@@ -8,9 +8,10 @@ swap surface: it translates the already-assembled OpenAI-shaped answer input int
 Interactions step schema, appends the YouTube video to the current message, and adapts the
 Interactions stream events back into the shapes `ResponseStreamer._consume` reads, so the
 preview / footer / markers / voice / image / reply-edit machinery is reused unchanged. It
-still rides the proxy (`create_gemini_interactions_client` uses the proxy base_url + key),
-so the "everything through LiteLLM" invariant holds; importing the google-genai Interactions
-types here is the documented carve-out for video ingestion.
+calls Gemini DIRECT (the cog's `interactions_client` uses `gemini_api_key`, no proxy): the
+Interactions API is inherently Gemini and the swap only fires on a Gemini answer model, so
+this is the one runtime answer turn that does not ride the LiteLLM proxy. Importing the
+google-genai Interactions types here is the documented carve-out for video ingestion.
 """
 
 from types import SimpleNamespace
@@ -215,21 +216,21 @@ async def adapt_interactions_stream(
             raise RuntimeError(f"Gemini interactions stream error: {event!r}")
 
 
-async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer inputs mirroring the Responses call site
+async def create_interactions_answer_stream(
     *,
     client: genai.Client,
     model: str,
     system_instruction: str,
     steps: list[StepParam],
     effort: ReasoningEffort,
-    end_user_id: str,
 ) -> AsyncIterator[ResponseStreamEvent]:
     """Streams a YouTube-aware QA answer through the Gemini Interactions API.
 
     Mirrors the Responses answer call (same model, system instruction, built-in grounding
     tools, effort-as-thinking-level) but lets Gemini watch the linked video, then yields the
     adapted stream so the shared `ResponseStreamer` consumes it unchanged. `extra_body` is
-    intentionally omitted (the interactions client does not support it).
+    intentionally omitted (the interactions client does not support it). The call goes direct
+    to Google, so no LiteLLM end-user header is sent.
     """
     responses = await client.aio.interactions.create(
         model=model,
@@ -253,7 +254,6 @@ async def create_interactions_answer_stream(  # noqa: PLR0913 -- per-call answer
             GoogleSearch(type="google_search", search_types=["web_search"]),
         ],
         stream=True,
-        extra_headers={"x-litellm-end-user-id": end_user_id},
     )
     # `stream=True` returns an async event stream; the overload still types it as a union with
     # the non-streaming Interaction, so narrow to the iterator the adapter consumes.

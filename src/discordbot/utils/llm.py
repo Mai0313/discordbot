@@ -1,17 +1,18 @@
-"""Factories for the runtime LiteLLM-proxy OpenAI client and the Gemini upload client."""
+"""Shared best-effort Responses API call surfaces for one-shot LLM calls.
+
+Each helper owns the proxy call surface, the per-call timeout, and the failure handling so a
+caller only maps a None result to its own fallback. Client construction lives at the call
+sites as inline `AsyncOpenAI(...)` / `genai.Client(...)` cached_properties, not here.
+"""
 
 from typing import cast
 import asyncio
 
-import httpx
-from google import genai
 from openai import AsyncOpenAI
 import logfire
 from pydantic import BaseModel, ValidationError
-from google.genai.types import HttpOptions
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 
 
@@ -112,70 +113,3 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
         )
         return None
     return (responses.output_text or "").strip()
-
-
-def create_litellm_client(config: LLMConfig) -> AsyncOpenAI:
-    """Returns a fresh AsyncOpenAI client pointed at the LiteLLM proxy.
-
-    Each cog keeps its own client instance; this factory only centralizes the
-    base-url / api-key wiring so proxy configuration lives in one place.
-
-    Args:
-        config: Runtime LLM configuration holding the proxy base URL and API key.
-
-    Returns:
-        A configured OpenAI-compatible client for the LiteLLM proxy.
-    """
-    return AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
-
-
-def create_gemini_client(config: LLMConfig) -> genai.Client:
-    """Returns a Gemini client for direct Files API uploads.
-
-    Attachment ingestion uploads through this client (not the LiteLLM proxy) so
-    a fresh upload can be polled to an ACTIVE `state` before it is referenced;
-    the proxy's file resource cannot report that readiness. The answer request
-    still references the uploaded file by its URI through the proxy.
-
-    Args:
-        config: Runtime LLM configuration holding the Google AI Studio key.
-
-    Returns:
-        A Gemini client authenticated with the configured Files API credential.
-    """
-    return genai.Client(api_key=config.gemini_api_key)
-
-
-def create_gemini_interactions_client(config: LLMConfig) -> genai.Client:
-    """Returns a Gemini client whose Interactions API is pointed at the LiteLLM proxy.
-
-    Unlike `create_gemini_client` (direct Files API uploads with the Google AI Studio
-    `gemini_api_key`), this uses the PROXY key + base URL so the native Gemini Interactions
-    API rides the same proxy as every other runtime call. It exists because the OpenAI
-    Responses bridge HTTP-fetches a YouTube URL as HTML and cannot make Gemini watch a video,
-    whereas the interactions transformation forwards a video URI untranslated for Gemini to
-    fetch server-side. `extra_body` is omitted because the interactions client does not
-    support it (it only warns and drops it). An explicit httpx `AsyncHTTPTransport` is passed so
-    the async interactions client (which cannot use aiohttp) does not warn about falling back to
-    httpx on its first request; it would use httpx regardless, so this only names the choice.
-
-    The base URL is normalized to the proxy root: google-genai appends its own
-    `/v1beta/interactions` path, but `OPENAI_BASE_URL` is the OpenAI-compatible `/v1` endpoint,
-    which would otherwise yield `/v1/v1beta/interactions` and miss the proxy's Gemini
-    Interactions route, so a trailing `/v1` is stripped first.
-
-    Args:
-        config: Runtime LLM configuration holding the proxy base URL and API key.
-
-    Returns:
-        A Gemini client whose `aio.interactions` calls target the LiteLLM proxy.
-    """
-    base_url = config.base_url.rstrip("/")
-    if base_url.endswith("/v1"):
-        base_url = base_url[: -len("/v1")]
-    return genai.Client(
-        api_key=config.api_key,
-        http_options=HttpOptions(
-            base_url=base_url, async_client_args={"transport": httpx.AsyncHTTPTransport()}
-        ),
-    )

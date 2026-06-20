@@ -12,9 +12,9 @@ import asyncio
 from pathlib import Path
 import argparse
 
+from openai import AsyncOpenAI
 from rich.console import Console
 
-from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.store import (
@@ -110,8 +110,9 @@ async def _regen_all(model: ModelSettings, folder: str, apply: bool) -> None:
         for user_id in user_ids:
             _preview_one(user_id=user_id)
         return
+    config = LLMConfig()
     extractor = MemoryExtractorAI(
-        client=create_litellm_client(config=LLMConfig()),
+        client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
         extract_model=model,
         evaluate_model=model,
         consolidate_model=model,

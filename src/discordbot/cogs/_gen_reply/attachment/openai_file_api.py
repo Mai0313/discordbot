@@ -20,7 +20,6 @@ from pydantic import Field, PrivateAttr, SkipValidation
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.llm import create_litellm_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._gen_reply.attachment.base import (
     RenderedPart,
@@ -65,7 +64,7 @@ class OpenAIFileUploader(AttachmentRenderer):
     @cached_property
     def client(self) -> AsyncOpenAI:
         """The OpenAI-compatible client used for Files API uploads."""
-        return create_litellm_client(config=self.config)
+        return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     async def render_image(
         self,

@@ -20,7 +20,6 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.llm import create_litellm_client, create_gemini_interactions_client
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
@@ -362,17 +361,23 @@ class ReplyGeneratorCogs(commands.Cog):
         Returns:
             A configured AsyncOpenAI client reused across reply requests.
         """
-        return create_litellm_client(config=self.config)
+        return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     @cached_property
     def interactions_client(self) -> genai.Client:
-        """The cached Gemini client whose Interactions API targets the LiteLLM proxy.
+        """The cached Gemini Interactions client for the YouTube-aware QA answer turn.
+
+        DIRECT to Google (`gemini_api_key`, no proxy): the Interactions API is inherently
+        Gemini, and the swap only fires when the answer model is already Gemini, so the direct
+        Google credential is always the right one. This is the one runtime answer turn that does
+        not ride the LiteLLM proxy. A missing key does not fail construction; it surfaces at the
+        first interaction call.
 
         Returns:
             A Gemini client used only for the YouTube-aware QA answer turn, which streams
-            through the native Interactions API (the proxy-backed path that can watch a video).
+            through the native Interactions API (the path that can watch a video).
         """
-        return create_gemini_interactions_client(config=self.config)
+        return genai.Client(api_key=self.config.gemini_api_key)
 
     @cached_property
     def voice_synthesizer(self) -> VoiceSynthesizer:
@@ -1338,7 +1343,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     ),
                     steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
                     effort=slow_model.effort,
-                    end_user_id=message.author.name,
                 )
             else:
                 responses = await self.client.responses.create(

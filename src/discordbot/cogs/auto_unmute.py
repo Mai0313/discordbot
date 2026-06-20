@@ -9,7 +9,7 @@ import nextcord
 from nextcord import User, Guild, Member, Message, AuditLogAction
 from nextcord.ext import commands
 
-from discordbot.utils.llm import create_text_or_none, create_litellm_client
+from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._auto_unmute.prompts import UNMUTE_PROMPT
@@ -50,7 +50,7 @@ class AutoUnmuteCogs(commands.Cog):
         Returns:
             A configured client reused across auto-unmute reply generation.
         """
-        return create_litellm_client(config=self.config)
+        return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
