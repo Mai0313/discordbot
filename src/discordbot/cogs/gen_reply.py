@@ -1636,7 +1636,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         effort=effort,
                         allow_voice=True,
                         allow_image=True,
-                        allow_research=True,
+                        allow_research=_can_launch_research(message=message),
                         yt_url=yt_url,
                     )
                 reactions.advance(emoji="<:greencheck:1517565102424068226>")
@@ -1649,6 +1649,16 @@ class ReplyGeneratorCogs(commands.Cog):
                 await _discard_task(task=parts_task)
             if threads_task is not None:
                 await _discard_task(task=threads_task)
+
+
+def _can_launch_research(*, message: Message) -> bool:
+    """Whether a research thread can be opened from this message.
+
+    Only a guild text channel can host a nested thread; in a DM or inside an existing thread the
+    `<deep-research>` marker is suppressed so the answer model never promises a run that cannot
+    actually start (the launch would otherwise return the no-thread path and contradict itself).
+    """
+    return message.guild is not None and isinstance(message.channel, nextcord.TextChannel)
 
 
 def _in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:
