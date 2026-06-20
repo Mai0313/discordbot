@@ -286,6 +286,29 @@ async def claim_planning(*, thread_id: int) -> bool:
         return bool(result.rowcount and result.rowcount > 0)
 
 
+async def cancel_stale_plan(*, thread_id: int, plan_interaction_id: str) -> bool:
+    """Cancels a still-pending plan whose approval view expired (planning -> cancelled).
+
+    Guarded on `interaction_id` so only the plan currently awaiting approval is cancelled: a
+    superseded view (the plan was refined to a new interaction, or already accepted) is a no-op,
+    so an expired stale view never discards a fresh plan or a running research.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=update(ResearchSessionRow)
+            .where(
+                ResearchSessionRow.thread_id == thread_id,
+                ResearchSessionRow.phase == "planning",
+                ResearchSessionRow.interaction_id == plan_interaction_id,
+            )
+            .values(phase="cancelled", updated_at=now)
+        )
+        await session.commit()
+        return bool(result.rowcount and result.rowcount > 0)
+
+
 async def get_session(*, thread_id: int) -> PersistentResearchSession | None:
     """Reads one session row, or `None` when the thread is not tracked."""
     await _ensure_schema()

@@ -601,10 +601,37 @@ class ResearchCogs(commands.Cog):
             thread=thread,
             content=f"{owner_mention} 📋 接受就開始研究(會花時間與成本),或點「修改計畫」直接打字告訴我要調整什麼",
             view=PlanApprovalView(
-                cog=self, owner_id=owner_id, plan_interaction_id=plan.interaction_id, agent=agent
+                cog=self,
+                owner_id=owner_id,
+                plan_interaction_id=plan.interaction_id,
+                agent=agent,
+                thread_id=thread.id,
             ),
             allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
         )
+
+    async def on_plan_timeout(
+        self, *, thread_id: int, owner_id: int, plan_interaction_id: str
+    ) -> None:
+        """Frees a plan the owner left un-acted once its approval view expires (best-effort).
+
+        Guarded on the plan's `interaction_id` so only the plan still awaiting approval is
+        cancelled; a refined or already-accepted plan is a no-op. Without this the row stays
+        `planning` and blocks the owner from launching new research until a restart sweep.
+        """
+        if not await db.cancel_stale_plan(
+            thread_id=thread_id, plan_interaction_id=plan_interaction_id
+        ):
+            return
+        self._active_threads.discard(thread_id)
+        thread = await self._fetch_thread(thread_id=thread_id)
+        if thread is None:
+            return
+        with contextlib.suppress(Exception):
+            await thread.send(
+                content=f"<@{owner_id}> 計畫太久沒動作先收起來了,要的話重新點升級",
+                allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
+            )
 
     async def on_accept_plan(self, *, interaction: Interaction, view: PlanApprovalView) -> None:
         """Approve button: runs the full Deep Research from the approved plan."""
@@ -660,6 +687,7 @@ class ResearchCogs(commands.Cog):
                     owner_id=view.owner_id,
                     plan_interaction_id=view.plan_interaction_id,
                     agent=view.agent,
+                    thread_id=thread.id,
                 ),
             )
             return

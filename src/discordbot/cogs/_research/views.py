@@ -62,13 +62,28 @@ class PlanApprovalView(View):
     """Buttons under a proposed Deep Research plan: accept and run, or modify."""
 
     def __init__(
-        self, *, cog: "ResearchCogs", owner_id: int, plan_interaction_id: str, agent: str
+        self,
+        *,
+        cog: "ResearchCogs",
+        owner_id: int,
+        plan_interaction_id: str,
+        agent: str,
+        thread_id: int,
     ) -> None:
         super().__init__(timeout=PLAN_VIEW_TIMEOUT_SECONDS)
         self.cog = cog
         self.owner_id = owner_id
         self.plan_interaction_id = plan_interaction_id
         self.agent = agent
+        self.thread_id = thread_id
+
+    async def on_timeout(self) -> None:
+        """Frees the planning slot if the owner never acted, so they are not blocked until restart."""
+        await self.cog.on_plan_timeout(
+            thread_id=self.thread_id,
+            owner_id=self.owner_id,
+            plan_interaction_id=self.plan_interaction_id,
+        )
 
     @nextcord.ui.button(
         label="接受並開始", style=ButtonStyle.success, custom_id="research:plan_accept"
