@@ -321,7 +321,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     await cog.on_message(message=success_message)
     assert success_message.suppressed
     assert success_message.replies[0]["files"]
-    assert success_message.reactions[-1] == "🆗"
+    assert success_message.reactions[-1] == "<:greencheck:1517565102424068226>"
 
     warning_message = FakeDiscordMessage()
     warning_message.author = FakeUser(bot=False)
