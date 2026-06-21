@@ -8,7 +8,7 @@ import contextlib
 
 import logfire
 import nextcord
-from nextcord import Embed, Message, ButtonStyle, Interaction
+from nextcord import Embed, Message, ButtonStyle, Interaction, SelectOption
 from nextcord.ui import Item, View, Modal, Button, TextInput, StringSelect
 
 from discordbot.typings.games import GameParticipant, DragonGatePlayerResult
@@ -492,9 +492,9 @@ class DragonGateView(View):
         min_values=1,
         max_values=1,
         options=[
-            nextcord.SelectOption(label="底注", value="min", emoji="🪙"),
-            nextcord.SelectOption(label="全池", value="max", emoji="💰"),
-            nextcord.SelectOption(label="自訂", value="custom", emoji="✏️"),
+            SelectOption(label="底注", value="min", emoji="🪙"),
+            SelectOption(label="全池", value="max", emoji="💰"),
+            SelectOption(label="自訂", value="custom", emoji="✏️"),
         ],
         row=2,
     )
@@ -573,19 +573,19 @@ class DragonGateView(View):
         else:
             bet_select.placeholder = "🪙 選擇下注金額"
         bet_select.options = [
-            nextcord.SelectOption(
+            SelectOption(
                 label=f"底注 {compact_amount(amount=minimum)}",
                 value="min",
                 emoji="🪙",
                 description="最低下注金額",
             ),
-            nextcord.SelectOption(
+            SelectOption(
                 label=f"全池 {compact_amount(amount=maximum)}",
                 value="max",
                 emoji="💰",
                 description="一把定生死, 清空彩金池",
             ),
-            nextcord.SelectOption(
+            SelectOption(
                 label="自訂", value="custom", emoji="✏️", description="彈出視窗輸入精確金額"
             ),
         ]

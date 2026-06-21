@@ -1,7 +1,6 @@
 """Shared send/edit helpers for economy interaction responses."""
 
-import nextcord
-from nextcord import Embed, Interaction
+from nextcord import File, Embed, Interaction
 from nextcord.ui import View
 
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -9,10 +8,7 @@ from discordbot.utils.message_cleanup import schedule_public_message_delete
 
 
 async def send_expiring_followup(
-    interaction: Interaction,
-    embed: Embed,
-    view: View | None = None,
-    file: nextcord.File | None = None,
+    interaction: Interaction, embed: Embed, view: View | None = None, file: File | None = None
 ) -> None:
     """Sends a game-related economy embed and schedules its cleanup."""
     extra_files = [file] if file is not None else None

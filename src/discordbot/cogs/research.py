@@ -22,7 +22,17 @@ from google import genai
 from openai import AsyncOpenAI
 import logfire
 import nextcord
-from nextcord import Embed, Locale, Interaction, SlashOption, AllowedMentions
+from nextcord import (
+    Embed,
+    Locale,
+    Object,
+    Message,
+    Interaction,
+    SlashOption,
+    TextChannel,
+    AllowedMentions,
+)
+from nextcord.ui import View
 from nextcord.ext import commands
 
 from discordbot.utils.llm import create_text_or_none
@@ -51,7 +61,7 @@ if TYPE_CHECKING:
     from typing import Any
     from collections.abc import Callable, Awaitable, Coroutine
 
-    from nextcord import Thread, Message
+    from nextcord import Thread
 
 # How long the modify flow waits for the owner to type their changes in the thread.
 MODIFY_WAIT_TIMEOUT_SECONDS = 600.0
@@ -224,7 +234,7 @@ class ResearchCogs(commands.Cog):
         if not self.config.deep_research_available:
             await interaction.response.send_message(content="深度研究目前停用中", ephemeral=True)
             return
-        if interaction.user is None or not isinstance(interaction.channel, nextcord.TextChannel):
+        if interaction.user is None or not isinstance(interaction.channel, TextChannel):
             await interaction.response.send_message(
                 content="深度研究只能在伺服器的一般文字頻道開喔(私訊或討論串裡開不了 thread)",
                 ephemeral=True,
@@ -267,7 +277,7 @@ class ResearchCogs(commands.Cog):
         """
         # A research thread can only hang off a message in a guild text channel; a DM, an existing
         # thread, or a forum post cannot host a nested thread, so refuse before promising research.
-        if anchor.guild is None or not isinstance(anchor.channel, nextcord.TextChannel):
+        if anchor.guild is None or not isinstance(anchor.channel, TextChannel):
             return "unsupported", None
         async with self._owner_locks.hold(key=owner_id):
             existing = await db.active_thread_for_owner(owner_id=owner_id)
@@ -396,7 +406,7 @@ class ResearchCogs(commands.Cog):
         owner_mention: str,
         result: ResearchResult,
         agent: str,
-        status: "nextcord.Message | None",
+        status: Message | None,
         offer_escalation: bool,
     ) -> None:
         """Delivers a terminal result, finalizes the opening status message, and records the phase."""
@@ -440,12 +450,7 @@ class ResearchCogs(commands.Cog):
         self._active_threads.discard(thread.id)
 
     async def _finalize_status(
-        self,
-        *,
-        status: "nextcord.Message | None",
-        thread: "Thread",
-        content: str,
-        view: "nextcord.ui.View | None" = None,
+        self, *, status: Message | None, thread: "Thread", content: str, view: View | None = None
     ) -> None:
         """Edits the opening status message to its terminal content (with optional buttons).
 
@@ -563,7 +568,7 @@ class ResearchCogs(commands.Cog):
         *,
         thread: "Thread",
         owner_mention: str,
-        status: "nextcord.Message | None",
+        status: Message | None,
         plan: ResearchPlan,
         failed_status: str,
     ) -> bool:
@@ -591,7 +596,7 @@ class ResearchCogs(commands.Cog):
         owner_mention: str,
         plan: ResearchPlan,
         agent: str,
-        status: "nextcord.Message | None",
+        status: Message | None,
     ) -> None:
         """Posts the proposed plan text plus the approve / modify view."""
         if status is not None:
@@ -904,7 +909,7 @@ class ResearchCogs(commands.Cog):
     # ----- helpers ------------------------------------------------------------------------
 
     def _progress_editor(
-        self, *, status: "nextcord.Message | None", label: str
+        self, *, status: Message | None, label: str
     ) -> "Callable[[str | None, float], Awaitable[None]]":
         """Builds an on-progress callback that edits the status message with elapsed time."""
 
@@ -928,9 +933,9 @@ class ResearchCogs(commands.Cog):
         *,
         thread: "Thread",
         content: str,
-        view: "nextcord.ui.View | None" = None,
+        view: View | None = None,
         allowed_mentions: "AllowedMentions | None" = None,
-    ) -> "nextcord.Message | None":
+    ) -> Message | None:
         """Best-effort `thread.send`, returning the message or None on failure.
 
         Mentions default to fully suppressed (`AllowedMentions.none()`); a caller that wants the
@@ -978,7 +983,7 @@ def _owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
     Report and plan text is agent-generated, so any `@everyone` / role / other-user mention it
     contains must not resolve; only the deliberate owner ping is allowed through.
     """
-    return AllowedMentions(everyone=False, roles=False, users=[nextcord.Object(id=owner_id)])
+    return AllowedMentions(everyone=False, roles=False, users=[Object(id=owner_id)])
 
 
 def setup(bot: commands.Bot) -> None:

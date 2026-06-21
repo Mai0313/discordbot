@@ -4,6 +4,7 @@ from pathlib import Path
 
 import nextcord
 from nextcord import Embed, Locale, Interaction, SlashOption, SelectOption
+from nextcord.ui import View
 from nextcord.ext import commands
 
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -27,7 +28,7 @@ _ERROR_COLOR = 0xFF0000
 
 
 async def _send_maple_followup(
-    interaction: Interaction, embed: Embed, view: nextcord.ui.View | None = None
+    interaction: Interaction, embed: Embed, view: View | None = None
 ) -> None:
     """Sends a MapleStory result embed at a uniform width."""
     payload = embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction)
