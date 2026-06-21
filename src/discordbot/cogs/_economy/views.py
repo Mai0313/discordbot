@@ -3,7 +3,7 @@
 import contextlib
 
 import nextcord
-from nextcord import ButtonStyle, Interaction
+from nextcord import Message, ButtonStyle, Interaction
 from nextcord.ui import View, Button
 from nextcord.ext import commands
 
@@ -32,7 +32,7 @@ from discordbot.cogs._economy.interactions import edit_response_embed, send_ephe
 class LoanDecisionViewBase(View):
     """Shared cleanup behavior for public loan-decision views."""
 
-    message: nextcord.Message | None
+    message: Message | None
 
     def _schedule_cleanup(self, interaction: Interaction | None = None) -> None:
         """Schedules the public request message for cleanup after a terminal state."""
@@ -61,7 +61,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         self.proposal_id = proposal_id
         self.creator_id = creator_id
         self.allow_self_approval = allow_self_approval
-        self.message: nextcord.Message | None = None
+        self.message: Message | None = None
 
     async def on_timeout(self) -> None:
         """Rejects a stale central-bank request and cleans up its message."""
@@ -218,7 +218,7 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         self.proposal_id = proposal_id
         self.lender_id = lender_id
         self.creator_id = creator_id
-        self.message: nextcord.Message | None = None
+        self.message: Message | None = None
 
     async def on_timeout(self) -> None:
         """Rejects a stale personal credit request and cleans up its message."""

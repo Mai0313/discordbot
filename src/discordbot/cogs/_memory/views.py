@@ -4,7 +4,7 @@ from typing import cast
 import contextlib
 
 import nextcord
-from nextcord import Embed, Interaction
+from nextcord import Embed, ButtonStyle, Interaction
 from nextcord.ui import View, Button
 
 MEMORY_VIEW_TIMEOUT_SECONDS = 180
@@ -108,14 +108,14 @@ class MemoryPagesView(View):
         cast("Button", self.previous_page).disabled = self.page_index <= 0
         cast("Button", self.next_page).disabled = self.page_index >= len(self.pages) - 1
 
-    @nextcord.ui.button(label="◀ 上一頁", style=nextcord.ButtonStyle.secondary)
+    @nextcord.ui.button(label="◀ 上一頁", style=ButtonStyle.secondary)
     async def previous_page(self, _button: Button, interaction: Interaction) -> None:
         """Shows the previous page in place."""
         self.page_index = max(self.page_index - 1, 0)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
 
-    @nextcord.ui.button(label="下一頁 ▶", style=nextcord.ButtonStyle.secondary)
+    @nextcord.ui.button(label="下一頁 ▶", style=ButtonStyle.secondary)
     async def next_page(self, _button: Button, interaction: Interaction) -> None:
         """Shows the next page in place."""
         self.page_index = min(self.page_index + 1, len(self.pages) - 1)

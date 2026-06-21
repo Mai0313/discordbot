@@ -5,8 +5,8 @@ from functools import cached_property
 
 from openai import AsyncOpenAI
 import logfire
-import nextcord
-from nextcord import User, Guild, Member, Message, AuditLogAction
+from nextcord import User, Guild, Member, Message, Forbidden, AuditLogAction
+from nextcord.abc import Messageable
 from nextcord.ext import commands
 
 from discordbot.utils.llm import create_text_or_none
@@ -137,18 +137,18 @@ class AutoUnmuteCogs(commands.Cog):
                 if not hasattr(entry.changes.after, "communication_disabled_until"):
                     continue
                 return entry.user, entry.reason
-        except nextcord.Forbidden:
+        except Forbidden:
             logfire.warn(f"missing view_audit_log permission in {guild.name}")
         return None, None
 
-    def _resolve_channel(self, guild: Guild) -> nextcord.abc.Messageable | None:
+    def _resolve_channel(self, guild: Guild) -> Messageable | None:
         """Picks a target channel: last active channel, then system channel."""
         channel_id = self._last_active_channel.get(guild.id)
         if channel_id is not None:
             channel = guild.get_channel(channel_id)
-            if isinstance(channel, nextcord.abc.Messageable):
+            if isinstance(channel, Messageable):
                 return channel
-        if isinstance(guild.system_channel, nextcord.abc.Messageable):
+        if isinstance(guild.system_channel, Messageable):
             return guild.system_channel
         return None
 

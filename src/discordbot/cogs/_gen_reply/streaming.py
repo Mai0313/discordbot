@@ -9,8 +9,7 @@ import contextlib
 from collections.abc import AsyncIterator
 
 import logfire
-import nextcord
-from nextcord import File, Message
+from nextcord import File, Message, NotFound, HTTPException
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
 from openai.types.responses import (
@@ -181,8 +180,8 @@ class ResponseStreamer(BaseModel):
         """
         try:
             return await self.message.reply(content=content)
-        except nextcord.HTTPException as exc:
-            if exc.code != 50035 and not isinstance(exc, nextcord.NotFound):
+        except HTTPException as exc:
+            if exc.code != 50035 and not isinstance(exc, NotFound):
                 raise
             logfire.info(
                 "Source message deleted before reply; sending unparented",

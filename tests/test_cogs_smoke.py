@@ -366,7 +366,7 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
     )
     assert cog._last_active_channel == {123: 456}
 
-    monkeypatch.setattr(auto_unmute.nextcord.abc, "Messageable", FakeSendChannel)
+    monkeypatch.setattr(auto_unmute, "Messageable", FakeSendChannel)
     assert cog._resolve_channel(guild=guild) is channel
     moderator, reason = await cog._lookup_audit(guild=guild)
     assert moderator.name == "moderator"

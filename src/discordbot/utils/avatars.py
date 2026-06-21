@@ -3,24 +3,24 @@
 from typing import Protocol
 import contextlib
 
-import nextcord
+from nextcord import Asset, Guild, Member, HTTPException
 
 
 class AvatarUser(Protocol):
     """Discord user-like object with enough identity for avatar lookup."""
 
     id: int
-    display_avatar: nextcord.Asset
+    display_avatar: Asset
 
 
-def _member_avatar_url(member: nextcord.Member, fallback_url: str) -> str:
+def _member_avatar_url(member: Member, fallback_url: str) -> str:
     """Returns the member's guild avatar URL, falling back to a global avatar."""
     if member.guild_avatar is not None:
         return member.guild_avatar.url
     return fallback_url or member.display_avatar.url
 
 
-async def guild_avatar_url(user: AvatarUser, guild: nextcord.Guild | None = None) -> str:
+async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:
     """Returns a guild-scoped avatar URL when Discord exposes one.
 
     Args:
@@ -31,13 +31,13 @@ async def guild_avatar_url(user: AvatarUser, guild: nextcord.Guild | None = None
         The member's guild avatar URL when available, otherwise the user's global display avatar.
     """
     fallback_url = user.display_avatar.url
-    member: nextcord.Member | None = None
-    if isinstance(user, nextcord.Member):
+    member: Member | None = None
+    if isinstance(user, Member):
         member = user
     elif guild is not None and hasattr(guild, "get_member"):
         member = guild.get_member(user.id)
         if member is None and hasattr(guild, "fetch_member"):
-            with contextlib.suppress(nextcord.HTTPException):
+            with contextlib.suppress(HTTPException):
                 member = await guild.fetch_member(user.id)
 
     if member is None:

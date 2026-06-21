@@ -4,7 +4,7 @@ from io import BytesIO
 from datetime import UTC, datetime
 
 import nextcord
-from nextcord import Locale, Member, Interaction, SlashOption
+from nextcord import File, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.cogs._economy import embeds
@@ -331,7 +331,7 @@ class EconomyCogs(commands.Cog):
         await send_expiring_followup(
             interaction=interaction,
             embed=embed,
-            file=nextcord.File(fp=BytesIO(board), filename=BALANCE_LEADERBOARD_BOARD_FILENAME),
+            file=File(fp=BytesIO(board), filename=BALANCE_LEADERBOARD_BOARD_FILENAME),
         )
 
     @nextcord.slash_command(
@@ -367,7 +367,7 @@ class EconomyCogs(commands.Cog):
         await send_expiring_followup(
             interaction=interaction,
             embed=embed,
-            file=nextcord.File(fp=BytesIO(board), filename=LOSS_LEADERBOARD_BOARD_FILENAME),
+            file=File(fp=BytesIO(board), filename=LOSS_LEADERBOARD_BOARD_FILENAME),
         )
 
     @nextcord.slash_command(

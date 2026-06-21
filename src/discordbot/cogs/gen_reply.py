@@ -12,8 +12,7 @@ import contextlib
 from google import genai
 from openai import AsyncOpenAI
 import logfire
-import nextcord
-from nextcord import File, Embed, Message
+from nextcord import File, Embed, Message, NotFound, TextChannel, HTTPException
 from pydantic import ValidationError
 from nextcord.ext import commands
 from google.genai.types import (
@@ -1628,10 +1627,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 spacer = embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message)
                 try:
                     await message.reply(content=None, embed=error_embed, **spacer)
-                except nextcord.HTTPException as send_error:
+                except HTTPException as send_error:
                     # Source deleted before the error landed (50035): send it unparented. Rebuild
                     # the spacer; the failed reply already consumed the single-use spacer file.
-                    if send_error.code != 50035 and not isinstance(send_error, nextcord.NotFound):
+                    if send_error.code != 50035 and not isinstance(send_error, NotFound):
                         raise
                     fresh_spacer = embed_spacer_payload(
                         embeds=[error_embed], is_edit=False, target=message
@@ -1835,7 +1834,7 @@ def _can_launch_research(*, message: Message) -> bool:
     `<deep-research>` marker is suppressed so the answer model never promises a run that cannot
     actually start (the launch would otherwise return the no-thread path and contradict itself).
     """
-    return message.guild is not None and isinstance(message.channel, nextcord.TextChannel)
+    return message.guild is not None and isinstance(message.channel, TextChannel)
 
 
 def _in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:

@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import cast
 
 import nextcord
-from nextcord import File, User, Member, Message, ButtonStyle, Interaction, SelectOption
+from nextcord import File, User, Embed, Member, Message, ButtonStyle, Interaction, SelectOption
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ui import Modal, Button, TextInput, StringSelect
 
@@ -55,7 +55,7 @@ def _select_option_label(symbol: str, name: str) -> str:
 
 def build_market_message_payload(
     quotes: tuple[StockMarketQuote, ...], page_index: int = 0
-) -> tuple[nextcord.Embed, File]:
+) -> tuple[Embed, File]:
     """Builds the market embed and board attachment for one page."""
     filename = market_board_filename(page_index=page_index)
     embed = build_market_embed(

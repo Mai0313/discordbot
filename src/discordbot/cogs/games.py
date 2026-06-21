@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import logfire
 import nextcord
-from nextcord import Embed, Locale, Interaction, SlashOption
+from nextcord import User, Embed, Guild, Locale, Member, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.games import (
@@ -68,7 +68,7 @@ class GamesCogs(commands.Cog):
         self._startup_cleanup_done = False
         self._blackjack_shoes = BlackjackShoeStore()
 
-    async def _system_identity(self, guild: nextcord.Guild | None = None) -> SystemIdentity:
+    async def _system_identity(self, guild: Guild | None = None) -> SystemIdentity:
         """Returns the casino system identity used for narrator embeds.
 
         Slash commands only fire after the gateway has connected, so
@@ -89,7 +89,7 @@ class GamesCogs(commands.Cog):
         )
 
     async def _bot_blackjack_participant(
-        self, *, guild: nextcord.Guild | None, table_bet: int, channel_id: int
+        self, *, guild: Guild | None, table_bet: int, channel_id: int
     ) -> GameParticipant | None:
         """Returns a Blackjack participant for the bot player, or None if it cannot join."""
         bot_user = self.bot.user
@@ -129,7 +129,7 @@ class GamesCogs(commands.Cog):
 
     @staticmethod
     async def _identity_from_user(
-        user: nextcord.User | nextcord.Member, guild: nextcord.Guild | None = None
+        user: User | Member, guild: Guild | None = None
     ) -> GameParticipantIdentity:
         """Builds the shared game identity for a Discord user."""
         avatar_url = await guild_avatar_url(user=user, guild=guild)
@@ -141,11 +141,7 @@ class GamesCogs(commands.Cog):
         )
 
     async def _participant_from_user(
-        self,
-        user: nextcord.User | nextcord.Member,
-        wager: int,
-        mode: WagerMode,
-        guild: nextcord.Guild | None = None,
+        self, user: User | Member, wager: int, mode: WagerMode, guild: Guild | None = None
     ) -> ParticipantPreparationResult:
         """Builds a lobby participant under the requested wager and mode."""
         balance = await get_balance(user_id=user.id)
@@ -160,7 +156,7 @@ class GamesCogs(commands.Cog):
         )
 
     async def _all_in_participant_from_user(
-        self, user: nextcord.User | nextcord.Member, guild: nextcord.Guild | None = None
+        self, user: User | Member, guild: Guild | None = None
     ) -> ParticipantPreparationResult:
         """Builds a clamp-mode participant using the user's current full balance."""
         balance = await get_balance(user_id=user.id)
@@ -456,7 +452,7 @@ class GamesCogs(commands.Cog):
     async def blackjack_history(
         self,
         interaction: Interaction,
-        member: nextcord.Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
             name="member",
             description="Player to inspect; defaults to yourself.",
             name_localizations={Locale.zh_TW: "玩家", Locale.ja: "プレイヤー"},

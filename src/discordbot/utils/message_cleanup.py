@@ -5,8 +5,7 @@ import asyncio
 from pathlib import Path
 
 import logfire
-import nextcord
-from nextcord import Message
+from nextcord import Message, NotFound, Forbidden, HTTPException
 from pydantic import Field, BaseModel
 from sqlalchemy import Engine, text, event, create_engine
 from nextcord.ext import commands
@@ -202,9 +201,9 @@ async def delete_public_message(message: Message, message_id: int | None = None)
     resolved_message_id = message_id if message_id is not None else getattr(message, "id", None)
     try:
         await message.delete()
-    except nextcord.NotFound:
+    except NotFound:
         pass
-    except (nextcord.Forbidden, nextcord.HTTPException):
+    except (Forbidden, HTTPException):
         logfire.warn("Failed to delete public response", _exc_info=True)
         return False
     if isinstance(resolved_message_id, int):
@@ -219,7 +218,7 @@ async def delete_tracked_public_messages(bot: commands.Bot) -> None:
     for record in records:
         try:
             message = await _fetch_tracked_message(bot=bot, record=record)
-        except nextcord.NotFound:
+        except NotFound:
             await forget_public_message(message_id=record.message_id)
             deleted_count += 1
             continue
@@ -231,7 +230,7 @@ async def delete_tracked_public_messages(bot: commands.Bot) -> None:
                 _exc_info=True,
             )
             continue
-        except (nextcord.Forbidden, nextcord.HTTPException):
+        except (Forbidden, HTTPException):
             logfire.warn(
                 "Failed to fetch stale public response",
                 channel_id=record.channel_id,

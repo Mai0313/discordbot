@@ -12,7 +12,8 @@ import io
 from typing import TYPE_CHECKING
 
 import logfire
-import nextcord
+from nextcord import File, Message, AllowedMentions
+from nextcord.ui import View
 
 if TYPE_CHECKING:
     from nextcord import Thread
@@ -56,12 +57,12 @@ def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
 async def deliver_report(  # noqa: PLR0913 -- the report body plus its completion-message inputs
     *,
     thread: "Thread",
-    status: nextcord.Message | None,
+    status: Message | None,
     owner_mention: str,
     result: "ResearchResult",
     footer: str,
-    view: nextcord.ui.View | None,
-    allowed_mentions: nextcord.AllowedMentions,
+    view: View | None,
+    allowed_mentions: AllowedMentions,
 ) -> None:
     """Delivers the report into the thread.
 
@@ -98,25 +99,25 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
         )
 
 
-def _final_files(*, report: str, image_bytes: bytes | None, limit: int) -> list[nextcord.File]:
+def _final_files(*, report: str, image_bytes: bytes | None, limit: int) -> list[File]:
     """The `research.md` (+ optional image) attachments for the last message, honoring the limit."""
-    files: list[nextcord.File] = []
+    files: list[File] = []
     encoded = report.encode("utf-8")
     if len(encoded) <= limit:
-        files.append(nextcord.File(fp=io.BytesIO(encoded), filename="research.md"))
+        files.append(File(fp=io.BytesIO(encoded), filename="research.md"))
     if image_bytes is not None and len(image_bytes) <= limit:
-        files.append(nextcord.File(fp=io.BytesIO(image_bytes), filename="research.png"))
+        files.append(File(fp=io.BytesIO(image_bytes), filename="research.png"))
     return files
 
 
 async def _place(  # noqa: PLR0913 -- target message plus its optional files / view / mention policy
     *,
-    status: nextcord.Message | None,
+    status: Message | None,
     thread: "Thread",
     content: str,
-    files: list[nextcord.File],
-    view: nextcord.ui.View | None,
-    allowed_mentions: nextcord.AllowedMentions,
+    files: list[File],
+    view: View | None,
+    allowed_mentions: AllowedMentions,
 ) -> None:
     """Edits the opening status message (when given) or sends a new message, with optional files/view."""
     if status is not None:

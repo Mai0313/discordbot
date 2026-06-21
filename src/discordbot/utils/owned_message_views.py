@@ -10,8 +10,7 @@ from io import BytesIO
 from collections.abc import Callable
 
 import logfire
-import nextcord
-from nextcord import File, Embed, Message, Interaction
+from nextcord import File, Embed, Message, NotFound, Interaction
 from nextcord.ui import View
 
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -128,7 +127,7 @@ async def edit_owned_public_message(
         try:
             await target_message.edit(**kwargs)
             return
-        except nextcord.NotFound:
+        except NotFound:
             message_id = getattr(target_message, "id", None)
             if isinstance(message_id, int):
                 await forget_public_message(message_id=message_id)
