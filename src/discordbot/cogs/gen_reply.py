@@ -47,7 +47,6 @@ from discordbot.cogs._gen_reply.voice import VoiceSynthesizer
 from discordbot.cogs._memory.pipeline import schedule_memory_update
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.prompts import (
-    IMAGE_PROMPT,
     REPLY_PROMPT,
     ROUTE_PROMPT,
     EFFORT_PROMPT,
@@ -62,11 +61,7 @@ from discordbot.cogs._gen_reply.prompts import (
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
-from discordbot.cogs._gen_reply.generation import (
-    ImageReplyGenerator,
-    generate_image_bytes,
-    refine_generation_prompt,
-)
+from discordbot.cogs._gen_reply.generation import ImageReplyGenerator, generate_image_bytes
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
@@ -423,11 +418,7 @@ class ReplyGeneratorCogs(commands.Cog):
             A generator bound to this cog's client and model catalog; the caller still gates
             it on `allow_image` and `config.inline_image_enabled`.
         """
-        return ImageReplyGenerator(
-            client=self.client,
-            runtime_models=self.runtime_models,
-            refine_enabled=self.config.refine_prompt_enabled,
-        )
+        return ImageReplyGenerator(client=self.client, runtime_models=self.runtime_models)
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
@@ -827,19 +818,10 @@ class ReplyGeneratorCogs(commands.Cog):
             else:
                 image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
 
-            refined_prompt = await refine_generation_prompt(
-                enabled=self.config.refine_prompt_enabled,
-                client=self.client,
-                prompt_model=self.runtime_models.prompt_model,
-                user_prompt=user_prompt,
-                instructions=IMAGE_PROMPT,
-                end_user_id=message.author.name,
-                image_bytes_list=image_bytes_list or None,
-            )
             image_bytes = await generate_image_bytes(
                 client=self.client,
                 image_model=self.runtime_models.image_model,
-                prompt=refined_prompt,
+                prompt=user_prompt,
                 end_user_id=message.author.name,
                 image_bytes_list=image_bytes_list or None,
             )
