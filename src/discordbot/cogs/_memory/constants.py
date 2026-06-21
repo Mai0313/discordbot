@@ -47,6 +47,16 @@ MEMORY_GLOBAL_CONCURRENCY = 24
 MAIN_COMPACTION_TRIGGER_CHARS = 30_000
 MAIN_COMPACTION_TARGET_CHARS = 15_000
 
+# Staleness window for mutable (dated `[~YYYY-MM]`) bullets in main.md's stable
+# sections, measured RELATIVE to the newest mutable activity in the file, not to
+# `today`. Consolidation drops a mutable bullet whose last-confirmed month is
+# more than this many days behind the freshest mutable bullet, so a busy channel
+# pushes stale traits out while a quiet stretch with no newer mutable signal ages
+# nothing and forgets nothing. Permanent identity facts and enforced standing
+# directives live in the undated `## 永久事實` section and are exempt. Read only
+# by the consolidation prompt (PHASE2_PROMPT / SERVER_PHASE2_PROMPT).
+STABLE_FRESHNESS_WINDOW_DAYS = 45
+
 # Tail window of the detail file fed to consolidation as low-trust provenance.
 # Effectively the whole evidence log for any realistic user: this bot injects
 # memory exactly once per reply with no on-demand retrieval (unlike codex), so

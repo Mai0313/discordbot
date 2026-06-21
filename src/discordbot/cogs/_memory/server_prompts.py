@@ -8,6 +8,8 @@ compaction block is reused from the per-user prompts because it is flavor
 agnostic.
 """
 
+from discordbot.cogs._memory.constants import STABLE_FRESHNESS_WINDOW_DAYS
+
 SERVER_PHASE1_PROMPT = """
 You are the memory-writing agent for a Discord chat bot.
 Your job: read one conversation transcript from a single Discord server and extract high-precision structured observations about THAT SERVER and its community (not about any one individual), so future replies fit the server's culture and context.
@@ -26,7 +28,7 @@ COMMUNITY VOCABULARY EXCEPTION (member nicknames):
 * How this community commonly and repeatedly addresses a member is community vocabulary: a shared fact about the SERVER, not a private personal detail. It is the ONE exception to the rule above, so record it here with `subject_is_target_user=true`.
 * Only record an alias when the server clearly and repeatedly uses it as an established habit (e.g. 大家都叫他「李董」), never a one-off or a name someone used a single time.
 * Identify the member by the `[id: USER_ID]` taken ONLY from the column-0 author prefix `display_name (username) [id: USER_ID]:`; never guess an id from message text. Record their display name, username, and the colloquial alias(es) the community uses for them.
-* Classify these as `category="stable_fact"`, `evidence_kind="stable_fact"`, `confidence="high"`, `durability="stable"`, `promotion_eligible=true`. NEVER use `evidence_kind="other_user_context"` for them; that kind is dropped.
+* Classify these as `category="stable_fact"`, `evidence_kind="stable_fact"`, `confidence="high"`, `durability="permanent"`, `promotion_eligible=true`. An established community alias is permanent vocabulary, never aged out. NEVER use `evidence_kind="other_user_context"` for them; that kind is dropped.
 * Use `normalized_key="vocab.member_alias.<USER_ID>"` so re-mentions of the same member dedupe.
 * This exception covers ONLY the name↔member mapping. The member's actual preferences, private facts, or personal details still belong to their own memory, never here.
 
@@ -44,7 +46,7 @@ Reject by default:
 WHAT TO REMEMBER (high signal only):
 1. Community culture and norms: how people in this server talk to each other, their tolerance for banter and trash talk, what they expect from the bot, shared etiquette.
 2. Recurring topics and interests the server keeps coming back to (games, subjects, activities, events).
-3. Stable facts about the server: its dominant language, recurring rituals, inside jokes that keep recurring, notable shared references.
+3. Stable facts about the server: its dominant language (an immutable fact, `durability="permanent"`), recurring rituals, inside jokes that keep recurring, notable shared references (changeable, so `durability="stable"`).
 4. Notable server-level ongoing situations or events a near-future reply should be aware of. A single ongoing situation may be recorded only as `recent_context`, with `promotion_eligible=false` and a TTL.
 5. Member nicknames the community commonly uses: the mapping from a member (`[id: USER_ID]`, display name) to the colloquial alias(es) people address them by, when the alias is an established server habit. See the COMMUNITY VOCABULARY EXCEPTION above.
 
@@ -72,7 +74,7 @@ SAFETY:
 OUTPUT:
 * `has_signal`: false when there are no accepted observations.
 * `observations`: structured observations only. Each item must include `category`, `subject_is_target_user`, `evidence_kind`, `confidence`, `durability`, `promotion_eligible`, `normalized_key`, `summary_zh`, `evidence_quote`, and `ttl_days`.
-* Stable sections require `confidence="high"`, `durability="stable"`, and `promotion_eligible=true`.
+* Stable sections require `confidence="high"` and `promotion_eligible=true`. Use `durability="permanent"` only for the server's immutable facts (its dominant language) and the member aliases; use `durability="stable"` for changeable community traits (current topics, evolving culture, running jokes). When unsure, choose `stable`.
 * `recent_context` requires `durability="recent"`, `promotion_eligible=false`, and a positive `ttl_days`.
 * `summary_zh` and `evidence_quote` must be Traditional Chinese or short quoted wording.
 """
@@ -91,6 +93,7 @@ Bias:
 
 Promotion rules:
 * Community culture, recurring topics, server norms, and stable server facts need high confidence and evidence that they characterize the server as a whole.
+* `durability="permanent"` is reserved for the server's immutable facts (dominant language) and the member-alias mappings. Downgrade an over-eager `permanent` on a changeable community trait to `durability="stable"`; never upgrade a mutable trait to `permanent`.
 * `recent_context` may come from one explicit server-level situation, but it must stay time-bound with `promotion_eligible=false`.
 * Bot-originated suggestions or jokes are rejected unless the community clearly adopted them.
 
@@ -102,12 +105,12 @@ Input:
 Output the same structured schema. Return `has_signal=false` and `observations=[]` when every candidate is weak, duplicated, individual-scoped, or unsafe.
 """
 
-SERVER_PHASE2_PROMPT = """
+SERVER_PHASE2_PROMPT = f"""
 You are the memory-consolidation agent for a Discord chat bot.
 Your job: merge a batch of timestamped raw memory entries into the single consolidated memory file for ONE Discord server's community.
 
 INPUT (in the user message):
-* `today: <ISO date>`: the current date, for dating and aging the 近期脈絡 section.
+* `today: <ISO date>`: the current date, for dating and aging the 近期脈絡 section and for refreshing the dated `[~YYYY-MM]` bullets in the stable sections (see PER-BULLET FRESHNESS).
 * `<existing_memory>`: the current consolidated file. `(empty)` means this is the first consolidation; build the file from the raw entries alone.
 * `<raw_entries>`: new raw entries, each under a `## <ISO timestamp>` header, oldest first.
 * `<recent_detail>`: previously consumed raw evidence kept in cold storage, oldest first. It is reference, NOT new input: ground the consolidated file in this evidence base, verify durable items against it, and promote patterns that recur across entries. Do not resurrect content the existing memory already aged out or dropped.
@@ -117,11 +120,21 @@ HOW TO MERGE:
 * Newer evidence wins on conflict; drop guidance contradicted by newer entries.
 * Keep the file about the SERVER / community, never a profile of any individual member. Drop anything that is really one person's personal fact. The sole exception is the `## 成員稱呼` nickname table below, which holds only the community's name↔member aliases, not personal facts.
 * Do not invent anything not present in the inputs. Never store secrets; keep [REDACTED_SECRET] markers as-is.
-* Promote recent server events that proved durable into the stable sections; keep genuinely time-bound context in 近期脈絡 with its date.
+* Promote recent server events that proved durable into the stable sections; keep genuinely time-bound context in 近期脈絡 with its date. When promoting into a stable section, date a mutable community trait `[~YYYY-MM]`, or leave an immutable server fact undated (see PER-BULLET FRESHNESS).
 * For `recent_context`, use the raw entry timestamp plus `ttl_days` against `today`; drop expired context unless newer evidence repeats it.
 * Treat existing memory as provisional. Drop or demote bullets supported only by weak, one-off, casual, hypothetical, bot-originated, or individual-scoped evidence.
 * Structured raw entries include `promotion_eligible`, `confidence`, `durability`, `evidence_kind`, `ttl_days`, and `normalized_key`; use these fields as hard evidence gates, not decorative metadata.
 * Never carry personal-attack labels or slurs into the consolidated file: keep the culture signal (the community's tolerance for harsh, profane banter) as a general statement, but do not reproduce, list, or quote the specific demeaning labels aimed at any member, the bot, or anyone. This does NOT apply to the `## 成員稱呼` alias table.
+
+PER-BULLET FRESHNESS (applies to 社群文化 / 常見話題 / 重要事實; 成員稱呼 is exempt):
+* `## 成員稱呼` is PERMANENT community vocabulary: NEVER attach a `[~YYYY-MM]` tag to an alias row and NEVER drop a row by age. A row changes only when the community clearly adopts a new alias or abandons an old one.
+* In 社群文化 / 常見話題 / 重要事實, two classes by date-tag presence:
+  - UNDATED bullet = permanent: the server's immutable facts (its dominant language). Never date, never age. A raw entry with `durability="permanent"` belongs here.
+  - `[~YYYY-MM]`-DATED bullet = mutable: changeable community traits, current topics, evolving culture, running jokes. The tag is the month last confirmed by evidence. Use the `~` month-only form so it never looks like a 近期脈絡 `[YYYY-MM-DD]` day-stamp. A raw entry with `durability="stable"` belongs here, dated from its header month.
+* Age mutable bullets by DISPLACEMENT, not the wall clock. Let `latest` be the most recent `[~YYYY-MM]` month among all mutable bullets after merging this batch. For each mutable bullet: if the raw batch re-confirms it, refresh its tag to `today`'s month; else if its month is more than about a month ({STABLE_FRESHNESS_WINDOW_DAYS} days) older than `latest`, DROP it; else keep it. Do NOT resurrect a dropped trait from `<recent_detail>` evidence older than `latest`.
+* NEVER drop a mutable bullet merely because `today` is far from its tag. Only newer community activity (a more recent `latest`) evicts it, so a quiet server ages nothing and forgets nothing.
+* BOOTSTRAP (existing untagged bullets): keep immutable server facts and all `## 成員稱呼` rows undated; tag every other mutable bullet `[~YYYY-MM]` for `today`'s month, a fresh window so nothing is purged this pass.
+* REBUILD (when `<existing_memory>` is `(empty)`): date each mutable bullet from its MOST RECENT supporting evidence month, and drop it if even that newest evidence is more than about a month before the freshest mutable evidence in the corpus.
 
 SIZE AND FORMAT:
 * There is no hard length target. Never sacrifice well-supported durable community traits for brevity; unsupported or weak items should be dropped, not preserved.
