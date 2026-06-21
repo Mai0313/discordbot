@@ -49,6 +49,7 @@ from discordbot.cogs._memory.prompts import (
 from discordbot.cogs._gen_reply.input import render_author_identity
 from discordbot.cogs._memory.constants import (
     MAIN_COMPACTION_TARGET_CHARS,
+    STABLE_FRESHNESS_WINDOW_DAYS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.cogs._memory.extraction import (
@@ -447,6 +448,40 @@ async def test_extract_filters_weak_observations() -> None:
     assert draft.observations[1].ttl_days == 30
 
 
+async def test_extract_accepts_permanent_and_rejects_volatile_durability() -> None:
+    # The freshness tiers hinge on the durability gate: an immutable identity fact
+    # tagged `permanent` must pass (it routes to the never-aged 永久事實 section),
+    # while a `volatile` observation on a stable category is still dropped.
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="使用者是男性",
+                normalized_key="fact.gender.male",
+                category="stable_fact",
+                evidence_kind="stable_fact",
+                durability="permanent",
+                evidence_quote="我是男生",
+            ),
+            _observation(
+                summary="使用者今天心情不錯",
+                normalized_key="mood.today.good",
+                durability="volatile",
+                evidence_quote="今天心情不錯",
+            ),
+        ),
+    )
+    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
+    assert draft is not None
+    assert [observation.normalized_key for observation in draft.observations] == [
+        "fact.gender.male"
+    ]
+    assert draft.observations[0].durability == "permanent"
+    # Permanent observations carry no TTL; they never age out.
+    assert draft.observations[0].ttl_days is None
+
+
 async def test_extract_evaluator_can_drop_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_client = FakeMemoryClient()
     extractor = MemoryExtractorAI(
@@ -584,6 +619,23 @@ def test_prompts_cover_recent_context_and_compaction() -> None:
     assert "today" in PHASE2_PROMPT
     assert "ttl_days" in PHASE2_PROMPT
     assert str(MAIN_COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
+
+
+def test_prompts_cover_permanent_tier_and_displacement_freshness() -> None:
+    # Phase-1 must offer the permanent durability so identity facts are tagged
+    # at extraction time; the evaluator may downgrade an over-eager permanent.
+    assert "permanent" in PHASE1_PROMPT
+    assert "permanent" in PHASE1_EVALUATOR_PROMPT
+    # Phase-2 carries the never-aged 永久事實 section plus the mutable `[~YYYY-MM]`
+    # tag, and the day-stamp form stays present so the two shapes never collide.
+    assert "永久事實" in PHASE2_PROMPT
+    assert "[~YYYY-MM]" in PHASE2_PROMPT
+    assert "[YYYY-MM-DD]" in PHASE2_PROMPT
+    # Displacement-driven aging: the window number is interpolated and the rule
+    # anchors on the freshest mutable activity (`latest`), not on `today`.
+    assert str(STABLE_FRESHNESS_WINDOW_DAYS) in PHASE2_PROMPT
+    assert "latest" in PHASE2_PROMPT
+    assert "DISPLACEMENT" in PHASE2_PROMPT
 
 
 def test_prompts_record_tone_persona_independently() -> None:

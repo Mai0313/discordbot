@@ -46,7 +46,7 @@ type MemoryEvidenceKind = Literal[
     "unknown",
 ]
 type MemoryConfidence = Literal["low", "medium", "high"]
-type MemoryDurability = Literal["volatile", "session", "recent", "stable"]
+type MemoryDurability = Literal["volatile", "session", "recent", "stable", "permanent"]
 
 # Both phases run on model output that originated in user conversations, so
 # secrets are scrubbed before upload and again on the model output. Patterns
@@ -452,7 +452,7 @@ def _is_accepted_observation(observation: MemoryObservation) -> bool:
     return (
         observation.promotion_eligible
         and observation.confidence == "high"
-        and observation.durability == "stable"
+        and observation.durability in {"stable", "permanent"}
         and observation.evidence_kind in _STABLE_EVIDENCE_KINDS
     )
 

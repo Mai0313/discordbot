@@ -14,6 +14,7 @@ from discordbot.cogs._memory.store import (
     write_main_memory,
 )
 from discordbot.cogs._gen_reply.input import render_server_identity
+from discordbot.cogs._memory.constants import STABLE_FRESHNESS_WINDOW_DAYS
 from discordbot.cogs._gen_reply.memory_tool import render_server_memory_block
 from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE1_PROMPT,
@@ -112,6 +113,8 @@ def test_phase1_prompt_records_member_aliases_as_community_vocabulary() -> None:
     assert "COMMUNITY VOCABULARY EXCEPTION" in SERVER_PHASE1_PROMPT
     assert "vocab.member_alias.<USER_ID>" in SERVER_PHASE1_PROMPT
     assert 'evidence_kind="stable_fact"' in SERVER_PHASE1_PROMPT
+    # Aliases are permanent community vocabulary so the freshness pass never ages them.
+    assert 'durability="permanent"' in SERVER_PHASE1_PROMPT
     # The same kind that the deterministic gate drops must be explicitly forbidden here.
     assert "other_user_context" in SERVER_PHASE1_PROMPT
 
@@ -126,6 +129,17 @@ def test_consolidation_prompt_adds_member_alias_section() -> None:
     assert "## 成員稱呼" in SERVER_PHASE2_PROMPT
     assert SERVER_PHASE2_PROMPT.index("## 成員稱呼") < SERVER_PHASE2_PROMPT.index("## 近期脈絡")
     assert "社群暱稱" in SERVER_PHASE2_PROMPT
+
+
+def test_server_consolidation_prompt_ages_mutable_traits_but_exempts_aliases() -> None:
+    # Server stable traits follow the same displacement freshness as user memory,
+    # while the 成員稱呼 alias table is a permanent carve-out that never ages.
+    assert "permanent" in SERVER_PHASE2_PROMPT
+    assert "[~YYYY-MM]" in SERVER_PHASE2_PROMPT
+    assert str(STABLE_FRESHNESS_WINDOW_DAYS) in SERVER_PHASE2_PROMPT
+    # The alias section is named in the exemption and the displacement anchor is present.
+    assert "成員稱呼 is exempt" in SERVER_PHASE2_PROMPT
+    assert "DISPLACEMENT" in SERVER_PHASE2_PROMPT
 
 
 # ---------------------------------------------------------------------------
