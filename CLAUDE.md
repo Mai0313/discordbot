@@ -52,7 +52,7 @@ When debugging, check `./data/logs` for the full runtime logs.
 - **Streaming UX** (`streaming.py`): progress is reactions on the user's message (`ReactionStatusChain`, ordered, fire-and-forget, custom app emojis); no separate status messages. `ResponseStreamer` previews the reasoning summary as `-#` subtext, replaced by the first content delta. Edits run on a snapshot editor task that shuts down via a stop-event (not cancellation) so an in-flight write always lands before the final edit (else it orphans the reply). `_reply_or_send` degrades `message.reply` to `channel.send` on a deleted source (Discord 50035 / `NotFound`).
 - **Best-effort convention** (voice, inline image, image/video persona replies): any failure leaves the primary deliverable plus a ⏱️/⚠️ react hint on the source, never raising into the pipeline's outer error path.
 - **Kill-switches** (`LLMConfig`, runtime; off still strips any marker but produces nothing): `youtube_video_enabled`, `deep_research_enabled` / `deep_research_max_enabled`, `voice_reply_enabled`, `inline_image_enabled`.
-- **Logfire spans**: `gen_reply pipeline` / `route` / `effort` / `context build` / `memory selection` / `answer` (carries a `backend` attr) / `prompt refine` / `image reply` / `video reply` / `threads context`, plus first-reasoning-delta + first-content-delta logs in `streaming.py`.
+- **Logfire spans**: `gen_reply pipeline` / `route` / `effort` / `context build` / `memory selection` / `answer` (carries a `backend` attr) / `image reply` / `video reply` / `threads context`, plus first-reasoning-delta + first-content-delta logs in `streaming.py`.
 
 ### Routes
 

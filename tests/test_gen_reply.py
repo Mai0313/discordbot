@@ -301,7 +301,7 @@ class FakeAttachment:
 
 
 class FakeResponses:
-    """Fake Responses API resource for routing, caption, and streamed reply calls."""
+    """Fake Responses API resource for routing, memory selection, and streamed reply calls."""
 
     def __init__(self) -> None:
         """Initializes recorded calls and default outputs."""
@@ -313,7 +313,6 @@ class FakeResponses:
         self.create_reasonings: list[dict[str, str]] = []
         self.parse_models: list[str] = []
         self.parse_inputs: list[object] = []
-        self.output_text = "caption"
         # parse() serves both the route classifier and the effort grader; each picks its
         # own parsed output by the requested text_format.
         self.output_parsed: RouteClassification | None = RouteClassification(decision="SUMMARY")
@@ -352,9 +351,7 @@ class FakeResponses:
             )
             return _stream_events_from(events=events)
         output = self.select_queue.pop(0) if self.select_queue else []
-        return SimpleNamespace(
-            output_text=self.output_text, output=output, usage=self.select_usage
-        )
+        return SimpleNamespace(output=output, usage=self.select_usage)
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
         self,
