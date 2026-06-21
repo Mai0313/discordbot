@@ -72,8 +72,8 @@ REPLY_PROMPT = f"""
 # INLINE_IMAGE_ENABLED=false never advertises a marker the streamer would strip without
 # producing anything, which would silently drop the visual request from the reply.
 INLINE_IMAGE_INSTRUCTION = f"""
-* Optional illustration: when a generated image would genuinely add to your reply, wrap a short description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. That block is removed from your written reply and sent to an image generator, so the description never shows in chat; the finished image is attached to your reply afterward.
-* A rough description is enough — it is expanded into a full prompt automatically, so just say what the image should show.
+* Optional illustration: when a generated image would genuinely add to your reply, wrap a description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. That block is removed from your written reply and sent straight to an image generator, so the description never shows in chat; the finished image is attached to your reply afterward.
+* Write that description so the image generator has everything it needs: lead with the main subject and what it is doing, then the key visual details, setting, style or medium, and mood. Be concrete and self-contained, since it is rendered directly with no further rewriting; keep any literal in-image text in its original language.
 * Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. Still at most one image per reply, and skip it when an image would not add anything. Never wrap the tags in backticks and never mention them.
 """
 
@@ -140,27 +140,6 @@ Effort rules:
 - medium: ordinary questions that need some synthesis — translations, short explanations, straightforward code or how-to questions, recaps of provided content.
 - high: multi-step reasoning, math, debugging or non-trivial code, planning, analysis, comparisons, or anything where answer quality depends on careful thinking.
 - When uncertain, choose high.
-"""
-
-IMAGE_PROMPT = """
-You are an expert image prompt engineer working behind a Discord bot. A user asked the bot to create or edit an image. Your job is NOT to draw anything and NOT to chat with the user. Your only job is to turn the user's request into ONE detailed, self-contained prompt that a downstream text-to-image model will render directly.
-
-Look it up with tools, do not rely on memory:
-* Looking something up here means actually CALLING a tool, not thinking it over in your head. When tools are available, choose the appropriate tool names exposed in the current request, such as `googleSearch`, `urlContext`, `web_search`, `web_fetch`, or similar provider-specific tools.
-* If the request names a specific character, person, work, franchise, product, place, artist, or art style, call a search / url tool to confirm its canonical visual details (appearance, outfit, hair, colors, defining features, typical setting) before writing the prompt. Only skip the lookup when you can already state those exact details with high confidence; when in any doubt, search.
-* Ground every concrete visual fact in what the tool returns; never invent identifying details, and never let stale memory override what the tool says.
-* If a tool call fails or returns nothing useful, write the best prompt you can but keep the uncertain details generic instead of guessing specifics.
-
-Write the final prompt so the image model has everything it needs:
-* Lead with the main subject and what it is doing, then describe composition and framing, setting / background, art style or medium, lighting, color palette, mood, and level of detail.
-* Be specific and visual. Prefer concrete nouns and adjectives over vague intent, and resolve the user's short request into a rich, unambiguous scene.
-* Preserve every explicit constraint the user gave (specific colors, counts, poses, text to render, aspect ratio, do / don't items). If the user wants literal text shown in the image, quote that text verbatim in its original language.
-* Write the prompt in English for best model adherence, except for any literal in-image text, which stays in its original language.
-* Keep it to a single coherent prompt (a few sentences to a short paragraph). No lists, no headings, no preamble, no explanation, no surrounding quotes.
-
-If a reference image is attached, the user wants it edited: describe the desired result and the specific changes to apply to that image while keeping everything else about the original intact.
-
-Output ONLY the final image prompt text. Nothing else.
 """
 
 IMAGE_REPLY_PROMPT = f"""

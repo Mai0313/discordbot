@@ -46,7 +46,7 @@ from discordbot.cogs._gen_reply.voice import (
 )
 from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
-from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, MEMORY_SELECT_PROMPT
+from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import ImageReplyGenerator
@@ -301,7 +301,7 @@ class FakeAttachment:
 
 
 class FakeResponses:
-    """Fake Responses API resource for routing, caption, and streamed reply calls."""
+    """Fake Responses API resource for routing, memory selection, and streamed reply calls."""
 
     def __init__(self) -> None:
         """Initializes recorded calls and default outputs."""
@@ -313,10 +313,6 @@ class FakeResponses:
         self.create_reasonings: list[dict[str, str]] = []
         self.parse_models: list[str] = []
         self.parse_inputs: list[object] = []
-        self.output_text = "caption"
-        # When set, create() raises this on tool-bearing calls only (the prompt director),
-        # leaving the tool-free caption call working, to exercise best-effort fallback.
-        self.create_error: Exception | None = None
         # parse() serves both the route classifier and the effort grader; each picks its
         # own parsed output by the requested text_format.
         self.output_parsed: RouteClassification | None = RouteClassification(decision="SUMMARY")
@@ -349,17 +345,13 @@ class FakeResponses:
         self.create_inputs.append(input)
         self.create_streams.append(stream)
         self.create_tools.append(tools)
-        if self.create_error is not None and tools:
-            raise self.create_error
         if stream:
             events = (
                 self.stream_queue.pop(0) if self.stream_queue else list(_default_turn_events())
             )
             return _stream_events_from(events=events)
         output = self.select_queue.pop(0) if self.select_queue else []
-        return SimpleNamespace(
-            output_text=self.output_text, output=output, usage=self.select_usage
-        )
+        return SimpleNamespace(output=output, usage=self.select_usage)
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
         self,
@@ -1345,9 +1337,7 @@ async def test_image_config_gate_controls_generator(
 ) -> None:
     """config.inline_image_enabled gates whether the QA streamer receives an image generator."""
     cog = _cog()
-    cog.config = SimpleNamespace(
-        voice_reply_enabled=False, inline_image_enabled=enabled, refine_prompt_enabled=True
-    )
+    cog.config = SimpleNamespace(voice_reply_enabled=False, inline_image_enabled=enabled)
     captured: list[object] = []
 
     class FakeResponder:
@@ -2147,7 +2137,8 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
         context_task=asyncio.create_task(_ready_reply_context()),
     )
     assert cog.client.images.generate_calls
-    assert cog.client.images.generate_prompts == ["caption"]
+    # No director: the raw request reaches images.generate directly.
+    assert cog.client.images.generate_prompts == ["image"]
     # The image is delivered first, then a conversational reply streams onto that same
     # message via the flash image_reply_model with no tools.
     assert message.replies[-1].file is not None
@@ -2293,8 +2284,8 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     assert cog.client.images.generate_calls == 0
 
 
-async def test_handle_image_reply_refines_prompt_for_generate() -> None:
-    """The prompt director runs before generate, on prompt_model with grounding tools."""
+async def test_handle_image_reply_sends_raw_prompt_to_generate() -> None:
+    """The raw request reaches images.generate directly, with no prompt director call."""
     cog = _cog()
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
@@ -2304,76 +2295,11 @@ async def test_handle_image_reply_refines_prompt_for_generate() -> None:
         context_task=asyncio.create_task(_ready_reply_context()),
     )
 
-    # The director's refined output (the fake's "caption") is what reaches images.generate.
-    assert cog.client.images.generate_prompts == ["caption"]
-    # The director is the first responses.create: prompt_model, IMAGE_PROMPT, non-stream, tools.
-    assert cog.client.responses.create_models[0] == cog.runtime_models.prompt_model.name
-    assert cog.client.responses.create_instructions[0] == IMAGE_PROMPT
-    assert cog.client.responses.create_streams[0] is False
-    assert cog.client.responses.create_tools[0] == list(cog.runtime_models.prompt_model.tools)
-
-
-async def test_handle_image_reply_skips_director_when_refine_disabled() -> None:
-    """With REFINE_PROMPT_ENABLED off the director is skipped and the raw prompt renders."""
-    cog = _cog()
-    cog.config.refine_prompt_enabled = False
-    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
-
-    await cog._handle_image_reply(
-        message=message,
-        user_prompt="draw a cat",
-        context_task=asyncio.create_task(_ready_reply_context()),
-    )
-
-    # The raw prompt reaches images.generate; the non-streaming director create never happened
-    # (only the streaming persona reply remains), so prompt_model / image_reply_model share a name.
+    # The raw prompt reaches images.generate; the only responses.create is the streaming persona
+    # reply (no non-streaming director ran).
     assert cog.client.images.generate_prompts == ["draw a cat"]
     assert cog.client.responses.create_streams == [True]
-
-
-async def test_handle_image_reply_director_receives_attached_bytes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """On the edit path the director receives the already-loaded bytes as an input image."""
-    cog = _cog()
-    monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
-    )
-    message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
-    message.attachments = [
-        FakeAttachment(
-            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
-        )
-    ]
-
-    await cog._handle_image_reply(
-        message=message,
-        user_prompt="make it blue",
-        context_task=asyncio.create_task(_ready_reply_context()),
-    )
-
-    assert cog.client.images.edit_calls == 1
-    director_input = cog.client.responses.create_inputs[0]
-    parts = director_input[0]["content"]
-    assert any(part.get("type") == "input_text" for part in parts)
-    assert any(part.get("type") == "input_image" for part in parts)
-
-
-async def test_handle_image_reply_falls_back_when_director_fails() -> None:
-    """A director failure keeps the raw prompt and still delivers the image."""
-    cog = _cog()
-    cog.client.responses.create_error = RuntimeError("director boom")
-    message = FakeMessage(content="image", author=FakeAuthor(user_id=1))
-
-    await cog._handle_image_reply(
-        message=message,
-        user_prompt="image",
-        context_task=asyncio.create_task(_ready_reply_context()),
-    )
-
-    # Generation fell back to the raw prompt; the image is still delivered (no error surfaced).
-    assert cog.client.images.generate_prompts == ["image"]
-    assert message.replies[-1].file is not None
+    assert cog.client.responses.create_models == [cog.runtime_models.image_reply_model.name]
 
 
 async def test_handle_image_reply_injects_only_user_memory() -> None:
