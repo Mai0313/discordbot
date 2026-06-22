@@ -1712,6 +1712,13 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert cog.input_builder.required_modality(content_type="video/mp4") == "video"
     assert cog.input_builder.required_modality(content_type="audio/mpeg") == "audio"
     assert cog.input_builder.required_modality(content_type="application/pdf") == "image"
+    # Unknown binary application types are dropped before any upload; readable structured-text
+    # suffixes (e.g. .geojson -> application/geo+json, application/atom+xml) still proxy through.
+    assert (
+        cog.input_builder.required_modality(content_type="application/octet-stream") == "unknown"
+    )
+    assert cog.input_builder.required_modality(content_type="application/geo+json") == "image"
+    assert cog.input_builder.required_modality(content_type="application/atom+xml") == "image"
 
     file_rendered = await cog.input_builder.attachment_handler.render_file(
         attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc"),

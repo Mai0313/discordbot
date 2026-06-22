@@ -340,9 +340,10 @@ class MessageInputBuilder(BaseModel):
             return "image"
         # An unlisted `application/*` binary the denylist did not name would otherwise pass as
         # an `image`-proxy and get uploaded before a renderer drops it. Only the known document /
-        # code / text application types are worth proxying as `input_file`; everything else under
-        # `application/*` is dropped on the metadata pass so it never costs an upload. Non-
-        # `application/*` types (e.g. `text/*`) keep proxying as `image`.
+        # code / text application types (plus structured `+json` / `+xml` suffixes) are worth
+        # proxying as `input_file`; everything else under `application/*` is dropped on the
+        # metadata pass so it never costs an upload. Non-`application/*` types (e.g. `text/*`)
+        # keep proxying as `image`.
         proxyable_application_mimes = frozenset({
             "application/pdf",
             "application/json",
@@ -370,9 +371,12 @@ class MessageInputBuilder(BaseModel):
             "application/vnd.oasis.opendocument.presentation",
             "application/epub+zip",
         })
+        # Structured-text suffixes (application/geo+json, application/atom+xml, ...) are readable
+        # JSON/XML the inline UTF-8 path or Gemini ingests, so allow them past the whitelist too.
         if (
             content_type.startswith("application/")
             and content_type not in proxyable_application_mimes
+            and not content_type.endswith(("+json", "+xml"))
         ):
             return "unknown"
         return "image"
