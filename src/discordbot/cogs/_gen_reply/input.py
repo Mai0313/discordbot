@@ -338,6 +338,43 @@ class MessageInputBuilder(BaseModel):
             return "audio"
         if content_type.startswith("image/"):
             return "image"
+        # An unlisted `application/*` binary the denylist did not name would otherwise pass as
+        # an `image`-proxy and get uploaded before a renderer drops it. Only the known document /
+        # code / text application types are worth proxying as `input_file`; everything else under
+        # `application/*` is dropped on the metadata pass so it never costs an upload. Non-
+        # `application/*` types (e.g. `text/*`) keep proxying as `image`.
+        proxyable_application_mimes = frozenset({
+            "application/pdf",
+            "application/json",
+            "application/ld+json",
+            "application/xml",
+            "application/javascript",
+            "application/x-javascript",
+            "application/typescript",
+            "application/x-yaml",
+            "application/yaml",
+            "application/toml",
+            "application/x-sh",
+            "application/x-python",
+            "application/x-python-code",
+            "application/sql",
+            "application/rtf",
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "application/vnd.oasis.opendocument.presentation",
+            "application/epub+zip",
+        })
+        if (
+            content_type.startswith("application/")
+            and content_type not in proxyable_application_mimes
+        ):
+            return "unknown"
         return "image"
 
     async def _render_attachment_parts(

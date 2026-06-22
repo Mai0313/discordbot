@@ -8,7 +8,7 @@ swap surface: it translates the already-assembled OpenAI-shaped answer input int
 Interactions step schema, appends the YouTube video to the current message, and adapts the
 Interactions stream events back into the shapes `ResponseStreamer._consume` reads, so the
 preview / footer / markers / voice / image / reply-edit machinery is reused unchanged. It
-calls Gemini DIRECT (the cog's `interactions_client` uses `gemini_api_key`, no proxy): the
+calls Gemini DIRECT (the cog's `gemini_client` uses `gemini_api_key`, no proxy): the
 Interactions API is inherently Gemini and the swap only fires on a Gemini answer model, so
 this is the one runtime answer turn that does not ride the LiteLLM proxy. Importing the
 google-genai Interactions types here is the documented carve-out for video ingestion.

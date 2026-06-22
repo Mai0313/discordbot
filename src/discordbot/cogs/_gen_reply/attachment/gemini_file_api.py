@@ -17,7 +17,7 @@ from collections import OrderedDict
 from google import genai
 import logfire
 from nextcord import Attachment, StickerItem
-from pydantic import Field, BaseModel, PrivateAttr, SkipValidation
+from pydantic import Field, BaseModel, PrivateAttr
 from google.genai.types import FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
@@ -39,16 +39,6 @@ if TYPE_CHECKING:
 # Lazily fetches a source's bytes and mime type. Awaited only when a fresh Gemini upload is
 # needed, so adopting an already-uploaded pending file never re-downloads the source.
 type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
-
-# A source whose byte fetch fails (typically an expired Discord/Threads CDN url that sits in
-# history scrollback) is skipped for this long so it is not re-fetched and re-warned on every
-# reply; after the window it is retried once so a transient blip self-heals.
-DEAD_SOURCE_TTL = timedelta(minutes=30)
-# Bounds concurrent media fetch + Files-API upload work across all in-flight pipelines (the
-# input builder is a shared singleton). Above the typical per-message attachment count so a
-# single request stays fully parallel, while two concurrent pipelines cannot launch dozens of
-# simultaneous uploads and starve each other (the source of the worst observed render tail).
-MEDIA_CONCURRENCY = 8
 
 
 class PendingUpload(BaseModel):
@@ -92,15 +82,6 @@ class GeminiFileUploader(AttachmentRenderer):
     # provider expiry; bounded like the render cache.
     _pending_uploads: OrderedDict[int | str, PendingUpload] = PrivateAttr(
         default_factory=OrderedDict
-    )
-    # Sources whose byte fetch failed, keyed by cache_key -> first-failure time. A hit within
-    # DEAD_SOURCE_TTL skips the fetch fast (no network, no per-turn re-warn); past the TTL the
-    # entry is dropped and the source retried once. Bounded like the caches above.
-    _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
-    # Caps concurrent media fetch/upload work; see MEDIA_CONCURRENCY. Created in-loop on first
-    # uploader access (during message handling), so it binds to the running event loop.
-    _media_semaphore: SkipValidation[asyncio.Semaphore] = PrivateAttr(
-        default_factory=lambda: asyncio.Semaphore(MEDIA_CONCURRENCY)
     )
 
     @cached_property
@@ -172,28 +153,6 @@ class GeminiFileUploader(AttachmentRenderer):
             type="input_file", file_id=file_id, filename=attachment.filename
         )
         return part, expires_at
-
-    def _is_known_dead(self, cache_key: int | str) -> bool:
-        """Whether a source's fetch failed recently enough to skip re-fetching it.
-
-        Past DEAD_SOURCE_TTL the marker is dropped so the source is retried once, letting a
-        transient blip self-heal while an expired CDN url stays cheap.
-        """
-        dead_at = self._dead_sources.get(cache_key)
-        if dead_at is None:
-            return False
-        if datetime.now(tz=UTC) - dead_at < DEAD_SOURCE_TTL:
-            self._dead_sources.move_to_end(cache_key)
-            return True
-        self._dead_sources.pop(cache_key, None)
-        return False
-
-    def _mark_dead(self, cache_key: int | str) -> None:
-        """Records a source's fetch failure so it is skipped for DEAD_SOURCE_TTL."""
-        self._dead_sources[cache_key] = datetime.now(tz=UTC)
-        self._dead_sources.move_to_end(cache_key)
-        if len(self._dead_sources) > 128:
-            self._dead_sources.popitem(last=False)
 
     async def _repoll_pending_upload(
         self, cache_key: int | str

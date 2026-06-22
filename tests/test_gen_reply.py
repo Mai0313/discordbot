@@ -44,7 +44,7 @@ from discordbot.cogs._gen_reply.voice import (
     VoiceSynthesizer,
     speechify_discord_markup,
 )
-from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
+from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
@@ -60,14 +60,10 @@ from discordbot.cogs._gen_reply.memory_tool import (
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
 from discordbot.cogs._parse_threads.builder import THREADS_CONTEXT_SEPARATOR
-from discordbot.cogs._gen_reply.attachment.base import loggable_cache_key
+from discordbot.cogs._gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
-from discordbot.cogs._gen_reply.attachment.gemini_file_api import (
-    DEAD_SOURCE_TTL,
-    PendingUpload,
-    GeminiFileUploader,
-)
+from discordbot.cogs._gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
 from tests.helpers.llm_input import (
@@ -622,7 +618,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
     cog.config = LLMConfig()
-    cog.__dict__["client"] = FakeClient()
+    cog.__dict__["openai_client"] = FakeClient()
     cog.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = cog.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
@@ -632,8 +628,8 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
 
 async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteClassification:
     """Classifies a message after building the shared text-only reference/current parts."""
-    reference_messages, current_message = await cog._get_reference_and_current_text_only(
-        message=message
+    reference_messages, current_message = await cog._get_reference_and_current(
+        message=message, text_only=True
     )
     return await cog._route_classify(
         message=message, reference_messages=reference_messages, current_message=current_message
@@ -642,8 +638,8 @@ async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteClassifi
 
 async def _grade(cog: ReplyGeneratorCogs, message: FakeMessage) -> EffortGrade:
     """Grades a message's answer effort after building the shared text-only parts."""
-    reference_messages, current_message = await cog._get_reference_and_current_text_only(
-        message=message
+    reference_messages, current_message = await cog._get_reference_and_current(
+        message=message, text_only=True
     )
     return await cog._grade_effort(
         message=message, reference_messages=reference_messages, current_message=current_message
@@ -660,7 +656,7 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
-    text_parts = await cog._get_reference_and_current_text_only(message=message)
+    text_parts = await cog._get_reference_and_current(message=message, text_only=True)
     route_done = asyncio.Event()
     route_done.set()
     context = await cog._prepare_reply_context(
@@ -801,7 +797,7 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
 
     chain_chunks = [parent.content, first_follow_up.content, second_follow_up.content]
     assert all(len(chunk) <= DISCORD_MESSAGE_LIMIT for chunk in chain_chunks)
-    assert cog.client.responses.create_models == []
+    assert cog.openai_client.responses.create_models == []
 
 
 def _deleted_source_error() -> nextcord.HTTPException:
@@ -1450,7 +1446,7 @@ async def test_youtube_qa_uses_interactions_backend(
         voice_reply_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
-    cog.__dict__["interactions_client"] = fake
+    cog.__dict__["gemini_client"] = fake
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
 
     url = "https://youtu.be/jNQXAC9IVRw"
@@ -1464,7 +1460,7 @@ async def test_youtube_qa_uses_interactions_backend(
     )
 
     # The Responses answer stream was never used; the Interactions one was, with the video part.
-    assert cog.client.responses.create_streams == []
+    assert cog.openai_client.responses.create_streams == []
     assert len(fake.recorder.calls) == 1
     last_step_parts = fake.recorder.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url} in last_step_parts
@@ -1485,7 +1481,7 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
         voice_reply_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
-    cog.__dict__["interactions_client"] = fake
+    cog.__dict__["gemini_client"] = fake
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
 
     url = "https://youtu.be/jNQXAC9IVRw"
@@ -1521,7 +1517,7 @@ async def test_youtube_qa_falls_back_to_responses(
             property(lambda _self: ModelSettings(name="gpt-5-mini", effort="high")),
         )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
-    cog.__dict__["interactions_client"] = fake
+    cog.__dict__["gemini_client"] = fake
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
 
     url = "https://youtu.be/jNQXAC9IVRw"
@@ -1536,7 +1532,7 @@ async def test_youtube_qa_falls_back_to_responses(
     )
 
     assert fake.recorder.calls == []
-    assert cog.client.responses.create_streams == [True]
+    assert cog.openai_client.responses.create_streams == [True]
 
 
 def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2079,10 +2075,11 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
 
     current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
     current.channel = FakeChannel(history=fake_history)
-    history = await cog._get_history_message(message=current, limit=30)
-    assert len(history.rendered) == 3
-    assert history.rendered[0]["role"] == "system"
-    assert [m.content for m in history.raw] == ["hello", "bot answer"]
+    raw_history = await cog._fetch_history(message=current, limit=30)
+    rendered = await cog._render_history(raw_history, text_only=False)
+    assert len(rendered) == 3
+    assert rendered[0]["role"] == "system"
+    assert [m.content for m in raw_history] == ["hello", "bot answer"]
 
     parent = FakeMessage(content="parent", author=FakeAuthor(user_id=4))
     grandparent = FakeMessage(content="grandparent", author=FakeAuthor(user_id=5))
@@ -2116,7 +2113,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
-    assert cog.client.responses.parse_models[0] == cog.runtime_models.route_model.name
+    assert cog.openai_client.responses.parse_models[0] == cog.runtime_models.route_model.name
 
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
@@ -2136,15 +2133,17 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
         user_prompt="image",
         context_task=asyncio.create_task(_ready_reply_context()),
     )
-    assert cog.client.images.generate_calls
+    assert cog.openai_client.images.generate_calls
     # No director: the raw request reaches images.generate directly.
-    assert cog.client.images.generate_prompts == ["image"]
+    assert cog.openai_client.images.generate_prompts == ["image"]
     # The image is delivered first, then a conversational reply streams onto that same
     # message via the flash image_reply_model with no tools.
     assert message.replies[-1].file is not None
-    assert cog.client.responses.create_models[-1] == cog.runtime_models.image_reply_model.name
-    assert cog.client.responses.create_streams[-1] is True
-    assert cog.client.responses.create_tools[-1] is None
+    assert (
+        cog.openai_client.responses.create_models[-1] == cog.runtime_models.image_reply_model.name
+    )
+    assert cog.openai_client.responses.create_streams[-1] is True
+    assert cog.openai_client.responses.create_tools[-1] is None
 
     streamed: list[FakeMessage] = []
 
@@ -2178,7 +2177,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     await _reply_via_pipeline(
         cog=cog, message=message, system_prompt="system", memory_enabled=False
     )
-    assert cog.client.responses.create_streams[-1] is True
+    assert cog.openai_client.responses.create_streams[-1] is True
     assert streamed[-1] is message
 
 
@@ -2280,8 +2279,8 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
         context_task=asyncio.create_task(_ready_reply_context()),
     )
 
-    assert cog.client.images.edit_calls == 1
-    assert cog.client.images.generate_calls == 0
+    assert cog.openai_client.images.edit_calls == 1
+    assert cog.openai_client.images.generate_calls == 0
 
 
 async def test_handle_image_reply_sends_raw_prompt_to_generate() -> None:
@@ -2297,9 +2296,9 @@ async def test_handle_image_reply_sends_raw_prompt_to_generate() -> None:
 
     # The raw prompt reaches images.generate; the only responses.create is the streaming persona
     # reply (no non-streaming director ran).
-    assert cog.client.images.generate_prompts == ["draw a cat"]
-    assert cog.client.responses.create_streams == [True]
-    assert cog.client.responses.create_models == [cog.runtime_models.image_reply_model.name]
+    assert cog.openai_client.images.generate_prompts == ["draw a cat"]
+    assert cog.openai_client.responses.create_streams == [True]
+    assert cog.openai_client.responses.create_models == [cog.runtime_models.image_reply_model.name]
 
 
 async def test_handle_image_reply_injects_only_user_memory() -> None:
@@ -2320,7 +2319,7 @@ async def test_handle_image_reply_injects_only_user_memory() -> None:
     )
 
     # The streamed reply is the last create; only the user memory block rides in it.
-    reply_input = cog.client.responses.create_inputs[-1]
+    reply_input = cog.openai_client.responses.create_inputs[-1]
     contents = [block.get("content") for block in reply_input]
     assert "USER_MEM_MARKER" in contents
     assert "SERVER_MEM_MARKER" not in contents
@@ -2378,10 +2377,10 @@ async def test_handle_video_reply_uses_raw_prompt_without_director(
     # The raw prompt reaches generate_videos; the only responses.create is the streaming reply
     # about the video (no non-streaming director ran).
     assert cog.gemini_client.generate_prompts == ["video"]
-    assert cog.client.responses.create_streams == [True]
-    assert cog.client.responses.create_models == [cog.runtime_models.video_reply_model.name]
+    assert cog.openai_client.responses.create_streams == [True]
+    assert cog.openai_client.responses.create_models == [cog.runtime_models.video_reply_model.name]
     # The reply watches the generated video: it is referenced as an uploaded input_file part.
-    reply_parts = cog.client.responses.create_inputs[0][-1]["content"]
+    reply_parts = cog.openai_client.responses.create_inputs[0][-1]["content"]
     assert any(part.get("type") == "input_file" for part in reply_parts)
     # No attachments: a plain text-to-video generation at the configured 1080p, MP4 delivered.
     config = cog.gemini_client.generate_configs[0]
@@ -2465,7 +2464,7 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
 
     routed = await _route(cog=cog, message=message)
     assert routed.decision == "QA"
-    assert cog.client.responses.parse_models[0] == cog.runtime_models.route_model.name
+    assert cog.openai_client.responses.parse_models[0] == cog.runtime_models.route_model.name
 
 
 @pytest.mark.parametrize(
@@ -2497,7 +2496,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     cog = _cog()
     # Distinctive non-fallback grade so the effort reaching the answer model is checked to
     # be the graded value, not the "high" default that timeout/error would also produce.
-    cog.client.responses.effort_parsed = EffortGrade(effort="low")
+    cog.openai_client.responses.effort_parsed = EffortGrade(effort="low")
     calls: list[str] = []
     prompts: list[str] = []
     prep_requests: list[tuple[int, bool]] = []
@@ -2621,14 +2620,12 @@ async def test_prepare_reply_context_shields_shared_parts_task(
         await release.wait()
         return ([], [])
 
-    async def fake_history(
-        message: FakeMessage, limit: int, with_text_only: bool = False
-    ) -> RenderedHistory:
+    async def fake_history(message: FakeMessage, limit: int) -> list[object]:
         """Returns empty history so prep parks directly on the shared parts task."""
-        del message, limit, with_text_only
-        return RenderedHistory()
+        del message, limit
+        return []
 
-    monkeypatch.setattr(cog, "_get_history_message", fake_history)
+    monkeypatch.setattr(cog, "_fetch_history", fake_history)
     parts_task = asyncio.create_task(coro=slow_parts())
     prep_task = asyncio.create_task(
         coro=cog._prepare_reply_context(
@@ -2825,7 +2822,7 @@ async def test_on_message_injects_threads_context_before_current(
 ) -> None:
     """A QA message with a Threads URL injects the parsed post just before the current message."""
     cog = _cog()
-    cog.client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
         voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
     )
@@ -2847,7 +2844,7 @@ async def test_on_message_injects_threads_context_before_current(
     await cog.on_message(message=message)
 
     assert seen_urls == [url]
-    answer = request_input(responses=cog.client.responses, phase="answer")
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
     assert has_threads_context_block(request=answer)
     assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
 
@@ -2910,7 +2907,7 @@ async def test_on_message_skips_threads_context_without_url(
 ) -> None:
     """A message with no Threads URL never starts the parse and injects no block."""
     cog = _cog()
-    cog.client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
         voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
     )
@@ -2932,7 +2929,7 @@ async def test_on_message_skips_threads_context_without_url(
 
     assert called == []
     assert not has_threads_context_block(
-        request=request_input(responses=cog.client.responses, phase="answer")
+        request=request_input(responses=cog.openai_client.responses, phase="answer")
     )
 
 
@@ -2941,7 +2938,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
 ) -> None:
     """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
-    cog.client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
         voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
     )
@@ -2966,7 +2963,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
 
     # The slow parse is dropped, but a deterministic timeout notice keeps the model from
     # claiming it cannot open the link, and the answer still streams.
-    answer = request_input(responses=cog.client.responses, phase="answer")
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
     assert has_threads_context_block(request=answer)
     assert "did not respond in time" in str(answer)
 
@@ -3007,16 +3004,16 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     parent.id = 988
     message.reference = FakeReference(resolved=parent)
 
-    cog.client.responses.select_queue = [
+    cog.openai_client.responses.select_queue = [
         [_function_call_item(call_id="c0", arguments=json.dumps({"user_id_list": ["1"]}))]
     ]
-    cog.client.responses.stream_queue = [
+    cog.openai_client.responses.stream_queue = [
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=cog.client.responses, phase="answer")
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
     blocks = list(iter_text_blocks(request=answer))
     memory_index = next(
         index
@@ -3138,35 +3135,36 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     await _reply_via_pipeline(cog=cog, message=message)
 
     # Two requests: selection (non-streaming) then the answer (streaming).
-    assert cog.client.responses.create_streams == [False, True]
+    assert cog.openai_client.responses.create_streams == [False, True]
 
     # Selection runs on the fast tool_model; only the answer pays for slow_model.
-    assert cog.client.responses.create_models == [
+    assert cog.openai_client.responses.create_models == [
         cog.runtime_models.tool_model.name,
         cog.runtime_models.slow_model.name,
     ]
 
     # Selection request offers only get_user_memory and lists the author as callable.
-    selection_idx = request_index(responses=cog.client.responses, phase="selection")
-    assert tool_names_for_call(responses=cog.client.responses, n=selection_idx) == [
+    selection_idx = request_index(responses=cog.openai_client.responses, phase="selection")
+    assert tool_names_for_call(responses=cog.openai_client.responses, n=selection_idx) == [
         "get_user_memory"
     ]
     assert extract_callable_user_ids(
-        request=request_input(responses=cog.client.responses, phase="selection")
+        request=request_input(responses=cog.openai_client.responses, phase="selection")
     ) == {1}
-    assert cog.client.responses.create_instructions[selection_idx] == MEMORY_SELECT_PROMPT
+    assert cog.openai_client.responses.create_instructions[selection_idx] == MEMORY_SELECT_PROMPT
 
     # Answer request keeps the built-in tools (no get_user_memory) and the clean persona: the
     # author declined selection, so their stored memory is not injected.
-    answer_idx = request_index(responses=cog.client.responses, phase="answer")
+    answer_idx = request_index(responses=cog.openai_client.responses, phase="answer")
     assert "get_user_memory" not in tool_names_for_call(
-        responses=cog.client.responses, n=answer_idx
+        responses=cog.openai_client.responses, n=answer_idx
     )
     _assert_runtime_time_context(
-        instructions=cog.client.responses.create_instructions[answer_idx], system_prompt="SYS"
+        instructions=cog.openai_client.responses.create_instructions[answer_idx],
+        system_prompt="SYS",
     )
     assert not has_memory_context_block(
-        request=request_input(responses=cog.client.responses, phase="answer")
+        request=request_input(responses=cog.openai_client.responses, phase="answer")
     )
 
     # Extraction still scheduled for the author with a memory-free, tool-free list.
@@ -3228,16 +3226,17 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
 
     # The selection phase still offers the tool even when nobody has stored memory; the
     # answer phase keeps the clean persona and the built-in tools.
-    selection_idx = request_index(responses=cog.client.responses, phase="selection")
-    answer_idx = request_index(responses=cog.client.responses, phase="answer")
+    selection_idx = request_index(responses=cog.openai_client.responses, phase="selection")
+    answer_idx = request_index(responses=cog.openai_client.responses, phase="answer")
     assert "get_user_memory" in tool_names_for_call(
-        responses=cog.client.responses, n=selection_idx
+        responses=cog.openai_client.responses, n=selection_idx
     )
     _assert_runtime_time_context(
-        instructions=cog.client.responses.create_instructions[answer_idx], system_prompt="SYS"
+        instructions=cog.openai_client.responses.create_instructions[answer_idx],
+        system_prompt="SYS",
     )
     assert "get_user_memory" not in tool_names_for_call(
-        responses=cog.client.responses, n=answer_idx
+        responses=cog.openai_client.responses, n=answer_idx
     )
     assert scheduled == [user_scope(user_id=1), server_scope(bot_id=999, server_id=1)]
 
@@ -3289,10 +3288,10 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
     await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
 
     # memory_enabled=False runs no selection phase: a single answer request, no tool, no memory.
-    assert cog.client.responses.create_streams == [True]
-    answer = request_input(responses=cog.client.responses, phase="answer")
+    assert cog.openai_client.responses.create_streams == [True]
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
     assert not has_memory_context_block(request=answer)
-    assert "get_user_memory" not in tool_names_for_call(responses=cog.client.responses, n=0)
+    assert "get_user_memory" not in tool_names_for_call(responses=cog.openai_client.responses, n=0)
     # The per-user update is skipped, but the server-scope update still runs in a public guild.
     assert scheduled == [server_scope(bot_id=999, server_id=1)]
 
@@ -3480,19 +3479,19 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
         parent.id = 988
         message.reference = FakeReference(resolved=parent)
 
-    cog.client.responses.select_queue = [
+    cog.openai_client.responses.select_queue = [
         [
             _function_call_item(call_id=f"c{index}", arguments=json.dumps({"user_id_list": ids}))
             for index, ids in enumerate(select_id_lists)
         ]
     ]
-    cog.client.responses.stream_queue = [
+    cog.openai_client.responses.stream_queue = [
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
     await _reply_via_pipeline(cog=cog, message=message)
 
-    answer = request_input(responses=cog.client.responses, phase="answer")
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
     # An allowlisted-but-memoryless user gets a placeholder block, not a leak; the boundary is
     # which ids' real memory reaches the model, so placeholder sections are filtered out.
     injected = {
@@ -3510,7 +3509,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     )
 
     callable_ids = extract_callable_user_ids(
-        request=request_input(responses=cog.client.responses, phase="selection")
+        request=request_input(responses=cog.openai_client.responses, phase="selection")
     )
     assert callable_includes <= callable_ids
     assert callable_excludes.isdisjoint(callable_ids)
@@ -3608,16 +3607,16 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     message.mentions = mention_authors
 
     if select_usage is not None:
-        cog.client.responses.select_usage = SimpleNamespace(
+        cog.openai_client.responses.select_usage = SimpleNamespace(
             input_tokens=select_usage[0], output_tokens=select_usage[1]
         )
-    cog.client.responses.select_queue = [
+    cog.openai_client.responses.select_queue = [
         [
             _function_call_item(call_id=f"c{index}", arguments=json.dumps({"user_id_list": ids}))
             for index, ids in enumerate(select_id_lists)
         ]
     ]
-    cog.client.responses.stream_queue = [
+    cog.openai_client.responses.stream_queue = [
         [
             _text_event(delta="好"),
             _completed_event(input_tokens=stream_usage[0], output_tokens=stream_usage[1]),
@@ -3656,7 +3655,7 @@ async def test_handle_message_reply_falls_back_to_author_memory_when_selection_f
 
     monkeypatch.setattr(cog, "_select_user_memories", boom)
 
-    cog.client.responses.stream_queue = [
+    cog.openai_client.responses.stream_queue = [
         [_text_event(delta="照常回答"), _completed_event(input_tokens=5, output_tokens=6)]
     ]
 
@@ -3665,7 +3664,7 @@ async def test_handle_message_reply_falls_back_to_author_memory_when_selection_f
 
     # The answer request still ran, and the author's own memory was injected as the fallback.
     assert (message.replies[0].content or "").startswith("照常回答")
-    answer = request_input(responses=cog.client.responses, phase="answer")
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
     assert "甲" in (extract_user_memory_blocks(request=answer).get(1) or "")
 
 
@@ -3735,13 +3734,13 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     )
     if not has_guild:
         message.guild = None
-    cog.client.responses.stream_queue = [
+    cog.openai_client.responses.stream_queue = [
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
     await _reply_via_pipeline(cog=cog, message=message, memory_enabled=memory_enabled)
 
-    answer = request_input(responses=cog.client.responses, phase="answer")
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
     assert (extract_server_memory_block(request=answer) is not None) == expect_server_read
 
     server_scope_value = server_scope(bot_id=999, server_id=1)
@@ -3760,7 +3759,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     # On a memory-enabled guild turn the selection request also sees the server memory so it can
     # resolve nicknames; non-guild or SUMMARY turns run no selection phase.
     if memory_enabled and has_guild:
-        selection = request_input(responses=cog.client.responses, phase="selection")
+        selection = request_input(responses=cog.openai_client.responses, phase="selection")
         assert extract_server_memory_block(request=selection) is not None
 
 
@@ -3924,18 +3923,18 @@ async def test_streamer_footer_shows_route_effort(economy_isolated_db: None) -> 
 async def test_route_classify_carries_decision_and_defaults_qa() -> None:
     """The route classifies the reply mode; unparsed output falls back to QA."""
     cog = _cog()
-    cog.client.responses.output_parsed = RouteClassification(decision="IMAGE")
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="IMAGE")
     message = FakeMessage(content="draw a cat", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "IMAGE"
 
-    cog.client.responses.output_parsed = None
+    cog.openai_client.responses.output_parsed = None
     assert (await _route(cog=cog, message=message)).decision == "QA"
 
 
 async def test_route_url_summary_downgrades_to_qa() -> None:
     """A SUMMARY classification on a message carrying a URL is steered back to QA."""
     cog = _cog()
-    cog.client.responses.output_parsed = RouteClassification(decision="SUMMARY")
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="SUMMARY")
     message = FakeMessage(content="整理 https://example.test/a", author=FakeAuthor(user_id=1))
 
     assert (await _route(cog=cog, message=message)).decision == "QA"
@@ -3944,11 +3943,11 @@ async def test_route_url_summary_downgrades_to_qa() -> None:
 async def test_grade_effort_carries_grade_and_defaults_high() -> None:
     """The effort grader returns the model's grade; unparsed output falls back to high."""
     cog = _cog()
-    cog.client.responses.effort_parsed = EffortGrade(effort="low")
+    cog.openai_client.responses.effort_parsed = EffortGrade(effort="low")
     message = FakeMessage(content="hi", author=FakeAuthor(user_id=1))
     assert (await _grade(cog=cog, message=message)).effort == "low"
 
-    cog.client.responses.effort_parsed = None
+    cog.openai_client.responses.effort_parsed = None
     assert (await _grade(cog=cog, message=message)).effort == "high"
 
 
@@ -4082,7 +4081,7 @@ async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None)
 
     await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False, effort="low")
 
-    assert cog.client.responses.create_reasonings[-1]["effort"] == "low"
+    assert cog.openai_client.responses.create_reasonings[-1]["effort"] == "low"
 
 
 async def test_route_input_excludes_attachment_payloads() -> None:
@@ -4093,7 +4092,7 @@ async def test_route_input_excludes_attachment_payloads() -> None:
 
     await _route(cog=cog, message=message)
 
-    rendered = str(cog.client.responses.parse_inputs[-1])
+    rendered = str(cog.openai_client.responses.parse_inputs[-1])
     assert "input_file" not in rendered
     assert "[attachment: file]" in rendered
 
@@ -4101,7 +4100,7 @@ async def test_route_input_excludes_attachment_payloads() -> None:
 async def test_select_user_memories_uses_text_only_transcript() -> None:
     """The selection request carries the text-only transcript verbatim, no payloads."""
     cog = _cog()
-    cog.client.responses.select_queue = [[]]
+    cog.openai_client.responses.select_queue = [[]]
     message_list = [
         EasyInputMessageParam(
             role="user",
@@ -4116,7 +4115,7 @@ async def test_select_user_memories_uses_text_only_transcript() -> None:
         message=FakeMessage(), message_list=message_list, allowed={1: "u"}
     )
 
-    rendered = str(cog.client.responses.create_inputs[-1])
+    rendered = str(cog.openai_client.responses.create_inputs[-1])
     assert "input_image" not in rendered
     assert "input_file" not in rendered
     assert "[attachment: image]" in rendered
@@ -4211,7 +4210,7 @@ async def _prepare_context_with_hanging_selection(
 
     monkeypatch.setattr(cog, "_select_user_memories", slow_selection)
     parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=message))
-    text_parts = await cog._get_reference_and_current_text_only(message=message)
+    text_parts = await cog._get_reference_and_current(message=message, text_only=True)
     # The route has already returned, so selection gets only the tiny grace before it times out.
     route_done = asyncio.Event()
     route_done.set()
