@@ -1,13 +1,14 @@
-"""Inline reply markers: the answer model self-selects a spoken segment and an optional image.
+"""Inline reply markers: the answer model self-selects spoken segments and optional images.
 
-The answer model wraps the part of its reply it wants read aloud in `<voice>...</voice>`: only
-that segment is synthesized to a voice clip, but it STAYS in the visible reply (only the tags
-are stripped). It may also wrap a short description in `<image>...</image>` to have one image
-generated and attached; that whole block (tags AND content) is REMOVED from the visible reply
-so the generation prompt never leaks into chat. `ResponseStreamer` extracts both at finalize
-time via `extract_inline_markers` and scrubs partial/complete tags from the live preview via
-`scrub_markers_for_preview`, so neither flickers mid-stream. The asymmetry is deliberate: voice
-content is meant to stay visible, image content is meant to be pulled.
+The answer model wraps the parts of its reply it wants read aloud in `<voice>...</voice>`: only
+those segments are synthesized (concatenated into a single voice clip), but they STAY in the
+visible reply (only the tags are stripped). It may also wrap short descriptions in
+`<image>...</image>` to have images generated and attached; each such block (tags AND content)
+is REMOVED from the visible reply so the generation prompt never leaks into chat.
+`ResponseStreamer` extracts both at finalize time via `extract_inline_markers` and scrubs
+partial/complete tags from the live preview via `scrub_markers_for_preview`, so neither flickers
+mid-stream. The asymmetry is deliberate: voice content is meant to stay visible, image content
+is meant to be pulled.
 """
 
 import re
@@ -21,6 +22,11 @@ IMAGE_OPEN = "<image>"
 IMAGE_CLOSE = "</image>"
 DEEP_RESEARCH_OPEN = "<deep-research>"
 DEEP_RESEARCH_CLOSE = "</deep-research>"
+
+# Hard cap on inline images per reply: a voice clip plus 9 images exactly fills Discord's
+# 10-attachment ceiling. The prompt tells the model this limit; the streamer enforces it by
+# dropping any extra blocks so a confused model never blows past the attachment cap.
+MAX_INLINE_IMAGES = 9
 
 # Complete blocks: non-greedy, DOTALL so a multi-line segment is captured, IGNORECASE so a
 # stray-cased tag still matches.
@@ -64,8 +70,9 @@ class InlineMarkers(BaseModel):
     voice_requested: bool = Field(
         default=False, description="Whether the reply wrapped any segment in <voice>."
     )
-    image_prompt: str | None = Field(
-        default=None, description="First <image> description to generate, or None when absent."
+    image_prompts: list[str] = Field(
+        default_factory=list,
+        description="Every <image> description to generate, in order; empty when none.",
     )
     research_brief: str | None = Field(
         default=None,
@@ -77,19 +84,19 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
     """Splits a finished reply into visible text plus its voice / image media requests.
 
     Image blocks (tags AND content) are removed entirely so the generation prompt never shows
-    in chat; the first non-empty one is the image request. Voice tags are stripped but their
-    inner content STAYS in the visible reply, and every wrapped segment is concatenated as the
-    spoken-clip input. An unclosed trailing `<image>` (the model forgot to close it) is still
+    in chat; every non-empty one becomes an image request, in order. Voice tags are stripped but
+    their inner content STAYS in the visible reply, and every wrapped segment is concatenated as
+    the spoken-clip input. An unclosed trailing `<image>` (the model forgot to close it) is still
     pulled so its raw description never leaks, and any stray unpaired tag is scrubbed.
     """
-    image_prompt = next(
-        (group for m in _IMAGE_BLOCK_RE.finditer(text) if (group := m.group(1).strip())), None
-    )
+    image_prompts = [
+        group for m in _IMAGE_BLOCK_RE.finditer(text) if (group := m.group(1).strip())
+    ]
     cleaned = _IMAGE_BLOCK_RE.sub("", text)
     trailing_image = _TRAILING_IMAGE_OPEN_RE.search(cleaned)
     if trailing_image is not None:
-        if image_prompt is None:
-            image_prompt = trailing_image.group(0)[len(IMAGE_OPEN) :].strip() or None
+        if trailing := trailing_image.group(0)[len(IMAGE_OPEN) :].strip():
+            image_prompts.append(trailing)
         cleaned = _TRAILING_IMAGE_OPEN_RE.sub("", cleaned)
 
     # Deep-research blocks are pulled like image blocks (tags AND content removed) so the
@@ -128,7 +135,7 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
         cleaned_text=cleaned,
         voice_text="\n".join(voice_segments),
         voice_requested=bool(voice_segments),
-        image_prompt=image_prompt,
+        image_prompts=image_prompts,
         research_brief=research_brief,
     )
 

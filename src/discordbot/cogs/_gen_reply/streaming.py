@@ -26,12 +26,20 @@ from discordbot.cogs._gen_reply.voice import (
     VoiceSynthesizer,
     speechify_discord_markup,
 )
-from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
+from discordbot.cogs._gen_reply.markers import (
+    MAX_INLINE_IMAGES,
+    extract_inline_markers,
+    scrub_markers_for_preview,
+)
 from discordbot.cogs._gen_reply.generation import ImageReplyGenerator
 
-# Filename of the inline-generated image attached onto a QA reply; mirrors the router IMAGE
-# route's `generated.png` so the bot's own generated images render the same in history.
+# Filename of a single inline-generated image attached onto a QA reply; mirrors the router IMAGE
+# route's `generated.png` so the bot's own generated images render the same in history. Multiple
+# images need distinct names, so they fall back to `generated_<n>.png` (Discord collides on dupes).
 INLINE_IMAGE_FILENAME = "generated.png"
+# Discord caps one message at 10 attachments; the voice clip plus MAX_INLINE_IMAGES already fits,
+# so this is a defensive clamp guarding the single attach edit.
+DISCORD_ATTACHMENT_LIMIT = 10
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
 # which stops Discord from rendering the actual mention. Strip those wrappers
@@ -101,9 +109,9 @@ class ResponseStreamer(BaseModel):
         default=None,
         description="Inline-image renderer; None disables inline <image> for this reply.",
     )
-    image_prompt: str | None = Field(
-        default=None,
-        description="The <image> description the answer model asked to illustrate, if any.",
+    image_prompts: list[str] = Field(
+        default_factory=list,
+        description="The <image> descriptions the answer model asked to illustrate, in order.",
     )
     research_brief: str | None = Field(
         default=None,
@@ -316,7 +324,7 @@ class ResponseStreamer(BaseModel):
         markers = extract_inline_markers(text=self.stored_content)
         self.stored_content = markers.cleaned_text
         self.voice_requested = markers.voice_requested
-        self.image_prompt = markers.image_prompt
+        self.image_prompts = markers.image_prompts
         # The streamer only surfaces the brief; the cog (not the streamer) launches the research
         # after the single media edit so it never touches the reply's one attachment edit.
         self.research_brief = markers.research_brief
@@ -362,7 +370,7 @@ class ResponseStreamer(BaseModel):
             cost=cost,
             reply_chars=reply_chars,
             voice_requested=self.voice_requested,
-            image_requested=self.image_prompt is not None,
+            image_count=len(self.image_prompts),
             memory_lookups=len(self.memory_lookups),
             chunked=chunked,
         )
@@ -453,67 +461,96 @@ class ResponseStreamer(BaseModel):
             return None
         return File(fp=BytesIO(clip.audio), filename=VOICE_REPLY_FILENAME)
 
-    async def _build_image_file(self) -> File | None:
-        """Renders the <image> request to an upload-ready PNG File, or None when not delivered.
+    async def _build_image_files(self) -> list[File]:
+        """Renders the <image> requests to upload-ready PNG Files, in order; [] when none delivered.
 
-        Best-effort like voice: no request or a disabled generator is silent; a
-        requested-but-failed or oversized render hints the source message and returns None.
+        Best-effort like voice: no request or a disabled generator is silent. The model is capped
+        at MAX_INLINE_IMAGES so a voice clip plus the images never exceed Discord's attachment
+        limit; any blocks past the cap are dropped here. The capped prompts render concurrently;
+        each failed or oversized image is dropped and a single ⚠️ hint rides on the source message.
         """
-        if self.image_prompt is None:
-            return None
+        prompts = self.image_prompts[:MAX_INLINE_IMAGES]
+        if not prompts:
+            return []
         if self.image_generator is None:
             # Inline image is intentionally off this turn (kill-switch / non-QA route): no hint.
             logfire.info(
                 "Inline image requested but disabled for this turn; replying without an image",
                 message_id=self.message.id,
             )
-            return None
-        # Mark the source message with the bot's `image` app emoji while the image renders.
+            return []
+        if len(self.image_prompts) > MAX_INLINE_IMAGES:
+            logfire.info(
+                "Inline image requests exceed the per-reply cap; dropping the extras",
+                message_id=self.message.id,
+                requested=len(self.image_prompts),
+                cap=MAX_INLINE_IMAGES,
+            )
+        # Mark the source message with the bot's `image` app emoji while the images render.
         await update_reaction(
             message=self.message, bot_user=None, emoji="<:image:1517559727880667226>"
         )
-        logfire.info("Generating inline image reply", message_id=self.message.id)
-        image = await self.image_generator.generate(
-            user_prompt=self.image_prompt, end_user_id=self.message.author.name
+        logfire.info(
+            "Generating inline image reply", message_id=self.message.id, image_count=len(prompts)
         )
-        if image is None:
-            # generate() logged the failure/timeout; cue the user the image could not be made.
-            await self._hint_media_unavailable(emoji="⚠️")
-            return None
-        upload_limit = self._upload_limit()
-        if len(image) > upload_limit:
-            logfire.warn(
-                "Inline image exceeds the guild upload limit; dropping image",
-                message_id=self.message.id,
-                image_bytes=len(image),
-                upload_limit=upload_limit,
+        # Render every requested image concurrently so a slow one never delays the others.
+        images = await asyncio.gather(
+            *(
+                self.image_generator.generate(
+                    user_prompt=prompt, end_user_id=self.message.author.name
+                )
+                for prompt in prompts
             )
+        )
+        upload_limit = self._upload_limit()
+        files: list[File] = []
+        dropped = False
+        for index, image in enumerate(images, start=1):
+            if image is None:
+                # generate() logged the failure/timeout; hint once after the loop.
+                dropped = True
+                continue
+            if len(image) > upload_limit:
+                logfire.warn(
+                    "Inline image exceeds the guild upload limit; dropping image",
+                    message_id=self.message.id,
+                    image_bytes=len(image),
+                    upload_limit=upload_limit,
+                )
+                dropped = True
+                continue
+            # A single image keeps `generated.png` to mirror the IMAGE route; multiples need
+            # distinct names since Discord collides on duplicate attachment filenames.
+            filename = INLINE_IMAGE_FILENAME if len(prompts) == 1 else f"generated_{index}.png"
+            files.append(File(fp=BytesIO(image), filename=filename))
+        if dropped:
             await self._hint_media_unavailable(emoji="⚠️")
-            return None
-        return File(fp=BytesIO(image), filename=INLINE_IMAGE_FILENAME)
+        return files
 
     async def _attach_generated_media(self) -> None:
-        """Attaches any requested spoken clip and inline image onto the sent reply in one edit.
+        """Attaches any requested spoken clip and inline images onto the sent reply in one edit.
 
-        The text reply is already on screen, so this adds no latency to it; both media are
+        The text reply is already on screen, so this adds no latency to it; the media are
         best-effort and any failure leaves the text reply (with a small emoji hint on the source
         message). They ride a single `reply.edit(files=...)` because `edit` replaces the
-        attachment list, so two separate edits would drop the first file.
+        attachment list, so two separate edits would drop the earlier files.
         """
         if self.reply is None:
-            if self.voice_requested or self.image_prompt is not None:
+            if self.voice_requested or self.image_prompts:
                 logfire.warn(
                     "Media requested but the reply was never sent; dropping it",
                     message_id=self.message.id,
                 )
                 await self._hint_media_unavailable(emoji="⚠️")
             return
-        # Build both concurrently so a slow media path never blocks the other: a TTS clip that
-        # hangs to VOICE_TIMEOUT_SECONDS must not delay a ready inline image (and vice versa).
-        voice_file, image_file = await asyncio.gather(
-            self._build_voice_file(), self._build_image_file()
+        # Build both paths concurrently so a slow one never blocks the other: a TTS clip that
+        # hangs to VOICE_TIMEOUT_SECONDS must not delay ready inline images (and vice versa).
+        voice_file, image_files = await asyncio.gather(
+            self._build_voice_file(), self._build_image_files()
         )
-        files = [media for media in (voice_file, image_file) if media is not None]
+        files = [media for media in (voice_file, *image_files) if media is not None][
+            :DISCORD_ATTACHMENT_LIMIT
+        ]
         if not files:
             return
         try:

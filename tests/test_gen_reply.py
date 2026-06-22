@@ -45,7 +45,11 @@ from discordbot.cogs._gen_reply.voice import (
     speechify_discord_markup,
 )
 from discordbot.cogs._gen_reply.context import ReplyContext
-from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
+from discordbot.cogs._gen_reply.markers import (
+    MAX_INLINE_IMAGES,
+    extract_inline_markers,
+    scrub_markers_for_preview,
+)
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -992,7 +996,7 @@ def test_extract_inline_markers_voice_keeps_content() -> None:
     assert markers.cleaned_text == "嗆爆你 聽好了 滾"
     assert markers.voice_text == "聽好了"
     assert markers.voice_requested is True
-    assert markers.image_prompt is None
+    assert markers.image_prompts == []
 
 
 def test_extract_inline_markers_multiple_voice_segments_concatenate() -> None:
@@ -1005,17 +1009,35 @@ def test_extract_inline_markers_multiple_voice_segments_concatenate() -> None:
 def test_extract_inline_markers_image_block_removed() -> None:
     """An <image> block (tags AND content) is pulled from the visible reply."""
     markers = extract_inline_markers(text="看這張\n<image>a red cat on a sofa</image>")
-    assert markers.image_prompt == "a red cat on a sofa"
+    assert markers.image_prompts == ["a red cat on a sofa"]
     assert "<image>" not in markers.cleaned_text
     assert "a red cat" not in markers.cleaned_text
     assert markers.cleaned_text == "看這張"
     assert markers.voice_requested is False
 
 
+def test_extract_inline_markers_multiple_image_blocks_in_order() -> None:
+    """Every <image> block becomes an image request, kept in document order."""
+    markers = extract_inline_markers(
+        text="先看\n<image>a red cat</image>\n再看\n<image>a blue dog</image>"
+    )
+    assert markers.image_prompts == ["a red cat", "a blue dog"]
+    assert "<image>" not in markers.cleaned_text
+    assert "red cat" not in markers.cleaned_text
+    assert "blue dog" not in markers.cleaned_text
+
+
+def test_extract_inline_markers_closed_then_unclosed_image_both_pulled() -> None:
+    """A complete block plus a trailing unclosed <image> are both captured, in order."""
+    markers = extract_inline_markers(text="看\n<image>a red cat</image>\n還有\n<image>a blue dog")
+    assert markers.image_prompts == ["a red cat", "a blue dog"]
+    assert "<image>" not in markers.cleaned_text
+
+
 def test_extract_inline_markers_unclosed_image_is_pulled() -> None:
     """An unclosed trailing <image> (model forgot to close) never leaks its description."""
     markers = extract_inline_markers(text="來囉\n<image>a sunset over the sea")
-    assert markers.image_prompt == "a sunset over the sea"
+    assert markers.image_prompts == ["a sunset over the sea"]
     assert "<image>" not in markers.cleaned_text
     assert "sunset" not in markers.cleaned_text
     assert markers.cleaned_text == "來囉"
@@ -1187,6 +1209,49 @@ async def test_voice_and_image_attach_in_one_edit(economy_isolated_db: None) -> 
     files = message.replies[0].files
     assert files is not None
     assert {item.filename for item in files} == {"reply.wav", "generated.png"}
+
+
+async def test_multiple_image_markers_attach_distinct_files(economy_isolated_db: None) -> None:
+    """Several <image> blocks each render and attach under distinct filenames in one edit."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeImageGenerator()
+
+    result = await ResponseStreamer(message=message, image_generator=generator).stream(
+        responses=_stream_events_from([
+            _text_event(delta="兩張圖 "),
+            _text_event(delta="<image>a red cat</image><image>a blue dog</image>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    assert "<image>" not in result
+    # Each description renders independently, in order.
+    assert [call["user_prompt"] for call in generator.calls] == ["a red cat", "a blue dog"]
+    files = message.replies[0].files
+    assert files is not None
+    assert [item.filename for item in files] == ["generated_1.png", "generated_2.png"]
+
+
+async def test_image_markers_capped_at_limit(economy_isolated_db: None) -> None:
+    """More <image> blocks than the per-reply cap render only up to MAX_INLINE_IMAGES."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeImageGenerator()
+    blocks = "".join(f"<image>image {index}</image>" for index in range(MAX_INLINE_IMAGES + 3))
+
+    await ResponseStreamer(message=message, image_generator=generator).stream(
+        responses=_stream_events_from([
+            _text_event(delta=f"好多圖 {blocks}"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    # Only the first MAX_INLINE_IMAGES render and attach; the extra blocks are dropped.
+    assert len(generator.calls) == MAX_INLINE_IMAGES
+    files = message.replies[0].files
+    assert files is not None
+    assert len(files) == MAX_INLINE_IMAGES
 
 
 class _FakeSpeechResponse:
