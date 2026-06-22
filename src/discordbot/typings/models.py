@@ -84,8 +84,8 @@ class RuntimeModelCatalog(BaseModel):
     def image_model(self) -> ModelSettings:
         """The model settings for image generation and editing.
 
-        Callers: `generate_image_bytes` (via `_handle_image_reply` and the QA-route inline
-        `<image>` `ImageReplyGenerator`).
+        Callers: `ImageGenerator` (its `render` for the IMAGE route `_handle_image_reply`, its
+        best-effort `generate` for the QA-route inline `<image>` marker).
 
         Returns:
             Model settings used with `images.generate` and `images.edit`.
@@ -97,7 +97,7 @@ class RuntimeModelCatalog(BaseModel):
     def video_model(self) -> ModelSettings:
         """The model settings for video generation.
 
-        Callers: `_handle_video_reply`.
+        Callers: `VideoGenerator.render` (via the VIDEO route `_handle_video_reply`).
 
         Returns:
             Model settings used with the native Gemini `generate_videos` API (a bare Veo model

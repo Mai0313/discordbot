@@ -59,11 +59,7 @@ from discordbot.cogs._gen_reply.prompts import (
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
-from discordbot.cogs._gen_reply.generation import (
-    ImageReplyGenerator,
-    generate_image_bytes,
-    generate_video_bytes,
-)
+from discordbot.cogs._gen_reply.generation import ImageGenerator, VideoGenerator
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
@@ -122,10 +118,6 @@ EFFORT_GRACE_SECONDS = 5.0
 # route window for free, so this latency hides behind the route. Tune against the
 # `gen_reply threads context done` latency log.
 THREADS_GRACE_SECONDS = 8.0
-
-# Hard ceiling on the video-generation polling loop so a hung provider job cannot
-# leave the message handler waiting forever.
-VIDEO_GENERATION_TIMEOUT_SECONDS = 600.0
 
 
 def _message_has_url(content: str) -> bool:
@@ -399,14 +391,29 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     @cached_property
-    def image_reply_generator(self) -> ImageReplyGenerator:
-        """The cached inline-image renderer for the QA-route `<image>` marker.
+    def image_generator(self) -> ImageGenerator:
+        """The cached image renderer shared by the IMAGE route and the QA-route `<image>` marker.
 
         Returns:
-            A generator bound to this cog's client and model catalog; the caller still gates
-            it on `allow_image` and `config.inline_image_enabled`.
+            A generator bound to this cog's proxy client and the image model; the route calls
+            `render` (raises) while the inline path calls `generate` (best-effort, gated on
+            `allow_image` and `config.inline_image_enabled`).
         """
-        return ImageReplyGenerator(client=self.openai_client, runtime_models=self.runtime_models)
+        return ImageGenerator(
+            client=self.openai_client, image_model=self.runtime_models.image_model
+        )
+
+    @cached_property
+    def video_generator(self) -> VideoGenerator:
+        """The cached video renderer for the VIDEO route.
+
+        Returns:
+            A generator bound to this cog's DIRECT-to-Google Gemini client and the video model
+            (Veo is unreachable via the proxy); the route calls `render` (raises).
+        """
+        return VideoGenerator(
+            client=self.gemini_client, video_model=self.runtime_models.video_model
+        )
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
@@ -581,12 +588,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 ),
             )
             images = [pair for group in gathered for pair in group]
-            video_bytes = await generate_video_bytes(
-                client=self.gemini_client,
-                video_model=self.runtime_models.video_model,
-                prompt=user_prompt,
-                reference_image_sources=images,
-                timeout_seconds=VIDEO_GENERATION_TIMEOUT_SECONDS,
+            video_bytes = await self.video_generator.render(
+                prompt=user_prompt, reference_image_sources=images
             )
             video_file = File(fp=BytesIO(video_bytes), filename="generated.mp4")
             reply = await message.reply(content=f"{message.author.mention}", file=video_file)
@@ -777,9 +780,7 @@ class ReplyGeneratorCogs(commands.Cog):
             else:
                 image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
 
-            image_bytes = await generate_image_bytes(
-                client=self.openai_client,
-                image_model=self.runtime_models.image_model,
+            image_bytes = await self.image_generator.render(
                 prompt=user_prompt,
                 end_user_id=message.author.name,
                 image_bytes_list=image_bytes_list or None,
@@ -1368,9 +1369,7 @@ class ReplyGeneratorCogs(commands.Cog):
             self.voice_synthesizer if allow_voice and self.config.voice_reply_enabled else None
         )
         image_generator = (
-            self.image_reply_generator
-            if allow_image and self.config.inline_image_enabled
-            else None
+            self.image_generator if allow_image and self.config.inline_image_enabled else None
         )
         # Only advertise the inline `<image>` marker when the renderer is actually active; with
         # it disabled the streamer would strip the block and produce nothing, silently dropping

@@ -31,7 +31,7 @@ from discordbot.cogs._gen_reply.markers import (
     extract_inline_markers,
     scrub_markers_for_preview,
 )
-from discordbot.cogs._gen_reply.generation import ImageReplyGenerator
+from discordbot.cogs._gen_reply.generation import ImageGenerator
 
 # Filename of a single inline-generated image attached onto a QA reply; mirrors the router IMAGE
 # route's `generated.png` so the bot's own generated images render the same in history. Multiple
@@ -105,7 +105,7 @@ class ResponseStreamer(BaseModel):
         default="",
         description="Speechified text of the <voice> segment used as the spoken-clip input.",
     )
-    image_generator: SkipValidation[ImageReplyGenerator | None] = Field(
+    image_generator: SkipValidation[ImageGenerator | None] = Field(
         default=None,
         description="Inline-image renderer; None disables inline <image> for this reply.",
     )

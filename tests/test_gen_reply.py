@@ -53,7 +53,7 @@ from discordbot.cogs._gen_reply.markers import (
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
-from discordbot.cogs._gen_reply.generation import ImageReplyGenerator
+from discordbot.cogs._gen_reply.generation import ImageGenerator
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     parse_user_id_list,
@@ -1438,7 +1438,7 @@ async def test_image_config_gate_controls_generator(
 
     assert (captured[0] is not None) == expect_gen
     if expect_gen:
-        assert isinstance(captured[0], ImageReplyGenerator)
+        assert isinstance(captured[0], ImageGenerator)
 
 
 class _FakeInteractionsResource:
