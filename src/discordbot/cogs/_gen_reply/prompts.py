@@ -3,6 +3,7 @@ from discordbot.cogs._gen_reply.markers import (
     VOICE_OPEN,
     IMAGE_CLOSE,
     VOICE_CLOSE,
+    MAX_INLINE_IMAGES,
     DEEP_RESEARCH_OPEN,
     DEEP_RESEARCH_CLOSE,
 )
@@ -47,6 +48,7 @@ COMMON_PROMPT = f"""
     * This is a capability you can choose, not a default: use it sparingly and at your own judgment.
     * Decide by inferring what the user actually wants to hear: lean toward wrapping a segment when they ask you to say it aloud or read it out, when it is a joke, a story, a song, a punch line that lands better spoken, or when the chat is casual enough that a spoken bit just feels natural; keep it as plain text when they want something to read or copy, such as code, links, lists, numbers, or a long reference-heavy answer.
     * Wrap only the conversational part worth hearing (not code, links, or lists); you decide how long that part is.
+    * You may wrap several separate spans across one reply, not just one: every wrapped span is stitched together in order into a single voice clip, so tag only the lines worth hearing instead of wrapping the whole reply.
     * The tags are a system-only switch, so never explain or mention them and never wrap them in backticks or a code block.
 """
 
@@ -72,9 +74,9 @@ REPLY_PROMPT = f"""
 # INLINE_IMAGE_ENABLED=false never advertises a marker the streamer would strip without
 # producing anything, which would silently drop the visual request from the reply.
 INLINE_IMAGE_INSTRUCTION = f"""
-* Optional illustration: when a generated image would genuinely add to your reply, wrap a description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. That block is removed from your written reply and sent straight to an image generator, so the description never shows in chat; the finished image is attached to your reply afterward.
-* Write that description so the image generator has everything it needs: lead with the main subject and what it is doing, then the key visual details, setting, style or medium, and mood. Be concrete and self-contained, since it is rendered directly with no further rewriting; keep any literal in-image text in its original language.
-* Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. Still at most one image per reply, and skip it when an image would not add anything. Never wrap the tags in backticks and never mention them.
+* Optional illustration: when a generated image would genuinely add to your reply, wrap a description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. Each such block is removed from your written reply and sent straight to an image generator, so the description never shows in chat; the finished images are attached to your reply afterward.
+* Write each description so the image generator has everything it needs: lead with the main subject and what it is doing, then the key visual details, setting, style or medium, and mood. Be concrete and self-contained, since it is rendered directly with no further rewriting; keep any literal in-image text in its original language.
+* Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. You may include several `{IMAGE_OPEN}...{IMAGE_CLOSE}` blocks when the reply genuinely calls for distinct pictures (each becomes its own attached image), but use at most {MAX_INLINE_IMAGES} per reply and skip it entirely when an image would not add anything. Never wrap the tags in backticks and never mention them.
 """
 
 # Appended to the QA system prompt only when deep research is enabled (kill-switch on, QA route).
