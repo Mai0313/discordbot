@@ -8,15 +8,13 @@ ready to rely on uploaded files instead of inline parts.
 import io
 import time
 from typing import TYPE_CHECKING, Literal
-import asyncio
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
-from collections import OrderedDict
 
 from openai import AsyncOpenAI
 import logfire
 from nextcord import Attachment, StickerItem
-from pydantic import Field, PrivateAttr, SkipValidation
+from pydantic import Field
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
@@ -38,8 +36,6 @@ if TYPE_CHECKING:
 type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
 type OpenAIFilePurpose = Literal["user_data", "vision"]
 
-DEAD_SOURCE_TTL = timedelta(minutes=30)
-MEDIA_CONCURRENCY = 8
 OPENAI_FILE_EXPIRY_SECONDS = 2_592_000
 
 
@@ -55,10 +51,6 @@ class OpenAIFileUploader(AttachmentRenderer):
     config: LLMConfig = Field(
         default_factory=LLMConfig,
         description="Runtime LLM config supplying the OpenAI-compatible file upload client.",
-    )
-    _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
-    _media_semaphore: SkipValidation[asyncio.Semaphore] = PrivateAttr(
-        default_factory=lambda: asyncio.Semaphore(MEDIA_CONCURRENCY)
     )
 
     @cached_property
@@ -116,24 +108,6 @@ class OpenAIFileUploader(AttachmentRenderer):
             type="input_file", file_id=file_id, filename=attachment.filename
         )
         return part, expires_at
-
-    def _is_known_dead(self, cache_key: int | str) -> bool:
-        """Whether a source's fetch failed recently enough to skip re-fetching it."""
-        dead_at = self._dead_sources.get(cache_key)
-        if dead_at is None:
-            return False
-        if datetime.now(tz=UTC) - dead_at < DEAD_SOURCE_TTL:
-            self._dead_sources.move_to_end(cache_key)
-            return True
-        self._dead_sources.pop(cache_key, None)
-        return False
-
-    def _mark_dead(self, cache_key: int | str) -> None:
-        """Records a source's fetch failure so history scrollback stays cheap."""
-        self._dead_sources[cache_key] = datetime.now(tz=UTC)
-        self._dead_sources.move_to_end(cache_key)
-        if len(self._dead_sources) > 128:
-            self._dead_sources.popitem(last=False)
 
     async def _resolve_file_upload(
         self,

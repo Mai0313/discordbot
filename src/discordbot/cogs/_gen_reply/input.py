@@ -338,6 +338,11 @@ class MessageInputBuilder(BaseModel):
             return "audio"
         if content_type.startswith("image/"):
             return "image"
+        # Everything else (documents, source code, structured text, an unlisted application
+        # type) proxies as `image` / `input_file`. MIME cannot reliably tell an unlisted binary
+        # apart from unlisted text/code, and a positive allowlist silently drops legitimate code
+        # attachments, so the denylist above stays the only drop rule; the renderers make the
+        # final call (the inline path keeps only PDF + UTF-8, Gemini ingests the rest).
         return "image"
 
     async def _render_attachment_parts(

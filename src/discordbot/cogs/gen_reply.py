@@ -15,13 +15,7 @@ import logfire
 from nextcord import File, Embed, Message, NotFound, TextChannel, HTTPException
 from pydantic import ValidationError
 from nextcord.ext import commands
-from google.genai.types import (
-    Image,
-    FileState,
-    GenerateVideosConfig,
-    VideoGenerationReferenceType,
-    VideoGenerationReferenceImage,
-)
+from google.genai.types import FileState
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -31,7 +25,12 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
 from discordbot.utils.youtube import YOUTUBE_URL_RE
-from discordbot.typings.models import EffortGrade, RouteClassification, RuntimeModelCatalog
+from discordbot.typings.models import (
+    EffortGrade,
+    ModelSettings,
+    RouteClassification,
+    RuntimeModelCatalog,
+)
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.cogs._memory.store import user_scope, server_scope, read_main_memory
@@ -44,7 +43,7 @@ from discordbot.cogs._gen_reply.input import (
 )
 from discordbot.cogs._gen_reply.voice import VoiceSynthesizer
 from discordbot.cogs._memory.pipeline import schedule_memory_update
-from discordbot.cogs._gen_reply.context import ReplyContext, RenderedHistory
+from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import (
     REPLY_PROMPT,
     ROUTE_PROMPT,
@@ -60,7 +59,11 @@ from discordbot.cogs._gen_reply.prompts import (
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
-from discordbot.cogs._gen_reply.generation import ImageReplyGenerator, generate_image_bytes
+from discordbot.cogs._gen_reply.generation import (
+    ImageReplyGenerator,
+    generate_image_bytes,
+    generate_video_bytes,
+)
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
@@ -357,8 +360,8 @@ class ReplyGeneratorCogs(commands.Cog):
         self.runtime_models = RuntimeModelCatalog()
 
     @cached_property
-    def client(self) -> AsyncOpenAI:
-        """The cached AsyncOpenAI client instance.
+    def openai_client(self) -> AsyncOpenAI:
+        """The cached AsyncOpenAI client for all LiteLLM-proxy Responses / audio / image calls.
 
         Returns:
             A configured AsyncOpenAI client reused across reply requests.
@@ -366,36 +369,20 @@ class ReplyGeneratorCogs(commands.Cog):
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     @cached_property
-    def interactions_client(self) -> genai.Client:
-        """The cached Gemini Interactions client for the YouTube-aware QA answer turn.
-
-        DIRECT to Google (`gemini_api_key`, no proxy): the Interactions API is inherently
-        Gemini, and the swap only fires when the answer model is already Gemini, so the direct
-        Google credential is always the right one. This is the one runtime answer turn that does
-        not ride the LiteLLM proxy. A missing key does not fail construction; it surfaces at the
-        first interaction call.
-
-        Returns:
-            A Gemini client used only for the YouTube-aware QA answer turn, which streams
-            through the native Interactions API (the path that can watch a video).
-        """
-        return genai.Client(api_key=self.config.gemini_api_key)
-
-    @cached_property
     def gemini_client(self) -> genai.Client:
-        """The cached native Gemini generation client.
+        """The cached native Gemini client for every DIRECT-to-Google runtime path.
 
-        DIRECT to Google (`gemini_api_key`, no proxy): Veo video generation is inherently
-        Gemini, so the direct credential is the right one and the native `generate_videos`
-        API (operations poll + Files download) is used instead of the LiteLLM proxy. This is
-        a runtime path that does not ride the proxy, so it forgoes proxy-side cost/usage
-        tracking, like the YouTube Interactions and deep-research direct paths. The name is
-        deliberately generic (not `video_client`) so a future move of image generation onto
-        the native SDK can reuse it. A missing key does not fail construction; it surfaces at
-        the first generation call.
+        DIRECT to Google (`gemini_api_key`, no proxy): it serves the two runtime paths the
+        LiteLLM proxy cannot, and the swap only ever fires when the answer model is already
+        Gemini so the direct credential is always the right one:
+        - native Veo video generation (`generate_videos`: operations poll + Files download); and
+        - the YouTube-aware QA answer turn that streams through the native Interactions API (the
+          only path that can actually watch a linked video).
+        Both forgo proxy-side cost/usage tracking, like the deep-research direct path. A missing
+        key does not fail construction; it surfaces at the first call.
 
         Returns:
-            A Gemini client for native media generation (currently Veo video).
+            A Gemini client for native media generation and the Interactions answer turn.
         """
         return genai.Client(api_key=self.config.gemini_api_key)
 
@@ -407,7 +394,9 @@ class ReplyGeneratorCogs(commands.Cog):
             A synthesizer bound to this cog's client and the catalog's TTS model; the
             caller still gates it on `allow_voice` and `config.voice_reply_enabled`.
         """
-        return VoiceSynthesizer(client=self.client, model_name=self.runtime_models.tts_model.name)
+        return VoiceSynthesizer(
+            client=self.openai_client, model_name=self.runtime_models.tts_model.name
+        )
 
     @cached_property
     def image_reply_generator(self) -> ImageReplyGenerator:
@@ -417,7 +406,7 @@ class ReplyGeneratorCogs(commands.Cog):
             A generator bound to this cog's client and model catalog; the caller still gates
             it on `allow_image` and `config.inline_image_enabled`.
         """
-        return ImageReplyGenerator(client=self.client, runtime_models=self.runtime_models)
+        return ImageReplyGenerator(client=self.openai_client, runtime_models=self.runtime_models)
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
@@ -428,7 +417,7 @@ class ReplyGeneratorCogs(commands.Cog):
             memory models.
         """
         return MemoryExtractorAI(
-            client=self.client,
+            client=self.openai_client,
             extract_model=self.runtime_models.extract_model,
             evaluate_model=self.runtime_models.memory_evaluator_model,
             consolidate_model=self.runtime_models.memories_model,
@@ -444,7 +433,7 @@ class ReplyGeneratorCogs(commands.Cog):
             guild through the same engine.
         """
         return MemoryExtractorAI(
-            client=self.client,
+            client=self.openai_client,
             extract_model=self.runtime_models.extract_model,
             evaluate_model=self.runtime_models.memory_evaluator_model,
             consolidate_model=self.runtime_models.memories_model,
@@ -469,66 +458,54 @@ class ReplyGeneratorCogs(commands.Cog):
             ),
         )
 
-    async def _get_history_message(
-        self, message: Message, limit: int, with_text_only: bool = False
-    ) -> RenderedHistory:
-        """Retrieves channel history once, returning rendered context plus raw messages.
+    async def _fetch_history(self, message: Message, limit: int) -> list[Message]:
+        """Fetches up to `limit` channel-history messages once (a single Discord API call).
 
-        The full render (uploaded attachment parts) always feeds the answer; the
-        text-only render is built only when `with_text_only`, since just the memory
-        selection call reads it and the SUMMARY route should not pay for a second pass.
+        Returned raw so both the text-only and the uploaded render derive from one fetch, and
+        the memory allowlist reads the same messages, without a second history round-trip.
         """
-        started = time.monotonic()
-        messages: list[EasyInputMessageParam] = []
-        text_only_messages: list[EasyInputMessageParam] = []
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
             hist_messages.append(m)
+        return hist_messages
 
-        if hist_messages:
-            full_tasks: list[Awaitable[EasyInputMessageParam]] = []
-            for hist_msg in hist_messages:
-                # History is the only render that opts into the dead-source skip: an expired
-                # CDN attachment here re-fails every turn. Current/reference do not (see
-                # GeminiFileUploader._resolve_file_upload).
-                full_tasks.append(
-                    self.input_builder.process_single_message(
-                        message=hist_msg, allow_dead_cache=True
-                    )
+    async def _render_history(
+        self, hist_messages: list[Message], *, text_only: bool
+    ) -> list[EasyInputMessageParam]:
+        """Renders fetched history in one mode: text-only markers, or full uploaded parts.
+
+        Both modes derive from the same `_fetch_history` result (one Discord call). The
+        text-only twin (no upload) feeds routing + memory selection so neither waits on the
+        Files API; the full render uploads attachment parts for the answer. History is the only
+        render that opts into the dead-source skip: an expired CDN attachment here re-fails every
+        turn (current / reference do not; see GeminiFileUploader._resolve_file_upload).
+        """
+        if not hist_messages:
+            return []
+        tasks: list[Awaitable[EasyInputMessageParam]] = [
+            self.input_builder.process_single_message_text_only(message=m)
+            if text_only
+            else self.input_builder.process_single_message(message=m, allow_dead_cache=True)
+            for m in hist_messages
+        ]
+        started = time.monotonic()
+        processed = await asyncio.gather(*tasks)
+        if not text_only:
+            logfire.info(
+                "gen_reply history render done",
+                elapsed_seconds=time.monotonic() - started,
+                message_count=len(hist_messages),
+            )
+        header = EasyInputMessageParam(
+            role="system",
+            content=[
+                ResponseInputTextParam(
+                    text="==== Chat History that might be helpful for answering. ====",
+                    type="input_text",
                 )
-            text_tasks: list[Awaitable[EasyInputMessageParam]] = []
-            if with_text_only:
-                for hist_msg in hist_messages:
-                    text_tasks.append(
-                        self.input_builder.process_single_message_text_only(message=hist_msg)
-                    )
-            processed, processed_text = await asyncio.gather(
-                asyncio.gather(*full_tasks), asyncio.gather(*text_tasks)
-            )
-
-            header = EasyInputMessageParam(
-                role="system",
-                content=[
-                    ResponseInputTextParam(
-                        text="==== Chat History that might be helpful for answering. ====",
-                        type="input_text",
-                    )
-                ],
-            )
-            messages.append(header)
-            messages.extend(processed)
-            if with_text_only:
-                text_only_messages.append(header)
-                text_only_messages.extend(processed_text)
-
-        logfire.info(
-            "gen_reply history render done",
-            elapsed_seconds=time.monotonic() - started,
-            message_count=len(hist_messages),
+            ],
         )
-        return RenderedHistory(
-            rendered=messages, rendered_text_only=text_only_messages, raw=hist_messages
-        )
+        return [header, *processed]
 
     async def _get_reference_message(
         self, message: Message, text_only: bool = False
@@ -587,7 +564,6 @@ class ReplyGeneratorCogs(commands.Cog):
         `_handle_image_reply` and consuming the speculative `ReplyContext` (history + the
         requester's memory) only after the video is on screen so its build overlaps generation.
         """
-        video_model = self.runtime_models.video_model
         started = time.monotonic()
         logfire.info("gen_reply video generation start", message_id=message.id)
         try:
@@ -605,64 +581,18 @@ class ReplyGeneratorCogs(commands.Cog):
                 ),
             )
             images = [pair for group in gathered for pair in group]
-            reference_images = [
-                VideoGenerationReferenceImage(
-                    image=Image(image_bytes=raw, mime_type=mime),
-                    reference_type=VideoGenerationReferenceType.ASSET,
-                )
-                for raw, mime in images[:3]
-            ]
-            # Veo 3.1 requires duration_seconds=8 at 1080p and with reference images, so it is
-            # pinned (4/6/8 are only selectable at 720p); audio rides on by default. Only fields
-            # this model accepts are set: enhance_prompt 400s on veo-3.1-generate-preview, and
-            # fps / seed / generate_audio / compression_quality are Vertex-only and 400 here too.
-            video_config = GenerateVideosConfig(
-                number_of_videos=1,
-                aspect_ratio="16:9",
-                resolution="1080p",
-                duration_seconds=8,
-                reference_images=reference_images or None,
+            video_bytes = await generate_video_bytes(
+                client=self.gemini_client,
+                video_model=self.runtime_models.video_model,
+                prompt=user_prompt,
+                reference_image_sources=images,
+                timeout_seconds=VIDEO_GENERATION_TIMEOUT_SECONDS,
             )
-            operation = await self.gemini_client.aio.models.generate_videos(
-                model=video_model.name,
-                prompt=user_prompt or "請依照訊息內容生成一段影片。",
-                config=video_config,
-            )
-            logfire.debug(
-                "gen_reply video job created",
-                message_id=message.id,
-                operation=operation.name,
-                reference_images=len(images),
-            )
-            async with asyncio.timeout(delay=VIDEO_GENERATION_TIMEOUT_SECONDS):
-                while not operation.done:
-                    await asyncio.sleep(5)
-                    operation = await self.gemini_client.aio.operations.get(operation=operation)
-                    logfire.debug(
-                        "gen_reply video poll",
-                        message_id=message.id,
-                        operation=operation.name,
-                        done=operation.done,
-                        poll_seconds=time.monotonic() - started,
-                    )
-            if operation.error or not (operation.response and operation.response.generated_videos):
-                logfire.warn(
-                    "gen_reply video generation failed",
-                    message_id=message.id,
-                    operation=operation.name,
-                    error=str(operation.error),
-                )
-                raise RuntimeError(f"Video generation failed: {operation.error}")
-            generated = operation.response.generated_videos[0]
-            if generated.video is None or generated.video.uri is None:
-                raise RuntimeError(f"Video generation returned no video for {operation.name}")
-            video_bytes = await self.gemini_client.aio.files.download(file=generated.video.uri)
             video_file = File(fp=BytesIO(video_bytes), filename="generated.mp4")
             reply = await message.reply(content=f"{message.author.mention}", file=video_file)
             logfire.info(
                 "gen_reply video delivered",
                 message_id=message.id,
-                operation=operation.name,
                 total_elapsed_seconds=time.monotonic() - started,
                 bytes=len(video_bytes),
             )
@@ -719,60 +649,89 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Best-effort: watches the just-made video and streams a persona reply onto its message.
 
-        Mirrors `_handle_image_reply`'s post-delivery reply but feeds the generated video as an
-        uploaded Files API `input_file` (video cannot be inlined). Injects only the selected user
-        memory, never the server memory block. Any failure leaves the delivered video untouched.
+        Feeds the generated video as an uploaded Files API `input_file` (video cannot be
+        inlined), then delegates to the shared media-persona-reply streamer. Any failure leaves
+        the delivered video untouched.
+        """
+        file_uri = await self._upload_video_for_reply(data=video_bytes)
+        if file_uri is None:
+            await _discard_task(task=context_task)
+            return
+        await self._stream_media_persona_reply(
+            message=message,
+            reply=reply,
+            context_task=context_task,
+            model=self.runtime_models.video_reply_model,
+            system_prompt=VIDEO_REPLY_PROMPT,
+            focus_part=ResponseInputFileParam(type="input_file", file_id=file_uri),
+            media_noun="video",
+            span_name="gen_reply video reply",
+        )
+
+    async def _stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the model / prompt / focus part / noun / span differ per route
+        self,
+        *,
+        message: Message,
+        reply: Message,
+        context_task: "asyncio.Task[ReplyContext]",
+        model: ModelSettings,
+        system_prompt: str,
+        focus_part: ResponseInputFileParam | ResponseInputImageParam,
+        media_noun: str,
+        span_name: str,
+    ) -> None:
+        """Best-effort: streams a persona reply onto an already-delivered generated image/video.
+
+        Shared by the IMAGE and VIDEO routes' post-delivery reply. Builds the answer-path input
+        (history, selected user memory, reference, current), appends the just-made media as the
+        focus the model replies about, and streams onto the already-sent media message:
+        pre-seeding `reply` makes the streamer edit that message (its content edits keep the
+        attached media). Injects only the selected user memory, never the server memory block,
+        and seeds the selection-call usage / memory labels so the footer matches the QA path.
+        Consumes the speculative `context_task` (awaited here so its build overlaps generation);
+        any failure leaves the delivered media untouched.
         """
         try:
-            file_uri = await self._upload_video_for_reply(data=video_bytes)
-            if file_uri is None:
-                await _discard_task(task=context_task)
-                return
-            video_reply_model = self.runtime_models.video_reply_model
             context = await context_task
-            # Mirror the answer path's order (history, memory, reference, current), but inject
+            # Mirror the answer path's order (history, memory, reference, current), injecting
             # only the selected user memory, never the server memory block.
             response_input: ResponseInputParam = [*context.hist_messages]
             if context.memory_block is not None:
                 response_input.append(context.memory_block)
             response_input.extend(context.reference_messages)
             response_input.extend(context.current_message)
-            # The generated video is the focus, appended last as an uploaded Files API file
-            # right after the request it answers.
+            # The generated media is the focus, appended last right after the request it answers.
             response_input.append(
                 EasyInputMessageParam(
                     role="user",
                     content=[
                         ResponseInputTextParam(
                             text=(
-                                "This is the video you just made for them in response to the "
-                                "request above. Reply to them about it."
+                                f"This is the {media_noun} you just made for them in response "
+                                "to the request above. Reply to them about it."
                             ),
                             type="input_text",
                         ),
-                        ResponseInputFileParam(type="input_file", file_id=file_uri),
+                        focus_part,
                     ],
                 )
             )
-            # Stream onto the already-sent video reply: pre-seeding `reply` makes the streamer
-            # edit that message (its content edits keep the attached video). The selection-call
-            # usage and memory labels are seeded so the footer matches the QA path.
             streamer = ResponseStreamer(
                 message=message,
                 reply=reply,
                 memory_lookups=context.memory_labels,
                 input_tokens=context.selection_input_tokens,
                 output_tokens=context.selection_output_tokens,
-                model_effort=video_reply_model.effort,
+                model_effort=model.effort,
             )
-            with logfire.span("gen_reply video reply", model=video_reply_model.name):
-                responses = await self.client.responses.create(
-                    model=video_reply_model.name,
+            with logfire.span(span_name, model=model.name):
+                responses = await self.openai_client.responses.create(
+                    model=model.name,
                     instructions=_build_runtime_instructions(
-                        system_prompt=VIDEO_REPLY_PROMPT, message=message
+                        system_prompt=system_prompt, message=message
                     ),
                     input=response_input,
-                    reasoning=video_reply_model.reasoning,
+                    reasoning=model.reasoning,
                     stream=True,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": message.author.name},
@@ -781,7 +740,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 await streamer.stream(responses=responses)
         except Exception:
             logfire.warn(
-                "Video reply generation failed; leaving the video without a reply",
+                "Media persona reply failed; leaving the delivered media without a reply",
+                media=media_noun,
                 message_id=message.id,
                 _exc_info=True,
             )
@@ -818,7 +778,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
 
             image_bytes = await generate_image_bytes(
-                client=self.client,
+                client=self.openai_client,
                 image_model=self.runtime_models.image_model,
                 prompt=user_prompt,
                 end_user_id=message.author.name,
@@ -840,101 +800,47 @@ class ReplyGeneratorCogs(commands.Cog):
             raise
 
         # The image is already delivered, so from here a failure must never surface as an
-        # error: the conversational reply is best-effort and leaves the image untouched.
-        try:
-            image_reply_model = self.runtime_models.image_reply_model
-            context = await context_task
-            # Mirror the answer path's order (history, memory, reference, current), but inject
-            # only the selected user memory, never the server memory block.
-            response_input: ResponseInputParam = [*context.hist_messages]
-            if context.memory_block is not None:
-                response_input.append(context.memory_block)
-            response_input.extend(context.reference_messages)
-            response_input.extend(context.current_message)
-            # The generated image is the focus, appended last as inline base64
-            # (provider-agnostic) right after the request it answers.
-            response_input.append(
-                EasyInputMessageParam(
-                    role="user",
-                    content=[
-                        ResponseInputTextParam(
-                            text=(
-                                "This is the image you just made for them in response to the "
-                                "request above. Reply to them about it."
-                            ),
-                            type="input_text",
-                        ),
-                        ResponseInputImageParam(
-                            image_url=convert_base64_to_data_uri(
-                                base64_image=base64.b64encode(image_bytes).decode()
-                            ),
-                            detail="auto",
-                            type="input_image",
-                        ),
-                    ],
-                )
-            )
-            # Stream onto the already-sent image reply: pre-seeding `reply` makes the streamer
-            # edit that message (its content edits keep the attached image). The selection-call
-            # usage and memory labels are seeded so the footer matches the QA path.
-            streamer = ResponseStreamer(
-                message=message,
-                reply=reply,
-                memory_lookups=context.memory_labels,
-                input_tokens=context.selection_input_tokens,
-                output_tokens=context.selection_output_tokens,
-                model_effort=image_reply_model.effort,
-            )
-            with logfire.span("gen_reply image reply", model=image_reply_model.name):
-                responses = await self.client.responses.create(
-                    model=image_reply_model.name,
-                    instructions=_build_runtime_instructions(
-                        system_prompt=IMAGE_REPLY_PROMPT, message=message
-                    ),
-                    input=response_input,
-                    reasoning=image_reply_model.reasoning,
-                    stream=True,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": message.author.name},
-                    extra_body={"mock_testing_fallbacks": False},
-                )
-                await streamer.stream(responses=responses)
-        except Exception:
-            logfire.warn(
-                "Image reply generation failed; leaving the image without a reply",
-                message_id=message.id,
-                _exc_info=True,
-            )
+        # error: the conversational reply is best-effort and leaves the image untouched. The
+        # image rides as inline base64 (provider-agnostic), unlike the video's Files API handle.
+        await self._stream_media_persona_reply(
+            message=message,
+            reply=reply,
+            context_task=context_task,
+            model=self.runtime_models.image_reply_model,
+            system_prompt=IMAGE_REPLY_PROMPT,
+            focus_part=ResponseInputImageParam(
+                image_url=convert_base64_to_data_uri(
+                    base64_image=base64.b64encode(image_bytes).decode()
+                ),
+                detail="auto",
+                type="input_image",
+            ),
+            media_noun="image",
+            span_name="gen_reply image reply",
+        )
 
     async def _get_reference_and_current(
-        self, message: Message
+        self, message: Message, text_only: bool = False
     ) -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
-        """Renders the reference chain and current message with uploaded attachment parts.
+        """Renders the reference chain and the current message together.
 
-        This is the answer-path render (uploads + activation poll to ACTIVE); it runs in
-        the background so only the answer awaits the Files API.
+        With `text_only` they render as attachment markers (no upload) for the route and memory
+        selection; otherwise this is the answer-path render (uploads + activation poll to ACTIVE)
+        that runs in the background so only the answer awaits the Files API. The render-timing log
+        fires only for the upload-bearing render, the latency-critical one.
         """
         started = time.monotonic()
         reference_messages, current_message = await asyncio.gather(
-            self._get_reference_message(message=message),
-            self._get_current_message(message=message),
+            self._get_reference_message(message=message, text_only=text_only),
+            self._get_current_message(message=message, text_only=text_only),
         )
-        logfire.info(
-            "gen_reply attachment render done",
-            elapsed_seconds=time.monotonic() - started,
-            reference_count=len(reference_messages),
-            current_count=len(current_message),
-        )
-        return reference_messages, current_message
-
-    async def _get_reference_and_current_text_only(
-        self, message: Message
-    ) -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
-        """Renders reference + current as attachment markers for route and memory selection."""
-        reference_messages, current_message = await asyncio.gather(
-            self._get_reference_message(message=message, text_only=True),
-            self._get_current_message(message=message, text_only=True),
-        )
+        if not text_only:
+            logfire.info(
+                "gen_reply attachment render done",
+                elapsed_seconds=time.monotonic() - started,
+                reference_count=len(reference_messages),
+                current_count=len(current_message),
+            )
         return reference_messages, current_message
 
     async def _route_classify(
@@ -957,7 +863,7 @@ class ReplyGeneratorCogs(commands.Cog):
         started = time.monotonic()
         try:
             with logfire.span("gen_reply route"):
-                responses = await self.client.responses.parse(
+                responses = await self.openai_client.responses.parse(
                     model=route_model.name,
                     instructions=ROUTE_PROMPT,
                     input=cast("ResponseInputParam", message_list),
@@ -1013,7 +919,7 @@ class ReplyGeneratorCogs(commands.Cog):
         effort_model = self.runtime_models.effort_model
         started = time.monotonic()
         with logfire.span("gen_reply effort"):
-            responses = await self.client.responses.parse(
+            responses = await self.openai_client.responses.parse(
                 model=effort_model.name,
                 instructions=EFFORT_PROMPT,
                 input=cast("ResponseInputParam", message_list),
@@ -1133,7 +1039,7 @@ class ReplyGeneratorCogs(commands.Cog):
             *message_list,
             render_callable_users_block(allowed=allowed),
         ]
-        responses = await self.client.responses.create(
+        responses = await self.openai_client.responses.create(
             model=tool_model.name,
             instructions=MEMORY_SELECT_PROMPT,
             input=selection_input,
@@ -1275,22 +1181,16 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         text_reference, text_current = text_parts
         build_started = time.monotonic()
-        with logfire.span("gen_reply context build"):
-            history = await self._get_history_message(
-                message=message, limit=history_limit, with_text_only=memory_enabled
-            )
-            # Shielded so cancelling this speculative prep (non-QA routes) does not
-            # propagate into the shared upload task: a SUMMARY route cancels prep while
-            # still reusing `parts_task`, and an unshielded `await` would cancel it too.
-            reference_messages, current_message = await asyncio.shield(parts_task)
-        # Covers the history fetch/render plus waiting on the shared attachment upload, so
-        # the log separates pre-answer attachment cost from the route-call cost.
-        logfire.info(
-            "gen_reply context build done",
-            elapsed_seconds=time.monotonic() - build_started,
-            message_id=message.id,
+
+        # Fetch channel history once (one Discord call), then render its cheap text-only twin up
+        # front so memory selection can start on text-only renders alone. The upload-bearing full
+        # render is awaited later, concurrently with the in-flight selection, so selection
+        # overlaps the Files-API upload window (which the answer must wait on regardless) instead
+        # of running serially after it.
+        raw_history = await self._fetch_history(message=message, limit=history_limit)
+        history_text_only = (
+            await self._render_history(raw_history, text_only=True) if memory_enabled else []
         )
-        hist_messages = history.rendered
 
         # The bot's own per-server memory is read once here and shared by both phases: it
         # primes selection (a `## 成員稱呼` nickname table maps spoken aliases to ids) and
@@ -1300,26 +1200,28 @@ class ReplyGeneratorCogs(commands.Cog):
             render_server_memory_block(memory=server_memory) if server_memory else None
         )
 
-        # Memory retrieval is two-phase: phase 1 lets the model pick whose long-term
-        # memory to read via get_user_memory (no built-in tools), and phase 2 streams the
-        # answer with the built-in tools always available and any selected memory injected
-        # as context. The allowlist (conversation authors + mentioned users, minus the bot)
-        # is the permission boundary.
-        # The split is deliberate, not a hard limit: by default LiteLLM silently drops
-        # grounding when a function tool and built-in search/url tools mix, and the Gemini 3
-        # include_server_side_tool_invocations opt-out that lifts it is Preview-only.
-        # Splitting also keeps selection on a cheaper/faster model off the answer's critical
-        # path and stays provider-neutral (OpenAI / Claude mix tools fine), so it stays
-        # correct if the answer model changes.
+        # Memory retrieval is two-phase: phase 1 lets the model pick whose long-term memory to
+        # read via get_user_memory (no built-in tools), and phase 2 streams the answer with the
+        # built-in tools always available and any selected memory injected as context. The
+        # allowlist (conversation authors + mentioned users, minus the bot) is the permission
+        # boundary.
+        # The split is deliberate, not a hard limit: by default LiteLLM silently drops grounding
+        # when a function tool and built-in search/url tools mix, and the Gemini 3
+        # include_server_side_tool_invocations opt-out that lifts it is Preview-only. Splitting
+        # also keeps selection on a cheaper/faster model off the answer's critical path and stays
+        # provider-neutral (OpenAI / Claude mix tools fine), so it stays correct if the answer
+        # model changes.
         memory_labels: list[str] = []
         selection_input_tokens = 0
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
+        allowed: dict[int, str] = {}
+        selection_task: asyncio.Task[MemorySelection] | None = None
         if memory_enabled and self.bot.user:
             # The allowlist needs raw Message objects (authors + mentions): the current
             # message, its reference chain, and the raw side of the shared history fetch.
             allowed = build_memory_allowlist(
-                messages=[message, *_walk_reference_chain(message=message), *history.raw],
+                messages=[message, *_walk_reference_chain(message=message), *raw_history],
                 bot_user_id=self.bot.user.id,
             )
             # Enrich participant labels with their community aliases in every guild channel,
@@ -1340,26 +1242,49 @@ class ReplyGeneratorCogs(commands.Cog):
                 message_id=message.id,
             )
             if allowed:
-                # Selection runs on the text-only transcript (markers, no file ids) so it
-                # neither re-reads the uploaded files nor blocks on their upload.
+                # Start selection now (the text-only renders are ready) so it overlaps the upload
+                # wait below instead of running serially after it. It runs on the text-only
+                # transcript (markers, no file ids), so it never re-reads or blocks on the uploads.
                 selection_message_list: list[EasyInputMessageParam] = [
-                    *history.rendered_text_only,
+                    *history_text_only,
                     *text_reference,
                     *text_current,
                 ]
+                selection_task = asyncio.create_task(
+                    coro=self._select_user_memories(
+                        message=message,
+                        message_list=selection_message_list,
+                        allowed=allowed,
+                        server_memory_block=server_memory_block,
+                    )
+                )
+
+        try:
+            # The answer needs the uploaded renders; await the full history render and the shared
+            # reference/current uploads here, concurrently with any in-flight selection above.
+            # `parts_task` is shielded so cancelling this speculative prep (non-QA routes) never
+            # cancels the shared upload task a SUMMARY route still reuses; the full history render
+            # rides as an ordinary gather child, so it is cancelled together with prep.
+            with logfire.span("gen_reply context build"):
+                hist_messages, (reference_messages, current_message) = await asyncio.gather(
+                    self._render_history(raw_history, text_only=False), asyncio.shield(parts_task)
+                )
+            # Covers the history fetch/render plus waiting on the shared attachment upload, so
+            # the log separates pre-answer attachment cost from the route-call cost.
+            logfire.info(
+                "gen_reply context build done",
+                elapsed_seconds=time.monotonic() - build_started,
+                message_id=message.id,
+            )
+
+            if selection_task is not None:
                 # Memory selection is an optional preflight; a provider/proxy hiccup here must
-                # never turn an answerable message into the generic error path.
+                # never turn an answerable message into the generic error path. Resolved under the
+                # route_done gate: it usually already finished during the upload wait above, so
+                # this returns immediately; a slow one gets only the post-route grace.
                 selection_started = time.monotonic()
                 try:
                     with logfire.span("gen_reply memory selection"):
-                        selection_task = asyncio.create_task(
-                            coro=self._select_user_memories(
-                                message=message,
-                                message_list=selection_message_list,
-                                allowed=allowed,
-                                server_memory_block=server_memory_block,
-                            )
-                        )
                         selection = await _await_gated(
                             task=selection_task,
                             route_done=route_done,
@@ -1398,6 +1323,13 @@ class ReplyGeneratorCogs(commands.Cog):
                         allowlist_size=len(allowed),
                         message_id=message.id,
                     )
+        finally:
+            # If this prep is cancelled during the upload wait (a non-QA route discarding it)
+            # before the gate resolves it, cancel the in-flight selection so it never orphans.
+            if selection_task is not None and not selection_task.done():
+                selection_task.cancel()
+                with contextlib.suppress(BaseException):
+                    await selection_task
 
         return ReplyContext(
             hist_messages=hist_messages,
@@ -1503,7 +1435,7 @@ class ReplyGeneratorCogs(commands.Cog):
             responses: AsyncIterator[ResponseStreamEvent]
             if use_interactions and yt_url is not None:
                 responses = create_interactions_answer_stream(
-                    client=self.interactions_client,
+                    client=self.gemini_client,
                     model=slow_model.name,
                     system_instruction=_build_runtime_instructions(
                         system_prompt=system_prompt, message=message
@@ -1512,7 +1444,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     effort=slow_model.effort,
                 )
             else:
-                responses = await self.client.responses.create(
+                responses = await self.openai_client.responses.create(
                     model=slow_model.name,
                     instructions=_build_runtime_instructions(
                         system_prompt=system_prompt, message=message
@@ -1673,8 +1605,8 @@ class ReplyGeneratorCogs(commands.Cog):
                             answer_model_is_gemini="gemini" in self.runtime_models.slow_model.name,
                         )
                     )
-                text_reference, text_current = await self._get_reference_and_current_text_only(
-                    message=message
+                text_reference, text_current = await self._get_reference_and_current(
+                    message=message, text_only=True
                 )
                 # Signals memory selection that the route has returned: selection runs
                 # unbounded while this is clear and gets only a short grace once it is set.
@@ -1706,41 +1638,39 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 route_done.set()
                 pipeline_span.set_attribute(key="route", value=route.decision)
-                if route.decision == "IMAGE":
+                if route.decision in ("IMAGE", "VIDEO"):
+                    # IMAGE and VIDEO share identical speculative-task teardown; they differ only
+                    # in the status emoji and which media handler runs. Effort and Threads context
+                    # are answer-only, so both are discarded here.
                     await _discard_task(task=effort_task)
                     effort_task = None
                     if threads_task is not None:
                         await _discard_task(task=threads_task)
                         threads_task = None
-                    reactions.advance(emoji="<:image:1517559727880667226>")
-                    # The image reply now answers with conversation history + the requester's
-                    # memory, so the speculative context is consumed, not discarded; the handler
-                    # awaits it only after the image is on screen so the build overlaps
-                    # generation. `parts_task` is left for the finally backstop: prep awaits it
-                    # via asyncio.shield, but if the handler discards prep on a generation
-                    # failure the shielded upload keeps running, so the finally must drain it.
-                    image_context_task = prep_task
-                    prep_task = None
-                    await self._handle_image_reply(
-                        message=message, user_prompt=user_prompt, context_task=image_context_task
+                    reactions.advance(
+                        emoji="<:image:1517559727880667226>"
+                        if route.decision == "IMAGE"
+                        else "<:video:1517560671913377842>"
                     )
-                elif route.decision == "VIDEO":
-                    await _discard_task(task=effort_task)
-                    effort_task = None
-                    if threads_task is not None:
-                        await _discard_task(task=threads_task)
-                        threads_task = None
-                    reactions.advance(emoji="<:video:1517560671913377842>")
-                    # The video reply now watches the generated clip and answers with
-                    # conversation history + the requester's memory, so the speculative context
-                    # is consumed, not discarded; the handler awaits it only after the video is
-                    # on screen so the build overlaps generation. `parts_task` is left for the
-                    # finally backstop, exactly as the IMAGE route does (prep shields it).
-                    video_context_task = prep_task
+                    # The media reply consumes (not discards) the speculative context: the handler
+                    # awaits it only after the media is on screen so the build overlaps generation.
+                    # `parts_task` is left for the finally backstop — prep awaits it via
+                    # asyncio.shield, so if the handler discards prep on a generation failure the
+                    # shielded upload keeps running and the finally must drain it.
+                    media_context_task = prep_task
                     prep_task = None
-                    await self._handle_video_reply(
-                        message=message, user_prompt=user_prompt, context_task=video_context_task
-                    )
+                    if route.decision == "IMAGE":
+                        await self._handle_image_reply(
+                            message=message,
+                            user_prompt=user_prompt,
+                            context_task=media_context_task,
+                        )
+                    else:
+                        await self._handle_video_reply(
+                            message=message,
+                            user_prompt=user_prompt,
+                            context_task=media_context_task,
+                        )
                 elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task)
                     prep_task = None

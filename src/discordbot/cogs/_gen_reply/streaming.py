@@ -233,19 +233,18 @@ class ResponseStreamer(BaseModel):
             await self._editor_task
         self._editor_task = None
 
-    async def _write_final_message(self, reply: Message | None, content: str, footer: str) -> None:
+    async def _write_final_message(self, content: str, footer: str) -> None:
         """Writes the final reply, continuing overflow as follow-up replies in the same channel."""
         parent_content, follow_up_chunks = self._split_reply_for_discord(
             content=content, footer=footer
         )
-        if reply is None:
-            reply = await self._reply_or_send(content=parent_content)
-        else:
-            await reply.edit(content=parent_content)
         # Track the parent reply so a later voice attach edits the right message even when
-        # the reply was created here (no preview snapshot ran before finalize).
-        self.reply = reply
-        previous = reply
+        # the reply is created here (no preview snapshot ran before finalize).
+        if self.reply is None:
+            self.reply = await self._reply_or_send(content=parent_content)
+        else:
+            await self.reply.edit(content=parent_content)
+        previous = self.reply
         for chunk in follow_up_chunks:
             previous = await previous.reply(content=chunk)
 
@@ -347,9 +346,7 @@ class ResponseStreamer(BaseModel):
         usage_footer = f"\n\n-# {model_label} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f}{memory_line}"
 
         # Final update to ensure complete message is displayed.
-        await self._write_final_message(
-            reply=self.reply, content=self.stored_content, footer=usage_footer
-        )
+        await self._write_final_message(content=self.stored_content, footer=usage_footer)
         reply_chars = len(self.stored_content)
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
         self.stored_content += usage_footer

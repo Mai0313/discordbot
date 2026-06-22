@@ -31,9 +31,6 @@ class ModelSettings(BaseModel):
         Returns:
             Reasoning options using this model's configured effort and an
             automatic reasoning summary.
-
-        Raises:
-            ValueError: The model has no reasoning effort configured.
         """
         return Reasoning(effort=self.effort, summary="auto")
 
