@@ -1673,6 +1673,21 @@ def test_extract_friendly_error_prefers_nested_provider_message() -> None:
     assert extract_friendly_error(exc=RuntimeError("bad b'not json'")) == "bad b'not json'"
 
 
+def test_required_modality_gate_keeps_code_and_text() -> None:
+    """The MIME gate drops unknown binaries but keeps source-code / structured-text types."""
+    modality = MessageInputBuilder.required_modality
+    # Known binary application types are dropped before any upload.
+    assert modality(content_type="application/octet-stream") == "unknown"
+    assert modality(content_type="application/x-tar") == "unknown"
+    # Source-code / script application types still proxy through (.rb -> application/x-ruby).
+    assert modality(content_type="application/x-ruby") == "image"
+    assert modality(content_type="application/x-perl") == "image"
+    # Structured-text suffixes and text/* pass too.
+    assert modality(content_type="application/geo+json") == "image"
+    assert modality(content_type="application/atom+xml") == "image"
+    assert modality(content_type="text/x-go") == "image"
+
+
 async def test_gen_reply_message_content_and_attachment_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1712,13 +1727,6 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert cog.input_builder.required_modality(content_type="video/mp4") == "video"
     assert cog.input_builder.required_modality(content_type="audio/mpeg") == "audio"
     assert cog.input_builder.required_modality(content_type="application/pdf") == "image"
-    # Unknown binary application types are dropped before any upload; readable structured-text
-    # suffixes (e.g. .geojson -> application/geo+json, application/atom+xml) still proxy through.
-    assert (
-        cog.input_builder.required_modality(content_type="application/octet-stream") == "unknown"
-    )
-    assert cog.input_builder.required_modality(content_type="application/geo+json") == "image"
-    assert cog.input_builder.required_modality(content_type="application/atom+xml") == "image"
 
     file_rendered = await cog.input_builder.attachment_handler.render_file(
         attachment=FakeAttachment(filename="note.txt", content_type="text/plain", payload=b"abc"),
