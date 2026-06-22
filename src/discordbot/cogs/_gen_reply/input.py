@@ -338,64 +338,11 @@ class MessageInputBuilder(BaseModel):
             return "audio"
         if content_type.startswith("image/"):
             return "image"
-        # An unlisted `application/*` binary the denylist did not name would otherwise pass as
-        # an `image`-proxy and get uploaded before a renderer drops it. Only the known document /
-        # code / text application types (plus structured `+json` / `+xml` suffixes) are worth
-        # proxying as `input_file`; everything else under `application/*` is dropped on the
-        # metadata pass so it never costs an upload. Non-`application/*` types (e.g. `text/*`)
-        # keep proxying as `image`.
-        proxyable_application_mimes = frozenset({
-            "application/pdf",
-            "application/json",
-            "application/ld+json",
-            "application/xml",
-            "application/javascript",
-            "application/x-javascript",
-            "application/typescript",
-            "application/x-yaml",
-            "application/yaml",
-            "application/toml",
-            "application/graphql",
-            "application/sql",
-            "application/rtf",
-            # Source-code / script application types (the system mime.types maps many code
-            # extensions here, e.g. .rb -> application/x-ruby). The binary `application/x-*`
-            # archives and executables are already caught by the denylist above, so these stay
-            # readable text the inline UTF-8 path or Gemini can ingest.
-            "application/x-sh",
-            "application/x-csh",
-            "application/x-python",
-            "application/x-python-code",
-            "application/x-ruby",
-            "application/x-perl",
-            "application/x-php",
-            "application/x-httpd-php",
-            "application/x-tcl",
-            "application/x-lua",
-            "application/x-powershell",
-            "application/x-latex",
-            "application/x-tex",
-            "application/x-texinfo",
-            "application/dart",
-            "application/msword",
-            "application/vnd.ms-excel",
-            "application/vnd.ms-powerpoint",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            "application/vnd.oasis.opendocument.text",
-            "application/vnd.oasis.opendocument.spreadsheet",
-            "application/vnd.oasis.opendocument.presentation",
-            "application/epub+zip",
-        })
-        # Structured-text suffixes (application/geo+json, application/atom+xml, ...) are readable
-        # JSON/XML the inline UTF-8 path or Gemini ingests, so allow them past the whitelist too.
-        if (
-            content_type.startswith("application/")
-            and content_type not in proxyable_application_mimes
-            and not content_type.endswith(("+json", "+xml"))
-        ):
-            return "unknown"
+        # Everything else (documents, source code, structured text, an unlisted application
+        # type) proxies as `image` / `input_file`. MIME cannot reliably tell an unlisted binary
+        # apart from unlisted text/code, and a positive allowlist silently drops legitimate code
+        # attachments, so the denylist above stays the only drop rule; the renderers make the
+        # final call (the inline path keeps only PDF + UTF-8, Gemini ingests the rest).
         return "image"
 
     async def _render_attachment_parts(
