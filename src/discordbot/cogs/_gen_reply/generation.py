@@ -1,6 +1,6 @@
-"""Media-generation services: the image and video render calls behind one uniform shape.
+"""Media-generation services: the image, video, and music render calls behind one uniform shape.
 
-Both runtime media generators are BaseModel services held as cog `cached_property`s (mirroring
+All runtime media generators are BaseModel services held as cog `cached_property`s (mirroring
 `VoiceSynthesizer`), so every media render goes through the same calling convention instead of a
 half-free-function / half-class mix:
 
@@ -11,8 +11,11 @@ half-free-function / half-class mix:
 - `VideoGenerator` runs the single native-Veo render behind the VIDEO route. It has only `render`
   (raising): video has no inline marker and is always the primary deliverable, so there is no
   best-effort twin by design.
+- `MusicGenerator` runs the native-Lyria render behind the QA-route `<music>` marker via the
+  Gemini Interactions API. Like `ImageGenerator.generate` it is best-effort only (`generate`,
+  None on any failure), since music is inline-only; it goes DIRECT to Google like `VideoGenerator`.
 
-Keeping both here means a future provider swap (or a move of either render off the proxy) changes
+Keeping them here means a future provider swap (or a move of a render off the proxy) changes
 one place.
 """
 
@@ -42,6 +45,44 @@ INLINE_IMAGE_TIMEOUT_SECONDS = 300.0
 # message handler waiting forever. Co-located with the image timeout since it is a property of
 # the render, not of the route that calls it.
 VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
+
+# Bound for the inline-music best-effort path, mirroring the inline-image timeout: the render
+# runs after the text reply is on screen, so the wait only delays this message's own clip.
+MUSIC_RENDER_TIMEOUT_SECONDS = 300.0
+
+# Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
+# Lyria prompt surface is documented in English). The QA `<music>` marker prompt already steers
+# the answer model to default to this style and write it into the description, so this is a
+# backstop default that still honors a description that asks for a different genre. Whether the
+# generation model actually reads `system_instruction` is unverified (the Gemini TTS path ignores
+# its `instructions` channel); the prompt-side default is the load-bearing path either way.
+MUSIC_STYLE_DIRECTIVE = (
+    "Compose in a Japanese anime / J-pop style by default; if the description clearly asks for a "
+    "different genre or style, follow the description instead."
+)
+
+# Map a returned audio mime type to a Discord-playable file extension. Discord's inline audio
+# player keys off the extension, and `AudioContent.mime_type` can be a non-obvious value
+# (`audio/mpeg`, `audio/l16`) or None, so a naive `split("/")[-1]` would yield an unplayable
+# name; fall back to `.mp3` for anything unmapped.
+_AUDIO_MIME_EXTENSIONS = {
+    "audio/mp3": ".mp3",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/l16": ".wav",
+    "audio/m4a": ".m4a",
+    "audio/aac": ".m4a",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".ogg",
+    "audio/flac": ".flac",
+    "audio/aiff": ".aiff",
+}
+
+
+def music_filename(*, mime_type: str | None) -> str:
+    """The Discord attachment filename for a generated music clip, by its audio mime type."""
+    extension = _AUDIO_MIME_EXTENSIONS.get((mime_type or "").lower(), ".mp3")
+    return f"music{extension}"
 
 
 class ImageGenerator(BaseModel):
@@ -214,3 +255,64 @@ class VideoGenerator(BaseModel):
         if generated.video is None or generated.video.uri is None:
             raise RuntimeError(f"Video generation returned no video for {operation.name}")
         return await self.client.aio.files.download(file=generated.video.uri)
+
+
+class MusicClip(BaseModel):
+    """A generated music clip: the audio bytes plus the mime type used to pick a file extension."""
+
+    audio: bytes = Field(..., description="Rendered audio bytes for the music clip.")
+    mime_type: str = Field(
+        ..., description="Audio mime type Lyria reported, e.g. audio/mp3, used to name the file."
+    )
+
+
+class MusicGenerator(BaseModel):
+    """Native-Lyria music render behind the QA-route `<music>` marker.
+
+    Holds the direct-to-Google client and the music model. Best-effort only (`generate`, None on
+    any failure), mirroring `ImageGenerator.generate`: music is inline-only, so a slow or refused
+    render never blocks anything but its own reply. Goes DIRECT to Google via the Gemini
+    Interactions API (the music model is dispatched there, not via the proxy).
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    client: SkipValidation[genai.Client] = Field(
+        ..., description="Direct-to-Google Gemini client for the Lyria Interactions call."
+    )
+    music_model: ModelSettings = Field(
+        ..., description="Model settings for native Gemini (Lyria) music generation."
+    )
+
+    async def generate(self, *, user_prompt: str) -> MusicClip | None:
+        """Renders one music clip from the description; None on any failure or timeout.
+
+        Best-effort wrapper for the QA-route `<music>` marker: one non-streaming Interactions
+        call inside a generous timeout, returning None to disable the inline path for this reply
+        rather than raising into the streamer. The fixed anime/J-pop style rides in
+        `system_instruction`; the description is passed as the plain-string `input`. The returned
+        audio mime type is carried back so the caller can pick a Discord-playable extension.
+        """
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(delay=MUSIC_RENDER_TIMEOUT_SECONDS):
+                interaction = await self.client.aio.interactions.create(
+                    model=self.music_model.name,
+                    input=user_prompt,
+                    system_instruction=MUSIC_STYLE_DIRECTIVE,
+                )
+        except Exception:
+            logfire.warn("Inline music generation failed; replying without music", _exc_info=True)
+            return None
+        audio = interaction.output_audio
+        if audio is None or not audio.data:
+            logfire.warn("Inline music generation returned no audio; replying without music")
+            return None
+        clip = base64.b64decode(audio.data)
+        logfire.info(
+            "gen_reply inline music generated",
+            elapsed_seconds=time.monotonic() - started,
+            music_bytes=len(clip),
+            mime_type=audio.mime_type,
+        )
+        return MusicClip(audio=clip, mime_type=audio.mime_type or "audio/mp3")

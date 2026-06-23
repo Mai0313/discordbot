@@ -1,7 +1,9 @@
 from discordbot.cogs._gen_reply.markers import (
     IMAGE_OPEN,
+    MUSIC_OPEN,
     VOICE_OPEN,
     IMAGE_CLOSE,
+    MUSIC_CLOSE,
     VOICE_CLOSE,
     MAX_INLINE_IMAGES,
     DEEP_RESEARCH_OPEN,
@@ -77,6 +79,19 @@ INLINE_IMAGE_INSTRUCTION = f"""
 * Optional illustration: when a generated image would genuinely add to your reply, wrap a description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. Each such block is removed from your written reply and sent straight to an image generator, so the description never shows in chat; the finished images are attached to your reply afterward.
 * Write each description so the image generator has everything it needs: lead with the main subject and what it is doing, then the key visual details, setting, style or medium, and mood. Be concrete and self-contained, since it is rendered directly with no further rewriting; keep any literal in-image text in its original language.
 * Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. You may include several `{IMAGE_OPEN}...{IMAGE_CLOSE}` blocks when the reply genuinely calls for distinct pictures (each becomes its own attached image), but use at most {MAX_INLINE_IMAGES} per reply and skip it entirely when an image would not add anything. Never wrap the tags in backticks and never mention them.
+"""
+
+# Appended to the QA system prompt only when the music generator is actually active (kill-switch
+# on, key present, QA route). Kept out of REPLY_PROMPT for the same reason as
+# INLINE_IMAGE_INSTRUCTION: a deployment with INLINE_MUSIC_ENABLED=false (or no Gemini key) must
+# not be told about a marker the streamer would strip without producing anything.
+MUSIC_INSTRUCTION = f"""
+* Optional music: when the user wants a song or a piece of music, or would genuinely enjoy one alongside your answer, wrap a description of that music in `{MUSIC_OPEN}...{MUSIC_CLOSE}`. That block is removed from your written reply and sent straight to a music generator, so the description never shows in chat; the finished clip is attached to your reply afterward.
+    * Default to a Japanese anime / J-pop style and write that style into the description; only depart from it when the user clearly asks for a different genre or style, in which case describe the genre they asked for.
+    * Write the description so the generator has everything it needs: the mood, the tempo or energy, the instrumentation, and any vocal or lyrical theme (state the language for any lyrics). Be concrete and self-contained, since it is rendered directly with no further rewriting.
+    * Use this sparingly and at most ONE `{MUSIC_OPEN}...{MUSIC_CLOSE}` per reply (it takes time and real cost); skip it entirely when music would not add anything.
+    * Because the description is hidden, briefly confirm in persona in your visible reply that you are putting a track together (and that it takes a moment); never promise an instant result.
+    * Never mention the tags and never wrap them in backticks or a code block.
 """
 
 # Appended to the QA system prompt only when deep research is enabled (kill-switch on, QA route).

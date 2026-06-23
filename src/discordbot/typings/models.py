@@ -107,6 +107,19 @@ class RuntimeModelCatalog(BaseModel):
         return video_model
 
     @property
+    def music_model(self) -> ModelSettings:
+        """The model settings for music generation.
+
+        Callers: `MusicGenerator.generate` (via the QA-route inline `<music>` marker).
+
+        Returns:
+            Model settings used with the native Gemini (Lyria) Interactions API (a bare model
+            name, no provider prefix, since the call goes direct to Google not via the proxy).
+        """
+        music_model = ModelSettings(name="lyria-3-clip-preview")
+        return music_model
+
+    @property
     def antigravity_model(self) -> ModelSettings:
         """The default deep-research agent: a one-shot Antigravity managed agent.
 

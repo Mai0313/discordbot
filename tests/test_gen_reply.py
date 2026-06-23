@@ -53,7 +53,7 @@ from discordbot.cogs._gen_reply.markers import (
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
-from discordbot.cogs._gen_reply.generation import ImageGenerator
+from discordbot.cogs._gen_reply.generation import MusicClip, ImageGenerator, music_filename
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     parse_user_id_list,
@@ -1043,6 +1043,36 @@ def test_extract_inline_markers_unclosed_image_is_pulled() -> None:
     assert markers.cleaned_text == "來囉"
 
 
+def test_extract_inline_markers_music_block_removed() -> None:
+    """A <music> block (tags AND content) is pulled from the visible reply."""
+    markers = extract_inline_markers(
+        text="這首給你\n<music>upbeat anime J-pop, female vocals</music>"
+    )
+    assert markers.music_prompt == "upbeat anime J-pop, female vocals"
+    assert "<music>" not in markers.cleaned_text
+    assert "anime" not in markers.cleaned_text
+    assert markers.cleaned_text == "這首給你"
+
+
+def test_extract_inline_markers_only_first_music_block_kept() -> None:
+    """Only the first non-empty <music> block is kept (a single clip per reply)."""
+    markers = extract_inline_markers(
+        text="<music>first track</music>中間<music>second track</music>"
+    )
+    assert markers.music_prompt == "first track"
+    assert "<music>" not in markers.cleaned_text
+    assert "second track" not in markers.cleaned_text
+
+
+def test_extract_inline_markers_unclosed_music_is_pulled() -> None:
+    """An unclosed trailing <music> (model forgot to close) never leaks its description."""
+    markers = extract_inline_markers(text="等我一下\n<music>a calm lo-fi beat")
+    assert markers.music_prompt == "a calm lo-fi beat"
+    assert "<music>" not in markers.cleaned_text
+    assert "lo-fi" not in markers.cleaned_text
+    assert markers.cleaned_text == "等我一下"
+
+
 def test_speechify_discord_markup_rewrites_and_drops() -> None:
     """Mentions resolve to names; emoji / timestamps drop; slash commands keep their words."""
     names = {239270225441193986: "小明", 42: "管理員", 7: "general"}
@@ -1254,6 +1284,123 @@ async def test_image_markers_capped_at_limit(economy_isolated_db: None) -> None:
     assert len(files) == MAX_INLINE_IMAGES
 
 
+# ---- inline music (<music>) ----
+
+
+class _FakeMusicGenerator:
+    """Records generate calls and returns a configurable MusicClip (or None) for streamer tests."""
+
+    def __init__(
+        self, audio: bytes | None = b"ID3-fake-mp3", mime_type: str = "audio/mp3"
+    ) -> None:
+        """Stores the clip (None audio simulates a failed render) returned by generate."""
+        self.clip = MusicClip(audio=audio, mime_type=mime_type) if audio is not None else None
+        self.calls: list[str] = []
+
+    async def generate(self, *, user_prompt: str) -> MusicClip | None:
+        """Records the music description request and returns the preset clip."""
+        self.calls.append(user_prompt)
+        return self.clip
+
+
+def _music_marker_events() -> list[SimpleNamespace]:
+    """A single-turn stream whose reply wraps a <music> description."""
+    return [
+        _text_event(delta="這首給你 "),
+        _text_event(delta="<music>upbeat anime J-pop, female vocals</music>"),
+        _completed_event(input_tokens=3, output_tokens=4),
+    ]
+
+
+async def test_music_marker_generates_and_attaches(economy_isolated_db: None) -> None:
+    """A <music> block is pulled from the reply, generated, and the clip attached to the reply."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeMusicGenerator()
+
+    result = await ResponseStreamer(message=message, music_generator=generator).stream(
+        responses=_stream_events_from(_music_marker_events())
+    )
+
+    # The block (tags AND description) never shows in chat.
+    assert "<music>" not in result
+    assert "anime" not in result
+    assert "這首給你" in result
+    # The description is handed to the generator and the clip attached afterward.
+    assert generator.calls == ["upbeat anime J-pop, female vocals"]
+    assert message.replies[0].file is not None
+    assert message.replies[0].file.filename == "music.mp3"
+    # The source message is marked with the music emoji while the clip renders.
+    assert message.added_reactions == ["🎵"]
+
+
+async def test_music_disabled_still_strips_marker(economy_isolated_db: None) -> None:
+    """With no generator (music off) the block is still pulled and no file attaches."""
+    del economy_isolated_db
+    message = FakeMessage()
+
+    result = await ResponseStreamer(message=message).stream(
+        responses=_stream_events_from(_music_marker_events())
+    )
+
+    assert "<music>" not in result
+    assert "anime" not in result
+    assert message.replies[0].file is None
+
+
+async def test_music_generation_failure_hints(economy_isolated_db: None) -> None:
+    """A failed render leaves a clean text reply with no file and a warning hint."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeMusicGenerator(audio=None)
+
+    result = await ResponseStreamer(message=message, music_generator=generator).stream(
+        responses=_stream_events_from(_music_marker_events())
+    )
+
+    assert "anime" not in result
+    assert message.replies[0].file is None
+    assert message.added_reactions == ["🎵", "⚠️"]
+
+
+async def test_music_filename_follows_returned_mime() -> None:
+    """The attachment extension follows the returned audio mime, falling back to .mp3."""
+    assert music_filename(mime_type="audio/wav") == "music.wav"
+    assert music_filename(mime_type="audio/mpeg") == "music.mp3"
+    assert music_filename(mime_type="audio/ogg") == "music.ogg"
+    assert music_filename(mime_type=None) == "music.mp3"
+
+
+async def test_voice_music_image_attach_in_one_edit(economy_isolated_db: None) -> None:
+    """A reply with all three markers rides one edit carrying the WAV, the clip, and the PNG."""
+    del economy_isolated_db
+    message = FakeMessage()
+    synthesizer = _FakeVoiceSynthesizer()
+    music_generator = _FakeMusicGenerator()
+    image_generator = _FakeImageGenerator()
+
+    result = await ResponseStreamer(
+        message=message,
+        voice_synthesizer=synthesizer,
+        music_generator=music_generator,
+        image_generator=image_generator,
+    ).stream(
+        responses=_stream_events_from([
+            _text_event(delta="來囉 <voice>聽好</voice> "),
+            _text_event(delta="<music>a calm lo-fi beat</music><image>a red balloon</image>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    assert "聽好" in result
+    assert "<music>" not in result
+    assert "lo-fi" not in result
+    assert "a red balloon" not in result
+    files = message.replies[0].files
+    assert files is not None
+    assert {item.filename for item in files} == {"reply.wav", "music.mp3", "generated.png"}
+
+
 class _FakeSpeechResponse:
     """Async binary-response stand-in exposing aread() like the OpenAI speech result."""
 
@@ -1365,9 +1512,11 @@ async def test_voice_config_gate_controls_synthesizer(
             model_effort: str = "",
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
+            music_generator: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
-            del message, memory_lookups, input_tokens, output_tokens, model_effort, image_generator
+            del message, memory_lookups, input_tokens, output_tokens, model_effort
+            del image_generator, music_generator
             captured.append(voice_synthesizer)
 
         async def stream(self, *, responses: object) -> str:
@@ -1413,10 +1562,11 @@ async def test_image_config_gate_controls_generator(
             model_effort: str = "",
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
+            music_generator: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer
+            del voice_synthesizer, music_generator
             captured.append(image_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -1648,6 +1798,24 @@ def test_collect_sources_skips_bot_own_voice_clip() -> None:
         FakeAttachment(filename="reply.wav", content_type="audio/wav", attachment_id=3)
     ]
     assert [s.cache_key for s in builder.collect_attachment_sources(message=user_msg)] == [3]
+
+
+def test_collect_sources_keeps_bot_own_music_clip() -> None:
+    """The bot's own generated music clip is deliberately retained (unlike the voice clip).
+
+    The `<music>` description is stripped from the visible reply, so the clip is the only trace
+    of the song the bot made; keeping it lets a later turn reference it. Only the spoken `reply.wav`
+    (whose text is already in the transcript) is skipped.
+    """
+    builder = _media_builder()  # bot user id 999
+
+    bot_msg = FakeMessage(author=FakeAuthor(user_id=999))
+    bot_msg.attachments = [
+        FakeAttachment(filename="music.mp3", content_type="audio/mpeg", attachment_id=1),
+        FakeAttachment(filename="reply.wav", content_type="audio/wav", attachment_id=2),
+    ]
+    # The music clip is kept (cache_key 1); only the voice clip (cache_key 2) is skipped.
+    assert [s.cache_key for s in builder.collect_attachment_sources(message=bot_msg)] == [1]
 
 
 async def test_dead_source_skipped_within_ttl_then_retried(
@@ -2239,10 +2407,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             model_effort: str = "",
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
+            music_generator: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator
+            del voice_synthesizer, image_generator, music_generator
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -2555,12 +2724,21 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
         "expected_flags",
         "expected_voice",
         "expected_image",
+        "expected_music",
     ),
     argvalues=[
-        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], []),
-        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], []),
-        ("SUMMARY", "_handle_message_reply", [(30, True), (100, False)], [False], [True], [False]),
-        ("QA", "_handle_message_reply", [(30, True)], [True], [True], [True]),
+        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], [], []),
+        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], [], []),
+        (
+            "SUMMARY",
+            "_handle_message_reply",
+            [(30, True), (100, False)],
+            [False],
+            [True],
+            [False],
+            [False],
+        ),
+        ("QA", "_handle_message_reply", [(30, True)], [True], [True], [True], [True]),
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
@@ -2571,6 +2749,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     expected_flags: list[bool],
     expected_voice: list[bool],
     expected_image: list[bool],
+    expected_music: list[bool],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
@@ -2632,6 +2811,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     memory_flags: list[bool] = []
     voice_flags: list[bool] = []
     image_flags: list[bool] = []
+    music_flags: list[bool] = []
     effort_flags: list[str] = []
     contexts: list[ReplyContext] = []
 
@@ -2643,6 +2823,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         effort: str = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
+        allow_music: bool = False,
         allow_research: bool = False,
         yt_url: str | None = None,
     ) -> None:
@@ -2652,6 +2833,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         memory_flags.append(memory_enabled)
         voice_flags.append(allow_voice)
         image_flags.append(allow_image)
+        music_flags.append(allow_music)
         effort_flags.append(effort)
         contexts.append(context)
 
@@ -2674,6 +2856,8 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     assert voice_flags == expected_voice
     # Inline image is QA-only; SUMMARY stays text and IMAGE/VIDEO never reach here.
     assert image_flags == expected_image
+    # Inline music is QA-only, like inline image; SUMMARY stays text.
+    assert music_flags == expected_music
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
@@ -2869,10 +3053,11 @@ class _ThreadsStreamer:
         model_effort: str = "",
         voice_synthesizer: object | None = None,
         image_generator: object | None = None,
+        music_generator: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
         del memory_lookups, input_tokens, output_tokens, model_effort
-        del voice_synthesizer, image_generator
+        del voice_synthesizer, image_generator, music_generator
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -2904,7 +3089,10 @@ async def test_on_message_injects_threads_context_before_current(
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
+        voice_reply_enabled=False,
+        inline_image_enabled=False,
+        music_available=False,
+        deep_research_enabled=False,
     )
     seen_urls: list[str] = []
 
@@ -2989,7 +3177,10 @@ async def test_on_message_skips_threads_context_without_url(
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
+        voice_reply_enabled=False,
+        inline_image_enabled=False,
+        music_available=False,
+        deep_research_enabled=False,
     )
     called: list[str] = []
 
@@ -3020,7 +3211,10 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False, inline_image_enabled=False, deep_research_enabled=False
+        voice_reply_enabled=False,
+        inline_image_enabled=False,
+        music_available=False,
+        deep_research_enabled=False,
     )
     monkeypatch.setattr("discordbot.cogs.gen_reply.THREADS_GRACE_SECONDS", 0.01)
 
@@ -3190,10 +3384,11 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             model_effort: str = "",
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
+            music_generator: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator
+            del voice_synthesizer, image_generator, music_generator
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3281,10 +3476,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             model_effort: str = "",
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
+            music_generator: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator
+            del voice_synthesizer, image_generator, music_generator
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3344,10 +3540,11 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             model_effort: str = "",
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
+            music_generator: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator
+            del voice_synthesizer, image_generator, music_generator
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
