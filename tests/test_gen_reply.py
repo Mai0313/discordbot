@@ -53,7 +53,12 @@ from discordbot.cogs._gen_reply.markers import (
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
-from discordbot.cogs._gen_reply.generation import MusicClip, ImageGenerator, music_filename
+from discordbot.cogs._gen_reply.generation import (
+    MusicClip,
+    ImageGenerator,
+    MusicGenerator,
+    music_filename,
+)
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     parse_user_id_list,
@@ -1399,6 +1404,24 @@ async def test_voice_music_image_attach_in_one_edit(economy_isolated_db: None) -
     files = message.replies[0].files
     assert files is not None
     assert {item.filename for item in files} == {"reply.wav", "music.mp3", "generated.png"}
+
+
+async def test_music_generator_drops_clip_on_bad_audio_payload() -> None:
+    """A non-decodable audio payload returns None instead of raising into the attach gather."""
+
+    class _Interactions:
+        async def create(self, **kwargs: object) -> SimpleNamespace:
+            """Returns an interaction whose audio data cannot be base64-decoded."""
+            del kwargs
+            return SimpleNamespace(
+                output_audio=SimpleNamespace(data="not-valid-base64-x", mime_type="audio/mpeg")
+            )
+
+    client = SimpleNamespace(aio=SimpleNamespace(interactions=_Interactions()))
+    generator = MusicGenerator(client=client, music_model=RuntimeModelCatalog().music_model)
+
+    # The decode failure is swallowed (best-effort), so the streamer's media gather is never aborted.
+    assert await generator.generate(user_prompt="a calm beat") is None
 
 
 class _FakeSpeechResponse:

@@ -294,6 +294,10 @@ class MusicGenerator(BaseModel):
         audio mime type is carried back so the caller can pick a Discord-playable extension.
         """
         started = time.monotonic()
+        # Output extraction and base64 decode stay inside the guard: an unexpected audio shape
+        # (a raising `output_audio`, non-base64 `data`) must drop the clip to None like any other
+        # failure, never escape into the streamer's single media-attach gather and abort the
+        # already-ready voice / images alongside it.
         try:
             async with asyncio.timeout(delay=MUSIC_RENDER_TIMEOUT_SECONDS):
                 interaction = await self.client.aio.interactions.create(
@@ -301,14 +305,14 @@ class MusicGenerator(BaseModel):
                     input=user_prompt,
                     system_instruction=MUSIC_STYLE_DIRECTIVE,
                 )
+            audio = interaction.output_audio
+            if audio is None or not audio.data:
+                logfire.warn("Inline music generation returned no audio; replying without music")
+                return None
+            clip = base64.b64decode(audio.data)
         except Exception:
             logfire.warn("Inline music generation failed; replying without music", _exc_info=True)
             return None
-        audio = interaction.output_audio
-        if audio is None or not audio.data:
-            logfire.warn("Inline music generation returned no audio; replying without music")
-            return None
-        clip = base64.b64decode(audio.data)
         logfire.info(
             "gen_reply inline music generated",
             elapsed_seconds=time.monotonic() - started,
