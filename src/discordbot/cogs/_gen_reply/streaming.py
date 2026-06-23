@@ -31,14 +31,16 @@ from discordbot.cogs._gen_reply.markers import (
     extract_inline_markers,
     scrub_markers_for_preview,
 )
-from discordbot.cogs._gen_reply.generation import ImageGenerator
+from discordbot.cogs._gen_reply.generation import ImageGenerator, MusicGenerator, music_filename
 
 # Filename of a single inline-generated image attached onto a QA reply; mirrors the router IMAGE
 # route's `generated.png` so the bot's own generated images render the same in history. Multiple
 # images need distinct names, so they fall back to `generated_<n>.png` (Discord collides on dupes).
 INLINE_IMAGE_FILENAME = "generated.png"
-# Discord caps one message at 10 attachments; the voice clip plus MAX_INLINE_IMAGES already fits,
-# so this is a defensive clamp guarding the single attach edit.
+# Discord caps one message at 10 attachments; the voice clip plus MAX_INLINE_IMAGES exactly fits,
+# but a rare voice + music + 9 images is 11, so this is the defensive clamp guarding the single
+# attach edit. Voice/music are ordered first, so the clamp drops a trailing (already rendered)
+# image rather than the clip; a per-reply dynamic image budget is not worth the complexity.
 DISCORD_ATTACHMENT_LIMIT = 10
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
@@ -112,6 +114,14 @@ class ResponseStreamer(BaseModel):
     image_prompts: list[str] = Field(
         default_factory=list,
         description="The <image> descriptions the answer model asked to illustrate, in order.",
+    )
+    music_generator: SkipValidation[MusicGenerator | None] = Field(
+        default=None,
+        description="Inline-music renderer; None disables inline <music> for this reply.",
+    )
+    music_prompt: str | None = Field(
+        default=None,
+        description="The <music> description the answer model asked to score, if any.",
     )
     research_brief: str | None = Field(
         default=None,
@@ -325,6 +335,7 @@ class ResponseStreamer(BaseModel):
         self.stored_content = markers.cleaned_text
         self.voice_requested = markers.voice_requested
         self.image_prompts = markers.image_prompts
+        self.music_prompt = markers.music_prompt
         # The streamer only surfaces the brief; the cog (not the streamer) launches the research
         # after the single media edit so it never touches the reply's one attachment edit.
         self.research_brief = markers.research_brief
@@ -371,6 +382,7 @@ class ResponseStreamer(BaseModel):
             reply_chars=reply_chars,
             voice_requested=self.voice_requested,
             image_count=len(self.image_prompts),
+            music_requested=bool(self.music_prompt),
             memory_lookups=len(self.memory_lookups),
             chunked=chunked,
         )
@@ -527,28 +539,67 @@ class ResponseStreamer(BaseModel):
             await self._hint_media_unavailable(emoji="⚠️")
         return files
 
+    async def _build_music_file(self) -> File | None:
+        """Generates the <music> clip to an upload-ready audio File, or None when not delivered.
+
+        Best-effort like the inline image path: a skip (not requested / disabled) is silent, while
+        a requested-but-failed or oversized clip hints the source message and returns None. The
+        file extension follows the returned audio mime type so Discord renders an inline player.
+        """
+        if self.music_prompt is None:
+            # The expected common path: the answer model wrapped no <music> block.
+            logfire.debug("Music not requested by the answer model", message_id=self.message.id)
+            return None
+        if self.music_generator is None:
+            # Music is intentionally off this turn (kill-switch / missing key): no hint.
+            logfire.info(
+                "Inline music requested but disabled for this turn; replying without music",
+                message_id=self.message.id,
+            )
+            return None
+        # Mark the source message while the clip renders (no custom app emoji for music yet).
+        await update_reaction(message=self.message, bot_user=None, emoji="🎵")
+        logfire.info("Generating inline music reply", message_id=self.message.id)
+        clip = await self.music_generator.generate(user_prompt=self.music_prompt)
+        if clip is None:
+            # generate() logged the failure/timeout; hint once.
+            await self._hint_media_unavailable(emoji="⚠️")
+            return None
+        upload_limit = self._upload_limit()
+        if len(clip.audio) > upload_limit:
+            logfire.warn(
+                "Generated music exceeds the guild upload limit; dropping audio",
+                message_id=self.message.id,
+                audio_bytes=len(clip.audio),
+                upload_limit=upload_limit,
+            )
+            await self._hint_media_unavailable(emoji="⚠️")
+            return None
+        return File(fp=BytesIO(clip.audio), filename=music_filename(mime_type=clip.mime_type))
+
     async def _attach_generated_media(self) -> None:
-        """Attaches any requested spoken clip and inline images onto the sent reply in one edit.
+        """Attaches any requested spoken clip, music clip, and inline images in one edit.
 
         The text reply is already on screen, so this adds no latency to it; the media are
         best-effort and any failure leaves the text reply (with a small emoji hint on the source
         message). They ride a single `reply.edit(files=...)` because `edit` replaces the
-        attachment list, so two separate edits would drop the earlier files.
+        attachment list, so two separate edits would drop the earlier files. Voice and music ride
+        first so the rare voice + music + 9 images overflow drops a trailing image, not the clip.
         """
         if self.reply is None:
-            if self.voice_requested or self.image_prompts:
+            if self.voice_requested or self.image_prompts or self.music_prompt:
                 logfire.warn(
                     "Media requested but the reply was never sent; dropping it",
                     message_id=self.message.id,
                 )
                 await self._hint_media_unavailable(emoji="⚠️")
             return
-        # Build both paths concurrently so a slow one never blocks the other: a TTS clip that
-        # hangs to VOICE_TIMEOUT_SECONDS must not delay ready inline images (and vice versa).
-        voice_file, image_files = await asyncio.gather(
-            self._build_voice_file(), self._build_image_files()
+        # Build every path concurrently so a slow one never blocks the others: a TTS clip or a
+        # music render that hangs to its timeout must not delay ready inline images (and vice versa).
+        voice_file, music_file, image_files = await asyncio.gather(
+            self._build_voice_file(), self._build_music_file(), self._build_image_files()
         )
-        files = [media for media in (voice_file, *image_files) if media is not None][
+        files = [media for media in (voice_file, music_file, *image_files) if media is not None][
             :DISCORD_ATTACHMENT_LIMIT
         ]
         if not files:

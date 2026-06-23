@@ -49,6 +49,7 @@ from discordbot.cogs._gen_reply.prompts import (
     ROUTE_PROMPT,
     EFFORT_PROMPT,
     SUMMARY_PROMPT,
+    MUSIC_INSTRUCTION,
     IMAGE_REPLY_PROMPT,
     VIDEO_REPLY_PROMPT,
     MEMORY_SELECT_PROMPT,
@@ -59,7 +60,7 @@ from discordbot.cogs._gen_reply.prompts import (
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
-from discordbot.cogs._gen_reply.generation import ImageGenerator, VideoGenerator
+from discordbot.cogs._gen_reply.generation import ImageGenerator, MusicGenerator, VideoGenerator
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
@@ -413,6 +414,19 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         return VideoGenerator(
             client=self.gemini_client, video_model=self.runtime_models.video_model
+        )
+
+    @cached_property
+    def music_generator(self) -> MusicGenerator:
+        """The cached music renderer for the QA-route `<music>` marker.
+
+        Returns:
+            A generator bound to this cog's DIRECT-to-Google Gemini client (Lyria runs on the
+            Interactions API, not the proxy) and the music model; the inline path calls
+            `generate` (best-effort, gated on `allow_music` and `config.music_available`).
+        """
+        return MusicGenerator(
+            client=self.gemini_client, music_model=self.runtime_models.music_model
         )
 
     @cached_property
@@ -1352,6 +1366,7 @@ class ReplyGeneratorCogs(commands.Cog):
         effort: Literal["low", "medium", "high"] = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
+        allow_music: bool = False,
         allow_research: bool = False,
         yt_url: str | None = None,
     ) -> None:
@@ -1360,8 +1375,9 @@ class ReplyGeneratorCogs(commands.Cog):
         The per-user update is gated by `memory_enabled`; the per-server update always runs
         (subject to its own guild / public-channel guards), so the SUMMARY route still records
         community memory even though it carries `memory_enabled=False`. `allow_voice` enables a
-        spoken clip and `allow_image` an inline generated image when the answer model marks the
-        reply for it (both QA only; SUMMARY stays text). `yt_url`, set only when the router asked
+        spoken clip, `allow_image` an inline generated image, and `allow_music` an inline
+        generated music clip when the answer model marks the reply for it (image and music are
+        QA only; voice also rides SUMMARY, which otherwise stays text). `yt_url`, set only when the router asked
         to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
         (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
@@ -1371,11 +1387,19 @@ class ReplyGeneratorCogs(commands.Cog):
         image_generator = (
             self.image_generator if allow_image and self.config.inline_image_enabled else None
         )
+        music_generator = (
+            self.music_generator if allow_music and self.config.music_available else None
+        )
         # Only advertise the inline `<image>` marker when the renderer is actually active; with
         # it disabled the streamer would strip the block and produce nothing, silently dropping
         # the visual request from the reply, so a disabled deployment must not be told about it.
         if image_generator is not None:
             system_prompt = f"{system_prompt}\n{INLINE_IMAGE_INSTRUCTION}"
+        # Advertise the inline `<music>` marker only when the generator is actually active, same
+        # reasoning as the image marker: a disabled deployment (kill-switch off or no Gemini key)
+        # must not be told about a marker the streamer would strip without producing anything.
+        if music_generator is not None:
+            system_prompt = f"{system_prompt}\n{MUSIC_INSTRUCTION}"
         # Advertise the <deep-research> marker only when the feature is on, same reasoning as the
         # image marker: a disabled deployment must not be told about a marker the streamer would
         # strip without producing anything.
@@ -1408,6 +1432,7 @@ class ReplyGeneratorCogs(commands.Cog):
             model_effort=effort,
             voice_synthesizer=voice_synthesizer,
             image_generator=image_generator,
+            music_generator=music_generator,
         )
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is
@@ -1741,6 +1766,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         effort=effort,
                         allow_voice=True,
                         allow_image=True,
+                        allow_music=True,
                         allow_research=_can_launch_research(message=message),
                         yt_url=yt_url,
                     )
