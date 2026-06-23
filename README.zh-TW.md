@@ -139,7 +139,7 @@ GEMINI_API_KEY=your_google_ai_studio_key
 
 ## 開發
 
-Contributor setup、code conventions、tests 與 release notes 請見 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+Contributor setup、code conventions、tests 與 release notes 請見 [CONTRIBUTING.md](./.github/CONTRIBUTING.md)。
 
 [文件](https://mai0313.github.io/discordbot/) | [回報問題](https://github.com/Mai0313/discordbot/issues) | [討論](https://github.com/Mai0313/discordbot/discussions)
 

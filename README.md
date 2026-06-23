@@ -139,7 +139,7 @@ When the bot responds with AI, relevant text, supported attachments, embedded me
 
 ## Development
 
-Contributor setup, code conventions, tests, and release notes live in [CONTRIBUTING.md](./CONTRIBUTING.md).
+Contributor setup, code conventions, tests, and release notes live in [CONTRIBUTING.md](./.github/CONTRIBUTING.md).
 
 [Documentation](https://mai0313.github.io/discordbot/) | [Report a Bug](https://github.com/Mai0313/discordbot/issues) | [Discussions](https://github.com/Mai0313/discordbot/discussions)
 

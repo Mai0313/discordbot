@@ -178,4 +178,4 @@ When debugging, check `./data/logs` for the full runtime logs.
 
 ## Documentation Split
 
-- `README.md` is the concise canonical user-facing README; `README.zh-CN.md` / `README.zh-TW.md` mirror its structure; `CONTRIBUTING.md` is developer-facing English; `CLAUDE.md` stays dense and AI-agent-facing (and is the symlink target for `AGENTS.md` / `GEMINI.md`, per the header).
+- `README.md` is the concise canonical user-facing README; `README.zh-CN.md` / `README.zh-TW.md` mirror its structure; `.github/CONTRIBUTING.md` is developer-facing English; `CLAUDE.md` stays dense and AI-agent-facing (and is the symlink target for `AGENTS.md` / `GEMINI.md`, per the header).
