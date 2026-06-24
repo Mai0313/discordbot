@@ -15,14 +15,17 @@ from nextcord.ui import Button
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs.memory import MemoryCogs
+from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs._memory import pipeline
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.store import (
     clear_raw,
     scope_lock,
     user_scope,
+    iter_scopes,
     clear_memory,
     mark_cleared,
+    server_scope,
     append_detail,
     cleared_since,
     raw_file_bytes,
@@ -2304,3 +2307,209 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
     await _wait_for_inflight()
     assert "全新整理" in read_main_memory(scope=USER_SCOPE)
     assert count_raw_entries(scope=USER_SCOPE) == 0
+
+
+# ---------------------------------------------------------------------------
+# memory_job persistence (restart-resumable phase-1 inbox)
+# ---------------------------------------------------------------------------
+
+
+async def test_db_upsert_pending_then_get(memory_isolated_dir: Path) -> None:
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject=f"target_user_id: {USER_ID}",
+        transcript="逐字稿",
+        identity=IDENTITY,
+        token=1,
+    )
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "pending"
+    assert job.transcript == "逐字稿"
+    assert job.flavor == "user"
+    assert job.token == 1
+
+
+async def test_db_upsert_newest_wins_and_older_token_noop(memory_isolated_dir: Path) -> None:
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE, flavor="user", subject="s", transcript="新", identity="", token=10
+    )
+    # An older token must not clobber the newer row.
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE, flavor="user", subject="s", transcript="舊", identity="", token=5
+    )
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.token == 10
+    assert job.transcript == "新"
+
+
+async def test_db_mark_done_clears_transcript_and_is_token_guarded(
+    memory_isolated_dir: Path,
+) -> None:
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE, flavor="user", subject="s", transcript="逐字稿", identity="", token=7
+    )
+    # A stale token does not transition the row.
+    await memory_db.mark_done(scope=USER_SCOPE, token=6)
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "pending"
+    # The owning token marks it done and drops the consumed transcript.
+    await memory_db.mark_done(scope=USER_SCOPE, token=7)
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+    assert job.transcript is None
+
+
+async def test_db_mark_failed_keeps_transcript(memory_isolated_dir: Path) -> None:
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE, flavor="user", subject="s", transcript="逐字稿", identity="", token=3
+    )
+    await memory_db.mark_failed(scope=USER_SCOPE, token=3, error="boom")
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "failed"
+    assert job.transcript == "逐字稿"
+    assert job.last_error == "boom"
+
+
+async def test_db_list_resumable_excludes_done(memory_isolated_dir: Path) -> None:
+    await memory_db.upsert_pending(
+        scope="111", flavor="user", subject="s", transcript="a", identity="", token=1
+    )
+    await memory_db.upsert_pending(
+        scope="222", flavor="user", subject="s", transcript="b", identity="", token=1
+    )
+    await memory_db.mark_done(scope="222", token=1)
+    scopes = {job.scope for job in await memory_db.list_resumable()}
+    assert scopes == {"111"}
+
+
+async def test_pipeline_success_marks_done_and_clears_transcript(
+    memory_isolated_dir: Path,
+) -> None:
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _draft("喜歡簡短")
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+    assert job.transcript is None
+
+
+async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
+    memory_isolated_dir: Path,
+) -> None:
+    extractor, fake_client = _extractor()
+    # extract() returns None on an LLM error, which must park the row at failed.
+    fake_client.responses.raises = RuntimeError("llm down")
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "failed"
+    assert job.transcript is not None
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+
+
+async def test_pipeline_no_signal_marks_done(memory_isolated_dir: Path) -> None:
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _no_signal()
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+
+
+async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path) -> None:
+    # A persisted failed row (transcript kept) is re-run on restart and succeeds.
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject=f"target_user_id: {USER_ID}",
+        transcript="Alice (alice) [id: 123456789]: 哈囉",
+        identity=IDENTITY,
+        token=42,
+    )
+    await memory_db.mark_failed(scope=USER_SCOPE, token=42, error="boom")
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _draft("喜歡簡短")
+    pipeline.resume_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        transcript="Alice (alice) [id: 123456789]: 哈囉",
+        extractor=extractor,
+        identity=IDENTITY,
+        token=42,
+    )
+    await _wait_for_inflight()
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+
+
+async def test_consolidate_if_needed_digests_over_threshold_scope(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
+    append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = ConsolidatedMemory(
+        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n掃描整理"
+    )
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+    assert "掃描整理" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+
+
+async def test_consolidate_if_needed_skips_under_threshold(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 5)
+    append_raw_entry(scope=USER_SCOPE, entry_text="- 只有一筆")
+    extractor, _fake_client = _extractor()
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+    # Below threshold: no consolidation, raw untouched.
+    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+
+
+def test_iter_scopes_finds_user_and_server_scopes(memory_isolated_dir: Path) -> None:
+    user = user_scope(user_id=USER_ID)
+    server = server_scope(bot_id=999, server_id=555)
+    append_raw_entry(scope=user, entry_text="- u")
+    append_raw_entry(scope=server, entry_text="- s")
+    assert set(iter_scopes()) == {user, server}
+
+
+def test_flavor_of_distinguishes_user_and_server() -> None:
+    assert pipeline.flavor_of(scope=user_scope(user_id=USER_ID)) == "user"
+    assert pipeline.flavor_of(scope=server_scope(bot_id=1, server_id=2)) == "server"

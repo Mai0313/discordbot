@@ -10,11 +10,13 @@ import time
 from typing import Literal
 import asyncio
 from datetime import UTC, datetime
+from collections.abc import Awaitable
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
+from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs._memory.store import (
     clear_raw,
     scope_lock,
@@ -57,13 +59,15 @@ class _PendingMemoryUpdate(BaseModel):
 
     Attributes:
         subject: The phase-1 extraction directive naming the memory target.
-        message_list: Reply-pipeline input messages captured for the skipped turn.
-        full_reply: The streamed reply text for the skipped turn.
+        transcript: The rendered phase-1 input captured for the skipped turn
+            (already folds in the reply), so the replay needs no re-render.
         extractor: The extraction service to run the replayed update with.
         identity: Single-line target identity stamped into the main memory
             file as human-inspection metadata.
         captured_at: `time.monotonic()` when the turn was captured, so a clear
             that lands before the replay can abort it via `cleared_since`.
+        token: `time.time_ns()` version token persisted with the deferred turn's
+            DB row, reused on replay so the terminal write guards on the same id.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -71,10 +75,9 @@ class _PendingMemoryUpdate(BaseModel):
     subject: str = Field(
         ..., description="The phase-1 extraction directive naming the memory target."
     )
-    message_list: SkipValidation[list[EasyInputMessageParam]] = Field(
-        ..., description="Reply-pipeline input messages captured for the skipped turn."
+    transcript: str = Field(
+        ..., description="The rendered phase-1 input captured for the skipped turn."
     )
-    full_reply: str = Field(..., description="The streamed reply text for the skipped turn.")
     extractor: SkipValidation[MemoryExtractorAI] = Field(
         ..., description="The extraction service to run the replayed update with."
     )
@@ -91,6 +94,9 @@ class _PendingMemoryUpdate(BaseModel):
             "`time.monotonic()` when the turn was captured, so a clear that lands "
             "before the replay can abort it via `cleared_since`."
         ),
+    )
+    token: int = Field(
+        ..., description="time.time_ns() version token reused on replay for the DB row guard."
     )
 
 
@@ -130,6 +136,36 @@ def _memory_semaphore() -> asyncio.Semaphore:
     return _memory_semaphore_holder.get()
 
 
+# Detached best-effort reply.db writes (the deferred-turn persist), held so the
+# event loop keeps a strong reference until they finish; rebuilt per loop.
+_db_tasks: set[asyncio.Task[None]] = set()
+
+
+def flavor_of(scope: str) -> memory_db.MemoryJobFlavor:
+    """Maps a scope to its persisted memory flavor (`server_scope` carries a '/')."""
+    return "server" if "/" in scope else "user"
+
+
+async def _safe(coro: Awaitable[None]) -> None:
+    """Awaits a best-effort reply.db write, swallowing any failure.
+
+    Persistence is an augmentation layer (the opposite of `research.py`, which
+    lets DB errors raise into its run loop): a reply.db failure must never break
+    the in-memory fire-and-forget memory pipeline.
+    """
+    try:
+        await coro
+    except Exception:
+        logfire.warn("memory_job persistence write failed", _exc_info=True)
+
+
+def _spawn_db(coro: Awaitable[None]) -> None:
+    """Runs a detached best-effort DB write, tracked so it is not GC'd mid-flight."""
+    task = asyncio.ensure_future(_safe(coro=coro))
+    _db_tasks.add(task)
+    task.add_done_callback(_db_tasks.discard)
+
+
 def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) plus the turn payload
     scope: str,
     subject: str,
@@ -138,7 +174,52 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     extractor: MemoryExtractorAI,
     identity: str,
 ) -> None:
-    """Starts a background memory update without delaying the reply path."""
+    """Starts a background memory update without delaying the reply path.
+
+    The transcript is rendered eagerly here (pure, sub-ms, already past the reply)
+    so the persisted job and the in-memory replay both carry a plain string and
+    `_run_memory_update` re-renders nothing.
+    """
+    transcript = transcript_from_messages(message_list=message_list, full_reply=full_reply)
+    _enqueue_memory_update(
+        scope=scope,
+        subject=subject,
+        transcript=transcript,
+        extractor=extractor,
+        identity=identity,
+        token=time.time_ns(),
+    )
+
+
+def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
+    *,
+    scope: str,
+    subject: str,
+    transcript: str,
+    extractor: MemoryExtractorAI,
+    identity: str,
+    token: int,
+) -> None:
+    """Re-enqueues a persisted phase-1 turn on restart, reusing its stored token."""
+    _enqueue_memory_update(
+        scope=scope,
+        subject=subject,
+        transcript=transcript,
+        extractor=extractor,
+        identity=identity,
+        token=token,
+    )
+
+
+def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) plus the rendered turn
+    scope: str,
+    subject: str,
+    transcript: str,
+    extractor: MemoryExtractorAI,
+    identity: str,
+    token: int,
+) -> None:
+    """Schedules (or defers) one rendered-transcript update, backed by a reply.db row."""
     global _inflight_loop  # noqa: PLW0603 -- process task de-dupe
     loop = asyncio.get_running_loop()
     if _inflight_loop is not loop:
@@ -149,21 +230,35 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     if running is not None and not running.done():
         _pending_updates[scope] = _PendingMemoryUpdate(
             subject=subject,
-            message_list=message_list,
-            full_reply=full_reply,
+            transcript=transcript,
             extractor=extractor,
             identity=identity,
             captured_at=time.monotonic(),
+            token=token,
+        )
+        # Persist the deferred turn so a redeploy before it runs still resumes it.
+        # Safe from a same-token race: this turn's worker only starts after the
+        # in-flight one ends, long after this detached write lands, and it carries
+        # a newer token than the running turn so newest-wins keeps it.
+        _spawn_db(
+            coro=memory_db.upsert_pending(
+                scope=scope,
+                flavor=flavor_of(scope=scope),
+                subject=subject,
+                transcript=transcript,
+                identity=identity,
+                token=token,
+            )
         )
         return
     task = asyncio.create_task(
         _run_memory_update(
             scope=scope,
             subject=subject,
-            message_list=message_list,
-            full_reply=full_reply,
+            transcript=transcript,
             extractor=extractor,
             identity=identity,
+            token=token,
         )
     )
     _inflight_tasks[scope] = task
@@ -190,34 +285,59 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
         # The memory was cleared after this turn was captured; replaying it
         # would write the pre-clear conversation back into storage.
         return
-    schedule_memory_update(
+    _enqueue_memory_update(
         scope=scope,
         subject=pending.subject,
-        message_list=pending.message_list,
-        full_reply=pending.full_reply,
+        transcript=pending.transcript,
         extractor=pending.extractor,
         identity=pending.identity,
+        token=pending.token,
     )
 
 
 async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update's flavor + payload
     scope: str,
     subject: str,
-    message_list: list[EasyInputMessageParam],
-    full_reply: str,
+    transcript: str,
     extractor: MemoryExtractorAI,
     identity: str,
+    token: int,
 ) -> None:
-    """Runs phase-1 extraction and, past the raw threshold, phase-2 consolidation."""
+    """Runs phase-1 extraction and, past the raw threshold, phase-2 consolidation.
+
+    The reply.db row is written `pending` at the top (awaited, before the lock) so
+    a redeploy mid-extraction resumes this turn; it is marked `done` once phase-1
+    is terminal (extracted, no signal, all dupes, or cleared) and `failed` only
+    when the LLM call itself fails, so the restart sweep retries just that case.
+    Consolidation needs no DB row: `raw.md` is its durable, re-entrant queue.
+    """
     started_at = time.monotonic()
-    transcript = transcript_from_messages(message_list=message_list, full_reply=full_reply)
+    await _safe(
+        coro=memory_db.upsert_pending(
+            scope=scope,
+            flavor=flavor_of(scope=scope),
+            subject=subject,
+            transcript=transcript,
+            identity=identity,
+            token=token,
+        )
+    )
     async with scope_lock(scope=scope), _memory_semaphore():
         draft = await extractor.extract(subject=subject, transcript=transcript)
-        if draft is None or not draft.has_signal or not draft.memory_markdown:
+        if draft is None:
+            # The LLM path itself failed: keep the row (transcript intact) so the
+            # restart sweep retries it, no extra timeout needed.
+            await _safe(
+                coro=memory_db.mark_failed(scope=scope, token=token, error="extract failed")
+            )
+            return
+        if not draft.has_signal or not draft.memory_markdown:
+            await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
         if cleared_since(scope=scope, started_at=started_at):
             # The memory was cleared while this update was in flight; dropping
             # the write beats resurrecting deleted memory.
+            await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
         recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
         deduped_observations = filter_duplicate_observations(
@@ -225,6 +345,7 @@ async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update
             existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
         )
         if not deduped_observations:
+            await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
         append_raw_entry(
             scope=scope,
@@ -232,6 +353,9 @@ async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update
                 update={"observations": deduped_observations}
             ).memory_markdown,
         )
+        # Phase-1 is durable in raw.md now; record success before the (best-effort,
+        # self-healing) consolidation so a consolidation crash never re-runs extraction.
+        await _safe(coro=memory_db.mark_done(scope=scope, token=token))
         if not _should_consolidate(scope=scope):
             return
         # Recorded at attempt time, not success time, so repeated LLM failures
@@ -240,6 +364,39 @@ async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update
         await _consolidate_locked(
             scope=scope, started_at=started_at, extractor=extractor, identity=identity
         )
+
+
+async def safe_list_resumable() -> list[memory_db.MemoryJob]:
+    """Returns the persisted non-`done` jobs for the restart sweep, best-effort.
+
+    Wrapped so a reply.db read failure degrades to "nothing to resume" instead of
+    breaking `on_ready`; the in-memory pipeline keeps working regardless.
+    """
+    try:
+        return await memory_db.list_resumable()
+    except Exception:
+        logfire.warn("memory_job resume read failed", _exc_info=True)
+        return []
+
+
+async def consolidate_if_needed(scope: str, extractor: MemoryExtractorAI, identity: str) -> None:
+    """Consolidates a scope whose raw backlog is over threshold; best-effort, self-logging.
+
+    The boot-sweep entry point: `_consolidate_locked` / `_should_consolidate` are
+    private and assume the scope lock + semaphore are held, so this wrapper takes
+    both and re-checks the threshold under the lock. It swallows its own errors
+    (a background digest must never surface), so the caller just spawns it.
+    """
+    try:
+        async with scope_lock(scope=scope), _memory_semaphore():
+            if not _should_consolidate(scope=scope):
+                return
+            _last_consolidation[scope] = time.monotonic()
+            await _consolidate_locked(
+                scope=scope, started_at=time.monotonic(), extractor=extractor, identity=identity
+            )
+    except Exception:
+        logfire.warn("Background memory consolidation sweep failed", scope=scope, _exc_info=True)
 
 
 def _should_consolidate(scope: str) -> bool:
