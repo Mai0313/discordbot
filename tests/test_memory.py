@@ -2447,6 +2447,39 @@ async def test_pipeline_no_signal_marks_done(memory_isolated_dir: Path) -> None:
     assert job.status == "done"
 
 
+async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir: Path) -> None:
+    # A deferred (stashed) turn whose scope is cleared before replay must mark its
+    # persisted row done, so a restart does not resume the cleared conversation.
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject=f"target_user_id: {USER_ID}",
+        transcript="Alice (alice) [id: 123456789]: 哈囉",
+        identity=IDENTITY,
+        token=7,
+    )
+    captured_at = time.monotonic()
+    pipeline._pending_updates[USER_SCOPE] = pipeline._PendingMemoryUpdate(
+        subject=f"target_user_id: {USER_ID}",
+        transcript="Alice (alice) [id: 123456789]: 哈囉",
+        extractor=object(),
+        identity=IDENTITY,
+        captured_at=captured_at,
+        token=7,
+    )
+    mark_cleared(scope=USER_SCOPE)
+    done_task = asyncio.create_task(asyncio.sleep(0))
+    await done_task
+    pipeline._finish_memory_update(scope=USER_SCOPE, task=done_task)
+    while pipeline._db_tasks:
+        await asyncio.gather(*list(pipeline._db_tasks))
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+    assert job.transcript is None
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+
+
 async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path) -> None:
     # A persisted failed row (transcript kept) is re-run on restart and succeeds.
     await memory_db.upsert_pending(

@@ -283,7 +283,10 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
         return
     if cleared_since(scope=scope, started_at=pending.captured_at):
         # The memory was cleared after this turn was captured; replaying it
-        # would write the pre-clear conversation back into storage.
+        # would write the pre-clear conversation back into storage. Mark the
+        # persisted deferred row done too (mirrors the in-flight clear branch in
+        # `_run_memory_update`) so a restart does not resume the cleared turn.
+        _spawn_db(coro=memory_db.mark_done(scope=scope, token=pending.token))
         return
     _enqueue_memory_update(
         scope=scope,
