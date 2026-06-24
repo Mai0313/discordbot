@@ -37,6 +37,7 @@ from discordbot.typings.models import (
 )
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
+from discordbot.utils.media_hosting import MediaHostingConfig, MediaHostingService
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
 from discordbot.cogs._gen_reply.voice import (
     VOICE_TIMEOUT_SECONDS,
@@ -93,6 +94,7 @@ TEST_LLM_MODEL = "test-llm-model"
 FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from collections.abc import AsyncIterator
 
     from openai.types.responses.response_input_param import ResponseInputParam
@@ -182,9 +184,14 @@ class FakeReply:
         self.edits: list[str] = []
 
     async def edit(
-        self, content: str | None = None, file: File | None = None, files: list[File] | None = None
+        self,
+        content: str | None = None,
+        file: File | None = None,
+        files: list[File] | None = None,
+        allowed_mentions: object | None = None,
     ) -> None:
         """Records edited content and/or newly attached media (voice clip / inline image)."""
+        del allowed_mentions
         if content is not None:
             self.content = content
             self.edits.append(content)
@@ -196,8 +203,9 @@ class FakeReply:
             if len(files) == 1:
                 self.file = files[0]
 
-    async def reply(self, content: str) -> FakeReply:
+    async def reply(self, content: str, allowed_mentions: object | None = None) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
+        del allowed_mentions
         child = FakeReply()
         child.content = content
         self.replies.append(child)
@@ -256,8 +264,10 @@ class FakeMessage:
         file: File | None = None,
         embed: Embed | None = None,
         files: list[File] | None = None,
+        allowed_mentions: object | None = None,
     ) -> FakeReply:
         """Creates and records a fake reply with the requested content."""
+        del allowed_mentions
         if self.reply_error is not None:
             raise self.reply_error
         reply = FakeReply()
@@ -996,6 +1006,51 @@ async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: Non
     assert message.added_reactions == ["<:voice:1517558121092878376>", "⏱️"]
 
 
+async def test_voice_too_big_falls_back_to_hosted_url(
+    economy_isolated_db: None, tmp_path: Path
+) -> None:
+    """A voice clip past the upload limit is hosted and its URL appended, not silently dropped."""
+    del economy_isolated_db
+    message = FakeMessage()
+    # 4-byte ceiling so the fake WAV (larger) exceeds it, like a long WAV in a 10 MiB DM.
+    message.guild = FakeGuild(filesize_limit=4)
+    synthesizer = _FakeVoiceSynthesizer()
+    service = MediaHostingService(
+        config=MediaHostingConfig(
+            MEDIA_HOSTING_ENABLED=True,
+            MEDIA_HOSTING_BASE_URL="https://media.test",
+            MEDIA_HOSTING_SERVE_DIR=str(tmp_path),
+        )
+    )
+
+    result = await ResponseStreamer(
+        message=message, voice_synthesizer=synthesizer, media_hosting=service
+    ).stream(responses=_stream_events_from(_voice_marker_events()))
+
+    _assert_no_voice_tags(result)
+    # The clip was hosted, not attached; its URL (a .wav) rides the reply content instead.
+    assert message.replies[0].file is None
+    content = message.replies[0].content or ""
+    assert "https://media.test/" in content
+    assert ".wav" in content
+
+
+async def test_voice_too_big_without_hosting_drops_with_hint(economy_isolated_db: None) -> None:
+    """With no media host, an oversized voice clip degrades to today's drop + ⚠️ hint."""
+    del economy_isolated_db
+    message = FakeMessage()
+    message.guild = FakeGuild(filesize_limit=4)
+    synthesizer = _FakeVoiceSynthesizer()
+
+    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+        responses=_stream_events_from(_voice_marker_events())
+    )
+
+    _assert_no_voice_tags(result)
+    assert message.replies[0].file is None
+    assert "⚠️" in message.added_reactions
+
+
 def test_extract_inline_markers_voice_keeps_content() -> None:
     """A <voice> segment stays in the visible text; only the tags are stripped."""
     markers = extract_inline_markers(text="嗆爆你 <voice>聽好了</voice> 滾")
@@ -1537,10 +1592,11 @@ async def test_voice_config_gate_controls_synthesizer(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_hosting: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del image_generator, music_generator
+            del image_generator, music_generator, media_hosting
             captured.append(voice_synthesizer)
 
         async def stream(self, *, responses: object) -> str:
@@ -1587,10 +1643,11 @@ async def test_image_config_gate_controls_generator(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_hosting: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, music_generator
+            del voice_synthesizer, music_generator, media_hosting
             captured.append(image_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -2432,10 +2489,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_hosting: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator
+            del voice_synthesizer, image_generator, music_generator, media_hosting
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3078,10 +3136,11 @@ class _ThreadsStreamer:
         voice_synthesizer: object | None = None,
         image_generator: object | None = None,
         music_generator: object | None = None,
+        media_hosting: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
         del memory_lookups, input_tokens, output_tokens, model_effort
-        del voice_synthesizer, image_generator, music_generator
+        del voice_synthesizer, image_generator, music_generator, media_hosting
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -3409,10 +3468,11 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_hosting: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator
+            del voice_synthesizer, image_generator, music_generator, media_hosting
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3501,10 +3561,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_hosting: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator
+            del voice_synthesizer, image_generator, music_generator, media_hosting
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3565,10 +3626,11 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_hosting: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator
+            del voice_synthesizer, image_generator, music_generator, media_hosting
             self.message = message
 
         async def stream(self, *, responses: object) -> str:

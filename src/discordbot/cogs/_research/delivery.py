@@ -15,6 +15,8 @@ import logfire
 from nextcord import File, Message, AllowedMentions
 from nextcord.ui import View
 
+from discordbot.utils.discord_limits import upload_limit_for
+
 if TYPE_CHECKING:
     from nextcord import Thread
 
@@ -26,10 +28,10 @@ DISCORD_MESSAGE_LIMIT = 2000
 def _upload_limit(*, thread: "Thread") -> int:
     """The thread's real upload ceiling (its guild's boost-tier `filesize_limit`).
 
-    A Discord Thread always lives in a guild, so `thread.guild` is never None and is read
-    directly (no DM fallback: research never runs in a DM).
+    A Discord Thread always lives in a guild, so `thread.guild` is never None (no DM fallback:
+    research never runs in a DM); the shared helper returns its `filesize_limit` directly.
     """
-    return thread.guild.filesize_limit
+    return upload_limit_for(guild=thread.guild)
 
 
 def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:

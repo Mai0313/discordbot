@@ -41,6 +41,7 @@ from discordbot.cogs.auto_unmute import AutoUnmuteCogs
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
+from discordbot.utils.media_hosting import MediaHostingConfig, MediaHostingService
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.blackjack import Card
 from discordbot.cogs._economy.database import (
@@ -227,14 +228,20 @@ async def test_template_on_message_and_ping() -> None:
 async def test_video_deliver_and_download_branches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifies video delivery, retry, oversize, and download error branches."""
+    """Verifies video delivery, oversize URL fallback, hosting-off, and download error branches."""
     cog = VideoCogs(bot=SimpleNamespace())
+    serve_dir = tmp_path / "serve"
+    cog.media_hosting = MediaHostingService(
+        config=MediaHostingConfig(
+            MEDIA_HOSTING_ENABLED=True,
+            MEDIA_HOSTING_BASE_URL="https://media.test",
+            MEDIA_HOSTING_SERVE_DIR=str(serve_dir),
+        )
+    )
     small = tmp_path / "small.mp4"
     small.write_bytes(data=b"0" * 100)
     big = tmp_path / "big.mp4"
     big.write_bytes(data=b"0" * 300)
-    low = tmp_path / "low.mp4"
-    low.write_bytes(data=b"1" * 100)
 
     interaction = FakeInteraction()
     await cog._deliver(
@@ -249,27 +256,35 @@ async def test_video_deliver_and_download_branches(
     assert interaction.edits[-1]["file"] is not None
     assert interaction.followup.sent == []
 
-    downloader = DownloaderStub(
-        results=[DownloadResultStub(filename=big), DownloadResultStub(filename=low)]
-    )
+    # Too big for native upload + hosting on: post the URL, no 480p retry, no attachment.
+    downloader = DownloaderStub(results=[DownloadResultStub(filename=big)])
     monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
-    retry_interaction = FakeInteraction(filesize_limit=200)
+    host_interaction = FakeInteraction(filesize_limit=200)
     await VideoCogs.download_video.callback(
-        cog, retry_interaction, url="https://x.test", quality="best"
+        cog, host_interaction, url="https://x.test", quality="best"
     )
-    assert [call["quality"] for call in downloader.calls] == ["best", "low"]
-    assert retry_interaction.edits[-1]["file"] is not None
-    assert "來源: <https://x.test>" in retry_interaction.edits[-1]["content"]
-    assert retry_interaction.followup.sent == []
+    assert [call["quality"] for call in downloader.calls] == ["best"]
+    assert "https://media.test/" in host_interaction.edits[-1]["content"]
+    assert "來源: <https://x.test>" in host_interaction.edits[-1]["content"]
+    assert "file" not in host_interaction.edits[-1]
+    assert host_interaction.followup.sent == []
 
+    # Too big + hosting unavailable: fall back to the "file too large" message.
+    cog.media_hosting = MediaHostingService(
+        config=MediaHostingConfig(
+            MEDIA_HOSTING_ENABLED=True, MEDIA_HOSTING_BASE_URL="", MEDIA_HOSTING_SERVE_DIR=""
+        )
+    )
+    big2 = tmp_path / "big2.mp4"
+    big2.write_bytes(data=b"0" * 300)
     fail_interaction = FakeInteraction(filesize_limit=200)
     monkeypatch.setattr(
         video,
         "VideoDownloader",
-        lambda output_folder: DownloaderStub(results=[DownloadResultStub(filename=big)]),
+        lambda output_folder: DownloaderStub(results=[DownloadResultStub(filename=big2)]),
     )
     await VideoCogs.download_video.callback(
-        cog, fail_interaction, url="https://x.test", quality="low"
+        cog, fail_interaction, url="https://x.test", quality="best"
     )
     assert "檔案大小超過" in fail_interaction.edits[-1]["content"]
 

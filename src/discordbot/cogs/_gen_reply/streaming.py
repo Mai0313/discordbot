@@ -5,11 +5,12 @@ import re
 import time
 from typing import cast
 import asyncio
+from pathlib import Path
 import contextlib
 from collections.abc import AsyncIterator
 
 import logfire
-from nextcord import File, Message, NotFound, HTTPException
+from nextcord import File, Message, NotFound, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
 from openai.types.responses import (
@@ -19,6 +20,7 @@ from openai.types.responses import (
 )
 
 from discordbot.utils.reactions import update_reaction
+from discordbot.utils.media_hosting import MediaHostingService
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs._gen_reply.voice import (
     VOICE_REPLY_FILENAME,
@@ -48,6 +50,23 @@ DISCORD_ATTACHMENT_LIMIT = 10
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 DISCORD_MESSAGE_LIMIT = 2000
+# Discord measures the full multipart request body, not just the file bytes, so the combined
+# attach is held this far under the limit (mirrors parse_threads' 1 MiB envelope reservation);
+# without it a set whose per-file sizes each pass can still 400 the final edit.
+MEDIA_ENVELOPE_MARGIN = 1024 * 1024
+
+
+class _MediaCandidate(BaseModel):
+    """One built media clip/image awaiting the file-vs-host decision in the single attach edit.
+
+    Attributes:
+        data: The media bytes to attach natively or host externally.
+        filename: Attachment filename carrying the allowlisted suffix (reply.wav / music.<ext> /
+            generated[_n].png), used both for the Discord attachment and the hosted suffix.
+    """
+
+    data: bytes = Field(..., description="The media bytes to attach natively or host externally.")
+    filename: str = Field(..., description="Attachment filename carrying the allowlisted suffix.")
 
 
 class ResponseStreamer(BaseModel):
@@ -126,6 +145,10 @@ class ResponseStreamer(BaseModel):
     research_brief: str | None = Field(
         default=None,
         description="The <deep-research> brief the answer model asked to launch, if any.",
+    )
+    media_hosting: SkipValidation[MediaHostingService | None] = Field(
+        default=None,
+        description="External host for media too big to upload; None disables the URL fallback.",
     )
     created_at: float = Field(
         default_factory=time.monotonic,
@@ -420,12 +443,13 @@ class ResponseStreamer(BaseModel):
         """
         return self.message.guild.filesize_limit if self.message.guild else 10 * 1024 * 1024
 
-    async def _build_voice_file(self) -> File | None:  # noqa: PLR0911 -- best-effort synth with distinct degrade paths (skip / disabled / empty / timeout / refused / oversized / success)
-        """Synthesizes the <voice> segment to an upload-ready WAV File, or None when not delivered.
+    async def _build_voice_candidate(self) -> _MediaCandidate | None:
+        """Synthesizes the <voice> segment to a WAV candidate, or None when not delivered.
 
         Best-effort: a skip (not requested / disabled / empty) is silent, while a
-        requested-but-failed clip (timeout / refusal / oversized) hints the source message and
-        returns None. The File is returned for the shared single attach edit.
+        requested-but-failed clip (timeout / refusal) hints the source message and returns None.
+        The upload-limit decision (attach vs host vs drop) is made by `_attach_generated_media`,
+        so an oversized clip is no longer dropped here (there is deliberately no spoken-length cap).
         """
         if not self.voice_requested:
             # The expected common path: the answer model wrapped no <voice> segment.
@@ -459,27 +483,15 @@ class ResponseStreamer(BaseModel):
             # Any other synthesis failure (most often a policy refusal); synthesize() logged it.
             await self._hint_media_unavailable(emoji="⚠️")
             return None
-        upload_limit = self._upload_limit()
-        if len(clip.audio) > upload_limit:
-            # Drop a clip past the upload limit so the answer model is free to choose the spoken
-            # length (there is deliberately no spoken-length cap).
-            logfire.warn(
-                "Synthesized voice exceeds the guild upload limit; dropping audio",
-                message_id=self.message.id,
-                audio_bytes=len(clip.audio),
-                upload_limit=upload_limit,
-            )
-            await self._hint_media_unavailable(emoji="⚠️")
-            return None
-        return File(fp=BytesIO(clip.audio), filename=VOICE_REPLY_FILENAME)
+        return _MediaCandidate(data=clip.audio, filename=VOICE_REPLY_FILENAME)
 
-    async def _build_image_files(self) -> list[File]:
-        """Renders the <image> requests to upload-ready PNG Files, in order; [] when none delivered.
+    async def _build_image_candidates(self) -> list[_MediaCandidate]:
+        """Renders the <image> requests to PNG candidates, in order; [] when none delivered.
 
-        Best-effort like voice: no request or a disabled generator is silent. The model is capped
-        at MAX_INLINE_IMAGES so a voice clip plus the images never exceed Discord's attachment
-        limit; any blocks past the cap are dropped here. The capped prompts render concurrently;
-        each failed or oversized image is dropped and a single ⚠️ hint rides on the source message.
+        Best-effort like voice: no request or a disabled generator is silent. The capped prompts
+        render concurrently; a generation failure drops that image and a single ⚠️ hint rides on
+        the source message. The upload-limit decision (attach vs host) is left to
+        `_attach_generated_media`, so a large image is no longer dropped here for size.
         """
         prompts = self.image_prompts[:MAX_INLINE_IMAGES]
         if not prompts:
@@ -514,37 +526,28 @@ class ResponseStreamer(BaseModel):
                 for prompt in prompts
             )
         )
-        upload_limit = self._upload_limit()
-        files: list[File] = []
+        candidates: list[_MediaCandidate] = []
         dropped = False
         for index, image in enumerate(images, start=1):
             if image is None:
                 # generate() logged the failure/timeout; hint once after the loop.
                 dropped = True
                 continue
-            if len(image) > upload_limit:
-                logfire.warn(
-                    "Inline image exceeds the guild upload limit; dropping image",
-                    message_id=self.message.id,
-                    image_bytes=len(image),
-                    upload_limit=upload_limit,
-                )
-                dropped = True
-                continue
             # A single image keeps `generated.png` to mirror the IMAGE route; multiples need
             # distinct names since Discord collides on duplicate attachment filenames.
             filename = INLINE_IMAGE_FILENAME if len(prompts) == 1 else f"generated_{index}.png"
-            files.append(File(fp=BytesIO(image), filename=filename))
+            candidates.append(_MediaCandidate(data=image, filename=filename))
         if dropped:
             await self._hint_media_unavailable(emoji="⚠️")
-        return files
+        return candidates
 
-    async def _build_music_file(self) -> File | None:
-        """Generates the <music> clip to an upload-ready audio File, or None when not delivered.
+    async def _build_music_candidate(self) -> _MediaCandidate | None:
+        """Generates the <music> clip to an audio candidate, or None when not delivered.
 
         Best-effort like the inline image path: a skip (not requested / disabled) is silent, while
-        a requested-but-failed or oversized clip hints the source message and returns None. The
-        file extension follows the returned audio mime type so Discord renders an inline player.
+        a requested-but-failed clip hints the source message and returns None. The filename suffix
+        follows the returned audio mime type so Discord (or the hosted link) renders a player; the
+        upload-limit decision (attach vs host) is left to `_attach_generated_media`.
         """
         if self.music_prompt is None:
             # The expected common path: the answer model wrapped no <music> block.
@@ -565,26 +568,32 @@ class ResponseStreamer(BaseModel):
             # generate() logged the failure/timeout; hint once.
             await self._hint_media_unavailable(emoji="⚠️")
             return None
-        upload_limit = self._upload_limit()
-        if len(clip.audio) > upload_limit:
-            logfire.warn(
-                "Generated music exceeds the guild upload limit; dropping audio",
-                message_id=self.message.id,
-                audio_bytes=len(clip.audio),
-                upload_limit=upload_limit,
-            )
-            await self._hint_media_unavailable(emoji="⚠️")
+        return _MediaCandidate(data=clip.audio, filename=music_filename(mime_type=clip.mime_type))
+
+    async def _host_candidate(self, candidate: _MediaCandidate) -> str | None:
+        """Hosts one oversized candidate externally and returns its URL, or None if unavailable.
+
+        Runs the blocking write off the event loop; the suffix comes from the candidate filename
+        so the hosting allowlist (and thus inline playability of the link) is honored.
+        """
+        if self.media_hosting is None:
             return None
-        return File(fp=BytesIO(clip.audio), filename=music_filename(mime_type=clip.mime_type))
+        return await asyncio.to_thread(
+            self.media_hosting.publish_bytes,
+            data=candidate.data,
+            suffix=Path(candidate.filename).suffix,
+        )
 
     async def _attach_generated_media(self) -> None:
-        """Attaches any requested spoken clip, music clip, and inline images in one edit.
+        """Attaches the spoken clip, music clip, and inline images in one edit, hosting overflow.
 
         The text reply is already on screen, so this adds no latency to it; the media are
-        best-effort and any failure leaves the text reply (with a small emoji hint on the source
-        message). They ride a single `reply.edit(files=...)` because `edit` replaces the
-        attachment list, so two separate edits would drop the earlier files. Voice and music ride
-        first so the rare voice + music + 9 images overflow drops a trailing image, not the clip.
+        best-effort. Anything that fits the upload limit rides a single `reply.edit(files=...)`
+        (one edit, because `edit` replaces the attachment list). Anything too big to upload (a
+        long voice WAV in a DM is the common case) is hosted on the external static server and its
+        URL appended to the reply instead of being dropped; if hosting is unavailable it degrades
+        to today's drop + ⚠️ hint. Voice/music are ordered first so the rare 11-attachment
+        overflow peels a trailing image, not the clip.
         """
         if self.reply is None:
             if self.voice_requested or self.image_prompts or self.music_prompt:
@@ -594,18 +603,106 @@ class ResponseStreamer(BaseModel):
                 )
                 await self._hint_media_unavailable(emoji="⚠️")
             return
+        reply = self.reply
         # Build every path concurrently so a slow one never blocks the others: a TTS clip or a
         # music render that hangs to its timeout must not delay ready inline images (and vice versa).
-        voice_file, music_file, image_files = await asyncio.gather(
-            self._build_voice_file(), self._build_music_file(), self._build_image_files()
+        voice_candidate, music_candidate, image_candidates = await asyncio.gather(
+            self._build_voice_candidate(),
+            self._build_music_candidate(),
+            self._build_image_candidates(),
         )
-        files = [media for media in (voice_file, music_file, *image_files) if media is not None][
-            :DISCORD_ATTACHMENT_LIMIT
+        candidates = [
+            candidate
+            for candidate in (voice_candidate, music_candidate, *image_candidates)
+            if candidate is not None
         ]
-        if not files:
+        if not candidates:
             return
+        native, hosted_urls, dropped = await self._partition_media(
+            candidates=candidates, upload_limit=self._upload_limit()
+        )
+        files = [
+            File(fp=BytesIO(candidate.data), filename=candidate.filename) for candidate in native
+        ]
+        await self._finalize_media_edit(reply=reply, files=files, hosted_urls=hosted_urls)
+        if dropped:
+            await self._hint_media_unavailable(emoji="⚠️")
+        logfire.info(
+            "Generated media attached",
+            message_id=self.message.id,
+            file_count=len(files),
+            hosted_count=len(hosted_urls),
+        )
+
+    async def _partition_media(
+        self, *, candidates: list[_MediaCandidate], upload_limit: int
+    ) -> tuple[list[_MediaCandidate], list[str], bool]:
+        """Splits candidates into native-attachable files vs hosted URLs; (native, urls, dropped).
+
+        (a) A candidate individually over the limit is hosted (or dropped when hosting is off /
+        fails). (b) Then the largest remaining are peeled to hosted URLs until the combined
+        multipart body clears the limit. The native list is finally clamped to Discord's
+        10-attachment cap (voice/music lead, so a trailing image drops). `dropped` flags any
+        candidate lost to a hosting failure or the count cap, so the caller can ⚠️ hint.
+        """
+        hosted_urls: list[str] = []
+        dropped = False
+        fitting: list[_MediaCandidate] = []
+        for candidate in candidates:
+            if len(candidate.data) <= upload_limit:
+                fitting.append(candidate)
+                continue
+            url = await self._host_candidate(candidate=candidate)
+            if url is not None:
+                hosted_urls.append(url)
+            else:
+                dropped = True
+
+        total = sum(len(candidate.data) for candidate in fitting)
+        while fitting and total + MEDIA_ENVELOPE_MARGIN > upload_limit:
+            largest = max(fitting, key=lambda candidate: len(candidate.data))
+            fitting.remove(largest)
+            total -= len(largest.data)
+            url = await self._host_candidate(candidate=largest)
+            if url is not None:
+                hosted_urls.append(url)
+            else:
+                dropped = True
+
+        if len(fitting) > DISCORD_ATTACHMENT_LIMIT:
+            fitting = fitting[:DISCORD_ATTACHMENT_LIMIT]
+            dropped = True
+        return fitting, hosted_urls, dropped
+
+    async def _finalize_media_edit(
+        self, *, reply: Message, files: list[File], hosted_urls: list[str]
+    ) -> None:
+        """Runs the single media edit: native files plus any hosted-URL line on the reply.
+
+        Hosted URLs are appended to the reply content when they fit Discord's 2000-char limit,
+        else posted as a follow-up reply so a long answer never overflows. There is nothing to do
+        when neither files nor URLs were produced.
+        """
+        if not files and not hosted_urls:
+            return
+        content: str | None = None
+        follow_up: str | None = None
+        if hosted_urls:
+            link_line = "\n-# 媒體過大，改用連結\n" + "\n".join(hosted_urls)
+            if len(self.stored_content) + len(link_line) <= DISCORD_MESSAGE_LIMIT:
+                self.stored_content += link_line
+                content = self.stored_content
+            else:
+                follow_up = link_line.lstrip("\n")
         try:
-            await self.reply.edit(files=files)
+            if files and content is not None:
+                await reply.edit(
+                    content=content, files=files, allowed_mentions=AllowedMentions.none()
+                )
+            elif files:
+                await reply.edit(files=files, allowed_mentions=AllowedMentions.none())
+            elif content is not None:
+                await reply.edit(content=content, allowed_mentions=AllowedMentions.none())
         except Exception:
             logfire.warn(
                 "Failed to attach generated media onto the reply",
@@ -615,7 +712,9 @@ class ResponseStreamer(BaseModel):
             )
             await self._hint_media_unavailable(emoji="⚠️")
             return
-        logfire.info("Generated media attached", message_id=self.message.id, file_count=len(files))
+        if follow_up is not None:
+            with contextlib.suppress(Exception):
+                await reply.reply(content=follow_up, allowed_mentions=AllowedMentions.none())
 
     async def stream(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""

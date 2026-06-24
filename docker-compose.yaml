@@ -26,6 +26,14 @@ services:
         target: /app/data
         bind:
           create_host_path: false
+      # Oversized media (clips too big for Discord's upload limit) is written here and served by
+      # the host's nginx static site (MEDIA_HOSTING_SERVE_DIR). The host dir must already exist
+      # and be writable by UID 1000; create_host_path: false fails fast if the mount is missing.
+      - type: bind
+        source: /mnt/share/media
+        target: /mnt/share/media
+        bind:
+          create_host_path: false
     network_mode: host
     restart: always
     pull_policy: always
