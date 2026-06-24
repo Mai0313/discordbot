@@ -21,6 +21,7 @@ from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs.gen_reply import (
     ReplyGeneratorCogs,
     _discard_task,
@@ -4603,3 +4604,98 @@ def test_can_launch_research_requires_guild_text_channel() -> None:
     assert _can_launch_research(message=thread) is False  # type: ignore[arg-type]  # SimpleNamespace stub
     dm = SimpleNamespace(guild=None, channel=MagicMock(spec=nextcord.TextChannel))
     assert _can_launch_research(message=dm) is False  # type: ignore[arg-type]  # SimpleNamespace stub
+
+
+async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """on_ready resume re-enqueues persisted jobs (by flavor) and sweeps every over-threshold scope."""
+    cog = _cog(bot_user_id=999)
+    cog._tasks = set()
+    cog._resume_started = False
+    user_sentinel = object()
+    server_sentinel = object()
+    cog.__dict__["memory_extractor"] = user_sentinel
+    cog.__dict__["server_memory_extractor"] = server_sentinel
+
+    user_job_scope = user_scope(user_id=1)
+    server_job_scope = server_scope(bot_id=999, server_id=2)
+    sweep_scope = user_scope(user_id=3)
+    jobs = [
+        memory_db.MemoryJob(
+            scope=user_job_scope,
+            flavor="user",
+            subject="target_user_id: 1",
+            transcript="u-transcript",
+            identity="id-u",
+            status="failed",
+            token=11,
+            last_error="boom",
+        ),
+        memory_db.MemoryJob(
+            scope=server_job_scope,
+            flavor="server",
+            subject="target_server_id: 2",
+            transcript="s-transcript",
+            identity="id-s",
+            status="pending",
+            token=22,
+            last_error=None,
+        ),
+    ]
+    resumed: list[dict[str, object]] = []
+    swept: list[str] = []
+
+    async def fake_list() -> list[memory_db.MemoryJob]:
+        return jobs
+
+    def fake_resume(**kwargs: object) -> None:
+        resumed.append(kwargs)
+
+    async def fake_consolidate(scope: str, extractor: object, identity: str) -> None:
+        swept.append(scope)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.safe_list_resumable", fake_list)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.resume_memory_update", fake_resume)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.consolidate_if_needed", fake_consolidate)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.iter_scopes",
+        lambda: [user_job_scope, server_job_scope, sweep_scope],
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.needs_consolidation", lambda scope: True)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.read_main_identity", lambda scope: "")
+
+    await cog._resume_memory()
+    # Wait for spawned sweep tasks to finish.
+    while cog._tasks:
+        await asyncio.gather(*list(cog._tasks))
+
+    assert {kwargs["scope"] for kwargs in resumed} == {user_job_scope, server_job_scope}
+    by_scope = {kwargs["scope"]: kwargs for kwargs in resumed}
+    assert by_scope[user_job_scope]["extractor"] is user_sentinel
+    assert by_scope[user_job_scope]["token"] == 11
+    assert by_scope[server_job_scope]["extractor"] is server_sentinel
+    # Every over-threshold scope is swept, including the resumed ones: the scope
+    # lock makes the resumed extraction and the consolidation sweep idempotent.
+    assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
+
+
+async def test_on_ready_resume_runs_once(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """on_ready guards the resume so a gateway reconnect does not re-sweep."""
+    cog = _cog(bot_user_id=999)
+    cog._tasks = set()
+    cog._resume_started = False
+    calls = 0
+
+    async def fake_resume_memory() -> None:
+        nonlocal calls
+        calls += 1
+
+    monkeypatch.setattr(cog, "_resume_memory", fake_resume_memory)
+    await cog.on_ready()
+    await cog.on_ready()
+    while cog._tasks:
+        await asyncio.gather(*list(cog._tasks))
+    assert calls == 1

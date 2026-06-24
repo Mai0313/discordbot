@@ -4,7 +4,7 @@ from io import BytesIO
 import re
 import time
 import base64
-from typing import TYPE_CHECKING, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 import asyncio
 from functools import cached_property
 import contextlib
@@ -33,7 +33,13 @@ from discordbot.typings.models import (
 )
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
-from discordbot.cogs._memory.store import user_scope, server_scope, read_main_memory
+from discordbot.cogs._memory.store import (
+    user_scope,
+    iter_scopes,
+    server_scope,
+    read_main_memory,
+    read_main_identity,
+)
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
@@ -42,7 +48,14 @@ from discordbot.cogs._gen_reply.input import (
     render_server_identity,
 )
 from discordbot.cogs._gen_reply.voice import VoiceSynthesizer
-from discordbot.cogs._memory.pipeline import schedule_memory_update
+from discordbot.cogs._memory.pipeline import (
+    flavor_of,
+    needs_consolidation,
+    safe_list_resumable,
+    resume_memory_update,
+    consolidate_if_needed,
+    schedule_memory_update,
+)
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import (
     REPLY_PROMPT,
@@ -90,7 +103,7 @@ from discordbot.cogs._gen_reply.interactions import (
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, AsyncIterator
+    from collections.abc import Awaitable, Coroutine, AsyncIterator
 
     from openai.types.responses import ResponseStreamEvent
 
@@ -351,6 +364,15 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
+        # Tracked background tasks for the one-shot restart memory resume.
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._resume_started = False
+
+    def _spawn(self, coro: "Coroutine[Any, Any, None]") -> None:
+        """Runs `coro` as a tracked background task so the gateway never blocks on it."""
+        task: asyncio.Task[None] = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     @cached_property
     def openai_client(self) -> AsyncOpenAI:
@@ -1515,6 +1537,66 @@ class ReplyGeneratorCogs(commands.Cog):
         self._schedule_server_memory_update(
             message=message, message_list=context.message_list, full_reply=full_reply
         )
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Resumes persisted memory work after a restart (runs once).
+
+        `on_ready` fires on every gateway reconnect, so `_resume_started` guards it
+        to a single sweep per process. The sweep is spawned, never awaited, so the
+        gateway is not blocked while it digests in the background.
+        """
+        if self._resume_started:
+            return
+        self._resume_started = True
+        self._spawn(self._resume_memory())
+
+    async def _resume_memory(self) -> None:
+        """Re-enqueues persisted phase-1 jobs and consolidates over-threshold scopes.
+
+        Two paths, both riding the existing per-scope lock + global concurrency
+        semaphore: persisted `pending`/`failed` jobs are re-run (transcript intact),
+        and every scope whose raw backlog is over threshold is swept. The sweep
+        covers scopes with a resumed job too: the per-scope lock plus the under-lock
+        `_should_consolidate` re-check make the resumed extraction and the sweep
+        idempotent, so a consolidation interrupted by the restart still finishes
+        even when the resumed extraction early-returns (failed, no signal, or all
+        duplicates) before it would reach the consolidation check.
+        """
+        jobs = await safe_list_resumable()
+        for job in jobs:
+            if job.transcript is None:
+                continue
+            extractor = (
+                self.server_memory_extractor if job.flavor == "server" else self.memory_extractor
+            )
+            resume_memory_update(
+                scope=job.scope,
+                subject=job.subject,
+                transcript=job.transcript,
+                extractor=extractor,
+                identity=job.identity,
+                token=job.token,
+            )
+        if jobs:
+            logfire.info("resumed persisted memory jobs", count=len(jobs))
+        swept = 0
+        for scope in iter_scopes():
+            if not needs_consolidation(scope=scope):
+                continue
+            extractor = (
+                self.server_memory_extractor
+                if flavor_of(scope=scope) == "server"
+                else self.memory_extractor
+            )
+            self._spawn(
+                consolidate_if_needed(
+                    scope=scope, extractor=extractor, identity=read_main_identity(scope=scope)
+                )
+            )
+            swept += 1
+        if swept:
+            logfire.info("scheduled memory consolidation sweep", count=swept)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:

@@ -8,6 +8,7 @@ from pathlib import Path
 from collections.abc import AsyncIterator
 
 import pytest
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs._economy.database import Base
@@ -46,7 +47,7 @@ async def research_isolated_db(
 
 @pytest.fixture
 def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Per-test memory directory with reset process-local memory state."""
+    """Per-test memory dir + isolated memory_job DB with reset process-local state."""
     memories_dir = tmp_path / "memories"
     monkeypatch.setattr("discordbot.cogs._memory.store._MEMORY_DIR", memories_dir)
     monkeypatch.setattr("discordbot.cogs._memory.store._cleared_at", {})
@@ -55,6 +56,17 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_consolidation", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_regeneration", {})
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline._db_tasks", set())
+    # Point the memory_job engine at a throwaway reply.db so no test ever writes the
+    # real file: every schedule_memory_update now persists, and those writes are
+    # swallowed best-effort, so a missing swap would pass green while polluting the
+    # real DB. NullPool closes each connection on return (no async dispose needed in
+    # this sync fixture); the schema bootstraps lazily on the first helper call.
+    memory_db_engine = create_async_engine(
+        url=f"sqlite+aiosqlite:///{tmp_path / 'memory_reply.db'}", poolclass=NullPool
+    )
+    monkeypatch.setattr("discordbot.cogs._memory.database._engine", memory_db_engine)
+    monkeypatch.setattr("discordbot.cogs._memory.database._schema_ready_for", None)
     # _scope_locks, _regeneration_tasks, and the memory semaphore are loop-local
     # helpers that rebuild on the per-test event loop, so they need no manual reset.
     return memories_dir

@@ -63,6 +63,36 @@ def server_scope(bot_id: int, server_id: int) -> str:
     return f"{bot_id}/{server_id}"
 
 
+def _scope_has_memory(scope: str) -> bool:
+    """Whether a scope already has live memory files on disk."""
+    return _main_path(scope=scope).exists() or _raw_path(scope=scope).exists()
+
+
+def iter_scopes() -> list[str]:
+    """Returns every scope with on-disk memory (user = flat, server = nested).
+
+    Walks `data/memories/`: a top-level dir holding `main.md` / `raw.md` is a user
+    scope (`<user_id>`); otherwise its child dirs holding those files are
+    `<bot_id>/<server_id>` server scopes. Used by the restart consolidation sweep
+    to find scopes whose raw backlog still needs digesting even when no extraction
+    job is pending for them.
+    """
+    scopes: list[str] = []
+    if not _MEMORY_DIR.is_dir():
+        return scopes
+    for top in sorted(_MEMORY_DIR.iterdir()):
+        if not top.is_dir():
+            continue
+        if _scope_has_memory(scope=top.name):
+            scopes.append(top.name)
+            continue
+        for nested in sorted(top.iterdir()):
+            scope = f"{top.name}/{nested.name}"
+            if nested.is_dir() and _scope_has_memory(scope=scope):
+                scopes.append(scope)
+    return scopes
+
+
 def _scope_dir(scope: str) -> Path:
     """Returns the memory directory for a scope."""
     return _MEMORY_DIR / scope
