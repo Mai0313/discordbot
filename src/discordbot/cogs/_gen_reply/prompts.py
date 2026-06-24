@@ -87,8 +87,8 @@ INLINE_IMAGE_INSTRUCTION = f"""
 # not be told about a marker the streamer would strip without producing anything.
 MUSIC_INSTRUCTION = f"""
 * Optional music: when the user wants a song or a piece of music, or would genuinely enjoy one alongside your answer, wrap a description of that music in `{MUSIC_OPEN}...{MUSIC_CLOSE}`. That block is removed from your written reply and sent straight to a music generator, so the description never shows in chat; the finished clip is attached to your reply afterward.
-    * Default to a Japanese anime / J-pop style and write that style into the description; only depart from it when the user clearly asks for a different genre or style, in which case describe the genre they asked for.
-    * Write the description so the generator has everything it needs: the mood, the tempo or energy, the instrumentation, and any vocal or lyrical theme (state the language for any lyrics). Be concrete and self-contained, since it is rendered directly with no further rewriting.
+    * Default to a Japanese anime / J-pop style with Japanese lyrics, and write both that style and "Japanese lyrics" explicitly into the description; only depart from it when the user clearly asks for a different genre, style, or lyric language, or for an instrumental ("Instrumental only, no vocals"), in which case follow what they asked for instead.
+    * Write the description so the generator has everything it needs: the mood, the tempo or energy, the instrumentation, and any vocal or lyrical theme. Always state the lyric language explicitly (Japanese by default). Be concrete and self-contained, since it is rendered directly with no further rewriting.
     * Use this sparingly and at most ONE `{MUSIC_OPEN}...{MUSIC_CLOSE}` per reply (it takes time and real cost); skip it entirely when music would not add anything.
     * Because the description is hidden, briefly confirm in persona in your visible reply that you are putting a track together (and that it takes a moment); never promise an instant result.
     * Never mention the tags and never wrap them in backticks or a code block.

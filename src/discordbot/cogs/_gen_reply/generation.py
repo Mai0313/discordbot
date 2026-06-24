@@ -51,14 +51,16 @@ VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
 MUSIC_RENDER_TIMEOUT_SECONDS = 300.0
 
 # Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
-# Lyria prompt surface is documented in English). The QA `<music>` marker prompt already steers
-# the answer model to default to this style and write it into the description, so this is a
-# backstop default that still honors a description that asks for a different genre. Whether the
-# generation model actually reads `system_instruction` is unverified (the Gemini TTS path ignores
-# its `instructions` channel); the prompt-side default is the load-bearing path either way.
+# Lyria prompt surface is documented in English). Lyria picks the lyric language from the prompt
+# (docs: "generates lyrics in the language of your prompt"), so the language is defaulted here too,
+# not just the genre. The QA `<music>` marker prompt already steers the answer model to default to
+# this style/language and write it into the description, so this is a backstop that still honors a
+# description asking for a different genre or language. A 2026-06 Interactions spike produced
+# Japanese vocals with this Japanese steer, but the load-bearing path stays the prompt-side default.
 MUSIC_STYLE_DIRECTIVE = (
-    "Compose in a Japanese anime / J-pop style by default; if the description clearly asks for a "
-    "different genre or style, follow the description instead."
+    "Compose in a Japanese anime / J-pop style with Japanese-language vocals by default; if the "
+    "description clearly asks for a different genre, style, or lyric language, or for an "
+    "instrumental, follow the description instead."
 )
 
 # Map a returned audio mime type to a Discord-playable file extension. Discord's inline audio
