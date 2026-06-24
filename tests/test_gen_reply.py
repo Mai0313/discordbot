@@ -4609,7 +4609,7 @@ def test_can_launch_research_requires_guild_text_channel() -> None:
 async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """on_ready resume re-enqueues persisted jobs (by flavor) and sweeps the rest."""
+    """on_ready resume re-enqueues persisted jobs (by flavor) and sweeps every over-threshold scope."""
     cog = _cog(bot_user_id=999)
     cog._tasks = set()
     cog._resume_started = False
@@ -4675,8 +4675,9 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     assert by_scope[user_job_scope]["extractor"] is user_sentinel
     assert by_scope[user_job_scope]["token"] == 11
     assert by_scope[server_job_scope]["extractor"] is server_sentinel
-    # Only the scope without a resumable job is swept for consolidation.
-    assert swept == [sweep_scope]
+    # Every over-threshold scope is swept, including the resumed ones: the scope
+    # lock makes the resumed extraction and the consolidation sweep idempotent.
+    assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
 
 
 async def test_on_ready_resume_runs_once(

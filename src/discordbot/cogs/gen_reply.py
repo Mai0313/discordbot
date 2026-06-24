@@ -1556,9 +1556,12 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Two paths, both riding the existing per-scope lock + global concurrency
         semaphore: persisted `pending`/`failed` jobs are re-run (transcript intact),
-        and any scope whose raw backlog is over threshold but has no pending job
-        (e.g. a consolidation interrupted by the restart) is swept so it still
-        digests after a redeploy.
+        and every scope whose raw backlog is over threshold is swept. The sweep
+        covers scopes with a resumed job too: the per-scope lock plus the under-lock
+        `_should_consolidate` re-check make the resumed extraction and the sweep
+        idempotent, so a consolidation interrupted by the restart still finishes
+        even when the resumed extraction early-returns (failed, no signal, or all
+        duplicates) before it would reach the consolidation check.
         """
         jobs = await safe_list_resumable()
         for job in jobs:
@@ -1577,10 +1580,9 @@ class ReplyGeneratorCogs(commands.Cog):
             )
         if jobs:
             logfire.info("resumed persisted memory jobs", count=len(jobs))
-        resumed_scopes = {job.scope for job in jobs}
         swept = 0
         for scope in iter_scopes():
-            if scope in resumed_scopes or not needs_consolidation(scope=scope):
+            if not needs_consolidation(scope=scope):
                 continue
             extractor = (
                 self.server_memory_extractor
