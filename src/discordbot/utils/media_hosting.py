@@ -9,9 +9,8 @@ handed a non-allowlisted suffix, or fails to write, so callers degrade back to t
 behavior with no extra handling.
 """
 
-from typing import Any
-from pathlib import Path
 import shutil
+from pathlib import Path
 import secrets
 
 import dotenv
@@ -120,7 +119,7 @@ class MediaHostingService(BaseModel):
         ..., description="The media-hosting configuration backing this service."
     )
 
-    def model_post_init(self, __context: Any) -> None:
+    def model_post_init(self, _context: object, /) -> None:
         """Logs the resolved serve dir once at construction so a misconfig fails loud.
 
         `available` only checks for non-empty config; a typo'd or unmounted serve dir would
@@ -132,9 +131,7 @@ class MediaHostingService(BaseModel):
         serve = Path(self.config.serve_dir)
         if serve.is_dir():
             logfire.info(
-                "Media hosting enabled",
-                base_url=self.config.base_url,
-                serve_dir=str(serve),
+                "Media hosting enabled", base_url=self.config.base_url, serve_dir=str(serve)
             )
         else:
             logfire.warn(
