@@ -2513,3 +2513,13 @@ def test_iter_scopes_finds_user_and_server_scopes(memory_isolated_dir: Path) -> 
 def test_flavor_of_distinguishes_user_and_server() -> None:
     assert pipeline.flavor_of(scope=user_scope(user_id=USER_ID)) == "user"
     assert pipeline.flavor_of(scope=server_scope(bot_id=1, server_id=2)) == "server"
+
+
+def test_needs_consolidation_reflects_threshold(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    assert pipeline.needs_consolidation(scope=USER_SCOPE) is False
+    append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
+    append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
+    assert pipeline.needs_consolidation(scope=USER_SCOPE) is True

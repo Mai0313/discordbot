@@ -50,6 +50,7 @@ from discordbot.cogs._gen_reply.input import (
 from discordbot.cogs._gen_reply.voice import VoiceSynthesizer
 from discordbot.cogs._memory.pipeline import (
     flavor_of,
+    needs_consolidation,
     safe_list_resumable,
     resume_memory_update,
     consolidate_if_needed,
@@ -1579,7 +1580,7 @@ class ReplyGeneratorCogs(commands.Cog):
         resumed_scopes = {job.scope for job in jobs}
         swept = 0
         for scope in iter_scopes():
-            if scope in resumed_scopes:
+            if scope in resumed_scopes or not needs_consolidation(scope=scope):
                 continue
             extractor = (
                 self.server_memory_extractor

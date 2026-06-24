@@ -379,6 +379,16 @@ async def safe_list_resumable() -> list[memory_db.MemoryJob]:
         return []
 
 
+def needs_consolidation(scope: str) -> bool:
+    """Public sync pre-check for the boot sweep so it only spawns over-threshold scopes.
+
+    A cheap file read (no lock), used to avoid queuing a per-scope task on the
+    global semaphore just to discover it is under threshold; `consolidate_if_needed`
+    re-checks under the lock, which stays the authority.
+    """
+    return _should_consolidate(scope=scope)
+
+
 async def consolidate_if_needed(scope: str, extractor: MemoryExtractorAI, identity: str) -> None:
     """Consolidates a scope whose raw backlog is over threshold; best-effort, self-logging.
 

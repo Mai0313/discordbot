@@ -4662,6 +4662,7 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
         "discordbot.cogs.gen_reply.iter_scopes",
         lambda: [user_job_scope, server_job_scope, sweep_scope],
     )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.needs_consolidation", lambda scope: True)
     monkeypatch.setattr("discordbot.cogs.gen_reply.read_main_identity", lambda scope: "")
 
     await cog._resume_memory()
