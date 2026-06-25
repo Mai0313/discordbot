@@ -347,10 +347,11 @@ class MediaDeliveryPlanner(BaseModel):
         """Splits items into native attachments, hosted URLs, and dropped items.
 
         (a) Each individually-oversize item is hosted (or dropped when hosting is off / fails),
-        concurrently. (b) The largest remaining are then peeled to hosted URLs until the
-        combined body clears `upload_limit - envelope_margin`. (c) The native list is finally
-        clamped to `attachment_limit`, the overflow dropped. Input order is preserved in
-        `native`, so a caller leading with voice/music keeps a trailing image as the drop.
+        concurrently. (b) The native list is clamped to `attachment_limit` first, the trailing
+        overflow dropped, so a marginal combined overflow then sheds a low-priority trailing image
+        rather than a prioritized voice/music clip. (c) The largest remaining are peeled to hosted
+        URLs until the combined body clears `upload_limit - envelope_margin`. Input order is
+        preserved in `native`, so a caller leading with voice/music keeps a trailing image as the drop.
 
         Args:
             items: The built media items to deliver, in caller-preferred order.
@@ -377,7 +378,15 @@ class MediaDeliveryPlanner(BaseModel):
                 else:
                     dropped.append(item)
 
-        # (b) Combined total: peel the largest remaining to a URL until the multipart body fits.
+        # (b) Discord's per-message attachment cap, applied BEFORE byte peeling: items past the cap
+        # cannot ride the edit anyway, so dropping the trailing overflow first means a marginal
+        # combined overflow sheds a low-priority trailing image instead of peeling the prioritized
+        # voice/music clip (callers lead with those).
+        if len(fitting) > attachment_limit:
+            dropped.extend(fitting[attachment_limit:])
+            fitting = fitting[:attachment_limit]
+
+        # (c) Combined total: peel the largest remaining to a URL until the multipart body fits.
         total = sum(sizes[id(item)] for item in fitting)
         while fitting and total + envelope_margin > upload_limit:
             largest = max(fitting, key=lambda item: sizes[id(item)])
@@ -388,11 +397,6 @@ class MediaDeliveryPlanner(BaseModel):
                 hosted_urls.append(url)
             else:
                 dropped.append(largest)
-
-        # (c) Discord's per-message attachment cap; the overflow (trailing, in order) drops.
-        if len(fitting) > attachment_limit:
-            dropped.extend(fitting[attachment_limit:])
-            fitting = fitting[:attachment_limit]
         return MediaPlan(native=fitting, hosted_urls=hosted_urls, dropped_items=dropped)
 
 

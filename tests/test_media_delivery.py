@@ -304,3 +304,28 @@ async def test_plan_clamps_to_attachment_limit(tmp_path: Path) -> None:
     assert [item.filename for item in plan.native] == [f"f{i}.png" for i in range(10)]
     assert plan.hosted_urls == []
     assert [item.filename for item in plan.dropped_items] == ["f10.png"]
+
+
+async def test_plan_count_clamp_precedes_peel_so_marginal_overflow_keeps_voice(
+    tmp_path: Path,
+) -> None:
+    """An 11th trailing image causing a marginal overflow is dropped first, sparing the voice clip.
+
+    Eleven items each fit individually but their sum overflows; dropping the trailing 11th (count
+    cap) brings the rest under the limit, so the prioritized (largest, leading) voice clip is never
+    peeled. With hosting off, peeling-before-clamping would have dropped the voice clip instead.
+    """
+    planner = _planner(serve_dir=tmp_path, enabled=False)
+    items = [
+        MediaItem(source=b"v" * 200, filename="reply.wav"),  # largest + leads: must survive
+        MediaItem(source=b"m" * 10, filename="music.mp3"),
+        *(MediaItem(source=b"i" * 10, filename=f"generated_{i}.png") for i in range(1, 10)),
+    ]
+    # 290 (10 kept items) <= 295 < 300 (all 11): clamping the trailing image avoids any peel.
+    plan = await planner.plan(items=items, upload_limit=295, envelope_margin=0)
+
+    native_names = [item.filename for item in plan.native]
+    assert "reply.wav" in native_names  # the voice clip survived (not peeled for size)
+    assert len(plan.native) == 10
+    assert plan.hosted_urls == []
+    assert [item.filename for item in plan.dropped_items] == ["generated_9.png"]
