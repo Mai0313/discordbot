@@ -235,6 +235,7 @@ async def test_video_deliver_and_download_branches(
     """Verifies video delivery, oversize URL fallback, hosting-off, and download error branches."""
     cog = VideoCogs(bot=SimpleNamespace())
     serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
             config=MediaHostingConfig(
@@ -369,6 +370,7 @@ async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
     """A Threads video too big to attach is hosted as a URL instead of a ⚠️ refusal."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=bot)
+    (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
             config=MediaHostingConfig(
@@ -403,6 +405,7 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
     """A post with one small and one oversize video attaches the small and links only the big one."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=bot)
+    (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
             config=MediaHostingConfig(

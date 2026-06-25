@@ -26,14 +26,15 @@ services:
         target: /app/data
         bind:
           create_host_path: false
-      # Oversized media (clips too big for Discord's upload limit) is written here and served by
-      # the host's nginx static site (MEDIA_HOSTING_SERVE_DIR). The host dir must already exist
-      # and be writable by UID 1000; create_host_path: false fails fast if the mount is missing.
-      - type: bind
-        source: /mnt/share/media
-        target: /mnt/share/media
-        bind:
-          create_host_path: false
+      # Media hosting (oversized clips -> external URL) is opt-in: the bot self-disables and falls
+      # back to native upload when the serve dir is absent (it never creates the dir), so the
+      # default compose does not require it. To enable hosting, set the MEDIA_HOSTING_* env vars
+      # and bind-mount the host's nginx-served dir (must exist, writable by UID 1000), e.g.:
+      #   - type: bind
+      #     source: /mnt/share/media
+      #     target: /mnt/share/media
+      #     bind:
+      #       create_host_path: false
     network_mode: host
     restart: always
     pull_policy: always

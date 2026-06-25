@@ -175,7 +175,7 @@ class MediaHostingService(BaseModel):
             )
         else:
             logfire.warn(
-                "Media hosting serve dir does not exist; hosted URLs will 404",
+                "Media hosting serve dir is missing; media will fall back to host-free delivery",
                 serve_dir=str(serve),
             )
 
@@ -183,10 +183,20 @@ class MediaHostingService(BaseModel):
         """Joins the configured base URL with a served filename."""
         return f"{self.config.base_url.rstrip('/')}/{name}"
 
-    def _destination(self, ext: str) -> Path:
-        """Builds an unguessable destination path inside the serve dir, creating it if needed."""
+    def _destination(self, ext: str) -> Path | None:
+        """An unguessable path inside the serve dir, or None when that dir does not exist.
+
+        The serve dir is a host-provided bind mount; the bot never creates it (a container-local
+        dir nginx cannot see would only 404), so a missing dir means hosting is inactive and the
+        caller falls back to its host-free behavior.
+        """
         serve = Path(self.config.serve_dir)
-        serve.mkdir(parents=True, exist_ok=True)
+        if not serve.is_dir():
+            logfire.warn(
+                "Media hosting serve dir is missing; falling back to host-free delivery",
+                serve_dir=str(serve),
+            )
+            return None
         return serve / f"{secrets.token_urlsafe(16)}{ext}"
 
     def publish_bytes(self, data: bytes, suffix: str) -> str | None:
@@ -197,8 +207,8 @@ class MediaHostingService(BaseModel):
             suffix: The intended file extension (e.g. ".wav"); refused if not allowlisted.
 
         Returns:
-            The public URL, or None when hosting is unavailable / the suffix is refused / the
-            write fails.
+            The public URL, or None when hosting is unavailable / the serve dir is missing / the
+            suffix is refused / the write fails.
         """
         if not self.config.available:
             return None
@@ -206,8 +216,10 @@ class MediaHostingService(BaseModel):
         if ext is None:
             logfire.debug("Media hosting refused a non-allowlisted suffix", suffix=suffix)
             return None
+        destination = self._destination(ext=ext)
+        if destination is None:
+            return None
         try:
-            destination = self._destination(ext=ext)
             destination.write_bytes(data)
         except Exception:
             logfire.warn("Failed to host media bytes", _exc_info=True)
@@ -226,8 +238,8 @@ class MediaHostingService(BaseModel):
             file_path: The existing file to move into the served dir.
 
         Returns:
-            The public URL, or None when hosting is unavailable / the suffix is refused / the
-            move fails.
+            The public URL, or None when hosting is unavailable / the serve dir is missing / the
+            suffix is refused / the move fails.
         """
         if not self.config.available:
             return None
@@ -237,8 +249,10 @@ class MediaHostingService(BaseModel):
                 "Media hosting refused a non-allowlisted suffix", suffix=file_path.suffix
             )
             return None
+        destination = self._destination(ext=ext)
+        if destination is None:
+            return None
         try:
-            destination = self._destination(ext=ext)
             shutil.move(str(file_path), str(destination))
         except Exception:
             logfire.warn("Failed to host media file", _exc_info=True)

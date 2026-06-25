@@ -79,6 +79,7 @@ def test_publish_path_moves_file_across_dirs(tmp_path: Path) -> None:
     source_dir = tmp_path / "src"
     serve_dir = tmp_path / "serve"
     source_dir.mkdir()
+    serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
     source = source_dir / "clip.mp4"
     source.write_bytes(b"movie")
     service = _service(serve_dir=serve_dir)
@@ -98,6 +99,7 @@ def test_publish_path_falls_back_on_cross_device_move(
     source_dir = tmp_path / "src"
     serve_dir = tmp_path / "serve"
     source_dir.mkdir()
+    serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
     source = source_dir / "clip.mp4"
     source.write_bytes(b"movie")
     service = _service(serve_dir=serve_dir)
@@ -152,13 +154,22 @@ def test_empty_serve_dir_returns_none() -> None:
     assert service.publish_bytes(data=b"x", suffix=".png") is None
 
 
-def test_write_failure_returns_none_without_raising(tmp_path: Path) -> None:
-    """A serve dir that cannot be created (it is a regular file) degrades to None, never raises."""
+def test_serve_dir_that_is_a_regular_file_returns_none(tmp_path: Path) -> None:
+    """A serve dir that is a regular file (not a directory) degrades to None, never raises."""
     blocker = tmp_path / "not_a_dir"
     blocker.write_text("i am a file")
     service = _service(serve_dir=blocker)
 
     assert service.publish_bytes(data=b"x", suffix=".png") is None
+
+
+def test_missing_serve_dir_falls_back_without_creating_it(tmp_path: Path) -> None:
+    """A configured-but-absent serve dir falls back to None and is never created by the bot."""
+    serve_dir = tmp_path / "not_mounted"
+    service = _service(serve_dir=serve_dir)
+
+    assert service.publish_bytes(data=b"x", suffix=".png") is None
+    assert not serve_dir.exists()  # the bot must not create the (unmounted) serve dir
 
 
 def test_empty_config_is_unavailable() -> None:
@@ -215,6 +226,7 @@ async def test_plan_hosts_individually_oversize_bytes_item(tmp_path: Path) -> No
 async def test_plan_hosts_oversize_path_item_by_move(tmp_path: Path) -> None:
     """A path item over the limit is moved into the serve dir and linked (source gone)."""
     serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
     source = tmp_path / "clip.mp4"
     source.write_bytes(b"m" * 200)
     planner = _planner(serve_dir=serve_dir)
