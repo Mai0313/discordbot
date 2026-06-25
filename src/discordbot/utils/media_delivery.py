@@ -92,10 +92,12 @@ _ALLOWED_SUFFIXES = frozenset({
 # collision (~1e-23 at 100M files) a dedup false-positive at worst, never a security break.
 _HASH_HEX_LEN = 32
 _HASH_CHUNK_BYTES = 1024 * 1024
-# In-progress writes land on a sibling `.tmp-*` then `os.replace` onto the final name (atomic on the
+# In-progress writes land on a sibling temp then `os.replace` onto the final name (atomic on the
 # serve filesystem), so the content-addressed name only ever appears with complete content. A crash
-# leaves a stale temp the 32-hex reaper can't match, so the sweep reaps temps older than this.
-_TEMP_PREFIX = ".tmp-"
+# leaves a stale temp the 32-hex reaper can't match, so the sweep reaps temps older than this. The
+# prefix is bot-specific (and the sweep verifies the full name shape) so a foreign `.tmp-*` parked in
+# the shared serve dir is never reaped.
+_TEMP_PREFIX = ".mediahost-tmp-"
 _STALE_TEMP_SECONDS = 300.0
 # A freshly-hosted file (and every in-flight concurrent publish) is protected from size-cap eviction
 # for this long, so one publisher never reaps another's just-returned-and-posted URL.
@@ -112,6 +114,10 @@ _HOSTED_NAME_RE = re.compile(
     + "|".join(re.escape(s) for s in sorted(_ALLOWED_SUFFIXES))
     + ")"
 )
+
+# The bot's own in-progress temp names (`_TEMP_PREFIX` + a token_urlsafe stem). The stale-temp sweep
+# verifies this full shape so it only ever reaps temps the service itself wrote, never a foreign one.
+_TEMP_NAME_RE = re.compile(re.escape(_TEMP_PREFIX) + r"[A-Za-z0-9_-]+")
 
 # All directory scan+mutate critical sections take this module-level lock so the ~5 service
 # instances (one per media cog) that share one serve dir never race each other; the multi-GB byte
@@ -458,14 +464,18 @@ class MediaHostingService(BaseModel):
         return deleted
 
     def sweep_stale_temps(self, *, now: float) -> None:
-        """Unlinks crash-left `.tmp-*` files older than the stale-temp window (best-effort)."""
+        """Unlinks crash-left bot temps older than the stale-temp window (best-effort).
+
+        Gated on the bot's own temp-name shape (like the reaper's 32-hex guard), so a foreign
+        `.tmp-*` parked in the shared serve dir is never reaped.
+        """
         serve = self._serve_dir()
         if serve is None:
             return
         cutoff = now - _STALE_TEMP_SECONDS
         with _SERVE_DIR_LOCK, os.scandir(serve) as entries:
             for entry in entries:
-                if not entry.name.startswith(_TEMP_PREFIX):
+                if _TEMP_NAME_RE.fullmatch(entry.name) is None:
                     continue
                 if not entry.is_file(follow_symlinks=False):
                     continue

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from discordbot.utils.media_delivery import (
+    _TEMP_PREFIX,
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
     MediaHostingConfig,
@@ -382,19 +383,23 @@ def test_cleanup_expired_disabled_when_retention_zero(tmp_path: Path) -> None:
     assert name in _hosted_files(tmp_path)
 
 
-def test_sweep_removes_stale_temps_only(tmp_path: Path) -> None:
-    """A crash-left `.tmp-*` past the window is reaped; a fresh in-flight temp is kept."""
+def test_sweep_removes_stale_bot_temps_only(tmp_path: Path) -> None:
+    """A crash-left bot temp past the window is reaped; a fresh one and any FOREIGN temp are kept."""
     service = _service(serve_dir=tmp_path)
-    stale = tmp_path / ".tmp-old"
-    stale.write_bytes(b"partial")
-    _age(stale, seconds=9999)
-    fresh = tmp_path / ".tmp-new"
-    fresh.write_bytes(b"partial")
+    stale_bot = tmp_path / f"{_TEMP_PREFIX}staletoken"
+    stale_bot.write_bytes(b"partial")
+    _age(stale_bot, seconds=9999)
+    fresh_bot = tmp_path / f"{_TEMP_PREFIX}freshtoken"
+    fresh_bot.write_bytes(b"partial")
+    foreign = tmp_path / ".tmp-someoneelse"  # a foreign temp parked in the shared dir
+    foreign.write_bytes(b"theirs")
+    _age(foreign, seconds=9999)
 
     service.sweep_stale_temps(now=time.time())
 
-    assert not stale.exists()
-    assert fresh.exists()
+    assert not stale_bot.exists()  # the bot's own stale temp is reaped
+    assert fresh_bot.exists()  # a recent (in-flight) bot temp is kept
+    assert foreign.exists()  # a foreign .tmp-* is never reaped
 
 
 def test_cleanup_no_op_on_missing_serve_dir(tmp_path: Path) -> None:
