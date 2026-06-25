@@ -152,7 +152,11 @@ class VideoDownloader(BaseModel):
         # Match the real host (not a raw substring) so a URL like `evil.com/?x=bilibili.com`
         # or `bilibili.com.attacker.com` never gets the bilibili Referer.
         http_headers = self._default_http_headers()
-        host = (urlparse(url).hostname or "").lower() if url else ""
+        # A user-pasted URL may be scheme-less (e.g. `www.bilibili.com/video/...`), which urlparse
+        # reads as a path with no hostname; prepend `//` so the host is parsed either way. The
+        # exact-host match still rejects `evil.com/?x=bilibili.com` and `bilibili.com.attacker.com`.
+        normalized = url if "://" in url else f"//{url}"
+        host = (urlparse(normalized).hostname or "").lower() if url else ""
         if host == "bilibili.com" or host.endswith(".bilibili.com"):
             http_headers["Referer"] = "https://www.bilibili.com"
 

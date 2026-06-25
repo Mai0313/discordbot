@@ -108,3 +108,19 @@ def test_download_resolves_facebook_share_links(
     assert captured_calls == [
         {"url": "https://www.facebook.com/reel/828357636228730", "download": True}
     ]
+
+
+def test_get_params_bilibili_referer_handles_scheme_less_hosts(tmp_path: Path) -> None:
+    """Bilibili URLs (with or without a scheme) get the Referer; lookalike hosts do not."""
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    def referer(url: str) -> object:
+        params = downloader.get_params(quality="best", dry_run=False, url=url)
+        headers = params["http_headers"]
+        assert isinstance(headers, dict)
+        return headers.get("Referer")
+
+    assert referer(url="https://www.bilibili.com/video/BV1") == "https://www.bilibili.com"
+    assert referer(url="www.bilibili.com/video/BV1") == "https://www.bilibili.com"  # scheme-less
+    assert referer(url="evil.com/?x=bilibili.com") is None  # substring lookalike
+    assert referer(url="bilibili.com.attacker.com/x") is None  # suffix lookalike
