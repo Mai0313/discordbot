@@ -12,7 +12,7 @@ import contextlib
 from google import genai
 from openai import AsyncOpenAI
 import logfire
-from nextcord import File, Embed, Message, NotFound, TextChannel, HTTPException, AllowedMentions
+from nextcord import Embed, Message, NotFound, TextChannel, HTTPException, AllowedMentions
 from pydantic import ValidationError
 from nextcord.ext import commands
 from google.genai.types import FileState
@@ -40,9 +40,14 @@ from discordbot.cogs._memory.store import (
     read_main_memory,
     read_main_identity,
 )
-from discordbot.utils.media_hosting import MediaHostingConfig, MediaHostingService
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.discord_limits import upload_limit_for
+from discordbot.utils.media_delivery import (
+    MediaItem,
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+    upload_limit_for,
+)
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
     sanitize_identity,
@@ -454,14 +459,15 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     @cached_property
-    def media_hosting(self) -> MediaHostingService:
-        """The cached external-media host shared by the IMAGE / VIDEO routes and the QA streamer.
+    def media_delivery(self) -> MediaDeliveryPlanner:
+        """The cached media-delivery planner shared by the IMAGE / VIDEO routes and QA streamer.
 
         Returns:
-            A service that writes media too big for Discord's upload limit into the served
-            directory and returns a public URL; it self-disables when unconfigured.
+            A planner that decides which media attach natively and which are hosted as a public
+            URL (media too big for Discord's upload limit); its host self-disables when
+            unconfigured, so every oversize item then degrades to the route's host-free path.
         """
-        return MediaHostingService(config=MediaHostingConfig())
+        return MediaDeliveryPlanner(media_hosting=MediaHostingService(config=MediaHostingConfig()))
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
@@ -606,7 +612,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _deliver_generated_media(
-        self, *, message: Message, data: bytes, filename: str, suffix: str
+        self, *, message: Message, data: bytes, filename: str
     ) -> Message | None:
         """Delivers generated image/video bytes, hosting a URL when too big to upload natively.
 
@@ -617,20 +623,21 @@ class ReplyGeneratorCogs(commands.Cog):
         the persona reply bails. If hosting is unavailable the native attach is attempted anyway,
         raising on oversize so the route stays on its existing hard-fail error path.
         """
-        if len(data) <= upload_limit_for(guild=message.guild):
-            media_file = File(fp=BytesIO(data), filename=filename)
-            return await message.reply(content=message.author.mention, file=media_file)
-        public_url = await asyncio.to_thread(
-            self.media_hosting.publish_bytes, data=data, suffix=suffix
+        item = MediaItem(source=data, filename=filename)
+        plan = await self.media_delivery.plan(
+            items=[item], upload_limit=upload_limit_for(guild=message.guild)
         )
-        if public_url is None:
+        if plan.native:
+            return await message.reply(
+                content=message.author.mention, file=plan.native[0].to_file()
+            )
+        if not plan.hosted_urls:
             # Hosting off/failed: attempt the native attach, which raises on oversize and keeps
             # the route on the outer error path exactly as before.
-            media_file = File(fp=BytesIO(data), filename=filename)
-            return await message.reply(content=message.author.mention, file=media_file)
+            return await message.reply(content=message.author.mention, file=item.to_file())
         # Too big to attach: the hosted URL is the deliverable (pings the author once). The persona
         # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
-        await message.reply(content=f"{message.author.mention}\n{public_url}")
+        await message.reply(content=f"{message.author.mention}\n{plan.hosted_urls[0]}")
         return None
 
     async def _persona_base_reply(self, *, message: Message, reply: Message | None) -> Message:
@@ -682,7 +689,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 prompt=user_prompt, reference_image_sources=images
             )
             reply = await self._deliver_generated_media(
-                message=message, data=video_bytes, filename="generated.mp4", suffix=".mp4"
+                message=message, data=video_bytes, filename="generated.mp4"
             )
             logfire.info(
                 "gen_reply video delivered",
@@ -881,7 +888,7 @@ class ReplyGeneratorCogs(commands.Cog):
             # Send the generated image immediately so the user sees it without waiting on the
             # conversational reply; the reply text streams onto this same message right after.
             reply = await self._deliver_generated_media(
-                message=message, data=image_bytes, filename="generated.png", suffix=".png"
+                message=message, data=image_bytes, filename="generated.png"
             )
             logfire.info(
                 "gen_reply image delivered",
@@ -1513,7 +1520,7 @@ class ReplyGeneratorCogs(commands.Cog):
             voice_synthesizer=voice_synthesizer,
             image_generator=image_generator,
             music_generator=music_generator,
-            media_hosting=self.media_hosting,
+            media_delivery=self.media_delivery,
         )
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is

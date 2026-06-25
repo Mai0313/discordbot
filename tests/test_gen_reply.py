@@ -37,7 +37,11 @@ from discordbot.typings.models import (
 )
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
-from discordbot.utils.media_hosting import MediaHostingConfig, MediaHostingService
+from discordbot.utils.media_delivery import (
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+)
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
 from discordbot.cogs._gen_reply.voice import (
     VOICE_TIMEOUT_SECONDS,
@@ -53,11 +57,7 @@ from discordbot.cogs._gen_reply.markers import (
     scrub_markers_for_preview,
 )
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
-from discordbot.cogs._gen_reply.streaming import (
-    DISCORD_MESSAGE_LIMIT,
-    ResponseStreamer,
-    _MediaCandidate,
-)
+from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
     MusicClip,
@@ -1031,7 +1031,9 @@ async def test_voice_too_big_falls_back_to_hosted_url(
     )
 
     result = await ResponseStreamer(
-        message=message, voice_synthesizer=synthesizer, media_hosting=service
+        message=message,
+        voice_synthesizer=synthesizer,
+        media_delivery=MediaDeliveryPlanner(media_hosting=service),
     ).stream(responses=_stream_events_from(_voice_marker_events()))
 
     _assert_no_voice_tags(result)
@@ -1070,47 +1072,6 @@ def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
             MEDIA_HOSTING_SERVE_DIR=str(serve_dir),
         )
     )
-
-
-async def test_partition_media_peels_largest_on_combined_overflow(tmp_path: Path) -> None:
-    """Candidates each fitting individually but summing past the limit peel the largest to a URL."""
-    streamer = ResponseStreamer(
-        message=FakeMessage(), media_hosting=_hosting_service(serve_dir=tmp_path)
-    )
-    # All three fit under the limit individually, but their sum + the 1 MiB envelope margin does
-    # not; only the largest is peeled to a hosted URL, leaving the other two as native attachments.
-    limit = 1024 * 1024 + 500
-    candidates = [
-        _MediaCandidate(data=b"a" * 400, filename="reply.wav"),
-        _MediaCandidate(data=b"b" * 300, filename="music.mp3"),
-        _MediaCandidate(data=b"c" * 200, filename="generated.png"),
-    ]
-
-    native, hosted_urls, dropped = await streamer._partition_media(
-        candidates=candidates, upload_limit=limit
-    )
-
-    assert {c.filename for c in native} == {"music.mp3", "generated.png"}
-    assert len(hosted_urls) == 1
-    assert hosted_urls[0].endswith(".wav")
-    assert dropped is False
-
-
-async def test_partition_media_clamps_to_ten_attachments() -> None:
-    """Eleven candidates all fitting (voice + music + 9 images) clamp to 10 with a drop hint."""
-    streamer = ResponseStreamer(message=FakeMessage())
-    # Limit is well above the combined size + envelope margin, so nothing is hosted; only the
-    # 10-attachment count cap applies, dropping one trailing candidate.
-    limit = 1024 * 1024 + 1000
-    candidates = [_MediaCandidate(data=b"x" * 10, filename=f"f{i}.png") for i in range(11)]
-
-    native, hosted_urls, dropped = await streamer._partition_media(
-        candidates=candidates, upload_limit=limit
-    )
-
-    assert len(native) == 10
-    assert hosted_urls == []
-    assert dropped is True
 
 
 async def test_finalize_media_edit_posts_followup_when_content_would_overflow(
@@ -1675,11 +1636,11 @@ async def test_voice_config_gate_controls_synthesizer(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
-            media_hosting: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del image_generator, music_generator, media_hosting
+            del image_generator, music_generator, media_delivery
             captured.append(voice_synthesizer)
 
         async def stream(self, *, responses: object) -> str:
@@ -1726,11 +1687,11 @@ async def test_image_config_gate_controls_generator(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
-            media_hosting: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, music_generator, media_hosting
+            del voice_synthesizer, music_generator, media_delivery
             captured.append(image_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -2572,11 +2533,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
-            media_hosting: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator, media_hosting
+            del voice_synthesizer, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -2775,7 +2736,9 @@ async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
 ) -> None:
     """An image too big to upload is hosted as a URL; the persona reply rides a separate message."""
     cog = _cog()
-    cog.__dict__["media_hosting"] = _hosting_service(serve_dir=tmp_path)
+    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
+        media_hosting=_hosting_service(serve_dir=tmp_path)
+    )
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
 
@@ -2796,12 +2759,41 @@ async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
     assert "media.test" not in (message.replies[1].content or "")
 
 
+async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> None:
+    """IMAGE route, hosting off + oversize: the native attach is attempted and its error propagates.
+
+    With no host available the deliverable cannot degrade to a URL, so `_deliver_generated_media`
+    falls through to the native attach (which Discord 400s on oversize); that error must stay on the
+    route's outer hard-fail path, never a silent drop. A FakeMessage models the 400 via reply_error.
+    """
+    cog = _cog()
+    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False))
+    )
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
+    # The native attach of an oversized file 400s on real Discord; the fake raises it on reply.
+    message.reply_error = nextcord.HTTPException(
+        SimpleNamespace(status=413, reason="Payload Too Large"),
+        {"code": 40005, "message": "Request entity too large"},
+    )
+
+    with pytest.raises(nextcord.HTTPException):
+        await cog._handle_image_reply(
+            message=message,
+            user_prompt="draw a cat",
+            context_task=asyncio.create_task(_ready_reply_context()),
+        )
+
+
 async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Oversized video hosted as a URL: a failed Files-API upload leaves no empty persona message."""
     cog = _cog()
-    cog.__dict__["media_hosting"] = _hosting_service(serve_dir=tmp_path)
+    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
+        media_hosting=_hosting_service(serve_dir=tmp_path)
+    )
 
     async def _fast_sleep(delay: float) -> None:
         """Skips the video generation polling delay."""
@@ -3281,11 +3273,11 @@ class _ThreadsStreamer:
         voice_synthesizer: object | None = None,
         image_generator: object | None = None,
         music_generator: object | None = None,
-        media_hosting: object | None = None,
+        media_delivery: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
         del memory_lookups, input_tokens, output_tokens, model_effort
-        del voice_synthesizer, image_generator, music_generator, media_hosting
+        del voice_synthesizer, image_generator, music_generator, media_delivery
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -3613,11 +3605,11 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
-            media_hosting: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator, media_hosting
+            del voice_synthesizer, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3706,11 +3698,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
-            media_hosting: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator, media_hosting
+            del voice_synthesizer, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3771,11 +3763,11 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
-            media_hosting: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator, media_hosting
+            del voice_synthesizer, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:

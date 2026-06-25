@@ -1,11 +1,9 @@
 """Streams a Responses API reply onto a Discord message."""
 
-from io import BytesIO
 import re
 import time
 from typing import cast
 import asyncio
-from pathlib import Path
 import contextlib
 from collections.abc import AsyncIterator
 
@@ -20,9 +18,15 @@ from openai.types.responses import (
 )
 
 from discordbot.utils.reactions import update_reaction
-from discordbot.utils.media_hosting import MediaHostingService
 from discordbot.utils.model_pricing import get_token_rates
-from discordbot.utils.discord_limits import upload_limit_for
+from discordbot.utils.media_delivery import (
+    MEDIA_ENVELOPE_MARGIN,
+    MediaItem,
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+    upload_limit_for,
+)
 from discordbot.cogs._gen_reply.voice import (
     VOICE_REPLY_FILENAME,
     VoiceOutcome,
@@ -40,34 +44,12 @@ from discordbot.cogs._gen_reply.generation import ImageGenerator, MusicGenerator
 # route's `generated.png` so the bot's own generated images render the same in history. Multiple
 # images need distinct names, so they fall back to `generated_<n>.png` (Discord collides on dupes).
 INLINE_IMAGE_FILENAME = "generated.png"
-# Discord caps one message at 10 attachments; the voice clip plus MAX_INLINE_IMAGES exactly fits,
-# but a rare voice + music + 9 images is 11, so this is the defensive clamp guarding the single
-# attach edit. Voice/music are ordered first, so the clamp drops a trailing (already rendered)
-# image rather than the clip; a per-reply dynamic image budget is not worth the complexity.
-DISCORD_ATTACHMENT_LIMIT = 10
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
 # which stops Discord from rendering the actual mention. Strip those wrappers
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 DISCORD_MESSAGE_LIMIT = 2000
-# Discord measures the full multipart request body, not just the file bytes, so the combined
-# attach is held this far under the limit (mirrors parse_threads' 1 MiB envelope reservation);
-# without it a set whose per-file sizes each pass can still 400 the final edit.
-MEDIA_ENVELOPE_MARGIN = 1024 * 1024
-
-
-class _MediaCandidate(BaseModel):
-    """One built media clip/image awaiting the file-vs-host decision in the single attach edit.
-
-    Attributes:
-        data: The media bytes to attach natively or host externally.
-        filename: Attachment filename carrying the allowlisted suffix (reply.wav / music.<ext> /
-            generated[_n].png), used both for the Discord attachment and the hosted suffix.
-    """
-
-    data: bytes = Field(..., description="The media bytes to attach natively or host externally.")
-    filename: str = Field(..., description="Attachment filename carrying the allowlisted suffix.")
 
 
 class ResponseStreamer(BaseModel):
@@ -147,9 +129,16 @@ class ResponseStreamer(BaseModel):
         default=None,
         description="The <deep-research> brief the answer model asked to launch, if any.",
     )
-    media_hosting: SkipValidation[MediaHostingService | None] = Field(
-        default=None,
-        description="External host for media too big to upload; None disables the URL fallback.",
+    media_delivery: MediaDeliveryPlanner = Field(
+        default_factory=lambda: MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(
+                config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False)
+            )
+        ),
+        description=(
+            "Decides attach-vs-host-vs-drop for generated media; defaults to a disabled planner "
+            "so a streamer built without one drops oversize media exactly as the host-free path."
+        ),
     )
     created_at: float = Field(
         default_factory=time.monotonic,
@@ -444,7 +433,7 @@ class ResponseStreamer(BaseModel):
         """
         return upload_limit_for(guild=self.message.guild)
 
-    async def _build_voice_candidate(self) -> _MediaCandidate | None:
+    async def _build_voice_candidate(self) -> MediaItem | None:
         """Synthesizes the <voice> segment to a WAV candidate, or None when not delivered.
 
         Best-effort: a skip (not requested / disabled / empty) is silent, while a
@@ -484,9 +473,9 @@ class ResponseStreamer(BaseModel):
             # Any other synthesis failure (most often a policy refusal); synthesize() logged it.
             await self._hint_media_unavailable(emoji="⚠️")
             return None
-        return _MediaCandidate(data=clip.audio, filename=VOICE_REPLY_FILENAME)
+        return MediaItem(source=clip.audio, filename=VOICE_REPLY_FILENAME)
 
-    async def _build_image_candidates(self) -> list[_MediaCandidate]:
+    async def _build_image_candidates(self) -> list[MediaItem]:
         """Renders the <image> requests to PNG candidates, in order; [] when none delivered.
 
         Best-effort like voice: no request or a disabled generator is silent. The capped prompts
@@ -527,7 +516,7 @@ class ResponseStreamer(BaseModel):
                 for prompt in prompts
             )
         )
-        candidates: list[_MediaCandidate] = []
+        candidates: list[MediaItem] = []
         dropped = False
         for index, image in enumerate(images, start=1):
             if image is None:
@@ -537,12 +526,12 @@ class ResponseStreamer(BaseModel):
             # A single image keeps `generated.png` to mirror the IMAGE route; multiples need
             # distinct names since Discord collides on duplicate attachment filenames.
             filename = INLINE_IMAGE_FILENAME if len(prompts) == 1 else f"generated_{index}.png"
-            candidates.append(_MediaCandidate(data=image, filename=filename))
+            candidates.append(MediaItem(source=image, filename=filename))
         if dropped:
             await self._hint_media_unavailable(emoji="⚠️")
         return candidates
 
-    async def _build_music_candidate(self) -> _MediaCandidate | None:
+    async def _build_music_candidate(self) -> MediaItem | None:
         """Generates the <music> clip to an audio candidate, or None when not delivered.
 
         Best-effort like the inline image path: a skip (not requested / disabled) is silent, while
@@ -569,21 +558,7 @@ class ResponseStreamer(BaseModel):
             # generate() logged the failure/timeout; hint once.
             await self._hint_media_unavailable(emoji="⚠️")
             return None
-        return _MediaCandidate(data=clip.audio, filename=music_filename(mime_type=clip.mime_type))
-
-    async def _host_candidate(self, candidate: _MediaCandidate) -> str | None:
-        """Hosts one oversized candidate externally and returns its URL, or None if unavailable.
-
-        Runs the blocking write off the event loop; the suffix comes from the candidate filename
-        so the hosting allowlist (and thus inline playability of the link) is honored.
-        """
-        if self.media_hosting is None:
-            return None
-        return await asyncio.to_thread(
-            self.media_hosting.publish_bytes,
-            data=candidate.data,
-            suffix=Path(candidate.filename).suffix,
-        )
+        return MediaItem(source=clip.audio, filename=music_filename(mime_type=clip.mime_type))
 
     async def _attach_generated_media(self) -> None:
         """Attaches the spoken clip, music clip, and inline images in one edit, hosting overflow.
@@ -612,70 +587,26 @@ class ResponseStreamer(BaseModel):
             self._build_music_candidate(),
             self._build_image_candidates(),
         )
-        candidates = [
-            candidate
-            for candidate in (voice_candidate, music_candidate, *image_candidates)
-            if candidate is not None
+        items = [
+            item
+            for item in (voice_candidate, music_candidate, *image_candidates)
+            if item is not None
         ]
-        if not candidates:
+        if not items:
             return
-        native, hosted_urls, dropped = await self._partition_media(
-            candidates=candidates, upload_limit=self._upload_limit()
+        plan = await self.media_delivery.plan(
+            items=items, upload_limit=self._upload_limit(), envelope_margin=MEDIA_ENVELOPE_MARGIN
         )
-        files = [
-            File(fp=BytesIO(candidate.data), filename=candidate.filename) for candidate in native
-        ]
-        await self._finalize_media_edit(reply=reply, files=files, hosted_urls=hosted_urls)
-        if dropped:
+        files = [item.to_file() for item in plan.native]
+        await self._finalize_media_edit(reply=reply, files=files, hosted_urls=plan.hosted_urls)
+        if plan.dropped_items:
             await self._hint_media_unavailable(emoji="⚠️")
         logfire.info(
             "Generated media attached",
             message_id=self.message.id,
             file_count=len(files),
-            hosted_count=len(hosted_urls),
+            hosted_count=len(plan.hosted_urls),
         )
-
-    async def _partition_media(
-        self, *, candidates: list[_MediaCandidate], upload_limit: int
-    ) -> tuple[list[_MediaCandidate], list[str], bool]:
-        """Splits candidates into native-attachable files vs hosted URLs; (native, urls, dropped).
-
-        (a) A candidate individually over the limit is hosted (or dropped when hosting is off /
-        fails). (b) Then the largest remaining are peeled to hosted URLs until the combined
-        multipart body clears the limit. The native list is finally clamped to Discord's
-        10-attachment cap (voice/music lead, so a trailing image drops). `dropped` flags any
-        candidate lost to a hosting failure or the count cap, so the caller can ⚠️ hint.
-        """
-        hosted_urls: list[str] = []
-        dropped = False
-        # (a) Per-item: host every individually-oversize candidate concurrently (independent
-        # writes), keeping the rest as native-attach candidates.
-        fitting = [c for c in candidates if len(c.data) <= upload_limit]
-        oversize = [c for c in candidates if len(c.data) > upload_limit]
-        if oversize:
-            urls = await asyncio.gather(*(self._host_candidate(candidate=c) for c in oversize))
-            for url in urls:
-                if url is not None:
-                    hosted_urls.append(url)
-                else:
-                    dropped = True
-
-        # (b) Combined total: peel the largest remaining to a URL until the multipart body fits.
-        total = sum(len(candidate.data) for candidate in fitting)
-        while fitting and total + MEDIA_ENVELOPE_MARGIN > upload_limit:
-            largest = max(fitting, key=lambda candidate: len(candidate.data))
-            fitting.remove(largest)
-            total -= len(largest.data)
-            url = await self._host_candidate(candidate=largest)
-            if url is not None:
-                hosted_urls.append(url)
-            else:
-                dropped = True
-
-        if len(fitting) > DISCORD_ATTACHMENT_LIMIT:
-            fitting = fitting[:DISCORD_ATTACHMENT_LIMIT]
-            dropped = True
-        return fitting, hosted_urls, dropped
 
     async def _finalize_media_edit(
         self, *, reply: Message, files: list[File], hosted_urls: list[str]

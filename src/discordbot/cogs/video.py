@@ -11,8 +11,13 @@ from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.downloader import VideoDownloader
-from discordbot.utils.media_hosting import MediaHostingConfig, MediaHostingService
-from discordbot.utils.discord_limits import upload_limit_for
+from discordbot.utils.media_delivery import (
+    MediaItem,
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+    upload_limit_for,
+)
 
 
 class VideoCogs(commands.Cog):
@@ -29,7 +34,9 @@ class VideoCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.media_hosting = MediaHostingService(config=MediaHostingConfig())
+        self.media_delivery = MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(config=MediaHostingConfig())
+        )
 
     @nextcord.slash_command(
         name="download_video",
@@ -77,9 +84,10 @@ class VideoCogs(commands.Cog):
             downloader = VideoDownloader(output_folder=tempfile.gettempdir())
             result = await asyncio.to_thread(downloader.download, url=url, quality=quality)
             with result:
-                size_bytes = result.filename.stat().st_size
-                file_size_mb = size_bytes / 1024 / 1024
-                if size_bytes <= upload_limit:
+                file_size_mb = result.filename.stat().st_size / 1024 / 1024
+                item = MediaItem(source=result.filename, filename=result.filename.name)
+                plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
+                if plan.native:
                     await self._deliver(
                         interaction=interaction,
                         file_size_mb=file_size_mb,
@@ -92,12 +100,11 @@ class VideoCogs(commands.Cog):
                 # rather than downgrading quality. Under ~100 MiB Discord still inline-plays the
                 # link; above that it is a browser-playable link. publish_path moves the file out
                 # of the temp dir, so the `with result` exit unlink becomes a no-op.
-                public_url = await asyncio.to_thread(
-                    self.media_hosting.publish_path, file_path=result.filename
-                )
-                if public_url is not None:
+                if plan.hosted_urls:
                     await self._deliver_url(
-                        interaction=interaction, file_size_mb=file_size_mb, public_url=public_url
+                        interaction=interaction,
+                        file_size_mb=file_size_mb,
+                        public_url=plan.hosted_urls[0],
                     )
                     return
 

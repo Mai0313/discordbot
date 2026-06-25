@@ -6,14 +6,20 @@ import tempfile
 import contextlib
 
 import logfire
-from nextcord import File, Color, Embed, Message, AllowedMentions
+from nextcord import Color, Embed, Message, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
 from discordbot.utils.reactions import update_reaction
-from discordbot.utils.media_hosting import MediaHostingConfig, MediaHostingService
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.utils.discord_limits import upload_limit_for
+from discordbot.utils.media_delivery import (
+    MEDIA_ENVELOPE_MARGIN,
+    MediaItem,
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+    upload_limit_for,
+)
 
 
 class ThreadsCogs(commands.Cog):
@@ -34,7 +40,9 @@ class ThreadsCogs(commands.Cog):
         self.bot = bot
         self.output_folder = Path(tempfile.gettempdir())
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
-        self.media_hosting = MediaHostingService(config=MediaHostingConfig())
+        self.media_delivery = MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(config=MediaHostingConfig())
+        )
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:
@@ -141,22 +149,6 @@ class ThreadsCogs(commands.Cog):
             )
         return embeds
 
-    async def _host_oversized_videos(self, target: ThreadsOutput) -> list[str]:
-        """Hosts a target's videos on the external static server, returning their URLs.
-
-        Returns an empty list when hosting is unavailable or fails for every video, so the caller
-        falls back to today's ⚠️ refusal. The move happens before `parse_cm.__exit__` deletes the
-        temp files, so the later cleanup of a moved file is a harmless no-op.
-        """
-        hosted_urls: list[str] = []
-        for path in target.video_paths:
-            if not path.exists():
-                continue
-            public_url = await asyncio.to_thread(self.media_hosting.publish_path, file_path=path)
-            if public_url is not None:
-                hosted_urls.append(public_url)
-        return hosted_urls
-
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
         """Listens for messages and parses Threads links.
@@ -188,13 +180,6 @@ class ThreadsCogs(commands.Cog):
                     return
 
                 target = results[-1]
-                total_size = sum(f.stat().st_size for f in target.video_paths if f.exists())
-                # Discord measures the full multipart request body, not just file bytes,
-                # so reserve 1 MiB for the multipart envelope + embeds JSON. Pull the
-                # actual per-guild limit from nextcord (boost tier 2/3 raises it to 50/100 MiB);
-                # message.guild is None in DMs, so fall back to Discord's non-Nitro base of 10 MiB.
-                max_size = upload_limit_for(guild=message.guild) - 1024 * 1024
-
                 # A text body past the embed-description limit cannot be rescued by hosting, so
                 # it stays the ⚠️ refusal. (Image count is not guarded: _build_embeds caps the
                 # message at 10 embeds and shows as many images as fit.)
@@ -205,37 +190,39 @@ class ThreadsCogs(commands.Cog):
                     return
 
                 # Videos too big to attach are hosted on the external static server and linked
-                # instead of refusing the whole post; small enough, they attach natively as today.
-                hosted_urls: list[str] = []
-                if total_size > max_size:
-                    hosted_urls = await self._host_oversized_videos(target=target)
-                    if not hosted_urls:
-                        # Hosting unavailable/failed for every video: keep today's refusal.
-                        await update_reaction(
-                            message=message,
-                            bot_user=self.bot.user,
-                            emoji="⚠️",
-                            previous=current_emoji,
-                        )
-                        return
-
-                files = (
-                    []
-                    if hosted_urls
-                    else [
-                        File(fp=str(path), filename=path.name)
-                        for path in target.video_paths
-                        if path.exists()
-                    ]
+                # instead of refusing the whole post; the rest attach natively. The planner
+                # reserves 1 MiB for the multipart envelope + embeds JSON and pulls the per-guild
+                # limit from nextcord (boost tier raises it to 50/100 MiB; a DM has the 10 MiB base).
+                items = [
+                    MediaItem(source=path, filename=path.name)
+                    for path in target.video_paths
+                    if path.exists()
+                ]
+                plan = await self.media_delivery.plan(
+                    items=items,
+                    upload_limit=upload_limit_for(guild=message.guild),
+                    envelope_margin=MEDIA_ENVELOPE_MARGIN,
                 )
+                if plan.dropped_items:
+                    # An oversize video that could not be hosted (hosting off / failed) keeps
+                    # today's whole-post ⚠️ refusal rather than posting a partial chain. Kept simple
+                    # on purpose: in the near-unreachable hosting-on partial-failure case (one
+                    # sibling video already moved into the serve dir, another's write fails) this
+                    # leaves the moved file orphaned at an unposted URL; both serve-dir writes
+                    # realistically succeed or fail together, so it is not worth a cleanup branch.
+                    await update_reaction(
+                        message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
+                    )
+                    return
 
+                files = [item.to_file() for item in plan.native]
                 embeds = self._build_embeds(results=results)
 
                 with contextlib.suppress(Exception):
                     await message.edit(suppress=True)
 
                 await message.reply(
-                    content="\n".join(hosted_urls) if hosted_urls else None,
+                    content="\n".join(plan.hosted_urls) if plan.hosted_urls else None,
                     embeds=embeds,
                     mention_author=False,
                     allowed_mentions=AllowedMentions.none(),

@@ -53,6 +53,11 @@ from discordbot.cogs._research.agent import (
     start_deep_research,
 )
 from discordbot.cogs._research.views import PlanApprovalView, ResultEscalationView
+from discordbot.utils.media_delivery import (
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+)
 from discordbot.cogs._research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs._research.delivery import split_report, deliver_report
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -106,6 +111,9 @@ class ResearchCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
+        self.media_delivery = MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(config=MediaHostingConfig())
+        )
         # One in-flight research per owner; the lock guards the check-then-create.
         self._owner_locks: KeyedLockManager[int] = KeyedLockManager()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -445,6 +453,7 @@ class ResearchCogs(commands.Cog):
             allowed_mentions=_owner_allowed_mentions(
                 owner_id=_owner_id_from_mention(mention=owner_mention)
             ),
+            media_delivery=self.media_delivery,
         )
         await db.set_phase(thread_id=thread.id, phase="done")
         self._active_threads.discard(thread.id)
