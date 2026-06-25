@@ -762,7 +762,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return
         await self._stream_media_persona_reply(
             message=message,
-            reply=await self._persona_base_reply(message=message, reply=reply),
+            reply=reply,
             context_task=context_task,
             model=self.runtime_models.video_reply_model,
             system_prompt=VIDEO_REPLY_PROMPT,
@@ -775,7 +775,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self,
         *,
         message: Message,
-        reply: Message,
+        reply: Message | None,
         context_task: "asyncio.Task[ReplyContext]",
         model: ModelSettings,
         system_prompt: str,
@@ -785,17 +785,23 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Best-effort: streams a persona reply onto an already-delivered generated image/video.
 
-        Shared by the IMAGE and VIDEO routes' post-delivery reply. Builds the answer-path input
-        (history, selected user memory, reference, current), appends the just-made media as the
-        focus the model replies about, and streams onto the already-sent media message:
-        pre-seeding `reply` makes the streamer edit that message (its content edits keep the
-        attached media). Injects only the selected user memory, never the server memory block,
-        and seeds the selection-call usage / memory labels so the footer matches the QA path.
-        Consumes the speculative `context_task` (awaited here so its build overlaps generation);
-        any failure leaves the delivered media untouched.
+        Shared by the IMAGE and VIDEO routes' post-delivery reply. `reply` is the delivered media
+        message (native attachment) or None when the media was hosted as a separate URL; the
+        persona-base message is built from it INSIDE the protected flow (`_persona_base_reply`), so a
+        base-creation or streaming failure is swallowed here instead of surfacing to the outer error
+        path, and a fresh hosted-case base that never received content is deleted (never an orphan).
+        Builds the answer-path input (history, selected user memory, reference, current), appends the
+        just-made media as the focus, and streams onto the base (its content edits keep an attached
+        media). Injects only the selected user memory, never the server memory block, and seeds the
+        selection-call usage / memory labels so the footer matches the QA path. Consumes the
+        speculative `context_task` (awaited here so its build overlaps generation); any failure
+        leaves the delivered media untouched.
         """
+        base: Message | None = None
+        streamer: ResponseStreamer | None = None
         try:
             context = await context_task
+            base = await self._persona_base_reply(message=message, reply=reply)
             # Mirror the answer path's order (history, memory, reference, current), injecting
             # only the selected user memory, never the server memory block.
             response_input: ResponseInputParam = [*context.hist_messages]
@@ -821,7 +827,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             streamer = ResponseStreamer(
                 message=message,
-                reply=reply,
+                reply=base,
                 memory_lookups=context.memory_labels,
                 input_tokens=context.selection_input_tokens,
                 output_tokens=context.selection_output_tokens,
@@ -848,6 +854,16 @@ class ReplyGeneratorCogs(commands.Cog):
                 message_id=message.id,
                 _exc_info=True,
             )
+            # A fresh hosted-case base (reply was None) that never received content is a bare ping;
+            # delete it so a failed persona reply leaves no orphan. A native media message
+            # (reply is not None) is the deliverable itself and is always kept.
+            if (
+                reply is None
+                and base is not None
+                and (streamer is None or not streamer.content_started)
+            ):
+                with contextlib.suppress(Exception):
+                    await base.delete()
 
     async def _handle_image_reply(
         self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
@@ -906,7 +922,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # image rides as inline base64 (provider-agnostic), unlike the video's Files API handle.
         await self._stream_media_persona_reply(
             message=message,
-            reply=await self._persona_base_reply(message=message, reply=reply),
+            reply=reply,
             context_task=context_task,
             model=self.runtime_models.image_reply_model,
             system_prompt=IMAGE_REPLY_PROMPT,

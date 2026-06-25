@@ -186,9 +186,14 @@ class FakeReply:
         self.embed: Embed | None = None
         self.replies: list[FakeReply] = []
         self.edits: list[str] = []
+        self.deleted = False
         # Records the allowed_mentions arg of each edit/reply so tests can prove a media edit /
         # follow-up keeps AllowedMentions.none() (dropping it would re-ping the author).
         self.allowed_mentions_seen: list[object | None] = []
+
+    async def delete(self) -> None:
+        """Records that this reply was deleted (e.g. the orphaned persona-base cleanup)."""
+        self.deleted = True
 
     async def edit(
         self,
@@ -2764,6 +2769,51 @@ async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
     )
     # The persona reply streamed onto its own message and never clobbered the URL.
     assert "media.test" not in (message.replies[1].content or "")
+
+
+async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hosted oversize image: a failed persona stream deletes the fresh base, leaving no orphan."""
+    cog = _cog()
+    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
+        media_hosting=_hosting_service(serve_dir=tmp_path)
+    )
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(
+        filesize_limit=4
+    )  # oversize -> hosted URL deliverable (reply is None)
+
+    class _BoomStreamer:
+        """Stands in for ResponseStreamer and fails while streaming the persona reply."""
+
+        content_started = False
+
+        def __init__(self, **kwargs: object) -> None:
+            """Ignores the streamer kwargs."""
+            del kwargs
+
+        async def stream(self, *, responses: object) -> str:
+            """Fails after the persona base has been created."""
+            del responses
+            raise RuntimeError("stream boom")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _BoomStreamer)
+
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # replies[0] is the hosted-URL deliverable (kept); replies[1] is the bare persona base (deleted).
+    assert len(message.replies) == 2
+    assert message.replies[0].deleted is False
+    assert any(
+        line.startswith("https://media.test/")
+        for line in (message.replies[0].content or "").splitlines()
+    )
+    assert message.replies[1].deleted is True  # the orphaned persona base was cleaned up
 
 
 async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> None:
