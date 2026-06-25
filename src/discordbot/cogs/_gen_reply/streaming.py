@@ -149,6 +149,9 @@ class ResponseStreamer(BaseModel):
     )
     _editor_task: asyncio.Task[None] | None = PrivateAttr(default=None)
     _editor_stop: asyncio.Event = PrivateAttr(default_factory=asyncio.Event)
+    # The usage footer appended to stored_content, kept so the media edit can splice any hosted-URL
+    # line BEFORE it (USAGE_FOOTER_RE strips only a footer at end-of-message).
+    _usage_footer: str = PrivateAttr(default="")
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -382,6 +385,7 @@ class ResponseStreamer(BaseModel):
         reply_chars = len(self.stored_content)
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
         self.stored_content += usage_footer
+        self._usage_footer = usage_footer
 
         await self._attach_generated_media()
         logfire.info(
@@ -624,7 +628,11 @@ class ResponseStreamer(BaseModel):
         if hosted_urls:
             link_line = "\n-# 媒體過大，改用連結\n" + "\n".join(hosted_urls)
             if len(self.stored_content) + len(link_line) <= DISCORD_MESSAGE_LIMIT:
-                self.stored_content += link_line
+                # Splice the link BEFORE the usage footer (stored_content ends with it): appending
+                # after the footer would leave USAGE_FOOTER_RE unable to strip it, so later history
+                # rendering would keep the model/token/cost footer inside the bot's answer.
+                body = self.stored_content.removesuffix(self._usage_footer)
+                self.stored_content = f"{body}{link_line}{self._usage_footer}"
                 content = self.stored_content
             else:
                 follow_up = link_line.lstrip("\n")

@@ -1042,6 +1042,13 @@ async def test_voice_too_big_falls_back_to_hosted_url(
     content = message.replies[0].content or ""
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
     assert ".wav" in content
+    # The hosted link rides BEFORE the usage footer, so USAGE_FOOTER_RE still strips the footer from
+    # later history; the link must survive that strip, and the footer must not (else it would leak
+    # the model/token/cost line into the bot's answer in history / memory).
+    assert USAGE_FOOTER_RE.search(content) is not None
+    stripped = USAGE_FOOTER_RE.sub("", content)
+    assert "media.test" in stripped
+    assert "⬆" not in stripped
     # The media edit that appended the URL must carry AllowedMentions.none() so the already-pinged
     # author is never re-pinged; a regression dropping the kwarg would record None here.
     assert message.replies[0].allowed_mentions_seen[-1] is not None
