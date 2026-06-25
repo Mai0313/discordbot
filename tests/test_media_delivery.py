@@ -1,7 +1,8 @@
 """Unit tests for the unified media-delivery module: the host writer and the planner."""
 
 import os
-import errno
+import re
+import time
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,12 @@ from discordbot.utils.media_delivery import (
 
 
 def _service(
-    *, serve_dir: Path, enabled: bool = True, base_url: str = "https://media.test"
+    *,
+    serve_dir: Path,
+    enabled: bool = True,
+    base_url: str = "https://media.test",
+    max_bytes: int = 8 * 1024**3,
+    retention_hours: float = 168.0,
 ) -> MediaHostingService:
     """Builds a host writer whose config points at a temp serve dir (via the env aliases)."""
     return MediaHostingService(
@@ -24,8 +30,28 @@ def _service(
             MEDIA_HOSTING_ENABLED=enabled,
             MEDIA_HOSTING_BASE_URL=base_url,
             MEDIA_HOSTING_SERVE_DIR=str(serve_dir),
+            MEDIA_HOSTING_MAX_BYTES=max_bytes,
+            MEDIA_HOSTING_RETENTION_HOURS=retention_hours,
         )
     )
+
+
+def _hosted_files(serve_dir: Path) -> list[str]:
+    """The final hosted filenames in a serve dir (excluding in-flight `.tmp-*` temps)."""
+    return [p.name for p in serve_dir.iterdir() if not p.name.startswith(".tmp-")]
+
+
+def _host(service: MediaHostingService, *, data: bytes, suffix: str = ".png") -> str:
+    """Hosts bytes and returns the resulting filename (asserts the publish succeeded)."""
+    url = service.publish_bytes(data=data, suffix=suffix)
+    assert url is not None
+    return url.removeprefix("https://media.test/")
+
+
+def _age(path: Path, *, seconds: float) -> None:
+    """Backdates a file's mtime by `seconds` (so it is past the eviction grace / age cutoff)."""
+    when = time.time() - seconds
+    os.utime(path, (when, when))
 
 
 def _planner(
@@ -40,18 +66,53 @@ def _planner(
 # --- host writer (publish_bytes / publish_path) ---------------------------------------------
 
 
-def test_publish_bytes_writes_allowlisted_suffix(tmp_path: Path) -> None:
-    """An allowlisted suffix is written under an unguessable name and a public URL returned."""
+def test_publish_bytes_writes_content_addressed_name(tmp_path: Path) -> None:
+    """Bytes are written under a 32-hex content-addressed name; the temp is os.replace'd away."""
     service = _service(serve_dir=tmp_path)
 
     url = service.publish_bytes(data=b"fake-wav", suffix=".wav")
 
     assert url is not None
     name = url.removeprefix("https://media.test/")
-    assert name.endswith(".wav")
-    assert name != ".wav"  # a token stem precedes the suffix
-    written = tmp_path / name
-    assert written.read_bytes() == b"fake-wav"
+    assert re.fullmatch(r"[0-9a-f]{32}\.wav", name)  # content hash + allowlisted suffix
+    assert (tmp_path / name).read_bytes() == b"fake-wav"
+    assert not any(p.name.startswith(".tmp-") for p in tmp_path.iterdir())  # no leftover temp
+
+
+def test_publish_bytes_dedups_identical_content(tmp_path: Path) -> None:
+    """Hosting identical bytes twice yields one file and the same URL, refreshing the mtime."""
+    service = _service(serve_dir=tmp_path)
+
+    url1 = _host(service, data=b"A" * 64)
+    _age(tmp_path / url1, seconds=100)  # age the file so the refresh is observable
+    old_mtime = (tmp_path / url1).stat().st_mtime
+    url2 = service.publish_bytes(data=b"A" * 64, suffix=".png")
+
+    assert url2 == f"https://media.test/{url1}"
+    assert _hosted_files(tmp_path) == [url1]  # exactly one copy
+    assert (tmp_path / url1).stat().st_mtime > old_mtime  # the re-host refreshed it (LRU/age)
+
+
+def test_publish_bytes_different_content_two_files(tmp_path: Path) -> None:
+    """Different bytes hash to different names: two files, two URLs."""
+    service = _service(serve_dir=tmp_path)
+
+    name_a = _host(service, data=b"A" * 10)
+    name_b = _host(service, data=b"B" * 10)
+
+    assert name_a != name_b
+    assert len(_hosted_files(tmp_path)) == 2
+
+
+def test_publish_bytes_same_content_different_suffix_two_files(tmp_path: Path) -> None:
+    """The same bytes under different suffixes stay distinct (the suffix rides the name)."""
+    service = _service(serve_dir=tmp_path)
+
+    name_png = _host(service, data=b"A" * 10, suffix=".png")
+    name_jpg = _host(service, data=b"A" * 10, suffix=".jpg")
+
+    assert name_png != name_jpg
+    assert len(_hosted_files(tmp_path)) == 2
 
 
 def test_publish_bytes_rejects_non_allowlisted_suffix(tmp_path: Path) -> None:
@@ -74,52 +135,78 @@ def test_publish_bytes_normalizes_uppercase_suffix(tmp_path: Path) -> None:
     assert url.endswith(".jpg")
 
 
-def test_publish_path_moves_file_across_dirs(tmp_path: Path) -> None:
-    """publish_path moves the source into the serve dir (source gone, dest present)."""
-    source_dir = tmp_path / "src"
-    serve_dir = tmp_path / "serve"
-    source_dir.mkdir()
-    serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
-    source = source_dir / "clip.mp4"
-    source.write_bytes(b"movie")
-    service = _service(serve_dir=serve_dir)
-
-    url = service.publish_path(file_path=source)
-
-    assert url is not None
-    assert not source.exists()
-    name = url.removeprefix("https://media.test/")
-    assert (serve_dir / name).read_bytes() == b"movie"
-
-
-def test_publish_path_falls_back_on_cross_device_move(
+def test_publish_bytes_failure_leaves_no_final_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When os.rename raises EXDEV (serve dir is a bind-mount), shutil.move's copy fallback runs."""
-    source_dir = tmp_path / "src"
+    """If the atomic os.replace fails, no content-named file ever appears (and the temp is cleaned)."""
+    service = _service(serve_dir=tmp_path)
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", _boom)
+
+    assert service.publish_bytes(data=b"A" * 10, suffix=".png") is None
+    assert _hosted_files(tmp_path) == []  # only a (cleaned) temp ever existed, never a final name
+
+
+def test_publish_path_hosts_and_consumes_source(tmp_path: Path) -> None:
+    """publish_path hosts the source under a content name and unlinks the source on a miss."""
     serve_dir = tmp_path / "serve"
-    source_dir.mkdir()
     serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
-    source = source_dir / "clip.mp4"
+    source = tmp_path / "clip.mp4"
     source.write_bytes(b"movie")
     service = _service(serve_dir=serve_dir)
-
-    def _exdev_rename(*args: object, **kwargs: object) -> None:
-        raise OSError(errno.EXDEV, "Invalid cross-device link")
-
-    monkeypatch.setattr(os, "rename", _exdev_rename)
 
     url = service.publish_path(file_path=source)
 
     assert url is not None
-    assert not source.exists()
+    assert not source.exists()  # consumed on a fresh host
     name = url.removeprefix("https://media.test/")
+    assert re.fullmatch(r"[0-9a-f]{32}\.mp4", name)
     assert (serve_dir / name).read_bytes() == b"movie"
+
+
+def test_publish_path_dedup_hit_leaves_source(tmp_path: Path) -> None:
+    """On a dedup hit publish_path returns the URL but leaves the source for the caller to clean."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    service = _service(serve_dir=serve_dir)
+    first = tmp_path / "a.mp4"
+    first.write_bytes(b"movie")
+    url1 = service.publish_path(file_path=first)  # miss -> hosted, source consumed
+    second = tmp_path / "b.mp4"
+    second.write_bytes(b"movie")  # byte-identical
+
+    url2 = service.publish_path(file_path=second)  # hit
+
+    assert url2 == url1
+    assert second.exists()  # the source is LEFT for the caller's own cleanup
+    assert len(_hosted_files(serve_dir)) == 1
+
+
+def test_publish_path_streams_without_reading_whole_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """publish_path hashes by streaming; it never read_bytes() the (possibly multi-GB) source."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    source = tmp_path / "clip.mp4"
+    source.write_bytes(b"x" * 4096)
+    service = _service(serve_dir=serve_dir)
+
+    def _no_read_bytes(self: Path) -> bytes:
+        raise AssertionError("publish_path must stream the hash, not read the whole file")
+
+    monkeypatch.setattr(Path, "read_bytes", _no_read_bytes)
+
+    assert service.publish_path(file_path=source) is not None
 
 
 def test_publish_path_rejects_non_allowlisted_and_keeps_file(tmp_path: Path) -> None:
-    """A non-allowlisted file is not moved; it stays in place for the caller's own cleanup."""
+    """A non-allowlisted file is not hosted; it stays in place for the caller's own cleanup."""
     serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
     source = tmp_path / "archive.zip"
     source.write_bytes(b"data")
     service = _service(serve_dir=serve_dir)
@@ -170,6 +257,155 @@ def test_missing_serve_dir_falls_back_without_creating_it(tmp_path: Path) -> Non
 
     assert service.publish_bytes(data=b"x", suffix=".png") is None
     assert not serve_dir.exists()  # the bot must not create the (unmounted) serve dir
+
+
+# --- cleanup: size cap, age cap, reaper guard -----------------------------------------------
+
+
+def test_size_cap_evicts_oldest_keeps_recent(tmp_path: Path) -> None:
+    """Past the size cap, the oldest hosted files are evicted (eagerly, at publish time)."""
+    service = _service(serve_dir=tmp_path, max_bytes=120, retention_hours=0)
+    n1 = _host(service, data=b"A" * 50)
+    _age(tmp_path / n1, seconds=1000)  # past the grace window
+    n2 = _host(service, data=b"B" * 50)
+    _age(tmp_path / n2, seconds=500)
+    n3 = _host(service, data=b"C" * 50)  # fresh; total 150 > 120 -> evict the oldest aged file
+
+    remaining = _hosted_files(tmp_path)
+    assert n1 not in remaining  # oldest evicted
+    assert n2 in remaining
+    assert n3 in remaining
+    assert sum((tmp_path / f).stat().st_size for f in remaining) <= 120
+
+
+def test_size_cap_protects_files_within_grace(tmp_path: Path) -> None:
+    """A just-hosted file (and every concurrent publish) is grace-protected from eviction."""
+    service = _service(serve_dir=tmp_path, max_bytes=80, retention_hours=0)
+    n1 = _host(service, data=b"A" * 50)
+    n2 = _host(service, data=b"B" * 50)  # total 100 > 80, but both within grace -> nothing evicted
+
+    assert set(_hosted_files(tmp_path)) == {n1, n2}  # disk sits temporarily over cap
+
+
+def test_size_cap_keeps_single_file_larger_than_cap(tmp_path: Path) -> None:
+    """A delivered file alone exceeding the cap is kept; the loop terminates without thrashing."""
+    service = _service(serve_dir=tmp_path, max_bytes=30, retention_hours=0)
+    n1 = _host(service, data=b"A" * 20)
+    _age(tmp_path / n1, seconds=1000)
+    n2 = _host(service, data=b"B" * 100)  # alone over cap; total 120 -> evict n1, then stop
+
+    remaining = _hosted_files(tmp_path)
+    assert n2 in remaining  # the delivered file survives
+    assert n1 not in remaining  # the only evictable candidate was reaped
+
+
+def test_age_cap_reaps_old_keeps_recent(tmp_path: Path) -> None:
+    """cleanup_expired deletes files older than retention_hours and keeps recent ones."""
+    service = _service(serve_dir=tmp_path, max_bytes=0, retention_hours=1)
+    old = _host(service, data=b"A" * 10)
+    _age(tmp_path / old, seconds=7200)  # 2h, past the 1h retention
+    recent = _host(service, data=b"B" * 10)
+
+    deleted = service.cleanup_expired(now=time.time())
+
+    assert deleted == 1
+    remaining = _hosted_files(tmp_path)
+    assert old not in remaining
+    assert recent in remaining
+
+
+def test_age_cap_keeps_file_at_exact_cutoff(tmp_path: Path) -> None:
+    """A file whose mtime equals the cutoff is kept; only strictly-older files are reaped."""
+    service = _service(serve_dir=tmp_path, max_bytes=0, retention_hours=1)
+    name = _host(service, data=b"A" * 10)
+    now = 1_000_000.0
+    os.utime(tmp_path / name, (now - 3600.0, now - 3600.0))  # mtime == now - retention
+
+    assert service.cleanup_expired(now=now) == 0
+    assert _hosted_files(tmp_path) == [name]
+
+
+def test_cleanup_never_touches_foreign_files(tmp_path: Path) -> None:
+    """The reaper only ever deletes the bot's own 32-hex files, never a foreign file in the dir."""
+    service = _service(serve_dir=tmp_path, max_bytes=1, retention_hours=0.0001)
+    (tmp_path / "access.log").write_text("log")  # foreign, allowlisted suffix
+    (tmp_path / "report.json").write_text("{}")  # foreign, allowlisted suffix
+    (tmp_path / "movie.mp4").write_bytes(b"film")  # foreign, human stem
+    (tmp_path / ("0" * 32 + ".zip")).write_bytes(b"zip")  # 32-hex stem but NON-allowlisted ext
+    (tmp_path / "subdir").mkdir()
+    bot_file = _host(service, data=b"Z" * 99)  # a real bot file that should be reaped
+    for entry in tmp_path.iterdir():
+        if entry.is_file():
+            _age(entry, seconds=99999)
+
+    service.run_maintenance(now=time.time())
+
+    survivors = {p.name for p in tmp_path.iterdir()}
+    assert {"access.log", "report.json", "movie.mp4", "0" * 32 + ".zip", "subdir"} <= survivors
+    assert bot_file not in survivors  # only the bot's own file was reaped
+
+
+def test_cleanup_skips_symlinks(tmp_path: Path) -> None:
+    """A hex-named symlink pointing at a foreign file is skipped, so the target is never deleted."""
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    foreign = tmp_path / "foreign.mp4"
+    foreign.write_bytes(b"x" * 999)
+    link = serve_dir / ("0" * 32 + ".mp4")
+    link.symlink_to(foreign)
+    service = _service(serve_dir=serve_dir, max_bytes=1, retention_hours=0.0001)
+
+    service.run_maintenance(now=time.time())
+
+    assert (
+        foreign.exists()
+    )  # a symlink is not a regular file, so it (and its target) are untouched
+
+
+def test_enforce_cap_disabled_when_max_bytes_zero(tmp_path: Path) -> None:
+    """max_bytes <= 0 disables size eviction independently of the cleanup gate."""
+    service = _service(serve_dir=tmp_path, max_bytes=0, retention_hours=0)
+    name = _host(service, data=b"A" * 999)
+    _age(tmp_path / name, seconds=99999)
+
+    assert service.enforce_cap(now=time.time()) == 0
+    assert name in _hosted_files(tmp_path)
+
+
+def test_cleanup_expired_disabled_when_retention_zero(tmp_path: Path) -> None:
+    """retention_hours <= 0 disables age reaping independently of the cleanup gate."""
+    service = _service(serve_dir=tmp_path, max_bytes=0, retention_hours=0)
+    name = _host(service, data=b"A" * 10)
+    _age(tmp_path / name, seconds=99999)
+
+    assert service.cleanup_expired(now=time.time()) == 0
+    assert name in _hosted_files(tmp_path)
+
+
+def test_sweep_removes_stale_temps_only(tmp_path: Path) -> None:
+    """A crash-left `.tmp-*` past the window is reaped; a fresh in-flight temp is kept."""
+    service = _service(serve_dir=tmp_path)
+    stale = tmp_path / ".tmp-old"
+    stale.write_bytes(b"partial")
+    _age(stale, seconds=9999)
+    fresh = tmp_path / ".tmp-new"
+    fresh.write_bytes(b"partial")
+
+    service.sweep_stale_temps(now=time.time())
+
+    assert not stale.exists()
+    assert fresh.exists()
+
+
+def test_cleanup_no_op_on_missing_serve_dir(tmp_path: Path) -> None:
+    """All cleanup methods no-op (and never create the dir) when the serve dir is absent."""
+    serve_dir = tmp_path / "absent"
+    service = _service(serve_dir=serve_dir)
+
+    assert service.enforce_cap(now=time.time()) == 0
+    assert service.cleanup_expired(now=time.time()) == 0
+    service.sweep_stale_temps(now=time.time())
+    assert not serve_dir.exists()
 
 
 def test_empty_config_is_unavailable() -> None:
