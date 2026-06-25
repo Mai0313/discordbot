@@ -16,11 +16,17 @@ unconfigured) deployment degrades to its prior, host-free behavior at every call
 """
 
 from io import BytesIO
+import os
+import re
+import time
 import shutil
 from typing import TYPE_CHECKING
 import asyncio
+import hashlib
 from pathlib import Path
 import secrets
+import threading
+import contextlib
 
 import dotenv
 import logfire
@@ -82,6 +88,37 @@ _ALLOWED_SUFFIXES = frozenset({
     ".ini",
 })
 
+# Hosted files are content-addressed: `<sha256(content)[:32]>.<allowlisted-ext>`. 128 bits makes a
+# collision (~1e-23 at 100M files) a dedup false-positive at worst, never a security break.
+_HASH_HEX_LEN = 32
+_HASH_CHUNK_BYTES = 1024 * 1024
+# In-progress writes land on a sibling `.tmp-*` then `os.replace` onto the final name (atomic on the
+# serve filesystem), so the content-addressed name only ever appears with complete content. A crash
+# leaves a stale temp the 32-hex reaper can't match, so the sweep reaps temps older than this.
+_TEMP_PREFIX = ".tmp-"
+_STALE_TEMP_SECONDS = 300.0
+# A freshly-hosted file (and every in-flight concurrent publish) is protected from size-cap eviction
+# for this long, so one publisher never reaps another's just-returned-and-posted URL.
+_EVICTION_GRACE_SECONDS = 300.0
+# How often the media_cleanup cog runs the age+size+temp sweep (a backstop; each publish enforces the
+# size cap eagerly). A module constant, not env: an operational cadence, and @tasks.loop wants it static.
+MEDIA_CLEANUP_INTERVAL_HOURS = 6.0
+
+# The cleanup reaper only ever deletes files the service itself wrote: a 32-hex stem plus an
+# allowlisted suffix. Built from the single `_ALLOWED_SUFFIXES` source so the writer and reaper
+# cannot drift; a foreign `access.log` / human-named `movie.mp4` never matches.
+_HOSTED_NAME_RE = re.compile(
+    f"[0-9a-f]{{{_HASH_HEX_LEN}}}(?:"
+    + "|".join(re.escape(s) for s in sorted(_ALLOWED_SUFFIXES))
+    + ")"
+)
+
+# All directory scan+mutate critical sections take this module-level lock so the ~5 service
+# instances (one per media cog) that share one serve dir never race each other; the multi-GB byte
+# writes go to unique temp names OUTSIDE the lock and stay fully concurrent. It is a threading.Lock
+# (not asyncio.Lock) because publish/cleanup run in `asyncio.to_thread` worker threads.
+_SERVE_DIR_LOCK = threading.Lock()
+
 
 def upload_limit_for(guild: "Guild | None") -> int:
     """Returns the destination's real attachment upload ceiling in bytes.
@@ -111,6 +148,24 @@ def _normalize_suffix(suffix: str) -> str | None:
     return normalized if normalized in _ALLOWED_SUFFIXES else None
 
 
+def _hash_bytes(data: bytes) -> str:
+    """The 128-bit hex content stem for in-memory bytes."""
+    return hashlib.sha256(data).hexdigest()[:_HASH_HEX_LEN]
+
+
+def _hash_file(path: Path) -> str:
+    """Streams a file through sha256 in chunks (never loads it whole) and returns its hex stem.
+
+    The path branch exists for the large-file case (multi-GB downloads), so hashing must never
+    `read_bytes()` the whole file into memory.
+    """
+    hasher = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_HASH_CHUNK_BYTES), b""):
+            hasher.update(chunk)
+    return hasher.hexdigest()[:_HASH_HEX_LEN]
+
+
 class MediaHostingConfig(BaseSettings):
     """Configuration for the external media host, read from environment variables.
 
@@ -120,6 +175,8 @@ class MediaHostingConfig(BaseSettings):
         base_url: Public base URL the host serves from (e.g. https://media.mai0313.com).
         serve_dir: In-container directory (bind-mounted from the host) files are written into;
             nginx serves the same files from the host path.
+        max_bytes: Soft cap on total hosted bytes; the oldest files are evicted past it (<=0 disables).
+        retention_hours: Hosted files older than this are reaped even under the cap (<=0 disables).
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -141,11 +198,26 @@ class MediaHostingConfig(BaseSettings):
         examples=["/mnt/share/media"],
         validation_alias=AliasChoices("MEDIA_HOSTING_SERVE_DIR"),
     )
+    max_bytes: int = Field(
+        default=8 * 1024**3,
+        description="Soft cap on total hosted bytes; oldest files are evicted past it (<=0 disables).",
+        validation_alias=AliasChoices("MEDIA_HOSTING_MAX_BYTES"),
+    )
+    retention_hours: float = Field(
+        default=168.0,
+        description="Hosted files older than this many hours are reaped, cap or not (<=0 disables).",
+        validation_alias=AliasChoices("MEDIA_HOSTING_RETENTION_HOURS"),
+    )
 
     @property
     def available(self) -> bool:
         """Whether hosting can actually run: enabled AND both base URL and serve dir are set."""
         return self.enabled and bool(self.base_url.strip()) and bool(self.serve_dir.strip())
+
+    @property
+    def cleanup_enabled(self) -> bool:
+        """Whether the cleanup loop should run: hosting available AND at least one cap is set."""
+        return self.available and (self.max_bytes > 0 or self.retention_hours > 0)
 
 
 class MediaHostingService(BaseModel):
@@ -183,28 +255,53 @@ class MediaHostingService(BaseModel):
         """Joins the configured base URL with a served filename."""
         return f"{self.config.base_url.rstrip('/')}/{name}"
 
-    def _destination(self, ext: str) -> Path | None:
-        """An unguessable path inside the serve dir, or None when that dir does not exist.
+    def _serve_dir(self) -> Path | None:
+        """The serve dir if it exists, else None (the bot never creates it; a missing dir falls back).
 
-        The serve dir is a host-provided bind mount; the bot never creates it (a container-local
-        dir nginx cannot see would only 404), so a missing dir means hosting is inactive and the
-        caller falls back to its host-free behavior.
+        The serve dir is a host-provided bind mount; a container-local dir nginx cannot see would
+        only 404, so a missing dir means hosting is inactive and the caller degrades to host-free.
         """
         serve = Path(self.config.serve_dir)
-        if not serve.is_dir():
-            logfire.warn(
-                "Media hosting serve dir is missing; falling back to host-free delivery",
-                serve_dir=str(serve),
-            )
-            return None
-        return serve / f"{secrets.token_urlsafe(16)}{ext}"
+        if serve.is_dir():
+            return serve
+        logfire.warn(
+            "Media hosting serve dir is missing; falling back to host-free delivery",
+            serve_dir=str(serve),
+        )
+        return None
+
+    def _dedup_hit(self, *, serve: Path, name: str) -> str | None:
+        """If the content-addressed file already exists, refresh its mtime and return its URL.
+
+        Holds the dir lock so the refresh (which keeps a re-hosted clip alive under both caps) never
+        races the sweep deleting that exact file.
+        """
+        final = serve / name
+        with _SERVE_DIR_LOCK:
+            if not final.exists():
+                return None
+            with contextlib.suppress(FileNotFoundError):
+                os.utime(final)
+            return self._public_url(name=name)
+
+    def _finalize(self, *, serve: Path, name: str, tmp: Path) -> str:
+        """Atomically moves a written temp onto its content-addressed name and returns the URL.
+
+        `os.replace` is atomic within the serve filesystem, so the final name only ever appears with
+        complete content (a crash leaves a `.tmp-*` the sweep reaps, never a poison cache entry that
+        dedup would serve forever). mtime is stamped to now so it means "last hosted" for both caps.
+        """
+        final = serve / name
+        os.replace(tmp, final)
+        os.utime(final)
+        return self._public_url(name=name)
 
     def publish_bytes(self, data: bytes, suffix: str) -> str | None:
-        """Writes bytes into the served dir under an unguessable name; returns the URL or None.
+        """Hosts bytes under a content-addressed name (dedup); returns the URL or None.
 
-        Args:
-            data: The media bytes to host.
-            suffix: The intended file extension (e.g. ".wav"); refused if not allowlisted.
+        Identical bytes map to the same name, so a re-host refreshes the existing file and returns
+        the same URL without rewriting; a miss writes to a sibling temp then `os.replace`s it onto
+        the final name (atomic) and enforces the size cap.
 
         Returns:
             The public URL, or None when hosting is unavailable / the serve dir is missing / the
@@ -216,26 +313,32 @@ class MediaHostingService(BaseModel):
         if ext is None:
             logfire.debug("Media hosting refused a non-allowlisted suffix", suffix=suffix)
             return None
-        destination = self._destination(ext=ext)
-        if destination is None:
+        serve = self._serve_dir()
+        if serve is None:
             return None
+        name = f"{_hash_bytes(data)}{ext}"
+        hit = self._dedup_hit(serve=serve, name=name)
+        if hit is not None:
+            return hit
+        tmp = serve / f"{_TEMP_PREFIX}{secrets.token_urlsafe(8)}"
         try:
-            destination.write_bytes(data)
+            tmp.write_bytes(data)
+            url = self._finalize(serve=serve, name=name, tmp=tmp)
         except Exception:
             logfire.warn("Failed to host media bytes", _exc_info=True)
+            with contextlib.suppress(Exception):
+                tmp.unlink(missing_ok=True)
             return None
-        return self._public_url(name=destination.name)
+        self.enforce_cap(now=time.time())
+        return url
 
-    def publish_path(self, file_path: Path) -> str | None:
-        """Moves an existing file into the served dir; returns the URL or None.
+    def publish_path(self, file_path: Path) -> str | None:  # noqa: PLR0911 -- best-effort short-circuit guards
+        """Hosts an on-disk file under a content-addressed name (dedup); returns the URL or None.
 
-        On a non-allowlisted suffix or any failure the file is left in place for the caller's
-        own cleanup. The serve dir is a bind-mount, so it may be a different filesystem than
-        the temp file; `shutil.move` falls back to copy+unlink across devices where
-        `Path.rename` would raise EXDEV.
-
-        Args:
-            file_path: The existing file to move into the served dir.
+        The file is hashed by a streaming read (never loaded whole into memory), so a multi-GB clip
+        stays flat. On a dedup HIT the source is left in place for the caller's own cleanup; on a
+        miss it is copied into a serve-dir temp, `os.replace`d onto the final name, and the source is
+        unlinked. The size cap is enforced after a successful host.
 
         Returns:
             The public URL, or None when hosting is unavailable / the serve dir is missing / the
@@ -249,15 +352,138 @@ class MediaHostingService(BaseModel):
                 "Media hosting refused a non-allowlisted suffix", suffix=file_path.suffix
             )
             return None
-        destination = self._destination(ext=ext)
-        if destination is None:
+        serve = self._serve_dir()
+        if serve is None:
             return None
         try:
-            shutil.move(str(file_path), str(destination))
+            name = f"{_hash_file(file_path)}{ext}"
+        except OSError:
+            logfire.warn("Failed to hash media file", _exc_info=True)
+            return None
+        hit = self._dedup_hit(serve=serve, name=name)
+        if hit is not None:
+            return hit  # the source is left in place for the caller's own cleanup
+        tmp = serve / f"{_TEMP_PREFIX}{secrets.token_urlsafe(8)}"
+        try:
+            shutil.copy2(str(file_path), str(tmp))
+            url = self._finalize(serve=serve, name=name, tmp=tmp)
+            file_path.unlink(missing_ok=True)
         except Exception:
             logfire.warn("Failed to host media file", _exc_info=True)
+            with contextlib.suppress(Exception):
+                tmp.unlink(missing_ok=True)
             return None
-        return self._public_url(name=destination.name)
+        self.enforce_cap(now=time.time())
+        return url
+
+    def _scan_hosted(self, *, serve: Path) -> list[tuple[float, int, str]]:
+        """(mtime, size, path) for every file the service itself wrote (the reaper guard).
+
+        Only a 32-hex stem + allowlisted suffix, regular files (not symlinks/dirs), non-recursive,
+        so a foreign file in the serve dir (an nginx log, a parked clip) is never a candidate.
+        """
+        hosted: list[tuple[float, int, str]] = []
+        with os.scandir(serve) as entries:
+            for entry in entries:
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                if _HOSTED_NAME_RE.fullmatch(entry.name) is None:
+                    continue
+                try:
+                    stat = entry.stat()
+                except OSError:
+                    continue
+                hosted.append((stat.st_mtime, stat.st_size, entry.path))
+        return hosted
+
+    def enforce_cap(self, *, now: float) -> int:
+        """Evicts oldest hosted files until total bytes <= max_bytes; returns the bytes freed.
+
+        Only the service's own files count and are evictable. A file hosted within the grace window
+        is protected (so a concurrent publisher's just-returned URL is never reaped), and a single
+        delivered file larger than the cap is kept: the loop stops when no evictable candidate
+        remains rather than reaping good recent files, leaving disk temporarily over cap.
+        """
+        cap = self.config.max_bytes
+        if cap <= 0:
+            return 0
+        serve = self._serve_dir()
+        if serve is None:
+            return 0
+        freed = 0
+        with _SERVE_DIR_LOCK:
+            files = self._scan_hosted(serve=serve)
+            total = sum(size for _, size, _ in files)
+            if total <= cap:
+                return 0
+            cutoff = now - _EVICTION_GRACE_SECONDS
+            evictable = sorted((f for f in files if f[0] < cutoff), key=lambda f: f[0])
+            for _mtime, size, path in evictable:
+                if total - freed <= cap:
+                    break
+                try:
+                    os.unlink(path)
+                    freed += size
+                except FileNotFoundError:
+                    freed += size
+                except OSError:
+                    logfire.warn("Failed to evict hosted media", path=path, _exc_info=True)
+        if freed:
+            logfire.info("Evicted hosted media over the size cap", freed_bytes=freed)
+        return freed
+
+    def cleanup_expired(self, *, now: float) -> int:
+        """Deletes hosted files older than retention_hours; returns the count deleted."""
+        retention = self.config.retention_hours
+        if retention <= 0:
+            return 0
+        serve = self._serve_dir()
+        if serve is None:
+            return 0
+        cutoff = now - retention * 3600.0
+        deleted = 0
+        with _SERVE_DIR_LOCK:
+            for mtime, _size, path in self._scan_hosted(serve=serve):
+                if mtime >= cutoff:
+                    continue
+                try:
+                    os.unlink(path)
+                    deleted += 1
+                except FileNotFoundError:
+                    deleted += 1
+                except OSError:
+                    logfire.warn("Failed to reap expired media", path=path, _exc_info=True)
+        if deleted:
+            logfire.info("Reaped expired hosted media", deleted_count=deleted)
+        return deleted
+
+    def sweep_stale_temps(self, *, now: float) -> None:
+        """Unlinks crash-left `.tmp-*` files older than the stale-temp window (best-effort)."""
+        serve = self._serve_dir()
+        if serve is None:
+            return
+        cutoff = now - _STALE_TEMP_SECONDS
+        with _SERVE_DIR_LOCK, os.scandir(serve) as entries:
+            for entry in entries:
+                if not entry.name.startswith(_TEMP_PREFIX):
+                    continue
+                if not entry.is_file(follow_symlinks=False):
+                    continue
+                try:
+                    if entry.stat().st_mtime < cutoff:
+                        os.unlink(entry.path)
+                except OSError:
+                    continue
+
+    def run_maintenance(self, *, now: float) -> tuple[int, int]:
+        """One sweep for the cleanup loop: reap expired, enforce the cap, clear stale temps.
+
+        Returns (deleted_count, freed_bytes). Age runs before size so the cap acts on what remains.
+        """
+        self.sweep_stale_temps(now=now)
+        deleted = self.cleanup_expired(now=now)
+        freed = self.enforce_cap(now=now)
+        return deleted, freed
 
 
 class MediaItem(BaseModel):

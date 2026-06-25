@@ -98,8 +98,9 @@ class VideoCogs(commands.Cog):
 
                 # Too big for native upload: host the original-quality file and post its URL,
                 # rather than downgrading quality. Under ~100 MiB Discord still inline-plays the
-                # link; above that it is a browser-playable link. publish_path moves the file out
-                # of the temp dir, so the `with result` exit unlink becomes a no-op.
+                # link; above that it is a browser-playable link. Hosting moves the file into the
+                # serve dir on a fresh upload (the `with result` exit unlink then no-ops) but leaves
+                # it on a dedup hit, so the exit unlink (missing_ok) cleans it up either way.
                 if plan.hosted_urls:
                     await self._deliver_url(
                         interaction=interaction,
