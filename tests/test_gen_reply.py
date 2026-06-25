@@ -1031,7 +1031,7 @@ async def test_voice_too_big_falls_back_to_hosted_url(
     # The clip was hosted, not attached; its URL (a .wav) rides the reply content instead.
     assert message.replies[0].file is None
     content = message.replies[0].content or ""
-    assert "https://media.test/" in content
+    assert any(line.startswith("https://media.test/") for line in content.splitlines())
     assert ".wav" in content
 
 

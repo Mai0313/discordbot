@@ -264,8 +264,9 @@ async def test_video_deliver_and_download_branches(
         cog, host_interaction, url="https://x.test", quality="best"
     )
     assert [call["quality"] for call in downloader.calls] == ["best"]
-    assert "https://media.test/" in host_interaction.edits[-1]["content"]
-    assert "來源: <https://x.test>" in host_interaction.edits[-1]["content"]
+    host_content = host_interaction.edits[-1]["content"]
+    assert any(line.startswith("https://media.test/") for line in host_content.splitlines())
+    assert "來源: <https://x.test>" in host_content
     assert "file" not in host_interaction.edits[-1]
     assert host_interaction.followup.sent == []
 
