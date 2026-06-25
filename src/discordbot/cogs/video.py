@@ -97,10 +97,7 @@ class VideoCogs(commands.Cog):
                 )
                 if public_url is not None:
                     await self._deliver_url(
-                        interaction=interaction,
-                        file_size_mb=file_size_mb,
-                        public_url=public_url,
-                        url=url,
+                        interaction=interaction, file_size_mb=file_size_mb, public_url=public_url
                     )
                     return
 
@@ -124,17 +121,16 @@ class VideoCogs(commands.Cog):
         )
 
     async def _deliver_url(
-        self, interaction: Interaction, file_size_mb: float, public_url: str, url: str
+        self, interaction: Interaction, file_size_mb: float, public_url: str
     ) -> None:
         """Edits the placeholder into a hosted-URL response for a file too big to upload.
 
-        The hosted URL is posted unwrapped so Discord embeds it (inline player under ~100 MiB,
-        a browser-playable link above); the source `url` stays wrapped in `<>` to suppress its
-        own embed.
+        The hosted URL is the only link in the message so Discord renders the inline video player
+        (a second URL such as the source link, even wrapped in `<>`, stops Discord from rendering
+        the inline player, so the source is intentionally omitted here). Under ~100 MiB Discord
+        inline-plays the link; above it the link is browser-playable.
         """
-        body = (
-            f"-# 檔案大小: {file_size_mb:.1f}MB (過大，改用連結)\n{public_url}\n-# 來源: <{url}>"
-        )
+        body = f"-# 檔案大小: {file_size_mb:.1f}MB (過大，改用連結)\n{public_url}"
         await interaction.edit_original_message(
             content=body, allowed_mentions=AllowedMentions.none()
         )

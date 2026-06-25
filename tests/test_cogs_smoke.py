@@ -266,7 +266,8 @@ async def test_video_deliver_and_download_branches(
     assert [call["quality"] for call in downloader.calls] == ["best"]
     host_content = host_interaction.edits[-1]["content"]
     assert any(line.startswith("https://media.test/") for line in host_content.splitlines())
-    assert "來源: <https://x.test>" in host_content
+    # The source link is omitted so the hosted URL is the only link and Discord inline-plays it.
+    assert "https://x.test" not in host_content
     assert "file" not in host_interaction.edits[-1]
     assert host_interaction.followup.sent == []
 
