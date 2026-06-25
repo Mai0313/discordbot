@@ -607,15 +607,15 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _deliver_generated_media(
         self, *, message: Message, data: bytes, filename: str, suffix: str
-    ) -> Message:
+    ) -> Message | None:
         """Delivers generated image/video bytes, hosting a URL when too big to upload natively.
 
-        Returns the message the persona reply should stream onto. When the bytes fit Discord's
-        upload limit they ride as a native attachment on that returned reply (unchanged UX).
-        When they exceed it the bytes are hosted and posted as a standalone link reply (the
-        durable deliverable), and a SEPARATE message is returned for the persona stream so its
-        edits never clobber the link. If hosting is unavailable the native attach is attempted
-        anyway, raising on oversize so the route stays on its existing hard-fail error path.
+        Returns the delivered media message the persona reply should stream onto, or None when the
+        bytes were too big and hosted as a standalone URL reply instead. On None the caller posts
+        the persona reply on a fresh non-pinging message (via `_persona_base_reply`) only if it
+        proceeds, so the hosted-URL message is never clobbered and no stray persona-base is left if
+        the persona reply bails. If hosting is unavailable the native attach is attempted anyway,
+        raising on oversize so the route stays on its existing hard-fail error path.
         """
         if len(data) <= upload_limit_for(guild=message.guild):
             media_file = File(fp=BytesIO(data), filename=filename)
@@ -628,9 +628,21 @@ class ReplyGeneratorCogs(commands.Cog):
             # the route on the outer error path exactly as before.
             media_file = File(fp=BytesIO(data), filename=filename)
             return await message.reply(content=message.author.mention, file=media_file)
-        # Too big to attach: the hosted URL is the deliverable (pings the author once); the
-        # persona reply streams onto a separate, non-pinging message so it never clobbers the link.
+        # Too big to attach: the hosted URL is the deliverable (pings the author once). The persona
+        # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
         await message.reply(content=f"{message.author.mention}\n{public_url}")
+        return None
+
+    async def _persona_base_reply(self, *, message: Message, reply: Message | None) -> Message:
+        """The message the persona stream edits: the delivered media message, or a fresh reply.
+
+        When the media rode as a native attachment, that same message is reused (its content edits
+        keep the attachment). When the media was hosted as a separate URL (`reply is None`), a fresh
+        non-pinging reply is created here, lazily, only when the persona reply actually proceeds —
+        so the hosted-URL message keeps the sole author ping and no empty message is ever orphaned.
+        """
+        if reply is not None:
+            return reply
         return await message.reply(
             content=message.author.mention, allowed_mentions=AllowedMentions.none()
         )
@@ -725,15 +737,17 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _reply_about_video(
         self,
         message: Message,
-        reply: Message,
+        reply: Message | None,
         video_bytes: bytes,
         context_task: "asyncio.Task[ReplyContext]",
     ) -> None:
         """Best-effort: watches the just-made video and streams a persona reply onto its message.
 
         Feeds the generated video as an uploaded Files API `input_file` (video cannot be
-        inlined), then delegates to the shared media-persona-reply streamer. Any failure leaves
-        the delivered video untouched.
+        inlined), then delegates to the shared media-persona-reply streamer. `reply` is None when
+        the clip was hosted as a URL; the persona-base message is only created once the Files API
+        upload succeeds, so a failed upload leaves no orphaned message. Any failure leaves the
+        delivered video untouched.
         """
         file_uri = await self._upload_video_for_reply(data=video_bytes)
         if file_uri is None:
@@ -741,7 +755,7 @@ class ReplyGeneratorCogs(commands.Cog):
             return
         await self._stream_media_persona_reply(
             message=message,
-            reply=reply,
+            reply=await self._persona_base_reply(message=message, reply=reply),
             context_task=context_task,
             model=self.runtime_models.video_reply_model,
             system_prompt=VIDEO_REPLY_PROMPT,
@@ -885,7 +899,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # image rides as inline base64 (provider-agnostic), unlike the video's Files API handle.
         await self._stream_media_persona_reply(
             message=message,
-            reply=reply,
+            reply=await self._persona_base_reply(message=message, reply=reply),
             context_task=context_task,
             model=self.runtime_models.image_reply_model,
             system_prompt=IMAGE_REPLY_PROMPT,

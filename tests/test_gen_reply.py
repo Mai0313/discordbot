@@ -53,7 +53,11 @@ from discordbot.cogs._gen_reply.markers import (
     scrub_markers_for_preview,
 )
 from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
-from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
+from discordbot.cogs._gen_reply.streaming import (
+    DISCORD_MESSAGE_LIMIT,
+    ResponseStreamer,
+    _MediaCandidate,
+)
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
     MusicClip,
@@ -182,6 +186,9 @@ class FakeReply:
         self.embed: Embed | None = None
         self.replies: list[FakeReply] = []
         self.edits: list[str] = []
+        # Records the allowed_mentions arg of each edit/reply so tests can prove a media edit /
+        # follow-up keeps AllowedMentions.none() (dropping it would re-ping the author).
+        self.allowed_mentions_seen: list[object | None] = []
 
     async def edit(
         self,
@@ -191,7 +198,7 @@ class FakeReply:
         allowed_mentions: object | None = None,
     ) -> None:
         """Records edited content and/or newly attached media (voice clip / inline image)."""
-        del allowed_mentions
+        self.allowed_mentions_seen.append(allowed_mentions)
         if content is not None:
             self.content = content
             self.edits.append(content)
@@ -205,7 +212,7 @@ class FakeReply:
 
     async def reply(self, content: str, allowed_mentions: object | None = None) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
-        del allowed_mentions
+        self.allowed_mentions_seen.append(allowed_mentions)
         child = FakeReply()
         child.content = content
         self.replies.append(child)
@@ -1033,6 +1040,9 @@ async def test_voice_too_big_falls_back_to_hosted_url(
     content = message.replies[0].content or ""
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
     assert ".wav" in content
+    # The media edit that appended the URL must carry AllowedMentions.none() so the already-pinged
+    # author is never re-pinged; a regression dropping the kwarg would record None here.
+    assert message.replies[0].allowed_mentions_seen[-1] is not None
 
 
 async def test_voice_too_big_without_hosting_drops_with_hint(economy_isolated_db: None) -> None:
@@ -1049,6 +1059,79 @@ async def test_voice_too_big_without_hosting_drops_with_hint(economy_isolated_db
     _assert_no_voice_tags(result)
     assert message.replies[0].file is None
     assert "⚠️" in message.added_reactions
+
+
+def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
+    """Builds a real media-hosting service writing into a temp serve dir for streamer tests."""
+    return MediaHostingService(
+        config=MediaHostingConfig(
+            MEDIA_HOSTING_ENABLED=True,
+            MEDIA_HOSTING_BASE_URL="https://media.test",
+            MEDIA_HOSTING_SERVE_DIR=str(serve_dir),
+        )
+    )
+
+
+async def test_partition_media_peels_largest_on_combined_overflow(tmp_path: Path) -> None:
+    """Candidates each fitting individually but summing past the limit peel the largest to a URL."""
+    streamer = ResponseStreamer(
+        message=FakeMessage(), media_hosting=_hosting_service(serve_dir=tmp_path)
+    )
+    # All three fit under the limit individually, but their sum + the 1 MiB envelope margin does
+    # not; only the largest is peeled to a hosted URL, leaving the other two as native attachments.
+    limit = 1024 * 1024 + 500
+    candidates = [
+        _MediaCandidate(data=b"a" * 400, filename="reply.wav"),
+        _MediaCandidate(data=b"b" * 300, filename="music.mp3"),
+        _MediaCandidate(data=b"c" * 200, filename="generated.png"),
+    ]
+
+    native, hosted_urls, dropped = await streamer._partition_media(
+        candidates=candidates, upload_limit=limit
+    )
+
+    assert {c.filename for c in native} == {"music.mp3", "generated.png"}
+    assert len(hosted_urls) == 1
+    assert hosted_urls[0].endswith(".wav")
+    assert dropped is False
+
+
+async def test_partition_media_clamps_to_ten_attachments() -> None:
+    """Eleven candidates all fitting (voice + music + 9 images) clamp to 10 with a drop hint."""
+    streamer = ResponseStreamer(message=FakeMessage())
+    # Limit is well above the combined size + envelope margin, so nothing is hosted; only the
+    # 10-attachment count cap applies, dropping one trailing candidate.
+    limit = 1024 * 1024 + 1000
+    candidates = [_MediaCandidate(data=b"x" * 10, filename=f"f{i}.png") for i in range(11)]
+
+    native, hosted_urls, dropped = await streamer._partition_media(
+        candidates=candidates, upload_limit=limit
+    )
+
+    assert len(native) == 10
+    assert hosted_urls == []
+    assert dropped is True
+
+
+async def test_finalize_media_edit_posts_followup_when_content_would_overflow(
+    economy_isolated_db: None,
+) -> None:
+    """A hosted URL on an already-near-2000-char reply rides a follow-up, not the main edit."""
+    del economy_isolated_db
+    streamer = ResponseStreamer(message=FakeMessage())
+    reply = FakeReply()
+    streamer.reply = reply
+    streamer.stored_content = "x" * (DISCORD_MESSAGE_LIMIT - 10)
+
+    await streamer._finalize_media_edit(
+        reply=reply, files=[], hosted_urls=["https://media.test/abc.wav"]
+    )
+
+    # The URL did not fit the main content, so it was posted as a follow-up reply (which must keep
+    # AllowedMentions.none()), and the parent content was left unchanged.
+    assert "media.test" not in (reply.content or "")
+    assert any("media.test" in (child.content or "") for child in reply.replies)
+    assert reply.allowed_mentions_seen[-1] is not None
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
@@ -2685,6 +2768,68 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
 
     # The image is delivered even though the reply stream raised; the error never surfaced.
     assert message.replies[-1].file is not None
+
+
+async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
+    tmp_path: Path,
+) -> None:
+    """An image too big to upload is hosted as a URL; the persona reply rides a separate message."""
+    cog = _cog()
+    cog.__dict__["media_hosting"] = _hosting_service(serve_dir=tmp_path)
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
+
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # Two messages: the hosted-URL deliverable (no attachment) and the separate persona reply.
+    assert len(message.replies) == 2
+    url_msg = message.replies[0]
+    assert url_msg.file is None
+    assert any(
+        line.startswith("https://media.test/") for line in (url_msg.content or "").splitlines()
+    )
+    # The persona reply streamed onto its own message and never clobbered the URL.
+    assert "media.test" not in (message.replies[1].content or "")
+
+
+async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Oversized video hosted as a URL: a failed Files-API upload leaves no empty persona message."""
+    cog = _cog()
+    cog.__dict__["media_hosting"] = _hosting_service(serve_dir=tmp_path)
+
+    async def _fast_sleep(delay: float) -> None:
+        """Skips the video generation polling delay."""
+        del delay
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", _fast_sleep)
+
+    async def _no_upload(data: bytes) -> None:
+        """Simulates the post-delivery Files-API upload failing."""
+        del data
+
+    monkeypatch.setattr(cog, "_upload_video_for_reply", _no_upload)
+    message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(filesize_limit=1)  # below the 3-byte fake clip -> oversized
+
+    await cog._handle_video_reply(
+        message=message,
+        user_prompt="video",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # Only the hosted-URL message exists; the upload failed so no bare persona-base was orphaned.
+    assert len(message.replies) == 1
+    url_msg = message.replies[0]
+    assert url_msg.file is None
+    assert any(
+        line.startswith("https://media.test/") for line in (url_msg.content or "").splitlines()
+    )
 
 
 async def test_handle_video_reply_uses_raw_prompt_without_director(

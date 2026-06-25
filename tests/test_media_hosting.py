@@ -1,6 +1,10 @@
 """Unit tests for the external media-hosting fallback helper."""
 
+import os
+import errno
 from pathlib import Path
+
+import pytest
 
 from discordbot.utils.media_hosting import MediaHostingConfig, MediaHostingService
 
@@ -60,6 +64,30 @@ def test_publish_path_moves_file_across_dirs(tmp_path: Path) -> None:
     source = source_dir / "clip.mp4"
     source.write_bytes(b"movie")
     service = _service(serve_dir=serve_dir)
+
+    url = service.publish_path(file_path=source)
+
+    assert url is not None
+    assert not source.exists()
+    name = url.removeprefix("https://media.test/")
+    assert (serve_dir / name).read_bytes() == b"movie"
+
+
+def test_publish_path_falls_back_on_cross_device_move(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When os.rename raises EXDEV (serve dir is a bind-mount), shutil.move's copy fallback runs."""
+    source_dir = tmp_path / "src"
+    serve_dir = tmp_path / "serve"
+    source_dir.mkdir()
+    source = source_dir / "clip.mp4"
+    source.write_bytes(b"movie")
+    service = _service(serve_dir=serve_dir)
+
+    def _exdev_rename(*args: object, **kwargs: object) -> None:
+        raise OSError(errno.EXDEV, "Invalid cross-device link")
+
+    monkeypatch.setattr(os, "rename", _exdev_rename)
 
     url = service.publish_path(file_path=source)
 

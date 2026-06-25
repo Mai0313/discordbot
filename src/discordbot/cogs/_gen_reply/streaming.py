@@ -22,6 +22,7 @@ from openai.types.responses import (
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.media_hosting import MediaHostingService
 from discordbot.utils.model_pricing import get_token_rates
+from discordbot.utils.discord_limits import upload_limit_for
 from discordbot.cogs._gen_reply.voice import (
     VOICE_REPLY_FILENAME,
     VoiceOutcome,
@@ -439,9 +440,9 @@ class ResponseStreamer(BaseModel):
         """The destination's real upload ceiling, falling back to Discord's 10MB base in a DM.
 
         A boosted guild's 50/100MB is honored via nextcord's `filesize_limit`; a DM has no guild
-        to query, so it falls back to Discord's non-Nitro base of 10MB.
+        to query, so it falls back to Discord's non-Nitro base of 10MB (shared helper).
         """
-        return self.message.guild.filesize_limit if self.message.guild else 10 * 1024 * 1024
+        return upload_limit_for(guild=self.message.guild)
 
     async def _build_voice_candidate(self) -> _MediaCandidate | None:
         """Synthesizes the <voice> segment to a WAV candidate, or None when not delivered.
@@ -647,17 +648,19 @@ class ResponseStreamer(BaseModel):
         """
         hosted_urls: list[str] = []
         dropped = False
-        fitting: list[_MediaCandidate] = []
-        for candidate in candidates:
-            if len(candidate.data) <= upload_limit:
-                fitting.append(candidate)
-                continue
-            url = await self._host_candidate(candidate=candidate)
-            if url is not None:
-                hosted_urls.append(url)
-            else:
-                dropped = True
+        # (a) Per-item: host every individually-oversize candidate concurrently (independent
+        # writes), keeping the rest as native-attach candidates.
+        fitting = [c for c in candidates if len(c.data) <= upload_limit]
+        oversize = [c for c in candidates if len(c.data) > upload_limit]
+        if oversize:
+            urls = await asyncio.gather(*(self._host_candidate(candidate=c) for c in oversize))
+            for url in urls:
+                if url is not None:
+                    hosted_urls.append(url)
+                else:
+                    dropped = True
 
+        # (b) Combined total: peel the largest remaining to a URL until the multipart body fits.
         total = sum(len(candidate.data) for candidate in fitting)
         while fitting and total + MEDIA_ENVELOPE_MARGIN > upload_limit:
             largest = max(fitting, key=lambda candidate: len(candidate.data))

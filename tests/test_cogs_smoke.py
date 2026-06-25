@@ -356,6 +356,38 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
 
 
+async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
+    """A Threads video too big to attach is hosted as a URL instead of a ⚠️ refusal."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=bot)
+    cog.media_hosting = MediaHostingService(
+        config=MediaHostingConfig(
+            MEDIA_HOSTING_ENABLED=True,
+            MEDIA_HOSTING_BASE_URL="https://media.test",
+            MEDIA_HOSTING_SERVE_DIR=str(tmp_path / "serve"),
+        )
+    )
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_bytes(data=b"123")
+
+    message = FakeDiscordMessage()
+    message.author = FakeUser(bot=False)
+    message.content = "https://www.threads.net/@alice/post/abc"
+    # A tiny ceiling drives max_size negative, so the 3-byte video counts as oversized.
+    message.guild = SimpleNamespace(filesize_limit=4)
+    cog.downloader = ThreadsDownloaderStub(
+        results=[_thread_output(video_paths=[video_file], image_urls=[])]
+    )
+
+    await cog.on_message(message=message)
+
+    # The video was hosted (its URL rides the reply content) and moved out of the temp dir.
+    content = message.replies[0].get("content") or ""
+    assert any(line.startswith("https://media.test/") for line in content.splitlines())
+    assert not video_file.exists()
+    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+
+
 async def test_auto_unmute_tracks_audit_and_generates_reply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
