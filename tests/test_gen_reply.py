@@ -3407,6 +3407,30 @@ async def test_on_message_forward_not_gated_as_empty(monkeypatch: pytest.MonkeyP
     assert pipeline_calls == [(dm_forward, "draw a cat")]
 
 
+async def test_on_message_commented_forward_merges_forwarded_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A commented forward (@bot please) merges the forwarded request into the media prompt."""
+    cog = _cog()
+
+    calls: list[tuple[FakeMessage, str]] = []
+
+    async def record_pipeline(message: FakeMessage, user_prompt: str, reactions: object) -> None:
+        """Records the prompt the pipeline receives for the media route."""
+        del reactions
+        calls.append((message, user_prompt))
+
+    monkeypatch.setattr(cog, "_run_reply_pipeline", record_pipeline)
+
+    # Guild forward: it can only trigger via the mention, so the comment survives as "please".
+    message = FakeMessage(content="<@999> please", author=FakeAuthor(user_id=1))
+    message.snapshots = [FakeSnapshot(content="draw a cat")]
+    await cog.on_message(message=message)
+
+    # The forwarded request is merged after the comment, not dropped because the comment is non-empty.
+    assert calls == [(message, "please\ndraw a cat")]
+
+
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
     """Advance schedules ordered swaps without blocking; flush waits for the tail."""
     events: list[tuple[str, str | None]] = []

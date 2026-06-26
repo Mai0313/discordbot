@@ -1730,11 +1730,15 @@ class ReplyGeneratorCogs(commands.Cog):
         # `message.snapshots`, so it must not be gated out as an empty message here, or the
         # snapshot text/media render in `input.py` never runs.
         is_forward = bool(message.snapshots)
-        # A pure forward (no comment) has empty content, so fall back to the forwarded text as
-        # the request: an IMAGE/VIDEO route then renders the forwarded "draw a cat" instead of
-        # the generic empty-prompt fallback.
-        if not user_prompt and is_forward:
-            user_prompt = self.input_builder.forwarded_request_text(message=message)
+        # A forward puts its request in `message.snapshots`, not content, so merge the forwarded
+        # text into the prompt (after the forwarder's own comment, if any). A guild forward can
+        # only trigger via a `<@bot>` comment, so the comment is usually non-empty: merging (not
+        # just an empty fallback) is what lets an IMAGE/VIDEO route render the forwarded "draw a
+        # cat" even when the trigger comment ("@bot please") survives mention-stripping.
+        if is_forward and (
+            forwarded := self.input_builder.forwarded_request_text(message=message)
+        ):
+            user_prompt = f"{user_prompt}\n{forwarded}".strip() if user_prompt else forwarded
 
         if not user_prompt and not has_attachment and not is_forward:
             logfire.debug(
