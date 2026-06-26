@@ -1709,8 +1709,12 @@ class ReplyGeneratorCogs(commands.Cog):
 
         user_prompt = await self.input_builder.get_user_prompt(content=message.content)
         has_attachment = bool(message.attachments or message.stickers)
+        # A forward leaves content/attachments/stickers empty and puts the payload in
+        # `message.snapshots`, so it must not be gated out as an empty message here, or the
+        # snapshot text/media render in `input.py` never runs.
+        is_forward = bool(message.snapshots)
 
-        if not user_prompt and not has_attachment:
+        if not user_prompt and not has_attachment and not is_forward:
             logfire.debug(
                 "gen_reply empty prompt; replied with ?", **_message_log_fields(message=message)
             )

@@ -3306,6 +3306,28 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert deleted.channel.sent[0].embed is not None
 
 
+async def test_on_message_forward_not_gated_as_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pure forward (empty content, payload only in snapshots) reaches the pipeline, not `?`."""
+    cog = _cog()
+
+    pipeline_calls: list[FakeMessage] = []
+
+    async def record_pipeline(message: FakeMessage, user_prompt: str, reactions: object) -> None:
+        """Records that the reply pipeline was reached instead of the empty-message `?` reply."""
+        del user_prompt, reactions
+        pipeline_calls.append(message)
+
+    monkeypatch.setattr(cog, "_run_reply_pipeline", record_pipeline)
+
+    dm_forward = FakeMessage(content="", author=FakeAuthor(user_id=1))
+    dm_forward.guild = None
+    dm_forward.snapshots = [FakeSnapshot(content="forwarded body")]
+    await cog.on_message(message=dm_forward)
+
+    assert dm_forward.replies == []  # not gated out with "?"
+    assert pipeline_calls == [dm_forward]
+
+
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
     """Advance schedules ordered swaps without blocking; flush waits for the tail."""
     events: list[tuple[str, str | None]] = []
