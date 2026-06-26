@@ -37,6 +37,11 @@ from discordbot.typings.models import (
 )
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
+from discordbot.utils.media_delivery import (
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+)
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
 from discordbot.cogs._gen_reply.voice import (
     VOICE_TIMEOUT_SECONDS,
@@ -93,6 +98,7 @@ TEST_LLM_MODEL = "test-llm-model"
 FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
+    from pathlib import Path
     from collections.abc import AsyncIterator
 
     from openai.types.responses.response_input_param import ResponseInputParam
@@ -180,11 +186,24 @@ class FakeReply:
         self.embed: Embed | None = None
         self.replies: list[FakeReply] = []
         self.edits: list[str] = []
+        self.deleted = False
+        # Records the allowed_mentions arg of each edit/reply so tests can prove a media edit /
+        # follow-up keeps AllowedMentions.none() (dropping it would re-ping the author).
+        self.allowed_mentions_seen: list[object | None] = []
+
+    async def delete(self) -> None:
+        """Records that this reply was deleted (e.g. the orphaned persona-base cleanup)."""
+        self.deleted = True
 
     async def edit(
-        self, content: str | None = None, file: File | None = None, files: list[File] | None = None
+        self,
+        content: str | None = None,
+        file: File | None = None,
+        files: list[File] | None = None,
+        allowed_mentions: object | None = None,
     ) -> None:
         """Records edited content and/or newly attached media (voice clip / inline image)."""
+        self.allowed_mentions_seen.append(allowed_mentions)
         if content is not None:
             self.content = content
             self.edits.append(content)
@@ -196,8 +215,9 @@ class FakeReply:
             if len(files) == 1:
                 self.file = files[0]
 
-    async def reply(self, content: str) -> FakeReply:
+    async def reply(self, content: str, allowed_mentions: object | None = None) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
+        self.allowed_mentions_seen.append(allowed_mentions)
         child = FakeReply()
         child.content = content
         self.replies.append(child)
@@ -256,8 +276,10 @@ class FakeMessage:
         file: File | None = None,
         embed: Embed | None = None,
         files: list[File] | None = None,
+        allowed_mentions: object | None = None,
     ) -> FakeReply:
         """Creates and records a fake reply with the requested content."""
+        del allowed_mentions
         if self.reply_error is not None:
             raise self.reply_error
         reply = FakeReply()
@@ -996,6 +1018,95 @@ async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: Non
     assert message.added_reactions == ["<:voice:1517558121092878376>", "⏱️"]
 
 
+async def test_voice_too_big_falls_back_to_hosted_url(
+    economy_isolated_db: None, tmp_path: Path
+) -> None:
+    """A voice clip past the upload limit is hosted and its URL appended, not silently dropped."""
+    del economy_isolated_db
+    message = FakeMessage()
+    # 4-byte ceiling so the fake WAV (larger) exceeds it, like a long WAV in a 10 MiB DM.
+    message.guild = FakeGuild(filesize_limit=4)
+    synthesizer = _FakeVoiceSynthesizer()
+    service = MediaHostingService(
+        config=MediaHostingConfig(
+            MEDIA_HOSTING_ENABLED=True,
+            MEDIA_HOSTING_BASE_URL="https://media.test",
+            MEDIA_HOSTING_SERVE_DIR=str(tmp_path),
+        )
+    )
+
+    result = await ResponseStreamer(
+        message=message,
+        voice_synthesizer=synthesizer,
+        media_delivery=MediaDeliveryPlanner(media_hosting=service),
+    ).stream(responses=_stream_events_from(_voice_marker_events()))
+
+    _assert_no_voice_tags(result)
+    # The clip was hosted, not attached; its URL (a .wav) rides the reply content instead.
+    assert message.replies[0].file is None
+    content = message.replies[0].content or ""
+    assert any(line.startswith("https://media.test/") for line in content.splitlines())
+    assert ".wav" in content
+    # The hosted link rides BEFORE the usage footer, so USAGE_FOOTER_RE still strips the footer from
+    # later history; the link must survive that strip, and the footer must not (else it would leak
+    # the model/token/cost line into the bot's answer in history / memory).
+    assert USAGE_FOOTER_RE.search(content) is not None
+    stripped = USAGE_FOOTER_RE.sub("", content)
+    assert "media.test" in stripped
+    assert "⬆" not in stripped
+    # The media edit that appended the URL must carry AllowedMentions.none() so the already-pinged
+    # author is never re-pinged; a regression dropping the kwarg would record None here.
+    assert message.replies[0].allowed_mentions_seen[-1] is not None
+
+
+async def test_voice_too_big_without_hosting_drops_with_hint(economy_isolated_db: None) -> None:
+    """With no media host, an oversized voice clip degrades to today's drop + ⚠️ hint."""
+    del economy_isolated_db
+    message = FakeMessage()
+    message.guild = FakeGuild(filesize_limit=4)
+    synthesizer = _FakeVoiceSynthesizer()
+
+    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+        responses=_stream_events_from(_voice_marker_events())
+    )
+
+    _assert_no_voice_tags(result)
+    assert message.replies[0].file is None
+    assert "⚠️" in message.added_reactions
+
+
+def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
+    """Builds a real media-hosting service writing into a temp serve dir for streamer tests."""
+    return MediaHostingService(
+        config=MediaHostingConfig(
+            MEDIA_HOSTING_ENABLED=True,
+            MEDIA_HOSTING_BASE_URL="https://media.test",
+            MEDIA_HOSTING_SERVE_DIR=str(serve_dir),
+        )
+    )
+
+
+async def test_finalize_media_edit_posts_followup_when_content_would_overflow(
+    economy_isolated_db: None,
+) -> None:
+    """A hosted URL on an already-near-2000-char reply rides a follow-up, not the main edit."""
+    del economy_isolated_db
+    streamer = ResponseStreamer(message=FakeMessage())
+    reply = FakeReply()
+    streamer.reply = reply
+    streamer.stored_content = "x" * (DISCORD_MESSAGE_LIMIT - 10)
+
+    await streamer._finalize_media_edit(
+        reply=reply, files=[], hosted_urls=["https://media.test/abc.wav"]
+    )
+
+    # The URL did not fit the main content, so it was posted as a follow-up reply (which must keep
+    # AllowedMentions.none()), and the parent content was left unchanged.
+    assert "media.test" not in (reply.content or "")
+    assert any("media.test" in (child.content or "") for child in reply.replies)
+    assert reply.allowed_mentions_seen[-1] is not None
+
+
 def test_extract_inline_markers_voice_keeps_content() -> None:
     """A <voice> segment stays in the visible text; only the tags are stripped."""
     markers = extract_inline_markers(text="嗆爆你 <voice>聽好了</voice> 滾")
@@ -1537,10 +1648,11 @@ async def test_voice_config_gate_controls_synthesizer(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del image_generator, music_generator
+            del image_generator, music_generator, media_delivery
             captured.append(voice_synthesizer)
 
         async def stream(self, *, responses: object) -> str:
@@ -1587,10 +1699,11 @@ async def test_image_config_gate_controls_generator(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, music_generator
+            del voice_synthesizer, music_generator, media_delivery
             captured.append(image_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -2432,10 +2545,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator
+            del voice_synthesizer, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -2627,6 +2741,144 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
 
     # The image is delivered even though the reply stream raised; the error never surfaced.
     assert message.replies[-1].file is not None
+
+
+async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
+    tmp_path: Path,
+) -> None:
+    """An image too big to upload is hosted as a URL; the persona reply rides a separate message."""
+    cog = _cog()
+    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
+        media_hosting=_hosting_service(serve_dir=tmp_path)
+    )
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
+
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # Two messages: the hosted-URL deliverable (no attachment) and the separate persona reply.
+    assert len(message.replies) == 2
+    url_msg = message.replies[0]
+    assert url_msg.file is None
+    assert any(
+        line.startswith("https://media.test/") for line in (url_msg.content or "").splitlines()
+    )
+    # The persona reply streamed onto its own message and never clobbered the URL.
+    assert "media.test" not in (message.replies[1].content or "")
+
+
+async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hosted oversize image: a failed persona stream deletes the fresh base, leaving no orphan."""
+    cog = _cog()
+    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
+        media_hosting=_hosting_service(serve_dir=tmp_path)
+    )
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(
+        filesize_limit=4
+    )  # oversize -> hosted URL deliverable (reply is None)
+
+    class _BoomStreamer:
+        """Stands in for ResponseStreamer and fails while streaming the persona reply."""
+
+        content_started = False
+
+        def __init__(self, **kwargs: object) -> None:
+            """Ignores the streamer kwargs."""
+            del kwargs
+
+        async def stream(self, *, responses: object) -> str:
+            """Fails after the persona base has been created."""
+            del responses
+            raise RuntimeError("stream boom")
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _BoomStreamer)
+
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # replies[0] is the hosted-URL deliverable (kept); replies[1] is the bare persona base (deleted).
+    assert len(message.replies) == 2
+    assert message.replies[0].deleted is False
+    assert any(
+        line.startswith("https://media.test/")
+        for line in (message.replies[0].content or "").splitlines()
+    )
+    assert message.replies[1].deleted is True  # the orphaned persona base was cleaned up
+
+
+async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> None:
+    """IMAGE route, hosting off + oversize: the native attach is attempted and its error propagates.
+
+    With no host available the deliverable cannot degrade to a URL, so `_deliver_generated_media`
+    falls through to the native attach (which Discord 400s on oversize); that error must stay on the
+    route's outer hard-fail path, never a silent drop. A FakeMessage models the 400 via reply_error.
+    """
+    cog = _cog()
+    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False))
+    )
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
+    # The native attach of an oversized file 400s on real Discord; the fake raises it on reply.
+    message.reply_error = nextcord.HTTPException(
+        SimpleNamespace(status=413, reason="Payload Too Large"),
+        {"code": 40005, "message": "Request entity too large"},
+    )
+
+    with pytest.raises(nextcord.HTTPException):
+        await cog._handle_image_reply(
+            message=message,
+            user_prompt="draw a cat",
+            context_task=asyncio.create_task(_ready_reply_context()),
+        )
+
+
+async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Oversized video hosted as a URL: a failed Files-API upload leaves no empty persona message."""
+    cog = _cog()
+    cog.__dict__["media_delivery"] = MediaDeliveryPlanner(
+        media_hosting=_hosting_service(serve_dir=tmp_path)
+    )
+
+    async def _fast_sleep(delay: float) -> None:
+        """Skips the video generation polling delay."""
+        del delay
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", _fast_sleep)
+
+    async def _no_upload(data: bytes) -> None:
+        """Simulates the post-delivery Files-API upload failing."""
+        del data
+
+    monkeypatch.setattr(cog, "_upload_video_for_reply", _no_upload)
+    message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
+    message.guild = FakeGuild(filesize_limit=1)  # below the 3-byte fake clip -> oversized
+
+    await cog._handle_video_reply(
+        message=message,
+        user_prompt="video",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # Only the hosted-URL message exists; the upload failed so no bare persona-base was orphaned.
+    assert len(message.replies) == 1
+    url_msg = message.replies[0]
+    assert url_msg.file is None
+    assert any(
+        line.startswith("https://media.test/") for line in (url_msg.content or "").splitlines()
+    )
 
 
 async def test_handle_video_reply_uses_raw_prompt_without_director(
@@ -3078,10 +3330,11 @@ class _ThreadsStreamer:
         voice_synthesizer: object | None = None,
         image_generator: object | None = None,
         music_generator: object | None = None,
+        media_delivery: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
         del memory_lookups, input_tokens, output_tokens, model_effort
-        del voice_synthesizer, image_generator, music_generator
+        del voice_synthesizer, image_generator, music_generator, media_delivery
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -3409,10 +3662,11 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator
+            del voice_synthesizer, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3501,10 +3755,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator
+            del voice_synthesizer, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3565,10 +3820,11 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             voice_synthesizer: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator
+            del voice_synthesizer, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:

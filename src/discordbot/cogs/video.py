@@ -11,6 +11,13 @@ from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.downloader import VideoDownloader
+from discordbot.utils.media_delivery import (
+    MediaItem,
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+    upload_limit_for,
+)
 
 
 class VideoCogs(commands.Cog):
@@ -27,6 +34,9 @@ class VideoCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
+        self.media_delivery = MediaDeliveryPlanner(
+            media_hosting=MediaHostingService(config=MediaHostingConfig())
+        )
 
     @nextcord.slash_command(
         name="download_video",
@@ -68,15 +78,16 @@ class VideoCogs(commands.Cog):
 
         # Read the destination's real upload ceiling (boost tier raises it to 50/100 MiB);
         # a DM has no guild to query, so fall back to Discord's current non-Nitro base of 10 MiB.
-        upload_limit = interaction.guild.filesize_limit if interaction.guild else 10 * 1024 * 1024
+        upload_limit = upload_limit_for(guild=interaction.guild)
 
         try:
             downloader = VideoDownloader(output_folder=tempfile.gettempdir())
             result = await asyncio.to_thread(downloader.download, url=url, quality=quality)
             with result:
-                size_bytes = result.filename.stat().st_size
-                file_size_mb = size_bytes / 1024 / 1024
-                if size_bytes <= upload_limit:
+                file_size_mb = result.filename.stat().st_size / 1024 / 1024
+                item = MediaItem(source=result.filename, filename=result.filename.name)
+                plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
+                if plan.native:
                     await self._deliver(
                         interaction=interaction,
                         file_size_mb=file_size_mb,
@@ -85,30 +96,22 @@ class VideoCogs(commands.Cog):
                     )
                     return
 
-                if quality == "low":
-                    await interaction.edit_original_message(
-                        content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+                # Too big for native upload: host the original-quality file and post its URL,
+                # rather than downgrading quality. Under ~100 MiB Discord still inline-plays the
+                # link; above that it is a browser-playable link. Hosting moves the file into the
+                # serve dir on a fresh upload (the `with result` exit unlink then no-ops) but leaves
+                # it on a dedup hit, so the exit unlink (missing_ok) cleans it up either way.
+                if plan.hosted_urls:
+                    await self._deliver_url(
+                        interaction=interaction,
+                        file_size_mb=file_size_mb,
+                        public_url=plan.hosted_urls[0],
                     )
                     return
 
                 await interaction.edit_original_message(
-                    content=f"-# 檔案過大 ({file_size_mb:.1f}MB)，正在重新下載低畫質版本..."
+                    content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                 )
-                low_result = await asyncio.to_thread(downloader.download, url=url, quality="low")
-                with low_result:
-                    low_size_bytes = low_result.filename.stat().st_size
-                    file_size_mb = low_size_bytes / 1024 / 1024
-                    if low_size_bytes > upload_limit:
-                        await interaction.edit_original_message(
-                            content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
-                        )
-                        return
-                    await self._deliver(
-                        interaction=interaction,
-                        file_size_mb=file_size_mb,
-                        file_path=low_result.filename,
-                        url=url,
-                    )
         except Exception:
             logfire.warn("Video download failed", _exc_info=True)
             with contextlib.suppress(Exception):
@@ -123,6 +126,21 @@ class VideoCogs(commands.Cog):
             content=body,
             file=File(fp=file_path, filename=file_path.name),
             allowed_mentions=AllowedMentions.none(),
+        )
+
+    async def _deliver_url(
+        self, interaction: Interaction, file_size_mb: float, public_url: str
+    ) -> None:
+        """Edits the placeholder into a hosted-URL response for a file too big to upload.
+
+        The hosted URL is the only link in the message so Discord renders the inline video player
+        (a second URL such as the source link, even wrapped in `<>`, stops Discord from rendering
+        the inline player, so the source is intentionally omitted here). Under ~100 MiB Discord
+        inline-plays the link; above it the link is browser-playable.
+        """
+        body = f"-# 檔案大小: {file_size_mb:.1f}MB (過大，改用連結)\n{public_url}"
+        await interaction.edit_original_message(
+            content=body, allowed_mentions=AllowedMentions.none()
         )
 
 

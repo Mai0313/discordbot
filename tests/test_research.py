@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 import base64
+from pathlib import Path
 
 from nextcord import AllowedMentions
 
@@ -9,8 +10,21 @@ from discordbot.cogs import research as research_cog
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._research import agent
 from discordbot.cogs._research import database as rdb
+from discordbot.utils.media_delivery import (
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+)
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
 from discordbot.cogs._research.delivery import split_report, deliver_report
+
+
+def _disabled_delivery() -> MediaDeliveryPlanner:
+    """A planner whose host is off, so report files attach natively exactly as before hosting."""
+    return MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False))
+    )
+
 
 # ----- marker extraction --------------------------------------------------------------------
 
@@ -470,9 +484,14 @@ class _FakeThread:
         self.sends.append(kwargs)
 
 
-def _completed_result(*, report_text: str) -> agent.ResearchResult:
+def _completed_result(
+    *, report_text: str, image_bytes: bytes | None = None
+) -> agent.ResearchResult:
     return agent.ResearchResult(
-        interaction_id="int_1", status="completed", report_text=report_text
+        interaction_id="int_1",
+        status="completed",
+        report_text=report_text,
+        image_bytes=image_bytes,
     )
 
 
@@ -491,6 +510,7 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
         footer=footer,
         view=None,
         allowed_mentions=mentions,
+        media_delivery=_disabled_delivery(),
     )
     contents = [str(edit["content"]) for edit in status.edits]
     contents += [str(send["content"]) for send in thread.sends]
@@ -516,9 +536,68 @@ async def test_delivery_inlines_footer_for_short_reports() -> None:
         footer="-# footer",
         view=None,
         allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
+        media_delivery=_disabled_delivery(),
     )
     # One message: the opening status edited into report + footer + the research.md attachment.
     assert not thread.sends
     assert len(status.edits) == 1
     assert "<@1>" in str(status.edits[0]["content"])
     assert status.edits[0]["files"]
+
+
+async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
+    """A report file too big to attach is hosted and its URL linked instead of silently dropped."""
+    status = _FakeStatusMessage()
+    thread = _FakeThread()
+    thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
+    planner = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=MediaHostingConfig(
+                MEDIA_HOSTING_ENABLED=True,
+                MEDIA_HOSTING_BASE_URL="https://media.test",
+                MEDIA_HOSTING_SERVE_DIR=str(tmp_path),
+            )
+        )
+    )
+    await deliver_report(
+        thread=thread,  # type: ignore[arg-type]  # minimal Thread double for the delivery path
+        status=status,  # type: ignore[arg-type]  # minimal status-message double
+        owner_mention="<@1>",
+        result=_completed_result(report_text="# Report\nbody"),
+        footer="-# footer",
+        view=None,
+        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
+        media_delivery=planner,
+    )
+    # The report .md was hosted (no native attachment); its URL rides the message content.
+    edit = status.edits[0]
+    assert not edit.get("files")
+    content = str(edit["content"])
+    assert any(line.startswith("https://media.test/") for line in content.splitlines())
+
+
+async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -> None:
+    """Host-off contract: md + png that each fit but jointly exceed the limit BOTH attach natively.
+
+    Pre-fold-in `_final_files` attached each file independently with no combined-body check. Routing
+    both through one `plan()` call would have fired the planner's combined-peel and dropped the
+    larger (the report), so delivery decides each attachment on its own to keep host-off parity.
+    """
+    status = _FakeStatusMessage()
+    thread = _FakeThread()
+    thread.guild = SimpleNamespace(filesize_limit=100)  # each file fits, md + png together do not
+    await deliver_report(
+        thread=thread,  # type: ignore[arg-type]  # minimal Thread double for the delivery path
+        status=status,  # type: ignore[arg-type]  # minimal status-message double
+        owner_mention="<@1>",
+        result=_completed_result(report_text="R" * 60, image_bytes=b"x" * 60),
+        footer="-# footer",
+        view=None,
+        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
+        media_delivery=_disabled_delivery(),
+    )
+    edit = status.edits[0]
+    files = edit["files"]
+    assert isinstance(files, list)
+    assert len(files) == 2  # research.md AND research.png both attached, neither dropped
+    assert "https://" not in str(edit["content"])  # nothing was hosted

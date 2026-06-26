@@ -42,6 +42,11 @@ from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
+from discordbot.utils.media_delivery import (
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+)
 from discordbot.cogs._games.blackjack import Card
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
@@ -227,14 +232,23 @@ async def test_template_on_message_and_ping() -> None:
 async def test_video_deliver_and_download_branches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Verifies video delivery, retry, oversize, and download error branches."""
+    """Verifies video delivery, oversize URL fallback, hosting-off, and download error branches."""
     cog = VideoCogs(bot=SimpleNamespace())
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=MediaHostingConfig(
+                MEDIA_HOSTING_ENABLED=True,
+                MEDIA_HOSTING_BASE_URL="https://media.test",
+                MEDIA_HOSTING_SERVE_DIR=str(serve_dir),
+            )
+        )
+    )
     small = tmp_path / "small.mp4"
     small.write_bytes(data=b"0" * 100)
     big = tmp_path / "big.mp4"
     big.write_bytes(data=b"0" * 300)
-    low = tmp_path / "low.mp4"
-    low.write_bytes(data=b"1" * 100)
 
     interaction = FakeInteraction()
     await cog._deliver(
@@ -249,27 +263,39 @@ async def test_video_deliver_and_download_branches(
     assert interaction.edits[-1]["file"] is not None
     assert interaction.followup.sent == []
 
-    downloader = DownloaderStub(
-        results=[DownloadResultStub(filename=big), DownloadResultStub(filename=low)]
-    )
+    # Too big for native upload + hosting on: post the URL, no 480p retry, no attachment.
+    downloader = DownloaderStub(results=[DownloadResultStub(filename=big)])
     monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
-    retry_interaction = FakeInteraction(filesize_limit=200)
+    host_interaction = FakeInteraction(filesize_limit=200)
     await VideoCogs.download_video.callback(
-        cog, retry_interaction, url="https://x.test", quality="best"
+        cog, host_interaction, url="https://x.test", quality="best"
     )
-    assert [call["quality"] for call in downloader.calls] == ["best", "low"]
-    assert retry_interaction.edits[-1]["file"] is not None
-    assert "來源: <https://x.test>" in retry_interaction.edits[-1]["content"]
-    assert retry_interaction.followup.sent == []
+    assert [call["quality"] for call in downloader.calls] == ["best"]
+    host_content = host_interaction.edits[-1]["content"]
+    assert any(line.startswith("https://media.test/") for line in host_content.splitlines())
+    # The source link is omitted so the hosted URL is the only link and Discord inline-plays it.
+    assert "https://x.test" not in host_content
+    assert "file" not in host_interaction.edits[-1]
+    assert host_interaction.followup.sent == []
 
+    # Too big + hosting unavailable: fall back to the "file too large" message.
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=MediaHostingConfig(
+                MEDIA_HOSTING_ENABLED=True, MEDIA_HOSTING_BASE_URL="", MEDIA_HOSTING_SERVE_DIR=""
+            )
+        )
+    )
+    big2 = tmp_path / "big2.mp4"
+    big2.write_bytes(data=b"0" * 300)
     fail_interaction = FakeInteraction(filesize_limit=200)
     monkeypatch.setattr(
         video,
         "VideoDownloader",
-        lambda output_folder: DownloaderStub(results=[DownloadResultStub(filename=big)]),
+        lambda output_folder: DownloaderStub(results=[DownloadResultStub(filename=big2)]),
     )
     await VideoCogs.download_video.callback(
-        cog, fail_interaction, url="https://x.test", quality="low"
+        cog, fail_interaction, url="https://x.test", quality="best"
     )
     assert "檔案大小超過" in fail_interaction.edits[-1]["content"]
 
@@ -338,6 +364,108 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     cog.downloader = ThreadsDownloaderStub(results=RuntimeError("parse failed"))
     await cog.on_message(message=error_message)
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
+
+
+async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
+    """A Threads video too big to attach is hosted as a URL instead of a ⚠️ refusal."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=bot)
+    (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=MediaHostingConfig(
+                MEDIA_HOSTING_ENABLED=True,
+                MEDIA_HOSTING_BASE_URL="https://media.test",
+                MEDIA_HOSTING_SERVE_DIR=str(tmp_path / "serve"),
+            )
+        )
+    )
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_bytes(data=b"123")
+
+    message = FakeDiscordMessage()
+    message.author = FakeUser(bot=False)
+    message.content = "https://www.threads.net/@alice/post/abc"
+    # A tiny ceiling drives max_size negative, so the 3-byte video counts as oversized.
+    message.guild = SimpleNamespace(filesize_limit=4)
+    cog.downloader = ThreadsDownloaderStub(
+        results=[_thread_output(video_paths=[video_file], image_urls=[])]
+    )
+
+    await cog.on_message(message=message)
+
+    # The video was hosted (its URL rides the reply content) and moved out of the temp dir.
+    content = message.replies[0].get("content") or ""
+    assert any(line.startswith("https://media.test/") for line in content.splitlines())
+    assert not video_file.exists()
+    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+
+
+async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> None:
+    """A post with one small and one oversize video attaches the small and links only the big one."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=bot)
+    (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=MediaHostingConfig(
+                MEDIA_HOSTING_ENABLED=True,
+                MEDIA_HOSTING_BASE_URL="https://media.test",
+                MEDIA_HOSTING_SERVE_DIR=str(tmp_path / "serve"),
+            )
+        )
+    )
+    small = tmp_path / "small.mp4"
+    small.write_bytes(data=b"0" * 100)
+    big = tmp_path / "big.mp4"
+    big.write_bytes(data=b"0" * (2 * 1024 * 1024))
+
+    message = FakeDiscordMessage()
+    message.author = FakeUser(bot=False)
+    message.content = "https://www.threads.net/@alice/post/abc"
+    # The ceiling clears the small clip plus the 1 MiB envelope margin but not the 2 MiB clip,
+    # so only the big one is peeled to a hosted URL while the small one attaches natively.
+    message.guild = SimpleNamespace(filesize_limit=1024 * 1024 + 200)
+    cog.downloader = ThreadsDownloaderStub(
+        results=[_thread_output(video_paths=[small, big], image_urls=[])]
+    )
+
+    await cog.on_message(message=message)
+
+    content = message.replies[0].get("content") or ""
+    hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
+    assert len(hosted) == 1  # only the oversize clip was linked
+    assert big.exists() is False  # the big clip was moved into the serve dir
+    assert small.exists() is True  # the small clip stayed on disk to attach natively
+    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+
+
+async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Path) -> None:
+    """With hosting off, an oversize Threads video refuses the whole post (pre-#325 ⚠️ behavior)."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=bot)
+    # Explicitly disabled planner — never the no-arg default, whose config is `available` on a dev
+    # box where .env enables hosting (it would write into the live serve dir).
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False))
+    )
+    video_file = tmp_path / "clip.mp4"
+    video_file.write_bytes(data=b"123")
+
+    message = FakeDiscordMessage()
+    message.author = FakeUser(bot=False)
+    message.content = "https://www.threads.net/@alice/post/abc"
+    message.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling -> the video is oversize
+    cog.downloader = ThreadsDownloaderStub(
+        results=[_thread_output(video_paths=[video_file], image_urls=[])]
+    )
+
+    await cog.on_message(message=message)
+
+    # No host available + oversize -> whole-post ⚠️ refusal, no reply, and the file is left in place.
+    assert message.reactions[-1] == "⚠️"
+    assert message.replies == []
+    assert video_file.exists() is True
 
 
 async def test_auto_unmute_tracks_audit_and_generates_reply(

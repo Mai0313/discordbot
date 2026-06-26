@@ -148,9 +148,18 @@ class VideoDownloader(BaseModel):
         output_path = Path(self.output_folder)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Base headers safe for most sites; site-specific headers added conditionally below
+        # Base headers safe for most sites; site-specific headers added conditionally below.
+        # Match the real host (not a raw substring) so a URL like `evil.com/?x=bilibili.com`
+        # or `bilibili.com.attacker.com` never gets the bilibili Referer.
         http_headers = self._default_http_headers()
-        if url and "bilibili.com" in url:
+        # A user-pasted URL may be scheme-less (e.g. `www.bilibili.com/video/...`), which urlparse
+        # reads as a path with no hostname; prepend `//` so the host is parsed either way. The
+        # exact-host match still rejects `evil.com/?x=bilibili.com` and `bilibili.com.attacker.com`.
+        host = ""
+        if url:
+            normalized = url if "://" in url else f"//{url}"
+            host = (urlparse(normalized).hostname or "").lower()
+        if host == "bilibili.com" or host.endswith(".bilibili.com"):
             http_headers["Referer"] = "https://www.bilibili.com"
 
         params = {

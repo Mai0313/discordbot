@@ -12,7 +12,7 @@ import contextlib
 from google import genai
 from openai import AsyncOpenAI
 import logfire
-from nextcord import File, Embed, Message, NotFound, TextChannel, HTTPException
+from nextcord import Embed, Message, NotFound, TextChannel, HTTPException, AllowedMentions
 from pydantic import ValidationError
 from nextcord.ext import commands
 from google.genai.types import FileState
@@ -41,6 +41,13 @@ from discordbot.cogs._memory.store import (
     read_main_identity,
 )
 from discordbot.utils.discord_embeds import embed_spacer_payload
+from discordbot.utils.media_delivery import (
+    MediaItem,
+    MediaHostingConfig,
+    MediaHostingService,
+    MediaDeliveryPlanner,
+    upload_limit_for,
+)
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
     sanitize_identity,
@@ -452,6 +459,17 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     @cached_property
+    def media_delivery(self) -> MediaDeliveryPlanner:
+        """The cached media-delivery planner shared by the IMAGE / VIDEO routes and QA streamer.
+
+        Returns:
+            A planner that decides which media attach natively and which are hosted as a public
+            URL (media too big for Discord's upload limit); its host self-disables when
+            unconfigured, so every oversize item then degrades to the route's host-free path.
+        """
+        return MediaDeliveryPlanner(media_hosting=MediaHostingService(config=MediaHostingConfig()))
+
+    @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
         """The cached per-user memory extraction service.
 
@@ -593,6 +611,49 @@ class ReplyGeneratorCogs(commands.Cog):
         messages.append(current_msg)
         return messages
 
+    async def _deliver_generated_media(
+        self, *, message: Message, data: bytes, filename: str
+    ) -> Message | None:
+        """Delivers generated image/video bytes, hosting a URL when too big to upload natively.
+
+        Returns the delivered media message the persona reply should stream onto, or None when the
+        bytes were too big and hosted as a standalone URL reply instead. On None the caller posts
+        the persona reply on a fresh non-pinging message (via `_persona_base_reply`) only if it
+        proceeds, so the hosted-URL message is never clobbered and no stray persona-base is left if
+        the persona reply bails. If hosting is unavailable the native attach is attempted anyway,
+        raising on oversize so the route stays on its existing hard-fail error path.
+        """
+        item = MediaItem(source=data, filename=filename)
+        plan = await self.media_delivery.plan(
+            items=[item], upload_limit=upload_limit_for(guild=message.guild)
+        )
+        if plan.native:
+            return await message.reply(
+                content=message.author.mention, file=plan.native[0].to_file()
+            )
+        if not plan.hosted_urls:
+            # Hosting off/failed: attempt the native attach, which raises on oversize and keeps
+            # the route on the outer error path exactly as before.
+            return await message.reply(content=message.author.mention, file=item.to_file())
+        # Too big to attach: the hosted URL is the deliverable (pings the author once). The persona
+        # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
+        await message.reply(content=f"{message.author.mention}\n{plan.hosted_urls[0]}")
+        return None
+
+    async def _persona_base_reply(self, *, message: Message, reply: Message | None) -> Message:
+        """The message the persona stream edits: the delivered media message, or a fresh reply.
+
+        When the media rode as a native attachment, that same message is reused (its content edits
+        keep the attachment). When the media was hosted as a separate URL (`reply is None`), a fresh
+        non-pinging reply is created here, lazily, only when the persona reply actually proceeds —
+        so the hosted-URL message keeps the sole author ping and no empty message is ever orphaned.
+        """
+        if reply is not None:
+            return reply
+        return await message.reply(
+            content=message.author.mention, allowed_mentions=AllowedMentions.none()
+        )
+
     async def _handle_video_reply(
         self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
     ) -> None:
@@ -627,8 +688,9 @@ class ReplyGeneratorCogs(commands.Cog):
             video_bytes = await self.video_generator.render(
                 prompt=user_prompt, reference_image_sources=images
             )
-            video_file = File(fp=BytesIO(video_bytes), filename="generated.mp4")
-            reply = await message.reply(content=f"{message.author.mention}", file=video_file)
+            reply = await self._deliver_generated_media(
+                message=message, data=video_bytes, filename="generated.mp4"
+            )
             logfire.info(
                 "gen_reply video delivered",
                 message_id=message.id,
@@ -682,15 +744,17 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _reply_about_video(
         self,
         message: Message,
-        reply: Message,
+        reply: Message | None,
         video_bytes: bytes,
         context_task: "asyncio.Task[ReplyContext]",
     ) -> None:
         """Best-effort: watches the just-made video and streams a persona reply onto its message.
 
         Feeds the generated video as an uploaded Files API `input_file` (video cannot be
-        inlined), then delegates to the shared media-persona-reply streamer. Any failure leaves
-        the delivered video untouched.
+        inlined), then delegates to the shared media-persona-reply streamer. `reply` is None when
+        the clip was hosted as a URL; the persona-base message is only created once the Files API
+        upload succeeds, so a failed upload leaves no orphaned message. Any failure leaves the
+        delivered video untouched.
         """
         file_uri = await self._upload_video_for_reply(data=video_bytes)
         if file_uri is None:
@@ -711,7 +775,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self,
         *,
         message: Message,
-        reply: Message,
+        reply: Message | None,
         context_task: "asyncio.Task[ReplyContext]",
         model: ModelSettings,
         system_prompt: str,
@@ -721,17 +785,23 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Best-effort: streams a persona reply onto an already-delivered generated image/video.
 
-        Shared by the IMAGE and VIDEO routes' post-delivery reply. Builds the answer-path input
-        (history, selected user memory, reference, current), appends the just-made media as the
-        focus the model replies about, and streams onto the already-sent media message:
-        pre-seeding `reply` makes the streamer edit that message (its content edits keep the
-        attached media). Injects only the selected user memory, never the server memory block,
-        and seeds the selection-call usage / memory labels so the footer matches the QA path.
-        Consumes the speculative `context_task` (awaited here so its build overlaps generation);
-        any failure leaves the delivered media untouched.
+        Shared by the IMAGE and VIDEO routes' post-delivery reply. `reply` is the delivered media
+        message (native attachment) or None when the media was hosted as a separate URL; the
+        persona-base message is built from it INSIDE the protected flow (`_persona_base_reply`), so a
+        base-creation or streaming failure is swallowed here instead of surfacing to the outer error
+        path, and a fresh hosted-case base that never received content is deleted (never an orphan).
+        Builds the answer-path input (history, selected user memory, reference, current), appends the
+        just-made media as the focus, and streams onto the base (its content edits keep an attached
+        media). Injects only the selected user memory, never the server memory block, and seeds the
+        selection-call usage / memory labels so the footer matches the QA path. Consumes the
+        speculative `context_task` (awaited here so its build overlaps generation); any failure
+        leaves the delivered media untouched.
         """
+        base: Message | None = None
+        streamer: ResponseStreamer | None = None
         try:
             context = await context_task
+            base = await self._persona_base_reply(message=message, reply=reply)
             # Mirror the answer path's order (history, memory, reference, current), injecting
             # only the selected user memory, never the server memory block.
             response_input: ResponseInputParam = [*context.hist_messages]
@@ -757,7 +827,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             streamer = ResponseStreamer(
                 message=message,
-                reply=reply,
+                reply=base,
                 memory_lookups=context.memory_labels,
                 input_tokens=context.selection_input_tokens,
                 output_tokens=context.selection_output_tokens,
@@ -784,6 +854,16 @@ class ReplyGeneratorCogs(commands.Cog):
                 message_id=message.id,
                 _exc_info=True,
             )
+            # A fresh hosted-case base (reply was None) that never received content is a bare ping;
+            # delete it so a failed persona reply leaves no orphan. A native media message
+            # (reply is not None) is the deliverable itself and is always kept.
+            if (
+                reply is None
+                and base is not None
+                and (streamer is None or not streamer.content_started)
+            ):
+                with contextlib.suppress(Exception):
+                    await base.delete()
 
     async def _handle_image_reply(
         self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
@@ -823,8 +903,9 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             # Send the generated image immediately so the user sees it without waiting on the
             # conversational reply; the reply text streams onto this same message right after.
-            image_file = File(fp=BytesIO(image_bytes), filename="generated.png")
-            reply = await message.reply(content=message.author.mention, file=image_file)
+            reply = await self._deliver_generated_media(
+                message=message, data=image_bytes, filename="generated.png"
+            )
             logfire.info(
                 "gen_reply image delivered",
                 message_id=message.id,
@@ -1455,6 +1536,7 @@ class ReplyGeneratorCogs(commands.Cog):
             voice_synthesizer=voice_synthesizer,
             image_generator=image_generator,
             music_generator=music_generator,
+            media_delivery=self.media_delivery,
         )
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is
