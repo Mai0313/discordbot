@@ -145,9 +145,30 @@ EFFORT_GRACE_SECONDS = 5.0
 THREADS_GRACE_SECONDS = 8.0
 
 
-def _message_has_url(content: str) -> bool:
-    """Returns whether the current message carries an explicit URL."""
-    return _MESSAGE_URL_RE.search(string=content) is not None
+def _message_link_texts(message: Message) -> list[str]:
+    """Every text span of a message that may carry a link: content, embeds, and forwarded snapshots.
+
+    A forward leaves `content`/`embeds` empty and puts the payload in `message.snapshots`, so a
+    forwarded URL is invisible to a `message.content`-only scan; folding the snapshot text in keeps
+    the YouTube / Threads / URL detectors in agreement with what routing already sees.
+    """
+    texts = [message.content or ""]
+    for embed in message.embeds:
+        texts.extend(text for text in (embed.url, embed.description) if text)
+    for snapshot in message.snapshots:
+        texts.append(snapshot.content or "")
+        for embed in snapshot.embeds:
+            texts.extend(text for text in (embed.url, embed.description) if text)
+    return texts
+
+
+def _first_url_match(pattern: re.Pattern[str], message: Message) -> re.Match[str] | None:
+    """First match of a URL pattern across a message's content, embeds, and forwarded snapshots."""
+    for text in _message_link_texts(message=message):
+        match = pattern.search(string=text)
+        if match:
+            return match
+    return None
 
 
 def _source_channel_is_public(message: Message) -> bool:
@@ -184,15 +205,9 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
 
 
 def _youtube_url_in_message(message: Message) -> str | None:
-    """Returns the first YouTube URL in a message's text or its embeds, if any."""
-    texts = [message.content or ""]
-    for embed in message.embeds:
-        texts.extend(text for text in (embed.url, embed.description) if text)
-    for text in texts:
-        match = YOUTUBE_URL_RE.search(string=text)
-        if match:
-            return match.group(0)
-    return None
+    """Returns the first YouTube URL in a message's text, embeds, or forwarded snapshots, if any."""
+    match = _first_url_match(pattern=YOUTUBE_URL_RE, message=message)
+    return match.group(0) if match else None
 
 
 def _find_youtube_url(message: Message) -> str | None:
@@ -998,7 +1013,9 @@ class ReplyGeneratorCogs(commands.Cog):
             parsed = responses.output_parsed
             if parsed is None:
                 route = RouteClassification(decision="QA")
-            elif parsed.decision == "SUMMARY" and _message_has_url(content=message.content):
+            elif parsed.decision == "SUMMARY" and (
+                _first_url_match(pattern=_MESSAGE_URL_RE, message=message) is not None
+            ):
                 # A summary request carrying a URL is really a QA recap of that link, not a
                 # recap of channel history, so steer it back to QA. Preserve watch_video so a
                 # "summarize this YouTube link" still reaches the video-watching path.
@@ -1798,7 +1815,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 # answer-context blocks. Started here so its single HTTP fetch overlaps the
                 # whole route/prep window for free; only the QA route consumes it, others
                 # cancel it. Resolution is route_done-gated like effort, never a fixed wait.
-                threads_match = THREADS_URL_RE.search(string=message.content)
+                threads_match = _first_url_match(pattern=THREADS_URL_RE, message=message)
                 if threads_match:
                     threads_task = asyncio.create_task(
                         coro=build_threads_context_messages(

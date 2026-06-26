@@ -1924,6 +1924,16 @@ def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> 
     assert _find_youtube_url(message=message) is None
 
 
+def test_find_youtube_url_in_forwarded_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forwarded message's YouTube link (in message.snapshots) is found, not just message.content."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content="")  # pure forward: empty top-level content
+    message.snapshots = [FakeSnapshot(content=f"summarize this {url}")]
+
+    assert _find_youtube_url(message=message) == url
+
+
 def _media_builder() -> MessageInputBuilder:
     """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
     return MessageInputBuilder(
