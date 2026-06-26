@@ -1944,6 +1944,16 @@ def test_find_youtube_url_in_forwarded_embed_title(monkeypatch: pytest.MonkeyPat
     assert _find_youtube_url(message=message) == url
 
 
+def test_find_youtube_url_in_forwarded_embed_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forwarded link card whose URL is only in embed.url is detected and was rendered too."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content="")
+    message.snapshots = [FakeSnapshot(embeds=[Embed(url=url)])]  # bare link card, no caption
+
+    assert _find_youtube_url(message=message) == url
+
+
 def _media_builder() -> MessageInputBuilder:
     """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
     return MessageInputBuilder(
@@ -2051,6 +2061,13 @@ def test_forwarded_request_text_is_untagged() -> None:
 
     # A normal message (no snapshots) yields no forwarded request text.
     assert builder.forwarded_request_text(message=FakeMessage(content="hi")) == ""
+
+
+def test_extract_embed_text_includes_embed_url() -> None:
+    """A link card's own url is rendered, so the answer model sees the link, not just a title."""
+    builder = _media_builder()
+    url = "https://youtu.be/jNQXAC9IVRw"
+    assert url in builder.extract_embed_text(embeds=[Embed(url=url)])
 
 
 async def test_dead_source_skipped_within_ttl_then_retried(

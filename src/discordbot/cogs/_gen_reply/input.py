@@ -157,7 +157,12 @@ class MessageInputBuilder(BaseModel):
 
     @staticmethod
     def extract_embed_text(embeds: list[Embed]) -> str:
-        """Joins author / title / description / fields / footer text from embeds."""
+        """Joins author / title / link / description / fields / footer text from embeds.
+
+        The embed's own `url` is included so the answer model actually sees a link card's
+        target (e.g. a forwarded link with no caption) and the URL detectors stay aligned with
+        the rendered text instead of reacting to a link the model was never shown.
+        """
         embed_parts: list[str] = []
         for embed in embeds:
             parts: list[str] = []
@@ -165,6 +170,8 @@ class MessageInputBuilder(BaseModel):
                 parts.append(f"Author: {embed.author.name}")
             if embed.title:
                 parts.append(f"Title: {embed.title}")
+            if embed.url:
+                parts.append(f"Link: {embed.url}")
             if embed.description:
                 parts.append(embed.description)
             for field in embed.fields:
