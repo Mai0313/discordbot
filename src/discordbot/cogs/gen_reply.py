@@ -1713,6 +1713,11 @@ class ReplyGeneratorCogs(commands.Cog):
         # `message.snapshots`, so it must not be gated out as an empty message here, or the
         # snapshot text/media render in `input.py` never runs.
         is_forward = bool(message.snapshots)
+        # A pure forward (no comment) has empty content, so fall back to the forwarded text as
+        # the request: an IMAGE/VIDEO route then renders the forwarded "draw a cat" instead of
+        # the generic empty-prompt fallback.
+        if not user_prompt and is_forward:
+            user_prompt = self.input_builder.forwarded_request_text(message=message)
 
         if not user_prompt and not has_attachment and not is_forward:
             logfire.debug(

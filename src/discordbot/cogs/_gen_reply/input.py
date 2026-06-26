@@ -8,7 +8,7 @@ from mimetypes import guess_type
 from collections import OrderedDict
 
 import logfire
-from nextcord import Embed, Message, Attachment, StickerItem
+from nextcord import Embed, Message, Attachment, StickerItem, MessageSnapshot
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -169,6 +169,14 @@ class MessageInputBuilder(BaseModel):
                 embed_parts.append("\n".join(parts))
         return "\n\n".join(embed_parts)
 
+    @staticmethod
+    def _snapshot_text(snapshot: MessageSnapshot) -> str:
+        """Raw forwarded text of one snapshot: its content, or its embeds as a fallback."""
+        text = snapshot.content.strip()
+        if not text and snapshot.embeds:
+            text = MessageInputBuilder.extract_embed_text(embeds=list(snapshot.embeds))
+        return text
+
     def _forwarded_snapshot_text(self, message: Message) -> str:
         """Renders a forwarded message's snapshots, each tagged `[forwarded message]`.
 
@@ -180,11 +188,23 @@ class MessageInputBuilder(BaseModel):
         """
         blocks: list[str] = []
         for snapshot in message.snapshots:
-            text = snapshot.content.strip()
-            if not text and snapshot.embeds:
-                text = self.extract_embed_text(embeds=list(snapshot.embeds))
+            text = self._snapshot_text(snapshot=snapshot)
             blocks.append(f"[forwarded message]: {text}" if text else "[forwarded message]")
         return "\n".join(blocks)
+
+    def forwarded_request_text(self, message: Message) -> str:
+        """Concatenated raw forwarded text (no `[forwarded message]` tag) across snapshots.
+
+        Used as the media prompt when a pure forward carries no comment of its own, so a
+        forwarded "draw a cat" reaches the IMAGE/VIDEO handler as its actual request instead
+        of the generic fallback. Empty for a normal message or a media-only forward.
+        """
+        texts = [
+            text
+            for snapshot in message.snapshots
+            if (text := self._snapshot_text(snapshot=snapshot))
+        ]
+        return "\n".join(texts)
 
     async def get_cleaned_content(self, message: Message) -> str:
         """Returns the textual content of a message without the author prefix."""

@@ -2021,6 +2021,18 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     assert await builder.get_cleaned_content(message=media_only) == "[forwarded message]"
 
 
+def test_forwarded_request_text_is_untagged() -> None:
+    """The media-prompt helper returns raw forwarded text without the `[forwarded message]` tag."""
+    builder = _media_builder()
+
+    forward = FakeMessage(author=FakeAuthor(user_id=1))
+    forward.snapshots = [FakeSnapshot(content="draw a cat")]
+    assert builder.forwarded_request_text(message=forward) == "draw a cat"
+
+    # A normal message (no snapshots) yields no forwarded request text.
+    assert builder.forwarded_request_text(message=FakeMessage(content="hi")) == ""
+
+
 async def test_dead_source_skipped_within_ttl_then_retried(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3310,22 +3322,23 @@ async def test_on_message_forward_not_gated_as_empty(monkeypatch: pytest.MonkeyP
     """A pure forward (empty content, payload only in snapshots) reaches the pipeline, not `?`."""
     cog = _cog()
 
-    pipeline_calls: list[FakeMessage] = []
+    pipeline_calls: list[tuple[FakeMessage, str]] = []
 
     async def record_pipeline(message: FakeMessage, user_prompt: str, reactions: object) -> None:
         """Records that the reply pipeline was reached instead of the empty-message `?` reply."""
-        del user_prompt, reactions
-        pipeline_calls.append(message)
+        del reactions
+        pipeline_calls.append((message, user_prompt))
 
     monkeypatch.setattr(cog, "_run_reply_pipeline", record_pipeline)
 
     dm_forward = FakeMessage(content="", author=FakeAuthor(user_id=1))
     dm_forward.guild = None
-    dm_forward.snapshots = [FakeSnapshot(content="forwarded body")]
+    dm_forward.snapshots = [FakeSnapshot(content="draw a cat")]
     await cog.on_message(message=dm_forward)
 
     assert dm_forward.replies == []  # not gated out with "?"
-    assert pipeline_calls == [dm_forward]
+    # The forwarded request reaches the pipeline as the prompt (so an IMAGE/VIDEO route is not blank).
+    assert pipeline_calls == [(dm_forward, "draw a cat")]
 
 
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
