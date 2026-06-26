@@ -248,6 +248,7 @@ class FakeMessage:
         self.embeds: list[Embed] = []
         self.attachments: list[FakeAttachment] = []
         self.stickers: list[FakeAttachment] = []
+        self.snapshots: list[FakeSnapshot] = []
         self.reference: FakeReference | None = None
         self.guild: FakeGuild | None = FakeGuild()
         self.channel = FakeChannel(history=self._history, view_channel=channel_public)
@@ -324,6 +325,23 @@ class FakeAttachment:
         """Returns the configured attachment bytes."""
         self.read_count += 1
         return self._payload
+
+
+class FakeSnapshot:
+    """Minimal stand-in for a `nextcord.MessageSnapshot` (a forwarded message's payload)."""
+
+    def __init__(
+        self,
+        content: str = "",
+        embeds: list[Embed] | None = None,
+        attachments: list[FakeAttachment] | None = None,
+        sticker_items: list[FakeAttachment] | None = None,
+    ) -> None:
+        """Initializes the forwarded snapshot's content and media (stickers as sticker_items)."""
+        self.content = content
+        self.embeds = embeds or []
+        self.attachments = attachments or []
+        self.sticker_items = sticker_items or []
 
 
 class FakeResponses:
@@ -1951,6 +1969,56 @@ def test_collect_sources_keeps_bot_own_music_clip() -> None:
     ]
     # The music clip is kept (cache_key 1); only the voice clip (cache_key 2) is skipped.
     assert [s.cache_key for s in builder.collect_attachment_sources(message=bot_msg)] == [1]
+
+
+def test_collect_sources_includes_forwarded_snapshot_media() -> None:
+    """A forwarded message's attachments (in message.snapshots) are collected, not dropped."""
+    builder = _media_builder()
+
+    msg = FakeMessage(author=FakeAuthor(user_id=1))
+    # The forwarder also dragged along their own attachment; both it and the forwarded one count.
+    msg.attachments = [
+        FakeAttachment(filename="own.txt", content_type="text/plain", attachment_id=1)
+    ]
+    msg.snapshots = [
+        FakeSnapshot(
+            content="forwarded",
+            attachments=[
+                FakeAttachment(filename="pic.png", content_type="image/png", attachment_id=2)
+            ],
+        )
+    ]
+    assert [s.cache_key for s in builder.collect_attachment_sources(message=msg)] == [1, 2]
+
+
+async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
+    """Forwarded snapshot text is folded in and tagged so a forward is never blank."""
+    builder = _media_builder()
+
+    # Text-only forward: the snapshot content surfaces under the tag.
+    forward_only = FakeMessage(author=FakeAuthor(user_id=1))
+    forward_only.snapshots = [FakeSnapshot(content="hello from elsewhere")]
+    rendered = await builder.get_cleaned_content(message=forward_only)
+    assert "[forwarded message]" in rendered
+    assert "hello from elsewhere" in rendered
+
+    # The forwarder's own comment is kept alongside the forwarded body (append, not replace).
+    with_comment = FakeMessage(content="look at this", author=FakeAuthor(user_id=1))
+    with_comment.snapshots = [FakeSnapshot(content="original text")]
+    rendered = await builder.get_cleaned_content(message=with_comment)
+    assert "look at this" in rendered
+    assert "original text" in rendered
+
+    # A media-only forward still emits the bare tag (its attachment rides separately).
+    media_only = FakeMessage(author=FakeAuthor(user_id=1))
+    media_only.snapshots = [
+        FakeSnapshot(
+            attachments=[
+                FakeAttachment(filename="pic.png", content_type="image/png", attachment_id=2)
+            ]
+        )
+    ]
+    assert await builder.get_cleaned_content(message=media_only) == "[forwarded message]"
 
 
 async def test_dead_source_skipped_within_ttl_then_retried(
