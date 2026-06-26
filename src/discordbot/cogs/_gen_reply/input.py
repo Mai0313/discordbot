@@ -8,7 +8,7 @@ from mimetypes import guess_type
 from collections import OrderedDict
 
 import logfire
-from nextcord import Embed, Message, Attachment, StickerItem
+from nextcord import Embed, Message, Attachment, StickerItem, MessageSnapshot
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -42,6 +42,12 @@ USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$")
 # persona prompt and the memory extraction prompt both treat as the trusted
 # authorship signal. Neutralize the lookalike before rendering.
 _ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
+
+# Marker prefixing each forwarded snapshot span appended to a rendered message body. The
+# answer model uses it to attribute forwarded content; the memory transcript strips from it
+# to end-of-body so a forward of someone else's words is never recorded as the forwarder's
+# own fact (forwarded text is always appended last, so the marker is the suffix boundary).
+FORWARDED_MESSAGE_MARKER = "[forwarded message]"
 
 
 def sanitize_identity(value: str) -> str:
@@ -151,7 +157,12 @@ class MessageInputBuilder(BaseModel):
 
     @staticmethod
     def extract_embed_text(embeds: list[Embed]) -> str:
-        """Joins author / title / description / fields / footer text from embeds."""
+        """Joins author / title / link / description / fields / footer text from embeds.
+
+        The embed's own `url` is included so the answer model actually sees a link card's
+        target (e.g. a forwarded link with no caption) and the URL detectors stay aligned with
+        the rendered text instead of reacting to a link the model was never shown.
+        """
         embed_parts: list[str] = []
         for embed in embeds:
             parts: list[str] = []
@@ -159,6 +170,8 @@ class MessageInputBuilder(BaseModel):
                 parts.append(f"Author: {embed.author.name}")
             if embed.title:
                 parts.append(f"Title: {embed.title}")
+            if embed.url:
+                parts.append(f"Link: {embed.url}")
             if embed.description:
                 parts.append(embed.description)
             for field in embed.fields:
@@ -169,6 +182,56 @@ class MessageInputBuilder(BaseModel):
                 embed_parts.append("\n".join(parts))
         return "\n\n".join(embed_parts)
 
+    @staticmethod
+    def snapshot_text(snapshot: MessageSnapshot) -> str:
+        """The rendered text of one forwarded snapshot: its content, or its embeds as a fallback.
+
+        This is the single source of truth for what the answer is shown from a snapshot, so the
+        URL detectors scan exactly this (an embed is rendered only when content is empty, so a
+        captioned link card's embed-only URL is neither rendered nor scanned).
+
+        A forward of the bot's own reply carries no `author`, so the usage-footer strip
+        `get_cleaned_content` applies to the bot's own messages cannot fire here; the same regex
+        is applied directly so a forwarded reply never re-injects the `-# ... ⬆ ... ⬇ ...` footer
+        the model would otherwise learn to mimic. The pattern is bot-footer-shaped, so it is a
+        no-op on forwarded user text.
+        """
+        text = USAGE_FOOTER_RE.sub("", snapshot.content).strip()
+        if not text and snapshot.embeds:
+            text = MessageInputBuilder.extract_embed_text(embeds=list(snapshot.embeds))
+        return text
+
+    def _forwardedsnapshot_text(self, message: Message) -> str:
+        """Renders a forwarded message's snapshots, each tagged `[forwarded message]`.
+
+        A Discord forward leaves `content`/`embeds`/`attachments` empty and puts the original
+        payload in `message.snapshots`; the tag tells the model the span is forwarded so it does
+        not credit the forwarder with the words. Empty for a normal message (no snapshots); a
+        media-only forward still emits the bare tag since its attachment rides separately via
+        `collect_attachment_sources`.
+        """
+        blocks: list[str] = []
+        for snapshot in message.snapshots:
+            text = self.snapshot_text(snapshot=snapshot)
+            blocks.append(
+                f"{FORWARDED_MESSAGE_MARKER}: {text}" if text else FORWARDED_MESSAGE_MARKER
+            )
+        return "\n".join(blocks)
+
+    def forwarded_request_text(self, message: Message) -> str:
+        """Concatenated raw forwarded text (no `[forwarded message]` tag) across snapshots.
+
+        Used as the media prompt when a pure forward carries no comment of its own, so a
+        forwarded "draw a cat" reaches the IMAGE/VIDEO handler as its actual request instead
+        of the generic fallback. Empty for a normal message or a media-only forward.
+        """
+        texts = [
+            text
+            for snapshot in message.snapshots
+            if (text := self.snapshot_text(snapshot=snapshot))
+        ]
+        return "\n".join(texts)
+
     async def get_cleaned_content(self, message: Message) -> str:
         """Returns the textual content of a message without the author prefix."""
         content = message.content.strip()
@@ -178,6 +241,10 @@ class MessageInputBuilder(BaseModel):
             content = self.extract_embed_text(embeds=list(message.embeds))
         if not content and message.is_system():
             content = message.system_content
+        # A forward can also carry the forwarder's own comment, so append rather than replace.
+        forwarded = self._forwardedsnapshot_text(message=message)
+        if forwarded:
+            content = f"{content}\n{forwarded}".strip() if content else forwarded
         return content
 
     def collect_attachment_sources(self, message: Message) -> list[AttachmentSource]:
@@ -187,14 +254,49 @@ class MessageInputBuilder(BaseModel):
         upload, the render cache key, and the IMAGE route; does no network or upload
         work so it is safe to call on the route critical path. Embeds prefer Discord's
         `proxy_url` (media.discordapp.net) over the origin URL, since sources like the
-        Threads CDN expire and reject requests without specific headers.
+        Threads CDN expire and reject requests without specific headers. A forwarded
+        message's media is folded in from `message.snapshots` so a forward is not blank.
         """
         is_own_message = bool(self.bot.user and message.author.id == self.bot.user.id)
+        sources = self._sources_from_parts(
+            attachments=list(message.attachments),
+            stickers=list(message.stickers),
+            embeds=list(message.embeds),
+            drop_own_voice=is_own_message,
+        )
+        # A forward's real payload lives in `message.snapshots`; the original author is not the
+        # bot, so the own-voice skip never applies. The snapshot carries stickers as
+        # `sticker_items`, and its attachment/embed ids stay unique so the render cache never
+        # collides. Empty for a normal message.
+        for snapshot in message.snapshots:
+            sources.extend(
+                self._sources_from_parts(
+                    attachments=list(snapshot.attachments),
+                    stickers=list(snapshot.sticker_items),
+                    embeds=list(snapshot.embeds),
+                    drop_own_voice=False,
+                )
+            )
+        return sources
+
+    def _sources_from_parts(
+        self,
+        *,
+        attachments: list[Attachment],
+        stickers: list[StickerItem],
+        embeds: list[Embed],
+        drop_own_voice: bool,
+    ) -> list[AttachmentSource]:
+        """Classifies one carrier's attachments / stickers / embed images into sources.
+
+        Shared by the message body and each forwarded snapshot. `drop_own_voice` skips the bot's
+        own generated voice clip (only meaningful on the bot's own message body).
+        """
         sources: list[AttachmentSource] = []
-        for attachment in message.attachments:
+        for attachment in attachments:
             # Skip the bot's own generated voice clip: its text is already in the transcript,
             # so re-uploading the WAV only adds latency and feeds the model duplicate self-output.
-            if is_own_message and attachment.filename == VOICE_REPLY_FILENAME:
+            if drop_own_voice and attachment.filename == VOICE_REPLY_FILENAME:
                 continue
             content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""
             sources.append(
@@ -205,7 +307,7 @@ class MessageInputBuilder(BaseModel):
                     cache_key=attachment.id,
                 )
             )
-        for sticker in message.stickers:
+        for sticker in stickers:
             sources.append(
                 AttachmentSource(
                     handle=sticker,
@@ -214,7 +316,7 @@ class MessageInputBuilder(BaseModel):
                     cache_key=sticker.id,
                 )
             )
-        for embed in message.embeds:
+        for embed in embeds:
             if embed.image and (url := embed.image.proxy_url or embed.image.url):
                 sources.append(
                     AttachmentSource(

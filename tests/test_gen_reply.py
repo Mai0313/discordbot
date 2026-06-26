@@ -248,6 +248,7 @@ class FakeMessage:
         self.embeds: list[Embed] = []
         self.attachments: list[FakeAttachment] = []
         self.stickers: list[FakeAttachment] = []
+        self.snapshots: list[FakeSnapshot] = []
         self.reference: FakeReference | None = None
         self.guild: FakeGuild | None = FakeGuild()
         self.channel = FakeChannel(history=self._history, view_channel=channel_public)
@@ -324,6 +325,23 @@ class FakeAttachment:
         """Returns the configured attachment bytes."""
         self.read_count += 1
         return self._payload
+
+
+class FakeSnapshot:
+    """Minimal stand-in for a `nextcord.MessageSnapshot` (a forwarded message's payload)."""
+
+    def __init__(
+        self,
+        content: str = "",
+        embeds: list[Embed] | None = None,
+        attachments: list[FakeAttachment] | None = None,
+        sticker_items: list[FakeAttachment] | None = None,
+    ) -> None:
+        """Initializes the forwarded snapshot's content and media (stickers as sticker_items)."""
+        self.content = content
+        self.embeds = embeds or []
+        self.attachments = attachments or []
+        self.sticker_items = sticker_items or []
 
 
 class FakeResponses:
@@ -1906,6 +1924,47 @@ def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> 
     assert _find_youtube_url(message=message) is None
 
 
+def test_find_youtube_url_in_forwarded_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forwarded message's YouTube link (in message.snapshots) is found, not just message.content."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content="")  # pure forward: empty top-level content
+    message.snapshots = [FakeSnapshot(content=f"summarize this {url}")]
+
+    assert _find_youtube_url(message=message) == url
+
+
+def test_find_youtube_url_in_forwarded_embed_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forwarded URL only in an embed title is found, matching what routing sees."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content="")
+    message.snapshots = [FakeSnapshot(embeds=[Embed(title=f"watch {url}")])]
+
+    assert _find_youtube_url(message=message) == url
+
+
+def test_find_youtube_url_in_forwarded_embed_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forwarded link card whose URL is only in embed.url is detected and was rendered too."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content="")
+    message.snapshots = [FakeSnapshot(embeds=[Embed(url=url)])]  # bare link card, no caption
+
+    assert _find_youtube_url(message=message) == url
+
+
+def test_find_youtube_url_skips_captioned_forward_embed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A captioned forward renders only its caption, so an embed-only URL is not scanned either."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content="")
+    # Snapshot has its own caption, so the embed (where the URL lives) is not rendered to the model.
+    message.snapshots = [FakeSnapshot(content="lol look at this", embeds=[Embed(url=url)])]
+
+    assert _find_youtube_url(message=message) is None
+
+
 def _media_builder() -> MessageInputBuilder:
     """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
     return MessageInputBuilder(
@@ -1951,6 +2010,93 @@ def test_collect_sources_keeps_bot_own_music_clip() -> None:
     ]
     # The music clip is kept (cache_key 1); only the voice clip (cache_key 2) is skipped.
     assert [s.cache_key for s in builder.collect_attachment_sources(message=bot_msg)] == [1]
+
+
+def test_collect_sources_includes_forwarded_snapshot_media() -> None:
+    """A forwarded message's attachments (in message.snapshots) are collected, not dropped."""
+    builder = _media_builder()
+
+    msg = FakeMessage(author=FakeAuthor(user_id=1))
+    # The forwarder also dragged along their own attachment; both it and the forwarded one count.
+    msg.attachments = [
+        FakeAttachment(filename="own.txt", content_type="text/plain", attachment_id=1)
+    ]
+    msg.snapshots = [
+        FakeSnapshot(
+            content="forwarded",
+            attachments=[
+                FakeAttachment(filename="pic.png", content_type="image/png", attachment_id=2)
+            ],
+        )
+    ]
+    assert [s.cache_key for s in builder.collect_attachment_sources(message=msg)] == [1, 2]
+
+
+async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
+    """Forwarded snapshot text is folded in and tagged so a forward is never blank."""
+    builder = _media_builder()
+
+    # Text-only forward: the snapshot content surfaces under the tag.
+    forward_only = FakeMessage(author=FakeAuthor(user_id=1))
+    forward_only.snapshots = [FakeSnapshot(content="hello from elsewhere")]
+    rendered = await builder.get_cleaned_content(message=forward_only)
+    assert "[forwarded message]" in rendered
+    assert "hello from elsewhere" in rendered
+
+    # The forwarder's own comment is kept alongside the forwarded body (append, not replace).
+    with_comment = FakeMessage(content="look at this", author=FakeAuthor(user_id=1))
+    with_comment.snapshots = [FakeSnapshot(content="original text")]
+    rendered = await builder.get_cleaned_content(message=with_comment)
+    assert "look at this" in rendered
+    assert "original text" in rendered
+
+    # A media-only forward still emits the bare tag (its attachment rides separately).
+    media_only = FakeMessage(author=FakeAuthor(user_id=1))
+    media_only.snapshots = [
+        FakeSnapshot(
+            attachments=[
+                FakeAttachment(filename="pic.png", content_type="image/png", attachment_id=2)
+            ]
+        )
+    ]
+    assert await builder.get_cleaned_content(message=media_only) == "[forwarded message]"
+
+    # Forwarding the bot's own reply (snapshot has no author) still strips the usage footer.
+    forwarded_bot_reply = FakeMessage(author=FakeAuthor(user_id=1))
+    forwarded_bot_reply.snapshots = [
+        FakeSnapshot(content="real answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3")
+    ]
+    rendered = await builder.get_cleaned_content(message=forwarded_bot_reply)
+    assert "real answer" in rendered
+    assert "⬆" not in rendered
+
+    # A captioned forward renders the caption only; an embed-only URL is not shown (nor scanned).
+    captioned = FakeMessage(author=FakeAuthor(user_id=1))
+    captioned.snapshots = [
+        FakeSnapshot(content="funny", embeds=[Embed(url="https://youtu.be/jNQXAC9IVRw")])
+    ]
+    rendered = await builder.get_cleaned_content(message=captioned)
+    assert "funny" in rendered
+    assert "youtu.be" not in rendered
+
+
+def test_forwarded_request_text_is_untagged() -> None:
+    """The media-prompt helper returns raw forwarded text without the `[forwarded message]` tag."""
+    builder = _media_builder()
+
+    forward = FakeMessage(author=FakeAuthor(user_id=1))
+    forward.snapshots = [FakeSnapshot(content="draw a cat")]
+    assert builder.forwarded_request_text(message=forward) == "draw a cat"
+
+    # A normal message (no snapshots) yields no forwarded request text.
+    assert builder.forwarded_request_text(message=FakeMessage(content="hi")) == ""
+
+
+def test_extract_embed_text_includes_embed_url() -> None:
+    """A link card's own url is rendered, so the answer model sees the link, not just a title."""
+    builder = _media_builder()
+    url = "https://youtu.be/jNQXAC9IVRw"
+    assert url in builder.extract_embed_text(embeds=[Embed(url=url)])
 
 
 async def test_dead_source_skipped_within_ttl_then_retried(
@@ -3236,6 +3382,53 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     await cog.on_message(message=deleted)
     assert deleted.replies == []
     assert deleted.channel.sent[0].embed is not None
+
+
+async def test_on_message_forward_not_gated_as_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pure forward (empty content, payload only in snapshots) reaches the pipeline, not `?`."""
+    cog = _cog()
+
+    pipeline_calls: list[tuple[FakeMessage, str]] = []
+
+    async def record_pipeline(message: FakeMessage, user_prompt: str, reactions: object) -> None:
+        """Records that the reply pipeline was reached instead of the empty-message `?` reply."""
+        del reactions
+        pipeline_calls.append((message, user_prompt))
+
+    monkeypatch.setattr(cog, "_run_reply_pipeline", record_pipeline)
+
+    dm_forward = FakeMessage(content="", author=FakeAuthor(user_id=1))
+    dm_forward.guild = None
+    dm_forward.snapshots = [FakeSnapshot(content="draw a cat")]
+    await cog.on_message(message=dm_forward)
+
+    assert dm_forward.replies == []  # not gated out with "?"
+    # The forwarded request reaches the pipeline as the prompt (so an IMAGE/VIDEO route is not blank).
+    assert pipeline_calls == [(dm_forward, "draw a cat")]
+
+
+async def test_on_message_commented_forward_merges_forwarded_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A commented forward (@bot please) merges the forwarded request into the media prompt."""
+    cog = _cog()
+
+    calls: list[tuple[FakeMessage, str]] = []
+
+    async def record_pipeline(message: FakeMessage, user_prompt: str, reactions: object) -> None:
+        """Records the prompt the pipeline receives for the media route."""
+        del reactions
+        calls.append((message, user_prompt))
+
+    monkeypatch.setattr(cog, "_run_reply_pipeline", record_pipeline)
+
+    # Guild forward: it can only trigger via the mention, so the comment survives as "please".
+    message = FakeMessage(content="<@999> please", author=FakeAuthor(user_id=1))
+    message.snapshots = [FakeSnapshot(content="draw a cat")]
+    await cog.on_message(message=message)
+
+    # The forwarded request is merged after the comment, not dropped because the comment is non-empty.
+    assert calls == [(message, "please\ndraw a cat")]
 
 
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
