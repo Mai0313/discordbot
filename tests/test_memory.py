@@ -725,6 +725,24 @@ def test_transcript_from_messages_drops_non_text_parts() -> None:
     assert "⬆" not in transcript
 
 
+def test_transcript_excludes_forwarded_payload() -> None:
+    """Forwarded snapshot text is dropped so it never becomes a fact about the forwarder."""
+    message_list = [
+        EasyInputMessageParam(
+            role="user",
+            content=(
+                "Alice (alice) [id: 1]: look at this\n"
+                "[forwarded message]: I live in Tokyo and love sushi"
+            ),
+        )
+    ]
+    transcript = transcript_from_messages(message_list=message_list, full_reply="ok")
+    # The forwarder's own comment stays; the forwarded payload (someone else's facts) is gone.
+    assert "Alice (alice) [id: 1]: look at this" in transcript
+    assert "Tokyo" not in transcript
+    assert "forwarded message" not in transcript
+
+
 def test_transcript_indents_bodies_so_markers_cannot_be_forged() -> None:
     message_list = [
         EasyInputMessageParam(

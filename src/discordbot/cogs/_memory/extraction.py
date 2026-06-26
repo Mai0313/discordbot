@@ -15,7 +15,7 @@ from discordbot.cogs._memory.prompts import (
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE
+from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
 from discordbot.cogs._memory.constants import (
     MEMORY_REPLY_MAX_CHARS,
     MEMORY_TRANSCRIPT_MAX_CHARS,
@@ -312,7 +312,7 @@ def transcript_from_messages(message_list: list[EasyInputMessageParam], full_rep
     """
     blocks: list[str] = []
     for message in message_list:
-        text = _message_text(message=message)
+        text = _strip_forwarded_payload(text=_message_text(message=message))
         if not text:
             continue
         marker = f"[message {len(blocks) + 1} | {message['role']}]"
@@ -517,6 +517,20 @@ def _omission_message(omitted_count: int) -> EasyInputMessageParam:
 def _indent_block(text: str) -> str:
     """Indents content lines so column-0 block markers cannot be forged in bodies."""
     return "\n".join(f"  {line}" for line in text.splitlines())
+
+
+def _strip_forwarded_payload(text: str) -> str:
+    """Drops a block's forwarded snapshot span so memory never attributes it to the forwarder.
+
+    `get_cleaned_content` appends forwarded text last under `FORWARDED_MESSAGE_MARKER`, so the
+    first marker is the suffix boundary: everything from it to end-of-body is someone else's
+    words and must not become a fact about the (target) forwarder. The answer still sees the
+    full body; only this memory-evidence transcript excludes it.
+    """
+    index = text.find(FORWARDED_MESSAGE_MARKER)
+    if index == -1:
+        return text
+    return text[:index].rstrip()
 
 
 def _message_text(message: EasyInputMessageParam) -> str:

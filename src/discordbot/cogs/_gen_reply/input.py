@@ -43,6 +43,12 @@ USAGE_FOOTER_RE = re.compile(r"\n\n-#[^\n]*⬆[^\n]*⬇[^\n]*(?:\n-#[^\n]*)?$")
 # authorship signal. Neutralize the lookalike before rendering.
 _ID_PREFIX_LOOKALIKE_RE = re.compile(r"\[\s*id\s*:", flags=re.IGNORECASE)
 
+# Marker prefixing each forwarded snapshot span appended to a rendered message body. The
+# answer model uses it to attribute forwarded content; the memory transcript strips from it
+# to end-of-body so a forward of someone else's words is never recorded as the forwarder's
+# own fact (forwarded text is always appended last, so the marker is the suffix boundary).
+FORWARDED_MESSAGE_MARKER = "[forwarded message]"
+
 
 def sanitize_identity(value: str) -> str:
     """Neutralizes authorship-prefix lookalikes in user-controlled identity fields."""
@@ -189,7 +195,9 @@ class MessageInputBuilder(BaseModel):
         blocks: list[str] = []
         for snapshot in message.snapshots:
             text = self._snapshot_text(snapshot=snapshot)
-            blocks.append(f"[forwarded message]: {text}" if text else "[forwarded message]")
+            blocks.append(
+                f"{FORWARDED_MESSAGE_MARKER}: {text}" if text else FORWARDED_MESSAGE_MARKER
+            )
         return "\n".join(blocks)
 
     def forwarded_request_text(self, message: Message) -> str:
