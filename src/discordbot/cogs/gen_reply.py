@@ -145,6 +145,18 @@ EFFORT_GRACE_SECONDS = 5.0
 THREADS_GRACE_SECONDS = 8.0
 
 
+def _embed_link_texts(embeds: list[Embed]) -> list[str]:
+    """Embed text spans that may carry a link: the embed's own URL plus its rendered text.
+
+    `extract_embed_text` covers author/title/description/fields/footer (the same text routing
+    sees via `_snapshot_text`); `embed.url` is the embed's own link, which it omits. Scanning
+    both keeps the URL detectors from missing a link the route already reacted to.
+    """
+    texts = [MessageInputBuilder.extract_embed_text(embeds=embeds)]
+    texts.extend(embed.url for embed in embeds if embed.url)
+    return texts
+
+
 def _message_link_texts(message: Message) -> list[str]:
     """Every text span of a message that may carry a link: content, embeds, and forwarded snapshots.
 
@@ -152,13 +164,10 @@ def _message_link_texts(message: Message) -> list[str]:
     forwarded URL is invisible to a `message.content`-only scan; folding the snapshot text in keeps
     the YouTube / Threads / URL detectors in agreement with what routing already sees.
     """
-    texts = [message.content or ""]
-    for embed in message.embeds:
-        texts.extend(text for text in (embed.url, embed.description) if text)
+    texts = [message.content or "", *_embed_link_texts(embeds=list(message.embeds))]
     for snapshot in message.snapshots:
         texts.append(snapshot.content or "")
-        for embed in snapshot.embeds:
-            texts.extend(text for text in (embed.url, embed.description) if text)
+        texts.extend(_embed_link_texts(embeds=list(snapshot.embeds)))
     return texts
 
 

@@ -1934,6 +1934,16 @@ def test_find_youtube_url_in_forwarded_snapshot(monkeypatch: pytest.MonkeyPatch)
     assert _find_youtube_url(message=message) == url
 
 
+def test_find_youtube_url_in_forwarded_embed_title(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A forwarded URL only in an embed title is found, matching what routing sees."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content="")
+    message.snapshots = [FakeSnapshot(embeds=[Embed(title=f"watch {url}")])]
+
+    assert _find_youtube_url(message=message) == url
+
+
 def _media_builder() -> MessageInputBuilder:
     """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
     return MessageInputBuilder(
