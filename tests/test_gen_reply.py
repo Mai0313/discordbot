@@ -1954,6 +1954,17 @@ def test_find_youtube_url_in_forwarded_embed_url(monkeypatch: pytest.MonkeyPatch
     assert _find_youtube_url(message=message) == url
 
 
+def test_find_youtube_url_skips_captioned_forward_embed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A captioned forward renders only its caption, so an embed-only URL is not scanned either."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(content="")
+    # Snapshot has its own caption, so the embed (where the URL lives) is not rendered to the model.
+    message.snapshots = [FakeSnapshot(content="lol look at this", embeds=[Embed(url=url)])]
+
+    assert _find_youtube_url(message=message) is None
+
+
 def _media_builder() -> MessageInputBuilder:
     """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
     return MessageInputBuilder(
@@ -2058,6 +2069,15 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     rendered = await builder.get_cleaned_content(message=forwarded_bot_reply)
     assert "real answer" in rendered
     assert "⬆" not in rendered
+
+    # A captioned forward renders the caption only; an embed-only URL is not shown (nor scanned).
+    captioned = FakeMessage(author=FakeAuthor(user_id=1))
+    captioned.snapshots = [
+        FakeSnapshot(content="funny", embeds=[Embed(url="https://youtu.be/jNQXAC9IVRw")])
+    ]
+    rendered = await builder.get_cleaned_content(message=captioned)
+    assert "funny" in rendered
+    assert "youtu.be" not in rendered
 
 
 def test_forwarded_request_text_is_untagged() -> None:

@@ -146,21 +146,19 @@ THREADS_GRACE_SECONDS = 8.0
 
 
 def _message_link_texts(message: Message) -> list[str]:
-    """Every text span of a message that may carry a link: content, embeds, and forwarded snapshots.
+    """The text spans a message actually renders to the model, for URL detection.
 
-    A forward leaves `content`/`embeds` empty and puts the payload in `message.snapshots`, so a
-    forwarded URL is invisible to a `message.content`-only scan; folding the snapshot text in keeps
-    the YouTube / Threads / URL detectors in agreement with what routing already sees. The embed
-    text comes from the same `extract_embed_text` the answer is rendered from (now including the
-    embed's own `url`), so a scan never reacts to a link the model was not shown.
+    Mirrors `get_cleaned_content` / `snapshot_text`: content takes precedence and an embed is
+    rendered (and thus scanned) only when its content is empty. So a URL scanner never fires on a
+    link the answer model was not shown, e.g. a captioned forwarded link card whose URL lives only
+    in the embed. A forward puts its payload in `message.snapshots`, scanned via `snapshot_text`.
     """
-    texts = [
-        message.content or "",
-        MessageInputBuilder.extract_embed_text(embeds=list(message.embeds)),
-    ]
+    content = (message.content or "").strip()
+    texts = [content]
+    if not content:
+        texts.append(MessageInputBuilder.extract_embed_text(embeds=list(message.embeds)))
     for snapshot in message.snapshots:
-        texts.append(snapshot.content or "")
-        texts.append(MessageInputBuilder.extract_embed_text(embeds=list(snapshot.embeds)))
+        texts.append(MessageInputBuilder.snapshot_text(snapshot=snapshot))
     return texts
 
 

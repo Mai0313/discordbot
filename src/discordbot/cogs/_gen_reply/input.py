@@ -183,8 +183,12 @@ class MessageInputBuilder(BaseModel):
         return "\n\n".join(embed_parts)
 
     @staticmethod
-    def _snapshot_text(snapshot: MessageSnapshot) -> str:
-        """Raw forwarded text of one snapshot: its content, or its embeds as a fallback.
+    def snapshot_text(snapshot: MessageSnapshot) -> str:
+        """The rendered text of one forwarded snapshot: its content, or its embeds as a fallback.
+
+        This is the single source of truth for what the answer is shown from a snapshot, so the
+        URL detectors scan exactly this (an embed is rendered only when content is empty, so a
+        captioned link card's embed-only URL is neither rendered nor scanned).
 
         A forward of the bot's own reply carries no `author`, so the usage-footer strip
         `get_cleaned_content` applies to the bot's own messages cannot fire here; the same regex
@@ -197,7 +201,7 @@ class MessageInputBuilder(BaseModel):
             text = MessageInputBuilder.extract_embed_text(embeds=list(snapshot.embeds))
         return text
 
-    def _forwarded_snapshot_text(self, message: Message) -> str:
+    def _forwardedsnapshot_text(self, message: Message) -> str:
         """Renders a forwarded message's snapshots, each tagged `[forwarded message]`.
 
         A Discord forward leaves `content`/`embeds`/`attachments` empty and puts the original
@@ -208,7 +212,7 @@ class MessageInputBuilder(BaseModel):
         """
         blocks: list[str] = []
         for snapshot in message.snapshots:
-            text = self._snapshot_text(snapshot=snapshot)
+            text = self.snapshot_text(snapshot=snapshot)
             blocks.append(
                 f"{FORWARDED_MESSAGE_MARKER}: {text}" if text else FORWARDED_MESSAGE_MARKER
             )
@@ -224,7 +228,7 @@ class MessageInputBuilder(BaseModel):
         texts = [
             text
             for snapshot in message.snapshots
-            if (text := self._snapshot_text(snapshot=snapshot))
+            if (text := self.snapshot_text(snapshot=snapshot))
         ]
         return "\n".join(texts)
 
@@ -238,7 +242,7 @@ class MessageInputBuilder(BaseModel):
         if not content and message.is_system():
             content = message.system_content
         # A forward can also carry the forwarder's own comment, so append rather than replace.
-        forwarded = self._forwarded_snapshot_text(message=message)
+        forwarded = self._forwardedsnapshot_text(message=message)
         if forwarded:
             content = f"{content}\n{forwarded}".strip() if content else forwarded
         return content
