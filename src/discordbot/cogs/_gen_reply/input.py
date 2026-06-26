@@ -16,7 +16,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
-from discordbot.cogs._gen_reply.voice import VOICE_REPLY_FILENAME
+from discordbot.cogs._gen_reply.generation import VOICE_REPLY_FILENAME
 from discordbot.cogs._gen_reply.attachment.base import (
     RenderedPart,
     AttachmentRenderer,

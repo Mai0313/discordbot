@@ -193,7 +193,7 @@ class RuntimeModelCatalog(BaseModel):
     def tts_model(self) -> ModelSettings:
         """The model settings for spoken-reply text-to-speech.
 
-        Callers: `VoiceSynthesizer` (via `ReplyGeneratorCogs.voice_synthesizer`).
+        Callers: `VoiceGenerator` (via `ReplyGeneratorCogs.voice_generator`).
 
         Returns:
             Model settings whose name is dispatched on the `audio.speech` endpoint to

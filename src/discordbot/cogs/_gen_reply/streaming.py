@@ -27,18 +27,20 @@ from discordbot.utils.media_delivery import (
     MediaDeliveryPlanner,
     upload_limit_for,
 )
-from discordbot.cogs._gen_reply.voice import (
-    VOICE_REPLY_FILENAME,
-    VoiceOutcome,
-    VoiceSynthesizer,
-    speechify_discord_markup,
-)
 from discordbot.cogs._gen_reply.markers import (
     MAX_INLINE_IMAGES,
     extract_inline_markers,
     scrub_markers_for_preview,
 )
-from discordbot.cogs._gen_reply.generation import ImageGenerator, MusicGenerator, music_filename
+from discordbot.cogs._gen_reply.generation import (
+    VOICE_REPLY_FILENAME,
+    VoiceOutcome,
+    ImageGenerator,
+    MusicGenerator,
+    VoiceGenerator,
+    music_filename,
+    speechify_discord_markup,
+)
 
 # Filename of a single inline-generated image attached onto a QA reply; mirrors the router IMAGE
 # route's `generated.png` so the bot's own generated images render the same in history. Multiple
@@ -97,7 +99,7 @@ class ResponseStreamer(BaseModel):
         default_factory=list,
         description="Labels of users whose stored memory was injected, for the footer.",
     )
-    voice_synthesizer: SkipValidation[VoiceSynthesizer | None] = Field(
+    voice_generator: SkipValidation[VoiceGenerator | None] = Field(
         default=None,
         description="TTS engine for spoken replies; None disables voice for this reply.",
     )
@@ -449,7 +451,7 @@ class ResponseStreamer(BaseModel):
             # The expected common path: the answer model wrapped no <voice> segment.
             logfire.debug("Voice not requested by the answer model", message_id=self.message.id)
             return None
-        if self.voice_synthesizer is None:
+        if self.voice_generator is None:
             # Voice is intentionally off this turn (kill-switch), not a failure: no hint.
             logfire.info(
                 "Voice requested but disabled for this turn; replying without audio",
@@ -463,7 +465,7 @@ class ResponseStreamer(BaseModel):
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
         )
-        clip = await self.voice_synthesizer.synthesize(
+        clip = await self.voice_generator.generate(
             text=self.voice_text, end_user_id=self.message.author.name
         )
         if clip.outcome is VoiceOutcome.EMPTY:

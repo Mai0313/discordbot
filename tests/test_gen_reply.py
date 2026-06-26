@@ -43,13 +43,6 @@ from discordbot.utils.media_delivery import (
     MediaDeliveryPlanner,
 )
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
-from discordbot.cogs._gen_reply.voice import (
-    VOICE_TIMEOUT_SECONDS,
-    VoiceClip,
-    VoiceOutcome,
-    VoiceSynthesizer,
-    speechify_discord_markup,
-)
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.markers import (
     MAX_INLINE_IMAGES,
@@ -60,10 +53,15 @@ from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
+    VOICE_TIMEOUT_SECONDS,
     MusicClip,
+    VoiceClip,
+    VoiceOutcome,
     ImageGenerator,
     MusicGenerator,
+    VoiceGenerator,
     music_filename,
+    speechify_discord_markup,
 )
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
@@ -902,8 +900,8 @@ async def test_streaming_reraises_non_deletion_http_errors(economy_isolated_db: 
 # ---- voice (spoken reply) ----
 
 
-class _FakeVoiceSynthesizer:
-    """Records synthesize calls and returns a configurable VoiceClip for streamer voice tests."""
+class _FakeVoiceGenerator:
+    """Records generate calls and returns a configurable VoiceClip for streamer voice tests."""
 
     def __init__(
         self, audio: bytes | None = b"RIFFfake-wav", outcome: VoiceOutcome = VoiceOutcome.OK
@@ -913,7 +911,7 @@ class _FakeVoiceSynthesizer:
         self.outcome = outcome
         self.calls: list[dict[str, str]] = []
 
-    async def synthesize(self, *, text: str, end_user_id: str) -> VoiceClip:
+    async def generate(self, *, text: str, end_user_id: str) -> VoiceClip:
         """Records the spoken-text request and returns the preset VoiceClip."""
         self.calls.append({"text": text, "end_user_id": end_user_id})
         return VoiceClip(audio=self.audio, outcome=self.outcome)
@@ -939,9 +937,9 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_d
     """A <voice> segment is spoken (only that part), its tags stripped, the clip attached."""
     del economy_isolated_db
     message = FakeMessage()
-    synthesizer = _FakeVoiceSynthesizer()
+    synthesizer = _FakeVoiceGenerator()
 
-    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+    result = await ResponseStreamer(message=message, voice_generator=synthesizer).stream(
         responses=_stream_events_from(_voice_marker_events())
     )
 
@@ -961,9 +959,9 @@ async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> No
     """A normal reply (no <voice>) never calls the synthesizer and attaches no file."""
     del economy_isolated_db
     message = FakeMessage()
-    synthesizer = _FakeVoiceSynthesizer()
+    synthesizer = _FakeVoiceGenerator()
 
-    await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+    await ResponseStreamer(message=message, voice_generator=synthesizer).stream(
         responses=_stream_events()
     )
 
@@ -991,9 +989,9 @@ async def test_voice_synthesis_failure_leaves_text_reply(economy_isolated_db: No
     """A synthesis error leaves a clean text reply, no file, and hints with a warning emoji."""
     del economy_isolated_db
     message = FakeMessage()
-    synthesizer = _FakeVoiceSynthesizer(audio=None, outcome=VoiceOutcome.ERROR)
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.ERROR)
 
-    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+    result = await ResponseStreamer(message=message, voice_generator=synthesizer).stream(
         responses=_stream_events_from(_voice_marker_events())
     )
 
@@ -1007,9 +1005,9 @@ async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: Non
     """A synthesis timeout leaves a text reply and hints with the clock emoji, staying silent."""
     del economy_isolated_db
     message = FakeMessage()
-    synthesizer = _FakeVoiceSynthesizer(audio=None, outcome=VoiceOutcome.TIMEOUT)
+    synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.TIMEOUT)
 
-    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+    result = await ResponseStreamer(message=message, voice_generator=synthesizer).stream(
         responses=_stream_events_from(_voice_marker_events())
     )
 
@@ -1026,7 +1024,7 @@ async def test_voice_too_big_falls_back_to_hosted_url(
     message = FakeMessage()
     # 4-byte ceiling so the fake WAV (larger) exceeds it, like a long WAV in a 10 MiB DM.
     message.guild = FakeGuild(filesize_limit=4)
-    synthesizer = _FakeVoiceSynthesizer()
+    synthesizer = _FakeVoiceGenerator()
     service = MediaHostingService(
         config=MediaHostingConfig(
             MEDIA_HOSTING_ENABLED=True,
@@ -1037,7 +1035,7 @@ async def test_voice_too_big_falls_back_to_hosted_url(
 
     result = await ResponseStreamer(
         message=message,
-        voice_synthesizer=synthesizer,
+        voice_generator=synthesizer,
         media_delivery=MediaDeliveryPlanner(media_hosting=service),
     ).stream(responses=_stream_events_from(_voice_marker_events()))
 
@@ -1064,9 +1062,9 @@ async def test_voice_too_big_without_hosting_drops_with_hint(economy_isolated_db
     del economy_isolated_db
     message = FakeMessage()
     message.guild = FakeGuild(filesize_limit=4)
-    synthesizer = _FakeVoiceSynthesizer()
+    synthesizer = _FakeVoiceGenerator()
 
-    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+    result = await ResponseStreamer(message=message, voice_generator=synthesizer).stream(
         responses=_stream_events_from(_voice_marker_events())
     )
 
@@ -1230,9 +1228,9 @@ async def test_voice_text_strips_discord_markup(economy_isolated_db: None) -> No
     del economy_isolated_db
     message = FakeMessage()
     message.guild = FakeGuild(members={239270225441193986: SimpleNamespace(display_name="小明")})
-    synthesizer = _FakeVoiceSynthesizer()
+    synthesizer = _FakeVoiceGenerator()
 
-    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+    result = await ResponseStreamer(message=message, voice_generator=synthesizer).stream(
         responses=_stream_events_from(_voice_marker_mention_events())
     )
 
@@ -1337,11 +1335,11 @@ async def test_voice_and_image_attach_in_one_edit(economy_isolated_db: None) -> 
     """A reply with both markers rides a single edit carrying the WAV and the PNG together."""
     del economy_isolated_db
     message = FakeMessage()
-    synthesizer = _FakeVoiceSynthesizer()
+    synthesizer = _FakeVoiceGenerator()
     generator = _FakeImageGenerator()
 
     result = await ResponseStreamer(
-        message=message, voice_synthesizer=synthesizer, image_generator=generator
+        message=message, voice_generator=synthesizer, image_generator=generator
     ).stream(
         responses=_stream_events_from([
             _text_event(delta="看 <voice>聽好</voice> "),
@@ -1492,13 +1490,13 @@ async def test_voice_music_image_attach_in_one_edit(economy_isolated_db: None) -
     """A reply with all three markers rides one edit carrying the WAV, the clip, and the PNG."""
     del economy_isolated_db
     message = FakeMessage()
-    synthesizer = _FakeVoiceSynthesizer()
+    synthesizer = _FakeVoiceGenerator()
     music_generator = _FakeMusicGenerator()
     image_generator = _FakeImageGenerator()
 
     result = await ResponseStreamer(
         message=message,
-        voice_synthesizer=synthesizer,
+        voice_generator=synthesizer,
         music_generator=music_generator,
         image_generator=image_generator,
     ).stream(
@@ -1570,12 +1568,12 @@ def _fake_audio_client(speech: _FakeSpeech) -> SimpleNamespace:
     return SimpleNamespace(audio=SimpleNamespace(speech=speech))
 
 
-async def test_voice_synthesizer_prepends_style_and_returns_bytes() -> None:
+async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
     """A normal reply renders to bytes with the style directive prepended to the input."""
     speech = _FakeSpeech(data=b"RIFFwav")
-    synth = VoiceSynthesizer(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
 
-    clip = await synth.synthesize(text="閉嘴", end_user_id="tester")
+    clip = await synth.generate(text="閉嘴", end_user_id="tester")
 
     assert clip.outcome is VoiceOutcome.OK
     assert clip.audio == b"RIFFwav"
@@ -1587,23 +1585,23 @@ async def test_voice_synthesizer_prepends_style_and_returns_bytes() -> None:
     assert speech.calls[0]["timeout"] == VOICE_TIMEOUT_SECONDS
 
 
-async def test_voice_synthesizer_swallows_provider_errors() -> None:
+async def test_voice_generator_swallows_provider_errors() -> None:
     """A provider error reports ERROR with no audio so the reply stays text-only."""
     speech = _FakeSpeech(error=RuntimeError("boom"))
-    synth = VoiceSynthesizer(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
 
-    clip = await synth.synthesize(text="嗆你", end_user_id="tester")
+    clip = await synth.generate(text="嗆你", end_user_id="tester")
 
     assert clip.audio is None
     assert clip.outcome is VoiceOutcome.ERROR
 
 
-async def test_voice_synthesizer_reports_timeout() -> None:
+async def test_voice_generator_reports_timeout() -> None:
     """A request timeout is reported as TIMEOUT so the caller can hint distinctly."""
     speech = _FakeSpeech(error=APITimeoutError(request=httpx.Request("POST", "http://proxy")))
-    synth = VoiceSynthesizer(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
 
-    clip = await synth.synthesize(text="嗆你", end_user_id="tester")
+    clip = await synth.generate(text="嗆你", end_user_id="tester")
 
     assert clip.audio is None
     assert clip.outcome is VoiceOutcome.TIMEOUT
@@ -1614,9 +1612,9 @@ async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> N
     del economy_isolated_db
     message = FakeMessage()
     message.guild = FakeGuild(filesize_limit=8)
-    synthesizer = _FakeVoiceSynthesizer(audio=b"x" * 16)
+    synthesizer = _FakeVoiceGenerator(audio=b"x" * 16)
 
-    result = await ResponseStreamer(message=message, voice_synthesizer=synthesizer).stream(
+    result = await ResponseStreamer(message=message, voice_generator=synthesizer).stream(
         responses=_stream_events_from(_voice_marker_events())
     )
 
@@ -1645,7 +1643,7 @@ async def test_voice_config_gate_controls_synthesizer(
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
-            voice_synthesizer: object | None = None,
+            voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
@@ -1653,7 +1651,7 @@ async def test_voice_config_gate_controls_synthesizer(
             """Records the synthesizer the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
             del image_generator, music_generator, media_delivery
-            captured.append(voice_synthesizer)
+            captured.append(voice_generator)
 
         async def stream(self, *, responses: object) -> str:
             """Returns placeholder reply content."""
@@ -1674,7 +1672,7 @@ async def test_voice_config_gate_controls_synthesizer(
 
     assert (captured[0] is not None) == expect_synth
     if expect_synth:
-        assert isinstance(captured[0], VoiceSynthesizer)
+        assert isinstance(captured[0], VoiceGenerator)
 
 
 @pytest.mark.parametrize(("enabled", "expect_gen"), [(True, True), (False, False)])
@@ -1696,14 +1694,14 @@ async def test_image_config_gate_controls_generator(
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
-            voice_synthesizer: object | None = None,
+            voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, music_generator, media_delivery
+            del voice_generator, music_generator, media_delivery
             captured.append(image_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -2542,14 +2540,14 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
-            voice_synthesizer: object | None = None,
+            voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator, media_delivery
+            del voice_generator, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3327,14 +3325,14 @@ class _ThreadsStreamer:
         input_tokens: int = 0,
         output_tokens: int = 0,
         model_effort: str = "",
-        voice_synthesizer: object | None = None,
+        voice_generator: object | None = None,
         image_generator: object | None = None,
         music_generator: object | None = None,
         media_delivery: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
         del memory_lookups, input_tokens, output_tokens, model_effort
-        del voice_synthesizer, image_generator, music_generator, media_delivery
+        del voice_generator, image_generator, music_generator, media_delivery
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -3659,14 +3657,14 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
-            voice_synthesizer: object | None = None,
+            voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator, media_delivery
+            del voice_generator, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3752,14 +3750,14 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
-            voice_synthesizer: object | None = None,
+            voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator, media_delivery
+            del voice_generator, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3817,14 +3815,14 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
-            voice_synthesizer: object | None = None,
+            voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_synthesizer, image_generator, music_generator, media_delivery
+            del voice_generator, image_generator, music_generator, media_delivery
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
