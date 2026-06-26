@@ -184,8 +184,15 @@ class MessageInputBuilder(BaseModel):
 
     @staticmethod
     def _snapshot_text(snapshot: MessageSnapshot) -> str:
-        """Raw forwarded text of one snapshot: its content, or its embeds as a fallback."""
-        text = snapshot.content.strip()
+        """Raw forwarded text of one snapshot: its content, or its embeds as a fallback.
+
+        A forward of the bot's own reply carries no `author`, so the usage-footer strip
+        `get_cleaned_content` applies to the bot's own messages cannot fire here; the same regex
+        is applied directly so a forwarded reply never re-injects the `-# ... ⬆ ... ⬇ ...` footer
+        the model would otherwise learn to mimic. The pattern is bot-footer-shaped, so it is a
+        no-op on forwarded user text.
+        """
+        text = USAGE_FOOTER_RE.sub("", snapshot.content).strip()
         if not text and snapshot.embeds:
             text = MessageInputBuilder.extract_embed_text(embeds=list(snapshot.embeds))
         return text

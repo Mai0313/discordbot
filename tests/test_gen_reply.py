@@ -2050,6 +2050,15 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     ]
     assert await builder.get_cleaned_content(message=media_only) == "[forwarded message]"
 
+    # Forwarding the bot's own reply (snapshot has no author) still strips the usage footer.
+    forwarded_bot_reply = FakeMessage(author=FakeAuthor(user_id=1))
+    forwarded_bot_reply.snapshots = [
+        FakeSnapshot(content="real answer\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3")
+    ]
+    rendered = await builder.get_cleaned_content(message=forwarded_bot_reply)
+    assert "real answer" in rendered
+    assert "⬆" not in rendered
+
 
 def test_forwarded_request_text_is_untagged() -> None:
     """The media-prompt helper returns raw forwarded text without the `[forwarded message]` tag."""
