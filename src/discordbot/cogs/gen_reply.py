@@ -54,7 +54,6 @@ from discordbot.cogs._gen_reply.input import (
     render_author_identity,
     render_server_identity,
 )
-from discordbot.cogs._gen_reply.voice import VoiceSynthesizer
 from discordbot.cogs._memory.pipeline import (
     flavor_of,
     needs_consolidation,
@@ -80,7 +79,12 @@ from discordbot.cogs._gen_reply.prompts import (
 from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
-from discordbot.cogs._gen_reply.generation import ImageGenerator, MusicGenerator, VideoGenerator
+from discordbot.cogs._gen_reply.generation import (
+    ImageGenerator,
+    MusicGenerator,
+    VideoGenerator,
+    VoiceGenerator,
+)
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
@@ -409,14 +413,14 @@ class ReplyGeneratorCogs(commands.Cog):
         return genai.Client(api_key=self.config.gemini_api_key)
 
     @cached_property
-    def voice_synthesizer(self) -> VoiceSynthesizer:
+    def voice_generator(self) -> VoiceGenerator:
         """The cached text-to-speech engine for spoken QA replies.
 
         Returns:
-            A synthesizer bound to this cog's client and the catalog's TTS model; the
+            A generator bound to this cog's proxy client and the catalog's TTS model; the
             caller still gates it on `allow_voice` and `config.voice_reply_enabled`.
         """
-        return VoiceSynthesizer(
+        return VoiceGenerator(
             client=self.openai_client, model_name=self.runtime_models.tts_model.name
         )
 
@@ -1484,8 +1488,8 @@ class ReplyGeneratorCogs(commands.Cog):
         to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
         (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
-        voice_synthesizer = (
-            self.voice_synthesizer if allow_voice and self.config.voice_reply_enabled else None
+        voice_generator = (
+            self.voice_generator if allow_voice and self.config.voice_reply_enabled else None
         )
         image_generator = (
             self.image_generator if allow_image and self.config.inline_image_enabled else None
@@ -1533,7 +1537,7 @@ class ReplyGeneratorCogs(commands.Cog):
             input_tokens=context.selection_input_tokens,
             output_tokens=context.selection_output_tokens,
             model_effort=effort,
-            voice_synthesizer=voice_synthesizer,
+            voice_generator=voice_generator,
             image_generator=image_generator,
             music_generator=music_generator,
             media_delivery=self.media_delivery,

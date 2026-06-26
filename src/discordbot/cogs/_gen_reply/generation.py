@@ -1,30 +1,40 @@
-"""Media-generation services: the image, video, and music render calls behind one uniform shape.
+"""Media-generation services: the image, voice, video, and music render calls behind one shape.
 
-All runtime media generators are BaseModel services held as cog `cached_property`s (mirroring
-`VoiceSynthesizer`), so every media render goes through the same calling convention instead of a
-half-free-function / half-class mix:
+All runtime media generators are BaseModel services held as cog `cached_property`s, so every media
+render goes through the same calling convention instead of a half-free-function / half-class mix:
 
-- `ImageGenerator` runs the downstream image model. `render` is the raising primitive shared by
-  the router IMAGE route (which also edits source pixels) and the best-effort inline path;
-  `generate` is the QA-route `<image>` marker's best-effort wrapper (generation-only, timeout,
-  None on any failure) so a slow inline render never blocks anything but its own reply.
-- `VideoGenerator` runs the single native-Veo render behind the VIDEO route. It has only `render`
-  (raising): video has no inline marker and is always the primary deliverable, so there is no
-  best-effort twin by design.
+- `ImageGenerator` runs the downstream image model on the LiteLLM proxy (`AsyncOpenAI`). `render`
+  is the raising primitive shared by the router IMAGE route (which also edits source pixels) and
+  the best-effort inline path; `generate` is the QA-route `<image>` marker's best-effort wrapper
+  (generation-only, timeout, None on any failure) so a slow inline render never blocks anything but
+  its own reply.
+- `VoiceGenerator` runs the text-to-speech model on the same LiteLLM proxy (`AsyncOpenAI`) as the
+  image generator. Kept on the proxy on purpose: TTS has many interchangeable providers, so the
+  one-SDK proxy path stays the most portable, unlike Veo / Lyria below which can only go direct.
+  `generate` is best-effort but returns a `VoiceClip` carrying a `VoiceOutcome`
+  (OK / EMPTY / TIMEOUT / ERROR) rather than a bare None, so the caller can hint a timeout (⏱️)
+  apart from any other failure (⚠️). The `speechify_discord_markup` helper that prepares its spoken
+  input lives alongside it.
+- `VideoGenerator` runs the single native-Veo render behind the VIDEO route DIRECT to Google
+  (`genai.Client`, Veo is unreachable via the proxy). It has only `render` (raising): video has no
+  inline marker and is always the primary deliverable, so there is no best-effort twin by design.
 - `MusicGenerator` runs the native-Lyria render behind the QA-route `<music>` marker via the
-  Gemini Interactions API. Like `ImageGenerator.generate` it is best-effort only (`generate`,
-  None on any failure), since music is inline-only; it goes DIRECT to Google like `VideoGenerator`.
+  Gemini Interactions API, also DIRECT to Google. Like `ImageGenerator.generate` it is best-effort
+  only (`generate`, None on any failure), since music is inline-only.
 
 Keeping them here means a future provider swap (or a move of a render off the proxy) changes
 one place.
 """
 
+import re
+from enum import StrEnum
 import time
 import base64
+from typing import Protocol
 import asyncio
 
 from google import genai
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, APITimeoutError
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from google.genai.types import (
@@ -49,6 +59,27 @@ VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
 # Bound for the inline-music best-effort path, mirroring the inline-image timeout: the render
 # runs after the text reply is on screen, so the wait only delays this message's own clip.
 MUSIC_RENDER_TIMEOUT_SECONDS = 300.0
+
+# Tunable voice config (edit here). The style directive fixes the voice age/gender and lets
+# the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and
+# distorts); it is prepended to the input (English on purpose: Gemini TTS style prompting is
+# documented in English and is read as style, not spoken aloud).
+TTS_MODEL_NAME = "gemini-3.1-flash-tts-preview"
+TTS_VOICE = "Despina"
+TTS_STYLE_DIRECTIVE = "Using a natural 18-year-old woman's voice that fits the following text:"
+TTS_SPEED = 1.5
+
+# Filename of the attached voice clip. Shared so input rendering can recognise and skip the
+# bot's own clip when it later appears in history, instead of re-uploading it as self-input.
+VOICE_REPLY_FILENAME = "reply.wav"
+
+# Bound: a request timeout so a slow/hung clip cannot keep this message's own pipeline (its final
+# status reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text is
+# already on screen, so the wait only delays its own message, never others; it is generous so a
+# longer spoken reply has room to render. There is deliberately no spoken-length cap: the answer
+# model decides how much to say. The upload-size guard lives at the attach site (`streaming.py`),
+# where the guild's real `filesize_limit` is known, not as a hardcoded byte ceiling here.
+VOICE_TIMEOUT_SECONDS = 300.0
 
 # Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
 # Lyria prompt surface is documented in English). Lyria picks the lyric language from the prompt
@@ -87,12 +118,75 @@ def music_filename(*, mime_type: str | None) -> str:
     return f"music{extension}"
 
 
+# Discord-specific markup the answer model may embed in a reply: user/role/channel mentions
+# (`<@id>` / `<@!id>` / `<@&id>` / `<#id>`), custom emoji (`<:name:id>` / `<a:name:id>`),
+# timestamps (`<t:unix:style>`), and slash-command references (`</cmd:id>`). Read aloud
+# verbatim these are a bare snowflake or a colon-wrapped name, so they are rewritten to a
+# spoken form before synthesis; the visible text reply keeps the real markup so Discord still
+# renders it.
+_MENTION_RE = re.compile(r"<(?:@[!&]?|#)(\d+)>")
+_CUSTOM_EMOJI_RE = re.compile(r"<a?:\w+:\d+>")
+_TIMESTAMP_RE = re.compile(r"<t:-?\d+(?::[tTdDfFR])?>")
+_SLASH_COMMAND_RE = re.compile(r"</([\w ]+):\d+>")
+_COLLAPSE_SPACES_RE = re.compile(r"[ \t]{2,}")
+
+
+class MentionNameResolver(Protocol):
+    """Resolves a Discord snowflake (member/role/channel) to a name for the spoken reply."""
+
+    def __call__(self, *, target_id: int) -> str | None: ...
+
+
+def speechify_discord_markup(*, text: str, resolve_name: MentionNameResolver) -> str:
+    """Rewrites Discord markup into plain spoken text before TTS synthesis.
+
+    A mention becomes the resolved member/role/channel name (or is dropped when it cannot be
+    resolved), custom emoji and timestamp tags are dropped, and a slash-command reference keeps
+    only its command words. Only the spoken-clip input is cleaned, so the model's `<@id>`-style
+    markup is never read aloud as a raw snowflake while the visible reply stays untouched.
+    """
+
+    def _named(match: re.Match[str]) -> str:
+        return resolve_name(target_id=int(match.group(1))) or ""
+
+    cleaned = _MENTION_RE.sub(_named, text)
+    cleaned = _CUSTOM_EMOJI_RE.sub("", cleaned)
+    cleaned = _TIMESTAMP_RE.sub("", cleaned)
+    cleaned = _SLASH_COMMAND_RE.sub(r"\1", cleaned)
+    cleaned = _COLLAPSE_SPACES_RE.sub(" ", cleaned)
+    return cleaned.strip()
+
+
+class VoiceOutcome(StrEnum):
+    """Why a spoken-clip synthesis attempt ended, so the caller can hint appropriately."""
+
+    OK = "ok"
+    EMPTY = "empty"
+    TIMEOUT = "timeout"
+    ERROR = "error"
+
+
+class VoiceClip(BaseModel):
+    """Result of one synthesis attempt: the audio (when produced) plus why it ended.
+
+    A failed attempt carries `audio=None` and a non-OK `outcome`; the caller always degrades
+    to a plain text reply and uses `outcome` to decide its best-effort failure hint.
+    """
+
+    audio: bytes | None = Field(
+        default=None, description="Rendered WAV bytes, or None when no clip was produced."
+    )
+    outcome: VoiceOutcome = Field(
+        ..., description="Why synthesis ended; drives the caller's best-effort failure hint."
+    )
+
+
 class ImageGenerator(BaseModel):
     """Image render shared by the router IMAGE route and the QA-route `<image>` marker.
 
     Holds the shared client and the image model. `render` is the raising primitive (edits when
     source bytes are present, else generates); `generate` is the best-effort inline wrapper that
-    returns None on any failure or timeout, mirroring how `VoiceSynthesizer` is gated.
+    returns None on any failure or timeout, mirroring how `VoiceGenerator` is gated.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -169,6 +263,89 @@ class ImageGenerator(BaseModel):
             image_bytes=len(image),
         )
         return image
+
+
+class VoiceGenerator(BaseModel):
+    """Best-effort text-to-speech for spoken replies through the LiteLLM proxy.
+
+    Holds the shared async client plus the fixed voice / style / speed config; `generate`
+    renders one reply to a `VoiceClip` carrying the WAV bytes (when produced) plus an outcome
+    (OK / EMPTY / TIMEOUT / ERROR), so the caller both degrades to a text reply and can hint
+    why the clip is missing (a timeout vs. any other provider error, e.g. a policy refusal).
+
+    The spoken delivery rides in `TTS_STYLE_DIRECTIVE` (it fixes the voice age/gender and lets
+    the tone follow the reply's own wording), prepended to the input text because the proxy's
+    `instructions` parameter is silently ignored for this TTS model. `response_format` is
+    intentionally not sent (the proxy 500s on it); the model returns WAV, hence `reply.wav`.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    client: SkipValidation[AsyncOpenAI] = Field(
+        ..., description="Shared LiteLLM-proxy client used for the audio.speech call."
+    )
+    model_name: str = Field(
+        default=TTS_MODEL_NAME, description="TTS model string dispatched on the proxy."
+    )
+    voice: str = Field(
+        default=TTS_VOICE, description="Fixed voice timbre name for spoken replies."
+    )
+    style_directive: str = Field(
+        default=TTS_STYLE_DIRECTIVE,
+        description="Style directive prepended to the spoken text (fixes voice age/gender).",
+    )
+    speed: float = Field(default=TTS_SPEED, description="Playback speed passed to the TTS model.")
+
+    async def generate(self, *, text: str, end_user_id: str) -> VoiceClip:
+        """Renders reply text to a VoiceClip, reporting why it ended for best-effort hinting."""
+        spoken = text.strip()
+        if not spoken:
+            logfire.info(
+                "Voice synthesis skipped: reply text was empty after stripping",
+                end_user_id=end_user_id,
+            )
+            return VoiceClip(outcome=VoiceOutcome.EMPTY)
+        try:
+            responses = await self.client.audio.speech.create(
+                input=f"{self.style_directive}\n\n{spoken}",
+                model=self.model_name,
+                voice=self.voice,
+                speed=self.speed,
+                extra_headers={"x-litellm-end-user-id": end_user_id},
+                timeout=VOICE_TIMEOUT_SECONDS,
+            )
+            audio = await responses.aread()
+            logfire.debug(
+                "Voice synthesis succeeded",
+                model=self.model_name,
+                speed=self.speed,
+                end_user_id=end_user_id,
+                text_chars=len(spoken),
+                audio_bytes=len(audio),
+            )
+            return VoiceClip(audio=audio, outcome=VoiceOutcome.OK)
+        except APITimeoutError:
+            # The clip took longer than VOICE_TIMEOUT_SECONDS to render. The caller marks the
+            # message with a timeout hint and still leaves a plain text reply.
+            logfire.warn(
+                "Voice synthesis timed out; replying without audio",
+                model=self.model_name,
+                end_user_id=end_user_id,
+                text_chars=len(spoken),
+                _exc_info=True,
+            )
+            return VoiceClip(outcome=VoiceOutcome.TIMEOUT)
+        except Exception:
+            # Any other provider error (most often the clip was refused, e.g. policy). The
+            # caller marks the message with a warning hint and degrades to a text reply.
+            logfire.warn(
+                "Voice synthesis failed; replying without audio",
+                model=self.model_name,
+                end_user_id=end_user_id,
+                text_chars=len(spoken),
+                _exc_info=True,
+            )
+            return VoiceClip(outcome=VoiceOutcome.ERROR)
 
 
 class VideoGenerator(BaseModel):
