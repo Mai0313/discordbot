@@ -220,3 +220,6 @@ __marimo__/
 /tmp/
 TODO.md
 /plan/
+
+# Host-local compose override (machine-specific bind mounts, e.g. media hosting)
+/docker-compose.override.yaml
