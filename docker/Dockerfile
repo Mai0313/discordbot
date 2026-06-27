@@ -12,6 +12,12 @@ LABEL maintainer="Wei Lee <mai@mai0313.com>" \
 FROM builder AS prod
 WORKDIR /app
 
+# Pin the project venv to a real in-image path. With `[tool.uv] preview = true` uv stores the
+# environment in its cache (environments-v2) and symlinks .venv to it; in Docker that cache is a
+# BuildKit cache mount on a different filesystem and is not part of the image, so .venv would
+# dangle at runtime and `uv run discordbot` fails to spawn. An explicit path keeps .venv real.
+ENV UV_PROJECT_ENVIRONMENT=/app/.venv
+
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update \
