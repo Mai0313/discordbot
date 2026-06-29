@@ -64,8 +64,10 @@ from discordbot.cogs._memory.pipeline import (
 )
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import (
+    IMAGE_PROMPT,
     REPLY_PROMPT,
     ROUTE_PROMPT,
+    VIDEO_PROMPT,
     EFFORT_PROMPT,
     SUMMARY_PROMPT,
     MUSIC_INSTRUCTION,
@@ -84,6 +86,7 @@ from discordbot.cogs._gen_reply.generation import (
     MusicGenerator,
     VideoGenerator,
     VoiceGenerator,
+    PromptGenerator,
 )
 from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
@@ -453,6 +456,21 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     @cached_property
+    def prompt_generator(self) -> PromptGenerator:
+        """The cached prompt director for the IMAGE and VIDEO routes.
+
+        Returns:
+            A director bound to this cog's proxy client and the flash + high + grounding
+            `prompt_model`, gated by `config.refine_prompt_enabled`; `refine` expands the raw
+            request before `render`, best-effort (raw prompt on disable / empty / error).
+        """
+        return PromptGenerator(
+            client=self.openai_client,
+            prompt_model=self.runtime_models.prompt_model,
+            enabled=self.config.refine_prompt_enabled,
+        )
+
+    @cached_property
     def video_generator(self) -> VideoGenerator:
         """The cached video renderer for the VIDEO route.
 
@@ -704,8 +722,16 @@ class ReplyGeneratorCogs(commands.Cog):
                 ),
             )
             images = [pair for group in gathered for pair in group]
+            # Refine the raw request into a full motion/camera prompt first (best-effort, raw
+            # prompt on disable / failure); the reference frames ride along as grounding.
+            refined_prompt = await self.prompt_generator.refine(
+                user_prompt=user_prompt,
+                instructions=VIDEO_PROMPT,
+                end_user_id=message.author.name,
+                image_bytes_list=[raw for raw, _ in images] or None,
+            )
             video_bytes = await self.video_generator.render(
-                prompt=user_prompt, reference_image_sources=images
+                prompt=refined_prompt, reference_image_sources=images
             )
             reply = await self._deliver_generated_media(
                 message=message, data=video_bytes, filename="generated.mp4"
@@ -915,8 +941,17 @@ class ReplyGeneratorCogs(commands.Cog):
             else:
                 image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
 
+            # Refine the raw request into a full generation/edit prompt first (best-effort, raw
+            # prompt on disable / failure); the source bytes ride along so an edit prompt is
+            # grounded in the actual image without a re-download.
+            refined_prompt = await self.prompt_generator.refine(
+                user_prompt=user_prompt,
+                instructions=IMAGE_PROMPT,
+                end_user_id=message.author.name,
+                image_bytes_list=image_bytes_list or None,
+            )
             image_bytes = await self.image_generator.render(
-                prompt=user_prompt,
+                prompt=refined_prompt,
                 end_user_id=message.author.name,
                 image_bytes_list=image_bytes_list or None,
             )
@@ -1558,6 +1593,7 @@ class ReplyGeneratorCogs(commands.Cog):
             image_generator=image_generator,
             music_generator=music_generator,
             media_delivery=self.media_delivery,
+            input_builder=self.input_builder,
         )
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is

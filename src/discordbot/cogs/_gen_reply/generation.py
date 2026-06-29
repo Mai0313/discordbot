@@ -3,6 +3,11 @@
 All runtime media generators are BaseModel services held as cog `cached_property`s, so every media
 render goes through the same calling convention instead of a half-free-function / half-class mix:
 
+- `PromptGenerator` is the upstream prompt director shared by the router IMAGE and VIDEO routes:
+  `refine` expands a thin user request into one rich, self-contained generation prompt with the
+  grounding tools (so a vague "draw the heroine of some anime" is looked up first), best-effort and
+  gated by `REFINE_PROMPT_ENABLED`. It runs on the proxy like the answer model. The QA-route inline
+  `<image>` marker does NOT refine (its description is already written by the answer model).
 - `ImageGenerator` runs the downstream image model on the LiteLLM proxy (`AsyncOpenAI`). `render`
   is the raising primitive shared by the router IMAGE route (which also edits source pixels) and
   the best-effort inline path; `generate` is the QA-route `<image>` marker's best-effort wrapper
@@ -30,7 +35,7 @@ import re
 from enum import StrEnum
 import time
 import base64
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 import asyncio
 
 from google import genai
@@ -43,13 +48,25 @@ from google.genai.types import (
     VideoGenerationReferenceType,
     VideoGenerationReferenceImage,
 )
+from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from openai.types.responses.response_input_text_param import ResponseInputTextParam
+from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
+
+if TYPE_CHECKING:
+    from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 # Bound for the inline-image best-effort path: the render runs after the text reply is already
 # on screen, so the wait only delays this message's own image, never others. Generous (mirrors
 # VOICE_TIMEOUT_SECONDS) so a slower render still has room to land.
 INLINE_IMAGE_TIMEOUT_SECONDS = 300.0
+
+# Bound for the prompt-refinement call: it sits SERIALLY before the image/video render on the
+# IMAGE/VIDEO critical path, so a hung director must not keep the route waiting forever. On
+# timeout the refine falls back to the raw user prompt like any other failure.
+PROMPT_REFINE_TIMEOUT_SECONDS = 120.0
 
 # Hard ceiling on the video-generation polling loop so a hung provider job cannot leave the
 # message handler waiting forever. Co-located with the image timeout since it is a property of
@@ -241,17 +258,23 @@ class ImageGenerator(BaseModel):
                 logfire.warn("Image operation returned an empty result; retrying once")
         raise ValueError("Image operation returned no image data after one retry")
 
-    async def generate(self, *, user_prompt: str, end_user_id: str) -> bytes | None:
+    async def generate(
+        self, *, user_prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
+    ) -> bytes | None:
         """Renders one image from the description; None on any failure or timeout.
 
-        Best-effort wrapper around `render` for the QA-route `<image>` marker: generation-only
-        (no editing) inside a generous timeout, returning None to disable the inline path for a
-        reply rather than raising into the streamer's path.
+        Best-effort wrapper around `render` for the QA-route `<image>` marker, inside a generous
+        timeout, returning None to disable the inline path for a reply rather than raising into the
+        streamer's path. When `image_bytes_list` is supplied (the user uploaded image(s) the answer
+        model is illustrating), it rides through to `render` as edit source pixels, so an inline
+        `<image>` over an attached photo edits it instead of generating a fresh one.
         """
         started = time.monotonic()
         try:
             async with asyncio.timeout(delay=INLINE_IMAGE_TIMEOUT_SECONDS):
-                image = await self.render(prompt=user_prompt, end_user_id=end_user_id)
+                image = await self.render(
+                    prompt=user_prompt, end_user_id=end_user_id, image_bytes_list=image_bytes_list
+                )
         except Exception:
             logfire.warn(
                 "Inline image generation failed; replying without an image", _exc_info=True
@@ -263,6 +286,98 @@ class ImageGenerator(BaseModel):
             image_bytes=len(image),
         )
         return image
+
+
+class PromptGenerator(BaseModel):
+    """Prompt director for the router IMAGE and VIDEO routes, running on the LiteLLM proxy.
+
+    Holds the shared proxy client, the director model, and the `REFINE_PROMPT_ENABLED` flag.
+    `refine` expands a thin user request ("draw the heroine of some anime") into one rich,
+    self-contained generation prompt, looking subjects up first with the grounding tools, so the
+    downstream image/video model renders a far stronger result than from the raw request. Any
+    already-loaded source bytes ride along as input images so an edit prompt is grounded in the
+    actual picture without a re-download.
+
+    Best-effort by construction: a disabled flag, an empty draft, a timeout, or ANY error all
+    fall back to the raw `user_prompt`, so a director failure never aborts generation and callers
+    can treat `refine` as a pure prompt-in / prompt-out step. The QA-route inline `<image>` marker
+    does NOT use this: that description is already authored by the answer model with grounding.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    client: SkipValidation[AsyncOpenAI] = Field(
+        ..., description="Shared LiteLLM-proxy client used for the refinement call."
+    )
+    prompt_model: ModelSettings = Field(
+        ..., description="Model settings for the prompt director (flash + high + grounding)."
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Whether refinement runs; False returns the raw prompt (REFINE_PROMPT_ENABLED).",
+    )
+
+    async def refine(
+        self,
+        *,
+        user_prompt: str,
+        instructions: str,
+        end_user_id: str,
+        image_bytes_list: list[bytes] | None = None,
+    ) -> str:
+        """Expands a thin IMAGE/VIDEO request into a rich, self-contained generation prompt.
+
+        Runs `prompt_model` with the grounding tools so a vague request is looked up and resolved
+        before the image/video model renders it. With `enabled=False` the director is skipped and
+        the raw `user_prompt` is returned; an empty draft, a timeout, or any error fall back the
+        same way, so an exception never escapes here.
+        """
+        if not self.enabled:
+            return user_prompt
+        director_content: list[
+            ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
+        ] = [
+            ResponseInputTextParam(
+                text=f"User generation request:\n{user_prompt}", type="input_text"
+            )
+        ]
+        for image_bytes in image_bytes_list or []:
+            director_content.append(
+                ResponseInputImageParam(
+                    image_url=convert_base64_to_data_uri(
+                        base64_image=base64.b64encode(image_bytes).decode()
+                    ),
+                    detail="auto",
+                    type="input_image",
+                )
+            )
+        director_input: list[EasyInputMessageParam] = [
+            EasyInputMessageParam(role="user", content=director_content)
+        ]
+        started = time.monotonic()
+        try:
+            async with asyncio.timeout(delay=PROMPT_REFINE_TIMEOUT_SECONDS):
+                with logfire.span("gen_reply prompt refine", model=self.prompt_model.name):
+                    responses = await self.client.responses.create(
+                        model=self.prompt_model.name,
+                        instructions=instructions,
+                        input=cast("ResponseInputParam", director_input),
+                        reasoning=self.prompt_model.reasoning,
+                        tools=list(self.prompt_model.tools),
+                        service_tier="auto",
+                        extra_headers={"x-litellm-end-user-id": end_user_id},
+                        extra_body={"mock_testing_fallbacks": False},
+                    )
+            refined = (responses.output_text or "").strip()
+        except Exception:
+            logfire.warn("Prompt refinement failed; using raw user prompt", _exc_info=True)
+            return user_prompt
+        logfire.info(
+            "gen_reply prompt refine done",
+            elapsed_seconds=time.monotonic() - started,
+            refined=bool(refined),
+        )
+        return refined or user_prompt
 
 
 class VoiceGenerator(BaseModel):
