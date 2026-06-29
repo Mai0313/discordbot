@@ -158,6 +158,23 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="deep-research-max-preview-04-2026")
 
     @property
+    def prompt_model(self) -> ModelSettings:
+        """The model settings for the image/video generation prompt director.
+
+        Callers: `PromptGenerator.refine` (via `_handle_image_reply`, `_handle_video_reply`).
+
+        Returns:
+            Flash-with-high-effort settings for the director call that expands a thin user
+            request into a rich, self-contained generation prompt before the image/video model
+            draws it. Flash (not flash-lite) so it reliably CALLS the grounding tools
+            (googleSearch / urlContext) to look up named subjects; effort is the latency lever
+            since this call sits serially on the IMAGE/VIDEO critical path before generation.
+            Deliberately decoupled from `slow_model` so the refinement tier can be tuned on its
+            own (bump to a pro snapshot here if the refined prompts underperform).
+        """
+        return ModelSettings(name="gemini-flash-latest", effort="high")
+
+    @property
     def image_reply_model(self) -> ModelSettings:
         """The model settings for the conversational reply that rides a generated image.
 

@@ -49,7 +49,7 @@ from discordbot.cogs._gen_reply.markers import (
     extract_inline_markers,
     scrub_markers_for_preview,
 )
-from discordbot.cogs._gen_reply.prompts import MEMORY_SELECT_PROMPT
+from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
 from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
@@ -60,6 +60,7 @@ from discordbot.cogs._gen_reply.generation import (
     ImageGenerator,
     MusicGenerator,
     VoiceGenerator,
+    PromptGenerator,
     music_filename,
     speechify_discord_markup,
 )
@@ -368,6 +369,9 @@ class FakeResponses:
         self.select_queue: list[list[SimpleNamespace]] = []
         # `.usage` returned by each non-streaming (memory selection) create().
         self.select_usage: SimpleNamespace | None = None
+        # `.output_text` returned by each non-streaming create(); the prompt director reads it.
+        # None (the default) leaves it empty so `refine` falls back to the raw prompt.
+        self.refine_output_text: str | None = None
 
     async def create(  # noqa: PLR0913 -- mirrors Responses API create signature
         self,
@@ -395,7 +399,9 @@ class FakeResponses:
             )
             return _stream_events_from(events=events)
         output = self.select_queue.pop(0) if self.select_queue else []
-        return SimpleNamespace(output=output, usage=self.select_usage)
+        return SimpleNamespace(
+            output=output, usage=self.select_usage, output_text=self.refine_output_text
+        )
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
         self,
@@ -1280,10 +1286,14 @@ class _FakeImageGenerator:
         """Stores the PNG bytes (None to simulate a failed render) returned by generate."""
         self.image = image
         self.calls: list[dict[str, str]] = []
+        self.image_bytes_lists: list[list[bytes] | None] = []
 
-    async def generate(self, *, user_prompt: str, end_user_id: str) -> bytes | None:
-        """Records the rough description request and returns the preset image bytes."""
+    async def generate(
+        self, *, user_prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
+    ) -> bytes | None:
+        """Records the description request (and any edit source bytes) and returns the image."""
         self.calls.append({"user_prompt": user_prompt, "end_user_id": end_user_id})
+        self.image_bytes_lists.append(image_bytes_list)
         return self.image
 
 
@@ -1318,6 +1328,35 @@ async def test_image_marker_generates_and_attaches(economy_isolated_db: None) ->
     assert message.replies[0].file.filename == "generated.png"
     # The source message is marked with the image app emoji while the image is rendered.
     assert message.added_reactions == ["<:image:1517559727880667226>"]
+    # No input_builder wired -> no source bytes -> a plain generation (not an edit).
+    assert generator.image_bytes_lists == [None]
+
+
+async def test_image_marker_edits_uploaded_image_with_source_bytes(
+    economy_isolated_db: None,
+) -> None:
+    """An uploaded image rides into the inline <image> render as edit source, without refinement."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeImageGenerator()
+
+    async def _load(*, message: object) -> list[bytes]:
+        """Stands in for the input builder loading the message's uploaded image bytes."""
+        del message
+        return [b"uploaded-bytes"]
+
+    builder = SimpleNamespace(get_image_source_bytes=_load)
+
+    await ResponseStreamer(
+        message=message, image_generator=generator, input_builder=builder
+    ).stream(responses=_stream_events_from(_image_marker_events()))
+
+    # The uploaded bytes ride through to generate, so the inline <image> edits them.
+    assert generator.image_bytes_lists == [[b"uploaded-bytes"]]
+    # The marker description itself is passed through verbatim (the marker path never refines).
+    assert generator.calls == [
+        {"user_prompt": "a cute black cat", "end_user_id": message.author.name}
+    ]
 
 
 async def test_image_disabled_still_strips_marker(economy_isolated_db: None) -> None:
@@ -1665,10 +1704,11 @@ async def test_voice_config_gate_controls_synthesizer(
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
+            input_builder: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del image_generator, music_generator, media_delivery
+            del image_generator, music_generator, media_delivery, input_builder
             captured.append(voice_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -1716,10 +1756,11 @@ async def test_image_config_gate_controls_generator(
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
+            input_builder: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, music_generator, media_delivery
+            del voice_generator, music_generator, media_delivery, input_builder
             captured.append(image_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -2690,10 +2731,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
+            input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, image_generator, music_generator, media_delivery
+            del voice_generator, image_generator, music_generator, media_delivery, input_builder
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -2791,6 +2833,101 @@ async def test_text_only_render_degrades_when_modality_lookup_fails(
     assert rendered == EasyInputMessageParam(role="user", content="")
 
 
+# ---- prompt director (PromptGenerator) ----
+
+
+async def test_prompt_generator_refines_with_grounding() -> None:
+    """An enabled director expands the request and records model, instructions, and grounding tools."""
+    client = FakeClient()
+    client.responses.refine_output_text = "a rich, detailed scene"
+    generator = PromptGenerator(
+        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=True
+    )
+
+    refined = await generator.refine(
+        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice"
+    )
+
+    assert refined == "a rich, detailed scene"
+    assert client.responses.create_models == [RuntimeModelCatalog().prompt_model.name]
+    assert client.responses.create_streams == [False]
+    assert client.responses.create_instructions == [IMAGE_PROMPT]
+    assert client.responses.create_tools == [[{"googleSearch": {}}, {"urlContext": {}}]]
+    # The raw request rides as the input_text part the director rewrites.
+    request_text = client.responses.create_inputs[0][0]["content"][0]["text"]
+    assert "draw a cat" in request_text
+
+
+async def test_prompt_generator_disabled_returns_raw_without_call() -> None:
+    """A disabled director returns the raw prompt and never calls the model."""
+    client = FakeClient()
+    generator = PromptGenerator(
+        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=False
+    )
+
+    refined = await generator.refine(
+        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice"
+    )
+
+    assert refined == "draw a cat"
+    assert client.responses.create_models == []
+
+
+async def test_prompt_generator_empty_draft_falls_back_to_raw() -> None:
+    """An empty draft (no output_text) falls back to the raw prompt."""
+    client = FakeClient()  # refine_output_text defaults to None
+    generator = PromptGenerator(
+        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=True
+    )
+
+    refined = await generator.refine(
+        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice"
+    )
+
+    assert refined == "draw a cat"
+
+
+async def test_prompt_generator_error_falls_back_to_raw() -> None:
+    """Any director error falls back to the raw prompt instead of raising into the route."""
+    client = FakeClient()
+
+    async def _boom(**kwargs: object) -> object:
+        """Fails the director call."""
+        del kwargs
+        raise RuntimeError("director boom")
+
+    client.responses.create = _boom
+    generator = PromptGenerator(
+        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=True
+    )
+
+    refined = await generator.refine(
+        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice"
+    )
+
+    assert refined == "draw a cat"
+
+
+async def test_prompt_generator_rides_source_images_as_input() -> None:
+    """Source bytes ride along as input_image parts so an edit draft is grounded in the picture."""
+    client = FakeClient()
+    client.responses.refine_output_text = "edited result"
+    generator = PromptGenerator(
+        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=True
+    )
+
+    await generator.refine(
+        user_prompt="make it blue",
+        instructions=IMAGE_PROMPT,
+        end_user_id="alice",
+        image_bytes_list=[base64.b64decode(_png_b64())],
+    )
+
+    director_content = client.responses.create_inputs[0][0]["content"]
+    assert director_content[0]["type"] == "input_text"
+    assert any(part.get("type") == "input_image" for part in director_content)
+
+
 async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.MonkeyPatch) -> None:
     """An attached image routes the IMAGE handler through images.edit with raw bytes."""
     cog = _cog()
@@ -2814,9 +2951,10 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     assert cog.openai_client.images.generate_calls == 0
 
 
-async def test_handle_image_reply_sends_raw_prompt_to_generate() -> None:
-    """The raw request reaches images.generate directly, with no prompt director call."""
+async def test_handle_image_reply_refines_prompt_before_generate() -> None:
+    """The prompt director expands the raw request and the refined prompt reaches images.generate."""
     cog = _cog()
+    cog.openai_client.responses.refine_output_text = "a photorealistic tabby cat, studio lighting"
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
     await cog._handle_image_reply(
@@ -2825,8 +2963,37 @@ async def test_handle_image_reply_sends_raw_prompt_to_generate() -> None:
         context_task=asyncio.create_task(_ready_reply_context()),
     )
 
-    # The raw prompt reaches images.generate; the only responses.create is the streaming persona
-    # reply (no non-streaming director ran).
+    # The refined prompt (not the raw request) reaches images.generate.
+    assert cog.openai_client.images.generate_prompts == [
+        "a photorealistic tabby cat, studio lighting"
+    ]
+    # Two responses.create calls: the non-streaming director first, then the streaming persona reply.
+    assert cog.openai_client.responses.create_streams == [False, True]
+    assert cog.openai_client.responses.create_models == [
+        cog.runtime_models.prompt_model.name,
+        cog.runtime_models.image_reply_model.name,
+    ]
+    # The director runs on IMAGE_PROMPT with the grounding tools available.
+    assert cog.openai_client.responses.create_instructions[0] == IMAGE_PROMPT
+    assert cog.openai_client.responses.create_tools[0] == [
+        {"googleSearch": {}},
+        {"urlContext": {}},
+    ]
+
+
+async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
+    """With REFINE_PROMPT_ENABLED off, the raw request reaches images.generate with no director call."""
+    cog = _cog()
+    cog.config.refine_prompt_enabled = False
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+
+    await cog._handle_image_reply(
+        message=message,
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # The raw prompt reaches images.generate; the only create is the streaming persona reply.
     assert cog.openai_client.images.generate_prompts == ["draw a cat"]
     assert cog.openai_client.responses.create_streams == [True]
     assert cog.openai_client.responses.create_models == [cog.runtime_models.image_reply_model.name]
@@ -3025,11 +3192,12 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
     )
 
 
-async def test_handle_video_reply_uses_raw_prompt_without_director(
+async def test_handle_video_reply_refines_prompt_before_render(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Video generation sends the raw request to native generate_videos, with no director call."""
+    """The prompt director expands the raw request and the refined prompt reaches generate_videos."""
     cog = _cog()
+    cog.openai_client.responses.refine_output_text = "a cat leaping in slow motion, camera pan"
 
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
@@ -3043,13 +3211,17 @@ async def test_handle_video_reply_uses_raw_prompt_without_director(
         context_task=asyncio.create_task(_ready_reply_context()),
     )
 
-    # The raw prompt reaches generate_videos; the only responses.create is the streaming reply
-    # about the video (no non-streaming director ran).
-    assert cog.gemini_client.generate_prompts == ["video"]
-    assert cog.openai_client.responses.create_streams == [True]
-    assert cog.openai_client.responses.create_models == [cog.runtime_models.video_reply_model.name]
-    # The reply watches the generated video: it is referenced as an uploaded input_file part.
-    reply_parts = cog.openai_client.responses.create_inputs[0][-1]["content"]
+    # The refined prompt reaches generate_videos; the director runs on VIDEO_PROMPT first, then the
+    # streaming reply about the video.
+    assert cog.gemini_client.generate_prompts == ["a cat leaping in slow motion, camera pan"]
+    assert cog.openai_client.responses.create_streams == [False, True]
+    assert cog.openai_client.responses.create_models == [
+        cog.runtime_models.prompt_model.name,
+        cog.runtime_models.video_reply_model.name,
+    ]
+    assert cog.openai_client.responses.create_instructions[0] == VIDEO_PROMPT
+    # The reply (the last create) watches the generated video: referenced as an input_file part.
+    reply_parts = cog.openai_client.responses.create_inputs[-1][-1]["content"]
     assert any(part.get("type") == "input_file" for part in reply_parts)
     # No attachments: a plain text-to-video generation at the configured 1080p, MP4 delivered.
     config = cog.gemini_client.generate_configs[0]
@@ -3522,10 +3694,11 @@ class _ThreadsStreamer:
         image_generator: object | None = None,
         music_generator: object | None = None,
         media_delivery: object | None = None,
+        input_builder: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
         del memory_lookups, input_tokens, output_tokens, model_effort
-        del voice_generator, image_generator, music_generator, media_delivery
+        del voice_generator, image_generator, music_generator, media_delivery, input_builder
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -3854,10 +4027,11 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
+            input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, image_generator, music_generator, media_delivery
+            del voice_generator, image_generator, music_generator, media_delivery, input_builder
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3947,10 +4121,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
+            input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, image_generator, music_generator, media_delivery
+            del voice_generator, image_generator, music_generator, media_delivery, input_builder
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -4012,10 +4187,11 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             image_generator: object | None = None,
             music_generator: object | None = None,
             media_delivery: object | None = None,
+            input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, image_generator, music_generator, media_delivery
+            del voice_generator, image_generator, music_generator, media_delivery, input_builder
             self.message = message
 
         async def stream(self, *, responses: object) -> str:

@@ -27,6 +27,7 @@ from discordbot.utils.media_delivery import (
     MediaDeliveryPlanner,
     upload_limit_for,
 )
+from discordbot.cogs._gen_reply.input import MessageInputBuilder
 from discordbot.cogs._gen_reply.markers import (
     MAX_INLINE_IMAGES,
     extract_inline_markers,
@@ -118,6 +119,10 @@ class ResponseStreamer(BaseModel):
     image_prompts: list[str] = Field(
         default_factory=list,
         description="The <image> descriptions the answer model asked to illustrate, in order.",
+    )
+    input_builder: SkipValidation[MessageInputBuilder | None] = Field(
+        default=None,
+        description="Loads the message's uploaded image bytes so an inline <image> can edit them.",
     )
     music_generator: SkipValidation[MusicGenerator | None] = Field(
         default=None,
@@ -481,6 +486,33 @@ class ResponseStreamer(BaseModel):
             return None
         return MediaItem(source=clip.audio, filename=VOICE_REPLY_FILENAME)
 
+    async def _load_marker_source_bytes(self) -> list[bytes]:
+        """Best-effort source pixels (current + replied-to message images) for an inline edit.
+
+        When the user uploaded image(s), an inline `<image>` over them edits rather than generates
+        (mirrors the IMAGE route's source gather). Best-effort: no builder or a load failure simply
+        yields no source bytes, so the marker falls back to fresh generation.
+        """
+        if self.input_builder is None:
+            return []
+        try:
+            if self.message.reference and isinstance(self.message.reference.resolved, Message):
+                own_bytes, ref_bytes = await asyncio.gather(
+                    self.input_builder.get_image_source_bytes(message=self.message),
+                    self.input_builder.get_image_source_bytes(
+                        message=self.message.reference.resolved
+                    ),
+                )
+                return own_bytes + ref_bytes
+            return await self.input_builder.get_image_source_bytes(message=self.message)
+        except Exception:
+            logfire.warn(
+                "Inline image source load failed; generating without source pixels",
+                message_id=self.message.id,
+                _exc_info=True,
+            )
+            return []
+
     async def _build_image_candidates(self) -> list[MediaItem]:
         """Renders the <image> requests to PNG candidates, in order; [] when none delivered.
 
@@ -513,11 +545,16 @@ class ResponseStreamer(BaseModel):
         logfire.info(
             "Generating inline image reply", message_id=self.message.id, image_count=len(prompts)
         )
+        # When the user uploaded image(s), feed them so an inline <image> edits them instead of
+        # generating a fresh picture (mirrors the IMAGE route); best-effort, [] when none / failure.
+        source_bytes = await self._load_marker_source_bytes()
         # Render every requested image concurrently so a slow one never delays the others.
         images = await asyncio.gather(
             *(
                 self.image_generator.generate(
-                    user_prompt=prompt, end_user_id=self.message.author.name
+                    user_prompt=prompt,
+                    end_user_id=self.message.author.name,
+                    image_bytes_list=source_bytes or None,
                 )
                 for prompt in prompts
             )

@@ -28,6 +28,8 @@ class LLMConfig(BaseSettings):
             answer model's `<deep-research>` marker is still stripped but no research runs.
         deep_research_max_enabled: Whether the priciest Deep Research Max tier may be picked
             from the escalation buttons; off by default so the expensive tier is opt-in.
+        refine_prompt_enabled: Kill-switch for the IMAGE/VIDEO prompt director; when false the
+            raw user request goes straight to the image/video model with no refinement step.
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -86,6 +88,11 @@ class LLMConfig(BaseSettings):
         default=False,
         description="Whether the priciest Deep Research Max tier is offered on the escalation buttons.",
         validation_alias=AliasChoices("DEEP_RESEARCH_MAX_ENABLED"),
+    )
+    refine_prompt_enabled: bool = Field(
+        default=True,
+        description="Whether the prompt director refines the IMAGE/VIDEO request before generation.",
+        validation_alias=AliasChoices("REFINE_PROMPT_ENABLED"),
     )
 
     @property
