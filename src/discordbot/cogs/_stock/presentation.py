@@ -18,6 +18,7 @@ from discordbot.typings.stock import (
     StockSettlementResult,
     StockParticipantPositionView,
 )
+from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN
 from discordbot.utils.currency import cash_floor
 from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right
 from discordbot.utils.number_text import compact_amount, share_quantity_text
@@ -27,8 +28,8 @@ from discordbot.cogs._economy.presentation import CURRENCY_NAME, amount_code, cu
 MARKET_COLOR = 0x2ECC71
 DETAIL_COLOR = 0x3498DB
 NEWS_COLOR = 0xF1C40F
-ERROR_COLOR = 0xED4245
-SUCCESS_COLOR = 0x57F287
+ERROR_COLOR = DISCORD_RED
+SUCCESS_COLOR = DISCORD_GREEN
 DETAIL_LIST_LIMIT = 3
 MARKET_BOARD_WIDTH = 1120
 MARKET_BOARD_FILENAME_PREFIX = "stock_market"

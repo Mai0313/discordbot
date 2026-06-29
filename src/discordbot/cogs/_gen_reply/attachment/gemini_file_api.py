@@ -31,6 +31,7 @@ from discordbot.cogs._gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
     load_attachment_bytes,
+    resolve_source_filename,
 )
 
 if TYPE_CHECKING:
@@ -106,15 +107,7 @@ class GeminiFileUploader(AttachmentRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
-        if isinstance(source, str):
-            # A URL/embed image has no filename; give it an image extension so a downstream
-            # filename-only classifier (the Interactions content kind) reads it as an image,
-            # not a document.
-            source_name = "image.png"
-        else:
-            source_name = (
-                getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
-            )
+        source_name = resolve_source_filename(source=source, url_fallback="image.png")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,
             filename=source_name,

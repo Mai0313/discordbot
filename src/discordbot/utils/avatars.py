@@ -13,13 +13,6 @@ class AvatarUser(Protocol):
     display_avatar: Asset
 
 
-def _member_avatar_url(member: Member, fallback_url: str) -> str:
-    """Returns the member's guild avatar URL, falling back to a global avatar."""
-    if member.guild_avatar is not None:
-        return member.guild_avatar.url
-    return fallback_url or member.display_avatar.url
-
-
 async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:
     """Returns a guild-scoped avatar URL when Discord exposes one.
 
@@ -42,4 +35,6 @@ async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:
 
     if member is None:
         return fallback_url
-    return _member_avatar_url(member=member, fallback_url=fallback_url)
+    if member.guild_avatar is not None:
+        return member.guild_avatar.url
+    return fallback_url or member.display_avatar.url

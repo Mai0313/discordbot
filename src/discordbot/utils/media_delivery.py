@@ -650,6 +650,16 @@ class MediaDeliveryPlanner(BaseModel):
         return MediaPlan(native=fitting, hosted_urls=hosted_urls, dropped_items=dropped)
 
 
+def build_media_delivery_planner() -> MediaDeliveryPlanner:
+    """Builds the default MediaDeliveryPlanner wired to the env-configured external media host.
+
+    The shared wiring used by every cog that delivers media (the streamer builds its own
+    test-friendly disabled planner instead). `MediaHostingConfig` self-disables when the host is
+    unconfigured, so this stays the byte-for-byte host-free path until hosting is set up.
+    """
+    return MediaDeliveryPlanner(media_hosting=MediaHostingService(config=MediaHostingConfig()))
+
+
 __all__ = [
     "DEFAULT_NON_NITRO_UPLOAD_LIMIT",
     "DISCORD_ATTACHMENT_LIMIT",
@@ -659,5 +669,6 @@ __all__ = [
     "MediaHostingService",
     "MediaItem",
     "MediaPlan",
+    "build_media_delivery_planner",
     "upload_limit_for",
 ]

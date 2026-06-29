@@ -13,10 +13,8 @@ from nextcord.ext import commands
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.utils.media_delivery import (
     MediaItem,
-    MediaHostingConfig,
-    MediaHostingService,
-    MediaDeliveryPlanner,
     upload_limit_for,
+    build_media_delivery_planner,
 )
 
 
@@ -34,9 +32,7 @@ class VideoCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.media_delivery = MediaDeliveryPlanner(
-            media_hosting=MediaHostingService(config=MediaHostingConfig())
-        )
+        self.media_delivery = build_media_delivery_planner()
 
     @nextcord.slash_command(
         name="download_video",

@@ -25,6 +25,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
 from discordbot.utils.youtube import YOUTUBE_URL_RE
+from discordbot.typings.colors import DISCORD_RED
 from discordbot.typings.models import (
     EffortGrade,
     ModelSettings,
@@ -43,10 +44,9 @@ from discordbot.cogs._memory.store import (
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MediaItem,
-    MediaHostingConfig,
-    MediaHostingService,
     MediaDeliveryPlanner,
     upload_limit_for,
+    build_media_delivery_planner,
 )
 from discordbot.cogs._gen_reply.input import (
     MessageInputBuilder,
@@ -486,7 +486,7 @@ class ReplyGeneratorCogs(commands.Cog):
             URL (media too big for Discord's upload limit); its host self-disables when
             unconfigured, so every oversize item then degrades to the route's host-free path.
         """
-        return MediaDeliveryPlanner(media_hosting=MediaHostingService(config=MediaHostingConfig()))
+        return build_media_delivery_planner()
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
@@ -1775,7 +1775,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",
-                    color=0xED4245,
+                    color=DISCORD_RED,
                 )
                 error_embed.set_footer(text=type(e).__name__)
                 spacer = embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message)

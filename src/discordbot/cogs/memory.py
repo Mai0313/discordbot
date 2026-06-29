@@ -14,6 +14,7 @@ from nextcord import Embed, Locale, Interaction
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.colors import DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs._memory.store import (
     user_scope,
@@ -37,8 +38,8 @@ from discordbot.cogs._memory.pipeline import (
 )
 from discordbot.cogs._memory.extraction import MemoryExtractorAI
 
-_SUCCESS_EMBED_COLOR = 0x57F287
-_WARN_EMBED_COLOR = 0xFEE75C
+_SUCCESS_EMBED_COLOR = DISCORD_GREEN
+_WARN_EMBED_COLOR = DISCORD_YELLOW
 
 _MEMORY_TITLE = "🧠 我對你的記憶"
 _SERVER_MEMORY_TITLE = "🧠 我對這個伺服器的記憶"

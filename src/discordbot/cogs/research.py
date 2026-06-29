@@ -38,6 +38,7 @@ from nextcord.ext import commands
 from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._research import database as db
+from discordbot.typings.colors import DISCORD_RED
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
@@ -53,11 +54,7 @@ from discordbot.cogs._research.agent import (
     start_deep_research,
 )
 from discordbot.cogs._research.views import PlanApprovalView, ResultEscalationView
-from discordbot.utils.media_delivery import (
-    MediaHostingConfig,
-    MediaHostingService,
-    MediaDeliveryPlanner,
-)
+from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs._research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs._research.delivery import split_report, deliver_report
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -111,9 +108,7 @@ class ResearchCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
-        self.media_delivery = MediaDeliveryPlanner(
-            media_hosting=MediaHostingService(config=MediaHostingConfig())
-        )
+        self.media_delivery = build_media_delivery_planner()
         # One in-flight research per owner; the lock guards the check-then-create.
         self._owner_locks: KeyedLockManager[int] = KeyedLockManager()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -493,7 +488,9 @@ class ResearchCogs(commands.Cog):
         if reason is None and exc is not None:
             reason = extract_friendly_error(exc=exc)
         embed = Embed(
-            title="深度研究失敗", description=f"```\n{reason or '未知錯誤'}\n```", color=0xED4245
+            title="深度研究失敗",
+            description=f"```\n{reason or '未知錯誤'}\n```",
+            color=DISCORD_RED,
         )
         if exc is not None:
             embed.set_footer(text=type(exc).__name__)

@@ -33,6 +33,18 @@ async def load_image_bytes(source: Attachment | StickerItem | str) -> tuple[byte
     )
 
 
+def resolve_source_filename(source: Attachment | StickerItem | str, *, url_fallback: str) -> str:
+    """Returns the upload filename for an image source (attachment, sticker, or URL).
+
+    A URL or embed image has no filename, so `url_fallback` (an image-extensioned name) is
+    used; a downstream filename-only classifier then reads it as an image, not a document.
+    An attachment keeps its real filename; a sticker synthesizes `<name>.png`.
+    """
+    if isinstance(source, str):
+        return url_fallback
+    return getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
+
+
 def attachment_mime(attachment: Attachment) -> str:
     """Returns the bare MIME type of a file attachment, empty when unguessable."""
     content_type = attachment.content_type or guess_type(attachment.filename)[0] or ""

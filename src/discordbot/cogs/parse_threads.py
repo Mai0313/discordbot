@@ -15,10 +15,8 @@ from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
-    MediaHostingConfig,
-    MediaHostingService,
-    MediaDeliveryPlanner,
     upload_limit_for,
+    build_media_delivery_planner,
 )
 
 
@@ -40,9 +38,7 @@ class ThreadsCogs(commands.Cog):
         self.bot = bot
         self.output_folder = Path(tempfile.gettempdir())
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
-        self.media_delivery = MediaDeliveryPlanner(
-            media_hosting=MediaHostingService(config=MediaHostingConfig())
-        )
+        self.media_delivery = build_media_delivery_planner()
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:

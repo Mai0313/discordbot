@@ -48,6 +48,7 @@ from discordbot.cogs._gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
     load_attachment_bytes,
+    resolve_source_filename,
 )
 
 if TYPE_CHECKING:
@@ -92,12 +93,7 @@ class AnthropicFileUploader(AttachmentRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
-        if isinstance(source, str):
-            source_name = "image.jpg"
-        else:
-            source_name = (
-                getattr(source, "filename", None) or f"{getattr(source, 'name', 'sticker')}.png"
-            )
+        source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,
             filename=source_name,
