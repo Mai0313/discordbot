@@ -82,6 +82,7 @@ from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centere
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
+    MAX_VIDEO_REFERENCE_IMAGES,
     ImageGenerator,
     MusicGenerator,
     VideoGenerator,
@@ -721,7 +722,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     for m in source_messages
                 ),
             )
-            images = [pair for group in gathered for pair in group]
+            # Cap to the same set render sends to Veo (it ingests at most three reference images),
+            # so the director grounds on exactly those frames and no unused bytes ride the path.
+            images = [pair for group in gathered for pair in group][:MAX_VIDEO_REFERENCE_IMAGES]
             # Refine the raw request into a full motion/camera prompt first (best-effort, raw
             # prompt on disable / failure); the reference frames ride along as grounding.
             refined_prompt = await self.prompt_generator.refine(

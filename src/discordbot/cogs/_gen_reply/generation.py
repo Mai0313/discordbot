@@ -73,6 +73,11 @@ PROMPT_REFINE_TIMEOUT_SECONDS = 120.0
 # the render, not of the route that calls it.
 VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
 
+# Veo ingests at most three ASSET reference images. Shared so the VIDEO route caps the frames it
+# grounds the prompt director on to exactly the set render will send, rather than letting the
+# director describe references Veo never receives (and uploading those unused bytes on the path).
+MAX_VIDEO_REFERENCE_IMAGES = 3
+
 # Bound for the inline-music best-effort path, mirroring the inline-image timeout: the render
 # runs after the text reply is on screen, so the wait only delays this message's own clip.
 MUSIC_RENDER_TIMEOUT_SECONDS = 300.0
@@ -497,7 +502,7 @@ class VideoGenerator(BaseModel):
                 image=Image(image_bytes=raw, mime_type=mime),
                 reference_type=VideoGenerationReferenceType.ASSET,
             )
-            for raw, mime in reference_image_sources[:3]
+            for raw, mime in reference_image_sources[:MAX_VIDEO_REFERENCE_IMAGES]
         ]
         # Veo 3.1 requires duration_seconds=8 at 1080p and with reference images, so it is pinned
         # (4/6/8 are only selectable at 720p); audio rides on by default. Only fields this model
