@@ -15,7 +15,7 @@ class LLMConfig(BaseSettings):
             the Gemini Files API directly, so uploads can be polled to ACTIVE.
         anthropic_api_key: The Anthropic key used to upload attachments to the
             Anthropic Files API directly (the side-channel for Claude answer models).
-        voice_reply_enabled: Kill-switch for spoken QA replies; when false the answer
+        inline_voice_enabled: Kill-switch for spoken QA replies; when false the answer
             model's voice marker is still stripped but no audio clip is synthesized.
         inline_image_enabled: Kill-switch for inline generated images on QA replies; when
             false the answer model's `<image>` marker is still stripped but no image is rendered.
@@ -57,10 +57,10 @@ class LLMConfig(BaseSettings):
         examples=["sk-ant-..."],
         validation_alias=AliasChoices("ANTHROPIC_API_KEY"),
     )
-    voice_reply_enabled: bool = Field(
+    inline_voice_enabled: bool = Field(
         default=True,
         description="Whether the bot may synthesize a spoken clip for fierce QA replies.",
-        validation_alias=AliasChoices("VOICE_REPLY_ENABLED"),
+        validation_alias=AliasChoices("INLINE_VOICE_ENABLED"),
     )
     inline_image_enabled: bool = Field(
         default=True,

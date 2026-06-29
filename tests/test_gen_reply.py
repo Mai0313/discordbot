@@ -1646,9 +1646,9 @@ async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> N
 async def test_voice_config_gate_controls_synthesizer(
     monkeypatch: pytest.MonkeyPatch, enabled: bool, expect_synth: bool
 ) -> None:
-    """config.voice_reply_enabled gates whether the QA streamer receives a synthesizer."""
+    """config.inline_voice_enabled gates whether the QA streamer receives a synthesizer."""
     cog = _cog()
-    cog.config = SimpleNamespace(voice_reply_enabled=enabled)
+    cog.config = SimpleNamespace(inline_voice_enabled=enabled)
     captured: list[object] = []
 
     class FakeResponder:
@@ -1699,7 +1699,7 @@ async def test_image_config_gate_controls_generator(
 ) -> None:
     """config.inline_image_enabled gates whether the QA streamer receives an image generator."""
     cog = _cog()
-    cog.config = SimpleNamespace(voice_reply_enabled=False, inline_image_enabled=enabled)
+    cog.config = SimpleNamespace(inline_voice_enabled=False, inline_image_enabled=enabled)
     captured: list[object] = []
 
     class FakeResponder:
@@ -1811,7 +1811,7 @@ async def test_youtube_qa_uses_interactions_backend(
     del economy_isolated_db
     cog = _cog()
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
+        inline_voice_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
@@ -1846,7 +1846,7 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
     del economy_isolated_db
     cog = _cog()
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
+        inline_voice_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
@@ -1874,7 +1874,7 @@ async def test_youtube_qa_falls_back_to_responses(
     del economy_isolated_db
     cog = _cog()
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False,
+        inline_voice_enabled=False,
         inline_image_enabled=False,
         youtube_video_enabled=scenario != "kill_switch_off",
     )
@@ -3557,7 +3557,7 @@ async def test_on_message_injects_threads_context_before_current(
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False,
+        inline_voice_enabled=False,
         inline_image_enabled=False,
         music_available=False,
         deep_research_enabled=False,
@@ -3645,7 +3645,7 @@ async def test_on_message_skips_threads_context_without_url(
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False,
+        inline_voice_enabled=False,
         inline_image_enabled=False,
         music_available=False,
         deep_research_enabled=False,
@@ -3679,7 +3679,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
     cog.config = SimpleNamespace(
-        voice_reply_enabled=False,
+        inline_voice_enabled=False,
         inline_image_enabled=False,
         music_available=False,
         deep_research_enabled=False,

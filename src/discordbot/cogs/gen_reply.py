@@ -433,7 +433,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Returns:
             A generator bound to this cog's proxy client and the catalog's TTS model; the
-            caller still gates it on `allow_voice` and `config.voice_reply_enabled`.
+            caller still gates it on `allow_voice` and `config.inline_voice_enabled`.
         """
         return VoiceGenerator(
             client=self.openai_client, model_name=self.runtime_models.tts_model.name
@@ -1506,7 +1506,7 @@ class ReplyGeneratorCogs(commands.Cog):
         (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
         voice_generator = (
-            self.voice_generator if allow_voice and self.config.voice_reply_enabled else None
+            self.voice_generator if allow_voice and self.config.inline_voice_enabled else None
         )
         image_generator = (
             self.image_generator if allow_image and self.config.inline_image_enabled else None
