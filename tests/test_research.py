@@ -17,6 +17,7 @@ from discordbot.utils.media_delivery import (
 )
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
 from discordbot.cogs._research.delivery import split_report, deliver_report
+from discordbot.cogs._research.streaming import ResearchProgressStreamer
 
 
 def _disabled_delivery() -> MediaDeliveryPlanner:
@@ -97,48 +98,313 @@ def test_deep_research_agent_config_shape() -> None:
     assert run_config["collaborative_planning"] is False
 
 
-class _RecordingInteractions:
-    """Records the kwargs of the last `create` and settles `get` immediately as completed."""
+class _FakeStream:
+    """Async iterator over scripted SSE events; can raise after a prefix to simulate a drop."""
 
-    def __init__(self) -> None:
+    def __init__(self, events: list[object], *, raise_after: int | None = None) -> None:
+        self._events = list(events)
+        self._raise_after = raise_after
+        self._yielded = 0
+
+    def __aiter__(self) -> "_FakeStream":
+        return self
+
+    async def __anext__(self) -> object:
+        if self._raise_after is not None and self._yielded >= self._raise_after:
+            raise RuntimeError("stream dropped")
+        if not self._events:
+            raise StopAsyncIteration
+        self._yielded += 1
+        return self._events.pop(0)
+
+
+class _FakeInteractions:
+    """Fakes `client.aio.interactions`: `create`/`get(stream=True)` yield scripted streams.
+
+    A non-stream `get(id=...)` returns the terminal interaction (the authoritative final read).
+    """
+
+    def __init__(self, *, streams: list[_FakeStream], terminal: object) -> None:
+        self._streams = list(streams)
+        self._terminal = terminal
         self.create_kwargs: dict[str, object] = {}
+        self.stream_get_calls: list[dict[str, object]] = []
 
-    async def create(self, **kwargs: object) -> SimpleNamespace:
+    async def create(self, **kwargs: object) -> _FakeStream:
         self.create_kwargs = kwargs
-        return SimpleNamespace(id="plan_x")
+        return self._streams.pop(0)
 
-    async def get(self, **kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(
-            id=kwargs.get("id"), status="completed", output_text="a plan", steps=[]
+    async def get(self, **kwargs: object) -> object:
+        if kwargs.get("stream"):
+            self.stream_get_calls.append(kwargs)
+            return self._streams.pop(0)
+        return self._terminal
+
+
+def _fake_client(*, streams: list[_FakeStream], terminal: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        aio=SimpleNamespace(interactions=_FakeInteractions(streams=streams, terminal=terminal))
+    )
+
+
+def _created_event(*, interaction_id: str = "int_9", event_id: str = "e1") -> SimpleNamespace:
+    return SimpleNamespace(
+        event_type="interaction.created",
+        event_id=event_id,
+        interaction=SimpleNamespace(id=interaction_id, model="m"),
+    )
+
+
+def _thought_event(text: str, *, event_id: str = "e2") -> SimpleNamespace:
+    return SimpleNamespace(
+        event_type="step.delta",
+        event_id=event_id,
+        delta=SimpleNamespace(type="thought_summary", content=SimpleNamespace(text=text)),
+    )
+
+
+def _completed_event(*, event_id: str = "e9") -> SimpleNamespace:
+    return SimpleNamespace(
+        event_type="interaction.completed", event_id=event_id, interaction=SimpleNamespace()
+    )
+
+
+def _terminal_interaction() -> SimpleNamespace:
+    return SimpleNamespace(
+        id="int_9",
+        status="completed",
+        output_text="# Report\nbody",
+        usage=SimpleNamespace(total_input_tokens=10, total_output_tokens=5),
+        steps=[],
+    )
+
+
+async def test_stream_antigravity_persists_id_streams_and_returns_terminal_result() -> None:
+    client = _fake_client(
+        streams=[_FakeStream([_created_event(), _thought_event("searching"), _completed_event()])],
+        terminal=_terminal_interaction(),
+    )
+    streamer = ResearchProgressStreamer(
+        status=None, label="Antigravity", preview_interval_seconds=0.01
+    )
+    persisted: list[str] = []
+
+    async def _persist(interaction_id: str) -> None:
+        persisted.append(interaction_id)
+
+    result = await agent.stream_antigravity(
+        client=client,
+        agent="antigravity-preview-05-2026",
+        brief="b",
+        system_instruction="sys",
+        streamer=streamer,
+        on_created=_persist,
+    )
+    kwargs = client.aio.interactions.create_kwargs
+    # The id is persisted on the first event (before the long wait) and the built-in grounding
+    # tool set rides every streaming create; the final result comes from the terminal get.
+    assert persisted == ["int_9"]
+    assert kwargs["stream"] is True
+    assert kwargs["background"] is True
+    assert kwargs["tools"] is agent.RESEARCH_TOOLS
+    assert streamer.reasoning == "searching"
+    assert result.ok is True
+    assert result.report_text.startswith("# Report")
+    assert result.input_tokens == 10
+    assert result.output_tokens == 5
+
+
+async def test_stream_reconnects_when_stream_ends_without_terminal(monkeypatch) -> None:  # noqa: ANN001 -- pytest monkeypatch fixture
+    # The SDK can close a bounded request mid-run; ending WITHOUT a terminal event must re-attach
+    # (from the last event id), not be mistaken for completion.
+    monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
+    client = _fake_client(
+        streams=[
+            _FakeStream([_created_event(event_id="e1"), _thought_event("part1", event_id="e2")]),
+            _FakeStream([_completed_event(event_id="e3")]),
+        ],
+        terminal=_terminal_interaction(),
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    async def _persist(_interaction_id: str) -> None:
+        return None
+
+    result = await agent.stream_antigravity(
+        client=client,
+        agent="a",
+        brief="b",
+        system_instruction="s",
+        streamer=streamer,
+        on_created=_persist,
+    )
+    stream_gets = client.aio.interactions.stream_get_calls
+    assert stream_gets
+    assert stream_gets[0]["last_event_id"] == "e2"
+    assert result.ok is True
+
+
+async def test_stream_reconnects_after_a_mid_stream_drop(monkeypatch) -> None:  # noqa: ANN001 -- pytest monkeypatch fixture
+    monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
+    client = _fake_client(
+        streams=[
+            _FakeStream(
+                [_created_event(event_id="e1"), _thought_event("x", event_id="e2")], raise_after=2
+            ),
+            _FakeStream([_completed_event(event_id="e3")]),
+        ],
+        terminal=_terminal_interaction(),
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    async def _persist(_interaction_id: str) -> None:
+        return None
+
+    result = await agent.stream_antigravity(
+        client=client,
+        agent="a",
+        brief="b",
+        system_instruction="s",
+        streamer=streamer,
+        on_created=_persist,
+    )
+    assert client.aio.interactions.stream_get_calls[0]["last_event_id"] == "e2"
+    assert result.ok is True
+
+
+async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) -> None:  # noqa: ANN001 -- pytest monkeypatch fixture
+    monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(agent, "MAX_STREAM_RECONNECTS", 0)
+    client = _fake_client(
+        streams=[
+            _FakeStream([_created_event(event_id="e1")], raise_after=1),
+            _FakeStream([], raise_after=0),
+        ],
+        terminal=_terminal_interaction(),
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    async def _persist(_interaction_id: str) -> None:
+        return None
+
+    # Streaming exhausts its reconnects, so the driver degrades to the poll and still returns the
+    # authoritative terminal result.
+    result = await agent.stream_antigravity(
+        client=client,
+        agent="a",
+        brief="b",
+        system_instruction="s",
+        streamer=streamer,
+        on_created=_persist,
+    )
+    assert result.ok is True
+
+
+async def test_stream_antigravity_reraises_when_create_never_yields_an_id() -> None:
+    client = _fake_client(
+        streams=[_FakeStream([], raise_after=0)], terminal=_terminal_interaction()
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+
+    async def _persist(_interaction_id: str) -> None:
+        return None
+
+    # No interaction.created ever arrived, so there is no id to resume: the error propagates to the
+    # cog's failure path instead of being swallowed into a poll.
+    raised = False
+    try:
+        await agent.stream_antigravity(
+            client=client,
+            agent="a",
+            brief="b",
+            system_instruction="s",
+            streamer=streamer,
+            on_created=_persist,
         )
+    except RuntimeError:
+        raised = True
+    assert raised is True
 
 
-def _recording_client() -> SimpleNamespace:
-    return SimpleNamespace(aio=SimpleNamespace(interactions=_RecordingInteractions()))
+async def test_resume_research_stream_drives_from_get_stream() -> None:
+    client = _fake_client(
+        streams=[_FakeStream([_completed_event(event_id="e1")])], terminal=_terminal_interaction()
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Deep Research")
+    result = await agent.resume_research_stream(
+        client=client, interaction_id="int_9", streamer=streamer
+    )
+    # Resume re-attaches via get(stream=True) and never calls create.
+    assert client.aio.interactions.create_kwargs == {}
+    assert result.ok is True
 
 
-async def test_start_plan_passes_research_tools() -> None:
-    client = _recording_client()
-    plan = await agent.start_plan(
-        client=client, agent="deep-research-preview-04-2026", brief="b", system_instruction="sys"
+async def test_stream_plan_passes_research_tools_and_returns_plan() -> None:
+    client = _fake_client(
+        streams=[
+            _FakeStream([
+                _created_event(interaction_id="plan_x", event_id="e1"),
+                _thought_event("outlining", event_id="e2"),
+                _completed_event(event_id="e3"),
+            ])
+        ],
+        terminal=SimpleNamespace(id="plan_x", status="completed", output_text="a plan", steps=[]),
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Planning")
+    plan = await agent.stream_plan(
+        client=client,
+        agent="deep-research-preview-04-2026",
+        brief="b",
+        system_instruction="sys",
+        streamer=streamer,
     )
     # Planning must pass the restricted search/url tool set so the agent default (which can include
-    # code execution) cannot leak raw tool-call text into the plan.
+    # code execution) cannot leak raw tool-call text into the plan; it now streams reasoning too.
     assert client.aio.interactions.create_kwargs["tools"] is agent.RESEARCH_TOOLS
+    assert client.aio.interactions.create_kwargs["stream"] is True
+    assert streamer.reasoning == "outlining"
     assert plan.status == "completed"
+    assert plan.plan_text == "a plan"
+    assert plan.interaction_id == "plan_x"
 
 
-async def test_refine_plan_passes_research_tools() -> None:
-    client = _recording_client()
-    plan = await agent.refine_plan(
+async def test_stream_refine_passes_research_tools_and_returns_plan() -> None:
+    client = _fake_client(
+        streams=[
+            _FakeStream([
+                _created_event(interaction_id="plan_x", event_id="e1"),
+                _completed_event(),
+            ])
+        ],
+        terminal=SimpleNamespace(id="plan_x", status="completed", output_text="a plan", steps=[]),
+    )
+    streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Re-planning")
+    plan = await agent.stream_refine(
         client=client,
         agent="deep-research-preview-04-2026",
         previous_interaction_id="plan_v1",
         feedback="tighten the scope",
         system_instruction="sys",
+        streamer=streamer,
     )
     assert client.aio.interactions.create_kwargs["tools"] is agent.RESEARCH_TOOLS
+    assert client.aio.interactions.create_kwargs["previous_interaction_id"] == "plan_v1"
     assert plan.status == "completed"
+
+
+def test_is_terminal_event_classifies_statuses() -> None:
+    assert agent._is_terminal_event(event=_completed_event()) is True
+    assert (
+        agent._is_terminal_event(
+            event=SimpleNamespace(event_type="error", error=SimpleNamespace(message="boom"))
+        )
+        is True
+    )
+    running = SimpleNamespace(event_type="interaction.status_update", status="in_progress")
+    assert agent._is_terminal_event(event=running) is False
+    failed = SimpleNamespace(event_type="interaction.status_update", status="budget_exceeded")
+    assert agent._is_terminal_event(event=failed) is True
+    assert agent._is_terminal_event(event=_thought_event("x")) is False
 
 
 def test_to_result_extracts_text_image_and_usage() -> None:
@@ -193,6 +459,51 @@ def test_latest_thought_reads_thought_step_summary() -> None:
         ]
     )
     assert agent._latest_thought(interaction=interaction) == "planning the search"
+
+
+# ----- progress streamer --------------------------------------------------------------------
+
+
+def test_streamer_feed_accumulates_only_thought_summaries() -> None:
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
+    streamer._feed(event=_thought_event("searching..."))
+    text_delta = SimpleNamespace(
+        event_type="step.delta", event_id="x", delta=SimpleNamespace(type="text", text="body")
+    )
+    streamer._feed(event=text_delta)  # report text is delivered separately, not shown as reasoning
+    streamer._feed(event=_created_event())  # non-delta events are ignored
+    assert streamer.reasoning == "searching..."
+
+
+def test_streamer_render_preview_windows_and_escapes_mentions() -> None:
+    streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Planning")
+    streamer.reasoning = "first line\n@everyone please\nlast line"
+    preview = streamer._render_preview()
+    assert preview.startswith("-# Planning... (Deep Research,")
+    assert "@everyone" not in preview  # agent text is escaped so the thinking can never ping
+    assert "last line" in preview
+
+
+async def test_streamer_write_snapshot_edits_and_skips_unchanged() -> None:
+    status = _FakeStatusMessage()
+    streamer = ResearchProgressStreamer(status=status, label="Antigravity", reasoning="thinking")
+    await streamer._write_preview_snapshot()
+    assert len(status.edits) == 1
+    assert status.edits[0]["allowed_mentions"].everyone is False
+    # A second write of the same rendered snapshot is a no-op, so the editor never spams edits.
+    streamer._displayed = streamer._render_preview()
+    await streamer._write_preview_snapshot()
+    assert len(status.edits) == 1
+
+
+async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
+    status = _FakeStatusMessage()
+    streamer = ResearchProgressStreamer(
+        status=status, label="Antigravity", preview_interval_seconds=0.01
+    )
+    await streamer.stream(events=_FakeStream([_thought_event("aaa"), _thought_event("bbb")]))
+    assert streamer.reasoning == "aaabbb"
+    assert streamer._editor_task is None  # the cadence editor is always stopped in finally
 
 
 # ----- research module helpers --------------------------------------------------------------
