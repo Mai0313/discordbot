@@ -142,6 +142,20 @@ def test_server_consolidation_prompt_ages_mutable_traits_but_exempts_aliases() -
     assert "DISPLACEMENT" in SERVER_PHASE2_PROMPT
 
 
+def test_server_phase1_prompt_pins_sharing_global() -> None:
+    # The sharing field scopes per-user memory across servers; server memory is
+    # already server-confined, so phase-1 pins the unused field to global.
+    assert 'Always set `sharing="global"`' in SERVER_PHASE1_PROMPT
+
+
+def test_server_consolidation_prompt_never_emits_a_tone_note() -> None:
+    # The tone note is a per-user tier: the server prompt must declare its
+    # `<existing_tone>` input always empty and demand an empty tone output.
+    assert "always `(empty)`" in SERVER_PHASE2_PROMPT
+    assert "TONE NOTE OUTPUT" in SERVER_PHASE2_PROMPT
+    assert "Always return an empty `tone_markdown`" in SERVER_PHASE2_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # /memory server show
 # ---------------------------------------------------------------------------

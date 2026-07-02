@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import re
 import json
 from types import SimpleNamespace
 import base64
@@ -36,7 +37,7 @@ from discordbot.typings.models import (
     RuntimeModelCatalog,
 )
 from discordbot.utils.reactions import ReactionStatusChain
-from discordbot.cogs._memory.store import user_scope, server_scope, write_main_memory
+from discordbot.cogs._memory.store import user_scope, write_tone, server_scope, write_main_memory
 from discordbot.utils.media_delivery import (
     MediaHostingConfig,
     MediaHostingService,
@@ -66,9 +67,13 @@ from discordbot.cogs._gen_reply.generation import (
 )
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
+    MemoryReadContext,
     parse_user_id_list,
+    memory_read_context,
+    memory_lookup_labels,
     resolve_user_memories,
     build_memory_allowlist,
+    filter_memory_for_context,
     widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
 )
@@ -84,6 +89,7 @@ from tests.helpers.llm_input import (
     request_index,
     request_input,
     iter_text_blocks,
+    extract_tone_block,
     tool_names_for_call,
     has_memory_context_block,
     extract_callable_user_ids,
@@ -745,6 +751,20 @@ def test_build_runtime_instructions_adds_request_time_context() -> None:
     instructions = _build_runtime_instructions(system_prompt="SYS", message=message)
 
     _assert_runtime_time_context(instructions=instructions, system_prompt="SYS")
+
+
+def test_build_runtime_instructions_names_conversation_location() -> None:
+    """Instructions name the current guild (name + id) for a guild message and the DM otherwise."""
+    guild_message = FakeMessage(content="hi")
+    instructions = _build_runtime_instructions(system_prompt="SYS", message=guild_message)
+    assert "Current conversation location:" in instructions
+    assert 'the Discord server "Test Guild" (guild 1)' in instructions
+
+    dm_message = FakeMessage(content="hi")
+    dm_message.guild = None
+    dm_instructions = _build_runtime_instructions(system_prompt="SYS", message=dm_message)
+    assert "Current conversation location:" in dm_instructions
+    assert "a Discord direct message (DM)" in dm_instructions
 
 
 async def _stream_events() -> AsyncIterator[SimpleNamespace]:
@@ -3000,12 +3020,13 @@ async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
 
 
 async def test_handle_image_reply_injects_only_user_memory() -> None:
-    """The conversational reply carries the requester's memory, never the server memory."""
+    """The conversational reply carries the requester's memory and tone note, never the server memory."""
     cog = _cog()
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
     context = ReplyContext(
         memory_block=EasyInputMessageParam(role="assistant", content="USER_MEM_MARKER"),
         server_memory_block=EasyInputMessageParam(role="assistant", content="SERVER_MEM_MARKER"),
+        tone_block=EasyInputMessageParam(role="assistant", content="TONE_MARKER"),
     )
 
     async def _ready() -> ReplyContext:
@@ -3016,10 +3037,13 @@ async def test_handle_image_reply_injects_only_user_memory() -> None:
         message=message, user_prompt="draw a cat", context_task=asyncio.create_task(_ready())
     )
 
-    # The streamed reply is the last create; only the user memory block rides in it.
+    # The streamed reply is the last create; the user memory block rides in it, then the
+    # tone note, mirroring the answer path's order; the server memory never does.
     reply_input = cog.openai_client.responses.create_inputs[-1]
     contents = [block.get("content") for block in reply_input]
     assert "USER_MEM_MARKER" in contents
+    assert "TONE_MARKER" in contents
+    assert contents.index("USER_MEM_MARKER") < contents.index("TONE_MARKER")
     assert "SERVER_MEM_MARKER" not in contents
 
 
@@ -3950,6 +3974,86 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     assert "reply to the Reference Message above" in blocks[current_index][1]
 
 
+async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The answer injects server memory, user memory, then the tone note before the current message."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 使用者輪廓\n喜歡簡短回覆",
+        identity="U1 (u1) [id: 1]",
+    )
+    write_main_memory(
+        scope=server_scope(bot_id=999, server_id=1),
+        content="v1\n\n## 伺服器輪廓\n社群風格",
+        identity="Test Guild [id: 1]",
+    )
+    write_tone(scope=user_scope(user_id=1), content="語氣輕鬆,句子精簡")
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    cog.openai_client.responses.select_queue = [
+        [_function_call_item(call_id="c0", arguments=json.dumps({"user_id_list": ["1"]}))]
+    ]
+    cog.openai_client.responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
+
+    await _reply_via_pipeline(cog=cog, message=message)
+
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    tone = extract_tone_block(request=answer)
+    assert tone is not None
+    assert "語氣輕鬆" in tone
+    blocks = list(iter_text_blocks(request=answer))
+    server_index = next(
+        index
+        for index, (role, text) in enumerate(blocks)
+        if role == "assistant" and text.startswith("(My long-term memory about this server")
+    )
+    memory_index = next(
+        index
+        for index, (role, text) in enumerate(blocks)
+        if role == "assistant" and text.startswith("(My long-term memory about participants")
+    )
+    tone_index = next(
+        index
+        for index, (role, text) in enumerate(blocks)
+        if role == "assistant" and text.startswith("(My note on how this user likes me to sound")
+    )
+    current_index = next(
+        index
+        for index, (_role, text) in enumerate(blocks)
+        if text.startswith("==== Current Message")
+    )
+    assert server_index < memory_index < tone_index < current_index
+
+
+async def test_summary_route_still_injects_tone_block(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """memory_enabled=False (SUMMARY) skips user memory but still injects the author's tone note."""
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    write_tone(scope=user_scope(user_id=1), content="語氣輕鬆")
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    cog.openai_client.responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
+
+    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
+
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    assert not has_memory_context_block(request=answer)
+    tone = extract_tone_block(request=answer)
+    assert tone is not None
+    assert "語氣輕鬆" in tone
+
+
 def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies model properties and provider-specific tool dispatch."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
@@ -4297,13 +4401,190 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     )
     allowed = {1: "A (a)", 2: "B (b)"}
 
-    memories = resolve_user_memories(user_id_list=["1", "<@1>", "3", "abc", "2"], allowed=allowed)
+    memories = resolve_user_memories(
+        user_id_list=["1", "<@1>", "3", "abc", "2"],
+        allowed=allowed,
+        context=MemoryReadContext(guild_id=None, dm_partner_id=None),
+    )
 
     by_id = {memory.user_id: memory for memory in memories}
     assert set(by_id) == {"1", "2"}
     assert "甲的記憶" in by_id["1"].memory
     assert by_id["1"].username == "A (a)"
     assert by_id["2"].memory == "(no stored memory for this user)"
+
+
+# One memory exercising every tag shape the filter distinguishes: global, single-guild
+# (with an indented continuation), comma multi-source, dm, legacy, untagged, malformed.
+_FILTER_FIXTURE_MEMORY = """v1
+
+## 使用者輪廓
+全域輪廓段落
+
+## 永久事實
+* 全域事實 [src:*]
+* 本群事實 [src:111]
+    縮排續行
+* 多源事實 [src:111,222]
+* 私訊事實 [src:dm]
+* 舊資料 [src:legacy]
+* 無標記事實
+* 壞標記事實 [src:!!]
+
+## 近期脈絡
+* [2026-07-01] 他群近況 [src:333]"""
+
+
+@pytest.mark.parametrize(
+    ("context", "present", "absent"),
+    [
+        (
+            MemoryReadContext(guild_id=111, dm_partner_id=None),
+            ["全域輪廓段落", "全域事實", "本群事實", "縮排續行", "多源事實"],
+            ["私訊事實", "舊資料", "無標記事實", "壞標記事實", "他群近況", "## 近期脈絡"],
+        ),
+        (
+            MemoryReadContext(guild_id=222, dm_partner_id=None),
+            ["全域輪廓段落", "全域事實", "多源事實"],
+            ["本群事實", "縮排續行", "私訊事實", "舊資料", "無標記事實", "壞標記事實", "他群近況"],
+        ),
+        (
+            MemoryReadContext(guild_id=333, dm_partner_id=None),
+            ["全域輪廓段落", "全域事實", "他群近況", "## 近期脈絡"],
+            ["本群事實", "縮排續行", "多源事實", "私訊事實", "舊資料", "無標記事實", "壞標記事實"],
+        ),
+        (
+            MemoryReadContext(guild_id=None, dm_partner_id=1),
+            [
+                "全域輪廓段落",
+                "全域事實",
+                "本群事實",
+                "縮排續行",
+                "多源事實",
+                "私訊事實",
+                "舊資料",
+                "無標記事實",
+                "壞標記事實",
+                "他群近況",
+            ],
+            [],
+        ),
+        (
+            MemoryReadContext(guild_id=None, dm_partner_id=555),
+            ["全域輪廓段落", "全域事實"],
+            [
+                "本群事實",
+                "縮排續行",
+                "多源事實",
+                "私訊事實",
+                "舊資料",
+                "無標記事實",
+                "壞標記事實",
+                "他群近況",
+                "## 近期脈絡",
+            ],
+        ),
+        (
+            MemoryReadContext(guild_id=None, dm_partner_id=None),
+            ["全域輪廓段落", "全域事實"],
+            [
+                "本群事實",
+                "縮排續行",
+                "多源事實",
+                "私訊事實",
+                "舊資料",
+                "無標記事實",
+                "壞標記事實",
+                "他群近況",
+                "## 近期脈絡",
+            ],
+        ),
+    ],
+    ids=[
+        "same-guild",
+        "comma-second-guild",
+        "other-guild",
+        "owner-own-dm",
+        "other-owner-in-dm",
+        "group-dm",
+    ],
+)
+def test_filter_memory_for_context_matrix(
+    context: MemoryReadContext, present: list[str], absent: list[str]
+) -> None:
+    """Per-bullet source scoping: only `[src:*]` and current-guild bullets survive outside the owner's DM.
+
+    The owner's own 1:1 DM keeps everything (including untagged/legacy/dm content);
+    every other context fail-closes untagged and malformed tags, an indented
+    continuation follows its bullet, the 使用者輪廓 paragraph passes through, and a
+    header whose section lost all content is dropped.
+    """
+    filtered = filter_memory_for_context(
+        memory=_FILTER_FIXTURE_MEMORY, owner_id=1, context=context
+    )
+
+    for fragment in present:
+        assert fragment in filtered
+    for fragment in absent:
+        assert fragment not in filtered
+    # Provenance never reaches the model: every well-formed tag is stripped from surviving
+    # lines. The owner short-circuit keeps the malformed `[src:!!]` literally (it is the
+    # owner's own content); everywhere else that line is dropped, so no `[src:` remains.
+    assert re.search(r"\[src:[0-9a-z*,]+\]", filtered) is None
+    if context.dm_partner_id != 1:
+        assert "[src:" not in filtered
+
+
+def test_filter_memory_fully_locked_returns_empty() -> None:
+    """A memory whose every section is filtered away collapses to "", not a bare v1 header."""
+    memory = "v1\n\n## 永久事實\n* 他群祕密 [src:222]"
+    filtered = filter_memory_for_context(
+        memory=memory, owner_id=1, context=MemoryReadContext(guild_id=111, dm_partner_id=None)
+    )
+    assert filtered == ""
+
+
+def test_memory_read_context_by_channel_kind() -> None:
+    """Guild sets guild_id; a 1:1 DM sets dm_partner_id; a guildless non-DM channel sets neither."""
+    guild_message = FakeMessage(content="hi")
+    guild_context = memory_read_context(message=guild_message)
+    assert guild_context.guild_id == 1
+    assert guild_context.dm_partner_id is None
+
+    dm_message = FakeMessage(content="hi", author=FakeAuthor(user_id=7))
+    dm_message.guild = None
+    dm_message.channel = MagicMock(spec=nextcord.DMChannel)
+    dm_context = memory_read_context(message=dm_message)
+    assert dm_context.guild_id is None
+    assert dm_context.dm_partner_id == 7
+
+    # A group DM has no guild but is not a DMChannel, so it fail-closes to neither.
+    group_message = FakeMessage(content="hi")
+    group_message.guild = None
+    group_context = memory_read_context(message=group_message)
+    assert group_context.guild_id is None
+    assert group_context.dm_partner_id is None
+
+
+def test_resolve_user_memories_fully_locked_reads_as_no_memory(
+    memory_isolated_dir: object,
+) -> None:
+    """A memory locked entirely to another guild resolves to the no-memory signal, uncredited."""
+    del memory_isolated_dir
+    write_main_memory(
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 永久事實\n* 他群祕密 [src:424242]",
+        identity="A (a) [id: 1]",
+    )
+
+    memories = resolve_user_memories(
+        user_id_list=["1"],
+        allowed={1: "A (a)"},
+        context=MemoryReadContext(guild_id=111, dm_partner_id=None),
+    )
+
+    assert [memory.memory for memory in memories] == [NO_STORED_MEMORY]
+    assert memory_lookup_labels(memories=memories) == []
 
 
 @pytest.mark.parametrize(
@@ -4672,7 +4953,12 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     assert [update["scope"] for update in scheduled] == [
         name_to_scope[name] for name in expect_scopes
     ]
+    # The user subject carries a second line naming the conversation source (guild or DM)
+    # so the pipeline can stamp each observation deterministically; the server flavor never does.
+    user_source = "guild 1" if has_guild else "dm"
     for update in scheduled:
+        if update["scope"] == name_to_scope["user"]:
+            assert update["subject"] == f"target_user_id: 1\nsource: {user_source}"
         if update["scope"] == server_scope_value:
             assert update["subject"] == "target_server_id: 1"
             assert update["extractor"] is cog.server_memory_extractor
@@ -5035,8 +5321,12 @@ async def test_select_user_memories_uses_text_only_transcript() -> None:
         )
     ]
 
+    message = FakeMessage()
     await cog._select_user_memories(
-        message=FakeMessage(), message_list=message_list, allowed={1: "u"}
+        message=message,
+        message_list=message_list,
+        allowed={1: "u"},
+        read_context=memory_read_context(message=message),
     )
 
     rendered = str(cog.openai_client.responses.create_inputs[-1])
@@ -5218,6 +5508,32 @@ async def test_memory_selection_timeout_falls_back_to_author_and_reference_memor
     assert "甲" in (blocks.get(1) or "")
     assert "乙" in (blocks.get(2) or "")
     assert len(context.memory_labels) == 2
+
+
+async def test_memory_selection_timeout_fallback_skips_locked_author_memory(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback injects nothing when the author's memory is locked to another guild.
+
+    The participant fallback applies the same per-bullet source scoping as a deliberate
+    lookup, so a selection failure can never leak what the selection path would have
+    filtered.
+    """
+    del memory_isolated_dir
+    cog = _cog()
+    write_main_memory(
+        scope=user_scope(user_id=1),
+        content="v1\n\n## 永久事實\n* 他群祕密 [src:424242]",
+        identity="Tester (tester) [id: 1]",
+    )
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+
+    context = await _prepare_context_with_hanging_selection(
+        cog=cog, message=message, monkeypatch=monkeypatch
+    )
+
+    assert context.memory_block is None
+    assert context.memory_labels == []
 
 
 def test_can_launch_research_requires_guild_text_channel() -> None:
