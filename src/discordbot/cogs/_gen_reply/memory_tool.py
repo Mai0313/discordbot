@@ -286,8 +286,10 @@ def parse_user_id_list(*, arguments: str) -> list[str]:
 # literal "[src:" inside user content cannot satisfy the visibility parse.
 _SRC_TAG_RE = re.compile(r"\[src:(?P<values>[0-9a-z*,]+)\]\s*$")
 # Any src-tag-shaped token, for stripping tags from surviving lines so the answer model
-# never sees provenance and therefore cannot echo it.
-_SRC_TAG_STRIP_RE = re.compile(r" ?\[src:[0-9a-z*,]*\]")
+# never sees provenance and therefore cannot echo it. Deliberately looser than the
+# visibility parse above: a malformed tag (kept only via the owner-DM short-circuit or
+# profile prose) is still noise the model could echo, so it is scrubbed too.
+_SRC_TAG_STRIP_RE = re.compile(r" ?\[src:[^\]\n]*\]")
 
 # The one untagged main.md section; its paragraph is global-by-contract (the write-side
 # prompt keeps everything private out of it), so the filter passes its prose through.
