@@ -47,21 +47,22 @@ from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs._research.agent import (
     ResearchPlan,
     ResearchResult,
-    start_plan,
-    refine_plan,
-    resume_research,
-    start_antigravity,
-    start_deep_research,
+    stream_plan,
+    stream_refine,
+    stream_antigravity,
+    stream_deep_research,
+    resume_research_stream,
 )
 from discordbot.cogs._research.views import PlanApprovalView, ResultEscalationView
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs._research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs._research.delivery import split_report, deliver_report
+from discordbot.cogs._research.streaming import ResearchProgressStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 if TYPE_CHECKING:
     from typing import Any
-    from collections.abc import Callable, Awaitable, Coroutine
+    from collections.abc import Coroutine
 
     from nextcord import Thread
 
@@ -321,25 +322,26 @@ class ResearchCogs(commands.Cog):
     async def _run_default_research(
         self, *, thread: "Thread", owner_mention: str, brief: str, agent: str
     ) -> None:
-        """Runs the default Antigravity research and delivers it, offering escalation after."""
+        """Streams the default Antigravity research and delivers it, offering escalation after."""
         status = await self._safe_send(thread=thread, content="-# Researching... (Antigravity)")
-        try:
-            interaction_id = await start_antigravity(
-                client=self.interactions_client,
-                agent=agent,
-                brief=brief,
-                system_instruction=self._system_instruction(),
-            )
+        streamer = ResearchProgressStreamer(status=status, label="Antigravity")
+
+        async def _persist(interaction_id: str) -> None:
             await db.set_interaction(
                 thread_id=thread.id,
                 interaction_id=interaction_id,
                 agent=agent,
                 phase="researching",
             )
-            result = await resume_research(
+
+        try:
+            result = await stream_antigravity(
                 client=self.interactions_client,
-                interaction_id=interaction_id,
-                on_progress=self._progress_editor(status=status, label="Antigravity"),
+                agent=agent,
+                brief=brief,
+                system_instruction=self._system_instruction(),
+                streamer=streamer,
+                on_created=_persist,
             )
             await self._finish(
                 thread=thread,
@@ -361,27 +363,27 @@ class ResearchCogs(commands.Cog):
     async def _run_deep_research(
         self, *, thread: "Thread", owner_mention: str, agent: str, previous_interaction_id: str
     ) -> None:
-        """Approves a planned interaction and runs the full Deep Research report."""
-        status = await self._safe_send(
-            thread=thread, content=f"-# Researching... ({_tier_label(agent=agent)})"
-        )
-        try:
-            interaction_id = await start_deep_research(
-                client=self.interactions_client,
-                agent=agent,
-                previous_interaction_id=previous_interaction_id,
-                system_instruction=self._system_instruction(),
-            )
+        """Approves a planned interaction and streams the full Deep Research report."""
+        label = _tier_label(agent=agent)
+        status = await self._safe_send(thread=thread, content=f"-# Researching... ({label})")
+        streamer = ResearchProgressStreamer(status=status, label=label)
+
+        async def _persist(interaction_id: str) -> None:
             await db.set_interaction(
                 thread_id=thread.id,
                 interaction_id=interaction_id,
                 agent=agent,
                 phase="researching",
             )
-            result = await resume_research(
+
+        try:
+            result = await stream_deep_research(
                 client=self.interactions_client,
-                interaction_id=interaction_id,
-                on_progress=self._progress_editor(status=status, label=_tier_label(agent=agent)),
+                agent=agent,
+                previous_interaction_id=previous_interaction_id,
+                system_instruction=self._system_instruction(),
+                streamer=streamer,
+                on_created=_persist,
             )
             await self._finish(
                 thread=thread,
@@ -539,12 +541,16 @@ class ResearchCogs(commands.Cog):
         if session is None:
             return
         status = await self._safe_send(thread=thread, content="-# Planning... (Deep Research)")
+        streamer = ResearchProgressStreamer(
+            status=status, label=_tier_label(agent=agent), action="Planning"
+        )
         try:
-            plan = await start_plan(
+            plan = await stream_plan(
                 client=self.interactions_client,
                 agent=agent,
                 brief=session.brief,
                 system_instruction=self._system_instruction(),
+                streamer=streamer,
             )
             if await self._fail_incomplete_plan(
                 thread=thread,
@@ -776,13 +782,17 @@ class ResearchCogs(commands.Cog):
     ) -> None:
         """Refines the plan with the owner's feedback and reposts it."""
         status = await self._safe_send(thread=thread, content="-# Re-planning...")
+        streamer = ResearchProgressStreamer(
+            status=status, label=_tier_label(agent=agent), action="Re-planning"
+        )
         try:
-            plan = await refine_plan(
+            plan = await stream_refine(
                 client=self.interactions_client,
                 agent=agent,
                 previous_interaction_id=previous_interaction_id,
                 feedback=feedback,
                 system_instruction=self._system_instruction(),
+                streamer=streamer,
             )
             current = await db.get_session(thread_id=thread.id)
             if current is None or current.phase != "planning":
@@ -864,11 +874,20 @@ class ResearchCogs(commands.Cog):
             self._active_threads.discard(session.thread_id)
             await self._notify_resume_failed(thread=thread, owner_id=session.owner_id)
             return
+        # Give the resumed run the same live reasoning view as a fresh one; a fetch miss leaves
+        # status None so the streamer's editor no-ops but still drives the stream to a result.
+        label = _tier_label(agent=session.agent)
+        status = (
+            await self._safe_send(thread=thread, content=f"-# Researching... ({label})")
+            if thread is not None
+            else None
+        )
+        streamer = ResearchProgressStreamer(status=status, label=label)
         try:
-            result = await resume_research(
+            result = await resume_research_stream(
                 client=self.interactions_client,
                 interaction_id=session.interaction_id,
-                on_progress=None,
+                streamer=streamer,
             )
         except Exception:
             logfire.warn("research resume failed", thread_id=session.thread_id, _exc_info=True)
@@ -887,7 +906,7 @@ class ResearchCogs(commands.Cog):
             owner_mention=owner_mention,
             result=result,
             agent=session.agent,
-            status=None,
+            status=status,
             offer_escalation="deep-research" not in session.agent,
         )
 
@@ -913,26 +932,6 @@ class ResearchCogs(commands.Cog):
         return fetched
 
     # ----- helpers ------------------------------------------------------------------------
-
-    def _progress_editor(
-        self, *, status: Message | None, label: str
-    ) -> "Callable[[str | None, float], Awaitable[None]]":
-        """Builds an on-progress callback that edits the status message with elapsed time."""
-
-        async def _on_progress(thought: str | None, elapsed: float) -> None:
-            if status is None:
-                return
-            mins, secs = divmod(int(elapsed), 60)
-            line = f"-# Researching... ({label}, {mins}m{secs:02d}s)"
-            if thought:
-                summary = next((ln.strip() for ln in thought.splitlines() if ln.strip()), "")
-                if summary:
-                    line = f"{line}\n-# {summary[:180]}"
-            # The thought summary is agent text and may quote a mention; never let it ping.
-            with contextlib.suppress(Exception):
-                await status.edit(content=line, allowed_mentions=AllowedMentions.none())
-
-        return _on_progress
 
     async def _safe_send(
         self,

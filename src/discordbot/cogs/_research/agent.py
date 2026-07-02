@@ -5,26 +5,32 @@ and `deep-research-max-preview-04-2026` escalation) run through one injected
 `genai.Client` that talks DIRECT to Google (`gemini_api_key`, no proxy). The proxy is
 bypassed on purpose: it drops `agent_config` in its interactions->responses transform, so
 `collaborative_planning` only works direct (verified 2026-06-20). Every call uses
-`background=True` + `store=True` and is polled to a terminal status via `interactions.get`.
+`background=True` + `store=True` + `stream=True`, so the agent's reasoning streams live to
+the thread (`_StreamDriver` + `ResearchProgressStreamer`) while it works.
 
-Call shapes share the poll + extract helpers:
-- `start_antigravity`: starts the default one-shot agent in a remote sandbox environment.
-- `start_plan` / `refine_plan`: Deep Research collaborative planning (returns a plan, not a report).
-- `start_deep_research`: approves the planned interaction and starts the full research.
-- `resume_research`: polls an already-started interaction to its terminal result.
+Call shapes share `_StreamDriver` / `_drive` (SSE consume + reconnect + terminal extract):
+- `stream_antigravity`: streams the default one-shot agent in a remote sandbox environment.
+- `stream_plan` / `stream_refine`: Deep Research collaborative planning (returns a plan, not a report).
+- `stream_deep_research`: approves the planned interaction and streams the full research.
+- `resume_research_stream`: re-attaches a live stream to an already-running interaction (restart resume).
 
-These functions can raise (network errors, `TimeoutError` on the poll bound); the cog wraps
-each call and maps failure to a friendly thread message.
+Robustness: the SDK can close a long-lived streaming request mid-run while the agent keeps
+working server-side, so `_StreamDriver` re-attaches via `interactions.get(stream=True,
+last_event_id=...)`. The final result is ALWAYS read through `_poll_until_terminal` (a terminal
+non-stream `interactions.get(id)` with retry-on-error): the streamed deltas are the live view
+only, `interaction.completed` carries no report body on purpose, and the poll both settles a run
+whose stream died and waits out any brief `in_progress` visibility lag, then `_to_result` maps it.
+These functions can raise (network errors, `TimeoutError`); the cog maps failure to a friendly message.
 """
 
 import time
 import base64
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 import asyncio
 
 from google import genai
 import logfire
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from google.genai._interactions.types import EnvironmentParam, DeepResearchAgentConfigParam
 from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
 from google.genai._interactions.types.environment_param import (
@@ -33,7 +39,11 @@ from google.genai._interactions.types.environment_param import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Awaitable
+    from collections.abc import Callable, Awaitable, AsyncIterator
+
+    from google.genai._interactions.types import InteractionSSEEvent
+
+    from discordbot.cogs._research.streaming import ResearchProgressStreamer
 
 # Built-in tools enabled for every research run: web grounding + URL reading. Passed explicitly
 # (not left to the agent default) so search/url grounding is guaranteed. Code execution is left
@@ -44,10 +54,8 @@ RESEARCH_TOOLS = [
     GoogleSearch(type="google_search", search_types=["web_search"]),
 ]
 
-# Polls the running interaction; research is minutes-long so a coarse interval is plenty.
+# The poll-fallback interval + the re-attach backoff; research is minutes-long so coarse is plenty.
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
-# The collaborative-planning call returns a short plan fast (~16s observed), so poll tighter.
-PLAN_POLL_INTERVAL_SECONDS = 5.0
 # A transient get() error mid-research (e.g. a server 504 gateway timeout) is retried, not fatal;
 # only this many CONSECUTIVE failures give up. There is no wall-clock timeout: the Gemini SDK
 # bounds each request and the agent settles server-side (Deep Research caps at 60 min).
@@ -101,11 +109,6 @@ def _deep_research_agent_config(*, collaborative_planning: bool) -> DeepResearch
         visualization="auto",
         collaborative_planning=collaborative_planning,
     )
-
-
-def _created_id(created: object) -> str:
-    """Returns a freshly created interaction's id, narrowing past the create() union return."""
-    return str(getattr(created, "id", ""))
 
 
 def _latest_thought(*, interaction: object) -> str | None:
@@ -203,118 +206,308 @@ async def _poll_until_terminal(
         await asyncio.sleep(poll_interval_seconds)
 
 
-async def start_antigravity(
-    *, client: genai.Client, agent: str, brief: str, system_instruction: str
-) -> str:
-    """Creates a background Antigravity research interaction and returns its id.
+# The SDK can close a create/get(stream=True) SSE request mid-run (each request is bounded) while
+# the agent keeps working server-side; `_StreamDriver` re-attaches via get(stream=True). This caps
+# CONSECUTIVE re-attaches that make no progress so a truly dead stream gives up (mirrors
+# MAX_CONSECUTIVE_POLL_ERRORS), while a healthy long run that just needs periodic re-attach never trips.
+MAX_STREAM_RECONNECTS = 20
 
-    Split from the poll so the cog can persist the interaction id (for restart resume)
-    before the minutes-long poll begins.
+# Called with the interaction id the moment `interaction.created` arrives (the stream's first event),
+# so the cog persists the id BEFORE the minutes-long run, exactly as the old create-then-store split did.
+type CreatedCallback = Callable[[str], Awaitable[None]]
+
+
+async def _noop_created(_interaction_id: str) -> None:
+    """A `CreatedCallback` that persists nothing (resume/plan do not re-store the id)."""
+    return
+
+
+def _is_terminal_event(*, event: "InteractionSSEEvent") -> bool:
+    """Whether an SSE event marks the interaction as settled (so the driver stops re-attaching).
+
+    `interaction.completed` and `error` are terminal; a `status_update` is terminal once it leaves
+    the two non-final states. Any other status (`failed` / `cancelled` / `budget_exceeded` /
+    `incomplete`) is a real terminal outcome the terminal `get(id)` then maps to a friendly result.
     """
+    if event.event_type in ("interaction.completed", "error"):
+        return True
+    if event.event_type == "interaction.status_update":
+        return event.status not in ("in_progress", "requires_action")
+    return False
+
+
+class _StreamDriver(BaseModel):
+    """Drives one research interaction's SSE stream with reconnect + id capture.
+
+    Yields every event to the `ResearchProgressStreamer` (for the live view) while capturing the
+    interaction id on `interaction.created` (persisted via `on_created` before the long wait) and
+    the resume token on every event. When the SDK closes the long-lived request without a terminal
+    event, it re-attaches via `get(stream=True, last_event_id=...)` so the run continues seamlessly.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    client: SkipValidation[genai.Client] = Field(
+        ..., description="Direct-to-Google Gemini client the stream is opened on."
+    )
+    interaction_id: str = Field(
+        default="", description="Captured on interaction.created; empty until the first event."
+    )
+    last_event_id: str | None = Field(
+        default=None, description="Resume token of the last received event for a re-attach."
+    )
+
+    async def _reopen(self) -> "AsyncIterator[InteractionSSEEvent]":
+        """Re-attaches a live stream to the running interaction from the last resume token."""
+        responses = await self.client.aio.interactions.get(
+            id=self.interaction_id, stream=True, last_event_id=self.last_event_id
+        )
+        return cast("AsyncIterator[InteractionSSEEvent]", responses)
+
+    async def events(
+        self,
+        *,
+        open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
+        on_created: "CreatedCallback",
+    ) -> "AsyncIterator[InteractionSSEEvent]":
+        """Yields events across reconnects until the interaction reaches a terminal event."""
+        stream = await open_initial()
+        empty_reconnects = 0
+        while True:
+            terminal = False
+            progressed = False
+            try:
+                async for event in stream:
+                    progressed = True
+                    if event.event_id:
+                        self.last_event_id = event.event_id
+                    if event.event_type == "interaction.created" and not self.interaction_id:
+                        self.interaction_id = str(event.interaction.id or "")
+                        await on_created(self.interaction_id)
+                    if _is_terminal_event(event=event):
+                        terminal = True
+                    yield event
+            except Exception:
+                logfire.warn(
+                    "research stream dropped; will reconnect",
+                    interaction_id=self.interaction_id,
+                    _exc_info=True,
+                )
+            if terminal:
+                return
+            if not self.interaction_id:
+                # The first stream ended before `interaction.created`: the create itself failed, so
+                # there is no id to re-attach to. Surface it to the caller's fallback / cog failure.
+                raise RuntimeError("research stream ended before interaction.created")
+            empty_reconnects = 0 if progressed else empty_reconnects + 1
+            if empty_reconnects > MAX_STREAM_RECONNECTS:
+                raise RuntimeError("research stream reconnect gave up")
+            await asyncio.sleep(RESEARCH_POLL_INTERVAL_SECONDS)
+            stream = await self._reopen()
+
+
+async def _drive(
+    *,
+    client: genai.Client,
+    driver: _StreamDriver,
+    streamer: "ResearchProgressStreamer",
+    open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
+    on_created: "CreatedCallback",
+) -> object:
+    """Runs the streamer over the driver's events, then returns the authoritative terminal interaction.
+
+    The streamed deltas are the live view only; the result is ALWAYS read through
+    `_poll_until_terminal` (a terminal non-stream `get(id)`) because `interaction.completed` carries
+    an empty payload on purpose, so the existing `_to_result` extraction is reused unchanged. Routing
+    the terminal read through the poll (not a single `get`) gives it the poll's retry-on-error and
+    waits out any brief `in_progress` visibility lag, so a completed run is never misread as failed;
+    it also transparently finishes a run whose stream died mid-way (the interaction lives server-side
+    via `store=True`). A streaming failure BEFORE any id (the create itself failed) re-raises so the
+    cog hits its normal failure path; once an id exists, streaming errors are swallowed and the poll
+    settles the run.
+    """
+    try:
+        await streamer.stream(
+            events=driver.events(open_initial=open_initial, on_created=on_created)
+        )
+    except Exception:
+        if not driver.interaction_id:
+            raise
+        logfire.warn(
+            "research stream failed; polling for the terminal result",
+            interaction_id=driver.interaction_id,
+            _exc_info=True,
+        )
+    return await _poll_until_terminal(
+        client=client,
+        interaction_id=driver.interaction_id,
+        on_progress=None,
+        poll_interval_seconds=RESEARCH_POLL_INTERVAL_SECONDS,
+    )
+
+
+def _plan_from_interaction(*, interaction: object, fallback_id: str) -> ResearchPlan:
+    """Maps a terminal planning interaction to a `ResearchPlan` (id falls back to the captured one)."""
+    return ResearchPlan(
+        interaction_id=str(getattr(interaction, "id", "") or fallback_id),
+        plan_text=(getattr(interaction, "output_text", "") or ""),
+        status=str(getattr(interaction, "status", "failed")),
+    )
+
+
+async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs plus the streamer + id callback
+    *,
+    client: genai.Client,
+    agent: str,
+    brief: str,
+    system_instruction: str,
+    streamer: "ResearchProgressStreamer",
+    on_created: "CreatedCallback",
+) -> ResearchResult:
+    """Streams the default Antigravity research (reasoning live); returns the terminal result."""
     environment = EnvironmentParam(
         type="remote", network=NetworkAllowlist(allowlist=[NetworkAllowlistAllowlist(domain="*")])
     )
-    interaction = await client.aio.interactions.create(
-        agent=agent,
-        input=brief,
-        system_instruction=system_instruction,
-        environment=environment,
-        tools=RESEARCH_TOOLS,
-        background=True,
-        store=True,
+    driver = _StreamDriver(client=client)
+
+    async def _open() -> "AsyncIterator[InteractionSSEEvent]":
+        responses = await client.aio.interactions.create(
+            agent=agent,
+            input=brief,
+            system_instruction=system_instruction,
+            environment=environment,
+            tools=RESEARCH_TOOLS,
+            background=True,
+            store=True,
+            stream=True,
+        )
+        return cast("AsyncIterator[InteractionSSEEvent]", responses)
+
+    logfire.info("research antigravity streaming", agent=agent)
+    interaction = await _drive(
+        client=client, driver=driver, streamer=streamer, open_initial=_open, on_created=on_created
     )
-    interaction_id = _created_id(created=interaction)
-    logfire.info("research antigravity started", interaction_id=interaction_id, agent=agent)
-    return interaction_id
+    return _to_result(interaction=interaction)
 
 
-async def start_plan(
-    *, client: genai.Client, agent: str, brief: str, system_instruction: str
+async def stream_plan(
+    *,
+    client: genai.Client,
+    agent: str,
+    brief: str,
+    system_instruction: str,
+    streamer: "ResearchProgressStreamer",
 ) -> ResearchPlan:
-    """Asks Deep Research for a proposed research plan (collaborative planning)."""
-    interaction = await client.aio.interactions.create(
-        agent=agent,
-        input=brief,
-        system_instruction=system_instruction,
-        agent_config=_deep_research_agent_config(collaborative_planning=True),
-        tools=RESEARCH_TOOLS,
-        background=True,
-        store=True,
-    )
-    interaction_id = _created_id(created=interaction)
-    final = await _poll_until_terminal(
+    """Streams a Deep Research collaborative-planning turn (reasoning live); returns the plan."""
+    driver = _StreamDriver(client=client)
+
+    async def _open() -> "AsyncIterator[InteractionSSEEvent]":
+        responses = await client.aio.interactions.create(
+            agent=agent,
+            input=brief,
+            system_instruction=system_instruction,
+            agent_config=_deep_research_agent_config(collaborative_planning=True),
+            tools=RESEARCH_TOOLS,
+            background=True,
+            store=True,
+            stream=True,
+        )
+        return cast("AsyncIterator[InteractionSSEEvent]", responses)
+
+    interaction = await _drive(
         client=client,
-        interaction_id=interaction_id,
-        on_progress=None,
-        poll_interval_seconds=PLAN_POLL_INTERVAL_SECONDS,
+        driver=driver,
+        streamer=streamer,
+        open_initial=_open,
+        on_created=_noop_created,
     )
-    return ResearchPlan(
-        interaction_id=str(getattr(final, "id", interaction_id)),
-        plan_text=(getattr(final, "output_text", "") or ""),
-        status=str(getattr(final, "status", "failed")),
-    )
+    return _plan_from_interaction(interaction=interaction, fallback_id=driver.interaction_id)
 
 
-async def refine_plan(
+async def stream_refine(  # noqa: PLR0913 -- the streaming refine inputs plus the streamer
     *,
     client: genai.Client,
     agent: str,
     previous_interaction_id: str,
     feedback: str,
     system_instruction: str,
+    streamer: "ResearchProgressStreamer",
 ) -> ResearchPlan:
-    """Refines a prior plan with the owner's feedback, staying in planning mode."""
-    interaction = await client.aio.interactions.create(
-        agent=agent,
-        input=feedback,
-        previous_interaction_id=previous_interaction_id,
-        system_instruction=system_instruction,
-        agent_config=_deep_research_agent_config(collaborative_planning=True),
-        tools=RESEARCH_TOOLS,
-        background=True,
-        store=True,
-    )
-    interaction_id = _created_id(created=interaction)
-    final = await _poll_until_terminal(
+    """Streams a plan refinement with the owner's feedback (reasoning live); returns the plan."""
+    driver = _StreamDriver(client=client)
+
+    async def _open() -> "AsyncIterator[InteractionSSEEvent]":
+        responses = await client.aio.interactions.create(
+            agent=agent,
+            input=feedback,
+            previous_interaction_id=previous_interaction_id,
+            system_instruction=system_instruction,
+            agent_config=_deep_research_agent_config(collaborative_planning=True),
+            tools=RESEARCH_TOOLS,
+            background=True,
+            store=True,
+            stream=True,
+        )
+        return cast("AsyncIterator[InteractionSSEEvent]", responses)
+
+    interaction = await _drive(
         client=client,
-        interaction_id=interaction_id,
-        on_progress=None,
-        poll_interval_seconds=PLAN_POLL_INTERVAL_SECONDS,
+        driver=driver,
+        streamer=streamer,
+        open_initial=_open,
+        on_created=_noop_created,
     )
-    return ResearchPlan(
-        interaction_id=str(getattr(final, "id", interaction_id)),
-        plan_text=(getattr(final, "output_text", "") or ""),
-        status=str(getattr(final, "status", "failed")),
-    )
+    return _plan_from_interaction(interaction=interaction, fallback_id=driver.interaction_id)
 
 
-async def start_deep_research(
-    *, client: genai.Client, agent: str, previous_interaction_id: str, system_instruction: str
-) -> str:
-    """Approves a planned interaction and starts the full Deep Research run; returns its id."""
-    interaction = await client.aio.interactions.create(
-        agent=agent,
-        input="The plan looks good, please proceed with the research.",
-        previous_interaction_id=previous_interaction_id,
-        system_instruction=system_instruction,
-        agent_config=_deep_research_agent_config(collaborative_planning=False),
-        tools=RESEARCH_TOOLS,
-        background=True,
-        store=True,
-    )
-    interaction_id = _created_id(created=interaction)
-    logfire.info("research deep-research started", interaction_id=interaction_id, agent=agent)
-    return interaction_id
-
-
-async def resume_research(
-    *, client: genai.Client, interaction_id: str, on_progress: "ProgressCallback | None"
+async def stream_deep_research(  # noqa: PLR0913 -- the streaming create inputs plus the streamer + id callback
+    *,
+    client: genai.Client,
+    agent: str,
+    previous_interaction_id: str,
+    system_instruction: str,
+    streamer: "ResearchProgressStreamer",
+    on_created: "CreatedCallback",
 ) -> ResearchResult:
-    """Re-enters the poll loop for an already-running interaction (restart resume)."""
-    final = await _poll_until_terminal(
-        client=client,
-        interaction_id=interaction_id,
-        on_progress=on_progress,
-        poll_interval_seconds=RESEARCH_POLL_INTERVAL_SECONDS,
+    """Approves a planned interaction and streams the full Deep Research run; returns the result."""
+    driver = _StreamDriver(client=client)
+
+    async def _open() -> "AsyncIterator[InteractionSSEEvent]":
+        responses = await client.aio.interactions.create(
+            agent=agent,
+            input="The plan looks good, please proceed with the research.",
+            previous_interaction_id=previous_interaction_id,
+            system_instruction=system_instruction,
+            agent_config=_deep_research_agent_config(collaborative_planning=False),
+            tools=RESEARCH_TOOLS,
+            background=True,
+            store=True,
+            stream=True,
+        )
+        return cast("AsyncIterator[InteractionSSEEvent]", responses)
+
+    logfire.info("research deep-research streaming", agent=agent)
+    interaction = await _drive(
+        client=client, driver=driver, streamer=streamer, open_initial=_open, on_created=on_created
     )
-    return _to_result(interaction=final)
+    return _to_result(interaction=interaction)
+
+
+async def resume_research_stream(
+    *, client: genai.Client, interaction_id: str, streamer: "ResearchProgressStreamer"
+) -> ResearchResult:
+    """Re-attaches a live stream to an already-running research (restart resume); returns the result."""
+    driver = _StreamDriver(client=client, interaction_id=interaction_id)
+
+    async def _open() -> "AsyncIterator[InteractionSSEEvent]":
+        responses = await client.aio.interactions.get(id=interaction_id, stream=True)
+        return cast("AsyncIterator[InteractionSSEEvent]", responses)
+
+    interaction = await _drive(
+        client=client,
+        driver=driver,
+        streamer=streamer,
+        open_initial=_open,
+        on_created=_noop_created,
+    )
+    return _to_result(interaction=interaction)
