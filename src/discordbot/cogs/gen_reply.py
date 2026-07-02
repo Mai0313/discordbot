@@ -35,6 +35,7 @@ from discordbot.typings.models import (
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.cogs._memory.store import (
+    read_tone,
     user_scope,
     iter_scopes,
     server_scope,
@@ -77,8 +78,13 @@ from discordbot.cogs._gen_reply.prompts import (
     INLINE_IMAGE_INSTRUCTION,
     DEEP_RESEARCH_INSTRUCTION,
     REQUEST_TIME_CONTEXT_PROMPT,
+    REQUEST_LOCATION_CONTEXT_PROMPT,
 )
-from discordbot.cogs._memory.extraction import MemoryExtractorAI, target_centered_memory_messages
+from discordbot.cogs._memory.extraction import (
+    MemoryExtractorAI,
+    subject_source_line,
+    target_centered_memory_messages,
+)
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
@@ -93,10 +99,14 @@ from discordbot.cogs._gen_reply.memory_tool import (
     GET_USER_MEMORY_TOOL,
     UserMemory,
     MemorySelection,
+    MemoryReadContext,
+    render_tone_block,
     parse_user_id_list,
+    memory_read_context,
     memory_lookup_labels,
     resolve_user_memories,
     build_memory_allowlist,
+    filter_memory_for_context,
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
@@ -200,12 +210,27 @@ def _source_channel_is_public(message: Message) -> bool:
 
 
 def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
-    """Prepends per-request time context to the model instructions."""
+    """Prepends per-request time and conversation-location context to the model instructions.
+
+    The location line names the current guild (or DM) with developer authority so the
+    model can reason about where it is speaking; the memory rules lean on it as the
+    anchor for never attributing a remembered fact to another server.
+    """
     message_created_at_asia_taipei = message.created_at.astimezone(tz=TAIWAN_TIMEZONE)
     request_time_context = REQUEST_TIME_CONTEXT_PROMPT.format(
         message_created_at_asia_taipei=message_created_at_asia_taipei.isoformat(timespec="seconds")
     ).strip()
-    return f"{request_time_context}\n\n{system_prompt}"
+    if message.guild is not None:
+        # Same single-line neutralization as user identities: a guild name is
+        # owner-controlled text and must not fake context markers.
+        guild_name = " ".join(sanitize_identity(value=message.guild.name).split())
+        conversation_location = f'the Discord server "{guild_name}" (guild {message.guild.id})'
+    else:
+        conversation_location = "a Discord direct message (DM)"
+    request_location_context = REQUEST_LOCATION_CONTEXT_PROMPT.format(
+        conversation_location=conversation_location
+    ).strip()
+    return f"{request_time_context}\n\n{request_location_context}\n\n{system_prompt}"
 
 
 def _youtube_url_in_message(message: Message) -> str | None:
@@ -838,9 +863,10 @@ class ReplyGeneratorCogs(commands.Cog):
         persona-base message is built from it INSIDE the protected flow (`_persona_base_reply`), so a
         base-creation or streaming failure is swallowed here instead of surfacing to the outer error
         path, and a fresh hosted-case base that never received content is deleted (never an orphan).
-        Builds the answer-path input (history, selected user memory, reference, current), appends the
-        just-made media as the focus, and streams onto the base (its content edits keep an attached
-        media). Injects only the selected user memory, never the server memory block, and seeds the
+        Builds the answer-path input (history, selected user memory, tone note, reference, current),
+        appends the just-made media as the focus, and streams onto the base (its content edits keep an
+        attached media). Injects only the selected user memory (already source-filtered) plus the
+        author's tone note, never the server memory block, and seeds the
         selection-call usage / memory labels so the footer matches the QA path. Consumes the
         speculative `context_task` (awaited here so its build overlaps generation); any failure
         leaves the delivered media untouched.
@@ -850,11 +876,13 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             context = await context_task
             base = await self._persona_base_reply(message=message, reply=reply)
-            # Mirror the answer path's order (history, memory, reference, current), injecting
-            # only the selected user memory, never the server memory block.
+            # Mirror the answer path's order (history, memory, tone, reference, current),
+            # injecting only the selected user memory (already source-filtered) and the
+            # author's tone note, never the server memory block.
             response_input: ResponseInputParam = [*context.hist_messages]
-            if context.memory_block is not None:
-                response_input.append(context.memory_block)
+            response_input.extend(
+                block for block in (context.memory_block, context.tone_block) if block is not None
+            )
             response_input.extend(context.reference_messages)
             response_input.extend(context.current_message)
             # The generated media is the focus, appended last right after the request it answers.
@@ -1195,6 +1223,7 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         message_list: list[EasyInputMessageParam],
         allowed: dict[int, str],
+        read_context: MemoryReadContext,
         server_memory_block: EasyInputMessageParam | None = None,
     ) -> MemorySelection:
         """Phase 1 of a reply: lets the model choose whose long-term memory to read.
@@ -1235,7 +1264,9 @@ class ReplyGeneratorCogs(commands.Cog):
             if item.name != "get_user_memory":
                 continue
             for memory in resolve_user_memories(
-                user_id_list=parse_user_id_list(arguments=item.arguments), allowed=allowed
+                user_id_list=parse_user_id_list(arguments=item.arguments),
+                allowed=allowed,
+                context=read_context,
             ):
                 if memory.user_id not in seen:
                     seen.add(memory.user_id)
@@ -1259,7 +1290,7 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     def _participant_memory_fallback(
-        self, *, message: Message, allowed: dict[int, str]
+        self, *, message: Message, allowed: dict[int, str], read_context: MemoryReadContext
     ) -> tuple[EasyInputMessageParam | None, list[str]]:
         """Builds the fallback memory block from the author plus any reply-reference authors.
 
@@ -1287,6 +1318,12 @@ class ReplyGeneratorCogs(commands.Cog):
                 continue
             seen.add(user_id)
             participant_memory = read_main_memory(scope=user_scope(user_id=user_id))
+            if participant_memory:
+                # Same per-bullet source scoping as the selection path: the fallback
+                # must never leak what a deliberate lookup would have filtered.
+                participant_memory = filter_memory_for_context(
+                    memory=participant_memory, owner_id=user_id, context=read_context
+                )
             if not participant_memory:
                 continue
             memories.append(
@@ -1339,7 +1376,7 @@ class ReplyGeneratorCogs(commands.Cog):
             ),
         )
 
-    async def _prepare_reply_context(  # noqa: PLR0913 -- speculative prep needs the turn payload plus the route-done signal
+    async def _prepare_reply_context(  # noqa: PLR0913, PLR0915 -- speculative prep needs the turn payload plus the route-done signal, and builds history/memory/tone/selection in sequence
         self,
         message: Message,
         history_limit: int,
@@ -1376,6 +1413,17 @@ class ReplyGeneratorCogs(commands.Cog):
         server_memory_block = (
             render_server_memory_block(memory=server_memory) if server_memory else None
         )
+
+        # Where this reply is happening, for per-bullet source scoping of every user
+        # memory read (selection resolution and the participant fallback alike).
+        read_context = memory_read_context(message=message)
+
+        # The message author's tone-preference note is read directly for that one author
+        # (their own preference for how the bot should sound, cross-server safe by
+        # construction) and injected on every reply with no selection phase — even on the
+        # SUMMARY route, which skips user memory. One file read, no extra LLM call.
+        author_tone = read_tone(scope=user_scope(user_id=message.author.id))
+        tone_block = render_tone_block(tone=author_tone) if author_tone else None
 
         # Memory retrieval is two-phase: phase 1 lets the model pick whose long-term memory to
         # read via get_user_memory (no built-in tools), and phase 2 streams the answer with the
@@ -1432,6 +1480,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         message=message,
                         message_list=selection_message_list,
                         allowed=allowed,
+                        read_context=read_context,
                         server_memory_block=server_memory_block,
                     )
                 )
@@ -1474,7 +1523,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         message_id=message.id,
                     )
                     memory_block, memory_labels = self._participant_memory_fallback(
-                        message=message, allowed=allowed
+                        message=message, allowed=allowed, read_context=read_context
                     )
                 except Exception:
                     logfire.warn(
@@ -1483,7 +1532,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         _exc_info=True,
                     )
                     memory_block, memory_labels = self._participant_memory_fallback(
-                        message=message, allowed=allowed
+                        message=message, allowed=allowed, read_context=read_context
                     )
                 else:
                     selection_input_tokens = selection.input_tokens
@@ -1514,6 +1563,7 @@ class ReplyGeneratorCogs(commands.Cog):
             current_message=current_message,
             server_memory_block=server_memory_block,
             memory_block=memory_block,
+            tone_block=tone_block,
             memory_labels=memory_labels,
             selection_input_tokens=selection_input_tokens,
             selection_output_tokens=selection_output_tokens,
@@ -1575,7 +1625,7 @@ class ReplyGeneratorCogs(commands.Cog):
         answer_input: ResponseInputParam = [*context.hist_messages]
         answer_input.extend(
             block
-            for block in (context.server_memory_block, context.memory_block)
+            for block in (context.server_memory_block, context.memory_block, context.tone_block)
             if block is not None
         )
         answer_input.extend(context.reference_messages)
@@ -1660,9 +1710,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 current_message=context.current_message,
                 target_user_id=message.author.id,
             )
+            # The second subject line names where this conversation happened (guild id
+            # or DM); it survives the memory_job round-trip so the pipeline can stamp
+            # each observation's source deterministically.
+            source_line = subject_source_line(guild_id=message.guild.id if message.guild else None)
             schedule_memory_update(
                 scope=user_scope(user_id=message.author.id),
-                subject=f"target_user_id: {message.author.id}",
+                subject=f"target_user_id: {message.author.id}\n{source_line}",
                 message_list=memory_message_list,
                 full_reply=full_reply,
                 extractor=self.memory_extractor,

@@ -65,7 +65,6 @@ nav:
                   - memory_tool: Reference/discordbot/cogs/_gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
                   - streaming: Reference/discordbot/cogs/_gen_reply/streaming.md
-                  - voice: Reference/discordbot/cogs/_gen_reply/voice.md
               - _help:
                   - content: Reference/discordbot/cogs/_help/content.md
                   - presentation: Reference/discordbot/cogs/_help/presentation.md
@@ -78,6 +77,7 @@ nav:
                   - views: Reference/discordbot/cogs/_maplestory/views.md
               - _memory:
                   - constants: Reference/discordbot/cogs/_memory/constants.md
+                  - database: Reference/discordbot/cogs/_memory/database.md
                   - extraction: Reference/discordbot/cogs/_memory/extraction.md
                   - pipeline: Reference/discordbot/cogs/_memory/pipeline.md
                   - prompts: Reference/discordbot/cogs/_memory/prompts.md
@@ -91,6 +91,7 @@ nav:
                   - database: Reference/discordbot/cogs/_research/database.md
                   - delivery: Reference/discordbot/cogs/_research/delivery.md
                   - prompts: Reference/discordbot/cogs/_research/prompts.md
+                  - streaming: Reference/discordbot/cogs/_research/streaming.md
                   - views: Reference/discordbot/cogs/_research/views.md
               - _stock:
                   - chart: Reference/discordbot/cogs/_stock/chart.md
@@ -107,6 +108,7 @@ nav:
               - help: Reference/discordbot/cogs/help.md
               - log_msg: Reference/discordbot/cogs/log_msg.md
               - maplestory: Reference/discordbot/cogs/maplestory.md
+              - media_cleanup: Reference/discordbot/cogs/media_cleanup.md
               - memory: Reference/discordbot/cogs/memory.md
               - parse_threads: Reference/discordbot/cogs/parse_threads.md
               - research: Reference/discordbot/cogs/research.md
@@ -131,6 +133,7 @@ nav:
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
               - llm: Reference/discordbot/utils/llm.md
+              - media_delivery: Reference/discordbot/utils/media_delivery.md
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
               - number_text: Reference/discordbot/utils/number_text.md
@@ -149,11 +152,13 @@ nav:
       - batch_dev: Scripts/batch_dev.md
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
+      - migrate_memory_privacy: Scripts/migrate_memory_privacy.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
       - regen_memories: Scripts/regen_memories.md
       - route_dev: Scripts/route_dev.md
       - test_fallback: Scripts/test_fallback.md
+      - trading: Scripts/trading.md
       - video_dev: Scripts/video_dev.md
       - voice_dev: Scripts/voice_dev.md
   # <<< auto-generated nav end

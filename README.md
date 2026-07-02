@@ -23,7 +23,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 
 ## Features
 
-- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos (optionally guided by attached images or a referenced video), continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background, manageable with `/memory show`, `/memory clear`, and `/memory regenerate`.
+- **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos (optionally guided by attached images or a referenced video), continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background — privacy-scoped by source, so something told in one server never surfaces in another (only your tone preferences and clearly harmless general facts carry over) — manageable with `/memory show` and `/memory regenerate`.
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites, with automatic low-quality retry for large files.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
@@ -57,7 +57,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | Search MapleStory Artale monsters, equipment, and scrolls.                                                             |
 | `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | Search NPCs, quests, and maps.                                                                                         |
 | `/maplestory item`, `/maplestory stats`                          | Search item drop sources and database stats.                                                                           |
-| `/memory show\|clear\|regenerate`                                | Privately shows, wipes, or rebuilds what the bot remembers about you; regenerate is scheduled in the background.       |
+| `/memory show\|regenerate`                                       | Privately shows or rebuilds what the bot remembers about you; regenerate is scheduled in the background.               |
 | `/help`                                                          | Shows the in-Discord guide.                                                                                            |
 | `/ping`                                                          | Checks bot latency.                                                                                                    |
 
@@ -115,7 +115,7 @@ GEMINI_API_KEY=your_google_ai_studio_key
 
 For local central-bank approval testing, set `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`. Keep it unset or `false` in production.
 
-Per-user long-term memory is always on; users manage their own memory with `/memory show`, `/memory clear`, and `/memory regenerate`.
+Per-user long-term memory is always on; users manage their own memory with `/memory show` and `/memory regenerate`. Every remembered fact is tagged with where it was learned, and anything private stays confined to that server or DM.
 
 ## Data And Privacy
 
