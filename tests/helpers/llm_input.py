@@ -20,6 +20,7 @@ from collections.abc import Mapping, Iterator, Sequence
 from openai.types.responses import ResponseInputParam
 
 from discordbot.cogs._gen_reply.memory_tool import (
+    render_tone_block,
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
@@ -70,6 +71,7 @@ def _header_line(block: Mapping[str, object]) -> str:
 
 _PARTICIPANT_HEADER = _header_line(block=render_memory_context_block(memories=[]))
 _SERVER_HEADER = _header_line(block=render_server_memory_block(memory=""))
+_TONE_HEADER = _header_line(block=render_tone_block(tone=""))
 _CALLABLE_HEADER = _header_line(block=render_callable_users_block(allowed={}))
 _THREADS_SEPARATOR_HEADS = (
     THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
@@ -126,6 +128,14 @@ def extract_server_memory_block(request: ResponseInputParam | str) -> str | None
     """Returns the server-memory assistant block's text, or None if absent."""
     for role, text in iter_text_blocks(request=request):
         if role == "assistant" and text.split("\n", 1)[0] == _SERVER_HEADER:
+            return text
+    return None
+
+
+def extract_tone_block(request: ResponseInputParam | str) -> str | None:
+    """Returns the tone-note assistant block's text, or None if absent."""
+    for role, text in iter_text_blocks(request=request):
+        if role == "assistant" and text.split("\n", 1)[0] == _TONE_HEADER:
             return text
     return None
 

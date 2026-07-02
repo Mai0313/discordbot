@@ -57,6 +57,12 @@ MAIN_COMPACTION_TARGET_CHARS = 15_000
 # by the consolidation prompt (PHASE2_PROMPT / SERVER_PHASE2_PROMPT).
 STABLE_FRESHNESS_WINDOW_DAYS = 45
 
+# Store-level backstop for the per-user tone note (tone.md). The note is
+# injected on every reply for the message author, so it must stay small;
+# shortness is enforced by the consolidation prompt and this clamp only stops a
+# misbehaving rewrite from growing the always-read tier unbounded.
+TONE_FILE_MAX_BYTES = 4_096
+
 # Tail window of the detail file fed to consolidation as low-trust provenance.
 # Effectively the whole evidence log for any realistic user: this bot injects
 # memory exactly once per reply with no on-demand retrieval (unlike codex), so

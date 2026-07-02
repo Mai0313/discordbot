@@ -10,10 +10,14 @@ main file, ``main.bak.md`` keeps the previous main generation as a manual
 recovery point against a bad consolidation rewrite, and ``detail.md`` is the
 readable cold tier retaining consumed and evicted raw entries verbatim:
 consolidation reads its tail window as provenance and ``/memory show`` can
-page through it, but it is never injected into reply prompts. The live files
-stay tens of KB at most and the detail file is appended in O(1), tail-window
-read, and trimmed back to a hard byte cap, so IO is synchronous; cross-task
-safety comes from the per-scope asyncio locks.
+page through it, but it is never injected into reply prompts. Per-user scopes
+also carry ``tone.md``: a short, persona-independent, cross-server-safe note of
+how that user wants the bot to sound, written by the same phase-2 consolidation
+that rewrites ``main.md`` and injected on every reply for the message author
+(no selection phase), kept short by its prompt rather than a compaction pass.
+The live files stay tens of KB at most and the detail file is appended in O(1),
+tail-window read, and trimmed back to a hard byte cap, so IO is synchronous;
+cross-task safety comes from the per-scope asyncio locks.
 """
 
 import os
@@ -28,6 +32,7 @@ import contextlib
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.cogs._memory.constants import (
     RAW_FILE_MAX_BYTES,
+    TONE_FILE_MAX_BYTES,
     DETAIL_FILE_MAX_BYTES,
     DETAIL_FILE_TRIM_TARGET_BYTES,
 )
@@ -118,6 +123,11 @@ def _detail_path(scope: str) -> Path:
     return _scope_dir(scope=scope) / "detail.md"
 
 
+def _tone_path(scope: str) -> Path:
+    """Returns the per-user tone-preference note path for a scope."""
+    return _scope_dir(scope=scope) / "tone.md"
+
+
 def _read_text(path: Path) -> str:
     """Reads a memory file, treating a missing file as empty."""
     try:
@@ -180,11 +190,44 @@ def write_main_memory(scope: str, content: str, identity: str) -> None:
     os.replace(src=tmp_path, dst=main_path)
 
 
+def read_tone(scope: str) -> str:
+    """Returns the per-user tone-preference note, or "" when there is none.
+
+    Read on every reply for the message author and injected as a low-authority
+    context block, so it is a plain short markdown note with no `v1` header or
+    identity line to strip. Cross-server safe by construction: consolidation
+    writes only persona-independent delivery qualities here, never facts.
+    """
+    return _read_text(path=_tone_path(scope=scope)).strip()
+
+
+def write_tone(scope: str, content: str) -> None:
+    """Atomically replaces the per-user tone-preference note.
+
+    Shortness is enforced by the consolidation prompt, not a compaction pass; the
+    `TONE_FILE_MAX_BYTES` clamp is only a store-level backstop so a misbehaving
+    rewrite cannot grow the always-injected note unbounded. There is no backup
+    generation: the note is best-effort and the next consolidation repairs a bad
+    write.
+    """
+    _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
+    rendered = content.strip()
+    encoded = rendered.encode("utf-8")
+    if len(encoded) > TONE_FILE_MAX_BYTES:
+        rendered = encoded[:TONE_FILE_MAX_BYTES].decode(encoding="utf-8", errors="ignore")
+    tone_path = _tone_path(scope=scope)
+    tmp_path = tone_path.with_suffix(".md.tmp")
+    tmp_path.write_text(data=rendered + "\n", encoding="utf-8")
+    os.replace(src=tmp_path, dst=tone_path)
+
+
 def append_raw_entry(scope: str, entry_text: str) -> None:
     """Appends one timestamped raw entry, archiving the oldest entries on overflow.
 
-    Headers carry only the timestamp: raw entries flow verbatim into the
-    detail file, and author identity must stay confined to the main file.
+    Headers carry only the timestamp. Author identity must stay confined to the
+    main file (raw entries flow verbatim into the detail file); an observation
+    body may carry the code-stamped conversation source (`- source: guild <id>` /
+    `dm`) — that is provenance of where a conversation happened, not identity.
     """
     _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).isoformat(timespec="seconds")
@@ -329,6 +372,7 @@ def clear_memory(scope: str) -> bool:
         _raw_path(scope=scope),
         _bak_path(scope=scope),
         _detail_path(scope=scope),
+        _tone_path(scope=scope),
     ):
         try:
             path.unlink()
@@ -337,11 +381,12 @@ def clear_memory(scope: str) -> bool:
             # Already gone (e.g. offline maintenance); deletion stays idempotent
             # without the exists()-then-unlink() race.
             continue
-    # A crash between a tmp write and os.replace (main rewrite or detail trim)
-    # can leave a tmp file behind; drop them so the directory removal below
-    # does not fail.
+    # A crash between a tmp write and os.replace (main rewrite, detail trim, or
+    # tone rewrite) can leave a tmp file behind; drop them so the directory
+    # removal below does not fail.
     main_path.with_suffix(".md.tmp").unlink(missing_ok=True)
     _detail_path(scope=scope).with_suffix(".md.tmp").unlink(missing_ok=True)
+    _tone_path(scope=scope).with_suffix(".md.tmp").unlink(missing_ok=True)
     # A missing or unexpectedly non-empty directory is left for offline
     # maintenance instead of failing the clear.
     with contextlib.suppress(OSError):

@@ -47,6 +47,7 @@ type MemoryEvidenceKind = Literal[
 ]
 type MemoryConfidence = Literal["low", "medium", "high"]
 type MemoryDurability = Literal["volatile", "session", "recent", "stable", "permanent"]
+type MemorySharing = Literal["global", "source_only"]
 
 # Both phases run on model output that originated in user conversations, so
 # secrets are scrubbed before upload and again on the model output. Patterns
@@ -67,8 +68,23 @@ _SECRET_PATTERNS = (
 )
 
 _AUTHOR_PREFIX_RE = re.compile(r"^[^\n]*?\[id: (?P<user_id>\d+)\]:")
+# Another participant referenced inside an observation's text (an id token or a raw
+# Discord mention). Such an observation is about a relationship or someone else's
+# business, so the sharing gate locks it to its source conversation. The id is captured
+# so the gate can exempt the TARGET's own id (the transcript's author prefix makes it
+# the most likely token to be quoted into evidence, and it names nobody else).
+_OTHER_PERSON_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]|<@!?(?P<mention_id>\d+)>")
+# The target-user id inside a phase-1 subject; None for the server flavor.
+_SUBJECT_TARGET_USER_RE = re.compile(r"^target_user_id:\s*(?P<user_id>\d+)", flags=re.MULTILINE)
+# The optional second subject line naming where the conversation happened. Format and
+# parser are co-located so the writer (`subject_source_line`) and the reader
+# (`parse_subject_source`) cannot drift apart across the memory_job round-trip.
+_SUBJECT_SOURCE_RE = re.compile(r"^source: (?P<source>guild \d+|dm)$", flags=re.MULTILINE)
 _KEY_SAFE_RE = re.compile(r"[^a-z0-9._:-]+")
 _STRUCTURED_KEY_RE = re.compile(r"^\s*-\s*normalized_key:\s*(?P<key>\S+)\s*$", flags=re.MULTILINE)
+# The code-stamped `- source:` field inside one observation block; paired with the
+# block's normalized_key by `observation_key_sources_from_text`.
+_STRUCTURED_SOURCE_RE = re.compile(r"^\s*-\s*source:\s*(?P<source>guild \d+|dm)\s*$")
 # Column-0 transcript block marker (`[message N | role]`). Used to realign a middle-
 # truncated tail to a trusted block boundary so a sliced indent never leaves user
 # content at column 0, where the marker scheme reserves the trusted authorship signal.
@@ -124,6 +140,17 @@ class MemoryObservation(BaseModel):
         description="Stable dedupe key for the same underlying observation.",
         examples=["preference.reply_language.zh_tw"],
     )
+    sharing: MemorySharing = Field(
+        ...,
+        description=(
+            "Whether the observation is safe to use in any conversation (`global`: harmless "
+            "general facts like language preference, interests, tech background) or must stay "
+            "confined to the conversation source it was learned in (`source_only`: secrets, "
+            "feelings, plans, anything personal or involving another person; when unsure, "
+            "source_only)."
+        ),
+        examples=["source_only"],
+    )
     summary_zh: str = Field(..., description="Traditional Chinese memory delta.")
     evidence_quote: str = Field(..., description="Short evidence quote from the target user.")
     ttl_days: int | None = Field(
@@ -147,11 +174,6 @@ class RawMemoryDraft(BaseModel):
         description="Validated structured memory observations; empty when has_signal is false",
     )
 
-    @property
-    def memory_markdown(self) -> str:
-        """Renders accepted observations into the raw markdown evidence format."""
-        return render_memory_observations(observations=self.observations)
-
 
 class ConsolidatedMemory(BaseModel):
     """Structured phase-2 consolidation output."""
@@ -168,6 +190,13 @@ class ConsolidatedMemory(BaseModel):
     memory_markdown: str = Field(
         ...,
         description="Full rewritten memory file starting with `v1`; empty when changed is false",
+    )
+    tone_markdown: str = Field(
+        ...,
+        description=(
+            "Full rewritten per-user tone note starting with `## 語氣偏好`; empty when the "
+            "corpus carries no tone signal (server-flavor consolidations always return empty)."
+        ),
     )
 
 
@@ -217,6 +246,8 @@ class MemoryExtractorAI(BaseModel):
         explains how to read it.
         """
         user_text = f"{subject}\n\nConversation transcript:\n{transcript}"
+        target_match = _SUBJECT_TARGET_USER_RE.search(subject)
+        target_user_id = int(target_match.group("user_id")) if target_match else None
         draft = await self._parse(
             model=self.extract_model,
             instructions=self.phase1_prompt,
@@ -227,7 +258,7 @@ class MemoryExtractorAI(BaseModel):
         )
         if draft is None:
             return None
-        draft = _validated_draft(draft=draft)
+        draft = _validated_draft(draft=draft, target_user_id=target_user_id)
         if not draft.has_signal:
             return draft
         evaluate_model = self.evaluate_model
@@ -247,15 +278,22 @@ class MemoryExtractorAI(BaseModel):
         )
         if evaluated is None:
             return None
-        return _validated_draft(draft=evaluated)
+        return _validated_draft(draft=evaluated, target_user_id=target_user_id)
 
-    async def consolidate(
-        self, existing_main: str, raw_entries: str, recent_detail: str, today: str, compact: bool
+    async def consolidate(  # noqa: PLR0913 -- the phase-2 corpus (main/tone/raw/detail) plus dating and compaction flags
+        self,
+        existing_main: str,
+        existing_tone: str,
+        raw_entries: str,
+        recent_detail: str,
+        today: str,
+        compact: bool,
     ) -> ConsolidatedMemory | None:
         """Returns the phase-2 consolidation result, or None when the LLM path fails."""
         user_text = (
             f"today: {today}\n\n"
             f"<existing_memory>\n{existing_main.strip() or '(empty)'}\n</existing_memory>\n\n"
+            f"<existing_tone>\n{existing_tone.strip() or '(empty)'}\n</existing_tone>\n\n"
             f"<raw_entries>\n{raw_entries.strip()}\n</raw_entries>\n\n"
             f"<recent_detail>\n{recent_detail.strip() or '(empty)'}\n</recent_detail>"
         )
@@ -273,7 +311,10 @@ class MemoryExtractorAI(BaseModel):
         if result is None:
             return None
         return result.model_copy(
-            update={"memory_markdown": redact_secrets(text=result.memory_markdown).strip()}
+            update={
+                "memory_markdown": redact_secrets(text=result.memory_markdown).strip(),
+                "tone_markdown": redact_secrets(text=result.tone_markdown).strip(),
+            }
         )
 
     async def _parse(  # noqa: PLR0913 -- thin delegate mirroring the 3 phase call sites
@@ -345,25 +386,51 @@ def target_centered_memory_messages(
     ]
 
 
-def render_memory_observations(observations: tuple[MemoryObservation, ...]) -> str:
-    """Renders structured observations as timestamp-entry body markdown."""
+def render_memory_observations(
+    observations: tuple[MemoryObservation, ...], source: str | None
+) -> str:
+    """Renders structured observations as timestamp-entry body markdown.
+
+    `source` names the conversation the observations came from (`guild <id>` /
+    `dm`), stamped deterministically here — never LLM-echoed — so consolidation
+    can scope each bullet. None (the server flavor, or a legacy job with no
+    source line) renders neither the source nor the sharing field.
+    """
     blocks: list[str] = []
     for observation in observations:
         ttl_text = "null" if observation.ttl_days is None else str(observation.ttl_days)
-        blocks.append(
-            "\n".join((
-                f"### {observation.category}",
-                f"- normalized_key: {observation.normalized_key}",
-                f"- evidence_kind: {observation.evidence_kind}",
-                f"- confidence: {observation.confidence}",
-                f"- durability: {observation.durability}",
-                f"- promotion_eligible: {str(observation.promotion_eligible).lower()}",
-                f"- ttl_days: {ttl_text}",
-                f"- summary_zh: {observation.summary_zh}",
-                f"- evidence_quote: {observation.evidence_quote}",
-            ))
-        )
+        lines = [
+            f"### {observation.category}",
+            f"- normalized_key: {observation.normalized_key}",
+            f"- evidence_kind: {observation.evidence_kind}",
+            f"- confidence: {observation.confidence}",
+            f"- durability: {observation.durability}",
+            f"- promotion_eligible: {str(observation.promotion_eligible).lower()}",
+            f"- ttl_days: {ttl_text}",
+        ]
+        if source is not None:
+            lines.append(f"- source: {source}")
+            lines.append(f"- sharing: {observation.sharing}")
+        lines.append(f"- summary_zh: {observation.summary_zh}")
+        lines.append(f"- evidence_quote: {observation.evidence_quote}")
+        blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
+
+
+def subject_source_line(guild_id: int | None) -> str:
+    """Renders the subject's second line naming where the conversation happened."""
+    return f"source: guild {guild_id}" if guild_id is not None else "source: dm"
+
+
+def parse_subject_source(subject: str) -> str | None:
+    """Extracts the conversation source from a persisted subject, or None when absent.
+
+    None covers the server flavor (its subject never carries a source line) and
+    user jobs persisted before the source line existed; both render without
+    per-observation source stamping.
+    """
+    match = _SUBJECT_SOURCE_RE.search(subject)
+    return match.group("source") if match else None
 
 
 def observation_keys_from_text(text: str) -> set[str]:
@@ -371,17 +438,48 @@ def observation_keys_from_text(text: str) -> set[str]:
     return {match.group("key") for match in _STRUCTURED_KEY_RE.finditer(text)}
 
 
+def observation_key_sources_from_text(text: str) -> set[tuple[str, str | None]]:
+    """Extracts `(normalized_key, source)` pairs from raw/detail evidence.
+
+    The renderer emits `- source:` after `- normalized_key:` inside one block, so a
+    line walk can pair each key with its block's source; entries written before
+    source stamping (or by the server flavor) pair with None.
+    """
+    pairs: set[tuple[str, str | None]] = set()
+    pending_key: str | None = None
+    for line in text.splitlines():
+        key_match = _STRUCTURED_KEY_RE.match(line)
+        if key_match:
+            if pending_key is not None:
+                pairs.add((pending_key, None))
+            pending_key = key_match.group("key")
+            continue
+        source_match = _STRUCTURED_SOURCE_RE.match(line)
+        if source_match and pending_key is not None:
+            pairs.add((pending_key, source_match.group("source")))
+            pending_key = None
+    if pending_key is not None:
+        pairs.add((pending_key, None))
+    return pairs
+
+
 def filter_duplicate_observations(
-    observations: tuple[MemoryObservation, ...], existing_text: str
+    observations: tuple[MemoryObservation, ...], existing_text: str, source: str | None
 ) -> tuple[MemoryObservation, ...]:
-    """Drops observations whose normalized key already exists in evidence."""
-    existing_keys = observation_keys_from_text(text=existing_text)
+    """Drops observations already evidenced from the SAME conversation source.
+
+    The dedupe key is `(normalized_key, source)`, not the key alone: a fact
+    re-stated in another guild (or a DM) must re-enter raw so consolidation can
+    widen that bullet's source tag; key-only dedupe would lock every fact to the
+    first source that ever observed it.
+    """
+    existing_pairs = observation_key_sources_from_text(text=existing_text)
     kept: list[MemoryObservation] = []
     for observation in observations:
-        if observation.normalized_key in existing_keys:
+        if (observation.normalized_key, source) in existing_pairs:
             continue
         kept.append(observation)
-        existing_keys.add(observation.normalized_key)
+        existing_pairs.add((observation.normalized_key, source))
     return tuple(kept)
 
 
@@ -392,12 +490,12 @@ def redact_secrets(text: str) -> str:
     return text
 
 
-def _validated_draft(draft: RawMemoryDraft) -> RawMemoryDraft:
+def _validated_draft(draft: RawMemoryDraft, target_user_id: int | None) -> RawMemoryDraft:
     """Applies deterministic high-precision gates to model observations."""
     observations: list[MemoryObservation] = []
     seen_keys: set[str] = set()
     for observation in draft.observations:
-        sanitized = _sanitize_observation(observation=observation)
+        sanitized = _sanitize_observation(observation=observation, target_user_id=target_user_id)
         if sanitized.normalized_key in seen_keys:
             continue
         if not _is_accepted_observation(observation=sanitized):
@@ -407,8 +505,19 @@ def _validated_draft(draft: RawMemoryDraft) -> RawMemoryDraft:
     return RawMemoryDraft(has_signal=bool(observations), observations=tuple(observations))
 
 
-def _sanitize_observation(observation: MemoryObservation) -> MemoryObservation:
-    """Normalizes text, keys, and TTL fields before validation."""
+def _mentions_other_person(text: str, target_user_id: int | None) -> bool:
+    """Whether the text references any participant other than the target user."""
+    for match in _OTHER_PERSON_TOKEN_RE.finditer(text):
+        mentioned = int(match.group("user_id") or match.group("mention_id"))
+        if target_user_id is None or mentioned != target_user_id:
+            return True
+    return False
+
+
+def _sanitize_observation(
+    observation: MemoryObservation, target_user_id: int | None
+) -> MemoryObservation:
+    """Normalizes text, keys, TTL, and sharing fields before validation."""
     category = observation.category
     ttl_days = observation.ttl_days
     promotion_eligible = observation.promotion_eligible
@@ -419,6 +528,22 @@ def _sanitize_observation(observation: MemoryObservation) -> MemoryObservation:
         ttl_days = 30 if ttl_days is None or ttl_days <= 0 else min(ttl_days, 90)
     else:
         ttl_days = None
+    summary_zh = _trim_text(text=redact_secrets(text=observation.summary_zh), max_chars=800)
+    evidence_quote = _trim_text(
+        text=redact_secrets(text=observation.evidence_quote), max_chars=240
+    )
+    # Deterministic privacy backstop over the LLM's sharing call: ongoing situations
+    # are private by construction, and an observation naming ANOTHER participant is
+    # about a relationship, not a portable fact (the target's own id — e.g. a quoted
+    # author prefix — names nobody else and stays exempt). Scans the pre-trim text so
+    # a token past the truncation point cannot dodge the gate. Code only ever tightens
+    # sharing to source_only; it never loosens a source_only call back to global.
+    sharing = observation.sharing
+    if category == "recent_context" or _mentions_other_person(
+        text=f"{observation.summary_zh}\n{observation.evidence_quote}",
+        target_user_id=target_user_id,
+    ):
+        sharing = "source_only"
     return MemoryObservation(
         category=category,
         subject_is_target_user=observation.subject_is_target_user,
@@ -427,10 +552,9 @@ def _sanitize_observation(observation: MemoryObservation) -> MemoryObservation:
         durability=durability,
         promotion_eligible=promotion_eligible,
         normalized_key=_clean_normalized_key(value=observation.normalized_key),
-        summary_zh=_trim_text(text=redact_secrets(text=observation.summary_zh), max_chars=800),
-        evidence_quote=_trim_text(
-            text=redact_secrets(text=observation.evidence_quote), max_chars=240
-        ),
+        sharing=sharing,
+        summary_zh=summary_zh,
+        evidence_quote=evidence_quote,
         ttl_days=ttl_days,
     )
 
