@@ -464,8 +464,21 @@ async def _consolidate_locked(
         # `v1: ...`): keep the raw batch for retry regardless of `changed`,
         # instead of discarding the accumulated signal.
         return
+    if result.tone_markdown and not result.tone_markdown.startswith("## 語氣偏好"):
+        # A malformed tone note rejects the batch like a malformed main rewrite: the
+        # rewritten main may have moved tone bullets out on the promise they land in
+        # the note, so consuming the batch here would silently lose the preference
+        # from every injected tier. Keeping raw retries the whole consolidation.
+        return
+    # The first rewrite that brings an untagged (pre-migration) file into the tagged
+    # format legitimately sheds a lot of text (tone bullets move to tone.md, private
+    # profile prose turns into tagged bullets), so it is judged by the deeper
+    # compaction floor; once tags exist the normal halving guard resumes.
+    first_tagged_rewrite = "[src:" not in existing_main and "[src:" in result.memory_markdown
     if is_well_formed and _rewrite_shrank_too_much(
-        existing_main=existing_main, rewritten=result.memory_markdown, compact=compact
+        existing_main=existing_main,
+        rewritten=result.memory_markdown,
+        compact=compact or first_tagged_rewrite,
     ):
         # A drastic surprise shrink is almost always a lossy LLM failure, not
         # a merge; refusing it keeps raw for retry and protects main.bak.md

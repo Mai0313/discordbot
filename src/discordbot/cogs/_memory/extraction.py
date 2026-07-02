@@ -70,8 +70,12 @@ _SECRET_PATTERNS = (
 _AUTHOR_PREFIX_RE = re.compile(r"^[^\n]*?\[id: (?P<user_id>\d+)\]:")
 # Another participant referenced inside an observation's text (an id token or a raw
 # Discord mention). Such an observation is about a relationship or someone else's
-# business, so the sharing gate locks it to its source conversation.
-_OTHER_PERSON_TOKEN_RE = re.compile(r"\[id:\s*\d+\]|<@!?\d+>")
+# business, so the sharing gate locks it to its source conversation. The id is captured
+# so the gate can exempt the TARGET's own id (the transcript's author prefix makes it
+# the most likely token to be quoted into evidence, and it names nobody else).
+_OTHER_PERSON_TOKEN_RE = re.compile(r"\[id:\s*(?P<user_id>\d+)\]|<@!?(?P<mention_id>\d+)>")
+# The target-user id inside a phase-1 subject; None for the server flavor.
+_SUBJECT_TARGET_USER_RE = re.compile(r"^target_user_id:\s*(?P<user_id>\d+)", flags=re.MULTILINE)
 # The optional second subject line naming where the conversation happened. Format and
 # parser are co-located so the writer (`subject_source_line`) and the reader
 # (`parse_subject_source`) cannot drift apart across the memory_job round-trip.
@@ -242,6 +246,8 @@ class MemoryExtractorAI(BaseModel):
         explains how to read it.
         """
         user_text = f"{subject}\n\nConversation transcript:\n{transcript}"
+        target_match = _SUBJECT_TARGET_USER_RE.search(subject)
+        target_user_id = int(target_match.group("user_id")) if target_match else None
         draft = await self._parse(
             model=self.extract_model,
             instructions=self.phase1_prompt,
@@ -252,7 +258,7 @@ class MemoryExtractorAI(BaseModel):
         )
         if draft is None:
             return None
-        draft = _validated_draft(draft=draft)
+        draft = _validated_draft(draft=draft, target_user_id=target_user_id)
         if not draft.has_signal:
             return draft
         evaluate_model = self.evaluate_model
@@ -272,7 +278,7 @@ class MemoryExtractorAI(BaseModel):
         )
         if evaluated is None:
             return None
-        return _validated_draft(draft=evaluated)
+        return _validated_draft(draft=evaluated, target_user_id=target_user_id)
 
     async def consolidate(  # noqa: PLR0913 -- the phase-2 corpus (main/tone/raw/detail) plus dating and compaction flags
         self,
@@ -484,12 +490,12 @@ def redact_secrets(text: str) -> str:
     return text
 
 
-def _validated_draft(draft: RawMemoryDraft) -> RawMemoryDraft:
+def _validated_draft(draft: RawMemoryDraft, target_user_id: int | None) -> RawMemoryDraft:
     """Applies deterministic high-precision gates to model observations."""
     observations: list[MemoryObservation] = []
     seen_keys: set[str] = set()
     for observation in draft.observations:
-        sanitized = _sanitize_observation(observation=observation)
+        sanitized = _sanitize_observation(observation=observation, target_user_id=target_user_id)
         if sanitized.normalized_key in seen_keys:
             continue
         if not _is_accepted_observation(observation=sanitized):
@@ -499,7 +505,18 @@ def _validated_draft(draft: RawMemoryDraft) -> RawMemoryDraft:
     return RawMemoryDraft(has_signal=bool(observations), observations=tuple(observations))
 
 
-def _sanitize_observation(observation: MemoryObservation) -> MemoryObservation:
+def _mentions_other_person(text: str, target_user_id: int | None) -> bool:
+    """Whether the text references any participant other than the target user."""
+    for match in _OTHER_PERSON_TOKEN_RE.finditer(text):
+        mentioned = int(match.group("user_id") or match.group("mention_id"))
+        if target_user_id is None or mentioned != target_user_id:
+            return True
+    return False
+
+
+def _sanitize_observation(
+    observation: MemoryObservation, target_user_id: int | None
+) -> MemoryObservation:
     """Normalizes text, keys, TTL, and sharing fields before validation."""
     category = observation.category
     ttl_days = observation.ttl_days
@@ -516,12 +533,15 @@ def _sanitize_observation(observation: MemoryObservation) -> MemoryObservation:
         text=redact_secrets(text=observation.evidence_quote), max_chars=240
     )
     # Deterministic privacy backstop over the LLM's sharing call: ongoing situations
-    # are private by construction, and an observation naming another participant is
-    # about a relationship, not a portable fact. Code only ever tightens sharing to
-    # source_only; it never loosens a source_only call back to global.
+    # are private by construction, and an observation naming ANOTHER participant is
+    # about a relationship, not a portable fact (the target's own id — e.g. a quoted
+    # author prefix — names nobody else and stays exempt). Scans the pre-trim text so
+    # a token past the truncation point cannot dodge the gate. Code only ever tightens
+    # sharing to source_only; it never loosens a source_only call back to global.
     sharing = observation.sharing
-    if category == "recent_context" or _OTHER_PERSON_TOKEN_RE.search(
-        f"{summary_zh}\n{evidence_quote}"
+    if category == "recent_context" or _mentions_other_person(
+        text=f"{observation.summary_zh}\n{observation.evidence_quote}",
+        target_user_id=target_user_id,
     ):
         sharing = "source_only"
     return MemoryObservation(

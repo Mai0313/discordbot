@@ -96,6 +96,7 @@ from discordbot.cogs._gen_reply.generation import (
     PromptGenerator,
 )
 from discordbot.cogs._gen_reply.memory_tool import (
+    NO_STORED_MEMORY,
     GET_USER_MEMORY_TOOL,
     UserMemory,
     MemorySelection,
@@ -106,7 +107,6 @@ from discordbot.cogs._gen_reply.memory_tool import (
     memory_lookup_labels,
     resolve_user_memories,
     build_memory_allowlist,
-    filter_memory_for_context,
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
@@ -221,10 +221,11 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
         message_created_at_asia_taipei=message_created_at_asia_taipei.isoformat(timespec="seconds")
     ).strip()
     if message.guild is not None:
-        # Same single-line neutralization as user identities: a guild name is
-        # owner-controlled text and must not fake context markers.
-        guild_name = " ".join(sanitize_identity(value=message.guild.name).split())
-        conversation_location = f'the Discord server "{guild_name}" (guild {message.guild.id})'
+        # Deliberately id-only: the guild NAME is owner-controlled text and this block
+        # rides the developer-authority `instructions` parameter, so embedding it would
+        # hand a server owner an instruction-injection surface. The id anchors the
+        # location just as well and cannot carry instructions.
+        conversation_location = f"a Discord server (guild id {message.guild.id})"
     else:
         conversation_location = "a Discord direct message (DM)"
     request_location_context = REQUEST_LOCATION_CONTEXT_PROMPT.format(
@@ -1311,26 +1312,18 @@ class ReplyGeneratorCogs(commands.Cog):
             message.author.id,
             *(ref.author.id for ref in _walk_reference_chain(message=message)),
         ]
-        memories: list[UserMemory] = []
-        seen: set[int] = set()
-        for user_id in candidate_ids:
-            if user_id in seen or user_id not in allowed:
-                continue
-            seen.add(user_id)
-            participant_memory = read_main_memory(scope=user_scope(user_id=user_id))
-            if participant_memory:
-                # Same per-bullet source scoping as the selection path: the fallback
-                # must never leak what a deliberate lookup would have filtered.
-                participant_memory = filter_memory_for_context(
-                    memory=participant_memory, owner_id=user_id, context=read_context
-                )
-            if not participant_memory:
-                continue
-            memories.append(
-                UserMemory(
-                    username=allowed[user_id], user_id=str(user_id), memory=participant_memory
-                )
+        # Delegates to the selection path's resolver so the allowlist gate, the
+        # per-bullet source filter, and dedupe live in exactly one place; only
+        # candidates whose memory survives filtering contribute.
+        memories = [
+            memory
+            for memory in resolve_user_memories(
+                user_id_list=[str(user_id) for user_id in candidate_ids],
+                allowed=allowed,
+                context=read_context,
             )
+            if memory.memory != NO_STORED_MEMORY
+        ]
         if not memories:
             return None, []
         return render_memory_context_block(memories=memories), memory_lookup_labels(

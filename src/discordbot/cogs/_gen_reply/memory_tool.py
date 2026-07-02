@@ -291,12 +291,15 @@ _SRC_TAG_RE = re.compile(r"\[src:(?P<values>[0-9a-z*,]+)\]\s*$")
 # profile prose) is still noise the model could echo, so it is scrubbed too.
 _SRC_TAG_STRIP_RE = re.compile(r" ?\[src:[^\]\n]*\]")
 
-# The one untagged main.md section; its paragraph is global-by-contract (the write-side
-# prompt keeps everything private out of it), so the filter passes its prose through.
+# The one untagged main.md section; its content is global-by-contract (the write-side
+# prompt and the migration keep everything private out of it), so the filter passes it
+# through — but only once the file itself is in the tagged format (see the profile gate).
 _PROFILE_HEADER = "## 使用者輪廓"
 
 
-def filter_memory_for_context(*, memory: str, owner_id: int, context: MemoryReadContext) -> str:
+def filter_memory_for_context(  # noqa: C901 -- one cohesive line-walk; splitting the branches would obscure the fate-sharing rules
+    *, memory: str, owner_id: int, context: MemoryReadContext
+) -> str:
     """Drops source-locked bullets that do not belong in the current conversation.
 
     The deterministic enforcement half of cross-server memory privacy (the write side
@@ -304,15 +307,22 @@ def filter_memory_for_context(*, memory: str, owner_id: int, context: MemoryRead
     names the current guild or is `[src:*]`. In the owner's own 1:1 DM everything
     survives (their own information cannot leak to themselves). A bullet with no tag
     or a malformed tag is legacy content of unknown source and is dropped (fail-closed
-    against LLM tag drift). Surviving lines are stripped of their tags so the model
-    never sees — and can never echo — where a fact was learned.
+    against LLM tag drift), and any indented line follows the fate of the column-0 line
+    above it — a nested sub-bullet must never outlive its filtered parent. The
+    `使用者輪廓` global-by-contract passthrough applies only when the file carries at
+    least one well-formed tag: a file with none predates the tagged format (e.g. its
+    migration failed), so its profile has no safety contract and fails closed with the
+    rest. Surviving lines are stripped of their tags so the model never sees — and can
+    never echo — where a fact was learned.
     """
     if context.dm_partner_id == owner_id:
         return _SRC_TAG_STRIP_RE.sub("", memory).strip()
+    lines = memory.splitlines()
+    profile_contract_holds = any(_SRC_TAG_RE.search(line) for line in lines)
     kept: list[str] = []
     in_profile = False
     keep_continuation = False
-    for line in memory.splitlines():
+    for line in lines:
         stripped = line.strip()
         if stripped.startswith("## "):
             in_profile = stripped == _PROFILE_HEADER
@@ -322,22 +332,35 @@ def filter_memory_for_context(*, memory: str, owner_id: int, context: MemoryRead
         if not stripped:
             kept.append(line)
             continue
-        if stripped.startswith(("* ", "- ")):
-            visible = _bullet_is_visible(bullet=stripped, context=context)
-            keep_continuation = visible
-            if visible:
-                kept.append(line)
-            continue
         if line[0].isspace():
-            # An indented continuation belongs to the preceding bullet and shares its fate.
+            # Any indented line — prose continuation or nested sub-bullet — belongs to
+            # the column-0 line above it and shares its fate, so a sub-bullet can never
+            # outlive a filtered parent or be filtered away from a visible one.
             if keep_continuation:
                 kept.append(line)
             continue
-        if in_profile or stripped == "v1":
+        if stripped.startswith(("* ", "- ")) and (not in_profile or _SRC_TAG_RE.search(stripped)):
+            # A tagged bullet is source-filtered even inside the profile (a tag there is
+            # format drift, and honoring it is strictly safer than the prose passthrough).
+            keep_continuation = _bullet_is_visible(bullet=stripped, context=context)
+            if keep_continuation:
+                kept.append(line)
+            continue
+        if stripped == "v1":
+            keep_continuation = False
             kept.append(line)
             continue
+        if in_profile:
+            # Profile prose (and untagged profile bullets — the migration deliberately
+            # leaves those untagged) is global-by-contract, but the contract only exists
+            # for files already in the tagged format.
+            keep_continuation = profile_contract_holds
+            if profile_contract_holds:
+                kept.append(line)
+            continue
         # Column-0 prose outside the profile is untagged content of unknown source:
-        # fail-closed, like an untagged bullet.
+        # fail-closed, like an untagged bullet — including anything indented under it.
+        keep_continuation = False
     filtered = _SRC_TAG_STRIP_RE.sub("", _drop_empty_sections(lines=kept)).strip()
     # A file whose every section was filtered away leaves only the bare `v1` header;
     # that is "no visible memory", not content.

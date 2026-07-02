@@ -2073,6 +2073,43 @@ async def test_pipeline_rejects_drastically_shrunken_rewrite(
     assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
 
 
+async def test_pipeline_first_tagged_rewrite_allows_deep_shrink(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The untagged→tagged transition rewrite may legitimately shed over half the file.
+
+    Moving tone bullets into tone.md and privatizing the profile shrinks an unmigrated
+    file past the halving guard; that one-time transition is judged by the deeper
+    compaction floor instead, so a failed-migration scope cannot freeze.
+    """
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    existing = "v1\n\n## 使用者輪廓\n" + "穩" * 5_000
+    write_main_memory(scope=USER_SCOPE, content=existing, identity=IDENTITY)
+    extractor, fake_client = _extractor()
+
+    rewritten = "v1\n\n## 穩定事實\n* " + "新" * 1_500 + " [src:legacy]"
+    parsed_outputs: list[BaseModel] = [
+        _draft("訊號"),
+        ConsolidatedMemory(changed=True, memory_markdown=rewritten, tone_markdown=""),
+    ]
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        return _parsed(output=parsed_outputs.pop(0))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+    assert "新新新" in read_main_memory(scope=USER_SCOPE)
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+
+
 async def test_pipeline_compaction_accepts_legitimate_shrink(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2729,6 +2766,23 @@ async def test_extract_sharing_gates_tighten_but_never_loosen() -> None:
                 normalized_key="preference.language",
                 sharing="global",
             ),
+            # The TARGET's own id (e.g. a quoted author prefix) names nobody else,
+            # so it must not lock an otherwise global fact.
+            _observation(
+                summary="使用者偏好簡短回覆",
+                normalized_key="preference.brevity",
+                sharing="global",
+                evidence_quote=f"Alice (alice) [id: {USER_ID}]: 回短一點",
+            ),
+            # The gate scans the PRE-trim text, so a token past the 800-char
+            # truncation point cannot dodge it.
+            _observation(
+                summary="使" * 799 + " [id: 42]",
+                normalized_key="pattern.longtail",
+                category="recurring_pattern",
+                evidence_kind="recurring_pattern",
+                sharing="global",
+            ),
             # Code never loosens the model's source_only call, however harmless.
             _observation(
                 summary="使用者喜歡貓", normalized_key="interest.cats", sharing="source_only"
@@ -2745,6 +2799,8 @@ async def test_extract_sharing_gates_tighten_but_never_loosen() -> None:
         "pattern.duo": "source_only",
         "pattern.party": "source_only",
         "preference.language": "global",
+        "preference.brevity": "global",
+        "pattern.longtail": "source_only",
         "interest.cats": "source_only",
     }
 
@@ -2955,9 +3011,13 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
-@pytest.mark.parametrize(argnames="bad_tone", argvalues=["", "語氣:很兇但沒有標頭"])
+@pytest.mark.parametrize(
+    argnames=("bad_tone", "main_committed"),
+    argvalues=[("", True), ("語氣:很兇但沒有標頭", False)],
+    ids=["empty-tone-commits", "malformed-tone-rejects-batch"],
+)
 async def test_pipeline_bad_tone_output_keeps_existing_note(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, bad_tone: str
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, bad_tone: str, main_committed: bool
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 原有偏好")
@@ -2983,8 +3043,17 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "合併後" in read_main_memory(scope=USER_SCOPE)
-    # An empty or malformed tone output never deletes the existing note.
+    if main_committed:
+        # An empty tone note is a legitimate no-tone-signal case: main commits, batch consumed.
+        assert "合併後" in read_main_memory(scope=USER_SCOPE)
+        assert count_raw_entries(scope=USER_SCOPE) == 0
+    else:
+        # A malformed tone note rejects the whole batch (the rewritten main may have
+        # moved tone bullets out on the promise they land in the note): main untouched,
+        # raw kept for retry.
+        assert "合併後" not in read_main_memory(scope=USER_SCOPE)
+        assert count_raw_entries(scope=USER_SCOPE) == 1
+    # Neither case ever deletes the existing note.
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 原有偏好"
 
 

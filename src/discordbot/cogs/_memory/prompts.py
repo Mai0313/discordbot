@@ -169,6 +169,7 @@ TONE NOTE OUTPUT (`tone_markdown`):
 * Merge `<existing_tone>` with any tone or delivery signal in the raw entries; newer evidence wins on conflict. Keep it compact (a handful of bullets, well under 1000 characters): it is injected into EVERY reply to this user.
 * Tone bullets carry NO date tags and NO `[src:...]` tags: how the user wants the bot to sound is cross-server safe by definition.
 * Returning the existing note unchanged is the normal case when the batch carries no tone signal. Return an empty `tone_markdown` ONLY when there is no tone signal at all (no existing note and none in the corpus).
+* Never drop a tone preference from `memory_markdown` unless THIS rewrite carries it in `tone_markdown`: when you return an empty `tone_markdown`, leave any tone bullet still sitting in the existing memory exactly where it is, so the preference is never lost between the two files.
 
 NO-OP:
 * If the raw entries add nothing material beyond the existing memory, return `changed=false` and an empty `memory_markdown`. The tone note follows its own rule above regardless: a no-op main rewrite may still carry an updated (or unchanged) `tone_markdown`.

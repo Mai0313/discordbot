@@ -754,11 +754,16 @@ def test_build_runtime_instructions_adds_request_time_context() -> None:
 
 
 def test_build_runtime_instructions_names_conversation_location() -> None:
-    """Instructions name the current guild (name + id) for a guild message and the DM otherwise."""
+    """Instructions carry the guild id for a guild message and the DM marker otherwise.
+
+    Deliberately id-only: the guild NAME is owner-controlled text and this block rides
+    the developer-authority instructions, so it must never appear there.
+    """
     guild_message = FakeMessage(content="hi")
     instructions = _build_runtime_instructions(system_prompt="SYS", message=guild_message)
     assert "Current conversation location:" in instructions
-    assert 'the Discord server "Test Guild" (guild 1)' in instructions
+    assert "a Discord server (guild id 1)" in instructions
+    assert "Test Guild" not in instructions
 
     dm_message = FakeMessage(content="hi")
     dm_message.guild = None
@@ -3930,7 +3935,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n喜歡簡短回覆",
+        content="v1\n\n## 穩定偏好\n* 喜歡簡短回覆 [src:*]",
         identity="U1 (u1) [id: 1]",
     )
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
@@ -3982,7 +3987,7 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n喜歡簡短回覆",
+        content="v1\n\n## 穩定偏好\n* 喜歡簡短回覆 [src:*]",
         identity="U1 (u1) [id: 1]",
     )
     write_main_memory(
@@ -4113,7 +4118,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n喜歡簡短回覆",
+        content="v1\n\n## 穩定偏好\n* 喜歡簡短回覆 [src:*]",
         identity="Tester (tester) [id: 1]",
     )
 
@@ -4273,7 +4278,7 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n不該被注入",
+        content="v1\n\n## 穩定偏好\n* 不該被注入 [src:*]",
         identity="Tester (tester) [id: 1]",
     )
 
@@ -4396,7 +4401,7 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     del memory_isolated_dir
     write_main_memory(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n甲的記憶",
+        content="v1\n\n## 穩定偏好\n* 甲的記憶 [src:*]",
         identity="A (a) [id: 1]",
     )
     allowed = {1: "A (a)", 2: "B (b)"}
@@ -4544,6 +4549,56 @@ def test_filter_memory_fully_locked_returns_empty() -> None:
     assert filtered == ""
 
 
+def test_filter_memory_indented_lines_share_their_parents_fate() -> None:
+    """Any indented line — prose or nested sub-bullet — lives and dies with its parent."""
+    memory = (
+        "v1\n\n"
+        "## 永久事實\n"
+        "* 本群事實 [src:111]\n"
+        "  - 未標記的子彈點\n"
+        "* 他群祕密 [src:222]\n"
+        "  - 全域標記也救不了孤兒 [src:*]\n"
+        "秘密的散文行\n"
+        "  秘密散文的縮排延續行"
+    )
+    filtered = filter_memory_for_context(
+        memory=memory, owner_id=1, context=MemoryReadContext(guild_id=111, dm_partner_id=None)
+    )
+    # A visible parent keeps its untagged sub-bullet; a filtered parent takes its
+    # sub-bullet down even when that sub-bullet is tagged global; dropped column-0
+    # prose takes its continuation down too.
+    assert "未標記的子彈點" in filtered
+    assert "孤兒" not in filtered
+    assert "秘密" not in filtered
+
+
+def test_filter_memory_profile_gate_requires_tagged_file() -> None:
+    """Profile content passes only when the file itself is in the tagged format.
+
+    A file with no well-formed tag anywhere predates the format (e.g. its migration
+    failed), so its profile has no global-safety contract and fails closed; in a
+    tagged file the profile keeps prose AND untagged bullets (the migration leaves
+    profile bullets untagged on purpose), while a tagged profile bullet is honored
+    as a source filter.
+    """
+    context = MemoryReadContext(guild_id=999, dm_partner_id=None)
+    untagged_file = "v1\n\n## 使用者輪廓\n未遷移的私密輪廓\n\n## 永久事實\n* 舊條目"
+    assert filter_memory_for_context(memory=untagged_file, owner_id=1, context=context) == ""
+    tagged_file = (
+        "v1\n\n"
+        "## 使用者輪廓\n"
+        "輪廓散文\n"
+        "* 輪廓內未標記彈點\n"
+        "* 輪廓內他群彈點 [src:222]\n\n"
+        "## 永久事實\n"
+        "* 全域事實 [src:*]"
+    )
+    filtered = filter_memory_for_context(memory=tagged_file, owner_id=1, context=context)
+    assert "輪廓散文" in filtered
+    assert "輪廓內未標記彈點" in filtered
+    assert "輪廓內他群彈點" not in filtered
+
+
 def test_memory_read_context_by_channel_kind() -> None:
     """Guild sets guild_id; a 1:1 DM sets dm_partner_id; a guildless non-DM channel sets neither."""
     guild_message = FakeMessage(content="hi")
@@ -4659,7 +4714,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     for uid, body in seeded.items():
         write_main_memory(
             scope=user_scope(user_id=uid),
-            content=f"v1\n\n## 使用者輪廓\n{body}",
+            content=f"v1\n\n## 穩定偏好\n* {body} [src:*]",
             identity=f"U{uid} (u{uid}) [id: {uid}]",
         )
     if server_nick is not None:
@@ -4798,7 +4853,7 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     for uid in seeded_ids:
         write_main_memory(
             scope=user_scope(user_id=uid),
-            content=f"v1\n\n## 使用者輪廓\n記憶{uid}",
+            content=f"v1\n\n## 穩定偏好\n* 記憶{uid} [src:*]",
             identity=f"{labels[uid]} [id: {uid}]",
         )
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
@@ -4847,7 +4902,7 @@ async def test_handle_message_reply_falls_back_to_author_memory_when_selection_f
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n甲",
+        content="v1\n\n## 穩定偏好\n* 甲 [src:*]",
         identity="Tester (tester) [id: 1]",
     )
 
@@ -5446,7 +5501,7 @@ async def test_memory_selection_timeout_falls_back_to_author_memory(
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n甲",
+        content="v1\n\n## 穩定偏好\n* 甲 [src:*]",
         identity="Tester (tester) [id: 1]",
     )
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
@@ -5484,12 +5539,12 @@ async def test_memory_selection_timeout_falls_back_to_author_and_reference_memor
     cog = _cog()
     write_main_memory(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 使用者輪廓\n甲",
+        content="v1\n\n## 穩定偏好\n* 甲 [src:*]",
         identity="Author (author) [id: 1]",
     )
     write_main_memory(
         scope=user_scope(user_id=2),
-        content="v1\n\n## 使用者輪廓\n乙",
+        content="v1\n\n## 穩定偏好\n* 乙 [src:*]",
         identity="Parent (parent) [id: 2]",
     )
     # _walk_reference_chain only follows a resolved message that passes isinstance(_, Message).
