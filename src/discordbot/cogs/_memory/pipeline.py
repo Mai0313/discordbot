@@ -20,6 +20,7 @@ from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs._memory.store import (
     clear_raw,
     read_tone,
+    clear_tone,
     scope_lock,
     write_tone,
     append_detail,
@@ -624,7 +625,14 @@ async def regenerate_main_memory(
         if cleared_since(scope=scope, started_at=started_at):
             return "failed"
         write_main_memory(scope=scope, content=result.memory_markdown, identity=identity)
-        _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
+        if not result.tone_markdown:
+            # Unlike an incremental consolidation (whose empty tone output only means
+            # "no tone signal in this batch"), this rebuild saw the WHOLE evidence
+            # corpus: no tone signal anywhere means a surviving note is stale and
+            # would keep injecting a preference the evidence no longer supports.
+            clear_tone(scope=scope)
+        else:
+            _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
         if raw_entries:
             # The rebuild consumed the raw batch; retire it to the cold tier
             # exactly like a consolidation so it cannot be re-ingested.

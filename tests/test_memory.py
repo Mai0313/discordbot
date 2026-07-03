@@ -3099,3 +3099,27 @@ async def test_regenerate_main_memory_writes_tone_and_ignores_existing_tone(
     user_text = fake_client.responses.parse_inputs[-1][0]["content"]
     assert "<existing_tone>\n(empty)\n</existing_tone>" in user_text
     assert "舊語氣" not in user_text
+
+
+async def test_regenerate_main_memory_clears_stale_tone_on_empty_output(
+    memory_isolated_dir: Path,
+) -> None:
+    """A full-evidence rebuild with no tone signal removes the now-unsupported note.
+
+    Unlike an incremental consolidation (empty tone = "no signal in this batch",
+    note kept), the rebuild saw the whole corpus, so a surviving note would keep
+    injecting a preference the evidence no longer backs.
+    """
+    extractor, fake_client = _extractor()
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    fake_client.responses.output_parsed = ConsolidatedMemory(
+        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n重建後的記憶", tone_markdown=""
+    )
+
+    result = await pipeline.regenerate_main_memory(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+
+    assert result == "regenerated"
+    assert read_tone(scope=USER_SCOPE) == ""
