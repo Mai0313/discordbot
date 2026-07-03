@@ -929,7 +929,7 @@ test = [
 requires-dist = [
     { name = "aiosqlite", specifier = ">=0.20.0" },
     { name = "anthropic", specifier = ">=0.109.2" },
-    { name = "google-genai", specifier = ">=2.7.0" },
+    { name = "google-genai", specifier = ">=2.10.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "logfire", specifier = ">=4.33.0" },
     { name = "nextcord", extras = ["speed", "voice"], specifier = ">=3.2.0" },
