@@ -60,6 +60,7 @@ from discordbot.cogs._gen_reply.generation import (
     VoiceOutcome,
     ImageGenerator,
     MusicGenerator,
+    VideoGenerator,
     VoiceGenerator,
     PromptGenerator,
     music_filename,
@@ -473,46 +474,38 @@ class FakeImages:
 
 
 class FakeGeminiVideoClient:
-    """Fake native Gemini client exposing the async Veo generation API.
+    """Fake native Gemini client exposing the async omni Interactions video API.
 
-    `generate_videos` returns an in-progress operation that the first `operations.get` flips
-    to done with one generated video; `files.download` returns fake MP4 bytes; `files.upload`
-    /`get` return an ACTIVE file for the post-generation "watch the video" reply. Records the
-    prompt and the config so tests can assert reference-image wiring.
+    `interactions.create` returns a completed interaction carrying one output video uri;
+    `files.download` returns fake MP4 bytes; `files.upload`/`get` return an ACTIVE file for both
+    the source-video edit upload and the post-generation "watch the video" reply. Records each
+    call's `input`, `response_format`, and `generation_config` (mirroring the real `create(**body)`)
+    so tests can assert the task, aspect ratio, and reference-image / source-video wiring.
     """
 
     def __init__(self) -> None:
         """Initializes call records and the async-namespace resources."""
-        self.generate_prompts: list[str] = []
-        self.generate_configs: list[object] = []
-        self.get_calls = 0
+        self.create_inputs: list[object] = []
+        self.create_response_formats: list[object] = []
+        self.create_configs: list[object] = []
         self.aio = SimpleNamespace(
-            models=SimpleNamespace(generate_videos=self._generate_videos),
-            operations=SimpleNamespace(get=self._operations_get),
+            interactions=SimpleNamespace(create=self._interactions_create),
             files=SimpleNamespace(
                 download=self._files_download, upload=self._files_upload, get=self._files_get
             ),
         )
 
-    async def _generate_videos(
-        self, *, model: str, prompt: str, config: object = None
-    ) -> SimpleNamespace:
-        """Records the request and returns an in-progress operation."""
-        del model
-        self.generate_prompts.append(prompt)
-        self.generate_configs.append(config)
-        return SimpleNamespace(name="op-1", done=False, error=None, response=None)
-
-    async def _operations_get(self, operation: object) -> SimpleNamespace:
-        """Records a poll and returns the completed operation with one generated video."""
-        del operation
-        self.get_calls += 1
-        video = SimpleNamespace(uri="https://files.test/video", video_bytes=None)
+    async def _interactions_create(self, **body: object) -> SimpleNamespace:
+        """Records the request body and returns a completed interaction with one output video."""
+        self.create_inputs.append(body.get("input"))
+        self.create_response_formats.append(body.get("response_format"))
+        self.create_configs.append(body.get("generation_config"))
         return SimpleNamespace(
-            name="op-1",
-            done=True,
-            error=None,
-            response=SimpleNamespace(generated_videos=[SimpleNamespace(video=video)]),
+            status="completed",
+            output_text=None,
+            output_video=SimpleNamespace(
+                uri="https://files.test/video", data=None, mime_type="video/mp4"
+            ),
         )
 
     async def _files_download(self, *, file: object) -> bytes:
@@ -521,14 +514,14 @@ class FakeGeminiVideoClient:
         return b"mp4"
 
     async def _files_upload(self, *, file: object, config: dict[str, str]) -> SimpleNamespace:
-        """Returns an ACTIVE uploaded file for the post-generation video reply."""
+        """Returns an ACTIVE uploaded file for the edit upload and the post-generation reply."""
         del file, config
         return SimpleNamespace(
             name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
         )
 
     async def _files_get(self, *, name: str) -> SimpleNamespace:
-        """Returns the ACTIVE uploaded file when the reply polls it."""
+        """Returns the ACTIVE uploaded file when a caller polls it."""
         del name
         return SimpleNamespace(
             name="files/vid", uri="https://files.test/files/vid", state=FileState.ACTIVE
@@ -2720,8 +2713,9 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
         context_task=asyncio.create_task(_ready_reply_context()),
     )
     assert len(message.replies) == 1
-    # Video has no director: the raw request reaches native generate_videos directly.
-    assert cog.gemini_client.generate_prompts == ["video"]
+    # Text-to-video: the (director-expanded) request reaches omni as the interaction input text.
+    create_input = cog.gemini_client.create_inputs[0]
+    assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
 
     await cog._handle_image_reply(
         message=message,
@@ -3224,7 +3218,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
 async def test_handle_video_reply_refines_prompt_before_render(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The prompt director expands the raw request and the refined prompt reaches generate_videos."""
+    """The prompt director expands the raw request and the refined prompt reaches omni."""
     cog = _cog()
     cog.openai_client.responses.refine_output_text = "a cat leaping in slow motion, camera pan"
 
@@ -3240,9 +3234,7 @@ async def test_handle_video_reply_refines_prompt_before_render(
         context_task=asyncio.create_task(_ready_reply_context()),
     )
 
-    # The refined prompt reaches generate_videos; the director runs on VIDEO_PROMPT first, then the
-    # streaming reply about the video.
-    assert cog.gemini_client.generate_prompts == ["a cat leaping in slow motion, camera pan"]
+    # The director runs on VIDEO_PROMPT first, then the streaming reply about the video.
     assert cog.openai_client.responses.create_streams == [False, True]
     assert cog.openai_client.responses.create_models == [
         cog.runtime_models.prompt_model.name,
@@ -3252,42 +3244,80 @@ async def test_handle_video_reply_refines_prompt_before_render(
     # The reply (the last create) watches the generated video: referenced as an input_file part.
     reply_parts = cog.openai_client.responses.create_inputs[-1][-1]["content"]
     assert any(part.get("type") == "input_file" for part in reply_parts)
-    # No attachments: a plain text-to-video generation at the configured 1080p, MP4 delivered.
-    config = cog.gemini_client.generate_configs[0]
-    assert config.resolution == "1080p"
-    assert config.reference_images is None
+    # No attachments: the refined prompt reaches omni as input text, task=text_to_video, fixed 16:9.
+    create_input = cog.gemini_client.create_inputs[0]
+    assert [part["text"] for part in create_input if part["type"] == "text"] == [
+        "a cat leaping in slow motion, camera pan"
+    ]
+    assert not any(part["type"] == "image" for part in create_input)
+    assert cog.gemini_client.create_configs[0]["video_config"]["task"] == "text_to_video"
+    assert cog.gemini_client.create_response_formats[0]["aspect_ratio"] == "16:9"
     assert message.replies[-1].file is not None
 
 
-async def test_handle_video_reply_includes_video_thumbnail_reference(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A referenced video's poster frame is wired in as an asset reference image."""
+async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A source video is edited in place: uploaded and sent to omni with task=edit, no director."""
     cog = _cog()
 
     async def fake_sleep(delay: float) -> None:
-        """Skips video polling delay."""
+        """Skips any polling delay."""
 
-    async def fake_thumbs(builder: object, message: object) -> list[tuple[bytes, str]]:
-        """Returns a fake video poster frame for the message."""
+    async def fake_video_sources(builder: object, message: object) -> list[tuple[bytes, str]]:
+        """Returns a fake raw source clip for the message."""
         del builder, message
-        return [(b"poster", "image/jpeg")]
+        return [(b"clip", "video/mp4")]
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.MessageInputBuilder.get_video_thumbnail_sources",
-        fake_thumbs,
+        "discordbot.cogs._gen_reply.input.MessageInputBuilder.get_video_sources",
+        fake_video_sources,
     )
     message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
 
     await cog._handle_video_reply(
         message=message,
-        user_prompt="video",
+        user_prompt="make it snowy",
         context_task=asyncio.create_task(_ready_reply_context()),
     )
 
-    config = cog.gemini_client.generate_configs[0]
-    assert len(config.reference_images) == 1
+    create_input = cog.gemini_client.create_inputs[0]
+    # The actual clip rides as a video part (uploaded to the Files API), edited in place.
+    assert any(part["type"] == "video" for part in create_input)
+    assert cog.gemini_client.create_configs[0]["video_config"]["task"] == "edit"
+    # The director is skipped for edits, so the raw request reaches omni unchanged and the proxy
+    # only ever runs the streaming persona reply (never a non-streaming refine call).
+    assert [part["text"] for part in create_input if part["type"] == "text"] == ["make it snowy"]
+    assert cog.openai_client.responses.create_streams == [True]
+    # An edit keeps the source clip's ratio, so no aspect_ratio is sent (omni 400s it otherwise).
+    assert "aspect_ratio" not in cog.gemini_client.create_response_formats[0]
+
+
+async def test_download_output_video_retries_until_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A URI-delivered clip whose first download fails (file still finalizing) is retried."""
+    calls = {"n": 0}
+
+    async def flaky_download(*, file: object) -> bytes:
+        """Fails the first download (file not yet servable), then succeeds."""
+        del file
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("file not ready")
+        return b"mp4"
+
+    async def fast_sleep(delay: float) -> None:
+        """Skips the retry backoff."""
+        del delay
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.generation.asyncio.sleep", fast_sleep)
+    client = SimpleNamespace(aio=SimpleNamespace(files=SimpleNamespace(download=flaky_download)))
+    generator = VideoGenerator(
+        client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
+    )
+
+    result = await generator._download_output_video(uri="https://files.test/v:download?alt=media")
+
+    assert result == b"mp4"
+    assert calls["n"] == 2
 
 
 async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3314,10 +3344,12 @@ async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.Mo
         context_task=asyncio.create_task(_ready_reply_context()),
     )
 
-    # All attached images ride as asset reference images, capped at three.
-    config = cog.gemini_client.generate_configs[0]
-    assert len(config.reference_images) == 3
-    assert all(ref.image.image_bytes for ref in config.reference_images)
+    # All attached images ride as subject reference images, capped at three, task=reference_to_video.
+    create_input = cog.gemini_client.create_inputs[0]
+    image_parts = [part for part in create_input if part["type"] == "image"]
+    assert len(image_parts) == 3
+    assert all(part["data"] for part in image_parts)
+    assert cog.gemini_client.create_configs[0]["video_config"]["task"] == "reference_to_video"
 
 
 @pytest.mark.parametrize(
@@ -4068,7 +4100,7 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     assert cog.runtime_models.fast_model == catalog.fast_model
     assert isinstance(catalog.fast_model, ModelSettings)
     assert "image" in catalog.image_model.name
-    assert catalog.video_model.name.startswith("veo")
+    assert "omni" in catalog.video_model.name
     assert catalog.slow_model.effort == "high"
     # Code execution is omitted on purpose: it 400s the request on file attachments.
     assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]

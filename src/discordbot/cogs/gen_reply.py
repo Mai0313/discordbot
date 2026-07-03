@@ -446,7 +446,8 @@ class ReplyGeneratorCogs(commands.Cog):
         DIRECT to Google (`gemini_api_key`, no proxy): it serves the two runtime paths the
         LiteLLM proxy cannot, and the swap only ever fires when the answer model is already
         Gemini so the direct credential is always the right one:
-        - native Veo video generation (`generate_videos`: operations poll + Files download); and
+        - native omni video generation / editing (`interactions.create`, delivery=uri + Files
+          download); and
         - the YouTube-aware QA answer turn that streams through the native Interactions API (the
           only path that can actually watch a linked video).
         Both forgo proxy-side cost/usage tracking, like the deep-research direct path. A missing
@@ -503,7 +504,8 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Returns:
             A generator bound to this cog's DIRECT-to-Google Gemini client and the video model
-            (Veo is unreachable via the proxy); the route calls `render` (raises).
+            (the Interactions API is Gemini-only, not reachable via the proxy); the route calls
+            `render` (raises).
         """
         return VideoGenerator(
             client=self.gemini_client, video_model=self.runtime_models.video_model
@@ -721,16 +723,17 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _handle_video_reply(
         self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
     ) -> None:
-        """Generates a video with the native Gemini (Veo) SDK, delivers it, then replies about it.
+        """Generates a video via the native Gemini (omni) Interactions API, delivers it, then replies.
 
-        Runs direct to Google via `generate_videos` (no proxy, no prompt director): the raw
-        request is the prompt, and any images on the message (plus the replied-to message,
-        mirroring the IMAGE route) ride as asset reference images (up to three). A referenced
-        video cannot be ingested by Veo, so it contributes its poster frame instead. The clip is
-        delivered first; then, best-effort, the bot watches the video it just made (uploaded to
-        the Gemini Files API) and streams a persona reply onto the same message, mirroring
-        `_handle_image_reply` and consuming the speculative `ReplyContext` (history + the
-        requester's memory) only after the video is on screen so its build overlaps generation.
+        Runs direct to Google via `interactions.create`. If the message (or the replied-to message,
+        mirroring the IMAGE route) carries a video, omni edits that actual clip in place
+        (`task="edit"`, the literal request as the edit instruction, no prompt director); otherwise
+        the request is expanded by the prompt director and any images ride as subject reference
+        frames (up to `MAX_VIDEO_REFERENCE_IMAGES`). The clip is delivered first; then, best-effort,
+        the bot watches the video it just made (uploaded to the Gemini Files API) and streams a
+        persona reply onto the same message, mirroring `_handle_image_reply` and consuming the
+        speculative `ReplyContext` (history + the requester's memory) only after the video is on
+        screen so its build overlaps generation.
         """
         started = time.monotonic()
         logfire.info("gen_reply video generation start", message_id=message.id)
@@ -738,30 +741,48 @@ class ReplyGeneratorCogs(commands.Cog):
             source_messages = [message]
             if message.reference and isinstance(message.reference.resolved, Message):
                 source_messages.append(message.reference.resolved)
-            gathered = await asyncio.gather(
-                *(
-                    self.input_builder.get_image_sources_with_mime(message=m)
-                    for m in source_messages
-                ),
-                *(
-                    self.input_builder.get_video_thumbnail_sources(message=m)
-                    for m in source_messages
-                ),
-            )
-            # Cap to the same set render sends to Veo (it ingests at most three reference images),
-            # so the director grounds on exactly those frames and no unused bytes ride the path.
-            images = [pair for group in gathered for pair in group][:MAX_VIDEO_REFERENCE_IMAGES]
-            # Refine the raw request into a full motion/camera prompt first (best-effort, raw
-            # prompt on disable / failure); the reference frames ride along as grounding.
-            refined_prompt = await self.prompt_generator.refine(
-                user_prompt=user_prompt,
-                instructions=VIDEO_PROMPT,
-                end_user_id=message.author.name,
-                image_bytes_list=[raw for raw, _ in images] or None,
-            )
-            video_bytes = await self.video_generator.render(
-                prompt=refined_prompt, reference_image_sources=images
-            )
+            # Find the source video first, by priority (current message, then replied-to); each
+            # message reads at most its first clip. Only when there is no source video do we
+            # download reference images, so an edit is never delayed by media it discards.
+            source_video: tuple[bytes, str] | None = None
+            for source_message in source_messages:
+                videos = await self.input_builder.get_video_sources(message=source_message)
+                if videos:
+                    source_video = videos[0]
+                    break
+            if source_video is not None:
+                # A source video is edited in place (task=edit): omni ingests the actual clip, so
+                # the prompt is the literal edit instruction. The director is skipped here — it
+                # only grounds on image parts (a video-only edit would run it blind) and it sits
+                # serially on the time-to-video path; the user's edit request is already specific.
+                # omni takes a single input here, so any accompanying reference images are dropped.
+                video_bytes = await self.video_generator.render(
+                    prompt=user_prompt, reference_image_sources=[], source_video=source_video
+                )
+            else:
+                # No source video: gather the message + replied-to images as subject references,
+                # capped to the same set render sends (omni takes a few), so the director grounds
+                # on exactly those frames and no unused bytes ride the path.
+                image_groups = await asyncio.gather(
+                    *(
+                        self.input_builder.get_image_sources_with_mime(message=m)
+                        for m in source_messages
+                    )
+                )
+                images = [pair for group in image_groups for pair in group][
+                    :MAX_VIDEO_REFERENCE_IMAGES
+                ]
+                # Refine the raw request into a full motion/camera prompt first (best-effort, raw
+                # prompt on disable / failure); the reference frames ride along as grounding.
+                refined_prompt = await self.prompt_generator.refine(
+                    user_prompt=user_prompt,
+                    instructions=VIDEO_PROMPT,
+                    end_user_id=message.author.name,
+                    image_bytes_list=[raw for raw, _ in images] or None,
+                )
+                video_bytes = await self.video_generator.render(
+                    prompt=refined_prompt, reference_image_sources=images
+                )
             reply = await self._deliver_generated_media(
                 message=message, data=video_bytes, filename="generated.mp4"
             )

@@ -26,7 +26,7 @@ from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
 
 if TYPE_CHECKING:
-    from google.genai._interactions.types import InteractionSSEEvent
+    from google.genai.interactions import InteractionSSEEvent
 
 DISCORD_MESSAGE_LIMIT = 2000
 

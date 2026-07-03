@@ -100,10 +100,12 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `VideoGenerator.render` (via the VIDEO route `_handle_video_reply`).
 
         Returns:
-            Model settings used with the native Gemini `generate_videos` API (a bare Veo model
-            name, no provider prefix, since the call goes direct to Google not via the proxy).
+            Model settings used with the native Gemini Interactions API (`interactions.create`,
+            a bare model name with no provider prefix, since the call goes direct to Google not
+            via the proxy). omni unifies text/image/reference/edit video generation, so the same
+            model backs plain generation and true source-video editing (`task="edit"`).
         """
-        video_model = ModelSettings(name="veo-3.1-generate-preview")
+        video_model = ModelSettings(name="gemini-omni-flash-preview")
         return video_model
 
     @property

@@ -22,7 +22,7 @@ from discordbot.cogs._gen_reply.attachment.base import (
     AttachmentRenderer,
     loggable_cache_key,
 )
-from discordbot.cogs._gen_reply.attachment.loaders import load_image_bytes
+from discordbot.cogs._gen_reply.attachment.loaders import load_image_bytes, load_attachment_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Sequence, Coroutine
@@ -384,22 +384,26 @@ class MessageInputBuilder(BaseModel):
         """Returns downscaled bytes of a message's image sources for the IMAGE route."""
         return [raw for raw, _ in await self.get_image_sources_with_mime(message=message)]
 
-    async def get_video_thumbnail_sources(self, message: Message) -> list[tuple[bytes, str]]:
-        """Best-effort (bytes, MIME) poster frames of a message's video attachments.
+    async def get_video_sources(self, message: Message) -> list[tuple[bytes, str]]:
+        """Best-effort (bytes, MIME) of the FIRST raw video attachment, for omni editing.
 
-        Veo cannot ingest a raw video, so a referenced/attached video contributes its poster
-        frame as a reference image instead: Discord's media proxy renders one from the
-        attachment's `proxy_url` via `?format=jpeg`, and `load_image_bytes` decodes it, so a
-        proxy that returns no frame is simply skipped. Video links Discord unfurled into an
-        embed thumbnail are already collected as image sources by `collect_attachment_sources`,
-        so only direct video attachments are handled here.
+        omni edits a single clip (`task="edit"`) and the VIDEO route only ever uses one, so this
+        downloads at most the first usable video instead of every attachment — a message carrying
+        several large clips must not spike bandwidth / memory reading clips the edit discards.
+        Video links Discord unfurled into an embed thumbnail are already collected as image sources
+        by `collect_attachment_sources`, so only direct video attachments count; a clip that fails
+        to read is skipped and the next is tried. Returns a one-item list (or empty), keeping the
+        caller's flatten-and-take-first shape.
         """
-        tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
         for source in self.collect_attachment_sources(message=message):
             if source.content_type.startswith("video/") and isinstance(source.handle, Attachment):
-                tasks.append(load_image_bytes(source=f"{source.handle.proxy_url}?format=jpeg"))
-        loaded = await asyncio.gather(*tasks, return_exceptions=True)
-        return [item for item in loaded if isinstance(item, tuple)]
+                try:
+                    return [await load_attachment_bytes(attachment=source.handle)]
+                except Exception:
+                    logfire.warn(
+                        "failed to read a source video attachment; trying the next", _exc_info=True
+                    )
+        return []
 
     @staticmethod
     def required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
