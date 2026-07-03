@@ -741,30 +741,34 @@ class ReplyGeneratorCogs(commands.Cog):
             source_messages = [message]
             if message.reference and isinstance(message.reference.resolved, Message):
                 source_messages.append(message.reference.resolved)
-            image_groups, video_groups = await asyncio.gather(
-                asyncio.gather(
-                    *(
-                        self.input_builder.get_image_sources_with_mime(message=m)
-                        for m in source_messages
-                    )
-                ),
-                asyncio.gather(
-                    *(self.input_builder.get_video_sources(message=m) for m in source_messages)
-                ),
-            )
-            source_videos = [pair for group in video_groups for pair in group]
-            if source_videos:
+            # Find the source video first, by priority (current message, then replied-to); each
+            # message reads at most its first clip. Only when there is no source video do we
+            # download reference images, so an edit is never delayed by media it discards.
+            source_video: tuple[bytes, str] | None = None
+            for source_message in source_messages:
+                videos = await self.input_builder.get_video_sources(message=source_message)
+                if videos:
+                    source_video = videos[0]
+                    break
+            if source_video is not None:
                 # A source video is edited in place (task=edit): omni ingests the actual clip, so
                 # the prompt is the literal edit instruction. The director is skipped here — it
                 # only grounds on image parts (a video-only edit would run it blind) and it sits
                 # serially on the time-to-video path; the user's edit request is already specific.
                 # omni takes a single input here, so any accompanying reference images are dropped.
                 video_bytes = await self.video_generator.render(
-                    prompt=user_prompt, reference_image_sources=[], source_video=source_videos[0]
+                    prompt=user_prompt, reference_image_sources=[], source_video=source_video
                 )
             else:
-                # Cap to the same set render sends (omni takes a few subject reference images), so
-                # the director grounds on exactly those frames and no unused bytes ride the path.
+                # No source video: gather the message + replied-to images as subject references,
+                # capped to the same set render sends (omni takes a few), so the director grounds
+                # on exactly those frames and no unused bytes ride the path.
+                image_groups = await asyncio.gather(
+                    *(
+                        self.input_builder.get_image_sources_with_mime(message=m)
+                        for m in source_messages
+                    )
+                )
                 images = [pair for group in image_groups for pair in group][
                     :MAX_VIDEO_REFERENCE_IMAGES
                 ]
