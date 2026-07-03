@@ -1730,6 +1730,8 @@ async def test_video_disabled_still_strips_marker(economy_isolated_db: None) -> 
     assert "<video>" not in result
     assert "wave" not in result
     assert message.replies[0].file is None
+    # The disabled path returns before the video emoji, so no spurious reaction is added.
+    assert message.added_reactions == []
 
 
 async def test_video_generation_failure_hints(economy_isolated_db: None) -> None:
