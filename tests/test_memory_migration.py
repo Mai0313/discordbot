@@ -4,9 +4,12 @@ from pathlib import Path
 
 from scripts.migrate_memory_privacy import (
     _resolve_user_ids,
+    _repoint_store_root,
     tag_untagged_bullets,
     count_untagged_bullets,
 )
+
+from discordbot.cogs._memory.store import read_main_memory
 
 # A migrated-in-progress main.md: the profile paragraph stays untagged by design,
 # two bullets already carry a tag, and two (one `* `, one `- `) still lack one.
@@ -62,6 +65,25 @@ def test_tag_untagged_bullets_is_idempotent() -> None:
     twice, fixed = tag_untagged_bullets(text=once)
     assert fixed == 0
     assert twice == once
+
+
+def test_repoint_store_root_makes_folder_govern_reads(
+    memory_isolated_dir: Path, tmp_path: Path
+) -> None:
+    """--folder must govern reads and writes, not just id enumeration.
+
+    Ids enumerated from a backup copy would otherwise read (and on --apply rewrite)
+    the live store; the fixture keeps the repoint from leaking into other tests.
+    """
+    del memory_isolated_dir
+    backup_root = tmp_path / "backup-memories"
+    (backup_root / "123").mkdir(parents=True)
+    (backup_root / "123" / "main.md").write_text(data="v1\n備份內容\n", encoding="utf-8")
+    _repoint_store_root(folder=backup_root)
+    assert read_main_memory(scope="123") == "v1\n備份內容"
+    # A single-user directory repoints to its parent (the memories root).
+    _repoint_store_root(folder=backup_root / "123")
+    assert read_main_memory(scope="123") == "v1\n備份內容"
 
 
 def test_resolve_user_ids_handles_single_user_and_root_folder(tmp_path: Path) -> None:

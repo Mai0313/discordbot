@@ -23,6 +23,10 @@ from rich.console import Console
 
 from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.llm import LLMConfig
+
+# Module-namespace import on purpose: `_repoint_store_root` reassigns the store's
+# root so `--folder` governs reads and writes, not just id enumeration.
+from discordbot.cogs._memory import store
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.store import (
     user_scope,
@@ -69,6 +73,17 @@ HARD RULES:
 * Keep the section order and headers; drop a section header only when tone extraction emptied it. The output must start exactly with `v1`.
 * Set `changed=true`. The content language stays Traditional Chinese.
 """
+
+
+def _repoint_store_root(folder: Path) -> None:
+    """Points the memory store at the requested root so `--folder` governs reads AND writes.
+
+    Without this, ids enumerated from a backup or staging copy would read — and on
+    `--apply`, rewrite — the LIVE `./data/memories` files instead of the requested
+    folder. A single-user directory repoints to its parent (the memories root).
+    """
+    root = folder.parent if folder.name.isdigit() else folder
+    store._MEMORY_DIR = root  # noqa: SLF001 -- deliberate offline repoint; the same knob the test fixture uses
 
 
 def _resolve_user_ids(folder: Path) -> list[int]:
@@ -191,7 +206,9 @@ async def _migrate_one(
 
 async def _migrate_all(model: ModelSettings, folder: str, apply: bool) -> None:
     """Migrates every resolved user's main.md, bounded by the local semaphore."""
-    user_ids = _resolve_user_ids(folder=Path(folder))
+    resolved_folder = Path(folder)
+    _repoint_store_root(folder=resolved_folder)
+    user_ids = _resolve_user_ids(folder=resolved_folder)
     if not apply:
         console.print(
             f"Dry-run preview for {len(user_ids)} user(s). Pass --apply to rewrite main.md."
