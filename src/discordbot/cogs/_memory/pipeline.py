@@ -19,7 +19,10 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs._memory.store import (
     clear_raw,
+    read_tone,
+    clear_tone,
     scope_lock,
+    write_tone,
     append_detail,
     cleared_since,
     raw_file_bytes,
@@ -44,7 +47,9 @@ from discordbot.cogs._memory.constants import (
 )
 from discordbot.cogs._memory.extraction import (
     MemoryExtractorAI,
+    parse_subject_source,
     transcript_from_messages,
+    render_memory_observations,
     filter_duplicate_observations,
 )
 
@@ -334,7 +339,7 @@ async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update
                 coro=memory_db.mark_failed(scope=scope, token=token, error="extract failed")
             )
             return
-        if not draft.has_signal or not draft.memory_markdown:
+        if not draft.has_signal or not draft.observations:
             await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
         if cleared_since(scope=scope, started_at=started_at):
@@ -342,19 +347,24 @@ async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update
             # the write beats resurrecting deleted memory.
             await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
+        # The subject's source line survives the memory_job round-trip, so a resumed
+        # turn stamps the same source; a pre-source row (or the server flavor) parses
+        # to None and renders without the source/sharing fields.
+        source = parse_subject_source(subject=subject)
         recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
         deduped_observations = filter_duplicate_observations(
             observations=draft.observations,
             existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
+            source=source,
         )
         if not deduped_observations:
             await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
         append_raw_entry(
             scope=scope,
-            entry_text=draft.model_copy(
-                update={"observations": deduped_observations}
-            ).memory_markdown,
+            entry_text=render_memory_observations(
+                observations=deduped_observations, source=source
+            ),
         )
         # Phase-1 is durable in raw.md now; record success before the (best-effort,
         # self-healing) consolidation so a consolidation crash never re-runs extraction.
@@ -432,11 +442,12 @@ def _should_consolidate(scope: str) -> bool:
 async def _consolidate_locked(
     scope: str, started_at: float, extractor: MemoryExtractorAI, identity: str
 ) -> None:
-    """Consolidates accumulated raw entries into the main memory file."""
+    """Consolidates accumulated raw entries into the main memory file (and tone note)."""
     existing_main = read_main_memory(scope=scope)
     compact = len(existing_main) > MAIN_COMPACTION_TRIGGER_CHARS
     result = await extractor.consolidate(
         existing_main=existing_main,
+        existing_tone=read_tone(scope=scope),
         raw_entries=read_raw_entries(scope=scope),
         recent_detail=read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
         today=datetime.now(UTC).date().isoformat(),
@@ -454,8 +465,21 @@ async def _consolidate_locked(
         # `v1: ...`): keep the raw batch for retry regardless of `changed`,
         # instead of discarding the accumulated signal.
         return
+    if result.tone_markdown and not result.tone_markdown.startswith("## 語氣偏好"):
+        # A malformed tone note rejects the batch like a malformed main rewrite: the
+        # rewritten main may have moved tone bullets out on the promise they land in
+        # the note, so consuming the batch here would silently lose the preference
+        # from every injected tier. Keeping raw retries the whole consolidation.
+        return
+    # The first rewrite that brings an untagged (pre-migration) file into the tagged
+    # format legitimately sheds a lot of text (tone bullets move to tone.md, private
+    # profile prose turns into tagged bullets), so it is judged by the deeper
+    # compaction floor; once tags exist the normal halving guard resumes.
+    first_tagged_rewrite = "[src:" not in existing_main and "[src:" in result.memory_markdown
     if is_well_formed and _rewrite_shrank_too_much(
-        existing_main=existing_main, rewritten=result.memory_markdown, compact=compact
+        existing_main=existing_main,
+        rewritten=result.memory_markdown,
+        compact=compact or first_tagged_rewrite,
     ):
         # A drastic surprise shrink is almost always a lossy LLM failure, not
         # a merge; refusing it keeps raw for retry and protects main.bak.md
@@ -473,6 +497,7 @@ async def _consolidate_locked(
         # `changed=false`, so a single contradictory boolean cannot silently
         # discard the whole raw batch.
         write_main_memory(scope=scope, content=result.memory_markdown, identity=identity)
+    _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
     # Reached only by a well-formed write or a genuine empty no-op: the batch is
     # consumed either way, since an unchanged verdict on the same raw entries
     # would just re-burn a consolidation call on every following extraction.
@@ -480,6 +505,23 @@ async def _consolidate_locked(
     # the failure paths above keep raw for retry and therefore must not retire it.
     append_detail(scope=scope, text=read_raw_entries(scope=scope))
     clear_raw(scope=scope)
+
+
+def _write_tone_result(scope: str, tone_markdown: str) -> None:
+    """Persists a consolidation's tone note when it is acceptable for this scope.
+
+    Sits on the tone-consuming paths (accepted rewrite AND genuine no-op, both of
+    which retire the raw batch — a main no-op can still carry fresh tone signal
+    that would otherwise be consumed without landing). User scopes only, and only
+    a note starting with the exact `## 語氣偏好` header; an empty or malformed
+    output never deletes the existing note — the tier is best-effort and the next
+    consolidation repairs it.
+    """
+    if flavor_of(scope=scope) != "user":
+        return
+    if not tone_markdown.startswith("## 語氣偏好"):
+        return
+    write_tone(scope=scope, content=tone_markdown)
 
 
 def regeneration_has_evidence(scope: str) -> bool:
@@ -570,6 +612,7 @@ async def regenerate_main_memory(
         _last_regeneration[scope] = time.monotonic()
         result = await extractor.consolidate(
             existing_main="",
+            existing_tone="",
             raw_entries=evidence,
             recent_detail="",
             today=datetime.now(UTC).date().isoformat(),
@@ -582,6 +625,14 @@ async def regenerate_main_memory(
         if cleared_since(scope=scope, started_at=started_at):
             return "failed"
         write_main_memory(scope=scope, content=result.memory_markdown, identity=identity)
+        if not result.tone_markdown:
+            # Unlike an incremental consolidation (whose empty tone output only means
+            # "no tone signal in this batch"), this rebuild saw the WHOLE evidence
+            # corpus: no tone signal anywhere means a surviving note is stale and
+            # would keep injecting a preference the evidence no longer supports.
+            clear_tone(scope=scope)
+        else:
+            _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
         if raw_entries:
             # The rebuild consumed the raw batch; retire it to the cold tier
             # exactly like a consolidation so it cannot be re-ingested.

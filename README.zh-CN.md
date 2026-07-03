@@ -23,7 +23,7 @@
 
 ## 功能
 
-- **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、观看贴上的 YouTube 视频、生成或编辑图片、生成短视频（可用附加图片或引用的视频当参考）、以接续 reply 消息延续长回复，并在可用时使用 model-provided web tools。它还会在后台慢慢积累对你个人偏好的长期记忆（跨服务器、仅自己可见），可用 `/memory show`、`/memory clear` 与 `/memory regenerate` 管理。
+- **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、观看贴上的 YouTube 视频、生成或编辑图片、生成短视频（可用附加图片或引用的视频当参考）、以接续 reply 消息延续长回复，并在可用时使用 model-provided web tools。它还会在后台慢慢积累对你个人偏好的长期记忆（仅自己可见，且按来源做隐私隔离：在某个服务器说的私事不会出现在别的服务器，只有语气偏好与明显无害的一般事实会跨服务器沿用），可用 `/memory show` 与 `/memory regenerate` 管理。
 - **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频，文件太大时会自动 retry 低画质。
 - **虚拟欢乐豆与金融系统**：用户可从消息获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
@@ -34,32 +34,32 @@
 
 ## 指令
 
-| 指令                                                             | 功能                                                                     |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `@bot <message>`                                                 | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。               |
-| _Threads URL_                                                    | 自动展开 Threads 贴文与媒体。                                            |
-| `/download_video <url> [quality]`                                | 下载视频并传回 Discord。                                                 |
-| `/balance [member]`                                              | 私密显示成员的虚拟欢乐豆余额、债务、stock holdings、净资产与 VIP 状态。  |
-| `/checkin`                                                       | 领取每日签到奖励。                                                       |
-| `/vip`                                                           | 购买永久 VIP 权益。                                                      |
-| `/leaderboard`                                                   | 显示全域余额排行榜。                                                     |
-| `/loss_leaderboard`                                              | 显示今日赌场输钱累计排行榜。                                             |
-| `/credit status\|borrow\|call\|repay`                            | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。           |
-| `/central_bank status\|borrow\|call\|repay`                      | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。     |
-| `/stock`                                                         | 公开股票市场消息，明细、交易、新闻、记录都在同一则 message edit。        |
-| `/give <member> <amount>`                                        | 转账虚拟欢乐豆给其他成员或 bot。                                         |
-| `/admin refund_tax\|collect_tax`                                 | admin-only 手动调整成员或 bot 余额。                                     |
-| `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。  |
-| `/games dragon_gate`                                             | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                           |
-| `/games fishing`                                                 | 打开个人钓鱼面板，买钓竿与鱼饵抛竿，是回收欢乐豆的 sink 玩法。           |
-| `/casino`                                                        | 显示赌场系统累积 P&L (跨服务器)。                                        |
-| `/pocat`                                                         | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                         |
-| `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查询 MapleStory Artale 怪物、装备与卷轴。                                |
-| `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | 查询 NPC、任务与地图。                                                   |
-| `/maplestory item`, `/maplestory stats`                          | 查询物品掉落来源与数据库统计。                                           |
-| `/memory show\|clear\|regenerate`                                | 私密查看、清除或重建 bot 对你记住的内容（regenerate 会排程在后台执行）。 |
-| `/help`                                                          | 显示 Discord 内的使用指南。                                              |
-| `/ping`                                                          | 检查 bot latency。                                                       |
+| 指令                                                             | 功能                                                                    |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `@bot <message>`                                                 | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。              |
+| _Threads URL_                                                    | 自动展开 Threads 贴文与媒体。                                           |
+| `/download_video <url> [quality]`                                | 下载视频并传回 Discord。                                                |
+| `/balance [member]`                                              | 私密显示成员的虚拟欢乐豆余额、债务、stock holdings、净资产与 VIP 状态。 |
+| `/checkin`                                                       | 领取每日签到奖励。                                                      |
+| `/vip`                                                           | 购买永久 VIP 权益。                                                     |
+| `/leaderboard`                                                   | 显示全域余额排行榜。                                                    |
+| `/loss_leaderboard`                                              | 显示今日赌场输钱累计排行榜。                                            |
+| `/credit status\|borrow\|call\|repay`                            | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。          |
+| `/central_bank status\|borrow\|call\|repay`                      | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。    |
+| `/stock`                                                         | 公开股票市场消息，明细、交易、新闻、记录都在同一则 message edit。       |
+| `/give <member> <amount>`                                        | 转账虚拟欢乐豆给其他成员或 bot。                                        |
+| `/admin refund_tax\|collect_tax`                                 | admin-only 手动调整成员或 bot 余额。                                    |
+| `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。 |
+| `/games dragon_gate`                                             | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                          |
+| `/games fishing`                                                 | 打开个人钓鱼面板，买钓竿与鱼饵抛竿，是回收欢乐豆的 sink 玩法。          |
+| `/casino`                                                        | 显示赌场系统累积 P&L (跨服务器)。                                       |
+| `/pocat`                                                         | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                        |
+| `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查询 MapleStory Artale 怪物、装备与卷轴。                               |
+| `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | 查询 NPC、任务与地图。                                                  |
+| `/maplestory item`, `/maplestory stats`                          | 查询物品掉落来源与数据库统计。                                          |
+| `/memory show\|regenerate`                                       | 私密查看或重建 bot 对你记住的内容（regenerate 会排程在后台执行）。      |
+| `/help`                                                          | 显示 Discord 内的使用指南。                                             |
+| `/ping`                                                          | 检查 bot latency。                                                      |
 
 ## 自托管
 
@@ -115,7 +115,7 @@ GEMINI_API_KEY=your_google_ai_studio_key
 
 本地测试央行批准流程时，可以设置 `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`。正式环境请保持未设置或 `false`。
 
-个人长期记忆永远开启；用户可以用 `/memory show`、`/memory clear` 与 `/memory regenerate` 管理自己的记忆。
+个人长期记忆永远开启；用户可以用 `/memory show` 与 `/memory regenerate` 管理自己的记忆。每条记忆都标记学到它的来源，私密内容只会留在该服务器或 DM 使用。
 
 ## 数据与隐私
 
