@@ -20,9 +20,12 @@ render goes through the same calling convention instead of a half-free-function 
   (OK / EMPTY / TIMEOUT / ERROR) rather than a bare None, so the caller can hint a timeout (⏱️)
   apart from any other failure (⚠️). The `speechify_discord_markup` helper that prepares its spoken
   input lives alongside it.
-- `VideoGenerator` runs the single native-Veo render behind the VIDEO route DIRECT to Google
-  (`genai.Client`, Veo is unreachable via the proxy). It has only `render` (raising): video has no
-  inline marker and is always the primary deliverable, so there is no best-effort twin by design.
+- `VideoGenerator` runs the single native-omni render behind the VIDEO route DIRECT to Google
+  (`genai.Client`, the Interactions API is Gemini-only, not reachable via the proxy). One model
+  (`interactions.create`) backs text / reference-image / source-video generation, so plain
+  generation and true source-video editing (`task="edit"`) share it. It has only `render`
+  (raising): video has no inline marker and is always the primary deliverable, so no best-effort
+  twin by design.
 - `MusicGenerator` runs the native-Lyria render behind the QA-route `<music>` marker via the
   Gemini Interactions API, also DIRECT to Google. Like `ImageGenerator.generate` it is best-effort
   only (`generate`, None on any failure), since music is inline-only.
@@ -31,22 +34,27 @@ Keeping them here means a future provider swap (or a move of a render off the pr
 one place.
 """
 
+from io import BytesIO
 import re
 from enum import StrEnum
 import time
 import base64
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 import asyncio
 
 from google import genai
 from openai import AsyncOpenAI, APITimeoutError
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from google.genai.types import (
-    Image,
-    GenerateVideosConfig,
-    VideoGenerationReferenceType,
-    VideoGenerationReferenceImage,
+from google.genai.types import FileState
+from google.genai.interactions import (
+    Interaction,
+    TextContentParam,
+    VideoConfigParam,
+    ImageContentParam,
+    VideoContentParam,
+    GenerationConfigParam,
+    VideoResponseFormatParam,
 )
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -68,14 +76,20 @@ INLINE_IMAGE_TIMEOUT_SECONDS = 300.0
 # timeout the refine falls back to the raw user prompt like any other failure.
 PROMPT_REFINE_TIMEOUT_SECONDS = 120.0
 
-# Hard ceiling on the video-generation polling loop so a hung provider job cannot leave the
-# message handler waiting forever. Co-located with the image timeout since it is a property of
-# the render, not of the route that calls it.
+# Hard ceiling on the whole omni video render (a single blocking interactions.create) so a hung
+# provider job cannot leave the message handler waiting forever. Co-located with the image timeout
+# since it is a property of the render, not of the route that calls it.
 VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
 
-# Veo ingests at most three ASSET reference images. Shared so the VIDEO route caps the frames it
+# Activation bound for a source video uploaded to the Files API before an omni edit. Larger than
+# the reply-upload's 60s because a raw user clip (up to the guild's boost-tier upload limit) is far
+# bigger than a generated image and can sit in PROCESSING longer; the edit hard-fails if it is not
+# ACTIVE by then, since the video is the primary deliverable.
+SOURCE_VIDEO_ACTIVATION_TIMEOUT_SECONDS = 180.0
+
+# omni accepts a handful of subject reference images. Shared so the VIDEO route caps the frames it
 # grounds the prompt director on to exactly the set render will send, rather than letting the
-# director describe references Veo never receives (and uploading those unused bytes on the path).
+# director describe references omni never receives (and uploading those unused bytes on the path).
 MAX_VIDEO_REFERENCE_IMAGES = 3
 
 # Bound for the inline-music best-effort path, mirroring the inline-image timeout: the render
@@ -469,91 +483,130 @@ class VoiceGenerator(BaseModel):
 
 
 class VideoGenerator(BaseModel):
-    """Native-Veo video render behind the VIDEO route.
+    """Native Gemini (omni) video render behind the VIDEO route.
 
     Holds the direct-to-Google client and the video model. Only `render` (raising) exists: video
     has no inline marker and is always the primary deliverable, so unlike `ImageGenerator` there
-    is no best-effort twin.
+    is no best-effort twin. Runs on the Gemini Interactions API (`interactions.create`), which
+    unifies text / reference-image / source-video generation on one model, so the same call backs
+    plain generation and true source-video editing (`task="edit"`).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     client: SkipValidation[genai.Client] = Field(
-        ..., description="Direct-to-Google Gemini client (Veo is unreachable via the proxy)."
+        ...,
+        description="Direct-to-Google Gemini client (the Interactions API is Gemini-only, no proxy).",
     )
     video_model: ModelSettings = Field(
-        ..., description="Model settings for native Gemini (Veo) video generation."
+        ..., description="Model settings for native Gemini (omni) video generation."
     )
 
     async def render(
-        self, *, prompt: str, reference_image_sources: list[tuple[bytes, str]]
+        self,
+        *,
+        prompt: str,
+        reference_image_sources: list[tuple[bytes, str]],
+        source_video: tuple[bytes, str] | None = None,
     ) -> bytes:
-        """Renders one video to MP4 bytes with the native Gemini (Veo) SDK; raises on failure.
+        """Renders one video to MP4 bytes via the native Gemini (omni) Interactions API; raises.
 
-        The video twin of `ImageGenerator.render` as the single downstream video render, so the
-        VIDEO route shares one implementation and a future provider swap changes one place. Goes
-        DIRECT to Google (the LiteLLM proxy cannot reach Veo); up to three source images ride as
-        ASSET reference images. Raises `RuntimeError` on an operation error or an empty result,
-        surfacing the RAI safety-filter reasons when the operation finished cleanly but filtered
-        every candidate, so a blocked render is diagnosable instead of a bare `None`.
+        The single downstream video render, so the VIDEO route shares one implementation and a
+        future provider swap changes one place. Goes DIRECT to Google (the Interactions API is
+        Gemini-only). Three input modes by precedence: a `source_video` is uploaded to the Files
+        API and edited in place (`task="edit"`); otherwise up to `MAX_VIDEO_REFERENCE_IMAGES`
+        subject images ride inline (`task="reference_to_video"`); otherwise plain text
+        (`task="text_to_video"`). 16:9 for text / reference generation (an edit keeps the source
+        clip's ratio, so no aspect ratio is sent); `delivery="uri"` so the clip comes back as a
+        Files URI (no base64 bloat) and is downloaded with a single `files.download` — the interaction
+        only reports `completed` once the file is ready, so no ACTIVE poll is needed. Duration is
+        left to omni's default. Raises `RuntimeError` when the interaction is not `completed` or
+        carries no video, folding in `status` + `output_text` (omni signals a soft refusal /
+        incomplete / budget_exceeded that way; the `Interaction` has no `error` / `rai_*` field).
         """
-        reference_images = [
-            VideoGenerationReferenceImage(
-                image=Image(image_bytes=raw, mime_type=mime),
-                reference_type=VideoGenerationReferenceType.ASSET,
+        text = prompt or "請依照訊息內容生成一段影片。"
+        content: list[TextContentParam | ImageContentParam | VideoContentParam]
+        task: Literal["edit", "reference_to_video", "text_to_video"]
+        # 16:9 is set for text / reference generation; omni 400s an aspect_ratio on an edit
+        # ("cannot be set in response format for edit task") since an edit keeps the source ratio.
+        response_format = VideoResponseFormatParam(type="video", delivery="uri")
+        if source_video is not None:
+            file_uri = await self._upload_source_video(source_video=source_video)
+            content = [
+                VideoContentParam(type="video", uri=file_uri),
+                TextContentParam(type="text", text=text),
+            ]
+            task = "edit"
+        elif reference_image_sources:
+            content = [TextContentParam(type="text", text=text)]
+            content.extend(
+                ImageContentParam(type="image", data=base64.b64encode(raw).decode())
+                for raw, _mime in reference_image_sources[:MAX_VIDEO_REFERENCE_IMAGES]
             )
-            for raw, mime in reference_image_sources[:MAX_VIDEO_REFERENCE_IMAGES]
-        ]
-        # Veo 3.1 requires duration_seconds=8 at 1080p and with reference images, so it is pinned
-        # (4/6/8 are only selectable at 720p); audio rides on by default. Only fields this model
-        # accepts are set: enhance_prompt 400s on veo-3.1-generate-preview, and fps / seed /
-        # generate_audio / compression_quality are Vertex-only and 400 here too.
-        video_config = GenerateVideosConfig(
-            number_of_videos=1,
-            aspect_ratio="16:9",
-            resolution="1080p",
-            duration_seconds=8,
-            reference_images=reference_images or None,
-        )
+            task = "reference_to_video"
+            response_format["aspect_ratio"] = "16:9"
+        else:
+            content = [TextContentParam(type="text", text=text)]
+            task = "text_to_video"
+            response_format["aspect_ratio"] = "16:9"
+
         started = time.monotonic()
-        operation = await self.client.aio.models.generate_videos(
-            model=self.video_model.name,
-            prompt=prompt or "請依照訊息內容生成一段影片。",
-            config=video_config,
-        )
-        logfire.debug(
-            "gen_reply video job created",
-            operation=operation.name,
-            reference_images=len(reference_images),
-        )
         async with asyncio.timeout(delay=VIDEO_RENDER_TIMEOUT_SECONDS):
-            while not operation.done:
-                await asyncio.sleep(5)
-                operation = await self.client.aio.operations.get(operation=operation)
-                logfire.debug(
-                    "gen_reply video poll",
-                    operation=operation.name,
-                    done=operation.done,
-                    poll_seconds=time.monotonic() - started,
-                )
-        response = operation.response
-        if operation.error or not (response and response.generated_videos):
-            # A clean finish with no videos means every candidate was safety-filtered; surface the
-            # RAI reasons so the empty case is distinguishable from a true operation error instead
-            # of the misleading bare `None` that operation.error carries here.
-            rai_reasons = response.rai_media_filtered_reasons if response else None
+            # Not a stream (no stream=True), so narrow the create() union to the Interaction the
+            # non-streaming call actually returns.
+            interaction = cast(
+                "Interaction",
+                await self.client.aio.interactions.create(
+                    model=self.video_model.name,
+                    input=content,
+                    response_format=response_format,
+                    generation_config=GenerationConfigParam(
+                        video_config=VideoConfigParam(task=task)
+                    ),
+                    timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
+                ),
+            )
+        video = interaction.output_video
+        if interaction.status != "completed" or video is None or video.uri is None:
             logfire.warn(
                 "gen_reply video generation failed",
-                operation=operation.name,
-                error=str(operation.error),
-                rai_media_filtered_count=response.rai_media_filtered_count if response else None,
-                rai_media_filtered_reasons=rai_reasons,
+                status=str(interaction.status),
+                task=task,
+                note=interaction.output_text,
             )
-            raise RuntimeError(f"Video generation failed: {operation.error or rai_reasons}")
-        generated = response.generated_videos[0]
-        if generated.video is None or generated.video.uri is None:
-            raise RuntimeError(f"Video generation returned no video for {operation.name}")
-        return await self.client.aio.files.download(file=generated.video.uri)
+            raise RuntimeError(
+                f"Video generation failed: status={interaction.status} note={interaction.output_text!r}"
+            )
+        logfire.debug(
+            "gen_reply video job done", task=task, render_seconds=time.monotonic() - started
+        )
+        return await self.client.aio.files.download(file=video.uri)
+
+    async def _upload_source_video(self, *, source_video: tuple[bytes, str]) -> str:
+        """Uploads a source clip to the Files API and returns its ACTIVE uri; raises on failure.
+
+        The edit path feeds the actual clip (not a poster frame), so the video IS the primary
+        deliverable and a failed upload must hard-fail with a diagnosable error rather than pass a
+        None uri into `VideoContentParam`. The activation bound is generous
+        (`SOURCE_VIDEO_ACTIVATION_TIMEOUT_SECONDS`) because a raw clip is far larger than an image
+        and can sit in PROCESSING longer than the reply-upload's window.
+        """
+        data, mime = source_video
+        uploaded = await self.client.aio.files.upload(
+            file=BytesIO(data), config={"mime_type": mime, "display_name": "source.mp4"}
+        )
+        file_name = uploaded.name
+        if file_name is None:
+            raise RuntimeError("Source video upload returned no file name")
+        deadline = time.monotonic() + SOURCE_VIDEO_ACTIVATION_TIMEOUT_SECONDS
+        while uploaded.state == FileState.PROCESSING:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Source video did not become ACTIVE before the deadline")
+            await asyncio.sleep(1.0)
+            uploaded = await self.client.aio.files.get(name=file_name)
+        if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
+            raise RuntimeError(f"Source video upload failed: state={uploaded.state}")
+        return uploaded.uri
 
 
 class MusicClip(BaseModel):

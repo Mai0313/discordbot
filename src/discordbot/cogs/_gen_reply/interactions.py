@@ -20,28 +20,27 @@ from collections.abc import AsyncIterator
 
 from google import genai
 from openai.types.responses import ResponseStreamEvent
-from google.genai._interactions.types import (
+from google.genai.interactions import (
     StepParam,
+    URLContext,
     ContentParam,
+    GoogleSearch,
     ThinkingLevel,
+    AllowlistParam,
     EnvironmentParam,
     TextContentParam,
     AudioContentParam,
     ImageContentParam,
     VideoContentParam,
     UserInputStepParam,
+    AllowlistEntryParam,
     InteractionSSEEvent,
     DocumentContentParam,
     ModelOutputStepParam,
     GenerationConfigParam,
 )
 from openai.types.shared.reasoning_effort import ReasoningEffort
-from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
-from google.genai._interactions.types.environment_param import (
-    NetworkAllowlist,
-    NetworkAllowlistAllowlist,
-)
 from openai.types.responses.response_input_content_param import ResponseInputContentParam
 
 if TYPE_CHECKING:
@@ -240,8 +239,7 @@ async def create_interactions_answer_stream(
         # existing environment's id. The `*` allowlist leaves outbound networking unrestricted so
         # the server-side tools and the YouTube fetch can reach any domain.
         environment=EnvironmentParam(
-            type="remote",
-            network=NetworkAllowlist(allowlist=[NetworkAllowlistAllowlist(domain="*")]),
+            type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
         ),
         generation_config=GenerationConfigParam(
             # effort is the route grade copied onto slow_model (always low / medium / high here,

@@ -22,7 +22,7 @@ from discordbot.cogs._gen_reply.attachment.base import (
     AttachmentRenderer,
     loggable_cache_key,
 )
-from discordbot.cogs._gen_reply.attachment.loaders import load_image_bytes
+from discordbot.cogs._gen_reply.attachment.loaders import load_image_bytes, load_attachment_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Sequence, Coroutine
@@ -384,20 +384,19 @@ class MessageInputBuilder(BaseModel):
         """Returns downscaled bytes of a message's image sources for the IMAGE route."""
         return [raw for raw, _ in await self.get_image_sources_with_mime(message=message)]
 
-    async def get_video_thumbnail_sources(self, message: Message) -> list[tuple[bytes, str]]:
-        """Best-effort (bytes, MIME) poster frames of a message's video attachments.
+    async def get_video_sources(self, message: Message) -> list[tuple[bytes, str]]:
+        """Best-effort (bytes, MIME) of a message's raw video attachments, for omni editing.
 
-        Veo cannot ingest a raw video, so a referenced/attached video contributes its poster
-        frame as a reference image instead: Discord's media proxy renders one from the
-        attachment's `proxy_url` via `?format=jpeg`, and `load_image_bytes` decodes it, so a
-        proxy that returns no frame is simply skipped. Video links Discord unfurled into an
-        embed thumbnail are already collected as image sources by `collect_attachment_sources`,
-        so only direct video attachments are handled here.
+        omni ingests the actual clip to edit it (`task="edit"`), so the raw video bytes are
+        loaded here rather than the poster frame the old Veo path used. Video links Discord
+        unfurled into an embed thumbnail are already collected as image sources by
+        `collect_attachment_sources`, so only direct video attachments are handled; a failed
+        read is skipped so a broken attachment never aborts the route.
         """
         tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
         for source in self.collect_attachment_sources(message=message):
             if source.content_type.startswith("video/") and isinstance(source.handle, Attachment):
-                tasks.append(load_image_bytes(source=f"{source.handle.proxy_url}?format=jpeg"))
+                tasks.append(load_attachment_bytes(attachment=source.handle))
         loaded = await asyncio.gather(*tasks, return_exceptions=True)
         return [item for item in loaded if isinstance(item, tuple)]
 

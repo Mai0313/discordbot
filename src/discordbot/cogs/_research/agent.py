@@ -31,17 +31,19 @@ import asyncio
 from google import genai
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from google.genai._interactions.types import EnvironmentParam, DeepResearchAgentConfigParam
-from google.genai._interactions.types.tool_param import URLContext, GoogleSearch
-from google.genai._interactions.types.environment_param import (
-    NetworkAllowlist,
-    NetworkAllowlistAllowlist,
+from google.genai.interactions import (
+    URLContext,
+    GoogleSearch,
+    AllowlistParam,
+    EnvironmentParam,
+    AllowlistEntryParam,
+    DeepResearchAgentConfigParam,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, AsyncIterator
 
-    from google.genai._interactions.types import InteractionSSEEvent
+    from google.genai.interactions import InteractionSSEEvent
 
     from discordbot.cogs._research.streaming import ResearchProgressStreamer
 
@@ -279,8 +281,9 @@ class _StreamDriver(BaseModel):
             try:
                 async for event in stream:
                     progressed = True
-                    if event.event_id:
-                        self.last_event_id = event.event_id
+                    event_id = getattr(event, "event_id", None)
+                    if event_id:
+                        self.last_event_id = event_id
                     if event.event_type == "interaction.created" and not self.interaction_id:
                         self.interaction_id = str(event.interaction.id or "")
                         await on_created(self.interaction_id)
@@ -366,7 +369,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
 ) -> ResearchResult:
     """Streams the default Antigravity research (reasoning live); returns the terminal result."""
     environment = EnvironmentParam(
-        type="remote", network=NetworkAllowlist(allowlist=[NetworkAllowlistAllowlist(domain="*")])
+        type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
     )
     driver = _StreamDriver(client=client)
 

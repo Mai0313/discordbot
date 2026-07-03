@@ -82,8 +82,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 detail=(
                     "Mention me or DM me to get started: chat, answer questions, summarize "
                     "articles, read your images and files, watch linked YouTube videos, and "
-                    "generate images, or short videos that can use your attached images or a "
-                    "referenced video as reference. I slowly learn your preferences "
+                    "generate images, or short videos from a prompt or your attached images, "
+                    "or edit a referenced video. I slowly learn your preferences "
                     "and may use them in a reply, marked with a 🧠 note.\n\n"
                     "Memory\n"
                     "`/memory show` — see what I remember about you\n"
@@ -163,7 +163,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 summary="tag 或私訊我就能聊天、看圖看檔、生成圖片",
                 detail=(
                     "tag 我或私訊我就能開始:聊天、回答問題、摘要文章、分析你附上的圖片和檔案、"
-                    "看你貼的 YouTube 影片,也能依需求生成圖片,或用你附加的圖片或引用的影片當參考生成短影片。我會慢慢記住你的偏好,回覆時可能參考並用 🧠 標註。\n\n"
+                    "看你貼的 YouTube 影片,也能依需求生成圖片,用附加的圖片或提示生成短影片,或編輯你引用的影片。我會慢慢記住你的偏好,回覆時可能參考並用 🧠 標註。\n\n"
                     "記憶\n"
                     "`/memory show` — 看我記得你什麼\n"
                     "`/memory regenerate` — 在背景重建我對你的記憶\n"
@@ -242,7 +242,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 detail=(
                     "メンションまたはDMで始められます:会話、質問への回答、記事の要約、"
                     "添付画像やファイルの読み取り、貼られた YouTube 動画の視聴、"
-                    "リクエストに応じた画像生成や、添付画像・参照動画を参考にした短い動画の生成。"
+                    "リクエストに応じた画像生成、プロンプトや添付画像からの短い動画の生成、参照動画の編集。"
                     "あなたの好みを少しずつ覚え、返信時に参照して 🧠 で示すことがあります。\n\n"
                     "メモリー\n"
                     "`/memory show` — 覚えている内容を表示\n"
