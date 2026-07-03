@@ -483,13 +483,15 @@ class VoiceGenerator(BaseModel):
 
 
 class VideoGenerator(BaseModel):
-    """Native Gemini (omni) video render behind the VIDEO route.
+    """Native Gemini (omni) video render behind the VIDEO route and the QA-route `<video>` marker.
 
-    Holds the direct-to-Google client and the video model. Only `render` (raising) exists: video
-    has no inline marker and is always the primary deliverable, so unlike `ImageGenerator` there
-    is no best-effort twin. Runs on the Gemini Interactions API (`interactions.create`), which
-    unifies text / reference-image / source-video generation on one model, so the same call backs
-    plain generation and true source-video editing (`task="edit"`).
+    Holds the direct-to-Google client and the video model. `render` (raising) backs the VIDEO
+    route, where video is always the primary deliverable; `generate` is its best-effort twin
+    (None on any failure) for the inline `<video>` marker, mirroring `ImageGenerator`'s render /
+    generate split so a slow or refused inline clip never blocks anything but its own reply. Runs
+    on the Gemini Interactions API (`interactions.create`), which unifies text / reference-image /
+    source-video generation on one model, so the same call backs plain generation and true
+    source-video editing (`task="edit"`).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -582,6 +584,29 @@ class VideoGenerator(BaseModel):
             "gen_reply video job done", task=task, render_seconds=time.monotonic() - started
         )
         return await self._download_output_video(uri=video.uri)
+
+    async def generate(
+        self, *, user_prompt: str, image_bytes_list: list[bytes] | None = None
+    ) -> bytes | None:
+        """Renders one inline `<video>` clip to MP4 bytes; None on any failure or timeout.
+
+        Best-effort twin of `render` for the QA-route `<video>` marker: it returns None (disabling
+        the inline video for this reply) instead of raising into the streamer's single media-attach
+        gather, so a slow / refused clip never aborts the ready voice / music / images alongside it.
+        When the user attached image(s) they ride as subject references (`task="reference_to_video"`);
+        otherwise it is plain `task="text_to_video"`. `render` already bounds itself with
+        `VIDEO_RENDER_TIMEOUT_SECONDS`, so no extra timeout is needed here.
+        """
+        # render's reference path uses only the raw bytes (the mime is unused there; only the
+        # edit path's source_video consumes a mime), so a placeholder mime is safe for references.
+        reference_image_sources = [(raw, "image/png") for raw in (image_bytes_list or [])]
+        try:
+            return await self.render(
+                prompt=user_prompt, reference_image_sources=reference_image_sources
+            )
+        except Exception:
+            logfire.warn("Inline video generation failed; replying without video", _exc_info=True)
+            return None
 
     async def _download_output_video(self, *, uri: str) -> bytes:
         """Downloads a URI-delivered clip, retrying while its Files entry finalizes; raises past the bound.

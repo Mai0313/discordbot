@@ -1230,6 +1230,34 @@ def test_extract_inline_markers_unclosed_music_is_pulled() -> None:
     assert markers.cleaned_text == "等我一下"
 
 
+def test_extract_inline_markers_video_block_removed() -> None:
+    """A <video> block (tags AND content) is pulled from the visible reply."""
+    markers = extract_inline_markers(text="動起來\n<video>a wave crashing on rocks</video>")
+    assert markers.video_prompt == "a wave crashing on rocks"
+    assert "<video>" not in markers.cleaned_text
+    assert "wave" not in markers.cleaned_text
+    assert markers.cleaned_text == "動起來"
+
+
+def test_extract_inline_markers_only_first_video_block_kept() -> None:
+    """Only the first non-empty <video> block is kept (a single clip per reply)."""
+    markers = extract_inline_markers(
+        text="<video>first scene</video>中間<video>second scene</video>"
+    )
+    assert markers.video_prompt == "first scene"
+    assert "<video>" not in markers.cleaned_text
+    assert "second scene" not in markers.cleaned_text
+
+
+def test_extract_inline_markers_unclosed_video_is_pulled() -> None:
+    """An unclosed trailing <video> (model forgot to close) never leaks its description."""
+    markers = extract_inline_markers(text="等我一下\n<video>a slow zoom over a city")
+    assert markers.video_prompt == "a slow zoom over a city"
+    assert "<video>" not in markers.cleaned_text
+    assert "zoom" not in markers.cleaned_text
+    assert markers.cleaned_text == "等我一下"
+
+
 def test_speechify_discord_markup_rewrites_and_drops() -> None:
     """Mentions resolve to names; emoji / timestamps drop; slash commands keep their words."""
     names = {239270225441193986: "小明", 42: "管理員", 7: "general"}
@@ -1291,6 +1319,9 @@ def test_scrub_markers_for_preview_hides_streaming_fragments() -> None:
     assert scrub_markers_for_preview(text="看這 <image>a red ca") == "看這"
     # A complete <image> block is removed whole.
     assert scrub_markers_for_preview(text="看這<image>a cat</image>之後") == "看這之後"
+    # A still-streaming <video> open and a complete block are both hidden whole.
+    assert scrub_markers_for_preview(text="動起來 <video>a wa") == "動起來"
+    assert scrub_markers_for_preview(text="看這<video>a wave</video>之後") == "看這之後"
     assert scrub_markers_for_preview(text="正常文字") == "正常文字"
 
 
@@ -1609,6 +1640,167 @@ async def test_music_generator_drops_clip_on_bad_audio_payload() -> None:
     assert await generator.generate(user_prompt="a calm beat") is None
 
 
+# ---- inline video (<video>) ----
+
+_VIDEO_EMOJI = "<:video:1517560671913377842>"
+
+
+class _FakeVideoGenerator:
+    """Records generate calls and returns configurable MP4 bytes (or None) for streamer tests."""
+
+    def __init__(self, video: bytes | None = b"\x00\x00\x00\x18ftypmp4") -> None:
+        """Stores the MP4 bytes (None simulates a failed render) returned by generate."""
+        self.video = video
+        self.calls: list[str] = []
+        self.image_bytes_lists: list[list[bytes] | None] = []
+
+    async def generate(
+        self, *, user_prompt: str, image_bytes_list: list[bytes] | None = None
+    ) -> bytes | None:
+        """Records the description request (and any reference source bytes) and returns the clip."""
+        self.calls.append(user_prompt)
+        self.image_bytes_lists.append(image_bytes_list)
+        return self.video
+
+
+def _video_marker_events() -> list[SimpleNamespace]:
+    """A single-turn stream whose reply wraps a <video> description."""
+    return [
+        _text_event(delta="幫你動起來 "),
+        _text_event(delta="<video>a wave crashing on rocks at sunset</video>"),
+        _completed_event(input_tokens=3, output_tokens=4),
+    ]
+
+
+async def test_video_marker_generates_and_attaches(economy_isolated_db: None) -> None:
+    """A <video> block is pulled from the reply, generated, and the clip attached to the reply."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeVideoGenerator()
+
+    result = await ResponseStreamer(message=message, video_generator=generator).stream(
+        responses=_stream_events_from(_video_marker_events())
+    )
+
+    # The block (tags AND description) never shows in chat.
+    assert "<video>" not in result
+    assert "wave" not in result
+    assert "幫你動起來" in result
+    # The description is handed to the generator and the clip attached afterward.
+    assert generator.calls == ["a wave crashing on rocks at sunset"]
+    assert message.replies[0].file is not None
+    assert message.replies[0].file.filename == "generated.mp4"
+    # The source message is marked with the video emoji while the clip renders.
+    assert message.added_reactions == [_VIDEO_EMOJI]
+    # No input_builder wired -> no source bytes -> plain text-to-video (not a reference render).
+    assert generator.image_bytes_lists == [None]
+
+
+async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db: None) -> None:
+    """An uploaded image rides into the inline <video> render as a subject reference."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeVideoGenerator()
+
+    async def _load(*, message: object) -> list[bytes]:
+        """Stands in for the input builder loading the message's uploaded image bytes."""
+        del message
+        return [b"uploaded-bytes"]
+
+    builder = SimpleNamespace(get_image_source_bytes=_load)
+
+    await ResponseStreamer(
+        message=message, video_generator=generator, input_builder=builder
+    ).stream(responses=_stream_events_from(_video_marker_events()))
+
+    # The uploaded bytes ride through to generate, so the inline <video> animates them.
+    assert generator.image_bytes_lists == [[b"uploaded-bytes"]]
+    assert generator.calls == ["a wave crashing on rocks at sunset"]
+
+
+async def test_video_disabled_still_strips_marker(economy_isolated_db: None) -> None:
+    """With no generator (video off) the block is still pulled and no file attaches."""
+    del economy_isolated_db
+    message = FakeMessage()
+
+    result = await ResponseStreamer(message=message).stream(
+        responses=_stream_events_from(_video_marker_events())
+    )
+
+    assert "<video>" not in result
+    assert "wave" not in result
+    assert message.replies[0].file is None
+
+
+async def test_video_generation_failure_hints(economy_isolated_db: None) -> None:
+    """A failed render leaves a clean text reply with no file and a warning hint."""
+    del economy_isolated_db
+    message = FakeMessage()
+    generator = _FakeVideoGenerator(video=None)
+
+    result = await ResponseStreamer(message=message, video_generator=generator).stream(
+        responses=_stream_events_from(_video_marker_events())
+    )
+
+    assert "wave" not in result
+    assert message.replies[0].file is None
+    assert message.added_reactions == [_VIDEO_EMOJI, "⚠️"]
+
+
+async def test_voice_music_video_image_attach_in_one_edit(economy_isolated_db: None) -> None:
+    """A reply with all four markers rides one edit carrying the WAV, music, video, and PNG."""
+    del economy_isolated_db
+    message = FakeMessage()
+    voice_generator = _FakeVoiceGenerator()
+    music_generator = _FakeMusicGenerator()
+    video_generator = _FakeVideoGenerator()
+    image_generator = _FakeImageGenerator()
+
+    result = await ResponseStreamer(
+        message=message,
+        voice_generator=voice_generator,
+        music_generator=music_generator,
+        video_generator=video_generator,
+        image_generator=image_generator,
+    ).stream(
+        responses=_stream_events_from([
+            _text_event(delta="來囉 <voice>聽好</voice> "),
+            _text_event(
+                delta="<music>a calm lo-fi beat</music><video>a wave</video><image>a red balloon</image>"
+            ),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    assert "聽好" in result
+    assert "<video>" not in result
+    assert "a wave" not in result
+    files = message.replies[0].files
+    assert files is not None
+    assert {item.filename for item in files} == {
+        "reply.wav",
+        "music.mp3",
+        "generated.mp4",
+        "generated.png",
+    }
+
+
+async def test_video_generator_drops_clip_on_provider_error() -> None:
+    """A provider error from render returns None instead of raising into the attach gather."""
+
+    class _Interactions:
+        async def create(self, **kwargs: object) -> object:
+            """Raises as if the omni Interactions call failed."""
+            del kwargs
+            raise RuntimeError("omni unavailable")
+
+    client = SimpleNamespace(aio=SimpleNamespace(interactions=_Interactions()))
+    generator = VideoGenerator(client=client, video_model=RuntimeModelCatalog().video_model)
+
+    # The failure is swallowed (best-effort), so the streamer's media gather is never aborted.
+    assert await generator.generate(user_prompt="a wave at sunset") is None
+
+
 class _FakeSpeechResponse:
     """Async binary-response stand-in exposing aread() like the OpenAI speech result."""
 
@@ -1721,12 +1913,13 @@ async def test_voice_config_gate_controls_synthesizer(
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            video_generator: object | None = None,
             media_delivery: object | None = None,
             input_builder: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del image_generator, music_generator, media_delivery, input_builder
+            del image_generator, music_generator, video_generator, media_delivery, input_builder
             captured.append(voice_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -1773,12 +1966,13 @@ async def test_image_config_gate_controls_generator(
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            video_generator: object | None = None,
             media_delivery: object | None = None,
             input_builder: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, music_generator, media_delivery, input_builder
+            del voice_generator, music_generator, video_generator, media_delivery, input_builder
             captured.append(image_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -2749,12 +2943,20 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            video_generator: object | None = None,
             media_delivery: object | None = None,
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, image_generator, music_generator, media_delivery, input_builder
+            del (
+                voice_generator,
+                image_generator,
+                music_generator,
+                video_generator,
+                media_delivery,
+                input_builder,
+            )
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -3378,10 +3580,11 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
         "expected_voice",
         "expected_image",
         "expected_music",
+        "expected_video",
     ),
     argvalues=[
-        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], [], []),
-        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], [], []),
+        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], [], [], []),
+        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], [], [], []),
         (
             "SUMMARY",
             "_handle_message_reply",
@@ -3390,8 +3593,9 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
             [True],
             [False],
             [False],
+            [False],
         ),
-        ("QA", "_handle_message_reply", [(30, True)], [True], [True], [True], [True]),
+        ("QA", "_handle_message_reply", [(30, True)], [True], [True], [True], [True], [True]),
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
@@ -3403,6 +3607,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     expected_voice: list[bool],
     expected_image: list[bool],
     expected_music: list[bool],
+    expected_video: list[bool],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
@@ -3465,6 +3670,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     voice_flags: list[bool] = []
     image_flags: list[bool] = []
     music_flags: list[bool] = []
+    video_flags: list[bool] = []
     effort_flags: list[str] = []
     contexts: list[ReplyContext] = []
 
@@ -3477,6 +3683,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         allow_voice: bool = False,
         allow_image: bool = False,
         allow_music: bool = False,
+        allow_video: bool = False,
         allow_research: bool = False,
         yt_url: str | None = None,
     ) -> None:
@@ -3487,6 +3694,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         voice_flags.append(allow_voice)
         image_flags.append(allow_image)
         music_flags.append(allow_music)
+        video_flags.append(allow_video)
         effort_flags.append(effort)
         contexts.append(context)
 
@@ -3511,6 +3719,8 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     assert image_flags == expected_image
     # Inline music is QA-only, like inline image; SUMMARY stays text.
     assert music_flags == expected_music
+    # Inline video is QA-only, like inline image/music; SUMMARY stays text.
+    assert video_flags == expected_video
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
@@ -3754,12 +3964,20 @@ class _ThreadsStreamer:
         voice_generator: object | None = None,
         image_generator: object | None = None,
         music_generator: object | None = None,
+        video_generator: object | None = None,
         media_delivery: object | None = None,
         input_builder: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
         del memory_lookups, input_tokens, output_tokens, model_effort
-        del voice_generator, image_generator, music_generator, media_delivery, input_builder
+        del (
+            voice_generator,
+            image_generator,
+            music_generator,
+            video_generator,
+            media_delivery,
+            input_builder,
+        )
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -3794,6 +4012,7 @@ async def test_on_message_injects_threads_context_before_current(
         inline_voice_enabled=False,
         inline_image_enabled=False,
         music_available=False,
+        video_available=False,
         deep_research_enabled=False,
     )
     seen_urls: list[str] = []
@@ -3882,6 +4101,7 @@ async def test_on_message_skips_threads_context_without_url(
         inline_voice_enabled=False,
         inline_image_enabled=False,
         music_available=False,
+        video_available=False,
         deep_research_enabled=False,
     )
     called: list[str] = []
@@ -3916,6 +4136,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
         inline_voice_enabled=False,
         inline_image_enabled=False,
         music_available=False,
+        video_available=False,
         deep_research_enabled=False,
     )
     monkeypatch.setattr("discordbot.cogs.gen_reply.THREADS_GRACE_SECONDS", 0.01)
@@ -4167,12 +4388,20 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            video_generator: object | None = None,
             media_delivery: object | None = None,
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, image_generator, music_generator, media_delivery, input_builder
+            del (
+                voice_generator,
+                image_generator,
+                music_generator,
+                video_generator,
+                media_delivery,
+                input_builder,
+            )
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -4261,12 +4490,20 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            video_generator: object | None = None,
             media_delivery: object | None = None,
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, image_generator, music_generator, media_delivery, input_builder
+            del (
+                voice_generator,
+                image_generator,
+                music_generator,
+                video_generator,
+                media_delivery,
+                input_builder,
+            )
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
@@ -4327,12 +4564,20 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
+            video_generator: object | None = None,
             media_delivery: object | None = None,
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
             del memory_lookups, input_tokens, output_tokens, model_effort
-            del voice_generator, image_generator, music_generator, media_delivery, input_builder
+            del (
+                voice_generator,
+                image_generator,
+                music_generator,
+                video_generator,
+                media_delivery,
+                input_builder,
+            )
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
