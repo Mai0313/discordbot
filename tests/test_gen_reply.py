@@ -4549,6 +4549,23 @@ def test_filter_memory_fully_locked_returns_empty() -> None:
     assert filtered == ""
 
 
+def test_filter_memory_multiple_tags_fail_closed() -> None:
+    """A bullet carrying more than one src tag is ambiguous tag drift and never surfaces.
+
+    Trusting the trailing tag would fail open on the widest one (`[src:*]` appended
+    after the real lock), so the exactly-one-tag rule drops it in every context.
+    """
+    memory = "v1\n\n## 永久事實\n* 祕密 [src:222] [src:*]\n* 正常全域 [src:*]"
+    for context in (
+        MemoryReadContext(guild_id=111, dm_partner_id=None),
+        MemoryReadContext(guild_id=222, dm_partner_id=None),
+        MemoryReadContext(guild_id=None, dm_partner_id=None),
+    ):
+        filtered = filter_memory_for_context(memory=memory, owner_id=1, context=context)
+        assert "祕密" not in filtered
+        assert "正常全域" in filtered
+
+
 def test_filter_memory_indented_lines_share_their_parents_fate() -> None:
     """Any indented line — prose or nested sub-bullet — lives and dies with its parent."""
     memory = (

@@ -369,11 +369,17 @@ def filter_memory_for_context(  # noqa: C901 -- one cohesive line-walk; splittin
 
 def _bullet_is_visible(bullet: str, context: MemoryReadContext) -> bool:
     """Whether one tagged bullet may surface in the current conversation."""
+    if len(_SRC_TAG_STRIP_RE.findall(bullet)) != 1:
+        # Zero tags is legacy content of unknown source; MORE than one is tag drift
+        # (e.g. `祕密 [src:123] [src:*]`, where trusting the trailing tag would
+        # fail open on the widest one). Either way the line's true scope is
+        # ambiguous, so it fails closed.
+        return False
     match = _SRC_TAG_RE.search(bullet)
     if match is None:
-        # No tag / malformed tag: legacy content of unknown source. `dm` and `legacy`
-        # values never match here either — they surface only via the owner-DM
-        # short-circuit in `filter_memory_for_context`.
+        # The one tag-shaped token is malformed: same unknown-source treatment.
+        # `dm` and `legacy` values never match below either — they surface only via
+        # the owner-DM short-circuit in `filter_memory_for_context`.
         return False
     values = match.group("values").split(",")
     if "*" in values:
