@@ -81,11 +81,11 @@ PROMPT_REFINE_TIMEOUT_SECONDS = 120.0
 # since it is a property of the render, not of the route that calls it.
 VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
 
-# Activation bound for a source video uploaded to the Files API before an omni edit. Larger than
-# the reply-upload's 60s because a raw user clip (up to the guild's boost-tier upload limit) is far
-# bigger than a generated image and can sit in PROCESSING longer; the edit hard-fails if it is not
-# ACTIVE by then, since the video is the primary deliverable.
-SOURCE_VIDEO_ACTIVATION_TIMEOUT_SECONDS = 180.0
+# Bound for waiting on a Files API entry to become usable: the source video uploaded for an omni
+# edit (polled to ACTIVE) and the URI-delivered generated clip (download retried until it lands).
+# Generous because a large clip can sit in PROCESSING a while; the render hard-fails past it, since
+# video is the primary deliverable.
+FILES_READY_TIMEOUT_SECONDS = 180.0
 
 # omni accepts a handful of subject reference images. Shared so the VIDEO route caps the frames it
 # grounds the prompt director on to exactly the set render will send, rather than letting the
@@ -518,8 +518,9 @@ class VideoGenerator(BaseModel):
         subject images ride inline (`task="reference_to_video"`); otherwise plain text
         (`task="text_to_video"`). 16:9 for text / reference generation (an edit keeps the source
         clip's ratio, so no aspect ratio is sent); `delivery="uri"` so the clip comes back as a
-        Files URI (no base64 bloat) and is downloaded with a single `files.download` — the interaction
-        only reports `completed` once the file is ready, so no ACTIVE poll is needed. Duration is
+        Files URI (no base64 bloat) and is downloaded with a bounded retry (`_download_output_video`):
+        the file can still be finalizing when the interaction reports `completed`, so a larger clip's
+        first download may fail and is retried until it lands. Duration is
         left to omni's default. Raises `RuntimeError` when the interaction is not `completed` or
         carries no video, folding in `status` + `output_text` (omni signals a soft refusal /
         incomplete / budget_exceeded that way; the `Interaction` has no `error` / `rai_*` field).
@@ -580,7 +581,29 @@ class VideoGenerator(BaseModel):
         logfire.debug(
             "gen_reply video job done", task=task, render_seconds=time.monotonic() - started
         )
-        return await self.client.aio.files.download(file=video.uri)
+        return await self._download_output_video(uri=video.uri)
+
+    async def _download_output_video(self, *, uri: str) -> bytes:
+        """Downloads a URI-delivered clip, retrying while its Files entry finalizes; raises past the bound.
+
+        With `delivery="uri"` the interaction reports `completed` while `files.get` can still show
+        PROCESSING for a moment (observed even when the download already succeeds), so rather than
+        poll the lagging state we retry the download itself — it returns the whole clip as soon as
+        the file is servable and adds no wait when the first attempt already works. Bounded by
+        `FILES_READY_TIMEOUT_SECONDS` so a stuck file hard-fails diagnosably instead of hanging,
+        since video is the primary deliverable.
+        """
+        deadline = time.monotonic() + FILES_READY_TIMEOUT_SECONDS
+        attempt = 0
+        while True:
+            try:
+                return await self.client.aio.files.download(file=uri)
+            except Exception:
+                if time.monotonic() >= deadline:
+                    raise
+                attempt += 1
+                logfire.debug("gen_reply video download not ready; retrying", attempt=attempt)
+                await asyncio.sleep(2.0)
 
     async def _upload_source_video(self, *, source_video: tuple[bytes, str]) -> str:
         """Uploads a source clip to the Files API and returns its ACTIVE uri; raises on failure.
@@ -588,7 +611,7 @@ class VideoGenerator(BaseModel):
         The edit path feeds the actual clip (not a poster frame), so the video IS the primary
         deliverable and a failed upload must hard-fail with a diagnosable error rather than pass a
         None uri into `VideoContentParam`. The activation bound is generous
-        (`SOURCE_VIDEO_ACTIVATION_TIMEOUT_SECONDS`) because a raw clip is far larger than an image
+        (`FILES_READY_TIMEOUT_SECONDS`) because a raw clip is far larger than an image
         and can sit in PROCESSING longer than the reply-upload's window.
         """
         data, mime = source_video
@@ -598,7 +621,7 @@ class VideoGenerator(BaseModel):
         file_name = uploaded.name
         if file_name is None:
             raise RuntimeError("Source video upload returned no file name")
-        deadline = time.monotonic() + SOURCE_VIDEO_ACTIVATION_TIMEOUT_SECONDS
+        deadline = time.monotonic() + FILES_READY_TIMEOUT_SECONDS
         while uploaded.state == FileState.PROCESSING:
             if time.monotonic() >= deadline:
                 raise RuntimeError("Source video did not become ACTIVE before the deadline")

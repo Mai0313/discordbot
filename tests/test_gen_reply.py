@@ -60,6 +60,7 @@ from discordbot.cogs._gen_reply.generation import (
     VoiceOutcome,
     ImageGenerator,
     MusicGenerator,
+    VideoGenerator,
     VoiceGenerator,
     PromptGenerator,
     music_filename,
@@ -3289,6 +3290,34 @@ async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyP
     assert cog.openai_client.responses.create_streams == [True]
     # An edit keeps the source clip's ratio, so no aspect_ratio is sent (omni 400s it otherwise).
     assert "aspect_ratio" not in cog.gemini_client.create_response_formats[0]
+
+
+async def test_download_output_video_retries_until_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A URI-delivered clip whose first download fails (file still finalizing) is retried."""
+    calls = {"n": 0}
+
+    async def flaky_download(*, file: object) -> bytes:
+        """Fails the first download (file not yet servable), then succeeds."""
+        del file
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("file not ready")
+        return b"mp4"
+
+    async def fast_sleep(delay: float) -> None:
+        """Skips the retry backoff."""
+        del delay
+
+    monkeypatch.setattr("discordbot.cogs._gen_reply.generation.asyncio.sleep", fast_sleep)
+    client = SimpleNamespace(aio=SimpleNamespace(files=SimpleNamespace(download=flaky_download)))
+    generator = VideoGenerator(
+        client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
+    )
+
+    result = await generator._download_output_video(uri="https://files.test/v:download?alt=media")
+
+    assert result == b"mp4"
+    assert calls["n"] == 2
 
 
 async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.MonkeyPatch) -> None:
