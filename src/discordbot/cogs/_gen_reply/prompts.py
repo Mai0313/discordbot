@@ -1,9 +1,11 @@
 from discordbot.cogs._gen_reply.markers import (
     IMAGE_OPEN,
     MUSIC_OPEN,
+    VIDEO_OPEN,
     VOICE_OPEN,
     IMAGE_CLOSE,
     MUSIC_CLOSE,
+    VIDEO_CLOSE,
     VOICE_CLOSE,
     MAX_INLINE_IMAGES,
     DEEP_RESEARCH_OPEN,
@@ -100,6 +102,20 @@ MUSIC_INSTRUCTION = f"""
     * Never mention the tags and never wrap them in backticks or a code block.
 """
 
+# Appended to the QA system prompt only when the video generator is actually active (kill-switch
+# on, key present, QA route). Kept out of REPLY_PROMPT for the same reason as INLINE_IMAGE_INSTRUCTION.
+# NOTE: the "one video per reply" cap is a deliberate throttle stated as a plain capability limit,
+# never as a cost warning: telling the model a clip is expensive makes it over-refuse, so the cap
+# alone does the throttling while the model still reaches for video when it genuinely helps.
+VIDEO_INSTRUCTION = f"""
+* Optional short video: when a generated video clip would genuinely add to your reply — motion, a short scene, or an animation a still image or words cannot convey — wrap a description of that video in `{VIDEO_OPEN}...{VIDEO_CLOSE}`. That block is removed from your written reply and sent straight to a video generator, so the description never shows in chat; the finished clip is attached to your reply afterward.
+    * You can make at most ONE video per reply, so use it only for the single moment that most benefits from a moving clip, and skip it when a still image or plain text already does the job.
+    * Write the description so the generator has everything it needs: lead with the main subject and its action or motion, then the setting, the shot or camera, the visual style, and the mood. Be concrete and self-contained, since it is rendered directly with no further rewriting.
+    * If the user attached image(s), the clip can bring them to life — describe the motion or scene you want built from them.
+    * Because the description is hidden, briefly confirm in persona in your visible reply that you are putting a short clip together (and that it takes a moment); never promise an instant result.
+    * Never mention the tags and never wrap them in backticks or a code block.
+"""
+
 # Appended to the QA system prompt only when deep research is enabled (kill-switch on, QA route).
 # Kept out of REPLY_PROMPT for the same reason as INLINE_IMAGE_INSTRUCTION: a deployment with
 # DEEP_RESEARCH_ENABLED=false must not be told about a marker the streamer would strip with no effect.
@@ -168,8 +184,8 @@ Effort rules:
 # Director instructions for the IMAGE route (and edit): faithfully restate a thin user request as
 # ONE self-contained text-to-image prompt WITHOUT inventing unrequested subjects / scene / style
 # (its job is clarifying what, grounding named entities, not art-directing). Run by
-# `PromptGenerator.refine` with grounding tools; not used by the inline `<image>` marker (the
-# answer model already authors that description).
+# `PromptGenerator.refine` with grounding tools; not used by the inline `<generate-image>` marker
+# (the answer model already authors that description).
 IMAGE_PROMPT = """
 You are an expert image prompt engineer working behind a Discord bot. A user asked the bot to create or edit an image. Your job is NOT to draw anything and NOT to chat with the user. Your only job is to restate the user's request as ONE clear, self-contained prompt that a downstream text-to-image model will render directly. You are a faithful translator, not an art director: you clarify WHAT to render, you do not invent HOW it looks.
 

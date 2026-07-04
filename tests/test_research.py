@@ -47,7 +47,7 @@ def test_unclosed_trailing_deep_research_is_still_pulled() -> None:
 
 def test_deep_research_coexists_with_voice() -> None:
     markers = extract_inline_markers(
-        text="<voice>馬上幫你查</voice> <deep-research>研究 X</deep-research>"
+        text="<generate-voice>馬上幫你查</generate-voice> <deep-research>研究 X</deep-research>"
     )
     assert markers.voice_requested
     assert "馬上幫你查" in markers.cleaned_text

@@ -7,10 +7,10 @@ render goes through the same calling convention instead of a half-free-function 
   `refine` expands a thin user request into one rich, self-contained generation prompt with the
   grounding tools (so a vague "draw the heroine of some anime" is looked up first), best-effort and
   gated by `REFINE_PROMPT_ENABLED`. It runs on the proxy like the answer model. The QA-route inline
-  `<image>` marker does NOT refine (its description is already written by the answer model).
+  `<generate-image>` marker does NOT refine (its description is already written by the answer model).
 - `ImageGenerator` runs the downstream image model on the LiteLLM proxy (`AsyncOpenAI`). `render`
   is the raising primitive shared by the router IMAGE route (which also edits source pixels) and
-  the best-effort inline path; `generate` is the QA-route `<image>` marker's best-effort wrapper
+  the best-effort inline path; `generate` is the QA-route `<generate-image>` marker's best-effort wrapper
   (generation-only, timeout, None on any failure) so a slow inline render never blocks anything but
   its own reply.
 - `VoiceGenerator` runs the text-to-speech model on the same LiteLLM proxy (`AsyncOpenAI`) as the
@@ -26,7 +26,7 @@ render goes through the same calling convention instead of a half-free-function 
   generation and true source-video editing (`task="edit"`) share it. It has only `render`
   (raising): video has no inline marker and is always the primary deliverable, so no best-effort
   twin by design.
-- `MusicGenerator` runs the native-Lyria render behind the QA-route `<music>` marker via the
+- `MusicGenerator` runs the native-Lyria render behind the QA-route `<generate-music>` marker via the
   Gemini Interactions API, also DIRECT to Google. Like `ImageGenerator.generate` it is best-effort
   only (`generate`, None on any failure), since music is inline-only.
 
@@ -120,7 +120,7 @@ VOICE_TIMEOUT_SECONDS = 300.0
 # Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
 # Lyria prompt surface is documented in English). Lyria picks the lyric language from the prompt
 # (docs: "generates lyrics in the language of your prompt"), so the language is defaulted here too,
-# not just the genre. The QA `<music>` marker prompt already steers the answer model to default to
+# not just the genre. The QA `<generate-music>` marker prompt already steers the answer model to default to
 # this style/language and write it into the description, so this is a backstop that still honors a
 # description asking for a different genre or language. A 2026-06 Interactions spike produced
 # Japanese vocals with this Japanese steer, but the load-bearing path stays the prompt-side default.
@@ -218,7 +218,7 @@ class VoiceClip(BaseModel):
 
 
 class ImageGenerator(BaseModel):
-    """Image render shared by the router IMAGE route and the QA-route `<image>` marker.
+    """Image render shared by the router IMAGE route and the QA-route `<generate-image>` marker.
 
     Holds the shared client and the image model. `render` is the raising primitive (edits when
     source bytes are present, else generates); `generate` is the best-effort inline wrapper that
@@ -282,11 +282,11 @@ class ImageGenerator(BaseModel):
     ) -> bytes | None:
         """Renders one image from the description; None on any failure or timeout.
 
-        Best-effort wrapper around `render` for the QA-route `<image>` marker, inside a generous
+        Best-effort wrapper around `render` for the QA-route `<generate-image>` marker, inside a generous
         timeout, returning None to disable the inline path for a reply rather than raising into the
         streamer's path. When `image_bytes_list` is supplied (the user uploaded image(s) the answer
         model is illustrating), it rides through to `render` as edit source pixels, so an inline
-        `<image>` over an attached photo edits it instead of generating a fresh one.
+        `<generate-image>` over an attached photo edits it instead of generating a fresh one.
         """
         started = time.monotonic()
         try:
@@ -319,7 +319,7 @@ class PromptGenerator(BaseModel):
 
     Best-effort by construction: a disabled flag, an empty draft, a timeout, or ANY error all
     fall back to the raw `user_prompt`, so a director failure never aborts generation and callers
-    can treat `refine` as a pure prompt-in / prompt-out step. The QA-route inline `<image>` marker
+    can treat `refine` as a pure prompt-in / prompt-out step. The QA-route inline `<generate-image>` marker
     does NOT use this: that description is already authored by the answer model with grounding.
     """
 
@@ -483,13 +483,15 @@ class VoiceGenerator(BaseModel):
 
 
 class VideoGenerator(BaseModel):
-    """Native Gemini (omni) video render behind the VIDEO route.
+    """Native Gemini (omni) video render behind the VIDEO route and the QA-route `<generate-video>` marker.
 
-    Holds the direct-to-Google client and the video model. Only `render` (raising) exists: video
-    has no inline marker and is always the primary deliverable, so unlike `ImageGenerator` there
-    is no best-effort twin. Runs on the Gemini Interactions API (`interactions.create`), which
-    unifies text / reference-image / source-video generation on one model, so the same call backs
-    plain generation and true source-video editing (`task="edit"`).
+    Holds the direct-to-Google client and the video model. `render` (raising) backs the VIDEO
+    route, where video is always the primary deliverable; `generate` is its best-effort twin
+    (None on any failure) for the inline `<generate-video>` marker, mirroring `ImageGenerator`'s render /
+    generate split so a slow or refused inline clip never blocks anything but its own reply. Runs
+    on the Gemini Interactions API (`interactions.create`), which unifies text / reference-image /
+    source-video generation on one model, so the same call backs plain generation and true
+    source-video editing (`task="edit"`).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -583,6 +585,29 @@ class VideoGenerator(BaseModel):
         )
         return await self._download_output_video(uri=video.uri)
 
+    async def generate(
+        self, *, user_prompt: str, image_bytes_list: list[bytes] | None = None
+    ) -> bytes | None:
+        """Renders one inline `<generate-video>` clip to MP4 bytes; None on any failure or timeout.
+
+        Best-effort twin of `render` for the QA-route `<generate-video>` marker: it returns None (disabling
+        the inline video for this reply) instead of raising into the streamer's single media-attach
+        gather, so a slow / refused clip never aborts the ready voice / music / images alongside it.
+        When the user attached image(s) they ride as subject references (`task="reference_to_video"`);
+        otherwise it is plain `task="text_to_video"`. `render` already bounds itself with
+        `VIDEO_RENDER_TIMEOUT_SECONDS`, so no extra timeout is needed here.
+        """
+        # render's reference path uses only the raw bytes (the mime is unused there; only the
+        # edit path's source_video consumes a mime), so a placeholder mime is safe for references.
+        reference_image_sources = [(raw, "image/png") for raw in (image_bytes_list or [])]
+        try:
+            return await self.render(
+                prompt=user_prompt, reference_image_sources=reference_image_sources
+            )
+        except Exception:
+            logfire.warn("Inline video generation failed; replying without video", _exc_info=True)
+            return None
+
     async def _download_output_video(self, *, uri: str) -> bytes:
         """Downloads a URI-delivered clip, retrying while its Files entry finalizes; raises past the bound.
 
@@ -642,7 +667,7 @@ class MusicClip(BaseModel):
 
 
 class MusicGenerator(BaseModel):
-    """Native-Lyria music render behind the QA-route `<music>` marker.
+    """Native-Lyria music render behind the QA-route `<generate-music>` marker.
 
     Holds the direct-to-Google client and the music model. Best-effort only (`generate`, None on
     any failure), mirroring `ImageGenerator.generate`: music is inline-only, so a slow or refused
@@ -662,7 +687,7 @@ class MusicGenerator(BaseModel):
     async def generate(self, *, user_prompt: str) -> MusicClip | None:
         """Renders one music clip from the description; None on any failure or timeout.
 
-        Best-effort wrapper for the QA-route `<music>` marker: one non-streaming Interactions
+        Best-effort wrapper for the QA-route `<generate-music>` marker: one non-streaming Interactions
         call inside a generous timeout, returning None to disable the inline path for this reply
         rather than raising into the streamer. The fixed anime/J-pop style rides in
         `system_instruction`; the description is passed as the plain-string `input`. The returned

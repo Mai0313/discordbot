@@ -85,7 +85,7 @@ class RuntimeModelCatalog(BaseModel):
         """The model settings for image generation and editing.
 
         Callers: `ImageGenerator` (its `render` for the IMAGE route `_handle_image_reply`, its
-        best-effort `generate` for the QA-route inline `<image>` marker).
+        best-effort `generate` for the QA-route inline `<generate-image>` marker).
 
         Returns:
             Model settings used with `images.generate` and `images.edit`.
@@ -112,7 +112,7 @@ class RuntimeModelCatalog(BaseModel):
     def music_model(self) -> ModelSettings:
         """The model settings for music generation.
 
-        Callers: `MusicGenerator.generate` (via the QA-route inline `<music>` marker).
+        Callers: `MusicGenerator.generate` (via the QA-route inline `<generate-music>` marker).
 
         Returns:
             Model settings used with the native Gemini (Lyria) Interactions API (a bare model

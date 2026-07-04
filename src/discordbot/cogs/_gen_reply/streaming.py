@@ -38,6 +38,7 @@ from discordbot.cogs._gen_reply.generation import (
     VoiceOutcome,
     ImageGenerator,
     MusicGenerator,
+    VideoGenerator,
     VoiceGenerator,
     music_filename,
     speechify_discord_markup,
@@ -47,6 +48,10 @@ from discordbot.cogs._gen_reply.generation import (
 # route's `generated.png` so the bot's own generated images render the same in history. Multiple
 # images need distinct names, so they fall back to `generated_<n>.png` (Discord collides on dupes).
 INLINE_IMAGE_FILENAME = "generated.png"
+
+# Filename of the single inline-generated video attached onto a QA reply (one clip per reply, so
+# no numbering); MP4 is what the omni renderer returns and what Discord inline-plays.
+INLINE_VIDEO_FILENAME = "generated.mp4"
 
 # Gemini occasionally wraps Discord mention syntax in backticks (inline code),
 # which stops Discord from rendering the actual mention. Strip those wrappers
@@ -106,31 +111,39 @@ class ResponseStreamer(BaseModel):
     )
     voice_requested: bool = Field(
         default=False,
-        description="Whether the answer model wrapped a segment in <voice> for this reply.",
+        description="Whether the answer model wrapped a segment in <generate-voice> for this reply.",
     )
     voice_text: str = Field(
         default="",
-        description="Speechified text of the <voice> segment used as the spoken-clip input.",
+        description="Speechified text of the <generate-voice> segment used as the spoken-clip input.",
     )
     image_generator: SkipValidation[ImageGenerator | None] = Field(
         default=None,
-        description="Inline-image renderer; None disables inline <image> for this reply.",
+        description="Inline-image renderer; None disables inline <generate-image> for this reply.",
     )
     image_prompts: list[str] = Field(
         default_factory=list,
-        description="The <image> descriptions the answer model asked to illustrate, in order.",
+        description="The <generate-image> descriptions the answer model asked to illustrate, in order.",
     )
     input_builder: SkipValidation[MessageInputBuilder | None] = Field(
         default=None,
-        description="Loads the message's uploaded image bytes so an inline <image> can edit them.",
+        description="Loads the message's uploaded image bytes so an inline <generate-image> can edit them.",
     )
     music_generator: SkipValidation[MusicGenerator | None] = Field(
         default=None,
-        description="Inline-music renderer; None disables inline <music> for this reply.",
+        description="Inline-music renderer; None disables inline <generate-music> for this reply.",
     )
     music_prompt: str | None = Field(
         default=None,
-        description="The <music> description the answer model asked to score, if any.",
+        description="The <generate-music> description the answer model asked to score, if any.",
+    )
+    video_generator: SkipValidation[VideoGenerator | None] = Field(
+        default=None,
+        description="Inline-video renderer; None disables inline <generate-video> for this reply.",
+    )
+    video_prompt: str | None = Field(
+        default=None,
+        description="The <generate-video> description the answer model asked to animate, if any.",
     )
     research_brief: str | None = Field(
         default=None,
@@ -350,15 +363,16 @@ class ResponseStreamer(BaseModel):
         cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
-        # The answer model may wrap a <voice> segment (spoken aloud, kept in the reply) and an
-        # <image> block (a generation request, removed from the reply). Extract both before the
-        # footer is built or anything is written. The <voice> segment stays in the visible text;
+        # The answer model may wrap a <generate-voice> segment (spoken aloud, kept in the reply) and an
+        # <generate-image> block (a generation request, removed from the reply). Extract both before the
+        # footer is built or anything is written. The <generate-voice> segment stays in the visible text;
         # only it (not the whole reply) feeds the spoken clip so the audio matches what is read.
         markers = extract_inline_markers(text=self.stored_content)
         self.stored_content = markers.cleaned_text
         self.voice_requested = markers.voice_requested
         self.image_prompts = markers.image_prompts
         self.music_prompt = markers.music_prompt
+        self.video_prompt = markers.video_prompt
         # The streamer only surfaces the brief; the cog (not the streamer) launches the research
         # after the single media edit so it never touches the reply's one attachment edit.
         self.research_brief = markers.research_brief
@@ -407,6 +421,7 @@ class ResponseStreamer(BaseModel):
             voice_requested=self.voice_requested,
             image_count=len(self.image_prompts),
             music_requested=bool(self.music_prompt),
+            video_requested=bool(self.video_prompt),
             memory_lookups=len(self.memory_lookups),
             chunked=chunked,
         )
@@ -445,7 +460,7 @@ class ResponseStreamer(BaseModel):
         return upload_limit_for(guild=self.message.guild)
 
     async def _build_voice_candidate(self) -> MediaItem | None:
-        """Synthesizes the <voice> segment to a WAV candidate, or None when not delivered.
+        """Synthesizes the <generate-voice> segment to a WAV candidate, or None when not delivered.
 
         Best-effort: a skip (not requested / disabled / empty) is silent, while a
         requested-but-failed clip (timeout / refusal) hints the source message and returns None.
@@ -453,7 +468,7 @@ class ResponseStreamer(BaseModel):
         so an oversized clip is no longer dropped here (there is deliberately no spoken-length cap).
         """
         if not self.voice_requested:
-            # The expected common path: the answer model wrapped no <voice> segment.
+            # The expected common path: the answer model wrapped no <generate-voice> segment.
             logfire.debug("Voice not requested by the answer model", message_id=self.message.id)
             return None
         if self.voice_generator is None:
@@ -489,7 +504,7 @@ class ResponseStreamer(BaseModel):
     async def _load_marker_source_bytes(self) -> list[bytes]:
         """Best-effort source pixels (current + replied-to message images) for an inline edit.
 
-        When the user uploaded image(s), an inline `<image>` over them edits rather than generates
+        When the user uploaded image(s), an inline `<generate-image>` over them edits rather than generates
         (mirrors the IMAGE route's source gather). Best-effort: no builder or a load failure simply
         yields no source bytes, so the marker falls back to fresh generation.
         """
@@ -513,13 +528,17 @@ class ResponseStreamer(BaseModel):
             )
             return []
 
-    async def _build_image_candidates(self) -> list[MediaItem]:
-        """Renders the <image> requests to PNG candidates, in order; [] when none delivered.
+    async def _build_image_candidates(
+        self, *, source_bytes_task: asyncio.Task[list[bytes]] | None
+    ) -> list[MediaItem]:
+        """Renders the <generate-image> requests to PNG candidates, in order; [] when none delivered.
 
         Best-effort like voice: no request or a disabled generator is silent. The capped prompts
         render concurrently; a generation failure drops that image and a single ⚠️ hint rides on
         the source message. The upload-limit decision (attach vs host) is left to
-        `_attach_generated_media`, so a large image is no longer dropped here for size.
+        `_attach_generated_media`, so a large image is no longer dropped here for size. The uploaded
+        source pixels (for editing) are awaited from the shared `source_bytes_task` so an inline
+        `<generate-image>` and `<generate-video>` in the same reply load them only once.
         """
         prompts = self.image_prompts[:MAX_INLINE_IMAGES]
         if not prompts:
@@ -545,9 +564,9 @@ class ResponseStreamer(BaseModel):
         logfire.info(
             "Generating inline image reply", message_id=self.message.id, image_count=len(prompts)
         )
-        # When the user uploaded image(s), feed them so an inline <image> edits them instead of
+        # When the user uploaded image(s), feed them so an inline <generate-image> edits them instead of
         # generating a fresh picture (mirrors the IMAGE route); best-effort, [] when none / failure.
-        source_bytes = await self._load_marker_source_bytes()
+        source_bytes = await source_bytes_task if source_bytes_task is not None else []
         # Render every requested image concurrently so a slow one never delays the others.
         images = await asyncio.gather(
             *(
@@ -575,7 +594,7 @@ class ResponseStreamer(BaseModel):
         return candidates
 
     async def _build_music_candidate(self) -> MediaItem | None:
-        """Generates the <music> clip to an audio candidate, or None when not delivered.
+        """Generates the <generate-music> clip to an audio candidate, or None when not delivered.
 
         Best-effort like the inline image path: a skip (not requested / disabled) is silent, while
         a requested-but-failed clip hints the source message and returns None. The filename suffix
@@ -583,7 +602,7 @@ class ResponseStreamer(BaseModel):
         upload-limit decision (attach vs host) is left to `_attach_generated_media`.
         """
         if self.music_prompt is None:
-            # The expected common path: the answer model wrapped no <music> block.
+            # The expected common path: the answer model wrapped no <generate-music> block.
             logfire.debug("Music not requested by the answer model", message_id=self.message.id)
             return None
         if self.music_generator is None:
@@ -603,19 +622,62 @@ class ResponseStreamer(BaseModel):
             return None
         return MediaItem(source=clip.audio, filename=music_filename(mime_type=clip.mime_type))
 
+    async def _build_video_candidate(
+        self, *, source_bytes_task: asyncio.Task[list[bytes]] | None
+    ) -> MediaItem | None:
+        """Generates the <generate-video> clip to an MP4 candidate, or None when not delivered.
+
+        Best-effort like the inline music path: a skip (not requested / disabled) is silent, while
+        a requested-but-failed clip hints the source message and returns None. When the user
+        uploaded image(s) they are awaited from the shared `source_bytes_task` and ride as subject
+        references (`reference_to_video`); otherwise it is plain text-to-video. The upload-limit
+        decision (attach vs host) is left to `_attach_generated_media`, so a large clip is hosted
+        as a URL rather than dropped for size.
+        """
+        if self.video_prompt is None:
+            # The expected common path: the answer model wrapped no <generate-video> block.
+            logfire.debug("Video not requested by the answer model", message_id=self.message.id)
+            return None
+        if self.video_generator is None:
+            # Video is intentionally off this turn (kill-switch / missing key): no hint.
+            logfire.info(
+                "Inline video requested but disabled for this turn; replying without video",
+                message_id=self.message.id,
+            )
+            return None
+        # Mark the source message with the bot's `video` app emoji while the clip renders.
+        await update_reaction(
+            message=self.message, bot_user=None, emoji="<:video:1517560671913377842>"
+        )
+        logfire.info("Generating inline video reply", message_id=self.message.id)
+        source_bytes = await source_bytes_task if source_bytes_task is not None else []
+        video_bytes = await self.video_generator.generate(
+            user_prompt=self.video_prompt, image_bytes_list=source_bytes or None
+        )
+        if video_bytes is None:
+            # generate() logged the failure/timeout; hint once.
+            await self._hint_media_unavailable(emoji="⚠️")
+            return None
+        return MediaItem(source=video_bytes, filename=INLINE_VIDEO_FILENAME)
+
     async def _attach_generated_media(self) -> None:
-        """Attaches the spoken clip, music clip, and inline images in one edit, hosting overflow.
+        """Attaches the voice, music, video, and image media in one edit, hosting overflow.
 
         The text reply is already on screen, so this adds no latency to it; the media are
         best-effort. Anything that fits the upload limit rides a single `reply.edit(files=...)`
         (one edit, because `edit` replaces the attachment list). Anything too big to upload (a
-        long voice WAV in a DM is the common case) is hosted on the external static server and its
-        URL appended to the reply instead of being dropped; if hosting is unavailable it degrades
-        to today's drop + ⚠️ hint. Voice/music are ordered first so the rare 11-attachment
-        overflow peels a trailing image, not the clip.
+        long voice WAV in a DM, or almost any video clip) is hosted on the external static server
+        and its URL appended to the reply instead of being dropped; if hosting is unavailable it
+        degrades to today's drop + ⚠️ hint. Voice/music/video are ordered first so the rare
+        over-cap overflow peels a trailing image, not a clip.
         """
         if self.reply is None:
-            if self.voice_requested or self.image_prompts or self.music_prompt:
+            if (
+                self.voice_requested
+                or self.image_prompts
+                or self.music_prompt
+                or self.video_prompt
+            ):
                 logfire.warn(
                     "Media requested but the reply was never sent; dropping it",
                     message_id=self.message.id,
@@ -623,16 +685,27 @@ class ResponseStreamer(BaseModel):
                 await self._hint_media_unavailable(emoji="⚠️")
             return
         reply = self.reply
-        # Build every path concurrently so a slow one never blocks the others: a TTS clip or a
-        # music render that hangs to its timeout must not delay ready inline images (and vice versa).
-        voice_candidate, music_candidate, image_candidates = await asyncio.gather(
+        # The uploaded source pixels (for editing an inline <generate-image> / grounding an inline <generate-video>)
+        # are loaded at most once even when both markers fire, since load_image_bytes re-fetches
+        # per call; both builders await this shared task. None when neither visual marker fired.
+        source_bytes_task = (
+            asyncio.ensure_future(self._load_marker_source_bytes())
+            if (self.image_generator is not None and self.image_prompts)
+            or (self.video_generator is not None and self.video_prompt is not None)
+            else None
+        )
+        # Build every path concurrently so a slow one never blocks the others: a TTS clip, a music
+        # render, or a video render that hangs to its timeout must not delay ready inline images
+        # (and vice versa).
+        voice_candidate, music_candidate, video_candidate, image_candidates = await asyncio.gather(
             self._build_voice_candidate(),
             self._build_music_candidate(),
-            self._build_image_candidates(),
+            self._build_video_candidate(source_bytes_task=source_bytes_task),
+            self._build_image_candidates(source_bytes_task=source_bytes_task),
         )
         items = [
             item
-            for item in (voice_candidate, music_candidate, *image_candidates)
+            for item in (voice_candidate, music_candidate, video_candidate, *image_candidates)
             if item is not None
         ]
         if not items:
