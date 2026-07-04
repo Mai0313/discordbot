@@ -960,10 +960,10 @@ class _FakeVoiceGenerator:
 
 
 def _voice_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply wraps one segment in <voice> tags."""
+    """A single-turn stream whose reply wraps one segment in <generate-voice> tags."""
     return [
         _text_event(delta="閉嘴啦白痴 "),
-        _text_event(delta="<voice>嗆爆你</voice>"),
+        _text_event(delta="<generate-voice>嗆爆你</generate-voice>"),
         _text_event(delta=" 滾"),
         _completed_event(input_tokens=3, output_tokens=4),
     ]
@@ -971,12 +971,12 @@ def _voice_marker_events() -> list[SimpleNamespace]:
 
 def _assert_no_voice_tags(text: str) -> None:
     """Asserts neither voice tag leaked into the visible reply."""
-    assert "<voice>" not in text
-    assert "</voice>" not in text
+    assert "<generate-voice>" not in text
+    assert "</generate-voice>" not in text
 
 
 async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_db: None) -> None:
-    """A <voice> segment is spoken (only that part), its tags stripped, the clip attached."""
+    """A <generate-voice> segment is spoken (only that part), its tags stripped, the clip attached."""
     del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
@@ -998,7 +998,7 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_d
 
 
 async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> None:
-    """A normal reply (no <voice>) never calls the synthesizer and attaches no file."""
+    """A normal reply (no <generate-voice>) never calls the synthesizer and attaches no file."""
     del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
@@ -1148,8 +1148,8 @@ async def test_finalize_media_edit_posts_followup_when_content_would_overflow(
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
-    """A <voice> segment stays in the visible text; only the tags are stripped."""
-    markers = extract_inline_markers(text="嗆爆你 <voice>聽好了</voice> 滾")
+    """A <generate-voice> segment stays in the visible text; only the tags are stripped."""
+    markers = extract_inline_markers(text="嗆爆你 <generate-voice>聽好了</generate-voice> 滾")
     assert markers.cleaned_text == "嗆爆你 聽好了 滾"
     assert markers.voice_text == "聽好了"
     assert markers.voice_requested is True
@@ -1157,147 +1157,132 @@ def test_extract_inline_markers_voice_keeps_content() -> None:
 
 
 def test_extract_inline_markers_multiple_voice_segments_concatenate() -> None:
-    """Multiple <voice> segments concatenate into one spoken input, all content kept."""
-    markers = extract_inline_markers(text="<voice>第一</voice>中間<voice>第二</voice>")
+    """Multiple <generate-voice> segments concatenate into one spoken input, all content kept."""
+    markers = extract_inline_markers(
+        text="<generate-voice>第一</generate-voice>中間<generate-voice>第二</generate-voice>"
+    )
     assert markers.voice_text == "第一\n第二"
     assert markers.cleaned_text == "第一中間第二"
 
 
 def test_extract_inline_markers_image_block_removed() -> None:
-    """An <image> block (tags AND content) is pulled from the visible reply."""
-    markers = extract_inline_markers(text="看這張\n<image>a red cat on a sofa</image>")
+    """An <generate-image> block (tags AND content) is pulled from the visible reply."""
+    markers = extract_inline_markers(
+        text="看這張\n<generate-image>a red cat on a sofa</generate-image>"
+    )
     assert markers.image_prompts == ["a red cat on a sofa"]
-    assert "<image>" not in markers.cleaned_text
+    assert "<generate-image>" not in markers.cleaned_text
     assert "a red cat" not in markers.cleaned_text
     assert markers.cleaned_text == "看這張"
     assert markers.voice_requested is False
 
 
 def test_extract_inline_markers_multiple_image_blocks_in_order() -> None:
-    """Every <image> block becomes an image request, kept in document order."""
+    """Every <generate-image> block becomes an image request, kept in document order."""
     markers = extract_inline_markers(
-        text="先看\n<image>a red cat</image>\n再看\n<image>a blue dog</image>"
+        text="先看\n<generate-image>a red cat</generate-image>\n再看\n<generate-image>a blue dog</generate-image>"
     )
     assert markers.image_prompts == ["a red cat", "a blue dog"]
-    assert "<image>" not in markers.cleaned_text
+    assert "<generate-image>" not in markers.cleaned_text
     assert "red cat" not in markers.cleaned_text
     assert "blue dog" not in markers.cleaned_text
 
 
 def test_extract_inline_markers_closed_then_unclosed_image_both_pulled() -> None:
-    """A complete block plus a trailing unclosed <image> are both captured, in order."""
-    markers = extract_inline_markers(text="看\n<image>a red cat</image>\n還有\n<image>a blue dog")
+    """A complete block plus a trailing unclosed <generate-image> are both captured, in order."""
+    markers = extract_inline_markers(
+        text="看\n<generate-image>a red cat</generate-image>\n還有\n<generate-image>a blue dog"
+    )
     assert markers.image_prompts == ["a red cat", "a blue dog"]
-    assert "<image>" not in markers.cleaned_text
+    assert "<generate-image>" not in markers.cleaned_text
 
 
 def test_extract_inline_markers_unclosed_image_is_pulled() -> None:
-    """An unclosed trailing <image> (model forgot to close) never leaks its description."""
-    markers = extract_inline_markers(text="來囉\n<image>a sunset over the sea")
+    """An unclosed trailing <generate-image> (model forgot to close) never leaks its description."""
+    markers = extract_inline_markers(text="來囉\n<generate-image>a sunset over the sea")
     assert markers.image_prompts == ["a sunset over the sea"]
-    assert "<image>" not in markers.cleaned_text
+    assert "<generate-image>" not in markers.cleaned_text
     assert "sunset" not in markers.cleaned_text
     assert markers.cleaned_text == "來囉"
 
 
 def test_extract_inline_markers_music_block_removed() -> None:
-    """A <music> block (tags AND content) is pulled from the visible reply."""
+    """A <generate-music> block (tags AND content) is pulled from the visible reply."""
     markers = extract_inline_markers(
-        text="這首給你\n<music>upbeat anime J-pop, female vocals</music>"
+        text="這首給你\n<generate-music>upbeat anime J-pop, female vocals</generate-music>"
     )
     assert markers.music_prompt == "upbeat anime J-pop, female vocals"
-    assert "<music>" not in markers.cleaned_text
+    assert "<generate-music>" not in markers.cleaned_text
     assert "anime" not in markers.cleaned_text
     assert markers.cleaned_text == "這首給你"
 
 
 def test_extract_inline_markers_only_first_music_block_kept() -> None:
-    """Only the first non-empty <music> block is kept (a single clip per reply)."""
+    """Only the first non-empty <generate-music> block is kept (a single clip per reply)."""
     markers = extract_inline_markers(
-        text="<music>first track</music>中間<music>second track</music>"
+        text="<generate-music>first track</generate-music>中間<generate-music>second track</generate-music>"
     )
     assert markers.music_prompt == "first track"
-    assert "<music>" not in markers.cleaned_text
+    assert "<generate-music>" not in markers.cleaned_text
     assert "second track" not in markers.cleaned_text
 
 
 def test_extract_inline_markers_unclosed_music_is_pulled() -> None:
-    """An unclosed trailing <music> (model forgot to close) never leaks its description."""
-    markers = extract_inline_markers(text="等我一下\n<music>a calm lo-fi beat")
+    """An unclosed trailing <generate-music> (model forgot to close) never leaks its description."""
+    markers = extract_inline_markers(text="等我一下\n<generate-music>a calm lo-fi beat")
     assert markers.music_prompt == "a calm lo-fi beat"
-    assert "<music>" not in markers.cleaned_text
+    assert "<generate-music>" not in markers.cleaned_text
     assert "lo-fi" not in markers.cleaned_text
     assert markers.cleaned_text == "等我一下"
 
 
 def test_extract_inline_markers_video_block_removed() -> None:
-    """A <video> block (tags AND content) is pulled from the visible reply."""
-    markers = extract_inline_markers(text="動起來\n<video>a wave crashing on rocks</video>")
+    """A <generate-video> block (tags AND content) is pulled from the visible reply."""
+    markers = extract_inline_markers(
+        text="動起來\n<generate-video>a wave crashing on rocks</generate-video>"
+    )
     assert markers.video_prompt == "a wave crashing on rocks"
-    assert "<video>" not in markers.cleaned_text
+    assert "<generate-video>" not in markers.cleaned_text
     assert "wave" not in markers.cleaned_text
     assert markers.cleaned_text == "動起來"
 
 
 def test_extract_inline_markers_only_first_video_block_kept() -> None:
-    """Only the first non-empty <video> block is kept (a single clip per reply)."""
+    """Only the first non-empty <generate-video> block is kept (a single clip per reply)."""
     markers = extract_inline_markers(
-        text="<video>first scene</video>中間<video>second scene</video>"
+        text="<generate-video>first scene</generate-video>中間<generate-video>second scene</generate-video>"
     )
     assert markers.video_prompt == "first scene"
-    assert "<video>" not in markers.cleaned_text
+    assert "<generate-video>" not in markers.cleaned_text
     assert "second scene" not in markers.cleaned_text
 
 
 def test_extract_inline_markers_unclosed_video_is_pulled() -> None:
-    """An unclosed trailing <video> (model forgot to close) never leaks its description."""
-    markers = extract_inline_markers(text="等我一下\n<video>a slow zoom over a city")
+    """An unclosed trailing <generate-video> (model forgot to close) never leaks its description."""
+    markers = extract_inline_markers(text="等我一下\n<generate-video>a slow zoom over a city")
     assert markers.video_prompt == "a slow zoom over a city"
-    assert "<video>" not in markers.cleaned_text
+    assert "<generate-video>" not in markers.cleaned_text
     assert "zoom" not in markers.cleaned_text
     assert markers.cleaned_text == "等我一下"
 
 
-def test_extract_inline_markers_preserves_html_video_in_code_fence() -> None:
-    """A real HTML <video> example in a fenced block is kept, not pulled as a generation request."""
-    text = '要嵌入影片:\n```html\n<video>\n  <source src="movie.mp4">\n</video>\n```'
+def test_extract_inline_markers_ignores_real_html_svg_ssml_tags() -> None:
+    """A reply that only SHOWS `<video>` / `<image>` / `<voice>` example markup is left untouched.
+
+    The markers are hyphenated (`generate-*`) precisely so a real HTML `<video>`, SVG `<image>`, or
+    SSML `<voice>` tag the answer is explaining is never mistaken for a generation request, even
+    when it is not wrapped in a code block.
+    """
+    text = (
+        "HTML 的 <video></video> 嵌入影片,SVG 用 <image href='a.png'/>,"
+        "SSML 用 <voice>Hi</voice> 指定嗓音。"
+    )
     markers = extract_inline_markers(text=text)
-    # The whole example survives verbatim and nothing is sent to the video generator.
+    # No generation is triggered and the whole explanation survives verbatim.
     assert markers.video_prompt is None
-    assert "<video>" in markers.cleaned_text
-    assert "</video>" in markers.cleaned_text
-    assert '<source src="movie.mp4">' in markers.cleaned_text
-
-
-def test_extract_inline_markers_preserves_html_video_with_attributes() -> None:
-    """A <video controls> example keeps its closing tag (the tag scrub must not touch code)."""
-    text = '範例:\n```html\n<video controls width="320">\n  <source src="a.mp4">\n</video>\n```'
-    markers = extract_inline_markers(text=text)
-    assert markers.video_prompt is None
-    assert "<video controls" in markers.cleaned_text
-    assert "</video>" in markers.cleaned_text
-
-
-def test_extract_inline_markers_preserves_marker_tag_in_inline_code() -> None:
-    """A <video> tag mentioned in inline backticks stays visible and triggers no generation."""
-    markers = extract_inline_markers(text="HTML 的 `<video>` 元素可以嵌入影片。")
-    assert markers.video_prompt is None
-    assert "`<video>`" in markers.cleaned_text
-
-
-def test_extract_inline_markers_pulls_real_video_alongside_code_example() -> None:
-    """A fenced example is preserved while a separate real <video> marker is still pulled."""
-    text = "先看範例:\n```html\n<video></video>\n```\n我幫你生一個 <video>a neon city at night</video>"
-    markers = extract_inline_markers(text=text)
-    # The example stays, the real marker is pulled and removed.
-    assert "```html" in markers.cleaned_text
-    assert markers.video_prompt == "a neon city at night"
-    assert "neon city" not in markers.cleaned_text
-
-
-def test_scrub_markers_for_preview_keeps_fenced_video_example() -> None:
-    """The live preview must not scrub a completed HTML <video> example inside a code block."""
-    assert "<video>" in scrub_markers_for_preview(text="範例 ```html\n<video></video>\n``` 好了")
+    assert markers.image_prompts == []
+    assert markers.voice_requested is False
+    assert markers.cleaned_text == text
 
 
 def test_speechify_discord_markup_rewrites_and_drops() -> None:
@@ -1328,9 +1313,9 @@ def test_speechify_discord_markup_rewrites_and_drops() -> None:
 
 
 def _voice_marker_mention_events() -> list[SimpleNamespace]:
-    """A stream whose <voice> segment contains a raw user mention."""
+    """A stream whose <generate-voice> segment contains a raw user mention."""
     return [
-        _text_event(delta="<voice>嗆爆 <@239270225441193986></voice>"),
+        _text_event(delta="<generate-voice>嗆爆 <@239270225441193986></generate-voice>"),
         _completed_event(input_tokens=3, output_tokens=4),
     ]
 
@@ -1354,20 +1339,28 @@ async def test_voice_text_strips_discord_markup(economy_isolated_db: None) -> No
 def test_scrub_markers_for_preview_hides_streaming_fragments() -> None:
     """Markers arriving mid-stream are hidden from the live preview before the final extract."""
     # A partial trailing tag is trimmed; the content before it stays.
-    assert scrub_markers_for_preview(text="嗆你 <voi") == "嗆你"
-    # A complete <voice> pair is stripped but its content stays visible.
-    assert scrub_markers_for_preview(text="嗆你 <voice>聽好</voice>") == "嗆你 聽好"
-    # An unclosed <image> open and everything after it is hidden whole (the block is pulled).
-    assert scrub_markers_for_preview(text="看這 <image>a red ca") == "看這"
-    # A complete <image> block is removed whole.
-    assert scrub_markers_for_preview(text="看這<image>a cat</image>之後") == "看這之後"
-    # A still-streaming <video> open and a complete block are both hidden whole.
-    assert scrub_markers_for_preview(text="動起來 <video>a wa") == "動起來"
-    assert scrub_markers_for_preview(text="看這<video>a wave</video>之後") == "看這之後"
+    assert scrub_markers_for_preview(text="嗆你 <generate-voi") == "嗆你"
+    # A complete <generate-voice> pair is stripped but its content stays visible.
+    assert (
+        scrub_markers_for_preview(text="嗆你 <generate-voice>聽好</generate-voice>") == "嗆你 聽好"
+    )
+    # An unclosed <generate-image> open and everything after it is hidden whole (the block is pulled).
+    assert scrub_markers_for_preview(text="看這 <generate-image>a red ca") == "看這"
+    # A complete <generate-image> block is removed whole.
+    assert (
+        scrub_markers_for_preview(text="看這<generate-image>a cat</generate-image>之後")
+        == "看這之後"
+    )
+    # A still-streaming <generate-video> open and a complete block are both hidden whole.
+    assert scrub_markers_for_preview(text="動起來 <generate-video>a wa") == "動起來"
+    assert (
+        scrub_markers_for_preview(text="看這<generate-video>a wave</generate-video>之後")
+        == "看這之後"
+    )
     assert scrub_markers_for_preview(text="正常文字") == "正常文字"
 
 
-# ---- inline image (<image>) ----
+# ---- inline image (<generate-image>) ----
 
 
 class _FakeImageGenerator:
@@ -1389,16 +1382,16 @@ class _FakeImageGenerator:
 
 
 def _image_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply wraps an <image> description."""
+    """A single-turn stream whose reply wraps an <generate-image> description."""
     return [
         _text_event(delta="這是你要的圖 "),
-        _text_event(delta="<image>a cute black cat</image>"),
+        _text_event(delta="<generate-image>a cute black cat</generate-image>"),
         _completed_event(input_tokens=3, output_tokens=4),
     ]
 
 
 async def test_image_marker_generates_and_attaches(economy_isolated_db: None) -> None:
-    """An <image> block is pulled from the reply, rendered, and the PNG attached to the reply."""
+    """An <generate-image> block is pulled from the reply, rendered, and the PNG attached to the reply."""
     del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator()
@@ -1408,7 +1401,7 @@ async def test_image_marker_generates_and_attaches(economy_isolated_db: None) ->
     )
 
     # The block (tags AND description) never shows in chat.
-    assert "<image>" not in result
+    assert "<generate-image>" not in result
     assert "a cute black cat" not in result
     assert "這是你要的圖" in result
     # The rough description is handed to the generator and the PNG attached afterward.
@@ -1426,7 +1419,7 @@ async def test_image_marker_generates_and_attaches(economy_isolated_db: None) ->
 async def test_image_marker_edits_uploaded_image_with_source_bytes(
     economy_isolated_db: None,
 ) -> None:
-    """An uploaded image rides into the inline <image> render as edit source, without refinement."""
+    """An uploaded image rides into the inline <generate-image> render as edit source, without refinement."""
     del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator()
@@ -1442,7 +1435,7 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes(
         message=message, image_generator=generator, input_builder=builder
     ).stream(responses=_stream_events_from(_image_marker_events()))
 
-    # The uploaded bytes ride through to generate, so the inline <image> edits them.
+    # The uploaded bytes ride through to generate, so the inline <generate-image> edits them.
     assert generator.image_bytes_lists == [[b"uploaded-bytes"]]
     # The marker description itself is passed through verbatim (the marker path never refines).
     assert generator.calls == [
@@ -1459,7 +1452,7 @@ async def test_image_disabled_still_strips_marker(economy_isolated_db: None) -> 
         responses=_stream_events_from(_image_marker_events())
     )
 
-    assert "<image>" not in result
+    assert "<generate-image>" not in result
     assert "a cute black cat" not in result
     assert message.replies[0].file is None
 
@@ -1490,14 +1483,14 @@ async def test_voice_and_image_attach_in_one_edit(economy_isolated_db: None) -> 
         message=message, voice_generator=synthesizer, image_generator=generator
     ).stream(
         responses=_stream_events_from([
-            _text_event(delta="看 <voice>聽好</voice> "),
-            _text_event(delta="<image>a red balloon</image>"),
+            _text_event(delta="看 <generate-voice>聽好</generate-voice> "),
+            _text_event(delta="<generate-image>a red balloon</generate-image>"),
             _completed_event(input_tokens=3, output_tokens=4),
         ])
     )
 
     assert "聽好" in result
-    assert "<image>" not in result
+    assert "<generate-image>" not in result
     assert "a red balloon" not in result
     files = message.replies[0].files
     assert files is not None
@@ -1505,7 +1498,7 @@ async def test_voice_and_image_attach_in_one_edit(economy_isolated_db: None) -> 
 
 
 async def test_multiple_image_markers_attach_distinct_files(economy_isolated_db: None) -> None:
-    """Several <image> blocks each render and attach under distinct filenames in one edit."""
+    """Several <generate-image> blocks each render and attach under distinct filenames in one edit."""
     del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator()
@@ -1513,12 +1506,14 @@ async def test_multiple_image_markers_attach_distinct_files(economy_isolated_db:
     result = await ResponseStreamer(message=message, image_generator=generator).stream(
         responses=_stream_events_from([
             _text_event(delta="兩張圖 "),
-            _text_event(delta="<image>a red cat</image><image>a blue dog</image>"),
+            _text_event(
+                delta="<generate-image>a red cat</generate-image><generate-image>a blue dog</generate-image>"
+            ),
             _completed_event(input_tokens=3, output_tokens=4),
         ])
     )
 
-    assert "<image>" not in result
+    assert "<generate-image>" not in result
     # Each description renders independently, in order.
     assert [call["user_prompt"] for call in generator.calls] == ["a red cat", "a blue dog"]
     files = message.replies[0].files
@@ -1527,11 +1522,13 @@ async def test_multiple_image_markers_attach_distinct_files(economy_isolated_db:
 
 
 async def test_image_markers_capped_at_limit(economy_isolated_db: None) -> None:
-    """More <image> blocks than the per-reply cap render only up to MAX_INLINE_IMAGES."""
+    """More <generate-image> blocks than the per-reply cap render only up to MAX_INLINE_IMAGES."""
     del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator()
-    blocks = "".join(f"<image>image {index}</image>" for index in range(MAX_INLINE_IMAGES + 3))
+    blocks = "".join(
+        f"<generate-image>image {index}</generate-image>" for index in range(MAX_INLINE_IMAGES + 3)
+    )
 
     await ResponseStreamer(message=message, image_generator=generator).stream(
         responses=_stream_events_from([
@@ -1547,7 +1544,7 @@ async def test_image_markers_capped_at_limit(economy_isolated_db: None) -> None:
     assert len(files) == MAX_INLINE_IMAGES
 
 
-# ---- inline music (<music>) ----
+# ---- inline music (<generate-music>) ----
 
 
 class _FakeMusicGenerator:
@@ -1567,16 +1564,16 @@ class _FakeMusicGenerator:
 
 
 def _music_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply wraps a <music> description."""
+    """A single-turn stream whose reply wraps a <generate-music> description."""
     return [
         _text_event(delta="這首給你 "),
-        _text_event(delta="<music>upbeat anime J-pop, female vocals</music>"),
+        _text_event(delta="<generate-music>upbeat anime J-pop, female vocals</generate-music>"),
         _completed_event(input_tokens=3, output_tokens=4),
     ]
 
 
 async def test_music_marker_generates_and_attaches(economy_isolated_db: None) -> None:
-    """A <music> block is pulled from the reply, generated, and the clip attached to the reply."""
+    """A <generate-music> block is pulled from the reply, generated, and the clip attached to the reply."""
     del economy_isolated_db
     message = FakeMessage()
     generator = _FakeMusicGenerator()
@@ -1586,7 +1583,7 @@ async def test_music_marker_generates_and_attaches(economy_isolated_db: None) ->
     )
 
     # The block (tags AND description) never shows in chat.
-    assert "<music>" not in result
+    assert "<generate-music>" not in result
     assert "anime" not in result
     assert "這首給你" in result
     # The description is handed to the generator and the clip attached afterward.
@@ -1606,7 +1603,7 @@ async def test_music_disabled_still_strips_marker(economy_isolated_db: None) -> 
         responses=_stream_events_from(_music_marker_events())
     )
 
-    assert "<music>" not in result
+    assert "<generate-music>" not in result
     assert "anime" not in result
     assert message.replies[0].file is None
 
@@ -1649,14 +1646,16 @@ async def test_voice_music_image_attach_in_one_edit(economy_isolated_db: None) -
         image_generator=image_generator,
     ).stream(
         responses=_stream_events_from([
-            _text_event(delta="來囉 <voice>聽好</voice> "),
-            _text_event(delta="<music>a calm lo-fi beat</music><image>a red balloon</image>"),
+            _text_event(delta="來囉 <generate-voice>聽好</generate-voice> "),
+            _text_event(
+                delta="<generate-music>a calm lo-fi beat</generate-music><generate-image>a red balloon</generate-image>"
+            ),
             _completed_event(input_tokens=3, output_tokens=4),
         ])
     )
 
     assert "聽好" in result
-    assert "<music>" not in result
+    assert "<generate-music>" not in result
     assert "lo-fi" not in result
     assert "a red balloon" not in result
     files = message.replies[0].files
@@ -1682,7 +1681,7 @@ async def test_music_generator_drops_clip_on_bad_audio_payload() -> None:
     assert await generator.generate(user_prompt="a calm beat") is None
 
 
-# ---- inline video (<video>) ----
+# ---- inline video (<generate-video>) ----
 
 _VIDEO_EMOJI = "<:video:1517560671913377842>"
 
@@ -1706,16 +1705,16 @@ class _FakeVideoGenerator:
 
 
 def _video_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply wraps a <video> description."""
+    """A single-turn stream whose reply wraps a <generate-video> description."""
     return [
         _text_event(delta="幫你動起來 "),
-        _text_event(delta="<video>a wave crashing on rocks at sunset</video>"),
+        _text_event(delta="<generate-video>a wave crashing on rocks at sunset</generate-video>"),
         _completed_event(input_tokens=3, output_tokens=4),
     ]
 
 
 async def test_video_marker_generates_and_attaches(economy_isolated_db: None) -> None:
-    """A <video> block is pulled from the reply, generated, and the clip attached to the reply."""
+    """A <generate-video> block is pulled from the reply, generated, and the clip attached to the reply."""
     del economy_isolated_db
     message = FakeMessage()
     generator = _FakeVideoGenerator()
@@ -1725,7 +1724,7 @@ async def test_video_marker_generates_and_attaches(economy_isolated_db: None) ->
     )
 
     # The block (tags AND description) never shows in chat.
-    assert "<video>" not in result
+    assert "<generate-video>" not in result
     assert "wave" not in result
     assert "幫你動起來" in result
     # The description is handed to the generator and the clip attached afterward.
@@ -1739,7 +1738,7 @@ async def test_video_marker_generates_and_attaches(economy_isolated_db: None) ->
 
 
 async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db: None) -> None:
-    """An uploaded image rides into the inline <video> render as a subject reference."""
+    """An uploaded image rides into the inline <generate-video> render as a subject reference."""
     del economy_isolated_db
     message = FakeMessage()
     generator = _FakeVideoGenerator()
@@ -1755,7 +1754,7 @@ async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db
         message=message, video_generator=generator, input_builder=builder
     ).stream(responses=_stream_events_from(_video_marker_events()))
 
-    # The uploaded bytes ride through to generate, so the inline <video> animates them.
+    # The uploaded bytes ride through to generate, so the inline <generate-video> animates them.
     assert generator.image_bytes_lists == [[b"uploaded-bytes"]]
     assert generator.calls == ["a wave crashing on rocks at sunset"]
 
@@ -1769,7 +1768,7 @@ async def test_video_disabled_still_strips_marker(economy_isolated_db: None) -> 
         responses=_stream_events_from(_video_marker_events())
     )
 
-    assert "<video>" not in result
+    assert "<generate-video>" not in result
     assert "wave" not in result
     assert message.replies[0].file is None
     # The disabled path returns before the video emoji, so no spurious reaction is added.
@@ -1808,16 +1807,16 @@ async def test_voice_music_video_image_attach_in_one_edit(economy_isolated_db: N
         image_generator=image_generator,
     ).stream(
         responses=_stream_events_from([
-            _text_event(delta="來囉 <voice>聽好</voice> "),
+            _text_event(delta="來囉 <generate-voice>聽好</generate-voice> "),
             _text_event(
-                delta="<music>a calm lo-fi beat</music><video>a wave</video><image>a red balloon</image>"
+                delta="<generate-music>a calm lo-fi beat</generate-music><generate-video>a wave</generate-video><generate-image>a red balloon</generate-image>"
             ),
             _completed_event(input_tokens=3, output_tokens=4),
         ])
     )
 
     assert "聽好" in result
-    assert "<video>" not in result
+    assert "<generate-video>" not in result
     assert "a wave" not in result
     files = message.replies[0].files
     assert files is not None
@@ -2294,7 +2293,7 @@ def test_collect_sources_skips_bot_own_voice_clip() -> None:
 def test_collect_sources_keeps_bot_own_music_clip() -> None:
     """The bot's own generated music clip is deliberately retained (unlike the voice clip).
 
-    The `<music>` description is stripped from the visible reply, so the clip is the only trace
+    The `<generate-music>` description is stripped from the visible reply, so the clip is the only trace
     of the song the bot made; keeping it lets a later turn reference it. Only the spoken `reply.wav`
     (whose text is already in the transcript) is skipped.
     """

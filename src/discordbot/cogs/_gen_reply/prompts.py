@@ -114,7 +114,6 @@ VIDEO_INSTRUCTION = f"""
     * If the user attached image(s), the clip can bring them to life — describe the motion or scene you want built from them.
     * Because the description is hidden, briefly confirm in persona in your visible reply that you are putting a short clip together (and that it takes a moment); never promise an instant result.
     * Never mention the tags and never wrap them in backticks or a code block.
-    * `<video>` is also a real HTML element. When you are only SHOWING it as example code (not requesting a generation), keep that example inside a code block or inline backticks so it stays visible in your reply instead of being treated as a generation request.
 """
 
 # Appended to the QA system prompt only when deep research is enabled (kill-switch on, QA route).
@@ -185,8 +184,8 @@ Effort rules:
 # Director instructions for the IMAGE route (and edit): faithfully restate a thin user request as
 # ONE self-contained text-to-image prompt WITHOUT inventing unrequested subjects / scene / style
 # (its job is clarifying what, grounding named entities, not art-directing). Run by
-# `PromptGenerator.refine` with grounding tools; not used by the inline `<image>` marker (the
-# answer model already authors that description).
+# `PromptGenerator.refine` with grounding tools; not used by the inline `<generate-image>` marker
+# (the answer model already authors that description).
 IMAGE_PROMPT = """
 You are an expert image prompt engineer working behind a Discord bot. A user asked the bot to create or edit an image. Your job is NOT to draw anything and NOT to chat with the user. Your only job is to restate the user's request as ONE clear, self-contained prompt that a downstream text-to-image model will render directly. You are a faithful translator, not an art director: you clarify WHAT to render, you do not invent HOW it looks.
 

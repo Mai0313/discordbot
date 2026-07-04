@@ -473,7 +473,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @cached_property
     def image_generator(self) -> ImageGenerator:
-        """The cached image renderer shared by the IMAGE route and the QA-route `<image>` marker.
+        """The cached image renderer shared by the IMAGE route and the QA-route `<generate-image>` marker.
 
         Returns:
             A generator bound to this cog's proxy client and the image model; the route calls
@@ -514,7 +514,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @cached_property
     def music_generator(self) -> MusicGenerator:
-        """The cached music renderer for the QA-route `<music>` marker.
+        """The cached music renderer for the QA-route `<generate-music>` marker.
 
         Returns:
             A generator bound to this cog's DIRECT-to-Google Gemini client (Lyria runs on the
@@ -1622,17 +1622,17 @@ class ReplyGeneratorCogs(commands.Cog):
         video_generator = (
             self.video_generator if allow_video and self.config.video_available else None
         )
-        # Only advertise the inline `<image>` marker when the renderer is actually active; with
+        # Only advertise the inline `<generate-image>` marker when the renderer is actually active; with
         # it disabled the streamer would strip the block and produce nothing, silently dropping
         # the visual request from the reply, so a disabled deployment must not be told about it.
         if image_generator is not None:
             system_prompt = f"{system_prompt}\n{INLINE_IMAGE_INSTRUCTION}"
-        # Advertise the inline `<music>` marker only when the generator is actually active, same
+        # Advertise the inline `<generate-music>` marker only when the generator is actually active, same
         # reasoning as the image marker: a disabled deployment (kill-switch off or no Gemini key)
         # must not be told about a marker the streamer would strip without producing anything.
         if music_generator is not None:
             system_prompt = f"{system_prompt}\n{MUSIC_INSTRUCTION}"
-        # Advertise the inline `<video>` marker only when the generator is actually active, same
+        # Advertise the inline `<generate-video>` marker only when the generator is actually active, same
         # reasoning as the image/music markers: a disabled deployment (kill-switch off or no Gemini
         # key) must not be told about a marker the streamer would strip without producing anything.
         if video_generator is not None:
