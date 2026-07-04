@@ -1258,6 +1258,48 @@ def test_extract_inline_markers_unclosed_video_is_pulled() -> None:
     assert markers.cleaned_text == "等我一下"
 
 
+def test_extract_inline_markers_preserves_html_video_in_code_fence() -> None:
+    """A real HTML <video> example in a fenced block is kept, not pulled as a generation request."""
+    text = '要嵌入影片:\n```html\n<video>\n  <source src="movie.mp4">\n</video>\n```'
+    markers = extract_inline_markers(text=text)
+    # The whole example survives verbatim and nothing is sent to the video generator.
+    assert markers.video_prompt is None
+    assert "<video>" in markers.cleaned_text
+    assert "</video>" in markers.cleaned_text
+    assert '<source src="movie.mp4">' in markers.cleaned_text
+
+
+def test_extract_inline_markers_preserves_html_video_with_attributes() -> None:
+    """A <video controls> example keeps its closing tag (the tag scrub must not touch code)."""
+    text = '範例:\n```html\n<video controls width="320">\n  <source src="a.mp4">\n</video>\n```'
+    markers = extract_inline_markers(text=text)
+    assert markers.video_prompt is None
+    assert "<video controls" in markers.cleaned_text
+    assert "</video>" in markers.cleaned_text
+
+
+def test_extract_inline_markers_preserves_marker_tag_in_inline_code() -> None:
+    """A <video> tag mentioned in inline backticks stays visible and triggers no generation."""
+    markers = extract_inline_markers(text="HTML 的 `<video>` 元素可以嵌入影片。")
+    assert markers.video_prompt is None
+    assert "`<video>`" in markers.cleaned_text
+
+
+def test_extract_inline_markers_pulls_real_video_alongside_code_example() -> None:
+    """A fenced example is preserved while a separate real <video> marker is still pulled."""
+    text = "先看範例:\n```html\n<video></video>\n```\n我幫你生一個 <video>a neon city at night</video>"
+    markers = extract_inline_markers(text=text)
+    # The example stays, the real marker is pulled and removed.
+    assert "```html" in markers.cleaned_text
+    assert markers.video_prompt == "a neon city at night"
+    assert "neon city" not in markers.cleaned_text
+
+
+def test_scrub_markers_for_preview_keeps_fenced_video_example() -> None:
+    """The live preview must not scrub a completed HTML <video> example inside a code block."""
+    assert "<video>" in scrub_markers_for_preview(text="範例 ```html\n<video></video>\n``` 好了")
+
+
 def test_speechify_discord_markup_rewrites_and_drops() -> None:
     """Mentions resolve to names; emoji / timestamps drop; slash commands keep their words."""
     names = {239270225441193986: "小明", 42: "管理員", 7: "general"}

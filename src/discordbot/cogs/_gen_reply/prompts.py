@@ -114,6 +114,7 @@ VIDEO_INSTRUCTION = f"""
     * If the user attached image(s), the clip can bring them to life — describe the motion or scene you want built from them.
     * Because the description is hidden, briefly confirm in persona in your visible reply that you are putting a short clip together (and that it takes a moment); never promise an instant result.
     * Never mention the tags and never wrap them in backticks or a code block.
+    * `<video>` is also a real HTML element. When you are only SHOWING it as example code (not requesting a generation), keep that example inside a code block or inline backticks so it stays visible in your reply instead of being treated as a generation request.
 """
 
 # Appended to the QA system prompt only when deep research is enabled (kill-switch on, QA route).
