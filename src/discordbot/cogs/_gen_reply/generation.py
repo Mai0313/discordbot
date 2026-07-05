@@ -21,12 +21,13 @@ render goes through the same calling convention instead of a half-free-function 
   (OK / EMPTY / TIMEOUT / ERROR) rather than a bare None, so the caller can hint a timeout (⏱️)
   apart from any other failure (⚠️). The `speechify_discord_markup` helper that prepares its spoken
   input lives alongside it.
-- `VideoGenerator` runs the single native-omni render behind the VIDEO route DIRECT to Google
+- `VideoGenerator` runs the native-omni render behind the VIDEO route DIRECT to Google
   (`genai.Client`, the Interactions API is Gemini-only, not reachable via the proxy). One model
-  (`interactions.create`) backs text / reference-image / source-video generation, so plain
-  generation and true source-video editing (`task="edit"`) share it. It has only `render`
-  (raising): video has no inline marker and is always the primary deliverable, so no best-effort
-  twin by design.
+  (`interactions.create`) backs text / reference-image / source-video generation: a `source_video`
+  is pinned to `task="edit"` while everything else omits the task so omni infers the mode
+  (image_to_video / reference_to_video / text_to_video). `render` is the raising primitive for the
+  VIDEO route; `generate` is its best-effort twin for the QA-route `<generate-video>` marker (None on
+  any failure), mirroring `ImageGenerator`.
 - `MusicGenerator` runs the native-Lyria render behind the QA-route `<generate-music>` marker via the
   Gemini Interactions API, also DIRECT to Google. Like `ImageGenerator.generate` it is best-effort
   only (`generate`, None on any failure), since music is inline-only.
@@ -40,7 +41,7 @@ import re
 from enum import StrEnum
 import time
 import base64
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 import asyncio
 
 from google import genai
@@ -65,6 +66,7 @@ from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
 
 if TYPE_CHECKING:
+    from google.genai.interactions import ImageContentMimeType
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 # Bound for the inline-image best-effort path: the render runs after the text reply is already
@@ -515,12 +517,15 @@ class VideoGenerator(BaseModel):
 
         The single downstream video render, so the VIDEO route shares one implementation and a
         future provider swap changes one place. Goes DIRECT to Google (the Interactions API is
-        Gemini-only). Three input modes by precedence: a `source_video` is uploaded to the Files
-        API and edited in place (`task="edit"`); otherwise up to `MAX_VIDEO_REFERENCE_IMAGES`
-        subject images ride inline (`task="reference_to_video"`); otherwise plain text
-        (`task="text_to_video"`). 16:9 for text / reference generation (an edit keeps the source
-        clip's ratio, so no aspect ratio is sent); `delivery="uri"` so the clip comes back as a
-        Files URI (no base64 bloat) and is downloaded with a bounded retry (`_download_output_video`):
+        Gemini-only). A `source_video` is uploaded to the Files API and edited in place with an
+        explicit `task="edit"`; otherwise the task is omitted and omni infers image_to_video /
+        reference_to_video / text_to_video from the prompt plus any input images (up to
+        `MAX_VIDEO_REFERENCE_IMAGES`, each carrying its real mime type — omni 400s an image content
+        block whose mime is empty, "Unsupported MIME type: "). 16:9 is sent only for pure text (an
+        edit keeps the source clip's ratio, and an image request may become image_to_video, which
+        follows the source frame's ratio, so no aspect ratio is sent there); `delivery="uri"` so the
+        clip comes back as a Files URI (no base64 bloat) and is downloaded with a bounded retry
+        (`_download_output_video`):
         the file can still be finalizing when the interaction reports `completed`, so a larger clip's
         first download may fail and is retried until it lands. Duration is
         left to omni's default. Raises `RuntimeError` when the interaction is not `completed` or
@@ -529,9 +534,17 @@ class VideoGenerator(BaseModel):
         """
         text = prompt or "請依照訊息內容生成一段影片。"
         content: list[TextContentParam | ImageContentParam | VideoContentParam]
-        task: Literal["edit", "reference_to_video", "text_to_video"]
-        # 16:9 is set for text / reference generation; omni 400s an aspect_ratio on an edit
-        # ("cannot be set in response format for edit task") since an edit keeps the source ratio.
+        # A source-video edit is the one task we still pin: with task omitted, omni infers the mode
+        # (image_to_video vs reference_to_video vs text_to_video) from the prompt + input media,
+        # which follows the #317 "hand the raw request over and let the model decide" direction and
+        # covers image_to_video without a brittle image-count heuristic. If a future deployment finds
+        # the inferred mode underwhelming (e.g. a lone image not animated in place), pin it back here.
+        generation_config: GenerationConfigParam | None = None
+        task_label: str
+        # 16:9 is the generation default we keep for pure text; it is omitted when images are present
+        # (omni may pick image_to_video, which follows the source frame's ratio and can reject an
+        # aspect_ratio the way an edit does) and on an edit (omni 400s it, "cannot be set in response
+        # format for edit task", since an edit keeps the source clip's ratio).
         response_format = VideoResponseFormatParam(type="video", delivery="uri")
         if source_video is not None:
             file_uri = await self._upload_source_video(source_video=source_video)
@@ -539,18 +552,24 @@ class VideoGenerator(BaseModel):
                 VideoContentParam(type="video", uri=file_uri),
                 TextContentParam(type="text", text=text),
             ]
-            task = "edit"
+            generation_config = GenerationConfigParam(video_config=VideoConfigParam(task="edit"))
+            task_label = "edit"
         elif reference_image_sources:
             content = [TextContentParam(type="text", text=text)]
+            # Each image MUST carry its real mime type: omni rejects an image content block with an
+            # empty mime ("Unsupported MIME type: "). The mime already rides in the source tuple.
             content.extend(
-                ImageContentParam(type="image", data=base64.b64encode(raw).decode())
-                for raw, _mime in reference_image_sources[:MAX_VIDEO_REFERENCE_IMAGES]
+                ImageContentParam(
+                    type="image",
+                    data=base64.b64encode(raw).decode(),
+                    mime_type=cast("ImageContentMimeType", mime),
+                )
+                for raw, mime in reference_image_sources[:MAX_VIDEO_REFERENCE_IMAGES]
             )
-            task = "reference_to_video"
-            response_format["aspect_ratio"] = "16:9"
+            task_label = "infer_image"
         else:
             content = [TextContentParam(type="text", text=text)]
-            task = "text_to_video"
+            task_label = "infer_text"
             response_format["aspect_ratio"] = "16:9"
 
         started = time.monotonic()
@@ -563,9 +582,7 @@ class VideoGenerator(BaseModel):
                     model=self.video_model.name,
                     input=content,
                     response_format=response_format,
-                    generation_config=GenerationConfigParam(
-                        video_config=VideoConfigParam(task=task)
-                    ),
+                    generation_config=generation_config,
                     timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
                 ),
             )
@@ -574,35 +591,32 @@ class VideoGenerator(BaseModel):
             logfire.warn(
                 "gen_reply video generation failed",
                 status=str(interaction.status),
-                task=task,
+                task=task_label,
                 note=interaction.output_text,
             )
             raise RuntimeError(
                 f"Video generation failed: status={interaction.status} note={interaction.output_text!r}"
             )
         logfire.debug(
-            "gen_reply video job done", task=task, render_seconds=time.monotonic() - started
+            "gen_reply video job done", task=task_label, render_seconds=time.monotonic() - started
         )
         return await self._download_output_video(uri=video.uri)
 
     async def generate(
-        self, *, user_prompt: str, image_bytes_list: list[bytes] | None = None
+        self, *, user_prompt: str, reference_image_sources: list[tuple[bytes, str]] | None = None
     ) -> bytes | None:
         """Renders one inline `<generate-video>` clip to MP4 bytes; None on any failure or timeout.
 
         Best-effort twin of `render` for the QA-route `<generate-video>` marker: it returns None (disabling
         the inline video for this reply) instead of raising into the streamer's single media-attach
         gather, so a slow / refused clip never aborts the ready voice / music / images alongside it.
-        When the user attached image(s) they ride as subject references (`task="reference_to_video"`);
-        otherwise it is plain `task="text_to_video"`. `render` already bounds itself with
-        `VIDEO_RENDER_TIMEOUT_SECONDS`, so no extra timeout is needed here.
+        When the user attached image(s) they ride along as `(bytes, mime)` pairs and omni infers the
+        task (image_to_video / reference_to_video); otherwise it is plain text. `render` already
+        bounds itself with `VIDEO_RENDER_TIMEOUT_SECONDS`, so no extra timeout is needed here.
         """
-        # render's reference path uses only the raw bytes (the mime is unused there; only the
-        # edit path's source_video consumes a mime), so a placeholder mime is safe for references.
-        reference_image_sources = [(raw, "image/png") for raw in (image_bytes_list or [])]
         try:
             return await self.render(
-                prompt=user_prompt, reference_image_sources=reference_image_sources
+                prompt=user_prompt, reference_image_sources=reference_image_sources or []
             )
         except Exception:
             logfire.warn("Inline video generation failed; replying without video", _exc_info=True)
