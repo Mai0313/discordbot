@@ -30,8 +30,10 @@ class LLMConfig(BaseSettings):
             answer model's `<deep-research>` marker is still stripped but no research runs.
         deep_research_max_enabled: Whether the priciest Deep Research Max tier may be picked
             from the escalation buttons; off by default so the expensive tier is opt-in.
-        refine_prompt_enabled: Kill-switch for the IMAGE/VIDEO prompt director; when false the
-            raw user request goes straight to the image/video model with no refinement step.
+        image_refine_prompt_enabled: Kill-switch for the IMAGE-route prompt director; when false
+            the raw user request goes straight to the image model with no refinement step.
+        video_refine_prompt_enabled: Kill-switch for the VIDEO-route prompt director; when false
+            the raw user request goes straight to the video model with no refinement step.
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -96,10 +98,15 @@ class LLMConfig(BaseSettings):
         description="Whether the priciest Deep Research Max tier is offered on the escalation buttons.",
         validation_alias=AliasChoices("DEEP_RESEARCH_MAX_ENABLED"),
     )
-    refine_prompt_enabled: bool = Field(
+    image_refine_prompt_enabled: bool = Field(
         default=True,
-        description="Whether the prompt director refines the IMAGE/VIDEO request before generation.",
-        validation_alias=AliasChoices("REFINE_PROMPT_ENABLED"),
+        description="Whether the prompt director refines the IMAGE-route request before generation.",
+        validation_alias=AliasChoices("IMAGE_REFINE_PROMPT_ENABLED"),
+    )
+    video_refine_prompt_enabled: bool = Field(
+        default=True,
+        description="Whether the prompt director refines the VIDEO-route request before generation.",
+        validation_alias=AliasChoices("VIDEO_REFINE_PROMPT_ENABLED"),
     )
 
     @property

@@ -6,7 +6,8 @@ render goes through the same calling convention instead of a half-free-function 
 - `PromptGenerator` is the upstream prompt director shared by the router IMAGE and VIDEO routes:
   `refine` expands a thin user request into one rich, self-contained generation prompt with the
   grounding tools (so a vague "draw the heroine of some anime" is looked up first), best-effort and
-  gated by `REFINE_PROMPT_ENABLED`. It runs on the proxy like the answer model. The QA-route inline
+  gated per-route by `IMAGE_REFINE_PROMPT_ENABLED` / `VIDEO_REFINE_PROMPT_ENABLED`. It runs on the
+  proxy like the answer model. The QA-route inline
   `<generate-image>` marker does NOT refine (its description is already written by the answer model).
 - `ImageGenerator` runs the downstream image model on the LiteLLM proxy (`AsyncOpenAI`). `render`
   is the raising primitive shared by the router IMAGE route (which also edits source pixels) and
@@ -310,7 +311,8 @@ class ImageGenerator(BaseModel):
 class PromptGenerator(BaseModel):
     """Prompt director for the router IMAGE and VIDEO routes, running on the LiteLLM proxy.
 
-    Holds the shared proxy client, the director model, and the `REFINE_PROMPT_ENABLED` flag.
+    Holds the shared proxy client and the director model; each `refine` call is gated per-route
+    by the caller's own flag (`IMAGE_REFINE_PROMPT_ENABLED` / `VIDEO_REFINE_PROMPT_ENABLED`).
     `refine` expands a thin user request ("draw the heroine of some anime") into one rich,
     self-contained generation prompt, looking subjects up first with the grounding tools, so the
     downstream image/video model renders a far stronger result than from the raw request. Any
@@ -331,10 +333,6 @@ class PromptGenerator(BaseModel):
     prompt_model: ModelSettings = Field(
         ..., description="Model settings for the prompt director (flash + high + grounding)."
     )
-    enabled: bool = Field(
-        default=True,
-        description="Whether refinement runs; False returns the raw prompt (REFINE_PROMPT_ENABLED).",
-    )
 
     async def refine(
         self,
@@ -342,6 +340,7 @@ class PromptGenerator(BaseModel):
         user_prompt: str,
         instructions: str,
         end_user_id: str,
+        enabled: bool,
         image_bytes_list: list[bytes] | None = None,
     ) -> str:
         """Expands a thin IMAGE/VIDEO request into a rich, self-contained generation prompt.
@@ -349,9 +348,10 @@ class PromptGenerator(BaseModel):
         Runs `prompt_model` with the grounding tools so a vague request is looked up and resolved
         before the image/video model renders it. With `enabled=False` the director is skipped and
         the raw `user_prompt` is returned; an empty draft, a timeout, or any error fall back the
-        same way, so an exception never escapes here.
+        same way, so an exception never escapes here. The caller passes its own per-route flag
+        (`image_refine_prompt_enabled` / `video_refine_prompt_enabled`).
         """
-        if not self.enabled:
+        if not enabled:
             return user_prompt
         director_content: list[
             ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam

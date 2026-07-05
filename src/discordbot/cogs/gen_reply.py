@@ -490,13 +490,13 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Returns:
             A director bound to this cog's proxy client and the flash + high + grounding
-            `prompt_model`, gated by `config.refine_prompt_enabled`; `refine` expands the raw
-            request before `render`, best-effort (raw prompt on disable / empty / error).
+            `prompt_model`; each `refine` call is gated by the caller's per-route flag
+            (`config.image_refine_prompt_enabled` / `config.video_refine_prompt_enabled`) and
+            expands the raw request before `render`, best-effort (raw prompt on disable / empty /
+            error).
         """
         return PromptGenerator(
-            client=self.openai_client,
-            prompt_model=self.runtime_models.prompt_model,
-            enabled=self.config.refine_prompt_enabled,
+            client=self.openai_client, prompt_model=self.runtime_models.prompt_model
         )
 
     @cached_property
@@ -779,6 +779,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     user_prompt=user_prompt,
                     instructions=VIDEO_PROMPT,
                     end_user_id=message.author.name,
+                    enabled=self.config.video_refine_prompt_enabled,
                     image_bytes_list=[raw for raw, _ in images] or None,
                 )
                 video_bytes = await self.video_generator.render(
@@ -1002,6 +1003,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 user_prompt=user_prompt,
                 instructions=IMAGE_PROMPT,
                 end_user_id=message.author.name,
+                enabled=self.config.image_refine_prompt_enabled,
                 image_bytes_list=image_bytes_list or None,
             )
             image_bytes = await self.image_generator.render(

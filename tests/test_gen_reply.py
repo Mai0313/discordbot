@@ -3104,12 +3104,10 @@ async def test_prompt_generator_refines_with_grounding() -> None:
     """An enabled director expands the request and records model, instructions, and grounding tools."""
     client = FakeClient()
     client.responses.refine_output_text = "a rich, detailed scene"
-    generator = PromptGenerator(
-        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=True
-    )
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
 
     refined = await generator.refine(
-        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice"
+        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice", enabled=True
     )
 
     assert refined == "a rich, detailed scene"
@@ -3125,12 +3123,10 @@ async def test_prompt_generator_refines_with_grounding() -> None:
 async def test_prompt_generator_disabled_returns_raw_without_call() -> None:
     """A disabled director returns the raw prompt and never calls the model."""
     client = FakeClient()
-    generator = PromptGenerator(
-        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=False
-    )
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
 
     refined = await generator.refine(
-        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice"
+        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice", enabled=False
     )
 
     assert refined == "draw a cat"
@@ -3140,12 +3136,10 @@ async def test_prompt_generator_disabled_returns_raw_without_call() -> None:
 async def test_prompt_generator_empty_draft_falls_back_to_raw() -> None:
     """An empty draft (no output_text) falls back to the raw prompt."""
     client = FakeClient()  # refine_output_text defaults to None
-    generator = PromptGenerator(
-        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=True
-    )
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
 
     refined = await generator.refine(
-        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice"
+        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice", enabled=True
     )
 
     assert refined == "draw a cat"
@@ -3161,12 +3155,10 @@ async def test_prompt_generator_error_falls_back_to_raw() -> None:
         raise RuntimeError("director boom")
 
     client.responses.create = _boom
-    generator = PromptGenerator(
-        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=True
-    )
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
 
     refined = await generator.refine(
-        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice"
+        user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice", enabled=True
     )
 
     assert refined == "draw a cat"
@@ -3176,14 +3168,13 @@ async def test_prompt_generator_rides_source_images_as_input() -> None:
     """Source bytes ride along as input_image parts so an edit draft is grounded in the picture."""
     client = FakeClient()
     client.responses.refine_output_text = "edited result"
-    generator = PromptGenerator(
-        client=client, prompt_model=RuntimeModelCatalog().prompt_model, enabled=True
-    )
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
 
     await generator.refine(
         user_prompt="make it blue",
         instructions=IMAGE_PROMPT,
         end_user_id="alice",
+        enabled=True,
         image_bytes_list=[base64.b64decode(_png_b64())],
     )
 
@@ -3246,9 +3237,9 @@ async def test_handle_image_reply_refines_prompt_before_generate() -> None:
 
 
 async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
-    """With REFINE_PROMPT_ENABLED off, the raw request reaches images.generate with no director call."""
+    """With IMAGE_REFINE_PROMPT_ENABLED off, the raw request reaches images.generate with no director call."""
     cog = _cog()
-    cog.config.refine_prompt_enabled = False
+    cog.config.image_refine_prompt_enabled = False
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
     await cog._handle_image_reply(
@@ -3498,6 +3489,33 @@ async def test_handle_video_reply_refines_prompt_before_render(
     assert cog.gemini_client.create_configs[0]["video_config"]["task"] == "text_to_video"
     assert cog.gemini_client.create_response_formats[0]["aspect_ratio"] == "16:9"
     assert message.replies[-1].file is not None
+
+
+async def test_handle_video_reply_refine_disabled_sends_raw_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With VIDEO_REFINE_PROMPT_ENABLED off, the raw request reaches omni with no director call."""
+    cog = _cog()
+    cog.config.video_refine_prompt_enabled = False
+
+    async def fake_sleep(delay: float) -> None:
+        """Skips video polling delay."""
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
+
+    await cog._handle_video_reply(
+        message=message,
+        user_prompt="video",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # The raw prompt reaches omni as input text; the only create is the streaming persona reply
+    # (no non-streaming refine call).
+    create_input = cog.gemini_client.create_inputs[0]
+    assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
+    assert cog.openai_client.responses.create_streams == [True]
+    assert cog.openai_client.responses.create_models == [cog.runtime_models.video_reply_model.name]
 
 
 async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyPatch) -> None:
