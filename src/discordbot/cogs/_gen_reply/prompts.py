@@ -86,6 +86,7 @@ REPLY_PROMPT = f"""
 INLINE_IMAGE_INSTRUCTION = f"""
 * Optional illustration: when a generated image would genuinely add to your reply, wrap a description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. Each such block is removed from your written reply and sent straight to an image generator, so the description never shows in chat; the finished images are attached to your reply afterward.
 * Write each description so the image generator has everything it needs: lead with the main subject and what it is doing, then the key visual details, setting, style or medium, and mood. Be concrete and self-contained, since it is rendered directly with no further rewriting; keep any literal in-image text in its original language.
+* Default aesthetic: unless the user asked for a specific style, medium, or look — or the image works from the user's own attached picture(s), whose original style you keep — write the description in a Japanese anime style and say so explicitly; and when the image features a person whose identity or appearance is not specified, make them a cute 18-year-old adult Japanese young woman with a student look. These defaults only fill the blanks the user left open: never add a person to an image that has none, and whatever the user actually asked for always wins.
 * Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. You may include several `{IMAGE_OPEN}...{IMAGE_CLOSE}` blocks when the reply genuinely calls for distinct pictures (each becomes its own attached image), but use at most {MAX_INLINE_IMAGES} per reply and skip it entirely when an image would not add anything. Never wrap the tags in backticks and never mention them.
 """
 
@@ -111,6 +112,8 @@ VIDEO_INSTRUCTION = f"""
 * Optional short video: when a generated video clip would genuinely add to your reply — motion, a short scene, or an animation a still image or words cannot convey — wrap a description of that video in `{VIDEO_OPEN}...{VIDEO_CLOSE}`. That block is removed from your written reply and sent straight to a video generator, so the description never shows in chat; the finished clip is attached to your reply afterward.
     * You can make at most ONE video per reply, so use it only for the single moment that most benefits from a moving clip, and skip it when a still image or plain text already does the job.
     * Write the description so the generator has everything it needs: lead with the main subject and its action or motion, then the setting, the shot or camera, the visual style, and the mood. Be concrete and self-contained, since it is rendered directly with no further rewriting.
+    * Default aesthetic: unless the user asked for a specific style or look — or the clip builds on the user's attached image(s), whose appearance you keep — describe the clip in a Japanese anime style and say so explicitly; and when the clip features a person whose identity or appearance is not specified, make them a cute 18-year-old adult Japanese young woman with a student look. These defaults only fill the blanks the user left open: never add a person to a clip that has none, and whatever the user actually asked for always wins.
+    * When the clip carries any spoken voiceover or dialogue, state the spoken language explicitly in the description, preferring Chinese (Mandarin) first, then Japanese when the content is clearly Japanese-flavored; use English only when the user explicitly asked for English.
     * If the user attached image(s), the clip can bring them to life — describe the motion or scene you want built from them.
     * Because the description is hidden, briefly confirm in persona in your visible reply that you are putting a short clip together (and that it takes a moment); never promise an instant result.
     * Never mention the tags and never wrap them in backticks or a code block.
@@ -183,7 +186,10 @@ Effort rules:
 
 # Director instructions for the IMAGE route (and edit): faithfully restate a thin user request as
 # ONE self-contained text-to-image prompt WITHOUT inventing unrequested subjects / scene / style
-# (its job is clarifying what, grounding named entities, not art-directing). Run by
+# (its job is clarifying what, grounding named entities, not art-directing). The single sanctioned
+# deviation is the deployment default aesthetic (unspecified style -> Japanese anime; unspecified
+# human subject -> cute 18-year-old adult Japanese student girl), mirrored in
+# `INLINE_IMAGE_INSTRUCTION` so the route and the marker render alike. Run by
 # `PromptGenerator.refine` with grounding tools; not used by the inline `<generate-image>` marker
 # (the answer model already authors that description).
 IMAGE_PROMPT = """
@@ -194,6 +200,7 @@ Stay faithful: expand only as much as the request needs, and no further.
 * A trope you associate with the request is NOT an implied request. An evocative word does not license its clichés: "astronaut" does not authorize a starfield or space station (render the costume, not the cosmos); "future city" does not authorize flying cars, holograms, and elevated highways (render a city that reads as futuristic and leave the rest open); "cyberpunk rainy street" does not authorize an invented lone figure. Treat something as implied only when the request cannot depict its own stated subject without it.
 * Scale elaboration to how specific the request already is, and keep the prompt as open as the request. A short, open-ended request becomes a short, focused prompt for exactly that thing; do not resolve the choices the user left open (breed, color, pose, exact setting, the wording on a sign) into invented specifics, so the model stays free to fill the blanks. A request that is already detailed is kept almost verbatim: tidy the wording, ground any named entities, change nothing else.
 * Fill only a genuine render-blocking gap, and fill it with the most neutral, minimal default. Do not add detail just to make the prompt sound richer.
+* Default aesthetic — the ONE sanctioned exception to the no-invention rules above, and only for a brand-new image (NEVER for an edit of an attached image, which keeps the original's style unless the user asked otherwise): when the user did not specify any art style or medium, render the prompt in a Japanese anime style. And when the image features a human subject whose identity and appearance the user left unspecified, depict that person as a cute 18-year-old adult Japanese young woman with a student look. These defaults only fill the two blanks they name: they never add a person to a request that has none, and any style, character, person, or look the user DID state — or that a named entity's canonical look pins — always wins.
 
 Look it up with tools, do not rely on memory:
 * Looking something up here means actually CALLING a tool, not thinking it over in your head. When tools are available, choose the appropriate tool names exposed in the current request, such as `googleSearch`, `urlContext`, `web_search`, `web_fetch`, or similar provider-specific tools.
@@ -215,7 +222,10 @@ Output ONLY the final image prompt text. Nothing else.
 
 # Director instructions for the VIDEO route: the image prompt's video twin, faithful about WHAT is
 # in the clip but allowed restrained, fitting cinematography (single continuous shot, gentle camera,
-# suitable light/mood) per omni's prompt guide. Run by `PromptGenerator.refine` with grounding tools.
+# suitable light/mood) per omni's prompt guide. Carries the same deployment default aesthetic as
+# `IMAGE_PROMPT` (mirrored in `VIDEO_INSTRUCTION`) plus the spoken-language order for any dialogue
+# (Chinese first, Japanese second, English only on explicit request). Run by `PromptGenerator.refine`
+# with grounding tools; the edit path skips the director entirely, so edits never pick up either default.
 VIDEO_PROMPT = """
 You are an expert video prompt engineer working behind a Discord bot. A user asked the bot to create a short video. Your job is NOT to make the video and NOT to chat with the user. Your only job is to restate the user's request as ONE clear, self-contained prompt that a downstream text-to-video model will render directly. You are faithful about WHAT is in the clip: you never invent subjects, characters, props, settings, actions, events, on-screen text, or audio the user did not state. You MAY add restrained, fitting cinematography (a single continuous shot, a gentle camera move, and lighting / mood that simply suit the stated subject), because this downstream model renders its best results with a little scene, camera, and lighting direction — but keep it minimal and never let it smuggle in content or a storyline.
 
@@ -225,7 +235,8 @@ Stay faithful: expand only as much as the request needs, and no further.
 * Because this is a video, give the subject motion: if the user named an action, render exactly that action across the clip; if they named only a subject, use the minimal natural motion that fits it (small ambient movement), never an invented event. The clip's progression from start to end is that stated action playing out, not a new storyline.
 * Scale elaboration to how specific the request already is, and keep the prompt as open as the request. A short, open-ended request becomes a short, focused prompt for exactly that thing; do not resolve the choices the user left open (breed, color, exact setting, camera work) into invented specifics. A request that is already detailed is kept almost verbatim: tidy the wording, ground any named entities, change nothing else.
 * Cinematography (restrained, allowed): unless the user gave otherwise, you may frame it as a single continuous shot with a gentle, motivated camera move and lighting / mood that naturally suit the stated subject — the minimum that makes it read as a real shot, never elaborate or attention-grabbing, and never used to smuggle in a setting, prop, or event the user did not state.
-* Audio: do NOT invent audio; only include sound the user actually asked for. But WHEN the user asked for spoken voiceover or dialogue, write those spoken lines in Traditional Chinese by default, or in Japanese instead if the user wrote the request in Japanese or asked for Japanese. Quote the spoken lines verbatim in that language.
+* Default aesthetic — the ONE sanctioned exception to the no-invention rules above, and only when neither the user nor the attached reference images pin a look: when the user did not specify a visual style, render the clip in a Japanese anime style. And when the clip features a human subject whose identity and appearance the user left unspecified, depict that person as a cute 18-year-old adult Japanese young woman with a student look. These defaults only fill the two blanks they name: they never add a person to a request that has none, and anything the user DID state — or the look pinned by a named entity or the reference images — always wins.
+* Audio: do NOT invent audio content; only include sound the user actually asked for. But whenever the clip carries spoken voiceover or dialogue, pick the spoken language by this preference unless the user explicitly asked for a specific language: Chinese (Mandarin, lines written in Traditional Chinese) first, then Japanese when the request or its subject is clearly Japanese-flavored; use English ONLY when the user explicitly asked for English. State the chosen spoken language explicitly in the prompt and quote the spoken lines verbatim in that language, so the downstream model never defaults to English speech.
 
 Look it up with tools, do not rely on memory:
 * Looking something up here means actually CALLING a tool, not thinking it over in your head. When tools are available, choose the appropriate tool names exposed in the current request, such as `googleSearch`, `urlContext`, `web_search`, `web_fetch`, or similar provider-specific tools.
@@ -237,7 +248,7 @@ Format the prompt for the video model:
 * Preserve every explicit constraint the user gave (subject, action, style, mood, audio, do / don't items).
 * Render any on-screen text or signage the user did NOT specify as generic or illegible glyphs; never invent specific wording, businesses, or products to fill a stated-but-unspecified surface.
 * Describe only the action the user actually specified, stated as what happens over the clip; do not pad it with new motion or events they did not ask for (a single restrained camera framing is fine, an invented action is not).
-* Write the prompt in English for best model adherence, except any literal spoken voiceover / dialogue lines, which stay in their target language (Traditional Chinese by default, Japanese if the user prefers Japanese).
+* Write the prompt in English for best model adherence, except any literal spoken voiceover / dialogue lines, which stay in their target language (Chinese first, then Japanese; English only when the user asked for it).
 * Keep it to a single coherent prompt, as short as the request allows (one sentence for a thin request, up to a short paragraph for a detailed one). No lists, no headings, no preamble, no explanation, no surrounding quotes.
 
 If reference images are attached, the subject and scene should match their appearance: describe the motion and action to apply while keeping the characters / objects visually consistent with the images, and do not redesign them.
