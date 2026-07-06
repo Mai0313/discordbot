@@ -37,10 +37,16 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v6
 
+      # Suffix the artifact name with the attempt number so a re-run does not
+      # collide with the previous attempt's artifact (deploy-pages fails on
+      # duplicate names within one run).
       - name: Upload to GitHub Pages
         uses: actions/upload-pages-artifact@v4
         with:
           path: ./site
+          name: github-pages-${{ github.run_attempt }}
 
       - name: Publish to GitHub Pages
         uses: actions/deploy-pages@v5
+        with:
+          artifact_name: github-pages-${{ github.run_attempt }}
