@@ -62,6 +62,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.llm import output_text_or_empty
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
 
@@ -389,7 +390,7 @@ class PromptGenerator(BaseModel):
                         extra_headers={"x-litellm-end-user-id": end_user_id},
                         extra_body={"mock_testing_fallbacks": False},
                     )
-            refined = (responses.output_text or "").strip()
+            refined = output_text_or_empty(responses=responses).strip()
         except Exception:
             logfire.warn("Prompt refinement failed; using raw user prompt", _exc_info=True)
             return user_prompt

@@ -11,9 +11,29 @@ import asyncio
 from openai import AsyncOpenAI
 import logfire
 from pydantic import BaseModel, ValidationError
+from openai.types.responses import Response
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.typings.models import ModelSettings
+
+
+def output_text_or_empty(*, responses: Response) -> str:
+    """Aggregates the response's text, tolerating output_text parts whose `text` is None.
+
+    The SDK's `Response.output_text` does a bare `"".join(...)` over every output_text part's
+    text; a single part with `text=None` — a Gemini-via-proxy quirk seen on some grounded /
+    refused turns — makes that join raise `TypeError`, defeating the usual
+    `(responses.output_text or "")` guard. This mirrors the SDK aggregation but keeps only the
+    non-empty text parts, so a stray None yields "" instead of raising.
+    """
+    texts = [
+        content.text
+        for output in responses.output
+        if output.type == "message"
+        for content in output.content
+        if content.type == "output_text" and content.text
+    ]
+    return "".join(texts)
 
 
 async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- shared best-effort call surface; all params are per-call inputs
@@ -112,4 +132,4 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
             "Text LLM request failed; using fallback", end_user_id=end_user_id, _exc_info=True
         )
         return None
-    return (responses.output_text or "").strip()
+    return output_text_or_empty(responses=responses).strip()

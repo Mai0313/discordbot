@@ -406,6 +406,17 @@ class FakeResponses:
             )
             return _stream_events_from(events=events)
         output = self.select_queue.pop(0) if self.select_queue else []
+        if self.refine_output_text is not None:
+            # The prompt director reads text via `output_text_or_empty`, which aggregates the
+            # structured `.output` message parts (mirroring how the real Response derives
+            # `.output_text`), so carry the refine text as an output_text content part.
+            output = [
+                *output,
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text=self.refine_output_text)],
+                ),
+            ]
         return SimpleNamespace(
             output=output, usage=self.select_usage, output_text=self.refine_output_text
         )

@@ -179,8 +179,13 @@ class FakeGeneratedResponse:
     """Fake non-streaming Responses API result."""
 
     def __init__(self, output_text: str) -> None:
-        """Stores generated output text."""
+        """Stores generated text as a structured output message (mirrors the real Response)."""
         self.output_text = output_text
+        self.output = [
+            SimpleNamespace(
+                type="message", content=[SimpleNamespace(type="output_text", text=output_text)]
+            )
+        ]
 
 
 def _thread_output(
