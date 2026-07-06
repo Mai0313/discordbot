@@ -406,6 +406,17 @@ class FakeResponses:
             )
             return _stream_events_from(events=events)
         output = self.select_queue.pop(0) if self.select_queue else []
+        if self.refine_output_text is not None:
+            # The prompt director reads text via `output_text_or_empty`, which aggregates the
+            # structured `.output` message parts (mirroring how the real Response derives
+            # `.output_text`), so carry the refine text as an output_text content part.
+            output = [
+                *output,
+                SimpleNamespace(
+                    type="message",
+                    content=[SimpleNamespace(type="output_text", text=self.refine_output_text)],
+                ),
+            ]
         return SimpleNamespace(
             output=output, usage=self.select_usage, output_text=self.refine_output_text
         )
@@ -1424,18 +1435,19 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes(
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    async def _load(*, message: object) -> list[bytes]:
-        """Stands in for the input builder loading the message's uploaded image bytes."""
+    async def _load(*, message: object) -> list[tuple[bytes, str]]:
+        """Stands in for the input builder loading the message's uploaded image (bytes, mime)."""
         del message
-        return [b"uploaded-bytes"]
+        return [(b"uploaded-bytes", "image/png")]
 
-    builder = SimpleNamespace(get_image_source_bytes=_load)
+    builder = SimpleNamespace(get_image_sources_with_mime=_load)
 
     await ResponseStreamer(
         message=message, image_generator=generator, input_builder=builder
     ).stream(responses=_stream_events_from(_image_marker_events()))
 
-    # The uploaded bytes ride through to generate, so the inline <generate-image> edits them.
+    # The uploaded bytes (mime stripped for the edit path) ride through to generate, so the inline
+    # <generate-image> edits them.
     assert generator.image_bytes_lists == [[b"uploaded-bytes"]]
     # The marker description itself is passed through verbatim (the marker path never refines).
     assert generator.calls == [
@@ -1693,14 +1705,14 @@ class _FakeVideoGenerator:
         """Stores the MP4 bytes (None simulates a failed render) returned by generate."""
         self.video = video
         self.calls: list[str] = []
-        self.image_bytes_lists: list[list[bytes] | None] = []
+        self.reference_sources: list[list[tuple[bytes, str]] | None] = []
 
     async def generate(
-        self, *, user_prompt: str, image_bytes_list: list[bytes] | None = None
+        self, *, user_prompt: str, reference_image_sources: list[tuple[bytes, str]] | None = None
     ) -> bytes | None:
-        """Records the description request (and any reference source bytes) and returns the clip."""
+        """Records the description request (and any reference source images) and returns the clip."""
         self.calls.append(user_prompt)
-        self.image_bytes_lists.append(image_bytes_list)
+        self.reference_sources.append(reference_image_sources)
         return self.video
 
 
@@ -1733,8 +1745,8 @@ async def test_video_marker_generates_and_attaches(economy_isolated_db: None) ->
     assert message.replies[0].file.filename == "generated.mp4"
     # The source message is marked with the video emoji while the clip renders.
     assert message.added_reactions == [_VIDEO_EMOJI]
-    # No input_builder wired -> no source bytes -> plain text-to-video (not a reference render).
-    assert generator.image_bytes_lists == [None]
+    # No input_builder wired -> no source images -> plain text-to-video (not a reference render).
+    assert generator.reference_sources == [None]
 
 
 async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db: None) -> None:
@@ -1743,19 +1755,20 @@ async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
-    async def _load(*, message: object) -> list[bytes]:
-        """Stands in for the input builder loading the message's uploaded image bytes."""
+    async def _load(*, message: object) -> list[tuple[bytes, str]]:
+        """Stands in for the input builder loading the message's uploaded image (bytes, mime)."""
         del message
-        return [b"uploaded-bytes"]
+        return [(b"uploaded-bytes", "image/png")]
 
-    builder = SimpleNamespace(get_image_source_bytes=_load)
+    builder = SimpleNamespace(get_image_sources_with_mime=_load)
 
     await ResponseStreamer(
         message=message, video_generator=generator, input_builder=builder
     ).stream(responses=_stream_events_from(_video_marker_events()))
 
-    # The uploaded bytes ride through to generate, so the inline <generate-video> animates them.
-    assert generator.image_bytes_lists == [[b"uploaded-bytes"]]
+    # The uploaded (bytes, mime) pair rides through to generate, so the inline <generate-video>
+    # animates it and omni infers the task.
+    assert generator.reference_sources == [[(b"uploaded-bytes", "image/png")]]
     assert generator.calls == ["a wave crashing on rocks at sunset"]
 
 
@@ -3480,13 +3493,14 @@ async def test_handle_video_reply_refines_prompt_before_render(
     # The reply (the last create) watches the generated video: referenced as an input_file part.
     reply_parts = cog.openai_client.responses.create_inputs[-1][-1]["content"]
     assert any(part.get("type") == "input_file" for part in reply_parts)
-    # No attachments: the refined prompt reaches omni as input text, task=text_to_video, fixed 16:9.
+    # No attachments: the refined prompt reaches omni as input text; the task is omitted so omni
+    # infers text_to_video, and the fixed 16:9 aspect ratio is still sent for pure text.
     create_input = cog.gemini_client.create_inputs[0]
     assert [part["text"] for part in create_input if part["type"] == "text"] == [
         "a cat leaping in slow motion, camera pan"
     ]
     assert not any(part["type"] == "image" for part in create_input)
-    assert cog.gemini_client.create_configs[0]["video_config"]["task"] == "text_to_video"
+    assert cog.gemini_client.create_configs[0] is None
     assert cog.gemini_client.create_response_formats[0]["aspect_ratio"] == "16:9"
     assert message.replies[-1].file is not None
 
@@ -3584,7 +3598,7 @@ async def test_download_output_video_retries_until_ready(monkeypatch: pytest.Mon
 
 
 async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Attached images ride as asset reference images (capped at three)."""
+    """Attached images ride as reference images (capped at three) with a real mime; task inferred."""
     cog = _cog()
 
     async def fake_sleep(delay: float) -> None:
@@ -3607,12 +3621,48 @@ async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.Mo
         context_task=asyncio.create_task(_ready_reply_context()),
     )
 
-    # All attached images ride as subject reference images, capped at three, task=reference_to_video.
+    # Images cap at three and each MUST carry a real, non-empty image mime (omni 400s an empty mime,
+    # the reported bug); the task is omitted so omni infers image_to_video vs reference_to_video.
     create_input = cog.gemini_client.create_inputs[0]
     image_parts = [part for part in create_input if part["type"] == "image"]
     assert len(image_parts) == 3
     assert all(part["data"] for part in image_parts)
-    assert cog.gemini_client.create_configs[0]["video_config"]["task"] == "reference_to_video"
+    assert all(part.get("mime_type", "").startswith("image/") for part in image_parts)
+    assert cog.gemini_client.create_configs[0] is None
+
+
+async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lone image (the reported crash case) sends a real mime, no aspect ratio, task inferred."""
+    cog = _cog()
+
+    async def fake_sleep(delay: float) -> None:
+        """Skips video polling delay."""
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    message = FakeMessage(content="讓這張動起來", author=FakeAuthor(user_id=1))
+    message.attachments = [
+        FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        )
+    ]
+
+    await cog._handle_video_reply(
+        message=message,
+        user_prompt="video",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # The single image carries its mime (this is exactly what was empty before, causing the 400);
+    # no aspect_ratio is sent (omni may pick image_to_video, which follows the source frame's ratio),
+    # and the task is omitted so omni infers image_to_video.
+    create_input = cog.gemini_client.create_inputs[0]
+    image_parts = [part for part in create_input if part["type"] == "image"]
+    assert len(image_parts) == 1
+    assert image_parts[0].get("mime_type", "").startswith("image/")
+    assert "aspect_ratio" not in cog.gemini_client.create_response_formats[0]
+    assert cog.gemini_client.create_configs[0] is None
 
 
 @pytest.mark.parametrize(

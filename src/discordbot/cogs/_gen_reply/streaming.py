@@ -501,25 +501,26 @@ class ResponseStreamer(BaseModel):
             return None
         return MediaItem(source=clip.audio, filename=VOICE_REPLY_FILENAME)
 
-    async def _load_marker_source_bytes(self) -> list[bytes]:
-        """Best-effort source pixels (current + replied-to message images) for an inline edit.
+    async def _load_marker_source_images(self) -> list[tuple[bytes, str]]:
+        """Best-effort source images (current + replied-to message) as `(bytes, mime)` pairs.
 
-        When the user uploaded image(s), an inline `<generate-image>` over them edits rather than generates
-        (mirrors the IMAGE route's source gather). Best-effort: no builder or a load failure simply
-        yields no source bytes, so the marker falls back to fresh generation.
+        Shared by the inline `<generate-image>` edit (which needs only the bytes) and the inline
+        `<generate-video>` reference path (which needs the mime, since omni rejects an image content
+        block with an empty mime). Best-effort: no builder or a load failure simply yields no
+        sources, so the marker falls back to fresh generation.
         """
         if self.input_builder is None:
             return []
         try:
             if self.message.reference and isinstance(self.message.reference.resolved, Message):
-                own_bytes, ref_bytes = await asyncio.gather(
-                    self.input_builder.get_image_source_bytes(message=self.message),
-                    self.input_builder.get_image_source_bytes(
+                own_images, ref_images = await asyncio.gather(
+                    self.input_builder.get_image_sources_with_mime(message=self.message),
+                    self.input_builder.get_image_sources_with_mime(
                         message=self.message.reference.resolved
                     ),
                 )
-                return own_bytes + ref_bytes
-            return await self.input_builder.get_image_source_bytes(message=self.message)
+                return own_images + ref_images
+            return await self.input_builder.get_image_sources_with_mime(message=self.message)
         except Exception:
             logfire.warn(
                 "Inline image source load failed; generating without source pixels",
@@ -529,7 +530,7 @@ class ResponseStreamer(BaseModel):
             return []
 
     async def _build_image_candidates(
-        self, *, source_bytes_task: asyncio.Task[list[bytes]] | None
+        self, *, source_images_task: asyncio.Task[list[tuple[bytes, str]]] | None
     ) -> list[MediaItem]:
         """Renders the <generate-image> requests to PNG candidates, in order; [] when none delivered.
 
@@ -537,8 +538,9 @@ class ResponseStreamer(BaseModel):
         render concurrently; a generation failure drops that image and a single ⚠️ hint rides on
         the source message. The upload-limit decision (attach vs host) is left to
         `_attach_generated_media`, so a large image is no longer dropped here for size. The uploaded
-        source pixels (for editing) are awaited from the shared `source_bytes_task` so an inline
-        `<generate-image>` and `<generate-video>` in the same reply load them only once.
+        source images (for editing) are awaited from the shared `source_images_task` so an inline
+        `<generate-image>` and `<generate-video>` in the same reply load them only once; only the raw
+        bytes are used here (the edit path needs no mime).
         """
         prompts = self.image_prompts[:MAX_INLINE_IMAGES]
         if not prompts:
@@ -566,7 +568,8 @@ class ResponseStreamer(BaseModel):
         )
         # When the user uploaded image(s), feed them so an inline <generate-image> edits them instead of
         # generating a fresh picture (mirrors the IMAGE route); best-effort, [] when none / failure.
-        source_bytes = await source_bytes_task if source_bytes_task is not None else []
+        source_images = await source_images_task if source_images_task is not None else []
+        source_bytes = [raw for raw, _ in source_images]
         # Render every requested image concurrently so a slow one never delays the others.
         images = await asyncio.gather(
             *(
@@ -623,16 +626,16 @@ class ResponseStreamer(BaseModel):
         return MediaItem(source=clip.audio, filename=music_filename(mime_type=clip.mime_type))
 
     async def _build_video_candidate(
-        self, *, source_bytes_task: asyncio.Task[list[bytes]] | None
+        self, *, source_images_task: asyncio.Task[list[tuple[bytes, str]]] | None
     ) -> MediaItem | None:
         """Generates the <generate-video> clip to an MP4 candidate, or None when not delivered.
 
         Best-effort like the inline music path: a skip (not requested / disabled) is silent, while
         a requested-but-failed clip hints the source message and returns None. When the user
-        uploaded image(s) they are awaited from the shared `source_bytes_task` and ride as subject
-        references (`reference_to_video`); otherwise it is plain text-to-video. The upload-limit
-        decision (attach vs host) is left to `_attach_generated_media`, so a large clip is hosted
-        as a URL rather than dropped for size.
+        uploaded image(s) they are awaited from the shared `source_images_task` and ride as
+        `(bytes, mime)` reference pairs so omni infers the task; otherwise it is plain text-to-video.
+        The upload-limit decision (attach vs host) is left to `_attach_generated_media`, so a large
+        clip is hosted as a URL rather than dropped for size.
         """
         if self.video_prompt is None:
             # The expected common path: the answer model wrapped no <generate-video> block.
@@ -650,9 +653,9 @@ class ResponseStreamer(BaseModel):
             message=self.message, bot_user=None, emoji="<:video:1517560671913377842>"
         )
         logfire.info("Generating inline video reply", message_id=self.message.id)
-        source_bytes = await source_bytes_task if source_bytes_task is not None else []
+        source_images = await source_images_task if source_images_task is not None else []
         video_bytes = await self.video_generator.generate(
-            user_prompt=self.video_prompt, image_bytes_list=source_bytes or None
+            user_prompt=self.video_prompt, reference_image_sources=source_images or None
         )
         if video_bytes is None:
             # generate() logged the failure/timeout; hint once.
@@ -685,11 +688,11 @@ class ResponseStreamer(BaseModel):
                 await self._hint_media_unavailable(emoji="⚠️")
             return
         reply = self.reply
-        # The uploaded source pixels (for editing an inline <generate-image> / grounding an inline <generate-video>)
+        # The uploaded source images (for editing an inline <generate-image> / grounding an inline <generate-video>)
         # are loaded at most once even when both markers fire, since load_image_bytes re-fetches
         # per call; both builders await this shared task. None when neither visual marker fired.
-        source_bytes_task = (
-            asyncio.ensure_future(self._load_marker_source_bytes())
+        source_images_task = (
+            asyncio.ensure_future(self._load_marker_source_images())
             if (self.image_generator is not None and self.image_prompts)
             or (self.video_generator is not None and self.video_prompt is not None)
             else None
@@ -700,8 +703,8 @@ class ResponseStreamer(BaseModel):
         voice_candidate, music_candidate, video_candidate, image_candidates = await asyncio.gather(
             self._build_voice_candidate(),
             self._build_music_candidate(),
-            self._build_video_candidate(source_bytes_task=source_bytes_task),
-            self._build_image_candidates(source_bytes_task=source_bytes_task),
+            self._build_video_candidate(source_images_task=source_images_task),
+            self._build_image_candidates(source_images_task=source_images_task),
         )
         items = [
             item
