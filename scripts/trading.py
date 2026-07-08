@@ -38,19 +38,20 @@ def run_trading_agents(stock: str) -> str:
     # config["llm_provider"] = "anthropic"
     # config["deep_think_llm"] = "claude-opus-4-8"
     # config["quick_think_llm"] = "claude-sonnet-5"
-    # config["backend_url"] = None
+    # config["backend_url"] = "https://api.anthropic.com/v1"
     # config["anthropic_effort"] = "high"
 
     # Common Settings
     config["temperature"] = 0.7
-    config["checkpoint_enabled"] = False
+    config["checkpoint_enabled"] = True
     config["output_language"] = "zh-TW"
-    config["max_debate_rounds"] = 1
-    config["max_risk_discuss_rounds"] = 1
+    config["max_debate_rounds"] = 5
+    config["max_risk_discuss_rounds"] = 5
     config["max_recur_limit"] = 100
     config["news_article_limit"] = 20
     config["global_news_article_limit"] = 100
     config["global_news_lookback_days"] = 30
+    config["llm_max_retries"] = 3
 
     selected_analysts = ["market", "social", "news", "fundamentals"]
 
@@ -70,6 +71,7 @@ if __name__ == "__main__":
     from rich.console import Console
 
     console = Console()
-    stock = "GOOG"
-    decision = run_trading_agents(stock=stock)
-    console.print(f"Decision for {stock}:\n{decision}")
+    stocks = ["GOOG", "2330.TW", "NVDA", "SPCX"]
+    for stock in stocks:
+        decision = run_trading_agents(stock=stock)
+        console.print(f"Decision for {stock}:\n{decision}")
