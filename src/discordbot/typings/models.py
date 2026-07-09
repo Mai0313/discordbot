@@ -306,7 +306,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings for the background memory extraction call.
         """
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
     def memory_evaluator_model(self) -> ModelSettings:
@@ -317,7 +317,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings for the background memory evaluator call.
         """
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
     def memories_model(self) -> ModelSettings:
@@ -328,7 +328,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings for the background memory consolidation call.
         """
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-pro-latest", effort="high")
 
 
 class RouteClassification(BaseModel):
