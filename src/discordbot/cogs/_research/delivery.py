@@ -55,6 +55,51 @@ def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
     return chunks
 
 
+def split_report_by_sections(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
+    """Splits a report into one chunk list per `---` section, packing each section under `limit`.
+
+    The report body is model-generated cited markdown whose major sections are divided by
+    blank-surrounded thematic breaks (a line of `---`). Each section becomes its own Discord
+    message so the delivered layout mirrors the report's structure; the separator line itself is
+    dropped. A section still longer than `limit` is sub-packed by `split_report` (paragraph then
+    line boundaries, a hard cut only as a last resort), and empty sections yield nothing. A report
+    with no thematic break is a single section, so its output is byte-for-byte `split_report`'s
+    paragraph packing (today's behavior). A `---`-only line inside a fenced code block, a setext
+    `## heading` underline (no blank line above), and a table delimiter row (`| --- |`) are all
+    left intact -- only a line of pure dashes with a blank line on both sides splits a section.
+    """
+    lines = text.split("\n")
+    sections: list[str] = []
+    current: list[str] = []
+    in_fence = False
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            current.append(line)
+            continue
+        prev_blank = index == 0 or lines[index - 1].strip() == ""
+        next_blank = index == len(lines) - 1 or lines[index + 1].strip() == ""
+        stripped = line.strip()
+        is_break = (
+            not in_fence
+            and prev_blank
+            and next_blank
+            and len(stripped) >= 3
+            and set(stripped) == {"-"}
+        )
+        if is_break:
+            sections.append("\n".join(current))
+            current = []
+        else:
+            current.append(line)
+    sections.append("\n".join(current))
+
+    chunks: list[str] = []
+    for section in sections:
+        chunks.extend(split_report(text=section, limit=limit))
+    return chunks
+
+
 async def deliver_report(  # noqa: PLR0913 -- the report body plus its completion-message inputs
     *,
     thread: "Thread",
@@ -79,7 +124,7 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     roles / other users) to ping only the owner; the caller passes an owner-only policy.
     """
     report = result.report_text.strip() or "(the research returned no report text)"
-    chunks = split_report(text=report) or ["(empty report)"]
+    chunks = split_report_by_sections(text=report) or ["(empty report)"]
     # Each attachment (the report `.md`, plus the chart `.png` if any) is decided independently:
     # they are unrelated files, so one is never peeled to a URL just because their *combined* size
     # crosses the limit (the planner's combined-body guard is for a single multi-file edit; here the

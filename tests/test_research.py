@@ -16,7 +16,11 @@ from discordbot.utils.media_delivery import (
     MediaDeliveryPlanner,
 )
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
-from discordbot.cogs._research.delivery import split_report, deliver_report
+from discordbot.cogs._research.delivery import (
+    split_report,
+    deliver_report,
+    split_report_by_sections,
+)
 from discordbot.cogs._research.streaming import ResearchProgressStreamer
 
 
@@ -85,6 +89,45 @@ def test_split_report_hard_cuts_an_oversized_line() -> None:
     chunks = split_report(text="C" * 5000, limit=2000)
     assert all(len(chunk) <= 2000 for chunk in chunks)
     assert "".join(chunks) == "C" * 5000
+
+
+def test_split_report_by_sections_splits_on_thematic_breaks() -> None:
+    chunks = split_report_by_sections(text="## A\n\nAlpha body\n\n---\n\n## B\n\nBeta body")
+    assert chunks == ["## A\n\nAlpha body", "## B\n\nBeta body"]
+
+
+def test_split_report_by_sections_subsplits_oversized_section() -> None:
+    chunks = split_report_by_sections(text="intro\n\n---\n\n" + "X" * 2500, limit=2000)
+    assert chunks[0] == "intro"
+    assert all(len(chunk) <= 2000 for chunk in chunks)
+    assert "".join(chunks[1:]) == "X" * 2500
+    assert len(chunks) == 3
+
+
+def test_split_report_by_sections_falls_back_to_paragraph_packing() -> None:
+    text = f"{'A' * 1200}\n\n{'B' * 1200}"
+    assert split_report_by_sections(text=text) == split_report(text=text)
+
+
+def test_split_report_by_sections_ignores_break_inside_code_fence() -> None:
+    chunks = split_report_by_sections(text="before\n\n```\n---\n```\n\nafter")
+    assert len(chunks) == 1
+    assert "---" in chunks[0]
+
+
+def test_split_report_by_sections_keeps_table_delimiter_row() -> None:
+    chunks = split_report_by_sections(text="| Col | Val |\n| --- | --- |\n| a | 1 |")
+    assert len(chunks) == 1
+
+
+def test_split_report_by_sections_keeps_setext_heading() -> None:
+    chunks = split_report_by_sections(text="Heading\n---\n\nbody")
+    assert len(chunks) == 1
+
+
+def test_split_report_by_sections_drops_empty_sections() -> None:
+    chunks = split_report_by_sections(text="---\n\nonly body\n\n---")
+    assert chunks == ["only body"]
 
 
 # ----- agent helpers ------------------------------------------------------------------------
