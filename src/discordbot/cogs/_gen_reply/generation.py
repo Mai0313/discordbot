@@ -263,7 +263,7 @@ class ImageGenerator(BaseModel):
                 )
             else:
                 result = await self.client.images.generate(
-                    prompt=prompt or "請生成一張日系動漫風格的可愛18歲成年日本學生少女圖片。",
+                    prompt=prompt,
                     model=self.image_model.name,
                     n=1,
                     response_format="b64_json",

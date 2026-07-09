@@ -86,7 +86,6 @@ REPLY_PROMPT = f"""
 INLINE_IMAGE_INSTRUCTION = f"""
 * Optional illustration: when a generated image would genuinely add to your reply, wrap a description of that image in `{IMAGE_OPEN}...{IMAGE_CLOSE}`. Each such block is removed from your written reply and sent straight to an image generator, so the description never shows in chat; the finished images are attached to your reply afterward.
 * Write each description so the image generator has everything it needs: lead with the main subject and what it is doing, then the key visual details, setting, style or medium, and mood. Be concrete and self-contained, since it is rendered directly with no further rewriting; keep any literal in-image text in its original language.
-* Default aesthetic: unless the user asked for a specific style, medium, or look — or the image works from the user's own attached picture(s), whose original style you keep — write the description in a Japanese anime style and say so explicitly; and when the image features a person whose identity or appearance is not specified, make them a cute 18-year-old adult Japanese young woman with a student look. These defaults only fill the blanks the user left open: never add a person to an image that has none, and whatever the user actually asked for always wins.
 * Draw one whenever the user clearly wants to see an image or would genuinely enjoy one alongside your answer; you do not need an explicit "draw me" request to use it. You may include several `{IMAGE_OPEN}...{IMAGE_CLOSE}` blocks when the reply genuinely calls for distinct pictures (each becomes its own attached image), but use at most {MAX_INLINE_IMAGES} per reply and skip it entirely when an image would not add anything. Never wrap the tags in backticks and never mention them.
 """
 
@@ -185,10 +184,8 @@ Effort rules:
 
 # Director instructions for the IMAGE route (and edit): faithfully restate a thin user request as
 # ONE self-contained text-to-image prompt WITHOUT inventing unrequested subjects / scene / style
-# (its job is clarifying what, grounding named entities, not art-directing). The single sanctioned
-# deviation is the deployment default aesthetic (unspecified style -> Japanese anime; unspecified
-# human subject -> cute 18-year-old adult Japanese student girl), mirrored in
-# `INLINE_IMAGE_INSTRUCTION` so the route and the marker render alike. Run by
+# (its job is clarifying what, grounding named entities, not art-directing; it carries NO default
+# aesthetic, so an unspecified style stays open and the model decides). Run by
 # `PromptGenerator.refine` with grounding tools; not used by the inline `<generate-image>` marker
 # (the answer model already authors that description).
 IMAGE_PROMPT = """
@@ -199,7 +196,6 @@ Stay faithful: expand only as much as the request needs, and no further.
 * A trope you associate with the request is NOT an implied request. An evocative word does not license its clichés: "astronaut" does not authorize a starfield or space station (render the costume, not the cosmos); "future city" does not authorize flying cars, holograms, and elevated highways (render a city that reads as futuristic and leave the rest open); "cyberpunk rainy street" does not authorize an invented lone figure. Treat something as implied only when the request cannot depict its own stated subject without it.
 * Scale elaboration to how specific the request already is, and keep the prompt as open as the request. A short, open-ended request becomes a short, focused prompt for exactly that thing; do not resolve the choices the user left open (breed, color, pose, exact setting, the wording on a sign) into invented specifics, so the model stays free to fill the blanks. A request that is already detailed is kept almost verbatim: tidy the wording, ground any named entities, change nothing else.
 * Fill only a genuine render-blocking gap, and fill it with the most neutral, minimal default. Do not add detail just to make the prompt sound richer.
-* Default aesthetic — the ONE sanctioned exception to the no-invention rules above, and only for a brand-new image (NEVER for an edit of an attached image, which keeps the original's style unless the user asked otherwise): when the user did not specify any art style or medium, render the prompt in a Japanese anime style. And when the image features a human subject whose identity and appearance the user left unspecified, depict that person as a cute 18-year-old adult Japanese young woman with a student look. These defaults only fill the two blanks they name: they never add a person to a request that has none, and any style, character, person, or look the user DID state — or that a named entity's canonical look pins — always wins.
 
 Look it up with tools, do not rely on memory:
 * Looking something up here means actually CALLING a tool, not thinking it over in your head. When tools are available, choose the appropriate tool names exposed in the current request, such as `googleSearch`, `urlContext`, `web_search`, `web_fetch`, or similar provider-specific tools.
