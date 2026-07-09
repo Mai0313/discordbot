@@ -409,11 +409,13 @@ class MessageInputBuilder(BaseModel):
     def required_modality(content_type: str) -> Literal["image", "video", "audio", "unknown"]:
         """Maps a MIME type to the input modality the model must accept.
 
-        Documents (PDF / Office / text / code) fall through to `image` as a
-        proxy: LiteLLM only reports text/image/audio/video, and image-capable
-        models in practice also accept `input_file`. Known binaries (archives,
-        executables, octet-stream) are checked first and return `unknown` so
-        they are dropped before reaching the API.
+        Documents the backend can read (PDF / text / code) fall through to
+        `image` as a proxy: LiteLLM only reports text/image/audio/video, and
+        image-capable models in practice also accept `input_file`. Known
+        binaries (archives, executables, octet-stream) and the Office /
+        OpenDocument formats the Gemini backend rejects at generation time
+        (`Unsupported MIME type`) are checked first and return `unknown`, so
+        they are dropped before reaching the API instead of 400-ing the reply.
         """
         unsupported_binary_mimes = frozenset({
             "application/octet-stream",
@@ -435,6 +437,18 @@ class MessageInputBuilder(BaseModel):
             "application/x-mach-binary",
             "application/x-sharedlib",
             "application/wasm",
+            # Office / OpenDocument binaries: the Files API stores them but the Gemini model
+            # 400s "Unsupported MIME type" at generation time, so drop them here rather than
+            # let one leak into the answer request (which has no per-attachment retry).
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "application/vnd.oasis.opendocument.text",
+            "application/vnd.oasis.opendocument.spreadsheet",
+            "application/vnd.oasis.opendocument.presentation",
         })
         if content_type in unsupported_binary_mimes:
             return "unknown"

@@ -2502,6 +2502,16 @@ def test_required_modality_gate_keeps_code_and_text() -> None:
     # Known binary application types are dropped before any upload.
     assert modality(content_type="application/octet-stream") == "unknown"
     assert modality(content_type="application/x-tar") == "unknown"
+    # Office / OpenDocument binaries the Gemini backend rejects are dropped, not uploaded.
+    assert modality(content_type="application/msword") == "unknown"
+    assert modality(content_type="application/vnd.ms-excel") == "unknown"
+    assert (
+        modality(
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        == "unknown"
+    )
+    assert modality(content_type="application/vnd.oasis.opendocument.text") == "unknown"
     # Source-code / script application types still proxy through (.rb -> application/x-ruby).
     assert modality(content_type="application/x-ruby") == "image"
     assert modality(content_type="application/x-perl") == "image"
