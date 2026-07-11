@@ -162,7 +162,7 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
         ),
         tools=[
             URLContext(type="url_context"),
-            GoogleSearch(type="google_search", search_types=["web_search"]),
+            GoogleSearch(search_types=["web_search"], type="google_search"),
         ],
         stream=True,
     )
