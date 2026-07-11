@@ -206,7 +206,6 @@ system-certs = false
 offline = false
 prerelease = "if-necessary-or-explicit"
 preview-features = true
-python-preference = "managed"
 
 # https://docs.astral.sh/uv/reference/settings/#index
 [[tool.uv.index]]
