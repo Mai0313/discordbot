@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 # `call:default_api:bash{command:...}` text and corrupting the report.
 RESEARCH_TOOLS = [
     URLContext(type="url_context"),
-    GoogleSearch(type="google_search", search_types=["web_search"]),
+    GoogleSearch(search_types=["web_search"], type="google_search"),
 ]
 
 # The poll-fallback interval + the re-attach backoff; research is minutes-long so coarse is plenty.

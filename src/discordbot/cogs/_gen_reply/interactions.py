@@ -249,7 +249,7 @@ async def create_interactions_answer_stream(
         ),
         tools=[
             URLContext(type="url_context"),
-            GoogleSearch(type="google_search", search_types=["web_search"]),
+            GoogleSearch(search_types=["web_search"], type="google_search"),
         ],
         stream=True,
     )
