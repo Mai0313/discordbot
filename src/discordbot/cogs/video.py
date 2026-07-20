@@ -10,9 +10,19 @@ import nextcord
 from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
+from discordbot.utils.douyin import (
+    DouyinError,
+    DouyinDownload,
+    DouyinDownloader,
+    DouyinBlockedError,
+    DouyinUnavailableError,
+    is_douyin_url,
+)
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.utils.media_delivery import (
+    DISCORD_ATTACHMENT_LIMIT,
     MediaItem,
+    MediaPlan,
     upload_limit_for,
     build_media_delivery_planner,
 )
@@ -39,8 +49,8 @@ class VideoCogs(commands.Cog):
         description="Download a video from various platforms and send it back.",
         name_localizations={Locale.zh_TW: "下載影片", Locale.ja: "動画ダウンロード"},
         description_localizations={
-            Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube, Facebook, Instagram, X, Tiktok 等)",
-            Locale.ja: "YouTube, Facebook, Instagram, X, Tiktok などから動画をダウンロードして送信します。",
+            Locale.zh_TW: "從多種平台下載影片並傳送 (支援 YouTube, Facebook, Instagram, X, Tiktok, 抖音 等)",
+            Locale.ja: "YouTube, Facebook, Instagram, X, Tiktok, 抖音 などから動画をダウンロードして送信します。",
         },
         nsfw=False,
     )
@@ -48,7 +58,8 @@ class VideoCogs(commands.Cog):
         self,
         interaction: Interaction,
         url: str = SlashOption(
-            description="Video URL (YouTube, Facebook Reels, Instagram, X, etc.)", required=True
+            description="Video URL (YouTube, Facebook Reels, Instagram, X, Douyin, etc.)",
+            required=True,
         ),
         quality: str = SlashOption(
             description="Video quality (higher quality = larger file size)",
@@ -75,6 +86,14 @@ class VideoCogs(commands.Cog):
         # Read the destination's real upload ceiling (boost tier raises it to 50/100 MiB);
         # a DM has no guild to query, so fall back to Discord's current non-Nitro base of 10 MiB.
         upload_limit = upload_limit_for(guild=interaction.guild)
+
+        # Douyin is routed away from yt-dlp entirely: its extractor needs cookies, never yields a
+        # photo post, and caps below the source resolution. The yt-dlp path below is untouched.
+        if is_douyin_url(url=url):
+            await self._handle_douyin(
+                interaction=interaction, url=url, quality=quality, upload_limit=upload_limit
+            )
+            return
 
         try:
             downloader = VideoDownloader(output_folder=tempfile.gettempdir())
@@ -110,8 +129,125 @@ class VideoCogs(commands.Cog):
                 )
         except Exception:
             logfire.warn("Video download failed", _exc_info=True)
-            with contextlib.suppress(Exception):
-                await interaction.edit_original_message(content="-# 檔案無法下載")
+            await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
+
+    async def _handle_douyin(
+        self, interaction: Interaction, url: str, quality: str, upload_limit: int
+    ) -> None:
+        """Downloads a Douyin video or photo post and sends it back.
+
+        Kept separate from the yt-dlp branch because a Douyin post can be a gallery, which needs
+        several attachments on one message rather than the single file the yt-dlp path delivers.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            url: The Douyin URL.
+            quality: The desired video quality; ignored for a photo post.
+            upload_limit: The destination's attachment ceiling.
+        """
+        downloader = DouyinDownloader(output_folder=tempfile.gettempdir())
+        try:
+            # Capped at the attachment limit so a 48-image gallery does not download 38 files
+            # that could never be sent; `omitted_images` reports what the cap left behind.
+            result = await asyncio.to_thread(
+                downloader.download, url=url, quality=quality, max_images=DISCORD_ATTACHMENT_LIMIT
+            )
+        except DouyinUnavailableError:
+            logfire.warn("Douyin post unavailable", _exc_info=True)
+            await self._edit_quietly(
+                interaction=interaction, content="-# 這則貼文已被刪除或設為私人"
+            )
+            return
+        except DouyinBlockedError:
+            # A bot wall is emphatically not a missing post; saying so would send the user off
+            # to re-check a link that is perfectly fine.
+            logfire.warn("Douyin blocked the request", _exc_info=True)
+            await self._edit_quietly(
+                interaction=interaction, content="-# 抖音暫時擋住了請求，請稍後再試"
+            )
+            return
+        except DouyinError:
+            logfire.warn("Douyin download failed", _exc_info=True)
+            await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
+            return
+        except Exception:
+            # This branch runs outside the command's own try, and the downloader can still raise
+            # something that is not a DouyinError (an OSError from a full temp dir, say). Without
+            # this the exception escapes the command and the user is left on "正在下載影片..."
+            # forever, since the bot registers no application-command error handler.
+            logfire.warn("Douyin download raised an unexpected error", _exc_info=True)
+            await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
+            return
+
+        try:
+            with result:
+                items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
+                # Read BEFORE planning, which caches it: a successful host moves the source out of
+                # the temp dir, so measuring afterwards would stat a deleted path and break the very
+                # oversize-to-URL fallback this number describes.
+                total_mb = result.total_bytes / 1024 / 1024
+                plan = await self.media_delivery.plan(items=items, upload_limit=upload_limit)
+
+                if not plan.native and plan.hosted_urls:
+                    await self._deliver_url(
+                        interaction=interaction,
+                        file_size_mb=total_mb,
+                        public_url=plan.hosted_urls[0],
+                    )
+                    return
+
+                if not plan.native:
+                    await self._edit_quietly(
+                        interaction=interaction,
+                        content=f"-# 下載失敗\n檔案大小超過 {total_mb:.1f}MB",
+                    )
+                    return
+
+                await self._deliver_douyin(
+                    interaction=interaction, plan=plan, result=result, url=url
+                )
+        except Exception:
+            logfire.warn("Douyin delivery failed", _exc_info=True)
+            await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
+
+    async def _deliver_douyin(
+        self, interaction: Interaction, plan: MediaPlan, result: DouyinDownload, url: str
+    ) -> None:
+        """Edits the placeholder into the final Douyin response.
+
+        Anything left out is stated explicitly rather than silently dropped, so the user knows a
+        gallery they see is partial. The two causes are reported separately because they are not
+        the same problem: the attachment cap is a Discord limit nothing can change, while a
+        dropped item means delivery itself failed.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            plan: The attach-vs-host outcome for the downloaded files.
+            result: The downloaded post, carrying the pre-cap image count.
+            url: The source Douyin URL.
+        """
+        total_mb = result.total_bytes / 1024 / 1024
+        lines = [f"-# 檔案大小: {total_mb:.1f}MB", f"-# 來源: <{url}>"]
+        if result.omitted_images:
+            lines.append(
+                f"-# 已省略 {result.omitted_images} 張圖片 (Discord 單則訊息最多 "
+                f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
+            )
+        if plan.dropped_items:
+            lines.append(f"-# 有 {len(plan.dropped_items)} 個檔案傳送失敗")
+        # Hosted URLs must stay unwrapped to remain clickable, so they follow the subtext lines.
+        lines.extend(plan.hosted_urls)
+
+        await interaction.edit_original_message(
+            content="\n".join(lines),
+            files=[item.to_file() for item in plan.native],
+            allowed_mentions=AllowedMentions.none(),
+        )
+
+    async def _edit_quietly(self, interaction: Interaction, content: str) -> None:
+        """Edits the deferred message, swallowing a failure to edit it."""
+        with contextlib.suppress(Exception):
+            await interaction.edit_original_message(content=content)
 
     async def _deliver(
         self, interaction: Interaction, file_size_mb: float, file_path: Path, url: str
