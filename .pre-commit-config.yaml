@@ -126,7 +126,14 @@ repos:
           - "Types-requests"
           - "Types-urllib3"
           - "openai"
-          - "google-genai"
+          # Pinned to the version uv.lock ships. pre-commit builds this hook its own venv and
+          # ignores uv.lock, so an unpinned entry silently type-checks against whatever is newest
+          # when the env is first built: locally that env is cached and stays on an old version,
+          # while CI rebuilds it every run. 2.12.1 re-exports `Interaction` as the union of the
+          # two *request* models, whose members have no `output_video` / `status` / `output_text`,
+          # so generation.py failed to type-check against an API the project never installs.
+          # Runtime is unaffected on either version. Bump this together with uv.lock.
+          - "google-genai==2.11.0"
           - "anthropic"
           - "sqlalchemy[asyncio]"
           - "pydantic-settings"
