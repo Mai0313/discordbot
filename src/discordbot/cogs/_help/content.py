@@ -140,7 +140,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label="Tools",
                 summary="Video download, MapleStory lookup, Threads, ping",
                 detail=(
-                    "`/download_video` — download a video from supported platforms\n"
+                    "`/download_video` — download a video from supported platforms; a Douyin "
+                    "link also works, and a Douyin photo post comes back as images\n"
                     "`/deep_research` — kick off a long, cited research report in a thread\n"
                     "`/maplestory` — look up MapleStory monsters, equipment, scrolls, NPCs, "
                     "quests, maps, and items\n"
@@ -219,7 +220,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label="實用工具",
                 summary="影片下載、楓之谷查詢、Threads、ping",
                 detail=(
-                    "`/download_video` — 從支援的平台下載影片\n"
+                    "`/download_video` — 從支援的平台下載影片,抖音連結也可以,"
+                    "抖音的圖文貼文會直接傳回圖片\n"
                     "`/deep_research` — 開一條 thread 進行帶引用的深度研究\n"
                     "`/maplestory` — 查楓之谷的怪物、裝備、卷軸、NPC、任務、地圖、物品\n"
                     "`/ping` — 看機器人的回應延遲\n\n"
@@ -299,7 +301,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                 label="ツール",
                 summary="動画DL・MapleStory検索・Threads・ping",
                 detail=(
-                    "`/download_video` — 対応サイトから動画をダウンロード\n"
+                    "`/download_video` — 対応サイトから動画をダウンロード。抖音のリンクも可、"
+                    "抖音の画像投稿は画像として返します\n"
                     "`/deep_research` — スレッドで引用付きのディープリサーチを実行\n"
                     "`/maplestory` — MapleStory のモンスター・装備・巻物・NPC・"
                     "クエスト・マップ・アイテムを検索\n"
