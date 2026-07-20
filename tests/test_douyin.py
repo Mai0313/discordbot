@@ -619,6 +619,49 @@ async def test_cog_states_how_many_gallery_images_were_omitted(
     assert len(interaction.edits[-1]["files"]) == 3
 
 
+async def test_cog_keeps_every_url_when_a_whole_gallery_is_hosted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A gallery hosted in full must post every URL, not just the first one.
+
+    The bare-URL reply exists so a lone oversize video renders an inline player; sending a gallery
+    down that path would silently discard every image past the first, plus the omitted-count note.
+    """
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    images = []
+    for index in range(3):
+        image = tmp_path / f"{_PHOTO_ID}_{index}.jpg"
+        image.write_bytes(bytes([index]) * 4096)  # distinct bytes so hosting cannot dedup them
+        images.append(image)
+
+    cog, _stub = _install_cog(
+        monkeypatch=monkeypatch,
+        outcome=DouyinDownload(
+            title="t", is_photo=True, filenames=images, total_images=len(images)
+        ),
+    )
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=MediaHostingConfig(
+                MEDIA_HOSTING_ENABLED=True,
+                MEDIA_HOSTING_BASE_URL="https://media.test",
+                MEDIA_HOSTING_SERVE_DIR=serve_dir.as_posix(),
+            )
+        )
+    )
+    interaction = FakeInteraction(filesize_limit=1024)
+
+    await VideoCogs.download_video.callback(
+        cog, interaction, url=f"https://www.douyin.com/note/{_PHOTO_ID}", quality="best"
+    )
+
+    content = interaction.edits[-1]["content"]
+    hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
+    assert len(hosted) == len(images)
+    assert "檔案無法下載" not in content
+
+
 async def test_cog_reports_a_blocked_request_as_retryable_not_deleted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
