@@ -11,7 +11,6 @@ from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.douyin import (
-    DouyinError,
     DouyinDownload,
     DouyinDownloader,
     DouyinBlockedError,
@@ -20,8 +19,8 @@ from discordbot.utils.douyin import (
 )
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.utils.media_delivery import (
-    DISCORD_ATTACHMENT_LIMIT,
     MEDIA_ENVELOPE_MARGIN,
+    DISCORD_ATTACHMENT_LIMIT,
     MediaItem,
     MediaPlan,
     upload_limit_for,
@@ -175,31 +174,14 @@ class VideoCogs(commands.Cog):
             result = await asyncio.to_thread(
                 downloader.download, url=url, quality=quality, max_images=DISCORD_ATTACHMENT_LIMIT
             )
-        except DouyinUnavailableError:
-            logfire.warn("Douyin post unavailable", _exc_info=True)
-            await self._edit_quietly(
-                interaction=interaction, content="-# 這則貼文已被刪除或設為私人"
-            )
-            return
-        except DouyinBlockedError:
-            # A bot wall is emphatically not a missing post; saying so would send the user off
-            # to re-check a link that is perfectly fine.
-            logfire.warn("Douyin blocked the request", _exc_info=True)
-            await self._edit_quietly(
-                interaction=interaction, content="-# 抖音暫時擋住了請求，請稍後再試"
-            )
-            return
-        except DouyinError:
+        except Exception as error:
+            # Deliberately catches everything, not just DouyinError: this runs outside the
+            # command's own try block and the bot registers no application-command error handler,
+            # so anything escaping here would strand the user on "正在下載影片..." forever.
             logfire.warn("Douyin download failed", _exc_info=True)
-            await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
-            return
-        except Exception:
-            # This branch runs outside the command's own try, and the downloader can still raise
-            # something that is not a DouyinError (an OSError from a full temp dir, say). Without
-            # this the exception escapes the command and the user is left on "正在下載影片..."
-            # forever, since the bot registers no application-command error handler.
-            logfire.warn("Douyin download raised an unexpected error", _exc_info=True)
-            await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
+            await self._edit_quietly(
+                interaction=interaction, content=self._douyin_failure_message(error=error)
+            )
             return
 
         try:
@@ -251,6 +233,19 @@ class VideoCogs(commands.Cog):
             logfire.warn("Douyin delivery failed", _exc_info=True)
             await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
 
+    @staticmethod
+    def _douyin_failure_message(error: Exception) -> str:
+        """Maps a Douyin download failure to the message the user should see.
+
+        A bot wall and a missing post are kept apart on purpose: reporting a block as a deleted
+        post would send someone off to re-check a link that is perfectly fine.
+        """
+        if isinstance(error, DouyinUnavailableError):
+            return "-# 這則貼文已被刪除或設為私人"
+        if isinstance(error, DouyinBlockedError):
+            return "-# 抖音暫時擋住了請求，請稍後再試"
+        return "-# 檔案無法下載"
+
     async def _deliver_douyin(
         self, interaction: Interaction, plan: MediaPlan, result: DouyinDownload, url: str
     ) -> None:
@@ -284,9 +279,7 @@ class VideoCogs(commands.Cog):
         files = [item.to_file() for item in plan.native]
         if files:
             await interaction.edit_original_message(
-                content="\n".join(lines),
-                files=files,
-                allowed_mentions=AllowedMentions.none(),
+                content="\n".join(lines), files=files, allowed_mentions=AllowedMentions.none()
             )
             return
 

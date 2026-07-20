@@ -6,7 +6,7 @@ the real endpoint would take the whole deployment down with it.
 """
 
 import json
-from typing import Any, Self
+from typing import IO, Any, Self
 from pathlib import Path
 import tempfile
 from collections.abc import Callable, Iterator
@@ -560,7 +560,7 @@ def test_local_write_failure_leaves_no_partial_file(
 
     real_open = Path.open
 
-    def failing_open(self: Path, *args: object, **kwargs: object):
+    def failing_open(self: Path, *args: object, **kwargs: object) -> IO[bytes]:
         """Writes a partial file and then fails, as a full disk would."""
         handle = real_open(self, *args, **kwargs)  # type: ignore[arg-type]  # passthrough stub
         original_write = handle.write

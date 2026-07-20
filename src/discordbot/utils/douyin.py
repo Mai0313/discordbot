@@ -14,10 +14,10 @@ import re
 import json
 import time
 import types
-import threading
 from typing import ClassVar
 from pathlib import Path
 from functools import cached_property
+import threading
 from collections import OrderedDict
 from urllib.parse import urljoin, parse_qs, urlparse
 
