@@ -145,7 +145,29 @@ class VideoCogs(commands.Cog):
             quality: The desired video quality; ignored for a photo post.
             upload_limit: The destination's attachment ceiling.
         """
-        downloader = DouyinDownloader(output_folder=tempfile.gettempdir())
+        # A private directory per invocation, because the filenames are derived from the post id:
+        # two people downloading the same post into one shared temp dir would write the same paths,
+        # letting one truncate the other's file and letting either one's cleanup delete a file the
+        # other is still uploading. The directory is removed once delivery finishes.
+        with tempfile.TemporaryDirectory(prefix="douyin-") as download_dir:
+            await self._download_and_deliver_douyin(
+                interaction=interaction,
+                url=url,
+                quality=quality,
+                upload_limit=upload_limit,
+                download_dir=download_dir,
+            )
+
+    async def _download_and_deliver_douyin(
+        self,
+        interaction: Interaction,
+        url: str,
+        quality: str,
+        upload_limit: int,
+        download_dir: str,
+    ) -> None:
+        """Runs the Douyin download and delivery inside a caller-owned download directory."""
+        downloader = DouyinDownloader(output_folder=download_dir)
         try:
             # Capped at the attachment limit so a 48-image gallery does not download 38 files
             # that could never be sent; `omitted_images` reports what the cap left behind.
