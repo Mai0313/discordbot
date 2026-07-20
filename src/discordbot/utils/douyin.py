@@ -14,6 +14,7 @@ import re
 import json
 import time
 import types
+import threading
 from typing import ClassVar
 from pathlib import Path
 from functools import cached_property
@@ -194,6 +195,11 @@ class DouyinDownload(BaseModel):
 _PAYLOAD_CACHE: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _PAYLOAD_CACHE_TTL_SECONDS = 300.0
 _PAYLOAD_CACHE_MAX_ENTRIES = 128
+# Downloads run in worker threads (the cog dispatches through asyncio.to_thread), so the read,
+# the LRU touch and the insert have to be one step each. Without it a concurrent eviction between
+# the lookup and the `move_to_end` raises KeyError on what was a cache hit. Only dictionary
+# bookkeeping happens under this lock, never a fetch.
+_PAYLOAD_CACHE_LOCK = threading.Lock()
 
 
 class DouyinDownloader(BaseModel):
@@ -351,12 +357,13 @@ class DouyinDownloader(BaseModel):
             DouyinBlockedError: If a bot wall answered instead of the post.
             DouyinError: If the page could not be fetched or its structure changed.
         """
-        cached = _PAYLOAD_CACHE.get(aweme_id)
-        if cached:
-            if time.monotonic() - cached[0] < _PAYLOAD_CACHE_TTL_SECONDS:
-                _PAYLOAD_CACHE.move_to_end(aweme_id)
-                return cached[1]
-            _PAYLOAD_CACHE.pop(aweme_id, None)
+        with _PAYLOAD_CACHE_LOCK:
+            cached = _PAYLOAD_CACHE.get(aweme_id)
+            if cached:
+                if time.monotonic() - cached[0] < _PAYLOAD_CACHE_TTL_SECONDS:
+                    _PAYLOAD_CACHE.move_to_end(aweme_id)
+                    return cached[1]
+                _PAYLOAD_CACHE.pop(aweme_id, None)
 
         # `share/note/` rather than `share/video/`: it serves both post types, so one path is
         # enough, and it keeps every request off a second path that could be banned separately.
@@ -386,10 +393,11 @@ class DouyinDownloader(BaseModel):
         if info is None:
             raise DouyinError(f"Douyin returned an unexpected structure for {aweme_id}")
 
-        _PAYLOAD_CACHE[aweme_id] = (time.monotonic(), info)
-        _PAYLOAD_CACHE.move_to_end(aweme_id)
-        if len(_PAYLOAD_CACHE) > _PAYLOAD_CACHE_MAX_ENTRIES:
-            _PAYLOAD_CACHE.popitem(last=False)
+        with _PAYLOAD_CACHE_LOCK:
+            _PAYLOAD_CACHE[aweme_id] = (time.monotonic(), info)
+            _PAYLOAD_CACHE.move_to_end(aweme_id)
+            if len(_PAYLOAD_CACHE) > _PAYLOAD_CACHE_MAX_ENTRIES:
+                _PAYLOAD_CACHE.popitem(last=False)
         return info
 
     @staticmethod
