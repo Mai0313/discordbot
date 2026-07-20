@@ -541,6 +541,46 @@ def test_payload_cache_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(douyin_module._PAYLOAD_CACHE) <= douyin_module._PAYLOAD_CACHE_MAX_ENTRIES
 
 
+def test_local_write_failure_leaves_no_partial_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A failed local write must clean up its own partial file.
+
+    Only network errors are retried, so a disk failure propagates immediately; the caller's
+    gallery cleanup only knows about files it already accepted, so this one has to remove itself.
+    """
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "share/note" in url:
+            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+        return _FakeResponse(body=b"video-bytes")
+
+    _install_session(monkeypatch=monkeypatch, handler=handler)
+    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
+
+    real_open = Path.open
+
+    def failing_open(self: Path, *args: object, **kwargs: object):
+        """Writes a partial file and then fails, as a full disk would."""
+        handle = real_open(self, *args, **kwargs)  # type: ignore[arg-type]  # passthrough stub
+        original_write = handle.write
+
+        def write(data: bytes) -> int:
+            original_write(data)
+            raise OSError(28, "No space left on device")
+
+        handle.write = write  # type: ignore[method-assign]  # simulating a mid-write disk failure
+        return handle
+
+    monkeypatch.setattr(Path, "open", failing_open)
+
+    with pytest.raises(OSError, match="No space left"):
+        downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+
+    monkeypatch.undo()
+    assert list(tmp_path.iterdir()) == []
+
+
 class _StubDouyinDownloader:
     """Downloader stub returning a canned result or raising a canned error."""
 

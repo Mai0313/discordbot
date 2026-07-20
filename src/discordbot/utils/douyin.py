@@ -563,6 +563,13 @@ class DouyinDownloader(BaseModel):
             except RequestException as e:
                 last_error = e
                 filepath.unlink(missing_ok=True)
+            except Exception:
+                # A local write can fail too (a full disk surfaces from `write`, not from the
+                # request), and that is not worth retrying. Clean up first: the caller's gallery
+                # cleanup only knows about files it already accepted, so a partial file left here
+                # would survive and take disk space with it.
+                filepath.unlink(missing_ok=True)
+                raise
 
         raise DouyinError(f"Failed to download Douyin media from {url}: {last_error}")
 
