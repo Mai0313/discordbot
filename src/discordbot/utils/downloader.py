@@ -12,6 +12,10 @@ from requests.exceptions import RequestException
 
 from discordbot.typings.video import VideoQuality
 
+# Redirect chases for a facebook.com/share/... link. Fixed rather than configurable: it bounds
+# one HEAD/GET against Facebook and nothing has ever needed a different value.
+SHARE_RESOLVE_TIMEOUT_SECONDS = 10
+
 
 class DownloadResult(BaseModel):
     """Represents a downloaded video file.
@@ -57,17 +61,9 @@ class VideoDownloader(BaseModel):
 
     Attributes:
         output_folder: Directory where downloaded files are written.
-        max_retries: Configured maximum retry count.
-        share_resolve_timeout: Timeout in seconds for resolving Facebook share URLs.
     """
 
     output_folder: str = Field(..., description="Download folder")
-    max_retries: int = Field(
-        default=5, description="Configured maximum retry count.", examples=[5, 3]
-    )
-    share_resolve_timeout: int = Field(
-        default=10, description="Timeout (seconds) for resolving Facebook share URLs"
-    )
 
     # Static map of quality presets to yt-dlp format strings; prefers separate
     # video+audio with safe fallbacks to muxed or video-only streams.
@@ -96,7 +92,7 @@ class VideoDownloader(BaseModel):
                         url,
                         allow_redirects=True,
                         headers=headers,
-                        timeout=self.share_resolve_timeout,
+                        timeout=SHARE_RESOLVE_TIMEOUT_SECONDS,
                     )
                 except RequestException:
                     continue
