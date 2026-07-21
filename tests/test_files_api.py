@@ -2,11 +2,16 @@
 
 import io
 from types import SimpleNamespace
+import asyncio
 from pathlib import Path
 
 from google.genai.types import FileState
 
-from discordbot.cogs._gen_reply.files_api import upload_to_files_api, upload_as_input_file
+from discordbot.cogs._gen_reply.files_api import (
+    LINK_MEDIA_UPLOAD_CONCURRENCY,
+    upload_to_files_api,
+    upload_as_input_file,
+)
 
 
 class _Files:
@@ -102,6 +107,66 @@ async def test_upload_gives_up_when_activation_exceeds_the_bound() -> None:
         timeout_seconds=0.0,
     )
     assert uri is None
+
+
+async def test_the_bound_covers_the_transfer_not_only_the_poll() -> None:
+    """A hung upload must give up and free its slot, not wedge it for the process lifetime.
+
+    google-genai disables the transport timeout by default, so an upload into a black-holed
+    connection never returns on its own. Bounding only the PROCESSING poll would let two such
+    uploads occupy both concurrency slots forever, after which every link-media build burns its
+    whole budget queueing here and silently degrades to text.
+    """
+
+    class _Hangs(_Files):
+        async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
+            """Never returns, the way a black-holed connection behaves."""
+            await asyncio.sleep(30)
+            raise AssertionError("should have been abandoned")
+
+    uri = await asyncio.wait_for(
+        upload_to_files_api(
+            client=_client(_Hangs()),
+            source=b"data",
+            mime_type="video/mp4",
+            display_name="clip.mp4",
+            timeout_seconds=0.05,
+        ),
+        timeout=5.0,
+    )
+    assert uri is None
+
+
+async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
+    """The slot is shared, so a hung upload must not starve everything behind it."""
+
+    class _Hangs(_Files):
+        async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
+            """Never returns, the way a black-holed connection behaves."""
+            await asyncio.sleep(30)
+            raise AssertionError("should have been abandoned")
+
+    hung = [
+        upload_to_files_api(
+            client=_client(_Hangs()),
+            source=b"data",
+            mime_type="video/mp4",
+            display_name=f"hung{index}.mp4",
+            timeout_seconds=0.05,
+        )
+        for index in range(LINK_MEDIA_UPLOAD_CONCURRENCY)
+    ]
+    healthy = upload_to_files_api(
+        client=_client(_Files()),
+        source=b"data",
+        mime_type="video/mp4",
+        display_name="clip.mp4",
+        timeout_seconds=5.0,
+    )
+    results = await asyncio.wait_for(asyncio.gather(*hung, healthy), timeout=10.0)
+
+    assert results[:-1] == [None] * LINK_MEDIA_UPLOAD_CONCURRENCY
+    assert results[-1] == "https://files.test/abc"
 
 
 async def test_upload_degrades_on_a_failed_file() -> None:

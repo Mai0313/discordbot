@@ -85,6 +85,48 @@ def is_douyin_url(url: str) -> bool:
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in _ALLOWED_HOSTS)
 
 
+def _extract_post_id(url: str) -> str:
+    """Reads the aweme id straight out of a URL, or returns an empty string."""
+    parsed = urlparse(url if "://" in url else f"//{url}")
+    # `modal_id` wins over the path: a `/user/<sec_uid>?modal_id=<id>` link carries both and
+    # the path would give the profile id.
+    modal_ids = parse_qs(parsed.query).get("modal_id")
+    if modal_ids and modal_ids[0].isdigit():
+        return modal_ids[0]
+
+    match = _PATH_ID_RE.search(parsed.path)
+    return match.group(1) if match else ""
+
+
+def is_douyin_post_url(url: str) -> bool:
+    """Reports whether a Douyin URL plausibly points at a single post.
+
+    `DOUYIN_URL_RE` matches the host, not the path, which is right for `/download_video` (a
+    human typed the link, so answering "that is not a post" is useful) but wrong for anything
+    that claims a message on its own: a pasted profile or live-room link would earn a warning
+    reaction and a failure reply nobody asked for, and would spend a Douyin request finding out.
+
+    A post id in the URL is proof. Otherwise only a bare single-segment path can be a short
+    link, and those never live on the live-streaming host.
+
+    Args:
+        url: A URL already known to be a Douyin URL.
+
+    Returns:
+        True when the URL carries a post id or looks like a short link.
+    """
+    if _extract_post_id(url=url):
+        return True
+    normalized = url if "://" in url else f"//{url}"
+    try:
+        parsed = urlparse(normalized)
+    except ValueError:
+        return False
+    if (parsed.hostname or "").lower().startswith("live."):
+        return False
+    return len([segment for segment in parsed.path.split("/") if segment]) == 1
+
+
 class DouyinError(RuntimeError):
     """Base error for every Douyin lookup failure."""
 
@@ -342,15 +384,7 @@ class DouyinDownloader(BaseModel):
     @staticmethod
     def _extract_id(url: str) -> str:
         """Reads the aweme id straight out of a URL, or returns an empty string."""
-        parsed = urlparse(url if "://" in url else f"//{url}")
-        # `modal_id` wins over the path: a `/user/<sec_uid>?modal_id=<id>` link carries both and
-        # the path would give the profile id.
-        modal_ids = parse_qs(parsed.query).get("modal_id")
-        if modal_ids and modal_ids[0].isdigit():
-            return modal_ids[0]
-
-        match = _PATH_ID_RE.search(parsed.path)
-        return match.group(1) if match else ""
+        return _extract_post_id(url=url)
 
     def _redirect_target(self, url: str) -> str:
         """Returns the Location of a single redirect hop, without fetching the body.
@@ -597,9 +631,12 @@ class DouyinDownloader(BaseModel):
             DouyinTooLargeError: If the media exceeds `max_bytes`.
             DouyinError: If every attempt fails.
         """
-        output_path = Path(self.output_folder)
-        output_path.mkdir(parents=True, exist_ok=True)
-        filepath = output_path / filename
+        # Deliberately does NOT create the output folder: `download` makes it once, up front.
+        # A caller that cancels mid-download cannot stop the worker thread (`asyncio.to_thread`
+        # abandons it), so it may remove the scratch dir underneath this loop; re-creating it
+        # here would silently strand every later file. Letting the open fail instead turns that
+        # removal into the stop signal the cancellation could not deliver.
+        filepath = Path(self.output_folder) / filename
 
         last_error: Exception | None = None
         for _ in range(self.max_retries):
@@ -685,6 +722,7 @@ class DouyinDownloader(BaseModel):
             DouyinError: If the post cannot be resolved, read, or downloaded.
         """
         resolved = post if post is not None else self.parse_metadata(url=url)
+        Path(self.output_folder).mkdir(parents=True, exist_ok=True)
         if resolved.is_photo:
             return self._download_images(post=resolved, max_images=max_images, max_bytes=max_bytes)
         return self._download_video(post=resolved, quality=quality, max_bytes=max_bytes)

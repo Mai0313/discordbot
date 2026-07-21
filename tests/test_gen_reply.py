@@ -4186,6 +4186,39 @@ async def test_on_message_injects_douyin_context_before_current(
     assert separator_index < current_index
 
 
+async def test_on_message_skips_a_non_post_douyin_link(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile or live-room link is not a post, so reading it would only waste a request."""
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    calls: list[str] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Records that the builder was reached at all."""
+        del answer_model_is_gemini, gemini_client, allow_media_ingest
+        calls.append(url)
+        return _douyin_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_douyin_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這個人是誰 https://www.douyin.com/user/MS4wLjABAAAAxyz",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    assert calls == []
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    assert not has_douyin_context_block(request=answer)
+
+
 async def test_on_message_douyin_media_ingest_kill_switch(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:

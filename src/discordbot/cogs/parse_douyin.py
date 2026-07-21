@@ -35,6 +35,7 @@ from discordbot.utils.douyin import (
     DouyinDownload,
     DouyinDownloader,
     DouyinBlockedError,
+    is_douyin_post_url,
 )
 from discordbot.typings.douyin import DouyinConfig
 from discordbot.utils.mentions import is_addressed_to_bot
@@ -56,6 +57,12 @@ from discordbot.cogs._parse_douyin.fetch import (
 
 # Douyin's own palette, so the expansion reads as a Douyin card at a glance.
 _EMBED_COLOR = 0xFE2C55
+
+# Bound on one expansion's Douyin work. It exists to cap how long a single paste can hold the
+# fetch slot it shares with the reply path, not to hurry the download along: a healthy post
+# finishes in seconds, while a stalling CDN would otherwise retry its way into the tens of
+# minutes. A timeout is reported as a plain failure, never as a missing post.
+DOUYIN_EXPAND_TIMEOUT_SECONDS = 120.0
 
 
 class DouyinCogs(commands.Cog):
@@ -104,6 +111,11 @@ class DouyinCogs(commands.Cog):
         if not match:
             return
 
+        # The regex matches the host, not the path, so a profile or live-room link would
+        # otherwise earn a warning reaction and a failure reply nobody asked for.
+        if not is_douyin_post_url(url=match.group(0)):
+            return
+
         # A link addressed to the bot is gen_reply's to answer about, not ours to expand; see
         # the module docstring. Checked after the URL match so the common no-link message costs
         # one regex, not two.
@@ -140,7 +152,16 @@ class DouyinCogs(commands.Cog):
                 # follows: the per-URL lock collapses simultaneous pastes of one link into a
                 # single fetch (the payload cache alone loses that race), and the semaphore
                 # keeps a burst of distinct links from arriving at Douyin all at once.
-                async with douyin_url_locks.hold(url), douyin_fetch_semaphore.get():
+                async with (
+                    douyin_url_locks.hold(url),
+                    douyin_fetch_semaphore.get(),
+                    asyncio.timeout(delay=DOUYIN_EXPAND_TIMEOUT_SECONDS),
+                ):
+                    # Bounded because the slot is shared with the reply path: a stalling CDN
+                    # costs `download_timeout` x `max_retries` per file, so an unbounded gallery
+                    # could hold one of two slots for half an hour and stall every AI reply
+                    # about a Douyin link behind it.
+                    #
                     # Parsed before the download so the caption survives a refused download: an
                     # oversize post still gets its card instead of a bare warning reaction. The
                     # share payload is cached, so this costs no extra request.
@@ -171,7 +192,9 @@ class DouyinCogs(commands.Cog):
         the ⚠️ that means "this post could not be read". The reason is stated in the reply, so
         a reader is never left guessing which of the two happened.
         """
-        logfire.warn("Douyin expansion failed", url=url, error_type=type(error).__name__)
+        logfire.warn(
+            "Douyin expansion failed", url=url, error_type=type(error).__name__, _exc_info=error
+        )
         emoji = self.blocked_emoji if isinstance(error, DouyinBlockedError) else "⚠️"
         await update_reaction(
             message=message, bot_user=self.bot.user, emoji=emoji, previous=current_emoji

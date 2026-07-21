@@ -1,11 +1,13 @@
 """Tests for the cog that auto-expands Douyin links pasted into a channel."""
 
+import time
 from types import SimpleNamespace
 import asyncio
 from pathlib import Path
 
 import pytest
 
+from discordbot.cogs import parse_douyin
 from discordbot.utils.douyin import (
     DouyinPost,
     DouyinError,
@@ -48,6 +50,7 @@ class _StubDownloader:
         self.download_error = download_error
         self.total_images = total_images
         self.download_calls = 0
+        self.received_post: DouyinPost | None = None
 
     def parse_metadata(self, url: str) -> DouyinPost:
         """Returns the canned post, or raises the canned parse failure."""
@@ -67,6 +70,7 @@ class _StubDownloader:
         """Writes the canned files into the scratch dir, or raises the canned failure."""
         del url, quality, max_images, max_bytes
         self.download_calls += 1
+        self.received_post = post
         if self.download_error is not None:
             raise self.download_error
         written: list[Path] = []
@@ -88,6 +92,10 @@ def _cog(
 ) -> tuple[DouyinCogs, dict[str, _StubDownloader]]:
     """Builds a cog wired to a stub downloader and a hosting-off delivery planner."""
     cog = DouyinCogs(bot=SimpleNamespace(user=SimpleNamespace(id=bot_id)))
+    # Pinned explicitly: DouyinConfig reads the real environment (typings/douyin.py loads .env
+    # at import), so a dev box with DOUYIN_AUTO_EXPAND_ENABLED=false would silently turn every
+    # test below into a no-op that still passes.
+    cog.config = SimpleNamespace(auto_expand_enabled=True)
     # Explicitly disabled planner — never the no-arg default, whose config is `available` on a
     # dev box where .env enables hosting (it would write into the live serve dir).
     cog.media_delivery = MediaDeliveryPlanner(
@@ -294,11 +302,69 @@ async def test_a_capped_gallery_reports_what_it_left_out() -> None:
     assert message.reactions[-1] == _GREEN
 
 
-async def test_the_parsed_post_is_reused_for_the_download(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The caption is parsed once and handed to the download, so nothing is fetched twice."""
+async def test_the_parsed_post_is_handed_to_the_download() -> None:
+    """The parsed post rides into the download, so the post is never resolved a second time.
+
+    Asserting the download ran once would not catch dropping `post=`; the stub records what it
+    was actually given.
+    """
     cog, made = _cog()
     message = _message()
 
     await cog.on_message(message=message)
 
-    assert made["stub"].download_calls == 1
+    stub = made["stub"]
+    assert stub.download_calls == 1
+    assert stub.received_post is stub.post
+
+
+async def test_a_non_post_link_is_left_alone() -> None:
+    """A profile or live-room link is not a post, so it earns no reaction, reply, or request.
+
+    The URL regex matches the host rather than the path, so without the post-shape gate the
+    cog would answer a pasted profile with a warning reaction and a failure message.
+    """
+    for content in (
+        "https://www.douyin.com/user/MS4wLjABAAAAxyz",
+        "https://live.douyin.com/123456",
+        "https://www.douyin.com/search/abc",
+    ):
+        cog, made = _cog()
+        message = _message(content=content)
+
+        await cog.on_message(message=message)
+
+        assert message.reactions == [], content
+        assert message.replies == [], content
+        assert made == {}, content
+
+
+async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalling download must not hold the shared Douyin slot indefinitely.
+
+    The slot is shared with the reply path, so an unbounded gallery would stall every AI reply
+    about a Douyin link behind it. A timeout is reported as a retryable failure, never as a
+    missing post.
+    """
+    monkeypatch.setattr(parse_douyin, "DOUYIN_EXPAND_TIMEOUT_SECONDS", 0.05)
+    cog, _ = _cog()
+
+    def never_returns(url: str) -> DouyinPost:
+        """Blocks the worker thread the way a stalling CDN read does."""
+        del url
+        time.sleep(1.0)
+        raise AssertionError("should have been abandoned")
+
+    cog.downloader_factory = lambda output_folder: SimpleNamespace(
+        parse_metadata=never_returns, download=never_returns
+    )
+    message = _message()
+
+    await cog.on_message(message=message)
+
+    assert message.reactions[-1] == "⚠️"
+    body = message.replies[0]["content"]
+    assert "稍後再試" in body
+    assert "刪除" not in body

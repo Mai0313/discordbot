@@ -20,6 +20,7 @@ from discordbot.cogs._parse_douyin import builder as douyin_builder
 from discordbot.cogs._parse_douyin.builder import (
     DOUYIN_BLOCKED_NOTICE,
     DOUYIN_CONTEXT_SEPARATOR,
+    DOUYIN_UNREADABLE_NOTICE,
     MAX_DOUYIN_INGEST_IMAGES,
     DOUYIN_UNAVAILABLE_NOTICE,
     DOUYIN_TEXT_ONLY_SEPARATOR,
@@ -215,15 +216,22 @@ async def test_a_deleted_post_gets_the_unavailable_notice(monkeypatch: pytest.Mo
     assert blocks[0]["content"][0]["text"] == DOUYIN_UNAVAILABLE_NOTICE
 
 
-async def test_any_other_parse_failure_degrades_rather_than_raising(
+async def test_any_other_failure_never_claims_the_post_is_deleted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The builder never raises into the reply pipeline."""
-    _stub_douyin(monkeypatch, parse_error=DouyinError("unreadable"))
+    """A failure that says nothing about the post must not be reported as a deleted one.
+
+    An unresolvable link, a transport error or a changed payload shape all surface as a bare
+    `DouyinError`; asserting the post is gone would send the user off to re-check a link that
+    is very likely fine. Only Douyin explicitly filtering the post out earns that wording.
+    """
+    _stub_douyin(monkeypatch, parse_error=DouyinError("could not find a post id"))
 
     blocks = await _build()
 
-    assert blocks[0]["content"][0]["text"] == DOUYIN_UNAVAILABLE_NOTICE
+    assert blocks[0]["content"][0]["text"] == DOUYIN_UNREADABLE_NOTICE
+    assert blocks[0]["content"][0]["text"] != DOUYIN_UNAVAILABLE_NOTICE
+    assert "deleted" not in DOUYIN_UNREADABLE_NOTICE.split("does NOT")[0]
 
 
 async def test_a_failed_download_still_supplies_the_caption(

@@ -85,6 +85,16 @@ DOUYIN_BLOCKED_NOTICE = (
     "invent the post's contents. ===="
 )
 
+# Used when the read failed for a reason that says nothing about the post: a link that is not
+# a post at all, a network error, an unexpected response shape. Kept apart from the deleted /
+# private notice because asserting a working link is dead is the worst thing this can say.
+DOUYIN_UNREADABLE_NOTICE = (
+    "==== We tried to read the Douyin link in the user's message but could not read it this "
+    "time. This does NOT mean the post is deleted or private, and it may well be a link that "
+    "is not a single post at all (a profile or a live room). Say only that you could not read "
+    "it, do not claim it is unavailable, and do not invent its contents. ===="
+)
+
 # Injected by gen_reply when the whole build exceeds the post-route grace. Keeps deterministic
 # context so a slow fetch does not re-expose the "I cannot open this link" fallback.
 DOUYIN_TIMEOUT_NOTICE = (
@@ -229,8 +239,11 @@ async def build_douyin_context_messages(
         except DouyinUnavailableError:
             return [_system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
         except Exception:
-            logfire.warn("Douyin metadata parse failed; injecting notice", _exc_info=True)
-            return [_system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
+            # Anything else says nothing about the post: an unresolvable link, a transport
+            # error, a changed payload shape. `DOUYIN_UNAVAILABLE_NOTICE` would have the model
+            # assert the post is deleted, which for these is simply false.
+            logfire.warn("Douyin metadata read failed; injecting neutral notice", _exc_info=True)
+            return [_system_block(text=DOUYIN_UNREADABLE_NOTICE)]
 
         media_parts: list[ResponseInputFileParam] = []
         if answer_model_is_gemini and allow_media_ingest:

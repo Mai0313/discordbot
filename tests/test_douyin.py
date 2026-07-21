@@ -25,6 +25,7 @@ from discordbot.utils.douyin import (
     DouyinTooLargeError,
     DouyinUnavailableError,
     is_douyin_url,
+    is_douyin_post_url,
 )
 from discordbot.utils.media_delivery import (
     MediaHostingConfig,
@@ -600,7 +601,18 @@ def test_download_under_the_cap_is_unaffected(
 def test_download_reuses_a_caller_supplied_post(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Passing an already-parsed post skips the parse, so a caller keeps its metadata cheaply."""
+    """Passing an already-parsed post skips the parse entirely.
+
+    Asserting only on the downloaded bytes would pass even if the post were re-parsed, so this
+    watches `parse_metadata` itself; the payload cache would otherwise hide the extra work.
+    """
+    parses = {"count": 0}
+    original_parse = DouyinDownloader.parse_metadata
+
+    def counting_parse(self: DouyinDownloader, url: str) -> object:
+        """Counts every metadata parse the downloader performs."""
+        parses["count"] += 1
+        return original_parse(self, url=url)
 
     def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
         if "share/note" in url:
@@ -611,9 +623,67 @@ def test_download_reuses_a_caller_supplied_post(
     downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
     url = f"https://www.douyin.com/video/{_VIDEO_ID}"
     post = downloader.parse_metadata(url=url)
+    monkeypatch.setattr(target=DouyinDownloader, name="parse_metadata", value=counting_parse)
 
     with downloader.download(url=url, post=post) as result:
         assert result.filenames[0].read_bytes() == b"video-bytes"
+    assert parses["count"] == 0
+
+    # Without a post the download resolves it itself, so the counter proves it is watching.
+    with downloader.download(url=url) as result:
+        assert result.filenames[0].read_bytes() == b"video-bytes"
+    assert parses["count"] == 1
+
+
+@pytest.mark.parametrize(
+    argnames=("url", "expected"),
+    argvalues=[
+        (f"https://www.douyin.com/video/{_VIDEO_ID}", True),
+        (f"https://www.douyin.com/user/MS4wLjABAAAAMOcq?modal_id={_VIDEO_ID}", True),
+        ("https://v.douyin.com/abc123", True),
+        (f"https://www.iesdouyin.com/share/note/{_PHOTO_ID}", True),
+        ("https://www.douyin.com/user/MS4wLjABAAAAMOcq", False),
+        ("https://live.douyin.com/123456", False),
+        ("https://www.douyin.com/search/whatever", False),
+    ],
+)
+def test_post_url_detection_separates_posts_from_profiles(url: str, expected: bool) -> None:
+    """Only a post-shaped link may be claimed automatically.
+
+    `DOUYIN_URL_RE` matches the host rather than the path, so without this a pasted profile or
+    live room would earn a warning reaction plus a failure reply, and spend a Douyin request
+    to discover it was never a post.
+    """
+    assert is_douyin_post_url(url=url) is expected
+
+
+def test_download_creates_the_output_folder_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`_download_to` must not re-create the output folder per file.
+
+    A cancelled caller cannot stop the worker thread, so it may remove the scratch dir
+    mid-download; re-creating it per file would silently strand every later image there
+    forever. Failing the open instead turns the removal into the stop signal.
+    """
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "share/note" in url:
+            return _FakeResponse(text=_ok_page(item=_PHOTO_ITEM))
+        return _FakeResponse(body=b"image-bytes")
+
+    _install_session(monkeypatch=monkeypatch, handler=handler)
+    scratch = tmp_path / "gone"
+    downloader = DouyinDownloader(output_folder=scratch.as_posix())
+    post = downloader.parse_metadata(url=f"https://www.douyin.com/note/{_PHOTO_ID}")
+
+    # Stand in for the rmtree a cancelled caller performs between two files.
+    scratch.mkdir()
+    scratch.rmdir()
+    with pytest.raises(FileNotFoundError):
+        downloader._download_to(url="https://cdn.test/1.jpg", filename="1.jpg")
+    assert not scratch.exists()  # nothing re-created it behind the caller's back
+    assert post.is_photo
 
 
 def test_failed_gallery_leaves_no_images_behind(

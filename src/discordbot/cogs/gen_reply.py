@@ -20,7 +20,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.utils.douyin import DOUYIN_URL_RE
+from discordbot.utils.douyin import DOUYIN_URL_RE, is_douyin_post_url
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
 from discordbot.utils.youtube import YOUTUBE_URL_RE
@@ -1953,7 +1953,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 # uploaded to the Files API, so this one is the slow speculative task; starting
                 # it here buys the whole route/prep window back.
                 douyin_match = _first_url_match(pattern=DOUYIN_URL_RE, message=message)
-                if douyin_match:
+                # The regex matches the host, not the path: a profile or live-room link is not
+                # a post, so reading it would only spend a Douyin request to say so.
+                if douyin_match and is_douyin_post_url(url=douyin_match.group(0)):
                     douyin_task = asyncio.create_task(
                         coro=build_douyin_context_messages(
                             url=douyin_match.group(0),

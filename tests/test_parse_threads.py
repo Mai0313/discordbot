@@ -210,6 +210,47 @@ async def test_build_caps_media_parts(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(media) == MAX_THREADS_MEDIA_PARTS
 
 
+async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Images claim the budget first and videos take what is left, never exceeding the cap.
+
+    A cap test fed images only leaves the video slice at zero, so it would pass even if the
+    video half ignored the budget entirely.
+    """
+    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS - 1)]
+    videos = [f"https://cdn.test/{index}.mp4" for index in range(4)]
+    _stub_parse(monkeypatch, [_post(images=images, videos=videos)])
+    uploads = _Uploads()
+    _stub_media(monkeypatch, uploads=uploads)
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+    )
+
+    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    assert len(media) == MAX_THREADS_MEDIA_PARTS
+    names = [part["filename"] for part in media]
+    assert sum(name.endswith(".mp4") for name in names) == 1  # only the leftover slot
+    assert sum(name.endswith(".jpg") for name in names) == MAX_THREADS_MEDIA_PARTS - 1
+
+
+async def test_a_full_image_budget_leaves_no_room_for_video(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When images fill the cap the videos are dropped rather than pushing it over."""
+    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
+    _stub_parse(monkeypatch, [_post(images=images, videos=["https://cdn.test/v.mp4"])])
+    uploads = _Uploads()
+    _stub_media(monkeypatch, uploads=uploads)
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+    )
+
+    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    assert len(media) == MAX_THREADS_MEDIA_PARTS
+    assert all(part["filename"].endswith(".jpg") for part in media)
+
+
 async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
     """A long reply chain is trimmed to the target plus its nearest ancestors."""
     chain = [

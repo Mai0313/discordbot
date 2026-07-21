@@ -75,7 +75,7 @@ async def upload_to_files_api(
         source: The media bytes, or the path to the media file on disk.
         mime_type: The media's real MIME type; the upload needs it, the part does not carry one.
         display_name: Cosmetic name recorded on the uploaded file.
-        timeout_seconds: Bound on the PROCESSING -> ACTIVE poll.
+        timeout_seconds: Bound on the whole transfer, not just the activation poll.
 
     Returns:
         The full `https://.../files/<id>` uri, or None when the upload failed or never
@@ -86,7 +86,12 @@ async def upload_to_files_api(
     # the file-like wrapper the SDK's signature requires.
     upload_source = io.BytesIO(source) if isinstance(source, bytes) else source
     try:
-        async with link_media_upload_semaphore.get():
+        # The bound covers the transfer as well as the poll, and sits INSIDE the slot on
+        # purpose. google-genai disables the transport timeout by default (`timeout=None`), so
+        # an upload into a black-holed connection never returns; bounding only the poll would
+        # let two such uploads wedge both slots for the life of the process, after which every
+        # link-media build burns its full budget waiting here and silently degrades to text.
+        async with link_media_upload_semaphore.get(), asyncio.timeout(delay=timeout_seconds):
             uploaded = await client.aio.files.upload(
                 file=upload_source, config={"mime_type": mime_type, "display_name": display_name}
             )
@@ -94,17 +99,16 @@ async def upload_to_files_api(
             if file_name is None:
                 logfire.warn("files api upload returned no resource name", name=display_name)
                 return None
-            deadline = time.monotonic() + timeout_seconds
             while uploaded.state == FileState.PROCESSING:
-                if time.monotonic() >= deadline:
-                    logfire.warn(
-                        "files api upload did not become ACTIVE in time",
-                        name=display_name,
-                        timeout_seconds=timeout_seconds,
-                    )
-                    return None
                 await asyncio.sleep(1.0)
                 uploaded = await client.aio.files.get(name=file_name)
+    except TimeoutError:
+        logfire.warn(
+            "files api upload did not finish in time",
+            name=display_name,
+            timeout_seconds=timeout_seconds,
+        )
+        return None
     except Exception:
         logfire.warn("files api upload failed", name=display_name, _exc_info=True)
         return None

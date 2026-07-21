@@ -31,9 +31,10 @@ douyin_url_locks: KeyedLockManager[str] = KeyedLockManager()
 def douyin_failure_message(error: Exception) -> str:
     """Maps a Douyin failure to the message a user should see.
 
-    A bot wall, a missing post and an oversize file are kept apart on purpose. Reporting a
-    block as a deleted post is the single worst outcome this feature can produce: it sends
-    someone off to re-check a link that is perfectly fine.
+    A bot wall, a missing post, an oversize file and a stall are kept apart on purpose.
+    Reporting any of them as a deleted post is the single worst outcome this feature can
+    produce: it sends someone off to re-check a link that is perfectly fine. Only
+    `DouyinUnavailableError` — Douyin explicitly filtering the post out — earns that wording.
     """
     if isinstance(error, DouyinUnavailableError):
         return "-# 這則貼文已被刪除或設為私人"
@@ -41,4 +42,6 @@ def douyin_failure_message(error: Exception) -> str:
         return "-# 抖音暫時擋住了請求，請稍後再試"
     if isinstance(error, DouyinTooLargeError):
         return "-# 這支影片太大,沒有自動下載;需要的話可以用 `/download_video`"
+    if isinstance(error, TimeoutError):
+        return "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"
     return "-# 檔案無法下載"
