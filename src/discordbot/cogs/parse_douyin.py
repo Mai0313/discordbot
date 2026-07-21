@@ -4,15 +4,13 @@ Unlike `/download_video`, which serves many platforms where a pasted link often 
 "look at this page", a Douyin link has no such ambiguity: posting one means "watch this",
 so it is converted without anyone typing a command.
 
-Expansion is skipped when the message is addressed to the bot (a DM, or an explicit
-mention): `gen_reply` reads the linked post and answers about it, so expanding as well would
-fetch the same post twice and post an attachment nobody asked for. The two paths are
-mutually exclusive, and `is_addressed_to_bot` is the single predicate deciding which runs.
+Runs independently of `gen_reply`, including when the message also mentions the bot: the
+clip is what everyone in the channel can see, while the reply is about it, so a mentioned
+link gets both. The two never coordinate; each reads the post for itself.
 
-That predicate is deliberately coarser than `gen_reply`'s own guards, so a few addressed
-messages get neither treatment: one typed inside an active research thread (the reply
-pipeline skips those), and one the router sends to IMAGE / VIDEO (those routes discard the
-link context). Both are rare enough to accept rather than couple the cogs together.
+The duplicate read is cheap where it matters — the share page is fetched once thanks to the
+module-level payload cache, and the media bytes are wanted at different qualities anyway:
+this cog asks for the best Discord will take, the reply for the cheapest the model can read.
 
 Douyin's WAF bans a share path for tens of minutes once it is hit hard, and this listener
 sees every message in every channel, so the request-volume bounds in `_parse_douyin/fetch.py`
@@ -38,7 +36,6 @@ from discordbot.utils.douyin import (
     is_douyin_post_url,
 )
 from discordbot.typings.douyin import DouyinConfig
-from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
@@ -114,12 +111,6 @@ class DouyinCogs(commands.Cog):
         # The regex matches the host, not the path, so a profile or live-room link would
         # otherwise earn a warning reaction and a failure reply nobody asked for.
         if not is_douyin_post_url(url=match.group(0)):
-            return
-
-        # A link addressed to the bot is gen_reply's to answer about, not ours to expand; see
-        # the module docstring. Checked after the URL match so the common no-link message costs
-        # one regex, not two.
-        if is_addressed_to_bot(message=message, bot_user=self.bot.user):
             return
 
         if not self.config.auto_expand_enabled:

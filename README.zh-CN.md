@@ -24,8 +24,8 @@
 ## 功能
 
 - **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、观看贴上的 YouTube 视频、生成或编辑图片、用提示或附加图片生成短视频、编辑引用的视频、以接续 reply 消息延续长回复，并在可用时使用 model-provided web tools。它还会在后台慢慢积累对你个人偏好的长期记忆（仅自己可见，且按来源做隐私隔离：在某个服务器说的私事不会出现在别的服务器，只有语气偏好与明显无害的一般事实会跨服务器沿用），可用 `/memory show` 与 `/memory regenerate` 管理。
-- **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain；改成 tag 机器人并附上链接，它会改为读过贴文再回答。
-- **抖音解析**：贴上抖音链接，机器人会直接把视频（或图文贴文的图片）传到频道；改成 tag 机器人并附上链接，它会改为看过视频再回答。
+- **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain；tag 机器人并附上链接的话，它还会读过贴文再回答。
+- **抖音解析**：贴上抖音链接，机器人会直接把视频（或图文贴文的图片）传到频道；tag 机器人并附上链接的话，它还会看过视频再回答。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频。抖音也支持，无水印且包含图文贴文。文件太大无法上传时会改以链接提供。
 - **虚拟欢乐豆与金融系统**：用户可从消息获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
 - **模拟股市**：`/stock` 开启一则公开 market message，内含 DB-managed virtual companies；选股、受 float supply、borrow cap 与单人 49% long holding cap 限制的交易、仓位摘要、近期交易记录、liquidity-based slippage、定期刷新新闻与 7 日图表都在同一则公开 message 内 edit 切换，只有发起 `/stock` 的 user 可以操作 controls。
@@ -38,8 +38,8 @@
 | 指令                                                             | 功能                                                                    |
 | ---------------------------------------------------------------- | ----------------------------------------------------------------------- |
 | `@bot <message>`                                                 | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。              |
-| _Threads URL_                                                    | 自动展开 Threads 贴文与媒体；被 tag 时改为读过贴文再回答。              |
-| _抖音 URL_                                                       | 自动传回视频或图片；被 tag 时改为看过视频再回答。                       |
+| _Threads URL_                                                    | 自动展开 Threads 贴文与媒体；被 tag 时还会读过贴文再回答。              |
+| _抖音 URL_                                                       | 自动传回视频或图片；被 tag 时还会看过视频再回答。                       |
 | `/download_video <url> [quality]`                                | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                      |
 | `/balance [member]`                                              | 私密显示成员的虚拟欢乐豆余额、债务、stock holdings、净资产与 VIP 状态。 |
 | `/checkin`                                                       | 领取每日签到奖励。                                                      |

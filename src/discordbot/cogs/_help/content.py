@@ -148,10 +148,10 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/ping` — check the bot's response latency\n\n"
                     "Threads parser\n"
                     "Paste a Threads link and I'll pull the posts, replies, and media. "
-                    "Tag me with the link instead and I'll read the post and answer about it.\n\n"
+                    "Tag me with the link and I'll also read the post and answer about it.\n\n"
                     "Douyin parser\n"
                     "Paste a Douyin link and I'll post the video (or the photos) right here. "
-                    "Tag me with the link instead and I'll watch it and answer about it."
+                    "Tag me with the link and I'll also watch it and answer about it."
                 ),
             ),
         },
@@ -231,10 +231,10 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/ping` — 看機器人的回應延遲\n\n"
                     "Threads 解析\n"
                     "貼上 Threads 連結,我會自動擷取貼文、回覆和媒體;"
-                    "改成 tag 我並附上連結,我就會直接看過貼文再回答你。\n\n"
+                    "tag 我並附上連結的話,我還會看過貼文再回答你。\n\n"
                     "抖音解析\n"
                     "貼上抖音連結,我會直接把影片(或圖片)傳上來;"
-                    "改成 tag 我並附上連結,我就會看過影片再回答你。"
+                    "tag 我並附上連結的話,我還會看過影片再回答你。"
                 ),
             ),
         },
@@ -317,10 +317,10 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/ping` — ボットの応答遅延を確認\n\n"
                     "Threads パーサー\n"
                     "Threads のリンクを貼ると、投稿・返信・メディアを取得します。"
-                    "メンション付きでリンクを送ると、投稿を読んでその内容に答えます。\n\n"
+                    "メンション付きなら、さらに投稿を読んで内容にも答えます。\n\n"
                     "抖音パーサー\n"
                     "抖音のリンクを貼ると、動画(または画像)をそのまま送ります。"
-                    "メンション付きで送ると、動画を見てその内容に答えます。"
+                    "メンション付きなら、さらに動画を見て内容にも答えます。"
                 ),
             ),
         },
