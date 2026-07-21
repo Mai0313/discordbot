@@ -16,7 +16,7 @@ URL_RE = re.compile(r"(?i)\bhttps?://[^\s<>]+")
 
 # Sentence punctuation a URL never really ends on, stripped from the tail of a generic match
 # so `see https://example.com/x.` does not carry the full stop into the URL.
-_TRAILING_PUNCTUATION = ".,;:!?)]}'\"、。，！？）」』"
+_TRAILING_PUNCTUATION = ".,;:!?)]}'\"、。，！？）」』"  # noqa: RUF001 -- CJK sentence punctuation is the point
 
 
 def extract_first_url(*, text: str, patterns: Sequence[re.Pattern[str]] = ()) -> str:
