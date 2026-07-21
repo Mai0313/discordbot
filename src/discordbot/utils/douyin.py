@@ -199,11 +199,39 @@ class DouyinDownload(BaseModel):
 _PAYLOAD_CACHE: OrderedDict[str, tuple[float, dict]] = OrderedDict()
 _PAYLOAD_CACHE_TTL_SECONDS = 300.0
 _PAYLOAD_CACHE_MAX_ENTRIES = 128
+
+# Resolved short links, keyed by the URL as pasted. A short code maps to its post forever, so
+# unlike the payload cache this one needs no TTL: a hit is always correct, and it removes the
+# redirect probe entirely for a link posted more than once. Worth its own cache because that
+# probe is a request to Douyin like any other, and auto-expansion multiplies how many of them
+# a single popular link produces.
+_LINK_ID_CACHE: OrderedDict[str, str] = OrderedDict()
+_LINK_ID_CACHE_MAX_ENTRIES = 512
 # Downloads run in worker threads (the cog dispatches through asyncio.to_thread), so the read,
 # the LRU touch and the insert have to be one step each. Without it a concurrent eviction between
 # the lookup and the `move_to_end` raises KeyError on what was a cache hit. Only dictionary
-# bookkeeping happens under this lock, never a fetch.
+# bookkeeping happens under this lock, never a fetch. Shared by both caches above; they are only
+# ever touched for a few dict operations, so a second lock would buy nothing.
 _PAYLOAD_CACHE_LOCK = threading.Lock()
+
+
+def _cached_link_id(url: str) -> str:
+    """Returns the cached post id for a URL, or an empty string on a miss."""
+    with _PAYLOAD_CACHE_LOCK:
+        aweme_id = _LINK_ID_CACHE.get(url)
+        if aweme_id is not None:
+            _LINK_ID_CACHE.move_to_end(url)
+            return aweme_id
+    return ""
+
+
+def _remember_link_id(url: str, aweme_id: str) -> None:
+    """Records a URL's resolved post id, evicting the least recently used entry past the cap."""
+    with _PAYLOAD_CACHE_LOCK:
+        _LINK_ID_CACHE[url] = aweme_id
+        _LINK_ID_CACHE.move_to_end(url)
+        if len(_LINK_ID_CACHE) > _LINK_ID_CACHE_MAX_ENTRIES:
+            _LINK_ID_CACHE.popitem(last=False)
 
 
 class DouyinDownloader(BaseModel):
@@ -285,6 +313,10 @@ class DouyinDownloader(BaseModel):
         Raises:
             DouyinError: If the URL is not a Douyin post link or cannot be resolved.
         """
+        cached = _cached_link_id(url=url)
+        if cached:
+            return cached
+
         # `is_douyin_url` accepts a scheme-less paste, so one can reach here; requests cannot fetch
         # it, and this module has already claimed the URL from the yt-dlp path, so there is nothing
         # to fall back to. Give it a scheme once, up front.
@@ -297,6 +329,7 @@ class DouyinDownloader(BaseModel):
 
             aweme_id = self._extract_id(url=current)
             if aweme_id:
+                _remember_link_id(url=url, aweme_id=aweme_id)
                 return aweme_id
 
             location = self._redirect_target(url=current)

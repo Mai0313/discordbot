@@ -168,10 +168,12 @@ def _install_session(
 
 @pytest.fixture(autouse=True)
 def _clear_payload_cache() -> Iterator[None]:
-    """Keeps the module-level share-payload cache from leaking between tests."""
+    """Keeps the module-level share-payload and short-link caches from leaking between tests."""
     douyin_module._PAYLOAD_CACHE.clear()
+    douyin_module._LINK_ID_CACHE.clear()
     yield
     douyin_module._PAYLOAD_CACHE.clear()
+    douyin_module._LINK_ID_CACHE.clear()
 
 
 @pytest.mark.parametrize(
@@ -412,6 +414,30 @@ def test_repeated_lookup_reuses_the_cached_payload(monkeypatch: pytest.MonkeyPat
     downloader.parse_metadata(url=url)
 
     assert len(calls) == 1
+
+
+def test_a_short_link_is_resolved_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A repeat paste of the same short link costs no redirect probe at all.
+
+    Auto-expansion turns every paste into a request, and the WAF bans by volume, so the second
+    lookup must reach Douyin fewer times than the first — not merely produce the same id.
+    """
+    short_url = "https://v.douyin.com/abc123"
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "v.douyin.com" in url:
+            return _FakeResponse(
+                headers={"Location": f"https://www.iesdouyin.com/share/video/{_VIDEO_ID}/"}
+            )
+        return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+
+    calls = _install_session(monkeypatch=monkeypatch, handler=handler)
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+
+    assert downloader._resolve_aweme_id(url=short_url) == _VIDEO_ID
+    assert len(calls) == 1
+    assert downloader._resolve_aweme_id(url=short_url) == _VIDEO_ID
+    assert len(calls) == 1  # served from the cache; the short-link host was never touched again
 
 
 def test_download_video_writes_the_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
