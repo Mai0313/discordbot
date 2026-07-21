@@ -1694,12 +1694,14 @@ class ReplyGeneratorCogs(commands.Cog):
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is
         # the one backend swap. It is Gemini-only and kill-switchable; otherwise (no video, a
-        # non-Gemini answer model, or the switch off) the turn falls back to the Responses path,
-        # which never errors. Both feed the same streamer so footer / memory / preview are shared.
+        # non-Gemini answer model, the switch off, or no direct key to swap with) the turn falls
+        # back to the Responses path, which never errors. Both feed the same streamer so footer /
+        # memory / preview are shared.
         use_interactions = (
             yt_url is not None
             and "gemini" in slow_model.name
             and self.config.youtube_video_enabled
+            and bool(self.config.gemini_api_key.strip())
         )
         if use_interactions:
             # Persistent marker (added directly, not via the status chain) so it stays after the

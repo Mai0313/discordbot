@@ -2123,7 +2123,10 @@ async def test_youtube_qa_uses_interactions_backend(
     del economy_isolated_db
     cog = _cog()
     cog.config = SimpleNamespace(
-        inline_voice_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
+        inline_voice_enabled=False,
+        inline_image_enabled=False,
+        youtube_video_enabled=True,
+        gemini_api_key="key",
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
@@ -2158,7 +2161,10 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
     del economy_isolated_db
     cog = _cog()
     cog.config = SimpleNamespace(
-        inline_voice_enabled=False, inline_image_enabled=False, youtube_video_enabled=True
+        inline_voice_enabled=False,
+        inline_image_enabled=False,
+        youtube_video_enabled=True,
+        gemini_api_key="key",
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
@@ -2178,7 +2184,9 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
     assert fake.recorder.calls[0].generation_config["thinking_level"] == "medium"
 
 
-@pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url"])
+@pytest.mark.parametrize(
+    "scenario", ["kill_switch_off", "non_gemini_model", "no_url", "no_key"]
+)
 async def test_youtube_qa_falls_back_to_responses(
     economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
@@ -2189,6 +2197,7 @@ async def test_youtube_qa_falls_back_to_responses(
         inline_voice_enabled=False,
         inline_image_enabled=False,
         youtube_video_enabled=scenario != "kill_switch_off",
+        gemini_api_key="" if scenario == "no_key" else "key",
     )
     if scenario == "non_gemini_model":
         monkeypatch.setattr(
