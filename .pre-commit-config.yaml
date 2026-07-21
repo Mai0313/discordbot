@@ -126,14 +126,13 @@ repos:
           - "Types-requests"
           - "Types-urllib3"
           - "openai"
-          # Pinned to the version uv.lock ships. pre-commit builds this hook its own venv and
-          # ignores uv.lock, so an unpinned entry silently type-checks against whatever is newest
-          # when the env is first built: locally that env is cached and stays on an old version,
-          # while CI rebuilds it every run. 2.12.1 re-exports `Interaction` as the union of the
-          # two *request* models, whose members have no `output_video` / `status` / `output_text`,
-          # so generation.py failed to type-check against an API the project never installs.
-          # Runtime is unaffected on either version. Bump this together with uv.lock.
-          - "google-genai==2.11.0"
+          # Deliberately unpinned, like every other entry here. pre-commit builds this hook its
+          # own venv from these names and never reads uv.lock, so the two resolve independently
+          # and can drift; a pin does not fix that, it only freezes the drift at one version and
+          # hides the upgrade signal a type error is meant to carry. Making them agree by
+          # construction means running mypy from the project environment instead, which first
+          # needs the errors nextcord's real types surface to be worked through.
+          - "google-genai"
           - "anthropic"
           - "sqlalchemy[asyncio]"
           - "pydantic-settings"
