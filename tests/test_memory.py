@@ -89,7 +89,7 @@ USER_SCOPE = user_scope(user_id=USER_ID)
 
 IDENTITY = f"Alice (alice) [id: {USER_ID}]"
 
-TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="none")
+TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="minimal")
 
 
 def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
@@ -617,9 +617,9 @@ async def test_extractor_uses_distinct_models_per_phase() -> None:
     fake_client = FakeMemoryClient()
     extractor = MemoryExtractorAI(
         client=cast("AsyncOpenAI", fake_client),
-        extract_model=ModelSettings(name="extract-model", effort="none"),
-        evaluate_model=ModelSettings(name="evaluate-model", effort="none"),
-        consolidate_model=ModelSettings(name="consolidate-model", effort="none"),
+        extract_model=ModelSettings(name="extract-model", effort="minimal"),
+        evaluate_model=ModelSettings(name="evaluate-model", effort="minimal"),
+        consolidate_model=ModelSettings(name="consolidate-model", effort="minimal"),
     )
     fake_client.responses.output_parsed = _draft("偏好明確")
     await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
