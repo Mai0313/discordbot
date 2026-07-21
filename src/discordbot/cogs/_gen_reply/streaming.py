@@ -172,6 +172,9 @@ class ResponseStreamer(BaseModel):
     # The usage footer appended to stored_content, kept so the media edit can splice any hosted-URL
     # line BEFORE it (USAGE_FOOTER_RE strips only a footer at end-of-message).
     _usage_footer: str = PrivateAttr(default="")
+    # Set when the reply message was deleted while streaming, so the media step knows the
+    # difference between "never sent" (a real problem, worth a hint) and "sent then deleted".
+    _reply_deleted: bool = PrivateAttr(default=False)
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -288,7 +291,13 @@ class ResponseStreamer(BaseModel):
         self._editor_task = None
 
     async def _write_final_message(self, content: str, footer: str) -> None:
-        """Writes the final reply, continuing overflow as follow-up replies in the same channel."""
+        """Writes the final reply, continuing overflow as follow-up replies in the same channel.
+
+        A reply deleted while it streamed (author delete, moderator purge) makes the final edit
+        404 with code 10008. That is a normal end, not a failure: the answer is complete and the
+        message it belonged to is gone on purpose, so the handle is dropped and nothing is
+        re-sent, since re-sending would resurrect exactly what someone just removed.
+        """
         parent_content, follow_up_chunks = self._split_reply_for_discord(
             content=content, footer=footer
         )
@@ -297,7 +306,17 @@ class ResponseStreamer(BaseModel):
         if self.reply is None:
             self.reply = await self._reply_or_send(content=parent_content)
         else:
-            await self.reply.edit(content=parent_content)
+            try:
+                await self.reply.edit(content=parent_content)
+            except NotFound:
+                logfire.info(
+                    "Reply deleted while streaming; finishing without the final edit",
+                    message_id=self.message.id,
+                    reply_id=self.reply.id,
+                )
+                self.reply = None
+                self._reply_deleted = True
+                return
         previous = self.reply
         for chunk in follow_up_chunks:
             previous = await previous.reply(content=chunk)
@@ -674,6 +693,10 @@ class ResponseStreamer(BaseModel):
         degrades to today's drop + ⚠️ hint. Voice/music/video are ordered first so the rare
         over-cap overflow peels a trailing image, not a clip.
         """
+        if self._reply_deleted:
+            # There is no message left to attach to, and the user removed it themselves, so a
+            # ⚠️ hint on their message would be noise about media they cannot see anyway.
+            return
         if self.reply is None:
             if (
                 self.voice_requested

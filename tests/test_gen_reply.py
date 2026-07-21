@@ -189,6 +189,7 @@ class FakeReply:
 
     def __init__(self) -> None:
         """Initializes the fake reply with empty content and no follow-up chain."""
+        self.id = 654
         self.content: str | None = ""
         self.file: File | None = None
         self.files: list[File] | None = None
@@ -196,6 +197,8 @@ class FakeReply:
         self.replies: list[FakeReply] = []
         self.edits: list[str] = []
         self.deleted = False
+        # When set, edit() raises this instead of recording (simulates a deleted reply).
+        self.edit_error: Exception | None = None
         # Records the allowed_mentions arg of each edit/reply so tests can prove a media edit /
         # follow-up keeps AllowedMentions.none() (dropping it would re-ping the author).
         self.allowed_mentions_seen: list[object | None] = []
@@ -212,6 +215,8 @@ class FakeReply:
         allowed_mentions: object | None = None,
     ) -> None:
         """Records edited content and/or newly attached media (voice clip / inline image)."""
+        if self.edit_error is not None:
+            raise self.edit_error
         self.allowed_mentions_seen.append(allowed_mentions)
         if content is not None:
             self.content = content
@@ -951,6 +956,56 @@ async def test_streaming_reraises_non_deletion_http_errors(economy_isolated_db: 
     with pytest.raises(nextcord.HTTPException):
         await ResponseStreamer(message=message).stream(responses=_stream_events())
     assert message.channel.sent == []
+
+
+async def test_streaming_tolerates_reply_deleted_before_final_edit(
+    economy_isolated_db: None,
+) -> None:
+    """A reply deleted while streaming ends the turn quietly instead of raising to the cog."""
+    del economy_isolated_db
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = _unknown_message_notfound()
+    streamer = ResponseStreamer(message=message, reply=reply)
+
+    result = await streamer.stream(responses=_stream_events())
+
+    # The caller still gets the full text (memory / research follow-ups stay usable).
+    assert result
+    assert streamer.reply is None
+    # Nothing is re-sent: the user removed that message on purpose.
+    assert message.replies == []
+    assert message.channel.sent == []
+
+
+async def test_streaming_reraises_non_deletion_edit_errors(economy_isolated_db: None) -> None:
+    """A non-deletion edit failure (e.g. Forbidden) still propagates as a real error."""
+    del economy_isolated_db
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = nextcord.HTTPException(
+        SimpleNamespace(status=403, reason="Forbidden"),
+        {"code": 50013, "message": "Missing Permissions"},
+    )
+
+    with pytest.raises(nextcord.HTTPException):
+        await ResponseStreamer(message=message, reply=reply).stream(responses=_stream_events())
+
+
+async def test_deleted_reply_skips_media_attach_without_hint(economy_isolated_db: None) -> None:
+    """Media requested on a since-deleted reply is dropped silently, with no ⚠️ on the source."""
+    del economy_isolated_db
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = _unknown_message_notfound()
+    synthesizer = _FakeVoiceGenerator()
+
+    await ResponseStreamer(message=message, reply=reply, voice_generator=synthesizer).stream(
+        responses=_stream_events_from(_voice_marker_events())
+    )
+
+    assert synthesizer.calls == []
+    assert message.added_reactions == []
 
 
 # ---- voice (spoken reply) ----
