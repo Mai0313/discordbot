@@ -143,6 +143,9 @@ class DouyinCogs(commands.Cog):
                 # follows: the per-URL lock collapses simultaneous pastes of one link into a
                 # single fetch (the payload cache alone loses that race), and the semaphore
                 # keeps a burst of distinct links from arriving at Douyin all at once.
+                # A timeout releases both while the worker thread is still running, since
+                # `asyncio.to_thread` cannot be cancelled; the scratch dir this block exits
+                # into is what stops it, so the overshoot is one request, not a stream.
                 async with (
                     douyin_url_locks.hold(url),
                     douyin_fetch_semaphore.get(),
