@@ -2184,9 +2184,7 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
     assert fake.recorder.calls[0].generation_config["thinking_level"] == "medium"
 
 
-@pytest.mark.parametrize(
-    "scenario", ["kill_switch_off", "non_gemini_model", "no_url", "no_key"]
-)
+@pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url", "no_key"])
 async def test_youtube_qa_falls_back_to_responses(
     economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
