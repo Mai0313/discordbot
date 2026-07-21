@@ -213,3 +213,14 @@ class VideoDownloader(BaseModel):
             title = info.get("title", "")
             filename = Path(ydl.prepare_filename(info))
             return DownloadResult(title=title, filename=filename)
+
+
+if __name__ == "__main__":
+    from rich.console import Console
+
+    console = Console()
+
+    downloader = VideoDownloader(output_folder="./data")
+    url = "https://www.bilibili.com/video/BV1jpK86hEc8"
+    result = downloader.download(url=url, quality="low")
+    console.print(f"Downloaded: {result.title} to {result.filename}")
