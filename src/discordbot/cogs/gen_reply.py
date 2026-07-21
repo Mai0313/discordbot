@@ -150,13 +150,14 @@ MEMORY_SELECT_GRACE_SECONDS = 5.0
 # route. Tune against the `gen_reply effort done` latency log.
 EFFORT_GRACE_SECONDS = 5.0
 
-# Threads-context parse rides the same route_done gate: it runs unbounded while the route
-# is in flight and gets only this grace once the route returns before the reply answers
-# without the post's media. Slightly wider than memory/effort because the parse is a single
-# HTTP fetch and missing the whole post is worse than waiting a beat. The parse overlaps the
-# route window for free, so this latency hides behind the route. Tune against the
-# `gen_reply threads context done` latency log.
-THREADS_GRACE_SECONDS = 8.0
+# A linked-post context build rides the same route_done gate: it runs unbounded while the
+# route is in flight and gets only this grace once the route returns. Far wider than
+# memory/effort because it fetches the post's media and uploads it to the Files API, and
+# because answering blind about a link the user explicitly pointed at is the failure this
+# feature exists to prevent. The builder bounds its own media step just under this and
+# degrades to text, so the grace is a backstop rather than the usual exit. The build overlaps
+# the route window for free. Tune against the `gen_reply threads context done` latency log.
+LINK_CONTEXT_GRACE_SECONDS = 180.0
 
 # Bound on the ACTIVE poll for a generated clip uploaded so the persona reply can watch it.
 # Generous relative to an image because video sits in PROCESSING longer, but far under the
@@ -1205,12 +1206,12 @@ class ReplyGeneratorCogs(commands.Cog):
         started = time.monotonic()
         try:
             blocks = await _await_gated(
-                task=threads_task, route_done=route_done, grace_seconds=THREADS_GRACE_SECONDS
+                task=threads_task, route_done=route_done, grace_seconds=LINK_CONTEXT_GRACE_SECONDS
             )
         except TimeoutError:
             logfire.warn(
                 "Threads context parse exceeded the post-route grace; injecting timeout notice",
-                grace_seconds=THREADS_GRACE_SECONDS,
+                grace_seconds=LINK_CONTEXT_GRACE_SECONDS,
                 message_id=message.id,
             )
             return threads_timeout_context_messages()
@@ -1933,6 +1934,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         coro=build_threads_context_messages(
                             url=threads_match.group(0),
                             answer_model_is_gemini="gemini" in self.runtime_models.slow_model.name,
+                            gemini_client=self.gemini_client,
                         )
                     )
                 text_reference, text_current = await self._get_reference_and_current(

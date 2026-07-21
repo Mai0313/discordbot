@@ -35,6 +35,13 @@ from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 # fetching bytes Google would reject. It is the provider's limit, not a policy of ours.
 FILES_API_MAX_BYTES = 2 * 1024**3
 
+# Bound on the whole fetch + upload step for the media of a linked post, shared by every link
+# context builder. It exists so the builder always returns within the pipeline's post-route
+# grace and degrades to text itself, rather than being cancelled with nothing to show. Set
+# well above a normal clip's cost: watching the linked video is the point, and the text block
+# is already on hand, so waiting is cheaper than answering blind.
+LINK_MEDIA_TIMEOUT_SECONDS = 170.0
+
 # Caps concurrent link-media uploads across all in-flight pipelines. Deliberately NOT the
 # attachment renderer's `_media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can hold its
 # slot for minutes, which would starve the ordinary per-message attachment renders that share

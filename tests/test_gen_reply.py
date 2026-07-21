@@ -4138,9 +4138,11 @@ async def test_on_message_injects_threads_context_before_current(
     )
     seen_urls: list[str] = []
 
-    async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
+    ) -> list[dict[str, object]]:
         """Returns a recognizable Threads block instead of hitting the network."""
-        del answer_model_is_gemini
+        del answer_model_is_gemini, gemini_client
         seen_urls.append(url)
         return _threads_block()
 
@@ -4175,10 +4177,10 @@ async def test_on_message_cancels_threads_context_on_image_route(
     cancelled: list[bool] = []
 
     async def hanging_builder(
-        *, url: str, answer_model_is_gemini: bool
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
     ) -> list[dict[str, object]]:
         """Blocks until cancelled, recording the cancellation."""
-        del url, answer_model_is_gemini
+        del url, answer_model_is_gemini, gemini_client
         try:
             await asyncio.sleep(30)
         except asyncio.CancelledError:
@@ -4260,11 +4262,13 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
         video_available=False,
         deep_research_enabled=False,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.THREADS_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.LINK_CONTEXT_GRACE_SECONDS", 0.01)
 
-    async def slow_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
+    async def slow_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
+    ) -> list[dict[str, object]]:
         """Outlasts the grace so the gate drops it."""
-        del url, answer_model_is_gemini
+        del url, answer_model_is_gemini, gemini_client
         await asyncio.sleep(5)
         return _threads_block()
 
