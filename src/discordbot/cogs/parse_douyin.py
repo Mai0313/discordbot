@@ -116,11 +116,7 @@ class DouyinCogs(commands.Cog):
         url = match.group(0)
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
         try:
-            # The per-URL lock collapses simultaneous pastes of one link into a single fetch
-            # (the payload cache alone loses that race), and the semaphore keeps a burst of
-            # distinct links from arriving at Douyin all at once.
-            async with douyin_url_locks.hold(url), douyin_fetch_semaphore.get():
-                await self._expand(message=message, url=url, current_emoji=current_emoji)
+            await self._expand(message=message, url=url, current_emoji=current_emoji)
         except Exception:
             logfire.error("Failed to expand Douyin link", _exc_info=True)
             with contextlib.suppress(Exception):
@@ -140,13 +136,21 @@ class DouyinCogs(commands.Cog):
         with tempfile.TemporaryDirectory(prefix="douyin-") as download_dir:
             downloader = self.downloader_factory(output_folder=download_dir)
             try:
-                # Parsed before the download so the caption survives a refused download: an
-                # oversize post still gets its card instead of a bare warning reaction. The
-                # share payload is cached, so this costs no extra request.
-                post = await asyncio.to_thread(downloader.parse_metadata, url=url)
-                result = await asyncio.to_thread(
-                    downloader.download, url=url, post=post, max_images=DISCORD_ATTACHMENT_LIMIT
-                )
+                # Both bounds cover only the Douyin-facing work, never the Discord upload that
+                # follows: the per-URL lock collapses simultaneous pastes of one link into a
+                # single fetch (the payload cache alone loses that race), and the semaphore
+                # keeps a burst of distinct links from arriving at Douyin all at once.
+                async with douyin_url_locks.hold(url), douyin_fetch_semaphore.get():
+                    # Parsed before the download so the caption survives a refused download: an
+                    # oversize post still gets its card instead of a bare warning reaction. The
+                    # share payload is cached, so this costs no extra request.
+                    post = await asyncio.to_thread(downloader.parse_metadata, url=url)
+                    result = await asyncio.to_thread(
+                        downloader.download,
+                        url=url,
+                        post=post,
+                        max_images=DISCORD_ATTACHMENT_LIMIT,
+                    )
             except Exception as error:
                 await self._report_failure(
                     message=message, url=url, error=error, current_emoji=current_emoji

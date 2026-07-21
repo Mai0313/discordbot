@@ -1,6 +1,7 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
 from types import SimpleNamespace
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from discordbot.utils.douyin import (
     DouyinTooLargeError,
     DouyinUnavailableError,
 )
+from discordbot.cogs._parse_douyin import fetch as douyin_fetch
 from discordbot.cogs._parse_douyin import builder as douyin_builder
 from discordbot.cogs._parse_douyin.builder import (
     DOUYIN_BLOCKED_NOTICE,
@@ -292,3 +294,63 @@ async def test_the_scratch_directory_is_removed(monkeypatch: pytest.MonkeyPatch)
     assert isinstance(source, Path)
     assert not source.exists()
     assert not source.parent.exists()
+
+
+async def test_the_douyin_bound_is_never_held_twice_on_one_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One build must never acquire the shared Douyin bound twice; that self-deadlocks.
+
+    `asyncio.Semaphore` is not reentrant, so wrapping the whole build in the bound while the
+    download takes it again would hang the moment the bound is saturated. Driven at capacity 1
+    so the failure is deterministic rather than a timing race, and bounded by wait_for so it
+    surfaces as a red test instead of a hung suite.
+    """
+    monkeypatch.setattr(douyin_fetch, "DOUYIN_FETCH_CONCURRENCY", 1)
+    _stub_douyin(monkeypatch)
+
+    blocks = await asyncio.wait_for(_build(), timeout=5.0)
+
+    assert blocks[0]["content"][0]["text"] == DOUYIN_CONTEXT_SEPARATOR
+
+
+async def test_the_fetch_bound_is_released_before_the_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A slow upload must not keep another link waiting on the Douyin bound.
+
+    The bound exists for Douyin's WAF; the upload talks to Google, so holding it across the
+    upload would throttle unrelated links for no protective reason. Capacity 1 makes "still
+    held" mean "the other link cannot start", which is exactly the property under test.
+    """
+    monkeypatch.setattr(douyin_fetch, "DOUYIN_FETCH_CONCURRENCY", 1)
+    _stub_douyin(monkeypatch)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class _SlowUploads(_Uploads):
+        async def __call__(self, **kwargs: object) -> dict[str, str] | None:
+            """Blocks inside the upload until the test lets it finish."""
+            started.set()
+            await release.wait()
+            return await super().__call__(**kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(douyin_builder, "upload_as_input_file", _SlowUploads())
+    slow = asyncio.create_task(_build())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5.0)
+
+        # A different link must get through while the first build sits in its upload.
+        other = await asyncio.wait_for(
+            build_douyin_context_messages(
+                url="https://v.douyin.com/other",
+                answer_model_is_gemini=True,
+                gemini_client=SimpleNamespace(),
+                allow_media_ingest=False,
+            ),
+            timeout=5.0,
+        )
+        assert other[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
+    finally:
+        release.set()
+        await asyncio.wait_for(slow, timeout=5.0)

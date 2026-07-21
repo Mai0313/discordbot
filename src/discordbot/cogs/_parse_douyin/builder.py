@@ -154,13 +154,17 @@ async def _fetch_and_upload(
     """
     with tempfile.TemporaryDirectory(prefix="douyin-ai-") as download_dir:
         downloader = DouyinDownloader(output_folder=download_dir)
-        download = await asyncio.to_thread(
-            downloader.download,
-            url=url,
-            post=post,
-            max_images=MAX_DOUYIN_INGEST_IMAGES,
-            max_bytes=FILES_API_MAX_BYTES,
-        )
+        # The Douyin bound covers only the Douyin-facing work. Holding it across the upload
+        # would block unrelated links for minutes while talking to Google, which is not what
+        # it protects against; the upload has its own, separate cap.
+        async with douyin_fetch_semaphore.get():
+            download = await asyncio.to_thread(
+                downloader.download,
+                url=url,
+                post=post,
+                max_images=MAX_DOUYIN_INGEST_IMAGES,
+                max_bytes=FILES_API_MAX_BYTES,
+            )
         # The scratch dir removes the files; `download.unlink` would only duplicate that.
         return await _upload_media(download=download, gemini_client=gemini_client)
 
@@ -210,24 +214,27 @@ async def build_douyin_context_messages(
         Input blocks ready to splice into the answer input before the current message.
     """
     with logfire.span("gen_reply douyin context"):
-        # Shared with the expansion cog: simultaneous reads of one link collapse into a single
-        # fetch, and a burst of distinct links queues instead of arriving at Douyin at once.
-        async with douyin_url_locks.hold(url), douyin_fetch_semaphore.get():
-            try:
+        try:
+            # The per-URL lock collapses simultaneous reads of one link into a single share-page
+            # fetch (the payload cache alone loses that race). Both bounds cover only the
+            # share-page read; the download takes the semaphore again on its own, and the upload
+            # is bounded separately, so a slow Google round-trip never blocks another link.
+            # Re-entering either here would deadlock: an asyncio.Semaphore is not reentrant.
+            async with douyin_url_locks.hold(url), douyin_fetch_semaphore.get():
                 downloader = DouyinDownloader(output_folder=tempfile.gettempdir())
                 post = await asyncio.to_thread(downloader.parse_metadata, url=url)
-            except DouyinBlockedError:
-                logfire.warn("Douyin blocked the context read; injecting the retryable notice")
-                return [_system_block(text=DOUYIN_BLOCKED_NOTICE)]
-            except DouyinUnavailableError:
-                return [_system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
-            except Exception:
-                logfire.warn("Douyin metadata parse failed; injecting notice", _exc_info=True)
-                return [_system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
+        except DouyinBlockedError:
+            logfire.warn("Douyin blocked the context read; injecting the retryable notice")
+            return [_system_block(text=DOUYIN_BLOCKED_NOTICE)]
+        except DouyinUnavailableError:
+            return [_system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
+        except Exception:
+            logfire.warn("Douyin metadata parse failed; injecting notice", _exc_info=True)
+            return [_system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
 
-            media_parts: list[ResponseInputFileParam] = []
-            if answer_model_is_gemini and allow_media_ingest:
-                media_parts = await _media_parts(url=url, post=post, gemini_client=gemini_client)
+        media_parts: list[ResponseInputFileParam] = []
+        if answer_model_is_gemini and allow_media_ingest:
+            media_parts = await _media_parts(url=url, post=post, gemini_client=gemini_client)
 
     text = _render_post_text(post=post, url=url)
     if media_parts:

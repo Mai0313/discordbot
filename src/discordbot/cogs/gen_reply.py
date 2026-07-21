@@ -161,7 +161,7 @@ EFFORT_GRACE_SECONDS = 5.0
 # because answering blind about a link the user explicitly pointed at is the failure this
 # feature exists to prevent. The builder bounds its own media step just under this and
 # degrades to text, so the grace is a backstop rather than the usual exit. The build overlaps
-# the route window for free. Tune against the `gen_reply threads context done` latency log.
+# the route window for free. Tune against the `gen_reply link context done` latency log.
 LINK_CONTEXT_GRACE_SECONDS = 180.0
 
 # Bound on the ACTIVE poll for a generated clip uploaded so the persona reply can watch it.
@@ -1232,7 +1232,8 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             return []
         logfire.info(
-            f"gen_reply {source} context done",
+            "gen_reply link context done",
+            source=source,
             elapsed_seconds=time.monotonic() - started,
             blocks=len(blocks),
             message_id=message.id,
