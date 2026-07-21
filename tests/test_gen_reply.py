@@ -4186,6 +4186,43 @@ async def test_on_message_injects_douyin_context_before_current(
     assert separator_index < current_index
 
 
+async def test_on_message_reads_a_linked_post_without_a_gemini_key(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A keyless deployment still gets the linked post's text, not a generic failure.
+
+    The direct client raises on an empty key, so touching it while assembling the builder call
+    would fail the whole reply before the builder's own text-only degradation could run.
+    """
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    cog.config.gemini_api_key = ""
+    clients: list[object] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Records the client it was handed instead of contacting Douyin."""
+        del url, answer_model_is_gemini, allow_media_ingest
+        clients.append(gemini_client)
+        return _douyin_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_douyin_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    )
+    await cog.on_message(message=message)
+
+    assert clients == [None]
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    assert has_douyin_context_block(request=answer)
+
+
 async def test_on_message_skips_a_non_post_douyin_link(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4333,13 +4370,7 @@ async def test_on_message_injects_threads_context_before_current(
     """A QA message with a Threads URL injects the parsed post just before the current message."""
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-        deep_research_enabled=False,
-    )
+    cog.config = _link_config()
     seen_urls: list[str] = []
 
     async def fake_builder(
@@ -4424,13 +4455,7 @@ async def test_on_message_skips_threads_context_without_url(
     """A message with no Threads URL never starts the parse and injects no block."""
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-        deep_research_enabled=False,
-    )
+    cog.config = _link_config()
     called: list[str] = []
 
     async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
@@ -4459,13 +4484,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
     cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
-    cog.config = SimpleNamespace(
-        inline_voice_enabled=False,
-        inline_image_enabled=False,
-        music_available=False,
-        video_available=False,
-        deep_research_enabled=False,
-    )
+    cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.LINK_CONTEXT_GRACE_SECONDS", 0.01)
 
     async def slow_builder(

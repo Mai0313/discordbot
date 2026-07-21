@@ -213,7 +213,7 @@ async def build_douyin_context_messages(
     *,
     url: str,
     answer_model_is_gemini: bool,
-    gemini_client: genai.Client,
+    gemini_client: genai.Client | None,
     allow_media_ingest: bool,
 ) -> list[EasyInputMessageParam]:
     """Reads a Douyin URL into answer-model input blocks.
@@ -225,7 +225,8 @@ async def build_douyin_context_messages(
     Args:
         url: The Douyin URL found in the current message.
         answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
-        gemini_client: Direct-to-Google client used for the media upload.
+        gemini_client: Direct-to-Google client used for the media upload, or None when no key
+            is configured, which reads the caption just like a non-Gemini answer model.
         allow_media_ingest: Kill-switch plus key check; when false only the caption is read.
 
     Returns:
@@ -254,7 +255,7 @@ async def build_douyin_context_messages(
             return [_system_block(text=DOUYIN_UNREADABLE_NOTICE)]
 
         media_parts: list[ResponseInputFileParam] = []
-        if answer_model_is_gemini and allow_media_ingest:
+        if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
             media_parts = await _media_parts(url=url, post=post, gemini_client=gemini_client)
 
     text = _render_post_text(post=post, url=url)

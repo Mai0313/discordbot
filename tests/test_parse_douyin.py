@@ -282,6 +282,20 @@ async def test_the_kill_switch_skips_the_media_but_keeps_the_caption(
     assert uploads.calls == []
 
 
+async def test_a_missing_key_reads_the_caption_instead_of_raising(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No key means no client to upload with, which is a text-only read, not a failure."""
+    uploads, _ = _stub_douyin(monkeypatch)
+
+    blocks = await build_douyin_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
+    )
+
+    assert blocks[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
+    assert uploads.calls == []
+
+
 async def test_a_non_gemini_answer_model_skips_the_upload(monkeypatch: pytest.MonkeyPatch) -> None:
     """A Files uri is Gemini-only, so another model gets the caption and no wasted upload."""
     uploads, _ = _stub_douyin(monkeypatch)

@@ -221,7 +221,7 @@ def _media_url_lines(*, target: ThreadsOutput) -> list[str]:
 
 
 async def build_threads_context_messages(
-    *, url: str, answer_model_is_gemini: bool, gemini_client: genai.Client
+    *, url: str, answer_model_is_gemini: bool, gemini_client: genai.Client | None
 ) -> list[EasyInputMessageParam]:
     """Parses a Threads URL into answer-model input blocks.
 
@@ -234,7 +234,8 @@ async def build_threads_context_messages(
     Args:
         url: The Threads post URL found in the current message.
         answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
-        gemini_client: Direct-to-Google client used for the media upload.
+        gemini_client: Direct-to-Google client used for the media upload, or None when no key
+            is configured, which reads the post as text just like a non-Gemini answer model.
 
     Returns:
         Input blocks ready to splice into the answer input before the current message.
@@ -270,7 +271,7 @@ async def build_threads_context_messages(
     target = results[target_index]
 
     media_parts: list[ResponseInputFileParam] = []
-    if answer_model_is_gemini:
+    if answer_model_is_gemini and gemini_client is not None:
         media_parts = await _target_media_parts(target=target, gemini_client=gemini_client)
 
     if media_parts:

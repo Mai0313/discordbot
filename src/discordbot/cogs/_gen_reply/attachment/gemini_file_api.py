@@ -92,9 +92,9 @@ class GeminiFileUploader(AttachmentRenderer):
         The client uploads attachments directly (not through the LiteLLM proxy) so each
         upload can be polled to an ACTIVE `state` before it is referenced. Built here, not
         at the cog: this uploader is only constructed on the Gemini answer-model path, so a
-        non-Gemini deployment never builds it. A missing `GEMINI_API_KEY` does not fail
-        construction; the failure surfaces at the upload call, where `_upload_file` catches
-        it and drops the attachment while the text reply still goes out.
+        non-Gemini deployment never builds it. An empty `GEMINI_API_KEY` raises here, and
+        because construction is lazy that surfaces at the upload call, where `_upload_file`
+        catches it and drops the attachment while the text reply still goes out.
 
         Returns:
             A Gemini client reused across uploads.

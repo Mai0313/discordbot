@@ -461,13 +461,29 @@ class ReplyGeneratorCogs(commands.Cog):
           download); and
         - the YouTube-aware QA answer turn that streams through the native Interactions API (the
           only path that can actually watch a linked video).
-        Both forgo proxy-side cost/usage tracking, like the deep-research direct path. A missing
-        key does not fail construction; it surfaces at the first call.
+        Both forgo proxy-side cost/usage tracking, like the deep-research direct path. An empty
+        key raises at construction, so a caller that is reachable without one must go through
+        `gemini_client_if_configured` instead of touching this.
 
         Returns:
             A Gemini client for native media generation and the Interactions answer turn.
         """
         return genai.Client(api_key=self.config.gemini_api_key)
+
+    @property
+    def gemini_client_if_configured(self) -> genai.Client | None:
+        """The direct Gemini client, or None when no key is configured.
+
+        For the paths that stay useful without a key: a linked post still contributes its text,
+        it just carries no uploaded media. Reading `gemini_client` there would raise before the
+        feature's own kill-switch was ever consulted.
+
+        Returns:
+            The client, or None when `GEMINI_API_KEY` is unset.
+        """
+        if not self.config.gemini_api_key.strip():
+            return None
+        return self.gemini_client
 
     @cached_property
     def voice_generator(self) -> VoiceGenerator:
@@ -1946,7 +1962,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         coro=build_threads_context_messages(
                             url=threads_match.group(0),
                             answer_model_is_gemini="gemini" in self.runtime_models.slow_model.name,
-                            gemini_client=self.gemini_client,
+                            gemini_client=self.gemini_client_if_configured,
                         )
                     )
                 # A Douyin URL is read the same way, except the clip itself is downloaded and
@@ -1960,7 +1976,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         coro=build_douyin_context_messages(
                             url=douyin_match.group(0),
                             answer_model_is_gemini="gemini" in self.runtime_models.slow_model.name,
-                            gemini_client=self.gemini_client,
+                            gemini_client=self.gemini_client_if_configured,
                             allow_media_ingest=(
                                 self.config.douyin_video_enabled
                                 and bool(self.config.gemini_api_key.strip())

@@ -273,6 +273,22 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rendered_posts == MAX_THREADS_POSTS
 
 
+async def test_build_without_a_key_rides_urls_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No key means no client to upload with, which is a text-only read, not a failure."""
+    _stub_parse(
+        monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
+    )
+    uploads = _Uploads()
+    _stub_media(monkeypatch, uploads=uploads)
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=None
+    )
+
+    assert blocks[0]["content"][0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
+    assert uploads.calls == []
+
+
 async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPatch) -> None:
     """A non-Gemini answer model gets the URLs as text and triggers no upload at all."""
     _stub_parse(
