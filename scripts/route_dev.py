@@ -13,7 +13,7 @@ from discordbot.cogs._gen_reply.prompts import ROUTE_PROMPT, EFFORT_PROMPT
 console = Console()
 config = LLMConfig()
 
-FAST_MODEL = ModelSettings(name="gemini-flash-lite-latest", effort="none")
+FAST_MODEL = ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
 
 
 def _smoke_parse(

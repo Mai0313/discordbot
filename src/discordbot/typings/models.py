@@ -20,8 +20,17 @@ class ModelSettings(BaseModel):
         description="LiteLLM model string dispatched on the Responses API.",
         examples=["gemini-flash-latest", "gemini-3.1-flash-image"],
     )
+    # `minimal`, never `none`. Gemini 3 cannot switch thinking off at all, so the API's own
+    # vocabulary starts at `minimal` (`thinking_level` accepts minimal / low / medium / high).
+    # LiteLLM does map `none`, but only after recognising the model as Gemini 3 by the literal
+    # substring `gemini-3` in the model string, which the `*-latest` aliases this project
+    # dispatches on do not contain. It therefore falls through to the pre-3 branch and sends
+    # `thinkingBudget: 0`, which a Gemini 3.x model rejects — so `none` silently stopped working
+    # the moment `gemini-flash-latest` began resolving to a 3.x snapshot. `minimal` maps to a
+    # small positive budget on that same branch and is accepted.
     effort: ReasoningEffort = Field(
-        default="none", description="Reasoning effort passed to the Responses API for this model."
+        default="minimal",
+        description="Reasoning effort passed to the Responses API for this model.",
     )
 
     @property
@@ -230,7 +239,7 @@ class RuntimeModelCatalog(BaseModel):
             Fast model settings used for short auto-unmute replies and stock
             news generation.
         """
-        fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="none")
+        fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
         return fast_model
 
     @property
@@ -240,12 +249,12 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_route_classify`.
 
         Returns:
-            Fast no-reasoning settings for the route classification call. The route's
+            Fast minimal-thinking settings for the route classification call. The route's
             only job is picking the reply mode; the effort grade runs as a separate
             parallel call on `effort_model`, so flash-lite is enough here and keeps the
             QA critical path short.
         """
-        return ModelSettings(name="gemini-flash-lite-latest", effort="none")
+        return ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
 
     @property
     def effort_model(self) -> ModelSettings:
@@ -254,13 +263,13 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_grade_effort`.
 
         Returns:
-            Fast no-reasoning settings for the effort grading call that runs in parallel
+            Fast minimal-thinking settings for the effort grading call that runs in parallel
             with the route. Grading how much the answer model should think follows simple
             complexity rules, so flash-lite is enough; the call is bounded by the same
             `route_done` gate as memory selection, so its latency hides behind the route
             and adds nothing to the critical path.
         """
-        return ModelSettings(name="gemini-flash-lite-latest", effort="none")
+        return ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
 
     @property
     def tool_model(self) -> ModelSettings:
@@ -269,13 +278,13 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_select_user_memories`.
 
         Returns:
-            Fast no-reasoning settings for the "whose long-term memory to read"
+            Fast minimal-thinking settings for the "whose long-term memory to read"
             tool-call decision on the reply critical path: flash (not flash-lite)
             because matching spoken community nicknames to user ids needs more
             language skill than the lite tier reliably delivers, while staying far
             below answer-model latency.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="none")
+        return ModelSettings(name="gemini-flash-latest", effort="minimal")
 
     @property
     def slow_model(self) -> ModelSettings:

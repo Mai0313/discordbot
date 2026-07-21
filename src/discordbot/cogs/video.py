@@ -10,13 +10,8 @@ import nextcord
 from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
-from discordbot.utils.douyin import (
-    DouyinDownload,
-    DouyinDownloader,
-    DouyinBlockedError,
-    DouyinUnavailableError,
-    is_douyin_url,
-)
+from discordbot.utils.urls import extract_first_url
+from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownload, DouyinDownloader, is_douyin_url
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -26,6 +21,7 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
+from discordbot.cogs._parse_douyin.fetch import douyin_failure_message
 
 
 class VideoCogs(commands.Cog):
@@ -58,7 +54,7 @@ class VideoCogs(commands.Cog):
         self,
         interaction: Interaction,
         url: str = SlashOption(
-            description="Video URL (YouTube, Facebook Reels, Instagram, X, Douyin, etc.)",
+            description="Video URL, or the share text containing it (YouTube, Instagram, X, Douyin, etc.)",
             required=True,
         ),
         quality: str = SlashOption(
@@ -82,6 +78,11 @@ class VideoCogs(commands.Cog):
         """
         await interaction.response.defer()
         await interaction.edit_original_message(content="-# 正在下載影片...")
+
+        # Share buttons hand over a blob of text with the link buried in it, and pasting that
+        # whole thing here is the natural thing to do. Douyin's pattern goes first because its
+        # copy runs straight into Chinese with no space, where the generic rule would swallow it.
+        url = extract_first_url(text=url, patterns=(DOUYIN_URL_RE,))
 
         # Read the destination's real upload ceiling (boost tier raises it to 50/100 MiB);
         # a DM has no guild to query, so fall back to Discord's current non-Nitro base of 10 MiB.
@@ -180,7 +181,7 @@ class VideoCogs(commands.Cog):
             # so anything escaping here would strand the user on "正在下載影片..." forever.
             logfire.warn("Douyin download failed", _exc_info=True)
             await self._edit_quietly(
-                interaction=interaction, content=self._douyin_failure_message(error=error)
+                interaction=interaction, content=douyin_failure_message(error=error)
             )
             return
 
@@ -232,19 +233,6 @@ class VideoCogs(commands.Cog):
         except Exception:
             logfire.warn("Douyin delivery failed", _exc_info=True)
             await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
-
-    @staticmethod
-    def _douyin_failure_message(error: Exception) -> str:
-        """Maps a Douyin download failure to the message the user should see.
-
-        A bot wall and a missing post are kept apart on purpose: reporting a block as a deleted
-        post would send someone off to re-check a link that is perfectly fine.
-        """
-        if isinstance(error, DouyinUnavailableError):
-            return "-# 這則貼文已被刪除或設為私人"
-        if isinstance(error, DouyinBlockedError):
-            return "-# 抖音暫時擋住了請求，請稍後再試"
-        return "-# 檔案無法下載"
 
     async def _deliver_douyin(
         self, interaction: Interaction, plan: MediaPlan, result: DouyinDownload, url: str

@@ -1,4 +1,18 @@
-"""Cog that expands Threads post URLs into Discord embeds and media files."""
+"""Cog that expands Threads post URLs into Discord embeds and media files.
+
+Expansion is skipped when the message is addressed to the bot (a DM, or an explicit
+mention): `gen_reply` self-parses the linked post and answers about it, so expanding as
+well would download the same media twice and post an embed nobody asked for. The two
+paths are mutually exclusive, and `is_addressed_to_bot` is the single predicate deciding
+which one runs. Keeping it to one download is the reason the rule exists: the media is
+the slow half, and it cannot be avoided by handing the model a URL, since only a Files
+API uri reaches it without somebody fetching the bytes first.
+
+That predicate is deliberately coarser than `gen_reply`'s own guards, so a few addressed
+messages get neither treatment: one typed inside an active research thread (the reply
+pipeline skips those), and one the router sends to IMAGE / VIDEO (those routes discard
+the link context). Both are rare enough to accept rather than couple the cogs together.
+"""
 
 import asyncio
 from pathlib import Path
@@ -10,6 +24,7 @@ from nextcord import Color, Embed, Message, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
+from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
@@ -157,6 +172,12 @@ class ThreadsCogs(commands.Cog):
 
         match = THREADS_URL_RE.search(string=message.content)
         if not match:
+            return
+
+        # A link addressed to the bot is gen_reply's to answer about, not ours to expand; see
+        # the module docstring for why the two never both fire. Checked after the URL match so
+        # the common no-link message costs one regex, not two.
+        if is_addressed_to_bot(message=message, bot_user=self.bot.user):
             return
 
         url = match.group(0)

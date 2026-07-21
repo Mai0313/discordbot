@@ -22,8 +22,10 @@ from discordbot.utils.douyin import (
     DouyinDownload,
     DouyinDownloader,
     DouyinBlockedError,
+    DouyinTooLargeError,
     DouyinUnavailableError,
     is_douyin_url,
+    is_douyin_post_url,
 )
 from discordbot.utils.media_delivery import (
     MediaHostingConfig,
@@ -167,10 +169,12 @@ def _install_session(
 
 @pytest.fixture(autouse=True)
 def _clear_payload_cache() -> Iterator[None]:
-    """Keeps the module-level share-payload cache from leaking between tests."""
+    """Keeps the module-level share-payload and short-link caches from leaking between tests."""
     douyin_module._PAYLOAD_CACHE.clear()
+    douyin_module._LINK_ID_CACHE.clear()
     yield
     douyin_module._PAYLOAD_CACHE.clear()
+    douyin_module._LINK_ID_CACHE.clear()
 
 
 @pytest.mark.parametrize(
@@ -413,6 +417,32 @@ def test_repeated_lookup_reuses_the_cached_payload(monkeypatch: pytest.MonkeyPat
     assert len(calls) == 1
 
 
+def test_a_short_link_is_resolved_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A repeat paste of the same short link costs no redirect probe at all.
+
+    Auto-expansion turns every paste into a request, and the WAF bans by volume, so the second
+    lookup must reach Douyin fewer times than the first — not merely produce the same id.
+    """
+    short_url = "https://v.douyin.com/abc123"
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        # Matched as a prefix, not a substring: a bare `in` would also accept
+        # `https://evil.test/?x=v.douyin.com`, and this stub decides which endpoint was hit.
+        if url.startswith(short_url):
+            return _FakeResponse(
+                headers={"Location": f"https://www.iesdouyin.com/share/video/{_VIDEO_ID}/"}
+            )
+        return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+
+    calls = _install_session(monkeypatch=monkeypatch, handler=handler)
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+
+    assert downloader._resolve_aweme_id(url=short_url) == _VIDEO_ID
+    assert len(calls) == 1
+    assert downloader._resolve_aweme_id(url=short_url) == _VIDEO_ID
+    assert len(calls) == 1  # served from the cache; the short-link host was never touched again
+
+
 def test_download_video_writes_the_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A video post produces exactly one file named after the post id."""
 
@@ -496,6 +526,166 @@ def test_download_gives_up_after_max_retries(
     with pytest.raises(DouyinError, match="Failed to download"):
         downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
     assert list(tmp_path.iterdir()) == []
+
+
+def test_oversize_content_length_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A declared length over the cap aborts before the body is read, so no file is written.
+
+    The whole point of the guard is to spend a couple of seconds instead of a whole time
+    budget, so an assertion that merely checks the raise would pass even if the download ran
+    to completion first.
+    """
+    read_bodies = {"count": 0}
+
+    class _CountingResponse(_FakeResponse):
+        def iter_content(self, chunk_size: int) -> Iterator[bytes]:
+            """Records that the body was read at all."""
+            read_bodies["count"] += 1
+            yield from super().iter_content(chunk_size=chunk_size)
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "share/note" in url:
+            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+        return _CountingResponse(body=b"x" * 100, headers={"Content-Length": "100"})
+
+    calls = _install_session(monkeypatch=monkeypatch, handler=handler)
+    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
+
+    with pytest.raises(DouyinTooLargeError):
+        downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}", max_bytes=10)
+
+    assert read_bodies["count"] == 0  # aborted on the header, never streamed
+    assert list(tmp_path.iterdir()) == []
+    # Deterministic failure: retrying would only re-fetch the same oversize file.
+    assert len([call for call in calls if "share/note" not in str(call["url"])]) == 1
+
+
+def test_oversize_stream_without_a_content_length_is_still_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A missing or lying Content-Length is caught mid-stream, and the partial file is removed."""
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "share/note" in url:
+            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+        return _FakeResponse(body=b"x" * 100)  # no Content-Length header at all
+
+    _install_session(monkeypatch=monkeypatch, handler=handler)
+    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
+
+    with pytest.raises(DouyinTooLargeError):
+        downloader.download(url=f"https://www.douyin.com/video/{_VIDEO_ID}", max_bytes=10)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_download_under_the_cap_is_unaffected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A file inside the cap downloads exactly as it does with no cap at all."""
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "share/note" in url:
+            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+        return _FakeResponse(body=b"video-bytes", headers={"Content-Length": "11"})
+
+    _install_session(monkeypatch=monkeypatch, handler=handler)
+    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
+
+    with downloader.download(
+        url=f"https://www.douyin.com/video/{_VIDEO_ID}", max_bytes=1024
+    ) as result:
+        assert result.filenames[0].read_bytes() == b"video-bytes"
+
+
+def test_download_reuses_a_caller_supplied_post(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Passing an already-parsed post skips the parse entirely.
+
+    Asserting only on the downloaded bytes would pass even if the post were re-parsed, so this
+    watches `parse_metadata` itself; the payload cache would otherwise hide the extra work.
+    """
+    parses = {"count": 0}
+    original_parse = DouyinDownloader.parse_metadata
+
+    def counting_parse(self: DouyinDownloader, url: str) -> object:
+        """Counts every metadata parse the downloader performs."""
+        parses["count"] += 1
+        return original_parse(self, url=url)
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "share/note" in url:
+            return _FakeResponse(text=_ok_page(item=_VIDEO_ITEM))
+        return _FakeResponse(body=b"video-bytes")
+
+    _install_session(monkeypatch=monkeypatch, handler=handler)
+    downloader = DouyinDownloader(output_folder=tmp_path.as_posix())
+    url = f"https://www.douyin.com/video/{_VIDEO_ID}"
+    post = downloader.parse_metadata(url=url)
+    monkeypatch.setattr(target=DouyinDownloader, name="parse_metadata", value=counting_parse)
+
+    with downloader.download(url=url, post=post) as result:
+        assert result.filenames[0].read_bytes() == b"video-bytes"
+    assert parses["count"] == 0
+
+    # Without a post the download resolves it itself, so the counter proves it is watching.
+    with downloader.download(url=url) as result:
+        assert result.filenames[0].read_bytes() == b"video-bytes"
+    assert parses["count"] == 1
+
+
+@pytest.mark.parametrize(
+    argnames=("url", "expected"),
+    argvalues=[
+        (f"https://www.douyin.com/video/{_VIDEO_ID}", True),
+        (f"https://www.douyin.com/user/MS4wLjABAAAAMOcq?modal_id={_VIDEO_ID}", True),
+        ("https://v.douyin.com/abc123", True),
+        (f"https://www.iesdouyin.com/share/note/{_PHOTO_ID}", True),
+        ("https://www.douyin.com/user/MS4wLjABAAAAMOcq", False),
+        ("https://live.douyin.com/123456", False),
+        ("https://www.douyin.com/search/whatever", False),
+    ],
+)
+def test_post_url_detection_separates_posts_from_profiles(url: str, expected: bool) -> None:
+    """Only a post-shaped link may be claimed automatically.
+
+    `DOUYIN_URL_RE` matches the host rather than the path, so without this a pasted profile or
+    live room would earn a warning reaction plus a failure reply, and spend a Douyin request
+    to discover it was never a post.
+    """
+    assert is_douyin_post_url(url=url) is expected
+
+
+def test_download_creates_the_output_folder_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`_download_to` must not re-create the output folder per file.
+
+    A cancelled caller cannot stop the worker thread, so it may remove the scratch dir
+    mid-download; re-creating it per file would silently strand every later image there
+    forever. Failing the open instead turns the removal into the stop signal.
+    """
+
+    def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
+        if "share/note" in url:
+            return _FakeResponse(text=_ok_page(item=_PHOTO_ITEM))
+        return _FakeResponse(body=b"image-bytes")
+
+    _install_session(monkeypatch=monkeypatch, handler=handler)
+    scratch = tmp_path / "gone"
+    downloader = DouyinDownloader(output_folder=scratch.as_posix())
+    post = downloader.parse_metadata(url=f"https://www.douyin.com/note/{_PHOTO_ID}")
+
+    # Stand in for the rmtree a cancelled caller performs between two files.
+    scratch.mkdir()
+    scratch.rmdir()
+    with pytest.raises(FileNotFoundError):
+        downloader._download_to(url="https://cdn.test/1.jpg", filename="1.jpg")
+    assert not scratch.exists()  # nothing re-created it behind the caller's back
+    assert post.is_photo
 
 
 def test_failed_gallery_leaves_no_images_behind(

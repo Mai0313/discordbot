@@ -17,7 +17,7 @@ config = LLMConfig()
 
 # LitellmModel expects LiteLLM provider-prefixed names instead of the model
 # aliases used by the OpenAI-compatible request path in cogs/gen_reply.py.
-AGENT_MODEL = ModelSettings(name="gemini/gemini-flash-latest", effort="none")
+AGENT_MODEL = ModelSettings(name="gemini/gemini-flash-latest", effort="minimal")
 
 
 def gen_reply_oai(user_prompt: str) -> RunResult:

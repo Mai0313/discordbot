@@ -26,6 +26,9 @@ class LLMConfig(BaseSettings):
         youtube_video_enabled: Kill-switch for answering about a linked YouTube video via the
             Gemini Interactions API; when false the QA turn falls back to the Responses path
             (which cannot watch the video).
+        douyin_video_enabled: Kill-switch for downloading a linked Douyin post's media and
+            uploading it so the answer model can watch it; when false the caption still rides
+            as context but the model is told plainly that it has not seen the clip.
         deep_research_enabled: Kill-switch for the deep-research feature; when false the QA
             answer model's `<deep-research>` marker is still stripped but no research runs.
         deep_research_max_enabled: Whether the priciest Deep Research Max tier may be picked
@@ -87,6 +90,11 @@ class LLMConfig(BaseSettings):
         default=True,
         description="Whether the bot may watch a linked YouTube video via the Interactions API.",
         validation_alias=AliasChoices("YOUTUBE_VIDEO_ENABLED"),
+    )
+    douyin_video_enabled: bool = Field(
+        default=True,
+        description="Whether the bot may upload a linked Douyin post's media for the model to read.",
+        validation_alias=AliasChoices("DOUYIN_VIDEO_ENABLED"),
     )
     deep_research_enabled: bool = Field(
         default=True,

@@ -58,6 +58,7 @@ nav:
                       - select: Reference/discordbot/cogs/_gen_reply/attachment/select.md
                   - context: Reference/discordbot/cogs/_gen_reply/context.md
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
+                  - files_api: Reference/discordbot/cogs/_gen_reply/files_api.md
                   - generation: Reference/discordbot/cogs/_gen_reply/generation.md
                   - input: Reference/discordbot/cogs/_gen_reply/input.md
                   - interactions: Reference/discordbot/cogs/_gen_reply/interactions.md
@@ -84,6 +85,9 @@ nav:
                   - server_prompts: Reference/discordbot/cogs/_memory/server_prompts.md
                   - store: Reference/discordbot/cogs/_memory/store.md
                   - views: Reference/discordbot/cogs/_memory/views.md
+              - _parse_douyin:
+                  - builder: Reference/discordbot/cogs/_parse_douyin/builder.md
+                  - fetch: Reference/discordbot/cogs/_parse_douyin/fetch.md
               - _parse_threads:
                   - builder: Reference/discordbot/cogs/_parse_threads/builder.md
               - _research:
@@ -110,6 +114,7 @@ nav:
               - maplestory: Reference/discordbot/cogs/maplestory.md
               - media_cleanup: Reference/discordbot/cogs/media_cleanup.md
               - memory: Reference/discordbot/cogs/memory.md
+              - parse_douyin: Reference/discordbot/cogs/parse_douyin.md
               - parse_threads: Reference/discordbot/cogs/parse_threads.md
               - research: Reference/discordbot/cogs/research.md
               - stock: Reference/discordbot/cogs/stock.md
@@ -118,6 +123,7 @@ nav:
           - typings:
               - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md
+              - douyin: Reference/discordbot/typings/douyin.md
               - economy: Reference/discordbot/typings/economy.md
               - fishing: Reference/discordbot/typings/fishing.md
               - games: Reference/discordbot/typings/games.md
@@ -130,10 +136,12 @@ nav:
               - avatars: Reference/discordbot/utils/avatars.md
               - currency: Reference/discordbot/utils/currency.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
+              - douyin: Reference/discordbot/utils/douyin.md
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
               - llm: Reference/discordbot/utils/llm.md
               - media_delivery: Reference/discordbot/utils/media_delivery.md
+              - mentions: Reference/discordbot/utils/mentions.md
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
               - model_pricing: Reference/discordbot/utils/model_pricing.md
               - number_text: Reference/discordbot/utils/number_text.md
@@ -144,6 +152,7 @@ nav:
               - stored_integer: Reference/discordbot/utils/stored_integer.md
               - threads: Reference/discordbot/utils/threads.md
               - timezone: Reference/discordbot/utils/timezone.md
+              - urls: Reference/discordbot/utils/urls.md
               - youtube: Reference/discordbot/utils/youtube.md
           - cli: Reference/discordbot/cli.md
   - Scripts:

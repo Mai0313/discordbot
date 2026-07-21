@@ -11,7 +11,15 @@ from nextcord import Embed
 from nextcord.ext import commands
 
 from discordbot import cli
-from discordbot.cogs import games, video, economy, template, auto_unmute, parse_threads
+from discordbot.cogs import (
+    games,
+    video,
+    economy,
+    template,
+    auto_unmute,
+    parse_douyin,
+    parse_threads,
+)
 from discordbot.cogs.games import GamesCogs
 from discordbot.cogs.video import VideoCogs
 from discordbot.cogs.economy import EconomyCogs
@@ -38,6 +46,7 @@ from discordbot.typings.economy import (
     LoanProposalAcceptResult,
 )
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
+from discordbot.cogs.parse_douyin import DouyinCogs
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
@@ -357,7 +366,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     warning_message = FakeDiscordMessage()
     warning_message.author = FakeUser(bot=False)
     warning_message.content = "https://www.threads.net/@alice/post/abc"
-    warning_message.guild = None
+    warning_message.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
     cog.downloader = ThreadsDownloaderStub(results=[])
     await cog.on_message(message=warning_message)
     assert warning_message.reactions[-1] == "⚠️"
@@ -365,10 +374,33 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     error_message = FakeDiscordMessage()
     error_message.author = FakeUser(bot=False)
     error_message.content = "https://www.threads.net/@alice/post/abc"
-    error_message.guild = None
+    error_message.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
     cog.downloader = ThreadsDownloaderStub(results=RuntimeError("parse failed"))
     await cog.on_message(message=error_message)
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
+
+
+async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
+    """A mention (or a DM) hands the link to gen_reply, so the cog must not also expand it."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=bot)
+    cog.downloader = ThreadsDownloaderStub(results=RuntimeError("must not be called"))
+
+    mentioned = FakeDiscordMessage()
+    mentioned.author = FakeUser(bot=False)
+    mentioned.content = "<@999> https://www.threads.net/@alice/post/abc"
+    mentioned.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    await cog.on_message(message=mentioned)
+    assert mentioned.reactions == []
+    assert mentioned.replies == []
+
+    direct_message = FakeDiscordMessage()
+    direct_message.author = FakeUser(bot=False)
+    direct_message.content = "https://www.threads.net/@alice/post/abc"
+    direct_message.guild = None  # a DM always reaches gen_reply, mention or not
+    await cog.on_message(message=direct_message)
+    assert direct_message.reactions == []
+    assert direct_message.replies == []
 
 
 async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
@@ -1976,20 +2008,32 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies every cog setup function registers the expected cog type."""
     added: list[
         tuple[
-            VideoCogs | GamesCogs | EconomyCogs | TemplateCogs | ThreadsCogs | AutoUnmuteCogs,
+            VideoCogs
+            | GamesCogs
+            | EconomyCogs
+            | TemplateCogs
+            | ThreadsCogs
+            | DouyinCogs
+            | AutoUnmuteCogs,
             bool | None,
         ]
     ] = []
 
     def record_cog(
-        cog: VideoCogs | GamesCogs | EconomyCogs | TemplateCogs | ThreadsCogs | AutoUnmuteCogs,
+        cog: VideoCogs
+        | GamesCogs
+        | EconomyCogs
+        | TemplateCogs
+        | ThreadsCogs
+        | DouyinCogs
+        | AutoUnmuteCogs,
         override: bool | None = None,
     ) -> None:
         """Records the cog instance and override flag passed to add_cog."""
         added.append((cog, override))
 
     bot = SimpleNamespace(add_cog=record_cog)
-    for module in [video, games, economy, template, parse_threads, auto_unmute]:
+    for module in [video, games, economy, template, parse_threads, parse_douyin, auto_unmute]:
         monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
         monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
         module.setup(bot=bot)
@@ -1999,6 +2043,7 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
         EconomyCogs,
         TemplateCogs,
         ThreadsCogs,
+        DouyinCogs,
         AutoUnmuteCogs,
     ]
 

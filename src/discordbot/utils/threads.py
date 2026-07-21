@@ -596,13 +596,18 @@ class ThreadsDownloader(BaseModel):
         Raises:
             RuntimeError: If the download fails.
         """
+        # Created before the request, never after: a caller that cancels mid-download cannot stop
+        # the worker thread (`asyncio.to_thread` abandons it), so it may remove the scratch dir
+        # underneath this. Creating it up front lets the open fail instead of quietly rebuilding
+        # a directory nobody will clean up, which turns the removal into the stop signal the
+        # cancellation could not deliver.
+        filepath = Path(self.output_folder) / filename
+        filepath.parent.mkdir(parents=True, exist_ok=True)
         try:
             headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.threads.net/"}
             response = requests.get(url=url, headers=headers, stream=True, timeout=15)
             response.raise_for_status()
 
-            filepath = Path(self.output_folder) / filename
-            filepath.parent.mkdir(parents=True, exist_ok=True)
             with filepath.open("wb") as f:
                 for chunk in response.iter_content(chunk_size=8192):
                     if chunk:
