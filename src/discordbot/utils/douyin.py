@@ -97,6 +97,10 @@ class DouyinBlockedError(DouyinError):
     """A bot wall answered instead of the post. Retryable: the post itself is fine."""
 
 
+class DouyinTooLargeError(DouyinError):
+    """The media exceeds the caller's cap. Deterministic, so it is never retried."""
+
+
 class DouyinPost(BaseModel):
     """Metadata for a single Douyin post, parsed without downloading anything.
 
@@ -533,7 +537,7 @@ class DouyinDownloader(BaseModel):
         ratio = self.quality_ratios.get(quality, "1080p")
         return f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&ratio={ratio}&line=0"
 
-    def _download_to(self, url: str, filename: str) -> Path:
+    def _download_to(self, url: str, filename: str, max_bytes: int | None = None) -> Path:
         """Streams a remote file into the output folder, retrying a stalled transfer.
 
         The media CDN intermittently stalls mid-transfer, which surfaces as a read timeout
@@ -541,14 +545,23 @@ class DouyinDownloader(BaseModel):
         is removed between attempts: leaving it would let a later `stat()` report a truncated
         download as a successful one.
 
+        `max_bytes` is a fail-fast guard, not a policy: it exists so a caller whose downstream
+        would reject the file anyway (the Files API caps a single upload at 2 GB) finds out from
+        the `Content-Length` in a couple of seconds instead of spending its whole time budget
+        fetching bytes nobody can use. The streamed re-check backs it up, since `Content-Length`
+        can be absent or wrong. The resulting `DouyinTooLargeError` is deterministic, so it is
+        raised past the retry loop rather than through it.
+
         Args:
             url: The media URL.
             filename: The name to save the file as.
+            max_bytes: Refuse media larger than this; None accepts any size.
 
         Returns:
             The path of the written file.
 
         Raises:
+            DouyinTooLargeError: If the media exceeds `max_bytes`.
             DouyinError: If every attempt fails.
         """
         output_path = Path(self.output_folder)
@@ -563,17 +576,26 @@ class DouyinDownloader(BaseModel):
                         url, headers=self._headers(), timeout=self.download_timeout, stream=True
                     )
                     response.raise_for_status()
+                    self._reject_oversize_header(response=response, url=url, max_bytes=max_bytes)
+                    written = 0
                     with filepath.open("wb") as f:
                         for chunk in response.iter_content(chunk_size=1 << 16):
-                            if chunk:
-                                f.write(chunk)
+                            if not chunk:
+                                continue
+                            written += len(chunk)
+                            if max_bytes is not None and written > max_bytes:
+                                raise DouyinTooLargeError(
+                                    f"Douyin media at {url} exceeds {max_bytes} bytes"
+                                )
+                            f.write(chunk)
                 return filepath
             except RequestException as e:
                 last_error = e
                 filepath.unlink(missing_ok=True)
             except Exception:
                 # A local write can fail too (a full disk surfaces from `write`, not from the
-                # request), and that is not worth retrying. Clean up first: the caller's gallery
+                # request), and that is not worth retrying; neither is an oversize file, which
+                # would be oversize again next time. Clean up first: the caller's gallery
                 # cleanup only knows about files it already accepted, so a partial file left here
                 # would survive and take disk space with it.
                 filepath.unlink(missing_ok=True)
@@ -581,8 +603,35 @@ class DouyinDownloader(BaseModel):
 
         raise DouyinError(f"Failed to download Douyin media from {url}: {last_error}")
 
+    @staticmethod
+    def _reject_oversize_header(
+        response: requests.Response, url: str, max_bytes: int | None
+    ) -> None:
+        """Refuses an oversize transfer from its `Content-Length`, before a byte is written.
+
+        Closing the response here is the whole point of the guard: the body is never read, so
+        no file is opened and nothing lands on disk.
+
+        Raises:
+            DouyinTooLargeError: If the declared length exceeds `max_bytes`.
+        """
+        if max_bytes is None:
+            return
+        declared = response.headers.get("Content-Length")
+        if declared is None or not declared.isdigit() or int(declared) <= max_bytes:
+            return
+        response.close()
+        raise DouyinTooLargeError(
+            f"Douyin media at {url} declares {declared} bytes, over the {max_bytes} byte cap"
+        )
+
     def download(
-        self, url: str, quality: str = "best", max_images: int | None = None
+        self,
+        url: str,
+        quality: str = "best",
+        max_images: int | None = None,
+        max_bytes: int | None = None,
+        post: DouyinPost | None = None,
     ) -> DouyinDownload:
         """Downloads a Douyin post's media.
 
@@ -590,6 +639,10 @@ class DouyinDownloader(BaseModel):
             url: The raw Douyin URL.
             quality: The requested quality preset. Ignored for a photo post.
             max_images: Cap on images fetched from a photo post. None fetches all of them.
+            max_bytes: Per-file size cap; None accepts any size. See `_download_to`.
+            post: An already-parsed post, so a caller that needs the metadata regardless (to
+                report a caption when the download is refused) does not parse it twice. The
+                share payload is cached, so passing it saves bookkeeping rather than a request.
 
         Returns:
             The downloaded files, with `total_images` recording the post's real image count so
@@ -598,12 +651,14 @@ class DouyinDownloader(BaseModel):
         Raises:
             DouyinError: If the post cannot be resolved, read, or downloaded.
         """
-        post = self.parse_metadata(url=url)
-        if post.is_photo:
-            return self._download_images(post=post, max_images=max_images)
-        return self._download_video(post=post, quality=quality)
+        resolved = post if post is not None else self.parse_metadata(url=url)
+        if resolved.is_photo:
+            return self._download_images(post=resolved, max_images=max_images, max_bytes=max_bytes)
+        return self._download_video(post=resolved, quality=quality, max_bytes=max_bytes)
 
-    def _download_video(self, post: DouyinPost, quality: str) -> DouyinDownload:
+    def _download_video(
+        self, post: DouyinPost, quality: str, max_bytes: int | None = None
+    ) -> DouyinDownload:
         """Downloads the watermark-free video for a post."""
         if not post.video_id:
             raise DouyinError(f"Douyin post {post.aweme_id} carries no playable video")
@@ -611,10 +666,13 @@ class DouyinDownloader(BaseModel):
         filepath = self._download_to(
             url=self._play_url(video_id=post.video_id, quality=quality),
             filename=f"{post.aweme_id}.mp4",
+            max_bytes=max_bytes,
         )
         return DouyinDownload(title=post.title, is_photo=False, filenames=[filepath])
 
-    def _download_images(self, post: DouyinPost, max_images: int | None) -> DouyinDownload:
+    def _download_images(
+        self, post: DouyinPost, max_images: int | None, max_bytes: int | None = None
+    ) -> DouyinDownload:
         """Downloads a photo post's images, honouring the caller's cap."""
         if not post.image_urls:
             raise DouyinError(f"Douyin post {post.aweme_id} carries no images")
@@ -624,7 +682,9 @@ class DouyinDownloader(BaseModel):
         try:
             for index, url in enumerate(wanted):
                 filenames.append(
-                    self._download_to(url=url, filename=f"{post.aweme_id}_{index + 1}.jpg")
+                    self._download_to(
+                        url=url, filename=f"{post.aweme_id}_{index + 1}.jpg", max_bytes=max_bytes
+                    )
                 )
         except Exception:
             # Nothing is returned on failure, so the caller never gets a handle to clean up with:
