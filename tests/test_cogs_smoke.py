@@ -380,27 +380,27 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
 
 
-async def test_threads_cog_expands_even_when_the_bot_is_mentioned() -> None:
-    """A mention does not suppress the expansion; the reply is about the post, this IS the post.
-
-    The two paths run independently, so a mentioned link gets both an expansion everyone can
-    see and an answer about it.
-    """
+async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
+    """A mention (or a DM) hands the link to gen_reply, so the cog must not also expand it."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=bot)
-    cog.downloader = ThreadsDownloaderStub(
-        results=[_thread_output(image_urls=["https://i/1.png"])]
-    )
+    cog.downloader = ThreadsDownloaderStub(results=RuntimeError("must not be called"))
 
-    message = FakeDiscordMessage()
-    message.author = FakeUser(bot=False)
-    message.content = "<@999> https://www.threads.net/@alice/post/abc"
-    message.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    mentioned = FakeDiscordMessage()
+    mentioned.author = FakeUser(bot=False)
+    mentioned.content = "<@999> https://www.threads.net/@alice/post/abc"
+    mentioned.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    await cog.on_message(message=mentioned)
+    assert mentioned.reactions == []
+    assert mentioned.replies == []
 
-    await cog.on_message(message=message)
-
-    assert message.replies
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+    direct_message = FakeDiscordMessage()
+    direct_message.author = FakeUser(bot=False)
+    direct_message.content = "https://www.threads.net/@alice/post/abc"
+    direct_message.guild = None  # a DM always reaches gen_reply, mention or not
+    await cog.on_message(message=direct_message)
+    assert direct_message.reactions == []
+    assert direct_message.replies == []
 
 
 async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:

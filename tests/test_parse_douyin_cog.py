@@ -139,20 +139,22 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
     assert not await asyncio.to_thread(Path(made["stub"].output_folder).exists)
 
 
-async def test_a_mentioned_link_is_still_expanded() -> None:
-    """A mention does not suppress the expansion; the reply is about the clip, this IS the clip.
-
-    The two paths run independently, so a mentioned link gets both an expansion everyone in
-    the channel can see and an answer about it.
-    """
+async def test_a_message_addressed_to_the_bot_is_left_alone() -> None:
+    """A mention (or a DM) hands the link to gen_reply, so the cog must not fetch anything."""
     cog, made = _cog()
-    message = _message(content=f"<@999> 這在講什麼 {_URL}")
 
-    await cog.on_message(message=message)
+    mentioned = _message(content=f"<@999> what is this {_URL}")
+    await cog.on_message(message=mentioned)
+    assert mentioned.reactions == []
+    assert mentioned.replies == []
 
-    assert message.replies[0]["files"]
-    assert message.reactions[-1] == _GREEN
-    assert made != {}
+    direct_message = _message()
+    direct_message.guild = None  # a DM always reaches gen_reply, mention or not
+    await cog.on_message(message=direct_message)
+    assert direct_message.reactions == []
+    assert direct_message.replies == []
+
+    assert made == {}  # no downloader was ever built, so Douyin was never contacted
 
 
 async def test_a_message_without_a_link_is_ignored() -> None:
