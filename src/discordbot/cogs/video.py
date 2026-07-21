@@ -12,6 +12,7 @@ from nextcord.ext import commands
 
 from discordbot.utils.urls import extract_first_url
 from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownload, DouyinDownloader, is_douyin_url
+from discordbot.typings.video import VideoQuality
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -22,6 +23,15 @@ from discordbot.utils.media_delivery import (
     build_media_delivery_planner,
 )
 from discordbot.cogs._parse_douyin.fetch import douyin_failure_message
+
+# The labels Discord shows for the `quality` option, keyed to the presets themselves so a
+# relabelling cannot drift onto a value the downloaders do not answer.
+QUALITY_CHOICES: dict[str, VideoQuality] = {
+    "Best Quality": "best",
+    "High (1080p)": "high",
+    "Medium (720p)": "medium",
+    "Low (480p)": "low",
+}
 
 
 class VideoCogs(commands.Cog):
@@ -57,16 +67,11 @@ class VideoCogs(commands.Cog):
             description="Video URL, or the share text containing it (YouTube, Instagram, X, Douyin, etc.)",
             required=True,
         ),
-        quality: str = SlashOption(
+        quality: VideoQuality = SlashOption(
             description="Video quality (higher quality = larger file size)",
             required=False,
             default="best",
-            choices={
-                "Best Quality": "best",
-                "High (1080p)": "high",
-                "Medium (720p)": "medium",
-                "Low (480p)": "low",
-            },
+            choices=QUALITY_CHOICES,
         ),
     ) -> None:
         """Downloads a video from various platforms and sends it back.
@@ -133,7 +138,7 @@ class VideoCogs(commands.Cog):
             await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
 
     async def _handle_douyin(
-        self, interaction: Interaction, url: str, quality: str, upload_limit: int
+        self, interaction: Interaction, url: str, quality: VideoQuality, upload_limit: int
     ) -> None:
         """Downloads a Douyin video or photo post and sends it back.
 
@@ -163,7 +168,7 @@ class VideoCogs(commands.Cog):
         self,
         interaction: Interaction,
         url: str,
-        quality: str,
+        quality: VideoQuality,
         upload_limit: int,
         download_dir: str,
     ) -> None:
