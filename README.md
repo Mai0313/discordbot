@@ -24,7 +24,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 ## Features
 
 - **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos from a prompt or attached images, edit a referenced video, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background — privacy-scoped by source, so something told in one server never surfaces in another (only your tone preferences and clearly harmless general facts carry over) — manageable with `/memory show` and `/memory regenerate`.
-- **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain.
+- **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain. Mention the bot alongside the link instead and it reads the post and answers about it.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites. Douyin is supported too, watermark free and including photo posts. Files too large to upload are served as a link instead.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
 - **Simulated stock market**: `/stock` opens one public market message with DB-managed virtual companies; selecting a stock, trading with float-supply, borrow, and per-user 49% long holding caps, position summaries, recent trades, liquidity-based slippage, periodically refreshed news, and the 7D chart all update that same public message. Only the opener can operate its controls.
@@ -37,7 +37,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | Command                                                          | What it does                                                                                                           |
 | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `@bot <message>`                                                 | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                              |
-| _Threads URL_                                                    | Automatically expands Threads posts and media.                                                                         |
+| _Threads URL_                                                    | Automatically expands Threads posts and media, unless the bot is mentioned (then it answers about the post instead).   |
 | `/download_video <url> [quality]`                                | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                              |
 | `/balance [member]`                                              | Privately shows a member's 虛擬歡樂豆 balance, debt, stock holdings, net worth, and VIP status.                        |
 | `/checkin`                                                       | Claims the daily check-in reward.                                                                                      |

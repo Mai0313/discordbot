@@ -147,7 +147,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "quests, maps, and items\n"
                     "`/ping` — check the bot's response latency\n\n"
                     "Threads parser\n"
-                    "Paste a Threads link and I'll pull the posts, replies, and media."
+                    "Paste a Threads link and I'll pull the posts, replies, and media. "
+                    "Tag me with the link instead and I'll read the post and answer about it."
                 ),
             ),
         },
@@ -226,7 +227,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/maplestory` — 查楓之谷的怪物、裝備、卷軸、NPC、任務、地圖、物品\n"
                     "`/ping` — 看機器人的回應延遲\n\n"
                     "Threads 解析\n"
-                    "貼上 Threads 連結,我會自動擷取貼文、回覆和媒體。"
+                    "貼上 Threads 連結,我會自動擷取貼文、回覆和媒體;"
+                    "改成 tag 我並附上連結,我就會直接看過貼文再回答你。"
                 ),
             ),
         },
@@ -309,6 +311,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/ping` — ボットの応答遅延を確認\n\n"
                     "Threads パーサー\n"
                     "Threads のリンクを貼ると、投稿・返信・メディアを取得します。"
+                    "メンション付きでリンクを送ると、投稿を読んでその内容に答えます。"
                 ),
             ),
         },

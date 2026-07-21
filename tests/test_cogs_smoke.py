@@ -357,7 +357,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     warning_message = FakeDiscordMessage()
     warning_message.author = FakeUser(bot=False)
     warning_message.content = "https://www.threads.net/@alice/post/abc"
-    warning_message.guild = None
+    warning_message.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
     cog.downloader = ThreadsDownloaderStub(results=[])
     await cog.on_message(message=warning_message)
     assert warning_message.reactions[-1] == "⚠️"
@@ -365,10 +365,33 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     error_message = FakeDiscordMessage()
     error_message.author = FakeUser(bot=False)
     error_message.content = "https://www.threads.net/@alice/post/abc"
-    error_message.guild = None
+    error_message.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
     cog.downloader = ThreadsDownloaderStub(results=RuntimeError("parse failed"))
     await cog.on_message(message=error_message)
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
+
+
+async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
+    """A mention (or a DM) hands the link to gen_reply, so the cog must not also expand it."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=bot)
+    cog.downloader = ThreadsDownloaderStub(results=RuntimeError("must not be called"))
+
+    mentioned = FakeDiscordMessage()
+    mentioned.author = FakeUser(bot=False)
+    mentioned.content = "<@999> https://www.threads.net/@alice/post/abc"
+    mentioned.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    await cog.on_message(message=mentioned)
+    assert mentioned.reactions == []
+    assert mentioned.replies == []
+
+    direct_message = FakeDiscordMessage()
+    direct_message.author = FakeUser(bot=False)
+    direct_message.content = "https://www.threads.net/@alice/post/abc"
+    direct_message.guild = None  # a DM always reaches gen_reply, mention or not
+    await cog.on_message(message=direct_message)
+    assert direct_message.reactions == []
+    assert direct_message.replies == []
 
 
 async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
