@@ -1,10 +1,12 @@
 """Tests for Threads URL parsing and media extraction."""
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
+from discordbot.utils import threads as threads_module
 from discordbot.utils.threads import (
     THREADS_URL_RE,
     Post,
@@ -317,10 +319,6 @@ def test_download_media_does_not_rebuild_a_removed_scratch_dir(
     only stop signal it has. Recreating the directory here would strand the clip in a temp dir
     nobody will clean up.
     """
-    import shutil
-
-    from discordbot.utils import threads as threads_module
-
     scratch = tmp_path / "threads-scratch"
     scratch.mkdir()
 
