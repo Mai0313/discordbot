@@ -11,7 +11,15 @@ from nextcord import Embed
 from nextcord.ext import commands
 
 from discordbot import cli
-from discordbot.cogs import games, video, economy, template, auto_unmute, parse_threads
+from discordbot.cogs import (
+    games,
+    video,
+    economy,
+    template,
+    auto_unmute,
+    parse_douyin,
+    parse_threads,
+)
 from discordbot.cogs.games import GamesCogs
 from discordbot.cogs.video import VideoCogs
 from discordbot.cogs.economy import EconomyCogs
@@ -38,6 +46,7 @@ from discordbot.typings.economy import (
     LoanProposalAcceptResult,
 )
 from discordbot.cogs.auto_unmute import AutoUnmuteCogs
+from discordbot.cogs.parse_douyin import DouyinCogs
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
@@ -1999,20 +2008,32 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies every cog setup function registers the expected cog type."""
     added: list[
         tuple[
-            VideoCogs | GamesCogs | EconomyCogs | TemplateCogs | ThreadsCogs | AutoUnmuteCogs,
+            VideoCogs
+            | GamesCogs
+            | EconomyCogs
+            | TemplateCogs
+            | ThreadsCogs
+            | DouyinCogs
+            | AutoUnmuteCogs,
             bool | None,
         ]
     ] = []
 
     def record_cog(
-        cog: VideoCogs | GamesCogs | EconomyCogs | TemplateCogs | ThreadsCogs | AutoUnmuteCogs,
+        cog: VideoCogs
+        | GamesCogs
+        | EconomyCogs
+        | TemplateCogs
+        | ThreadsCogs
+        | DouyinCogs
+        | AutoUnmuteCogs,
         override: bool | None = None,
     ) -> None:
         """Records the cog instance and override flag passed to add_cog."""
         added.append((cog, override))
 
     bot = SimpleNamespace(add_cog=record_cog)
-    for module in [video, games, economy, template, parse_threads, auto_unmute]:
+    for module in [video, games, economy, template, parse_threads, parse_douyin, auto_unmute]:
         monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
         monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
         module.setup(bot=bot)
@@ -2022,6 +2043,7 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
         EconomyCogs,
         TemplateCogs,
         ThreadsCogs,
+        DouyinCogs,
         AutoUnmuteCogs,
     ]
 
