@@ -306,3 +306,45 @@ def test_post_tolerates_null_string_fields() -> None:
     assert post.text_post_app_info is not None
     assert post.text_post_app_info.link_preview_attachment is not None
     assert post.text_post_app_info.link_preview_attachment.image_url == ""
+
+
+def test_download_media_does_not_rebuild_a_removed_scratch_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scratch dir removed mid-download stops the worker instead of being recreated.
+
+    The reply pipeline runs this in a thread it cannot cancel, so the caller's `rmtree` is the
+    only stop signal it has. Recreating the directory here would strand the clip in a temp dir
+    nobody will clean up.
+    """
+    import shutil
+
+    from discordbot.utils import threads as threads_module
+
+    scratch = tmp_path / "threads-scratch"
+    scratch.mkdir()
+
+    class _Response:
+        """A body that never has to stream, because the open should fail first."""
+
+        def raise_for_status(self) -> None:
+            """Accepts the transfer."""
+
+        def iter_content(self, chunk_size: int) -> list[bytes]:
+            """Yields one chunk, which the test expects never to be written."""
+            del chunk_size
+            return [b"clip"]
+
+    def fake_get(**kwargs: object) -> _Response:
+        """Removes the scratch dir the way a cancelled caller's rmtree would."""
+        del kwargs
+        shutil.rmtree(path=scratch)
+        return _Response()
+
+    monkeypatch.setattr(target=threads_module.requests, name="get", value=fake_get)
+    downloader = ThreadsDownloader(output_folder=str(scratch))
+
+    with pytest.raises(FileNotFoundError):
+        downloader.download_media(url="https://cdn.test/v.mp4", filename="clip.mp4")
+
+    assert not scratch.exists()
