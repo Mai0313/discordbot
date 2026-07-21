@@ -426,7 +426,9 @@ def test_a_short_link_is_resolved_once(monkeypatch: pytest.MonkeyPatch) -> None:
     short_url = "https://v.douyin.com/abc123"
 
     def handler(url: str, kwargs: dict[str, object]) -> _FakeResponse:
-        if "v.douyin.com" in url:
+        # Matched as a prefix, not a substring: a bare `in` would also accept
+        # `https://evil.test/?x=v.douyin.com`, and this stub decides which endpoint was hit.
+        if url.startswith(short_url):
             return _FakeResponse(
                 headers={"Location": f"https://www.iesdouyin.com/share/video/{_VIDEO_ID}/"}
             )
