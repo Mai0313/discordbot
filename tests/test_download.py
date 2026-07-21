@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from discordbot.cogs.video import QUALITY_CHOICES
+from discordbot.cogs.video import QUALITY_CHOICES, VideoCogs
 from discordbot.utils.urls import extract_first_url
 from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownloader
 from discordbot.typings.video import VideoQuality
@@ -164,9 +164,17 @@ def test_download_video_passes_unparseable_input_through() -> None:
 
 
 def test_every_quality_preset_is_answered_everywhere() -> None:
-    """A preset added to the type has to be answered by all three sites that map it."""
+    """A preset added to the type has to be answered by every site that maps one.
+
+    The option's own default is read off the registered command rather than spelled out here:
+    nextcord types `SlashOption(default=...)` as `Any`, so it is the one preset site mypy
+    cannot see, and it is the value every `/download_video` without an explicit quality carries.
+    """
     presets = set(get_args(VideoQuality))
 
     assert set(VideoDownloader.quality_formats) == presets
     assert set(DouyinDownloader.quality_ratios) == presets
     assert set(QUALITY_CHOICES.values()) == presets
+
+    cog = VideoCogs(bot=object())
+    assert cog.download_video.options["quality"].default in presets
