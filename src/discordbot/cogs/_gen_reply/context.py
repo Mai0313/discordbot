@@ -37,6 +37,10 @@ class ReplyContext(BaseModel):
         default_factory=list,
         description="Rendered Threads-post context blocks, injected before the current message.",
     )
+    douyin_block: SkipValidation[list[EasyInputMessageParam]] = Field(
+        default_factory=list,
+        description="Rendered Douyin-post context blocks, injected before the current message.",
+    )
     memory_labels: list[str] = Field(
         default_factory=list, description="Footer labels of users whose memory was injected."
     )

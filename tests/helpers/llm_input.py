@@ -19,6 +19,13 @@ from collections.abc import Mapping, Iterator, Sequence
 
 from openai.types.responses import ResponseInputParam
 
+from discordbot.cogs._parse_douyin.builder import (
+    DOUYIN_BLOCKED_NOTICE,
+    DOUYIN_TIMEOUT_NOTICE,
+    DOUYIN_CONTEXT_SEPARATOR,
+    DOUYIN_UNAVAILABLE_NOTICE,
+    DOUYIN_TEXT_ONLY_SEPARATOR,
+)
 from discordbot.cogs._gen_reply.memory_tool import (
     render_tone_block,
     render_server_memory_block,
@@ -80,6 +87,15 @@ _THREADS_SEPARATOR_HEADS = (
 _THREADS_NOTICE_HEADS = (
     THREADS_UNAVAILABLE_NOTICE.split("\n", 1)[0],
     THREADS_TIMEOUT_NOTICE.split("\n", 1)[0],
+)
+_DOUYIN_SEPARATOR_HEADS = (
+    DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0],
+    DOUYIN_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
+)
+_DOUYIN_NOTICE_HEADS = (
+    DOUYIN_UNAVAILABLE_NOTICE.split("\n", 1)[0],
+    DOUYIN_BLOCKED_NOTICE.split("\n", 1)[0],
+    DOUYIN_TIMEOUT_NOTICE.split("\n", 1)[0],
 )
 
 _ID_SECTION = re.compile(r"\[id: (\d+)\][^\n]*\n(.*?)(?=\n\n\[id: |\Z)", re.DOTALL)
@@ -206,3 +222,21 @@ def request_input(
 ) -> ResponseInputParam | str:
     """Returns the recorded input for a semantic pipeline phase."""
     return responses.create_inputs[request_index(responses=responses, phase=phase)]
+
+
+def extract_douyin_context_block(request: ResponseInputParam | str) -> str | None:
+    """Returns the text of the block following the Douyin separator, or None if absent."""
+    items = list(iter_text_blocks(request=request))
+    for index, (role, text) in enumerate(items):
+        if role == "system" and text.split("\n", 1)[0] in _DOUYIN_SEPARATOR_HEADS:
+            return items[index + 1][1] if index + 1 < len(items) else ""
+    return None
+
+
+def has_douyin_context_block(request: ResponseInputParam | str) -> bool:
+    """Whether the input carries an injected Douyin separator or notice block."""
+    for _role, text in iter_text_blocks(request=request):
+        head = text.split("\n", 1)[0]
+        if head in _DOUYIN_SEPARATOR_HEADS or head in _DOUYIN_NOTICE_HEADS:
+            return True
+    return False
