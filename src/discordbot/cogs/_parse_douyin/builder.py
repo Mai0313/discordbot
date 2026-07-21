@@ -39,6 +39,13 @@ from discordbot.cogs._gen_reply.files_api import (
     upload_as_input_file,
 )
 
+# Resolution asked of Douyin for the clip the model reads. Deliberately below what the
+# expansion posts to Discord: the model samples frames at its own media resolution, so the
+# extra pixels of a 1080p source buy it nothing while costing real download and upload time on
+# the reply's critical path. A human watching the expansion does notice, which is why that path
+# still asks for the best available.
+AI_INGEST_QUALITY = "medium"
+
 # Cap on images ingested from a photo post. Each costs a download plus an upload, and a model
 # reading eight frames of a gallery already has the gist; the cog's Discord-side cap is
 # separate and larger, because attaching a file is far cheaper than tokenizing it.
@@ -172,6 +179,7 @@ async def _fetch_and_upload(
                 downloader.download,
                 url=url,
                 post=post,
+                quality=AI_INGEST_QUALITY,
                 max_images=MAX_DOUYIN_INGEST_IMAGES,
                 max_bytes=FILES_API_MAX_BYTES,
             )
