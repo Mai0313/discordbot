@@ -10,7 +10,8 @@ import nextcord
 from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
-from discordbot.utils.douyin import DouyinDownload, DouyinDownloader, is_douyin_url
+from discordbot.utils.urls import extract_first_url
+from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownload, DouyinDownloader, is_douyin_url
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -53,7 +54,7 @@ class VideoCogs(commands.Cog):
         self,
         interaction: Interaction,
         url: str = SlashOption(
-            description="Video URL (YouTube, Facebook Reels, Instagram, X, Douyin, etc.)",
+            description="Video URL, or the share text containing it (YouTube, Instagram, X, Douyin, etc.)",
             required=True,
         ),
         quality: str = SlashOption(
@@ -77,6 +78,11 @@ class VideoCogs(commands.Cog):
         """
         await interaction.response.defer()
         await interaction.edit_original_message(content="-# 正在下載影片...")
+
+        # Share buttons hand over a blob of text with the link buried in it, and pasting that
+        # whole thing here is the natural thing to do. Douyin's pattern goes first because its
+        # copy runs straight into Chinese with no space, where the generic rule would swallow it.
+        url = extract_first_url(text=url, patterns=(DOUYIN_URL_RE,))
 
         # Read the destination's real upload ceiling (boost tier raises it to 50/100 MiB);
         # a DM has no guild to query, so fall back to Discord's current non-Nitro base of 10 MiB.

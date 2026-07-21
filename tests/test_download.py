@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from discordbot.utils.urls import extract_first_url
+from discordbot.utils.douyin import DOUYIN_URL_RE
 from discordbot.utils.downloader import VideoDownloader
 
 
@@ -124,3 +126,36 @@ def test_get_params_bilibili_referer_handles_scheme_less_hosts(tmp_path: Path) -
     assert referer(url="www.bilibili.com/video/BV1") == "https://www.bilibili.com"  # scheme-less
     assert referer(url="evil.com/?x=bilibili.com") is None  # substring lookalike
     assert referer(url="bilibili.com.attacker.com/x") is None  # suffix lookalike
+
+
+def test_download_video_extracts_a_url_from_share_text() -> None:
+    """A share blob pasted into the command still finds its link.
+
+    Share buttons wrap the URL in copy — Douyin's runs straight into Chinese with no space —
+    so a command that only accepted a bare URL would fail on the most natural thing to paste.
+    """
+    blob = (
+        "8.46 Y@m.QX :9pm UYm:/ 06/01 短片《临时司机》#AI短片# 内容过于真实 "
+        "https://v.douyin.com/tLgj3lCAnds 复制此链接，打开Dou音搜索，直接观看视频"
+    )
+    assert extract_first_url(text=blob, patterns=(DOUYIN_URL_RE,)) == (
+        "https://v.douyin.com/tLgj3lCAnds"
+    )
+
+
+def test_download_video_leaves_a_bare_url_untouched() -> None:
+    """The common case must be unchanged: a bare URL passes through as-is."""
+    url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    assert extract_first_url(text=url, patterns=(DOUYIN_URL_RE,)) == url
+
+
+def test_download_video_drops_sentence_punctuation_after_a_link() -> None:
+    """A link written mid-sentence must not carry the full stop into the request."""
+    assert extract_first_url(text="see https://example.com/a/b.", patterns=()) == (
+        "https://example.com/a/b"
+    )
+
+
+def test_download_video_passes_unparseable_input_through() -> None:
+    """Text with no URL is handed on unchanged, so it fails downstream as it always did."""
+    assert extract_first_url(text="  not a url  ", patterns=()) == "not a url"

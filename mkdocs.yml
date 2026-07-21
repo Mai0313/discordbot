@@ -152,6 +152,7 @@ nav:
               - stored_integer: Reference/discordbot/utils/stored_integer.md
               - threads: Reference/discordbot/utils/threads.md
               - timezone: Reference/discordbot/utils/timezone.md
+              - urls: Reference/discordbot/utils/urls.md
               - youtube: Reference/discordbot/utils/youtube.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
