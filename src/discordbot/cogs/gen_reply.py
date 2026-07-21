@@ -1,6 +1,5 @@
 """Cog that routes Discord messages through the AI reply pipeline."""
 
-from io import BytesIO
 import re
 import time
 import base64
@@ -15,7 +14,6 @@ import logfire
 from nextcord import Embed, Message, NotFound, TextChannel, HTTPException, AllowedMentions
 from pydantic import ValidationError
 from nextcord.ext import commands
-from google.genai.types import FileState
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -86,6 +84,7 @@ from discordbot.cogs._memory.extraction import (
     subject_source_line,
     target_centered_memory_messages,
 )
+from discordbot.cogs._gen_reply.files_api import upload_to_files_api
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
@@ -158,6 +157,11 @@ EFFORT_GRACE_SECONDS = 5.0
 # route window for free, so this latency hides behind the route. Tune against the
 # `gen_reply threads context done` latency log.
 THREADS_GRACE_SECONDS = 8.0
+
+# Bound on the ACTIVE poll for a generated clip uploaded so the persona reply can watch it.
+# Generous relative to an image because video sits in PROCESSING longer, but far under the
+# link-media bound: the clip was just produced here, so it is small and known-good.
+GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS = 60.0
 
 
 def _message_link_texts(message: Message) -> list[str]:
@@ -809,34 +813,17 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _upload_video_for_reply(self, data: bytes) -> str | None:
         """Uploads a generated video to the Gemini Files API, polling to ACTIVE; None on failure.
 
-        Mirrors the attachment uploader's ACTIVE poll: a fresh Files API upload reports a
-        deprecated `uploaded` status through the proxy, so it is polled to ACTIVE here on the
-        direct client before the reply references it. The bound is generous because video
-        processing is slower than an image's; the reply references the full `uri` through the
-        proxy, exactly like the attachment path.
+        The bound is generous because video processing is slower than an image's. The reply
+        then references the full `uri` through the proxy; see `files_api` for why a uri and
+        not the clip's own URL.
         """
-        activation_timeout_seconds = 60.0
-        poll_interval_seconds = 1.0
-        try:
-            uploaded = await self.gemini_client.aio.files.upload(
-                file=BytesIO(data),
-                config={"mime_type": "video/mp4", "display_name": "generated.mp4"},
-            )
-            file_name = uploaded.name
-            if file_name is None:
-                return None
-            deadline = time.monotonic() + activation_timeout_seconds
-            while uploaded.state == FileState.PROCESSING:
-                if time.monotonic() >= deadline:
-                    return None
-                await asyncio.sleep(poll_interval_seconds)
-                uploaded = await self.gemini_client.aio.files.get(name=file_name)
-            if uploaded.state != FileState.ACTIVE:
-                return None
-        except Exception:
-            logfire.warn("failed to upload generated video for reply", _exc_info=True)
-            return None
-        return uploaded.uri
+        return await upload_to_files_api(
+            client=self.gemini_client,
+            source=data,
+            mime_type="video/mp4",
+            display_name="generated.mp4",
+            timeout_seconds=GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS,
+        )
 
     async def _reply_about_video(
         self,
