@@ -15,6 +15,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.utils.mentions import has_bot_mention
 from discordbot.utils.model_pricing import get_supported_modalities
 from discordbot.cogs._gen_reply.generation import VOICE_REPLY_FILENAME
 from discordbot.cogs._gen_reply.attachment.base import (
@@ -150,10 +151,7 @@ class MessageInputBuilder(BaseModel):
 
     def has_bot_mention(self, content: str) -> bool:
         """Returns whether the content mentions the bot directly."""
-        if not self.bot.user:
-            return False
-        bot_id = re.escape(str(self.bot.user.id))
-        return re.search(rf"<@!?{bot_id}>", content) is not None
+        return has_bot_mention(content=content, bot_user=self.bot.user)
 
     @staticmethod
     def extract_embed_text(embeds: list[Embed]) -> str:
