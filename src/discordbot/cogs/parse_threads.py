@@ -4,9 +4,9 @@ Expansion is skipped when the message is addressed to the bot (a DM, or an expli
 mention): `gen_reply` self-parses the linked post and answers about it, so expanding as
 well would download the same media twice and post an embed nobody asked for. The two
 paths are mutually exclusive, and `is_addressed_to_bot` is the single predicate deciding
-which one runs. Keeping it to one download is the reason the rule exists: the media is
-the slow half, and it cannot be avoided by handing the model a URL, since only a Files
-API uri reaches it without somebody fetching the bytes first.
+which one runs. Keeping it to one download is the reason the rule exists: the media is the
+slow half, and on the path the reply actually takes, handing the model a URL instead saves
+nothing — the proxy fetches it and inlines it rather than forwarding it.
 
 That predicate is deliberately coarser than `gen_reply`'s own guards, so a few addressed
 messages get neither treatment: one typed inside an active research thread (the reply

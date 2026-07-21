@@ -5,9 +5,11 @@ the result as input blocks, so the answer model watches the clip instead of gues
 link. Only the first Douyin URL in the message is used.
 
 The clip is downloaded and uploaded to the Gemini Files API rather than handed over as a URL.
-That is not a preference: Douyin's play endpoint only answers a mobile User-Agent, which
-neither the proxy nor Gemini sends, so the bytes have to come from here either way — and a
-remote URL would be base64-inlined by the proxy anyway (see `_gen_reply/files_api.py`).
+On this path that is not a preference: the answer goes through the proxy, which fetches a
+remote URL and base64-inlines it rather than forwarding it, so the bytes cross the wire either
+way — and under a size cap that a Files uri does not have (see `_gen_reply/files_api.py`).
+Gemini itself would resolve the play URL directly, so a direct-to-Google path could skip both
+the download and the upload; that is #346, not this.
 
 The text block is injected unconditionally, even when the media cannot be fetched, so the
 model never falls back to "I cannot open this link" and never invents what the post contained.

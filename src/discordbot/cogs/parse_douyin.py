@@ -8,9 +8,9 @@ Expansion is skipped when the message is addressed to the bot (a DM, or an expli
 mention): `gen_reply` reads the linked post and answers about it, so expanding as well would
 fetch the same media twice and post an attachment nobody asked for. The two paths are
 mutually exclusive, and `is_addressed_to_bot` is the single predicate deciding which runs.
-One link therefore costs one clip download, which matters here more than anywhere: the WAF
-below bans on volume, and the download cannot be skipped by handing the model a URL, since
-the play endpoint only answers a mobile User-Agent no proxy or model backend will send.
+One link therefore costs one clip download, which matters here more than anywhere, since the
+WAF below bans on volume. Handing the model the play URL instead saves nothing on the path
+the reply takes: the proxy fetches it and inlines it rather than forwarding it.
 
 That predicate is deliberately coarser than `gen_reply`'s own guards, so a few addressed
 messages get neither treatment: one typed inside an active research thread (the reply
