@@ -72,6 +72,8 @@ class VideoMetadata(BaseModel):
         duration_seconds: Duration in seconds; 0.0 when the site does not report one.
         webpage_url: Canonical page URL after redirects, so a short link resolves.
         is_live: Whether the URL points at a live stream rather than a finished video.
+        from_playlist: Whether the fields describe the first entry of a playlist-shaped
+            page (a space, a collection, a season) rather than the page itself.
     """
 
     video_id: str = Field(default="", description="Site-native video id (e.g. a Bilibili BV id).")
@@ -87,6 +89,10 @@ class VideoMetadata(BaseModel):
         default="", description="Canonical page URL after redirects, so a short link resolves."
     )
     is_live: bool = Field(default=False, description="Whether the URL points at a live stream.")
+    from_playlist: bool = Field(
+        default=False,
+        description="Whether the fields describe a playlist-shaped page's first entry.",
+    )
 
 
 class VideoDownloader(BaseModel):
@@ -295,9 +301,12 @@ class VideoDownloader(BaseModel):
         page_url = str(info.get("webpage_url") or "")
         # `noplaylist` keeps a download to one item, but a multi-part page (e.g. a Bilibili
         # anthology) can still report itself playlist-shaped; the first entry is the part the
-        # pasted URL shows.
+        # pasted URL shows. `from_playlist` records the unwrap, since only then can these
+        # fields describe some other video than the page the caller asked about.
+        from_playlist = False
         entries = info.get("entries")
         if entries:
+            from_playlist = True
             info = next((entry for entry in entries if entry), info)
         return VideoMetadata(
             video_id=str(info.get("id") or ""),
@@ -307,6 +316,7 @@ class VideoDownloader(BaseModel):
             duration_seconds=float(info.get("duration") or 0.0),
             webpage_url=page_url or str(info.get("webpage_url") or ""),
             is_live=bool(info.get("is_live") or False),
+            from_playlist=from_playlist,
         )
 
 

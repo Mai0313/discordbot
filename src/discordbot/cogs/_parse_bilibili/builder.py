@@ -304,11 +304,17 @@ async def build_bilibili_context_messages(
             return [_system_block(text=BILIBILI_UNREADABLE_NOTICE)]
 
         # A b23.tv short link can resolve to a page that is not a single video (a user
-        # space, a collection): yt-dlp reads those SUCCESSFULLY as playlists, so the
-        # metadata would describe some video the user never linked. The canonical page URL
-        # is the tell; anything but a /video/ page gets the neutral notice, whose wording
-        # already covers "not a single video at all".
-        if metadata.webpage_url and BILIBILI_URL_RE.search(string=metadata.webpage_url) is None:
+        # space, a collection, a season): yt-dlp reads those SUCCESSFULLY as playlists, so
+        # the metadata would describe some video the user never linked. Only a
+        # playlist-shaped page can misrepresent like that — a single-video result IS the
+        # linked video even when Bilibili redirected it to a /bangumi/ page server-side —
+        # so the playlist unwrap plus a canonical URL off the /video/ form is the tell, and
+        # it gets the neutral notice, whose wording already covers "not a single video".
+        if (
+            metadata.from_playlist
+            and metadata.webpage_url
+            and BILIBILI_URL_RE.search(string=metadata.webpage_url) is None
+        ):
             logfire.info(
                 "Bilibili link resolved to a non-video page; injecting neutral notice",
                 url=url,

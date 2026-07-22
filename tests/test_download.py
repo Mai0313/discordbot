@@ -178,6 +178,7 @@ def test_parse_metadata_reads_info_without_downloading(
     assert metadata.duration_seconds == 63.0
     assert metadata.webpage_url == "https://www.bilibili.com/video/BV1jpK86hEc8"
     assert metadata.is_live is False
+    assert metadata.from_playlist is False
     assert captured_calls == [
         {"url": "https://www.bilibili.com/video/BV1jpK86hEc8", "download": False}
     ]
@@ -258,6 +259,7 @@ def test_parse_metadata_keeps_the_playlist_page_url(
     assert metadata.video_id == "BV1"
     assert metadata.title == "newest upload"
     assert metadata.webpage_url == "https://space.bilibili.com/672328094"
+    assert metadata.from_playlist is True
 
 
 def test_download_stop_signal_aborts_at_the_next_progress_tick(

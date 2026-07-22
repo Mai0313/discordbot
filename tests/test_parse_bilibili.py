@@ -28,6 +28,7 @@ def _metadata(
     is_live: bool = False,
     description: str = "影片簡介",
     webpage_url: str = "",
+    from_playlist: bool = False,
 ) -> VideoMetadata:
     """Builds the parsed metadata the builder renders into its text block."""
     return VideoMetadata(
@@ -38,6 +39,7 @@ def _metadata(
         duration_seconds=duration,
         webpage_url=webpage_url,
         is_live=is_live,
+        from_playlist=from_playlist,
     )
 
 
@@ -322,7 +324,8 @@ async def test_a_link_resolving_to_a_non_video_page_gets_the_neutral_notice(
     misinformation, the exact over-claim the notices exist to prevent.
     """
     uploads, recorded = _stub_bilibili(
-        monkeypatch, metadata=_metadata(webpage_url="https://space.bilibili.com/672328094")
+        monkeypatch,
+        metadata=_metadata(webpage_url="https://space.bilibili.com/672328094", from_playlist=True),
     )
 
     blocks = await _build()
@@ -331,6 +334,27 @@ async def test_a_link_resolving_to_a_non_video_page_gets_the_neutral_notice(
     assert blocks[0]["content"][0]["text"] == BILIBILI_UNREADABLE_NOTICE
     assert recorded["downloads"] == []
     assert uploads.calls == []
+
+
+async def test_a_bangumi_redirected_single_video_is_still_ingested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A /video/ link Bilibili redirects to a bangumi page is still the linked video.
+
+    yt-dlp resolves some `/video/BV…` links to a `/bangumi/play/ep…` canonical URL
+    server-side; the result is a single video, not a playlist, so the non-video-page guard
+    must not reject it — that would tell the user a perfectly watchable video is unreadable.
+    """
+    uploads, recorded = _stub_bilibili(
+        monkeypatch,
+        metadata=_metadata(webpage_url="https://www.bilibili.com/bangumi/play/ep288525"),
+    )
+
+    blocks = await _build()
+
+    assert blocks[0]["content"][0]["text"] == BILIBILI_CONTEXT_SEPARATOR
+    assert recorded["downloads"] == [bilibili_builder.AI_INGEST_QUALITY]
+    assert len(uploads.calls) == 1
 
 
 async def test_the_media_step_timeout_degrades_to_the_text(
