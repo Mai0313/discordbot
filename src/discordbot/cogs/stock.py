@@ -105,8 +105,16 @@ def _log_stock_news_refresh_failure(task: asyncio.Task[None]) -> None:
     """Logs unexpected background stock news refresh failures."""
     try:
         task.result()
-    except Exception:
-        logfire.warn("Background stock news refresh failed", _exc_info=True)
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so it must be handled here or it escapes
+        # this done-callback into the loop's exception handler on shutdown.
+        logfire.info("Background stock news refresh cancelled")
+    # Broad on purpose: fire-and-forget refresh whose failure must only leave the news
+    # stale (deterministic fallback templates), never surface to a caller.
+    except Exception as exc:
+        logfire.warn(
+            "Background stock news refresh failed", error_type=type(exc).__name__, _exc_info=exc
+        )
 
 
 def setup(bot: commands.Bot) -> None:

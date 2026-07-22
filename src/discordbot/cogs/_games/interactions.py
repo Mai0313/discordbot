@@ -53,6 +53,7 @@ async def edit_message_with_retry(
                 attempt=attempt + 1,
                 status=error.status,
                 message_id=message.id,
+                _exc_info=error,
             )
             await asyncio.sleep(0.5 * (attempt + 1))
     return await message.edit(**edit_kwargs())

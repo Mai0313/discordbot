@@ -465,8 +465,17 @@ def _safe_compute_action_evs(  # noqa: PLR0913 -- thin EV-engine wrapper mirrori
             doubled=doubled,
             bet=bet,
         )
-    except Exception:
-        logfire.warn("Bot EV engine failed; falling back to basic strategy", _exc_info=True)
+    except Exception as exc:
+        logfire.warn(
+            "Bot EV engine failed; falling back to basic strategy",
+            allowed_actions=allowed_actions,
+            hand_ranks=[card.rank for card in hand_cards],
+            dealer_ranks=[card.rank for card in dealer_cards],
+            shoe_size=len(shoe),
+            doubled=doubled,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
         return None
 
 

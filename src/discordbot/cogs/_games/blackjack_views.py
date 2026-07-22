@@ -1035,10 +1035,24 @@ class BlackjackView(View):
                 )
             else:
                 self.round_state.decline_insurance(user_id=user_id)
-        except ValueError:
-            logfire.warn("Bot insurance action rejected; declining as fallback", user_id=user_id)
-            with contextlib.suppress(ValueError):
+        except ValueError as exc:
+            logfire.warn(
+                "Bot insurance action rejected; declining as fallback",
+                user_id=user_id,
+                take_insurance=take_insurance,
+                _exc_info=exc,
+            )
+            try:
                 self.round_state.decline_insurance(user_id=user_id)
+            except ValueError as decline_exc:
+                # Bot seat stays unresolved; the loop ends at MAX_BOT_TURN_STEPS or the
+                # timeout path closes the phase via decline_insurance_for_all_unresolved.
+                logfire.warn(
+                    "Bot insurance fallback decline also rejected; seat left unresolved",
+                    user_id=user_id,
+                    phase=self.round_state.phase,
+                    _exc_info=decline_exc,
+                )
         self._state_revision += 1
         if self.round_state.finished:
             await self._finalize_locked(message=message)
@@ -1123,9 +1137,12 @@ class BlackjackView(View):
                 self.round_state.split(user_id=user_id)
             elif action == "surrender":
                 self.round_state.surrender(user_id=user_id)
-        except ValueError:
+        except ValueError as exc:
             logfire.warn(
-                "Bot action raised on BlackjackRound; falling back", user_id=user_id, action=action
+                "Bot action raised on BlackjackRound; falling back",
+                user_id=user_id,
+                action=action,
+                _exc_info=exc,
             )
             return False
         return True
@@ -1209,14 +1226,22 @@ class BlackjackView(View):
         self._disable_buttons()
         self.stop()
         await self._safe_edit_view_locked(message=message)
-        logfire.info("Blackjack finalize started", players=len(self.round_state.players))
+        logfire.debug(
+            "Blackjack finalize started",
+            players=len(self.round_state.players),
+            channel_id=self._channel_id,
+        )
 
         if self.round_state.peeked_blackjack and not self._peek_animated:
             self._peek_animated = True
             await self._animate_peek_locked(message=message)
 
         await self._play_dealer_locked()
-        logfire.info("Blackjack dealer phase done", dealer_total=self.round_state.dealer_total())
+        logfire.debug(
+            "Blackjack dealer phase done",
+            dealer_total=self.round_state.dealer_total(),
+            channel_id=self._channel_id,
+        )
 
         if self._shoe_store is not None:
             self._shoe_store.save_shoe(
@@ -1236,7 +1261,9 @@ class BlackjackView(View):
                 player_avatar_url=participant.avatar_url,
             )
             results.append(BlackjackPlayerResult(participant=participant, settlement=settlement))
-        logfire.info("Blackjack settlement done", results=len(results))
+        logfire.debug(
+            "Blackjack settlement done", results=len(results), channel_id=self._channel_id
+        )
         dealer_cards = list(self.round_state.dealer)
         dealer_total = self.round_state.dealer_total()
         self._track_background_task(
@@ -1256,14 +1283,28 @@ class BlackjackView(View):
             dealer_steps=self._dealer_steps,
         )
         self.clear_items()
-        with contextlib.suppress(Exception):
+        try:
             await asyncio.wait_for(
                 message.edit(
                     **_blackjack_table_edit_kwargs(embeds=seat_embeds, view=None, target=message)
                 ),
                 timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
-        logfire.info("Blackjack final edit done")
+        # Broad on purpose: settlement is already committed, so this render must never
+        # raise back into the round and skip the cleanup scheduling below.
+        except Exception as exc:
+            logfire.warn(
+                "Blackjack final table edit failed; settled round never rendered",
+                channel_id=self._channel_id,
+                message_id=message.id,
+                players=len(self.round_state.players),
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+        else:
+            logfire.debug(
+                "Blackjack final edit done", channel_id=self._channel_id, message_id=message.id
+            )
         schedule_public_message_delete(message=message, user_name=self.author_name)
 
     async def _safe_edit_view_locked(self, message: Message) -> None:
@@ -1396,8 +1437,17 @@ class BlackjackView(View):
                 dealer_cards=dealer_cards,
                 dealer_total=dealer_total,
             )
-        except Exception:
-            logfire.warn("Blackjack round history persistence failed", _exc_info=True)
+        # Broad on purpose: history is off the critical path and runs as a background
+        # task, so it must never disturb an already-settled round.
+        except Exception as exc:
+            logfire.warn(
+                "Blackjack round history persistence failed",
+                channel_id=self._channel_id,
+                message_id=message.id,
+                players=len(results),
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     def _track_background_task(self, coroutine: Coroutine[Any, Any, None]) -> None:
         """Tracks a background UI refresh task until it finishes."""
