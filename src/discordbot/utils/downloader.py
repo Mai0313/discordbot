@@ -56,6 +56,34 @@ class DownloadResult(BaseModel):
         self.unlink()
 
 
+class VideoMetadata(BaseModel):
+    """Metadata for a video, read by yt-dlp without downloading any media.
+
+    Attributes:
+        video_id: Site-native video id (e.g. a Bilibili BV id).
+        title: Video title reported by yt-dlp.
+        uploader: Uploader / channel display name.
+        description: Full video description; callers trim it to their own budget.
+        duration_seconds: Duration in seconds; 0.0 when the site does not report one.
+        webpage_url: Canonical page URL after redirects, so a short link resolves.
+        is_live: Whether the URL points at a live stream rather than a finished video.
+    """
+
+    video_id: str = Field(default="", description="Site-native video id (e.g. a Bilibili BV id).")
+    title: str = Field(default="", description="Video title reported by yt-dlp.")
+    uploader: str = Field(default="", description="Uploader / channel display name.")
+    description: str = Field(
+        default="", description="Full video description; callers trim it to their own budget."
+    )
+    duration_seconds: float = Field(
+        default=0.0, description="Duration in seconds; 0.0 when the site does not report one."
+    )
+    webpage_url: str = Field(
+        default="", description="Canonical page URL after redirects, so a short link resolves."
+    )
+    is_live: bool = Field(default=False, description="Whether the URL points at a live stream.")
+
+
 class VideoDownloader(BaseModel):
     """Downloads videos with yt-dlp and local project defaults.
 
@@ -215,6 +243,46 @@ class VideoDownloader(BaseModel):
             title = info.get("title", "")
             filename = Path(ydl.prepare_filename(info))
             return DownloadResult(title=title, filename=filename)
+
+    def parse_metadata(self, url: str) -> VideoMetadata:
+        """Reads a video's metadata via yt-dlp without downloading any media.
+
+        Deliberately not the `dry_run=True` preset: that branch flips `quiet` off and
+        `dump_json` on, a CLI probe shape that prints the whole info dict to stdout.
+        `extract_info(download=False)` under `simulate` fetches the same metadata silently.
+
+        Args:
+            url: The URL of the video to inspect.
+
+        Returns:
+            The parsed metadata; absent string fields fall back to empty, duration to 0.0.
+
+        Raises:
+            RuntimeError: When yt-dlp returns no metadata for the URL.
+        """
+        url = self._convert_facebook_url(url)
+        params = self.get_params(quality="best", dry_run=False, url=url)
+        params.update({"simulate": True, "skip_download": True})
+        with YoutubeDL(params=params) as ydl:
+            info = ydl.extract_info(url=url, download=False)
+        if info is None:
+            msg = f"yt-dlp returned no metadata for {url}"
+            raise RuntimeError(msg)
+        # `noplaylist` keeps a download to one item, but a multi-part page (e.g. a Bilibili
+        # anthology) can still report itself playlist-shaped; the first entry is the part the
+        # pasted URL shows.
+        entries = info.get("entries")
+        if entries:
+            info = next((entry for entry in entries if entry), info)
+        return VideoMetadata(
+            video_id=str(info.get("id") or ""),
+            title=str(info.get("title") or ""),
+            uploader=str(info.get("uploader") or ""),
+            description=str(info.get("description") or ""),
+            duration_seconds=float(info.get("duration") or 0.0),
+            webpage_url=str(info.get("webpage_url") or ""),
+            is_live=bool(info.get("is_live") or False),
+        )
 
 
 if __name__ == "__main__":

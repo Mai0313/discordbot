@@ -114,6 +114,128 @@ def test_download_resolves_facebook_share_links(
     ]
 
 
+def _install_metadata_stub(
+    monkeypatch: pytest.MonkeyPatch, info: dict[str, Any] | None
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Installs a yt-dlp stub whose extract_info returns a canned metadata dict."""
+    captured_params: list[dict[str, Any]] = []
+    captured_calls: list[dict[str, Any]] = []
+
+    class _YoutubeDLStub:
+        """Small context-manager stub for yt-dlp metadata probes."""
+
+        def __init__(self, params: dict[str, Any]) -> None:
+            """Records the yt-dlp params passed by the downloader."""
+            self.params = params
+            captured_params.append(params)
+
+        def __enter__(self) -> Self:
+            """Returns the stub instance."""
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: TracebackType | None,
+        ) -> None:
+            """Matches yt-dlp's context-manager shape."""
+
+        def extract_info(self, url: str, download: bool) -> dict[str, Any] | None:
+            """Records the call and returns the canned info dict."""
+            captured_calls.append({"url": url, "download": download})
+            return info
+
+    monkeypatch.setattr("discordbot.utils.downloader.YoutubeDL", _YoutubeDLStub)
+    return captured_params, captured_calls
+
+
+def test_parse_metadata_reads_info_without_downloading(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The metadata probe maps yt-dlp's info dict and never asks for a download."""
+    captured_params, captured_calls = _install_metadata_stub(
+        monkeypatch=monkeypatch,
+        info={
+            "id": "BV1jpK86hEc8",
+            "title": "a title",
+            "uploader": "an uploader",
+            "description": "a description",
+            "duration": 63,
+            "webpage_url": "https://www.bilibili.com/video/BV1jpK86hEc8",
+            "is_live": False,
+        },
+    )
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    metadata = downloader.parse_metadata(url="https://www.bilibili.com/video/BV1jpK86hEc8")
+
+    assert metadata.video_id == "BV1jpK86hEc8"
+    assert metadata.title == "a title"
+    assert metadata.uploader == "an uploader"
+    assert metadata.description == "a description"
+    assert metadata.duration_seconds == 63.0
+    assert metadata.webpage_url == "https://www.bilibili.com/video/BV1jpK86hEc8"
+    assert metadata.is_live is False
+    assert captured_calls == [
+        {"url": "https://www.bilibili.com/video/BV1jpK86hEc8", "download": False}
+    ]
+    # Silent probe params: simulate without the dry_run branch's stdout-dumping shape.
+    assert captured_params[0]["simulate"] is True
+    assert captured_params[0]["skip_download"] is True
+    assert captured_params[0]["quiet"] is True
+    assert "dump_json" not in captured_params[0]
+
+
+def test_parse_metadata_defaults_absent_fields(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fields a site does not report fall back to typed defaults instead of raising."""
+    _install_metadata_stub(monkeypatch=monkeypatch, info={"id": "BV1", "duration": None})
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    metadata = downloader.parse_metadata(url="https://www.bilibili.com/video/BV1")
+
+    assert metadata.video_id == "BV1"
+    assert metadata.title == ""
+    assert metadata.uploader == ""
+    assert metadata.description == ""
+    assert metadata.duration_seconds == 0.0
+    assert metadata.webpage_url == ""
+    assert metadata.is_live is False
+
+
+def test_parse_metadata_unwraps_playlist_shaped_info(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A multi-part page reporting itself playlist-shaped yields its first real entry."""
+    _install_metadata_stub(
+        monkeypatch=monkeypatch,
+        info={
+            "id": "anthology",
+            "entries": [None, {"id": "BV1", "title": "part one", "duration": 10}],
+        },
+    )
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    metadata = downloader.parse_metadata(url="https://www.bilibili.com/video/BV1?p=1")
+
+    assert metadata.video_id == "BV1"
+    assert metadata.title == "part one"
+    assert metadata.duration_seconds == 10.0
+
+
+def test_parse_metadata_raises_when_ytdlp_returns_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A None info dict is a failed probe, not an empty video."""
+    _install_metadata_stub(monkeypatch=monkeypatch, info=None)
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    with pytest.raises(RuntimeError, match="no metadata"):
+        downloader.parse_metadata(url="https://www.bilibili.com/video/BV1")
+
+
 def test_get_params_bilibili_referer_handles_scheme_less_hosts(tmp_path: Path) -> None:
     """Bilibili URLs (with or without a scheme) get the Referer; lookalike hosts do not."""
     downloader = VideoDownloader(output_folder=tmp_path.as_posix())
