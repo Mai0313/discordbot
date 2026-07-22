@@ -31,6 +31,7 @@ from discordbot.typings.models import (
     RouteClassification,
     RuntimeModelCatalog,
 )
+from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.cogs._memory.store import (
@@ -131,6 +132,10 @@ from discordbot.cogs._gen_reply.interactions import (
     create_interactions_answer_stream,
 )
 from discordbot.cogs._gen_reply.link_sources import LinkContextSource
+from discordbot.cogs._parse_bilibili.builder import (
+    build_bilibili_context_messages,
+    bilibili_timeout_context_messages,
+)
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
@@ -419,6 +424,22 @@ async def _build_douyin_link_context(
     )
 
 
+async def _build_bilibili_link_context(
+    *,
+    url: str,
+    answer_model_is_gemini: bool,
+    gemini_client: genai.Client | None,
+    allow_media_ingest: bool,
+) -> list[EasyInputMessageParam]:
+    """Adapts the Bilibili builder to the registry signature (a straight pass-through)."""
+    return await build_bilibili_context_messages(
+        url=url,
+        answer_model_is_gemini=answer_model_is_gemini,
+        gemini_client=gemini_client,
+        allow_media_ingest=allow_media_ingest,
+    )
+
+
 def _threads_media_ingest_allowed(config: LLMConfig) -> bool:
     """Threads media ingestion has no kill-switch; the Gemini checks alone gate it."""
     del config
@@ -428,6 +449,11 @@ def _threads_media_ingest_allowed(config: LLMConfig) -> bool:
 def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:
     """The Douyin kill-switch plus the direct-Gemini key its Files API upload needs."""
     return config.douyin_video_enabled and bool(config.gemini_api_key.strip())
+
+
+def _bilibili_media_ingest_allowed(config: LLMConfig) -> bool:
+    """The Bilibili kill-switch plus the direct-Gemini key its Files API upload needs."""
+    return config.bilibili_video_enabled and bool(config.gemini_api_key.strip())
 
 
 # The linked-content sources gen_reply reads into answer context, in splice order: the blocks
@@ -450,6 +476,15 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         build=_build_douyin_link_context,
         on_timeout=douyin_timeout_context_messages,
         media_ingest_allowed=_douyin_media_ingest_allowed,
+    ),
+    LinkContextSource(
+        name="bilibili",
+        # Path-anchored to the watchable /video/ forms (plus b23.tv short links), so unlike
+        # Douyin no url_filter is needed on top.
+        url_pattern=BILIBILI_URL_RE,
+        build=_build_bilibili_link_context,
+        on_timeout=bilibili_timeout_context_messages,
+        media_ingest_allowed=_bilibili_media_ingest_allowed,
     ),
 )
 
