@@ -44,11 +44,12 @@ from discordbot.cogs._gen_reply.files_api import (
     upload_as_input_file,
 )
 
-# Resolution asked of yt-dlp for the clip the model reads. Same rationale as the Douyin
-# builder's: the model samples frames at its own media resolution, so the extra pixels of a
-# 1080p source buy it nothing while costing real download and upload time on the reply's
-# critical path (anonymous Bilibili mostly serves ~480p anyway).
-AI_INGEST_QUALITY: VideoQuality = "medium"
+# Resolution asked of yt-dlp for the clip the model reads: the lowest preset (height<=480).
+# Same rationale as the Douyin builder's: the model samples frames at its own media
+# resolution, so extra source pixels buy it nothing while costing real download and upload
+# time on the reply's critical path — and Bilibili is long-form, so bytes scale with duration
+# first (anonymous access mostly tops out around 480p regardless).
+AI_INGEST_QUALITY: VideoQuality = "low"
 
 # Longest video worth downloading for one reply. A longer clip cannot finish the download plus
 # the Files API upload inside `LINK_MEDIA_TIMEOUT_SECONDS` anyway; failing from the metadata
