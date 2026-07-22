@@ -9,8 +9,10 @@ import re
 # share short links. Live rooms (`live.bilibili.com`), user spaces (`space.bilibili.com`),
 # moments (`t.bilibili.com`) and `/bangumi/` pages never match, so unlike `DOUYIN_URL_RE` no
 # separate post-URL guard is needed on top. A `b23.tv` short link CAN still resolve to one of
-# those; the context builder's neutral unreadable notice covers that, and Bilibili has no
-# Douyin-grade WAF economics, so one wasted probe is acceptable.
+# those — and yt-dlp reads a space or collection SUCCESSFULLY as a playlist rather than
+# failing — so the context builder checks the resolved canonical URL against this regex and
+# rejects a non-video page with its neutral notice. Bilibili has no Douyin-grade WAF
+# economics, so the one wasted probe is acceptable.
 # The host is anchored right after the scheme, so `bilibili.com.attacker.com/video/...` and
 # `evil.com/?x=bilibili.com/video/...` never match. A BV id is exactly `BV` plus 10 base-62
 # characters (the lookahead stops a longer token from matching truncated), an av id is digits,

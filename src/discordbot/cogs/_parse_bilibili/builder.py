@@ -25,6 +25,8 @@ semaphore only bounds concurrent multi-hundred-MB downloads on the host.
 
 import asyncio
 import tempfile
+import threading
+import contextlib
 
 from google import genai
 import logfire
@@ -33,7 +35,8 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.video import VideoQuality
-from discordbot.utils.downloader import VideoMetadata, VideoDownloader
+from discordbot.utils.bilibili import BILIBILI_URL_RE
+from discordbot.utils.downloader import VideoMetadata, DownloadResult, VideoDownloader
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 from discordbot.cogs._gen_reply.files_api import (
     FILES_API_MAX_BYTES,
@@ -60,6 +63,11 @@ MAX_BILIBILI_DESCRIPTION_CHARS = 1000
 # Concurrent Bilibili fetches across the builder. Bounds parallel large downloads on the
 # host's disk and bandwidth, not a WAF (Bilibili does not ban the way Douyin does).
 BILIBILI_FETCH_CONCURRENCY = 2
+
+# How long an abandoned download gets to notice its stop signal before the scratch dir is
+# removed anyway. The signal fires at the next yt-dlp progress tick, typically well under a
+# second; a worker that outlives this window is stalled on the network, not downloading.
+DOWNLOAD_STOP_JOIN_SECONDS = 5.0
 
 bilibili_fetch_semaphore = LoopLocalSemaphore(capacity_provider=lambda: BILIBILI_FETCH_CONCURRENCY)
 
@@ -149,6 +157,46 @@ def _render_video_text(metadata: VideoMetadata, url: str) -> str:
     return "\n".join(lines)
 
 
+def _retrieve_quietly(task: "asyncio.Task[DownloadResult]") -> None:
+    """Retrieves an abandoned task's outcome so asyncio never logs it as never-retrieved."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def _download_with_stop_signal(*, downloader: VideoDownloader, url: str) -> DownloadResult:
+    """Runs the blocking download with a stop signal cancellation can actually deliver.
+
+    `asyncio.to_thread` cannot cancel its worker, so an abandoned build (a post-route
+    discard, the media timeout) would otherwise leave yt-dlp downloading for minutes —
+    holding a shared thread-pool slot and even re-creating the scratch dir after its removal
+    (yt-dlp re-makes the output dir before each DASH format). On any interruption the signal
+    makes the worker abort at its next progress tick, and the bounded join keeps the scratch
+    dir alive until the worker has really stopped, so its removal never races a live writer.
+    """
+    stop_signal = threading.Event()
+    download_task = asyncio.create_task(
+        coro=asyncio.to_thread(
+            downloader.download, url=url, quality=AI_INGEST_QUALITY, stop_signal=stop_signal
+        )
+    )
+    download_task.add_done_callback(_retrieve_quietly)
+    try:
+        return await asyncio.shield(download_task)
+    except BaseException:
+        stop_signal.set()
+        done, _pending = await asyncio.wait({download_task}, timeout=DOWNLOAD_STOP_JOIN_SECONDS)
+        if done:
+            with contextlib.suppress(BaseException):
+                download_task.result()
+        else:
+            logfire.warn(
+                "Bilibili download worker ignored the stop signal within the join window",
+                url=url,
+                join_seconds=DOWNLOAD_STOP_JOIN_SECONDS,
+            )
+        raise
+
+
 async def _fetch_and_upload(
     *, url: str, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
@@ -163,9 +211,7 @@ async def _fetch_and_upload(
         # The semaphore covers only the download. Holding it across the upload would block
         # other links for minutes while talking to Google, which is not what it bounds.
         async with bilibili_fetch_semaphore.get():
-            download = await asyncio.to_thread(
-                downloader.download, url=url, quality=AI_INGEST_QUALITY
-            )
+            download = await _download_with_stop_signal(downloader=downloader, url=url)
         size_bytes = download.filename.stat().st_size
         if size_bytes > FILES_API_MAX_BYTES:
             logfire.warn(
@@ -240,9 +286,11 @@ async def build_bilibili_context_messages(
     """
     with logfire.span("gen_reply bilibili context"):
         try:
-            async with bilibili_fetch_semaphore.get():
-                downloader = VideoDownloader(output_folder=tempfile.gettempdir())
-                metadata = await asyncio.to_thread(downloader.parse_metadata, url=url)
+            # The probe is a couple of cheap page requests, so it deliberately does NOT take
+            # bilibili_fetch_semaphore: a queue of multi-minute downloads holding both slots
+            # must never starve the always-injected text block into the timeout notice.
+            downloader = VideoDownloader(output_folder=tempfile.gettempdir())
+            metadata = await asyncio.to_thread(downloader.parse_metadata, url=url)
         except Exception as error:
             # Broad on purpose: yt-dlp wraps deleted, private, region-locked, member-only and
             # transport failures alike in extractor-worded DownloadErrors, so no failure here
@@ -252,6 +300,19 @@ async def build_bilibili_context_messages(
                 url=url,
                 error_type=type(error).__name__,
                 _exc_info=error,
+            )
+            return [_system_block(text=BILIBILI_UNREADABLE_NOTICE)]
+
+        # A b23.tv short link can resolve to a page that is not a single video (a user
+        # space, a collection): yt-dlp reads those SUCCESSFULLY as playlists, so the
+        # metadata would describe some video the user never linked. The canonical page URL
+        # is the tell; anything but a /video/ page gets the neutral notice, whose wording
+        # already covers "not a single video at all".
+        if metadata.webpage_url and BILIBILI_URL_RE.search(string=metadata.webpage_url) is None:
+            logfire.info(
+                "Bilibili link resolved to a non-video page; injecting neutral notice",
+                url=url,
+                resolved_url=metadata.webpage_url,
             )
             return [_system_block(text=BILIBILI_UNREADABLE_NOTICE)]
 

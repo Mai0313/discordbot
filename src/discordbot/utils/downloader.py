@@ -3,6 +3,7 @@
 import types
 from typing import Any, ClassVar
 from pathlib import Path
+import threading
 from urllib.parse import parse_qs, urlparse
 
 from yt_dlp import YoutubeDL
@@ -15,6 +16,10 @@ from discordbot.typings.video import VideoQuality
 # Redirect chases for a facebook.com/share/... link. Fixed rather than configurable: it bounds
 # one HEAD/GET against Facebook and nothing has ever needed a different value.
 SHARE_RESOLVE_TIMEOUT_SECONDS = 10
+
+
+class DownloadStoppedError(Exception):
+    """Raised inside yt-dlp when the caller's stop signal is set mid-download."""
 
 
 class DownloadResult(BaseModel):
@@ -222,7 +227,11 @@ class VideoDownloader(BaseModel):
         return params
 
     def download(
-        self, url: str, quality: VideoQuality = "best", dry_run: bool = False
+        self,
+        url: str,
+        quality: VideoQuality = "best",
+        dry_run: bool = False,
+        stop_signal: threading.Event | None = None,
     ) -> DownloadResult:
         """Downloads a video from the given URL.
 
@@ -230,6 +239,9 @@ class VideoDownloader(BaseModel):
             url: The URL of the video to download.
             quality: The requested quality preset.
             dry_run: If True, simulates the download.
+            stop_signal: Optional event a caller sets to abort the download. This method
+                blocks its thread, so asyncio cancellation cannot stop it; the signal is
+                checked at every yt-dlp progress tick and aborts with DownloadStoppedError.
 
         Returns:
             A DownloadResult instance containing the title and filename.
@@ -238,6 +250,13 @@ class VideoDownloader(BaseModel):
         url = self._convert_facebook_url(url)
 
         params = self.get_params(quality=quality, dry_run=dry_run, url=url)
+        if stop_signal is not None:
+
+            def _abort_if_stopped(_progress: dict[str, Any]) -> None:
+                if stop_signal.is_set():
+                    raise DownloadStoppedError(f"download stopped for {url}")
+
+            params["progress_hooks"] = [_abort_if_stopped]
         with YoutubeDL(params=params) as ydl:
             info = ydl.extract_info(url=url, download=True)
             title = info.get("title", "")
@@ -262,12 +281,18 @@ class VideoDownloader(BaseModel):
         """
         url = self._convert_facebook_url(url)
         params = self.get_params(quality="best", dry_run=False, url=url)
-        params.update({"simulate": True, "skip_download": True})
+        # `extract_flat` keeps a playlist-shaped page (a channel, a user space, a collection)
+        # to ONE request instead of resolving every entry over the network in a probe that is
+        # supposed to take seconds.
+        params.update({"simulate": True, "skip_download": True, "extract_flat": "in_playlist"})
         with YoutubeDL(params=params) as ydl:
             info = ydl.extract_info(url=url, download=False)
         if info is None:
             msg = f"yt-dlp returned no metadata for {url}"
             raise RuntimeError(msg)
+        # The page's own URL wins over the first entry's below, so a caller can tell a
+        # playlist-shaped page apart from the single video it asked about.
+        page_url = str(info.get("webpage_url") or "")
         # `noplaylist` keeps a download to one item, but a multi-part page (e.g. a Bilibili
         # anthology) can still report itself playlist-shaped; the first entry is the part the
         # pasted URL shows.
@@ -280,7 +305,7 @@ class VideoDownloader(BaseModel):
             uploader=str(info.get("uploader") or ""),
             description=str(info.get("description") or ""),
             duration_seconds=float(info.get("duration") or 0.0),
-            webpage_url=str(info.get("webpage_url") or ""),
+            webpage_url=page_url or str(info.get("webpage_url") or ""),
             is_live=bool(info.get("is_live") or False),
         )
 

@@ -3,6 +3,7 @@
 from types import TracebackType
 from typing import Any, Self, get_args
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -10,7 +11,7 @@ from discordbot.cogs.video import QUALITY_CHOICES, VideoCogs
 from discordbot.utils.urls import extract_first_url
 from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownloader
 from discordbot.typings.video import VideoQuality
-from discordbot.utils.downloader import VideoDownloader
+from discordbot.utils.downloader import VideoDownloader, DownloadStoppedError
 
 
 def _install_youtube_dl_stub(
@@ -180,10 +181,12 @@ def test_parse_metadata_reads_info_without_downloading(
     assert captured_calls == [
         {"url": "https://www.bilibili.com/video/BV1jpK86hEc8", "download": False}
     ]
-    # Silent probe params: simulate without the dry_run branch's stdout-dumping shape.
+    # Silent probe params: simulate without the dry_run branch's stdout-dumping shape, and
+    # flat playlists so a channel/space page never costs one request per entry.
     assert captured_params[0]["simulate"] is True
     assert captured_params[0]["skip_download"] is True
     assert captured_params[0]["quiet"] is True
+    assert captured_params[0]["extract_flat"] == "in_playlist"
     assert "dump_json" not in captured_params[0]
 
 
@@ -223,6 +226,67 @@ def test_parse_metadata_unwraps_playlist_shaped_info(
     assert metadata.video_id == "BV1"
     assert metadata.title == "part one"
     assert metadata.duration_seconds == 10.0
+
+
+def test_parse_metadata_keeps_the_playlist_page_url(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A playlist-shaped page keeps its own URL, so a caller can tell it from a video.
+
+    A b23.tv short link can resolve to a user space or collection, which yt-dlp reads
+    SUCCESSFULLY as a playlist; if the first entry's URL won, the caller could no longer
+    detect that the page the user linked was never a single video.
+    """
+    _install_metadata_stub(
+        monkeypatch=monkeypatch,
+        info={
+            "id": "672328094",
+            "webpage_url": "https://space.bilibili.com/672328094",
+            "entries": [
+                {
+                    "id": "BV1",
+                    "title": "newest upload",
+                    "webpage_url": "https://www.bilibili.com/video/BV1",
+                }
+            ],
+        },
+    )
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    metadata = downloader.parse_metadata(url="https://b23.tv/abc123X")
+
+    assert metadata.video_id == "BV1"
+    assert metadata.title == "newest upload"
+    assert metadata.webpage_url == "https://space.bilibili.com/672328094"
+
+
+def test_download_stop_signal_aborts_at_the_next_progress_tick(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The caller's stop signal turns into a raising progress hook inside yt-dlp.
+
+    The download blocks its worker thread, so asyncio cancellation cannot reach it; the
+    hook is the one place yt-dlp lets the caller abort mid-download.
+    """
+    captured_params, _ = _install_youtube_dl_stub(monkeypatch=monkeypatch, tmp_path=tmp_path)
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+    stop_signal = threading.Event()
+
+    with downloader.download(
+        url="https://example.com/v", quality="best", dry_run=True, stop_signal=stop_signal
+    ):
+        pass
+
+    (hook,) = captured_params[0]["progress_hooks"]
+    hook({})  # not signaled yet: the download proceeds
+    stop_signal.set()
+    with pytest.raises(DownloadStoppedError):
+        hook({})
+
+    # Without a signal no hook is installed, so the plain path stays untouched.
+    with downloader.download(url="https://example.com/v", quality="best", dry_run=True):
+        pass
+    assert "progress_hooks" not in captured_params[1]
 
 
 def test_parse_metadata_raises_when_ytdlp_returns_nothing(

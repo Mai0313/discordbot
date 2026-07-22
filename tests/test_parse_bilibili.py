@@ -1,8 +1,10 @@
 """Tests for the Bilibili-context builder that feeds linked videos to the answer model."""
 
+import time
 from types import SimpleNamespace
 import asyncio
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -89,10 +91,14 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
         return resolved
 
     def fake_download(
-        self: VideoDownloader, url: str, quality: str = "best", dry_run: bool = False
+        self: VideoDownloader,
+        url: str,
+        quality: str = "best",
+        dry_run: bool = False,
+        stop_signal: object = None,
     ) -> DownloadResult:
         """Writes a canned clip into the builder's scratch dir, or raises."""
-        del url, dry_run
+        del url, dry_run, stop_signal
         recorded["downloads"].append(quality)
         if download_error is not None:
             raise download_error
@@ -306,15 +312,129 @@ async def test_a_resolved_short_link_lists_both_urls(monkeypatch: pytest.MonkeyP
     assert _URL in text
 
 
+async def test_a_link_resolving_to_a_non_video_page_gets_the_neutral_notice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A b23.tv short link resolving to a space or collection must not impersonate a video.
+
+    yt-dlp reads those pages SUCCESSFULLY as playlists, so without the canonical-URL check
+    the builder would present the space's first video as "the linked video" — confident
+    misinformation, the exact over-claim the notices exist to prevent.
+    """
+    uploads, recorded = _stub_bilibili(
+        monkeypatch, metadata=_metadata(webpage_url="https://space.bilibili.com/672328094")
+    )
+
+    blocks = await _build()
+
+    assert len(blocks) == 1
+    assert blocks[0]["content"][0]["text"] == BILIBILI_UNREADABLE_NOTICE
+    assert recorded["downloads"] == []
+    assert uploads.calls == []
+
+
+async def test_the_media_step_timeout_degrades_to_the_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A download slower than the internal media bound still yields the honest text block.
+
+    This is the branch upholding the contract that the media step is bounded inside the
+    builder, so a slow fetch degrades to text instead of being cancelled with nothing.
+    """
+    monkeypatch.setattr(bilibili_builder, "LINK_MEDIA_TIMEOUT_SECONDS", 0.05)
+    uploads, _ = _stub_bilibili(monkeypatch)
+
+    def slow_download(
+        self: VideoDownloader,
+        url: str,
+        quality: str = "best",
+        dry_run: bool = False,
+        stop_signal: object = None,
+    ) -> DownloadResult:
+        """Outlasts the media bound so the internal timeout fires."""
+        del url, quality, dry_run, stop_signal
+        time.sleep(0.3)
+        path = Path(self.output_folder) / "late.mp4"
+        path.write_bytes(b"late")
+        return DownloadResult(title="late", filename=path)
+
+    monkeypatch.setattr(target=VideoDownloader, name="download", value=slow_download)
+
+    blocks = await _build()
+
+    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+    assert uploads.calls == []
+
+
+async def test_a_raising_upload_degrades_to_the_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An upload that raises (the realistic SDK failure) must not claim the clip was watched."""
+
+    class _RaisingUploads(_Uploads):
+        async def __call__(self, **kwargs: object) -> dict[str, str] | None:
+            """Raises the way a genai SDK failure would."""
+            del kwargs
+            raise RuntimeError("upload exploded")
+
+    _stub_bilibili(monkeypatch, uploads=_RaisingUploads())
+
+    blocks = await _build()
+
+    assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+
+
+async def test_a_cancelled_build_signals_the_download_to_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelling the build makes the blocked yt-dlp worker abort instead of running on.
+
+    `asyncio.to_thread` cannot cancel its worker, so without the stop signal a discarded
+    build would leave a zombie download holding a thread-pool slot and writing into (or
+    re-creating) a scratch dir that was already removed.
+    """
+    started = threading.Event()
+    observed: list[bool] = []
+    _stub_bilibili(monkeypatch)
+
+    def blocking_download(
+        self: VideoDownloader,
+        url: str,
+        quality: str = "best",
+        dry_run: bool = False,
+        stop_signal: threading.Event | None = None,
+    ) -> DownloadResult:
+        """Runs until the stop signal arrives, recording whether it ever did."""
+        del url, quality, dry_run
+        started.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if stop_signal is not None and stop_signal.is_set():
+                observed.append(True)
+                raise RuntimeError("stopped by signal")
+            time.sleep(0.01)
+        observed.append(False)
+        raise RuntimeError("never signaled")
+
+    monkeypatch.setattr(target=VideoDownloader, name="download", value=blocking_download)
+
+    build_task = asyncio.create_task(_build())
+    await asyncio.to_thread(started.wait, 5.0)
+    build_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await build_task
+
+    assert observed == [True]
+
+
 async def test_the_bilibili_bound_is_never_held_twice_on_one_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One build must never acquire the shared Bilibili bound twice; that self-deadlocks.
 
-    `asyncio.Semaphore` is not reentrant, so wrapping the whole build in the bound while the
-    download takes it again would hang the moment the bound is saturated. Driven at capacity 1
-    so the failure is deterministic rather than a timing race, and bounded by wait_for so it
-    surfaces as a red test instead of a hung suite.
+    `asyncio.Semaphore` is not reentrant: the metadata probe deliberately stays off the
+    bound, and only the download takes it, so re-wrapping the whole build in it would hang
+    the moment the bound is saturated. Driven at capacity 1 so the failure is deterministic
+    rather than a timing race, and bounded by wait_for so it surfaces as a red test instead
+    of a hung suite.
     """
     monkeypatch.setattr(bilibili_builder, "BILIBILI_FETCH_CONCURRENCY", 1)
     _stub_bilibili(monkeypatch)
