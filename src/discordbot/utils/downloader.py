@@ -3,6 +3,7 @@
 import types
 from typing import Any, ClassVar
 from pathlib import Path
+import threading
 from urllib.parse import parse_qs, urlparse
 
 from yt_dlp import YoutubeDL
@@ -15,6 +16,10 @@ from discordbot.typings.video import VideoQuality
 # Redirect chases for a facebook.com/share/... link. Fixed rather than configurable: it bounds
 # one HEAD/GET against Facebook and nothing has ever needed a different value.
 SHARE_RESOLVE_TIMEOUT_SECONDS = 10
+
+
+class DownloadStoppedError(Exception):
+    """Raised inside yt-dlp when the caller's stop signal is set mid-download."""
 
 
 class DownloadResult(BaseModel):
@@ -54,6 +59,40 @@ class DownloadResult(BaseModel):
             exc_tb: Traceback raised inside the context, if any.
         """
         self.unlink()
+
+
+class VideoMetadata(BaseModel):
+    """Metadata for a video, read by yt-dlp without downloading any media.
+
+    Attributes:
+        video_id: Site-native video id (e.g. a Bilibili BV id).
+        title: Video title reported by yt-dlp.
+        uploader: Uploader / channel display name.
+        description: Full video description; callers trim it to their own budget.
+        duration_seconds: Duration in seconds; 0.0 when the site does not report one.
+        webpage_url: Canonical page URL after redirects, so a short link resolves.
+        is_live: Whether the URL points at a live stream rather than a finished video.
+        from_playlist: Whether the fields describe the first entry of a playlist-shaped
+            page (a space, a collection, a season) rather than the page itself.
+    """
+
+    video_id: str = Field(default="", description="Site-native video id (e.g. a Bilibili BV id).")
+    title: str = Field(default="", description="Video title reported by yt-dlp.")
+    uploader: str = Field(default="", description="Uploader / channel display name.")
+    description: str = Field(
+        default="", description="Full video description; callers trim it to their own budget."
+    )
+    duration_seconds: float = Field(
+        default=0.0, description="Duration in seconds; 0.0 when the site does not report one."
+    )
+    webpage_url: str = Field(
+        default="", description="Canonical page URL after redirects, so a short link resolves."
+    )
+    is_live: bool = Field(default=False, description="Whether the URL points at a live stream.")
+    from_playlist: bool = Field(
+        default=False,
+        description="Whether the fields describe a playlist-shaped page's first entry.",
+    )
 
 
 class VideoDownloader(BaseModel):
@@ -194,7 +233,11 @@ class VideoDownloader(BaseModel):
         return params
 
     def download(
-        self, url: str, quality: VideoQuality = "best", dry_run: bool = False
+        self,
+        url: str,
+        quality: VideoQuality = "best",
+        dry_run: bool = False,
+        stop_signal: threading.Event | None = None,
     ) -> DownloadResult:
         """Downloads a video from the given URL.
 
@@ -202,6 +245,9 @@ class VideoDownloader(BaseModel):
             url: The URL of the video to download.
             quality: The requested quality preset.
             dry_run: If True, simulates the download.
+            stop_signal: Optional event a caller sets to abort the download. This method
+                blocks its thread, so asyncio cancellation cannot stop it; the signal is
+                checked at every yt-dlp progress tick and aborts with DownloadStoppedError.
 
         Returns:
             A DownloadResult instance containing the title and filename.
@@ -210,11 +256,68 @@ class VideoDownloader(BaseModel):
         url = self._convert_facebook_url(url)
 
         params = self.get_params(quality=quality, dry_run=dry_run, url=url)
+        if stop_signal is not None:
+
+            def _abort_if_stopped(_progress: dict[str, Any]) -> None:
+                if stop_signal.is_set():
+                    raise DownloadStoppedError(f"download stopped for {url}")
+
+            params["progress_hooks"] = [_abort_if_stopped]
         with YoutubeDL(params=params) as ydl:
             info = ydl.extract_info(url=url, download=True)
             title = info.get("title", "")
             filename = Path(ydl.prepare_filename(info))
             return DownloadResult(title=title, filename=filename)
+
+    def parse_metadata(self, url: str) -> VideoMetadata:
+        """Reads a video's metadata via yt-dlp without downloading any media.
+
+        Deliberately not the `dry_run=True` preset: that branch flips `quiet` off and
+        `dump_json` on, a CLI probe shape that prints the whole info dict to stdout.
+        `extract_info(download=False)` under `simulate` fetches the same metadata silently.
+
+        Args:
+            url: The URL of the video to inspect.
+
+        Returns:
+            The parsed metadata; absent string fields fall back to empty, duration to 0.0.
+
+        Raises:
+            RuntimeError: When yt-dlp returns no metadata for the URL.
+        """
+        url = self._convert_facebook_url(url)
+        params = self.get_params(quality="best", dry_run=False, url=url)
+        # `extract_flat` keeps a playlist-shaped page (a channel, a user space, a collection)
+        # to ONE request instead of resolving every entry over the network in a probe that is
+        # supposed to take seconds.
+        params.update({"simulate": True, "skip_download": True, "extract_flat": "in_playlist"})
+        with YoutubeDL(params=params) as ydl:
+            info = ydl.extract_info(url=url, download=False)
+        if info is None:
+            msg = f"yt-dlp returned no metadata for {url}"
+            raise RuntimeError(msg)
+        # The page's own URL wins over the first entry's below, so a caller can tell a
+        # playlist-shaped page apart from the single video it asked about.
+        page_url = str(info.get("webpage_url") or "")
+        # `noplaylist` keeps a download to one item, but a multi-part page (e.g. a Bilibili
+        # anthology) can still report itself playlist-shaped; the first entry is the part the
+        # pasted URL shows. `from_playlist` records the unwrap, since only then can these
+        # fields describe some other video than the page the caller asked about.
+        from_playlist = False
+        entries = info.get("entries")
+        if entries:
+            from_playlist = True
+            info = next((entry for entry in entries if entry), info)
+        return VideoMetadata(
+            video_id=str(info.get("id") or ""),
+            title=str(info.get("title") or ""),
+            uploader=str(info.get("uploader") or ""),
+            description=str(info.get("description") or ""),
+            duration_seconds=float(info.get("duration") or 0.0),
+            webpage_url=page_url or str(info.get("webpage_url") or ""),
+            is_live=bool(info.get("is_live") or False),
+            from_playlist=from_playlist,
+        )
 
 
 if __name__ == "__main__":

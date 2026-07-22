@@ -26,6 +26,7 @@
 - **AI chat**：在 server tag bot 或傳送 DM。它可以回答問題、總結近期聊天、檢查支援的附件、觀看貼上的 YouTube 影片、生成或編輯圖片、用提示或附加圖片生成短影片、編輯引用的影片、以接續 reply 訊息延續長回覆，並在可用時使用 model-provided web tools。它還會在背景慢慢累積對你個人偏好的長期記憶（僅自己可見，且依來源做隱私隔離：在某個伺服器說的私事不會出現在別的伺服器，只有語氣偏好與明顯無害的一般事實會跨伺服器沿用），可用 `/memory show` 與 `/memory regenerate` 管理。
 - **Threads 解析**：貼上 Threads.net 或 Threads.com URL，bot 會展開貼文、media 與 reply chain；改成 tag bot 並附上連結，它會改為讀過貼文再回答。
 - **抖音解析**：貼上抖音連結，bot 會直接把影片（或圖文貼文的圖片）傳到頻道；改成 tag bot 並附上連結，它會改為看過影片再回答。
+- **Bilibili 問答**：tag bot 並附上 B 站影片連結，它會看過影片再回答。單獨貼連結不會自動展開；`/download_video` 仍可下載檔案。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片。抖音也支援，無浮水印且包含圖文貼文。檔案太大無法上傳時會改以連結提供。
 - **虛擬歡樂豆與金融系統**：使用者可從訊息獲得虛擬歡樂豆，可每日簽到、轉帳、購買 VIP、使用長期個人信貸或央行借款，並查看排行榜。
 - **模擬股市**：`/stock` 開啟一則公開 market message，內含 DB-managed virtual companies；選股、受 float supply、borrow cap 與單人 49% long holding cap 限制的交易、部位摘要、近期交易紀錄、liquidity-based slippage、定期刷新新聞與 7 日圖表都在同一則公開 message 內 edit 切換，只有發起 `/stock` 的 user 可以操作 controls。
@@ -40,6 +41,7 @@
 | `@bot <message>`                                                 | 和 AI chat。需要 bot 檢查檔案或圖片時，可附上支援的附件。               |
 | _Threads URL_                                                    | 自動展開 Threads 貼文與 media；被 tag 時改為讀過貼文再回答。            |
 | _抖音 URL_                                                       | 自動傳回影片或圖片；被 tag 時改為看過影片再回答。                       |
+| _Bilibili URL + tag_                                             | 看過連結的影片後回答（單獨貼連結不會自動展開）。                        |
 | `/download_video <url> [quality]`                                | 下載影片並傳回 Discord。抖音的圖文貼文會傳回圖片。                      |
 | `/balance [member]`                                              | 私密顯示成員的虛擬歡樂豆餘額、債務、stock holdings、淨資產與 VIP 狀態。 |
 | `/checkin`                                                       | 領取每日簽到獎勵。                                                      |

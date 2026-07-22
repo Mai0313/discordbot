@@ -19,24 +19,31 @@ from collections.abc import Mapping, Iterator, Sequence
 
 from openai.types.responses import ResponseInputParam
 
-from discordbot.cogs._parse_douyin.builder import (
-    DOUYIN_BLOCKED_NOTICE,
-    DOUYIN_TIMEOUT_NOTICE,
-    DOUYIN_CONTEXT_SEPARATOR,
-    DOUYIN_UNAVAILABLE_NOTICE,
-    DOUYIN_TEXT_ONLY_SEPARATOR,
-)
 from discordbot.cogs._gen_reply.memory_tool import (
     render_tone_block,
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
 )
-from discordbot.cogs._parse_threads.builder import (
+from discordbot.cogs._gen_reply.link_sources.douyin import (
+    DOUYIN_BLOCKED_NOTICE,
+    DOUYIN_TIMEOUT_NOTICE,
+    DOUYIN_CONTEXT_SEPARATOR,
+    DOUYIN_UNAVAILABLE_NOTICE,
+    DOUYIN_TEXT_ONLY_SEPARATOR,
+)
+from discordbot.cogs._gen_reply.link_sources.threads import (
     THREADS_TIMEOUT_NOTICE,
     THREADS_CONTEXT_SEPARATOR,
     THREADS_UNAVAILABLE_NOTICE,
     THREADS_TEXT_ONLY_SEPARATOR,
+)
+from discordbot.cogs._gen_reply.link_sources.bilibili import (
+    BILIBILI_TIMEOUT_NOTICE,
+    BILIBILI_CONTEXT_SEPARATOR,
+    BILIBILI_UNREADABLE_NOTICE,
+    BILIBILI_TOO_LONG_SEPARATOR,
+    BILIBILI_TEXT_ONLY_SEPARATOR,
 )
 
 
@@ -96,6 +103,15 @@ _DOUYIN_NOTICE_HEADS = (
     DOUYIN_UNAVAILABLE_NOTICE.split("\n", 1)[0],
     DOUYIN_BLOCKED_NOTICE.split("\n", 1)[0],
     DOUYIN_TIMEOUT_NOTICE.split("\n", 1)[0],
+)
+_BILIBILI_SEPARATOR_HEADS = (
+    BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0],
+    BILIBILI_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
+    BILIBILI_TOO_LONG_SEPARATOR.split("\n", 1)[0],
+)
+_BILIBILI_NOTICE_HEADS = (
+    BILIBILI_UNREADABLE_NOTICE.split("\n", 1)[0],
+    BILIBILI_TIMEOUT_NOTICE.split("\n", 1)[0],
 )
 
 _ID_SECTION = re.compile(r"\[id: (\d+)\][^\n]*\n(.*?)(?=\n\n\[id: |\Z)", re.DOTALL)
@@ -238,5 +254,23 @@ def has_douyin_context_block(request: ResponseInputParam | str) -> bool:
     for _role, text in iter_text_blocks(request=request):
         head = text.split("\n", 1)[0]
         if head in _DOUYIN_SEPARATOR_HEADS or head in _DOUYIN_NOTICE_HEADS:
+            return True
+    return False
+
+
+def extract_bilibili_context_block(request: ResponseInputParam | str) -> str | None:
+    """Returns the text of the block following the Bilibili separator, or None if absent."""
+    items = list(iter_text_blocks(request=request))
+    for index, (role, text) in enumerate(items):
+        if role == "system" and text.split("\n", 1)[0] in _BILIBILI_SEPARATOR_HEADS:
+            return items[index + 1][1] if index + 1 < len(items) else ""
+    return None
+
+
+def has_bilibili_context_block(request: ResponseInputParam | str) -> bool:
+    """Whether the input carries an injected Bilibili separator or notice block."""
+    for _role, text in iter_text_blocks(request=request):
+        head = text.split("\n", 1)[0]
+        if head in _BILIBILI_SEPARATOR_HEADS or head in _BILIBILI_NOTICE_HEADS:
             return True
     return False

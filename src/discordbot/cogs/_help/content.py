@@ -138,7 +138,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
             "tools": HelpSection(
                 emoji="🧰",
                 label="Tools",
-                summary="Video download, MapleStory lookup, Threads, Douyin, ping",
+                summary="Video download, MapleStory lookup, Threads, Douyin, Bilibili, ping",
                 detail=(
                     "`/download_video` — download a video from supported platforms; a Douyin "
                     "link also works, and a Douyin photo post comes back as images\n"
@@ -151,7 +151,10 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "Tag me with the link instead and I'll read the post and answer about it.\n\n"
                     "Douyin parser\n"
                     "Paste a Douyin link and I'll post the video (or the photos) right here. "
-                    "Tag me with the link instead and I'll watch it and answer about it."
+                    "Tag me with the link instead and I'll watch it and answer about it.\n\n"
+                    "Bilibili\n"
+                    "Tag me with a Bilibili video link and I'll watch the video and answer "
+                    "about it."
                 ),
             ),
         },
@@ -222,7 +225,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
             "tools": HelpSection(
                 emoji="🧰",
                 label="實用工具",
-                summary="影片下載、楓之谷查詢、Threads、抖音、ping",
+                summary="影片下載、楓之谷查詢、Threads、抖音、B站、ping",
                 detail=(
                     "`/download_video` — 從支援的平台下載影片,抖音連結也可以,"
                     "抖音的圖文貼文會直接傳回圖片\n"
@@ -234,7 +237,9 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "改成 tag 我並附上連結,我就會直接看過貼文再回答你。\n\n"
                     "抖音解析\n"
                     "貼上抖音連結,我會直接把影片(或圖片)傳上來;"
-                    "改成 tag 我並附上連結,我就會看過影片再回答你。"
+                    "改成 tag 我並附上連結,我就會看過影片再回答你。\n\n"
+                    "Bilibili\n"
+                    "tag 我並附上 B 站影片連結,我會看過影片再回答你。"
                 ),
             ),
         },
@@ -307,7 +312,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
             "tools": HelpSection(
                 emoji="🧰",
                 label="ツール",
-                summary="動画DL・MapleStory検索・Threads・抖音・ping",
+                summary="動画DL・MapleStory検索・Threads・抖音・ビリビリ・ping",
                 detail=(
                     "`/download_video` — 対応サイトから動画をダウンロード。抖音のリンクも可、"
                     "抖音の画像投稿は画像として返します\n"
@@ -320,7 +325,9 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "メンション付きでリンクを送ると、投稿を読んでその内容に答えます。\n\n"
                     "抖音パーサー\n"
                     "抖音のリンクを貼ると、動画(または画像)をそのまま送ります。"
-                    "メンション付きで送ると、動画を見てその内容に答えます。"
+                    "メンション付きで送ると、動画を見てその内容に答えます。\n\n"
+                    "ビリビリ\n"
+                    "メンション付きで Bilibili の動画リンクを送ると、動画を見てその内容に答えます。"
                 ),
             ),
         },

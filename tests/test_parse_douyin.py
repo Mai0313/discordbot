@@ -16,8 +16,8 @@ from discordbot.utils.douyin import (
     DouyinUnavailableError,
 )
 from discordbot.cogs._parse_douyin import fetch as douyin_fetch
-from discordbot.cogs._parse_douyin import builder as douyin_builder
-from discordbot.cogs._parse_douyin.builder import (
+from discordbot.cogs._gen_reply.link_sources import douyin as douyin_builder
+from discordbot.cogs._gen_reply.link_sources.douyin import (
     DOUYIN_BLOCKED_NOTICE,
     DOUYIN_CONTEXT_SEPARATOR,
     DOUYIN_UNREADABLE_NOTICE,

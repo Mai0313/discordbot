@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
-from discordbot.cogs._parse_threads import builder as threads_builder
-from discordbot.cogs._parse_threads.builder import (
+from discordbot.cogs._gen_reply.link_sources import threads as threads_builder
+from discordbot.cogs._gen_reply.link_sources.threads import (
     MAX_THREADS_POSTS,
     MAX_THREADS_MEDIA_PARTS,
     THREADS_CONTEXT_SEPARATOR,

@@ -66,7 +66,6 @@ from discordbot.cogs._gen_reply.generation import (
     music_filename,
     speechify_discord_markup,
 )
-from discordbot.cogs._parse_douyin.builder import DOUYIN_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     MemoryReadContext,
@@ -80,10 +79,12 @@ from discordbot.cogs._gen_reply.memory_tool import (
     allowlist_ids_from_server_memory,
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
-from discordbot.cogs._parse_threads.builder import THREADS_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
+from discordbot.cogs._gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
+from discordbot.cogs._gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
+from discordbot.cogs._gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
@@ -98,9 +99,11 @@ from tests.helpers.llm_input import (
     extract_callable_user_ids,
     has_threads_context_block,
     extract_user_memory_blocks,
+    has_bilibili_context_block,
     extract_server_memory_block,
     extract_douyin_context_block,
     extract_threads_context_block,
+    extract_bilibili_context_block,
 )
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -4220,6 +4223,17 @@ def _douyin_block(body: str = "MOCK DOUYIN POST BODY") -> list[dict[str, object]
     ]
 
 
+def _bilibili_block(body: str = "MOCK BILIBILI VIDEO BODY") -> list[dict[str, object]]:
+    """Builds a builder-shaped Bilibili block: the real separator plus a user content message."""
+    return [
+        {
+            "role": "system",
+            "content": [{"type": "input_text", "text": BILIBILI_CONTEXT_SEPARATOR}],
+        },
+        {"role": "user", "content": [{"type": "input_text", "text": body}]},
+    ]
+
+
 def _link_config() -> SimpleNamespace:
     """The config fields a QA reply carrying a linked post actually reads."""
     return SimpleNamespace(
@@ -4229,6 +4243,7 @@ def _link_config() -> SimpleNamespace:
         video_available=False,
         deep_research_enabled=False,
         douyin_video_enabled=True,
+        bilibili_video_enabled=True,
         gemini_api_key="key",
     )
 
@@ -4597,6 +4612,355 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     answer = request_input(responses=cog.openai_client.responses, phase="answer")
     assert has_threads_context_block(request=answer)
     assert "did not respond in time" in str(answer)
+
+
+async def test_on_message_injects_bilibili_context_before_current(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A QA message with a Bilibili URL injects the read video just before the current message."""
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    seen: list[tuple[str, bool]] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable Bilibili block instead of contacting Bilibili."""
+        del answer_model_is_gemini, gemini_client
+        seen.append((url, allow_media_ingest))
+        return _bilibili_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    url = "https://www.bilibili.com/video/BV1jpK86hEc8"
+    message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=message)
+
+    assert seen == [(url, True)]
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    assert has_bilibili_context_block(request=answer)
+    assert extract_bilibili_context_block(request=answer) == "MOCK BILIBILI VIDEO BODY"
+
+    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
+    separator_index = headers.index(BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    current_index = next(
+        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
+    )
+    assert separator_index < current_index
+
+
+async def test_on_message_skips_a_non_video_bilibili_link(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A live-room or space link is not a watchable video, so the build never starts."""
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    calls: list[str] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Records that the builder was reached at all."""
+        del answer_model_is_gemini, gemini_client, allow_media_ingest
+        calls.append(url)
+        return _bilibili_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這個直播間如何 https://live.bilibili.com/12345",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    assert calls == []
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    assert not has_bilibili_context_block(request=answer)
+
+
+async def test_on_message_bilibili_media_ingest_kill_switch(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the switch off the builder still runs, but is told not to fetch the media."""
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    cog.config.bilibili_video_enabled = False
+    seen: list[bool] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Records the ingestion flag the pipeline computed."""
+        del url, answer_model_is_gemini, gemini_client
+        seen.append(allow_media_ingest)
+        return _bilibili_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    assert seen == [False]
+
+
+async def test_on_message_cancels_bilibili_context_on_image_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-QA route cancels the in-flight Bilibili build instead of orphaning its download."""
+    cog = _cog()
+    cog.config = _link_config()
+    cancelled: list[bool] = []
+
+    async def hanging_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Blocks until cancelled, recording the cancellation."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return []
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Routes every message to IMAGE after yielding so the build starts."""
+        del reference_messages, current_message
+        await asyncio.sleep(0)
+        return RouteClassification(decision="IMAGE")
+
+    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+        """Accepts the dispatched image request."""
+        del message, user_prompt
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_bilibili_context_messages", hanging_builder
+    )
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
+    monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 畫這個 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    assert cancelled == [True]
+
+
+async def test_on_message_bilibili_keyless_disables_media_ingest(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank Gemini key turns the ingest flag off even with the kill-switch on.
+
+    The predicate needs both halves; without this the builder would be told it may upload
+    while holding no client to upload with.
+    """
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    cog.config.gemini_api_key = ""
+    seen: list[tuple[object, bool]] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Records the client and flag the pipeline computed."""
+        del url, answer_model_is_gemini
+        seen.append((gemini_client, allow_media_ingest))
+        return _bilibili_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    assert seen == [(None, False)]
+
+
+async def test_on_message_finally_backstop_cancels_link_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pipeline failure before the QA resolve still cancels the in-flight link build.
+
+    The link tasks start before the route call, so a raising route reaches the finally with
+    the dict populated; the backstop there is the only thing cancelling a multi-hundred-MB
+    download on that path.
+    """
+    cog = _cog()
+    cog.config = _link_config()
+    cancelled: list[bool] = []
+
+    async def hanging_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Blocks until cancelled, recording the cancellation."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return []
+
+    async def raising_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Fails the pipeline after yielding so the build has started."""
+        del reference_messages, current_message
+        await asyncio.sleep(0)
+        raise RuntimeError("route exploded")
+
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
+        route_done: object,
+    ) -> ReplyContext:
+        """Keeps the speculative prep off the real memory and history paths."""
+        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        return ReplyContext()
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_bilibili_context_messages", hanging_builder
+    )
+    monkeypatch.setattr(cog, "_route_classify", raising_route)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    assert cancelled == [True]
+
+
+async def test_on_message_bilibili_grace_timeout_injects_notice(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A build slower than the post-route grace injects a timeout notice; the answer streams."""
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.LINK_CONTEXT_GRACE_SECONDS", 0.01)
+
+    async def slow_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Outlasts the grace so the gate drops it."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        await asyncio.sleep(5)
+        return _bilibili_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", slow_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    assert has_bilibili_context_block(request=answer)
+    assert "did not respond in time" in str(answer)
+
+
+async def test_on_message_orders_link_blocks_in_registry_order(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One message carrying several readable links injects the blocks in registry order.
+
+    The URLs are pasted in reverse registry order on purpose: the splice must follow
+    `LINK_CONTEXT_SOURCES` order (threads, douyin, bilibili), not text order, so the answer
+    input stays deterministic however the user arranged the links.
+    """
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+
+    async def fake_threads_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable Threads block instead of hitting the network."""
+        del url, answer_model_is_gemini, gemini_client
+        return _threads_block()
+
+    async def fake_douyin_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable Douyin block instead of contacting Douyin."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        return _douyin_block()
+
+    async def fake_bilibili_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable Bilibili block instead of contacting Bilibili."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        return _bilibili_block()
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_threads_context_messages", fake_threads_builder
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_douyin_context_messages", fake_douyin_builder
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_bilibili_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content=(
+            "<@999> 這幾個在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8 "
+            "https://v.douyin.com/abc123 https://www.threads.com/@a/post/ABC123"
+        ),
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
+    threads_index = headers.index(THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    douyin_index = headers.index(DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    bilibili_index = headers.index(BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    current_index = next(
+        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
+    )
+    assert threads_index < douyin_index < bilibili_index < current_index
 
 
 def test_reply_context_message_list_orders_hist_ref_current() -> None:
