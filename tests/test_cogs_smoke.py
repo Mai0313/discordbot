@@ -2102,6 +2102,7 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         send=record_context_send,
         guild=SimpleNamespace(name="Guild", id=1),
         author=FakeUser(user_id=1),
+        command=SimpleNamespace(qualified_name="demo"),
     )
     await cli.DiscordBot.on_command_error(bot, context, commands.NotOwner())
     await cli.DiscordBot.on_command_error(
@@ -2112,6 +2113,22 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     )
     await cli.DiscordBot.on_command_error(bot, context, commands.CommandNotFound("nope"))
     assert len(sent) == 4
+
+    # An error the handler has no branch for used to vanish at no level at all; it now
+    # reports the type nextcord wrapped, not the wrapper.
+    logged: list[dict[str, Any]] = []
+
+    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the unhandled-command-error log."""
+        logged.append(kwargs)
+
+    monkeypatch.setattr(cli.logfire, "error", record_error)
+    await cli.DiscordBot.on_command_error(
+        bot, context, commands.CommandInvokeError(ValueError("boom"))
+    )
+    assert len(sent) == 4
+    assert logged[-1]["error_type"] == "ValueError"
+    assert logged[-1]["command"] == "demo"
 
 
 async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(

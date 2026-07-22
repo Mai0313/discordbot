@@ -523,6 +523,14 @@ def test_maplestory_load_helpers_handle_missing_and_invalid_files(tmp_path: Path
     bad_json.write_text(data="{bad", encoding="utf-8")
     assert _load_json(path=bad_json, model=Monster) == []
     assert _load_translations(data_dir=tmp_path) == {}
+    # `_load_json` runs during the synchronous cog load, so every shape a hand-maintained
+    # data file can take has to degrade instead of killing startup.
+    off_schema = tmp_path / "off_schema.json"
+    off_schema.write_text(data='[{"name": 1}]', encoding="utf-8")
+    assert _load_json(path=off_schema, model=Monster) == []
+    not_a_list = tmp_path / "not_a_list.json"
+    not_a_list.write_text(data="12", encoding="utf-8")
+    assert _load_json(path=not_a_list, model=Monster) == []
 
 
 def test_maplestory_embeds_include_expected_sections(service: MapleStoryService) -> None:
