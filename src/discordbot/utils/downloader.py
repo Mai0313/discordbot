@@ -10,6 +10,12 @@ from pydantic import Field, BaseModel
 from requests import Session
 from requests.exceptions import RequestException
 
+from discordbot.typings.video import VideoQuality
+
+# Redirect chases for a facebook.com/share/... link. Fixed rather than configurable: it bounds
+# one HEAD/GET against Facebook and nothing has ever needed a different value.
+SHARE_RESOLVE_TIMEOUT_SECONDS = 10
+
 
 class DownloadResult(BaseModel):
     """Represents a downloaded video file.
@@ -55,21 +61,13 @@ class VideoDownloader(BaseModel):
 
     Attributes:
         output_folder: Directory where downloaded files are written.
-        max_retries: Configured maximum retry count.
-        share_resolve_timeout: Timeout in seconds for resolving Facebook share URLs.
     """
 
     output_folder: str = Field(..., description="Download folder")
-    max_retries: int = Field(
-        default=5, description="Configured maximum retry count.", examples=[5, 3]
-    )
-    share_resolve_timeout: int = Field(
-        default=10, description="Timeout (seconds) for resolving Facebook share URLs"
-    )
 
     # Static map of quality presets to yt-dlp format strings; prefers separate
     # video+audio with safe fallbacks to muxed or video-only streams.
-    quality_formats: ClassVar[dict[str, str]] = {
+    quality_formats: ClassVar[dict[VideoQuality, str]] = {
         "best": "bestvideo*+bestaudio/best/bestvideo*",
         "high": "bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080][fps<=60]/best[height<=1080]",
         "medium": "bestvideo[height<=720][fps<=60]+bestaudio/best[height<=720][fps<=60]/best[height<=720]",
@@ -94,7 +92,7 @@ class VideoDownloader(BaseModel):
                         url,
                         allow_redirects=True,
                         headers=headers,
-                        timeout=self.share_resolve_timeout,
+                        timeout=SHARE_RESOLVE_TIMEOUT_SECONDS,
                     )
                 except RequestException:
                     continue
@@ -134,11 +132,13 @@ class VideoDownloader(BaseModel):
 
         return url
 
-    def get_params(self, quality: str, dry_run: bool, url: str | None = None) -> dict[str, Any]:
+    def get_params(
+        self, quality: VideoQuality, dry_run: bool, url: str | None = None
+    ) -> dict[str, Any]:
         """Returns the yt-dlp configuration parameters.
 
         Args:
-            quality: The requested quality preset ('best', 'high', 'medium', 'low').
+            quality: The requested quality preset.
             dry_run: If True, enables simulation mode.
             url: Optional URL to determine site-specific headers (e.g., bilibili).
 
@@ -163,7 +163,7 @@ class VideoDownloader(BaseModel):
             http_headers["Referer"] = "https://www.bilibili.com"
 
         params = {
-            "format": self.quality_formats.get(quality, "best"),
+            "format": self.quality_formats[quality],
             "outtmpl": f"{output_path.as_posix()}/%(id)s.%(ext)s",
             "quiet": True,
             "no_warnings": False,
@@ -193,7 +193,9 @@ class VideoDownloader(BaseModel):
             })
         return params
 
-    def download(self, url: str, quality: str = "best", dry_run: bool = False) -> DownloadResult:
+    def download(
+        self, url: str, quality: VideoQuality = "best", dry_run: bool = False
+    ) -> DownloadResult:
         """Downloads a video from the given URL.
 
         Args:

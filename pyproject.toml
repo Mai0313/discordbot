@@ -68,12 +68,12 @@ authors = [
 ]
 dependencies = [
     "aiosqlite>=0.22.1",
-    "anthropic>=0.116.0",
-    "google-genai>=2.11.0",
+    "anthropic>=0.117.0",
+    "google-genai>=2.13.0",
     "httpx>=0.28.1",
-    "logfire>=4.37.0",
+    "logfire>=4.38.0",
     "nextcord[speed,voice]>=3.2.0",
-    "openai>=2.45.0",
+    "openai>=2.46.0",
     "pillow>=12.3.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.2",
@@ -389,6 +389,13 @@ ignore = [
 ignore-overlong-task-comments = true
 max-doc-length = 99
 max-line-length = 99
+
+[tool.ruff.lint.flake8-bugbear]
+# `SlashOption(...)` as a parameter default is nextcord's API for describing a slash option,
+# not a mutable value shared between calls, so B008 is a false positive on it. Ruff only lets
+# it through when the annotation is a type it knows to be immutable, which stops holding as
+# soon as an option is annotated with an alias it cannot resolve.
+extend-immutable-calls = ["nextcord.SlashOption"]
 
 [tool.ruff.lint.pydocstyle]
 # Use Google-style docstrings.

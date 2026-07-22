@@ -121,7 +121,7 @@ class EconomyCogs(commands.Cog):
     async def admin_refund_tax(
         self,
         interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member = SlashOption(
             name="member",
             description=f"The member or bot to receive the {CURRENCY_NAME}.",
             name_localizations={Locale.zh_TW: "對象", Locale.ja: "対象"},
@@ -170,7 +170,7 @@ class EconomyCogs(commands.Cog):
     async def admin_collect_tax(
         self,
         interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member = SlashOption(
             name="member",
             description=f"The member or bot to debit the {CURRENCY_NAME} from.",
             name_localizations={Locale.zh_TW: "對象", Locale.ja: "対象"},
@@ -262,7 +262,7 @@ class EconomyCogs(commands.Cog):
     async def balance(
         self,
         interaction: Interaction,
-        member: Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member | None = SlashOption(
             name="member",
             description="Member to inspect; defaults to yourself.",
             name_localizations={Locale.zh_TW: "成員", Locale.ja: "メンバー"},
@@ -383,7 +383,7 @@ class EconomyCogs(commands.Cog):
     async def give(
         self,
         interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member = SlashOption(
             name="member",
             description=f"The member or bot to receive the {CURRENCY_NAME}.",
             name_localizations={Locale.zh_TW: "對象", Locale.ja: "受取人"},
@@ -559,7 +559,7 @@ class EconomyCogs(commands.Cog):
     async def credit_borrow(
         self,
         interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member = SlashOption(
             name="member",
             description="The member you want to borrow from.",
             name_localizations={Locale.zh_TW: "貸方", Locale.ja: "貸し手"},
@@ -689,7 +689,7 @@ class EconomyCogs(commands.Cog):
     async def credit_repay(
         self,
         interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member = SlashOption(
             name="member",
             description="The lender to repay.",
             name_localizations={Locale.zh_TW: "貸方", Locale.ja: "貸し手"},
@@ -770,7 +770,7 @@ class EconomyCogs(commands.Cog):
     async def credit_call(
         self,
         interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member = SlashOption(
             name="member",
             description="The borrower to collect from.",
             name_localizations={Locale.zh_TW: "借方", Locale.ja: "借り手"},
@@ -1036,7 +1036,7 @@ class EconomyCogs(commands.Cog):
     async def central_bank_call(
         self,
         interaction: Interaction,
-        member: Member = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member = SlashOption(
             name="member",
             description="The borrower to collect from.",
             name_localizations={Locale.zh_TW: "借方", Locale.ja: "借り手"},

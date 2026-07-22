@@ -43,6 +43,7 @@ import time
 import base64
 from typing import TYPE_CHECKING, Protocol, cast
 import asyncio
+from collections.abc import AsyncIterator
 
 from google import genai
 from openai import AsyncOpenAI, APITimeoutError
@@ -50,7 +51,6 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from google.genai.types import FileState
 from google.genai.interactions import (
-    Interaction,
     TextContentParam,
     VideoConfigParam,
     ImageContentParam,
@@ -575,18 +575,21 @@ class VideoGenerator(BaseModel):
 
         started = time.monotonic()
         async with asyncio.timeout(delay=VIDEO_RENDER_TIMEOUT_SECONDS):
-            # Not a stream (no stream=True), so narrow the create() union to the Interaction the
-            # non-streaming call actually returns.
-            interaction = cast(
-                "Interaction",
-                await self.client.aio.interactions.create(
-                    model=self.video_model.name,
-                    input=content,
-                    response_format=response_format,
-                    generation_config=generation_config,
-                    timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
-                ),
+            interaction = await self.client.aio.interactions.create(
+                model=self.video_model.name,
+                input=content,
+                response_format=response_format,
+                generation_config=generation_config,
+                timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
             )
+        # No `stream=True`, so this is the interaction rather than an event stream. Narrowed by
+        # excluding the stream instead of casting to `google.genai.interactions.Interaction`:
+        # that module star-imports the name from both `triggers` (an alias for the union of the
+        # two *request* models, which carry no `output_video` / `status` / `output_text`) and
+        # `types.interactions` (the response class), and only the runtime import order makes the
+        # response class win, so the cast named the request union and typed the wrong object.
+        if isinstance(interaction, AsyncIterator):
+            raise RuntimeError("Video generation returned an event stream, not an interaction")
         video = interaction.output_video
         if interaction.status != "completed" or video is None or video.uri is None:
             logfire.warn(

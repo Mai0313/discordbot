@@ -25,6 +25,8 @@ from pydantic import Field, BaseModel
 import requests
 from requests.exceptions import RequestException
 
+from discordbot.typings.video import VideoQuality
+
 # Single source of truth for detecting a Douyin URL, kept module level so the planned
 # auto-expand cog can share it the way `THREADS_URL_RE` is shared by parse_threads and
 # gen_reply. Douyin's own share button emits the link inside a blob of noise
@@ -326,7 +328,7 @@ class DouyinDownloader(BaseModel):
 
     # The command's quality presets mapped onto the `ratio` the play endpoint accepts. `best` and
     # `high` share 1080p because 1080p is the source resolution, not an upscale.
-    quality_ratios: ClassVar[dict[str, str]] = {
+    quality_ratios: ClassVar[dict[VideoQuality, str]] = {
         "best": "1080p",
         "high": "1080p",
         "medium": "720p",
@@ -587,7 +589,7 @@ class DouyinDownloader(BaseModel):
                 urls.append(url_list[-1])
         return urls
 
-    def _play_url(self, video_id: str, quality: str) -> str:
+    def _play_url(self, video_id: str, quality: VideoQuality) -> str:
         """Builds the watermark-free play URL for a video.
 
         The URL Douyin ships in `play_addr.url_list` points at the `playwm` endpoint, whose
@@ -596,12 +598,12 @@ class DouyinDownloader(BaseModel):
 
         Args:
             video_id: Douyin's internal video id.
-            quality: One of the command's quality presets.
+            quality: The requested quality preset.
 
         Returns:
             The play endpoint URL.
         """
-        ratio = self.quality_ratios.get(quality, "1080p")
+        ratio = self.quality_ratios[quality]
         return f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&ratio={ratio}&line=0"
 
     def _download_to(self, url: str, filename: str, max_bytes: int | None = None) -> Path:
@@ -698,7 +700,7 @@ class DouyinDownloader(BaseModel):
     def download(
         self,
         url: str,
-        quality: str = "best",
+        quality: VideoQuality = "best",
         max_images: int | None = None,
         max_bytes: int | None = None,
         post: DouyinPost | None = None,
@@ -728,7 +730,7 @@ class DouyinDownloader(BaseModel):
         return self._download_video(post=resolved, quality=quality, max_bytes=max_bytes)
 
     def _download_video(
-        self, post: DouyinPost, quality: str, max_bytes: int | None = None
+        self, post: DouyinPost, quality: VideoQuality, max_bytes: int | None = None
     ) -> DouyinDownload:
         """Downloads the watermark-free video for a post."""
         if not post.video_id:

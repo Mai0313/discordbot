@@ -27,6 +27,7 @@ from discordbot.utils.douyin import (
     is_douyin_url,
     is_douyin_post_url,
 )
+from discordbot.typings.video import VideoQuality
 from discordbot.utils.media_delivery import (
     MediaHostingConfig,
     MediaHostingService,
@@ -315,7 +316,7 @@ def test_photo_post_is_not_misread_as_a_video(monkeypatch: pytest.MonkeyPatch) -
     argnames=("quality", "ratio"),
     argvalues=[("best", "1080p"), ("high", "1080p"), ("medium", "720p"), ("low", "540p")],
 )
-def test_play_url_drops_the_watermark_and_maps_quality(quality: str, ratio: str) -> None:
+def test_play_url_drops_the_watermark_and_maps_quality(quality: VideoQuality, ratio: str) -> None:
     """The play endpoint replaces playwm, and each preset maps to a ratio."""
     downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
     url = downloader._play_url(video_id="vid123", quality=quality)
@@ -323,12 +324,6 @@ def test_play_url_drops_the_watermark_and_maps_quality(quality: str, ratio: str)
     assert "/aweme/v1/play/" in url
     assert "playwm" not in url
     assert f"ratio={ratio}" in url
-
-
-def test_unknown_quality_falls_back_to_best() -> None:
-    """An unrecognised preset must not produce a malformed ratio."""
-    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
-    assert "ratio=1080p" in downloader._play_url(video_id="vid123", quality="bogus")
 
 
 def test_filtered_post_reports_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -452,7 +452,7 @@ class GamesCogs(commands.Cog):
     async def blackjack_history(
         self,
         interaction: Interaction,
-        member: Member | None = SlashOption(  # noqa: B008 -- nextcord SlashOption is the canonical default
+        member: Member | None = SlashOption(
             name="member",
             description="Player to inspect; defaults to yourself.",
             name_localizations={Locale.zh_TW: "玩家", Locale.ja: "プレイヤー"},

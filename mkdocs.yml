@@ -130,6 +130,7 @@ nav:
               - llm: Reference/discordbot/typings/llm.md
               - models: Reference/discordbot/typings/models.md
               - stock: Reference/discordbot/typings/stock.md
+              - video: Reference/discordbot/typings/video.md
           - utils:
               - amount_parsing: Reference/discordbot/utils/amount_parsing.md
               - asyncio_locks: Reference/discordbot/utils/asyncio_locks.md
