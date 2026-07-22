@@ -4599,6 +4599,62 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     assert "did not respond in time" in str(answer)
 
 
+async def test_on_message_orders_link_blocks_in_registry_order(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One message carrying several readable links injects the blocks in registry order.
+
+    The Douyin URL comes first in the message text on purpose: the splice must follow
+    `LINK_CONTEXT_SOURCES` order (threads before douyin), not text order, so the answer input
+    stays deterministic however the user arranged the links.
+    """
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+
+    async def fake_threads_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable Threads block instead of hitting the network."""
+        del url, answer_model_is_gemini, gemini_client
+        return _threads_block()
+
+    async def fake_douyin_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable Douyin block instead of contacting Douyin."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        return _douyin_block()
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_threads_context_messages", fake_threads_builder
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_douyin_context_messages", fake_douyin_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content=(
+            "<@999> 這兩個在講什麼 https://v.douyin.com/abc123 "
+            "https://www.threads.com/@a/post/ABC123"
+        ),
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    answer = request_input(responses=cog.openai_client.responses, phase="answer")
+    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
+    threads_index = headers.index(THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    douyin_index = headers.index(DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    current_index = next(
+        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
+    )
+    assert threads_index < douyin_index < current_index
+
+
 def test_reply_context_message_list_orders_hist_ref_current() -> None:
     """message_list keeps transcript order: history, reference, current."""
     context = ReplyContext(

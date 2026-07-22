@@ -33,13 +33,12 @@ class ReplyContext(BaseModel):
     tone_block: SkipValidation[EasyInputMessageParam | None] = Field(
         default=None, description="Rendered tone-preference block for the message author, if any."
     )
-    threads_block: SkipValidation[list[EasyInputMessageParam]] = Field(
+    link_blocks: SkipValidation[list[EasyInputMessageParam]] = Field(
         default_factory=list,
-        description="Rendered Threads-post context blocks, injected before the current message.",
-    )
-    douyin_block: SkipValidation[list[EasyInputMessageParam]] = Field(
-        default_factory=list,
-        description="Rendered Douyin-post context blocks, injected before the current message.",
+        description=(
+            "Rendered linked-post context blocks in LINK_CONTEXT_SOURCES order, "
+            "injected before the current message."
+        ),
     )
     memory_labels: list[str] = Field(
         default_factory=list, description="Footer labels of users whose memory was injected."

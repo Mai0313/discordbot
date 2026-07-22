@@ -130,6 +130,7 @@ from discordbot.cogs._gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
 )
+from discordbot.cogs._gen_reply.link_sources import LinkContextSource
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
@@ -381,6 +382,85 @@ async def _await_gated[GatedT](
             await route_wait
         if not task.done():
             await _discard_task(task=task, label=label)
+
+
+async def _build_threads_link_context(
+    *,
+    url: str,
+    answer_model_is_gemini: bool,
+    gemini_client: genai.Client | None,
+    allow_media_ingest: bool,
+) -> list[EasyInputMessageParam]:
+    """Adapts the Threads builder to the registry signature.
+
+    Threads media ingestion has no kill-switch, so the flag is accepted and dropped. The
+    builder name resolves from this module's globals at call time, which is what keeps a test
+    monkeypatching `discordbot.cogs.gen_reply.build_threads_context_messages` effective.
+    """
+    del allow_media_ingest
+    return await build_threads_context_messages(
+        url=url, answer_model_is_gemini=answer_model_is_gemini, gemini_client=gemini_client
+    )
+
+
+async def _build_douyin_link_context(
+    *,
+    url: str,
+    answer_model_is_gemini: bool,
+    gemini_client: genai.Client | None,
+    allow_media_ingest: bool,
+) -> list[EasyInputMessageParam]:
+    """Adapts the Douyin builder to the registry signature (a straight pass-through)."""
+    return await build_douyin_context_messages(
+        url=url,
+        answer_model_is_gemini=answer_model_is_gemini,
+        gemini_client=gemini_client,
+        allow_media_ingest=allow_media_ingest,
+    )
+
+
+def _threads_media_ingest_allowed(config: LLMConfig) -> bool:
+    """Threads media ingestion has no kill-switch; the Gemini checks alone gate it."""
+    del config
+    return True
+
+
+def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:
+    """The Douyin kill-switch plus the direct-Gemini key its Files API upload needs."""
+    return config.douyin_video_enabled and bool(config.gemini_api_key.strip())
+
+
+# The linked-content sources gen_reply reads into answer context, in splice order: the blocks
+# land in the answer input in this order, just before the current message. Adding a source is
+# one entry here plus its builder module; the pipeline loops stay untouched.
+LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
+    LinkContextSource(
+        name="threads",
+        url_pattern=THREADS_URL_RE,
+        build=_build_threads_link_context,
+        on_timeout=threads_timeout_context_messages,
+        media_ingest_allowed=_threads_media_ingest_allowed,
+    ),
+    LinkContextSource(
+        name="douyin",
+        url_pattern=DOUYIN_URL_RE,
+        # The regex matches the host, not the path: a profile or live-room link is not a post,
+        # so reading it would only spend a rate-limited Douyin request to say so.
+        url_filter=is_douyin_post_url,
+        build=_build_douyin_link_context,
+        on_timeout=douyin_timeout_context_messages,
+        media_ingest_allowed=_douyin_media_ingest_allowed,
+    ),
+)
+
+
+async def _discard_link_tasks(
+    *, link_tasks: dict[str, "asyncio.Task[list[EasyInputMessageParam]]"], message_id: int
+) -> None:
+    """Discards every in-flight link-context build (non-QA routes and the finally backstop)."""
+    for name, task in link_tasks.items():
+        await _discard_task(task=task, label=name, message_id=message_id)
+    link_tasks.clear()
 
 
 def _log_pre_answer_latency(started: float, decision: str) -> None:
@@ -1703,10 +1783,10 @@ class ReplyGeneratorCogs(commands.Cog):
             if block is not None
         )
         answer_input.extend(context.reference_messages)
-        # The Threads post the user linked rides just before the current message (its own
-        # separator leads the block); empty unless the message carried a Threads URL.
-        answer_input.extend(context.threads_block)
-        answer_input.extend(context.douyin_block)
+        # The linked post(s) the user pointed at ride just before the current message, each
+        # block led by its own separator; empty unless the message carried a link a registered
+        # source reads. The order inside is LINK_CONTEXT_SOURCES order.
+        answer_input.extend(context.link_blocks)
         answer_input.extend(context.current_message)
 
         # Seed the streamer with the selection request's usage so the footer and chat reward
@@ -1982,8 +2062,7 @@ class ReplyGeneratorCogs(commands.Cog):
             asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]] | None
         ) = None
         effort_task: asyncio.Task[EffortGrade] | None = None
-        threads_task: asyncio.Task[list[EasyInputMessageParam]] | None = None
-        douyin_task: asyncio.Task[list[EasyInputMessageParam]] | None = None
+        link_tasks: dict[str, asyncio.Task[list[EasyInputMessageParam]]] = {}
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
                 pipeline_started = time.monotonic()
@@ -1996,34 +2075,31 @@ class ReplyGeneratorCogs(commands.Cog):
                 parts_task = asyncio.create_task(
                     coro=self._get_reference_and_current(message=message)
                 )
-                # A Threads URL in the current message is self-parsed (metadata only) into
-                # answer-context blocks. Started here so its single HTTP fetch overlaps the
-                # whole route/prep window for free; only the QA route consumes it, others
-                # cancel it. Resolution is route_done-gated like effort, never a fixed wait.
-                threads_match = _first_url_match(pattern=THREADS_URL_RE, message=message)
-                if threads_match:
-                    threads_task = asyncio.create_task(
-                        coro=build_threads_context_messages(
-                            url=threads_match.group(0),
+                # A link a registered source can read (Threads, Douyin) is self-parsed into
+                # answer-context blocks: metadata text always, the media downloaded and
+                # uploaded to the Files API when the source allows it. Started here so the
+                # fetch (the slow half) overlaps the whole route/prep window for free; only
+                # the QA route consumes the blocks, other routes cancel the tasks. Resolution
+                # is route_done-gated like effort, never a fixed wait.
+                for link_source in LINK_CONTEXT_SOURCES:
+                    link_match = _first_url_match(pattern=link_source.url_pattern, message=message)
+                    if link_match is None:
+                        continue
+                    link_url = link_match.group(0)
+                    # A source's url_filter rejects a matched link it cannot read (e.g. a
+                    # Douyin profile or live room, whose regex matches the host, not the
+                    # path), which would only spend a rate-limited request to say so.
+                    if link_source.url_filter is not None and not link_source.url_filter(
+                        url=link_url
+                    ):
+                        continue
+                    link_tasks[link_source.name] = asyncio.create_task(
+                        coro=link_source.build(
+                            url=link_url,
                             answer_model_is_gemini="gemini" in self.runtime_models.slow_model.name,
                             gemini_client=self.gemini_client_if_configured,
-                        )
-                    )
-                # A Douyin URL is read the same way, except the clip itself is downloaded and
-                # uploaded to the Files API, so this one is the slow speculative task; starting
-                # it here buys the whole route/prep window back.
-                douyin_match = _first_url_match(pattern=DOUYIN_URL_RE, message=message)
-                # The regex matches the host, not the path: a profile or live-room link is not
-                # a post, so reading it would only spend a Douyin request to say so.
-                if douyin_match and is_douyin_post_url(url=douyin_match.group(0)):
-                    douyin_task = asyncio.create_task(
-                        coro=build_douyin_context_messages(
-                            url=douyin_match.group(0),
-                            answer_model_is_gemini="gemini" in self.runtime_models.slow_model.name,
-                            gemini_client=self.gemini_client_if_configured,
-                            allow_media_ingest=(
-                                self.config.douyin_video_enabled
-                                and bool(self.config.gemini_api_key.strip())
+                            allow_media_ingest=link_source.media_ingest_allowed(
+                                config=self.config
                             ),
                         )
                     )
@@ -2062,20 +2138,11 @@ class ReplyGeneratorCogs(commands.Cog):
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only
-                    # in the status emoji and which media handler runs. Effort and Threads context
+                    # in the status emoji and which media handler runs. Effort and link context
                     # are answer-only, so both are discarded here.
                     await _discard_task(task=effort_task, label="effort", message_id=message.id)
                     effort_task = None
-                    if threads_task is not None:
-                        await _discard_task(
-                            task=threads_task, label="threads", message_id=message.id
-                        )
-                        threads_task = None
-                    if douyin_task is not None:
-                        await _discard_task(
-                            task=douyin_task, label="douyin", message_id=message.id
-                        )
-                        douyin_task = None
+                    await _discard_link_tasks(link_tasks=link_tasks, message_id=message.id)
                     reactions.advance(
                         emoji="<:image:1517559727880667226>"
                         if route.decision == "IMAGE"
@@ -2103,19 +2170,11 @@ class ReplyGeneratorCogs(commands.Cog):
                 elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task, label="prep", message_id=message.id)
                     prep_task = None
-                    # A digest recaps channel history, not one linked post, so the Threads
-                    # block is not injected here. A URL-bearing SUMMARY is already rerouted to
-                    # QA in `_route_classify`, so this is normally None; discard defensively.
-                    if threads_task is not None:
-                        await _discard_task(
-                            task=threads_task, label="threads", message_id=message.id
-                        )
-                        threads_task = None
-                    if douyin_task is not None:
-                        await _discard_task(
-                            task=douyin_task, label="douyin", message_id=message.id
-                        )
-                        douyin_task = None
+                    # A digest recaps channel history, not one linked post, so the linked-post
+                    # blocks are not injected here. A URL-bearing SUMMARY is already rerouted
+                    # to QA in `_route_classify`, so these are normally absent; discard
+                    # defensively.
+                    await _discard_link_tasks(link_tasks=link_tasks, message_id=message.id)
                     reactions.advance(emoji="<:stacks:1517562531365912607>")
                     # so it neither biases the digest nor floods extraction, but the
                     # per-server memory is still recorded since the digest is rich
@@ -2157,28 +2216,25 @@ class ReplyGeneratorCogs(commands.Cog):
                         message=message, effort_task=effort_task, route_done=route_done
                     )
                     effort_task = None
-                    # The parse ran in parallel since before the route; resolve it under the
-                    # same route_done gate and fold the post's blocks into the answer context.
-                    if threads_task is not None:
-                        threads_block = await self._resolve_link_block(
-                            message=message,
-                            source="threads",
-                            link_task=threads_task,
-                            route_done=route_done,
-                            on_timeout=threads_timeout_context_messages,
-                        )
-                        threads_task = None
-                        context = context.model_copy(update={"threads_block": threads_block})
-                    if douyin_task is not None:
-                        douyin_block = await self._resolve_link_block(
-                            message=message,
-                            source="douyin",
-                            link_task=douyin_task,
-                            route_done=route_done,
-                            on_timeout=douyin_timeout_context_messages,
-                        )
-                        douyin_task = None
-                        context = context.model_copy(update={"douyin_block": douyin_block})
+                    # The parses ran in parallel since before the route; resolve each under
+                    # the same route_done gate and fold the post blocks into the answer
+                    # context, in registry order so the splice stays deterministic.
+                    if link_tasks:
+                        link_blocks: list[EasyInputMessageParam] = []
+                        for link_source in LINK_CONTEXT_SOURCES:
+                            link_task = link_tasks.pop(link_source.name, None)
+                            if link_task is None:
+                                continue
+                            link_blocks.extend(
+                                await self._resolve_link_block(
+                                    message=message,
+                                    source=link_source.name,
+                                    link_task=link_task,
+                                    route_done=route_done,
+                                    on_timeout=link_source.on_timeout,
+                                )
+                            )
+                        context = context.model_copy(update={"link_blocks": link_blocks})
                     pipeline_span.set_attribute(key="effort", value=effort)
                     # Watch a linked YouTube video only when the router judged the user is asking
                     # about it; the URL itself is taken from the message text or the replied-to
@@ -2205,10 +2261,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 await _discard_task(task=effort_task, label="effort", message_id=message.id)
             if parts_task is not None:
                 await _discard_task(task=parts_task, label="parts", message_id=message.id)
-            if threads_task is not None:
-                await _discard_task(task=threads_task, label="threads", message_id=message.id)
-            if douyin_task is not None:
-                await _discard_task(task=douyin_task, label="douyin", message_id=message.id)
+            await _discard_link_tasks(link_tasks=link_tasks, message_id=message.id)
 
 
 def _can_launch_research(*, message: Message) -> bool:
