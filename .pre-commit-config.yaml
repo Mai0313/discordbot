@@ -15,7 +15,7 @@ default_stages:
 
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.20
+    rev: v0.15.22
     hooks:
       - id: ruff-check
         types_or: [ python, pyi, jupyter ]
@@ -103,7 +103,7 @@ repos:
       - id: nbstripout
 
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.4.2
+    rev: v2.4.3
     hooks:
       - id: codespell
         additional_dependencies:
@@ -126,12 +126,6 @@ repos:
           - "Types-requests"
           - "Types-urllib3"
           - "openai"
-          # Deliberately unpinned, like every other entry here. pre-commit builds this hook its
-          # own venv from these names and never reads uv.lock, so the two resolve independently
-          # and can drift; a pin does not fix that, it only freezes the drift at one version and
-          # hides the upgrade signal a type error is meant to carry. Making them agree by
-          # construction means running mypy from the project environment instead, which first
-          # needs the errors nextcord's real types surface to be worked through.
           - "google-genai"
           - "anthropic"
           - "sqlalchemy[asyncio]"
@@ -154,7 +148,7 @@ repos:
       - id: gitleaks
 
   - repo: https://github.com/astral-sh/uv-pre-commit
-    rev: 0.11.27
+    rev: 0.11.31
     hooks:
       - id: uv-sync
         args: ["--all-groups"]
