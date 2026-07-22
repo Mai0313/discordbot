@@ -144,12 +144,16 @@ class AnthropicFileUploader(AttachmentRenderer):
         async with self._media_semaphore:
             try:
                 data, content_type = await load_data()
-            except Exception:
+            except Exception as exc:
+                # Broad on purpose: `load_data` is caller-supplied and spans a CDN fetch plus a
+                # PIL decode, and any failure must degrade to dropping this one attachment.
                 logfire.warn(
                     "failed to load attachment bytes for upload",
                     filename=filename,
                     cache_key=loggable_cache_key(cache_key=cache_key),
                     allow_dead_cache=allow_dead_cache,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
                 )
                 if allow_dead_cache:
                     self._mark_dead(cache_key=cache_key)
@@ -174,8 +178,15 @@ class AnthropicFileUploader(AttachmentRenderer):
             uploaded = await self.anthropic_client.beta.files.upload(
                 file=(filename, io.BytesIO(data), content_type)
             )
-        except Exception:
-            logfire.warn("failed to upload attachment to Anthropic Files API", filename=filename)
+        except Exception as exc:
+            # Broad on purpose: SDK, network and auth failures all degrade the same way here.
+            logfire.warn(
+                "failed to upload attachment to Anthropic Files API",
+                filename=filename,
+                content_type=content_type,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             return None
         if not uploaded.id:
             logfire.warn("upload returned no file id; dropping", filename=filename)
