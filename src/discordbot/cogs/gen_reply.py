@@ -97,10 +97,6 @@ from discordbot.cogs._gen_reply.generation import (
     VoiceGenerator,
     PromptGenerator,
 )
-from discordbot.cogs._parse_douyin.builder import (
-    build_douyin_context_messages,
-    douyin_timeout_context_messages,
-)
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     GET_USER_MEMORY_TOOL,
@@ -123,20 +119,24 @@ from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
-from discordbot.cogs._parse_threads.builder import (
-    build_threads_context_messages,
-    threads_timeout_context_messages,
-)
 from discordbot.cogs._gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
 )
 from discordbot.cogs._gen_reply.link_sources import LinkContextSource
-from discordbot.cogs._parse_bilibili.builder import (
+from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
+from discordbot.cogs._gen_reply.link_sources.douyin import (
+    build_douyin_context_messages,
+    douyin_timeout_context_messages,
+)
+from discordbot.cogs._gen_reply.link_sources.threads import (
+    build_threads_context_messages,
+    threads_timeout_context_messages,
+)
+from discordbot.cogs._gen_reply.link_sources.bilibili import (
     build_bilibili_context_messages,
     bilibili_timeout_context_messages,
 )
-from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, Coroutine, AsyncIterator

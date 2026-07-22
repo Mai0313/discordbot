@@ -66,7 +66,6 @@ from discordbot.cogs._gen_reply.generation import (
     music_filename,
     speechify_discord_markup,
 )
-from discordbot.cogs._parse_douyin.builder import DOUYIN_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     MemoryReadContext,
@@ -80,11 +79,12 @@ from discordbot.cogs._gen_reply.memory_tool import (
     allowlist_ids_from_server_memory,
 )
 from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
-from discordbot.cogs._parse_threads.builder import THREADS_CONTEXT_SEPARATOR
-from discordbot.cogs._parse_bilibili.builder import BILIBILI_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
+from discordbot.cogs._gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
+from discordbot.cogs._gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
+from discordbot.cogs._gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUploader
 

@@ -1,12 +1,14 @@
 """Descriptor for one linked-content source `gen_reply` reads into answer context.
 
-Each source (Threads, Douyin, ...) keeps its own builder module; this model only carries the
-wiring `gen_reply` needs to treat them uniformly: spot the URL, start the speculative build,
-gate its media ingestion, and inject a deterministic notice when the build outruns the
-post-route grace. The registry instances live in `gen_reply.py` (`LINK_CONTEXT_SOURCES`) as
-thin adapters over the builder functions: an adapter body resolves the builder name from that
-module's globals at call time, so a test monkeypatching
-`discordbot.cogs.gen_reply.build_*_context_messages` still intercepts the call.
+Each source (Threads, Douyin, Bilibili, ...) keeps its own builder module beside this one in
+this package; the model here only carries the wiring `gen_reply` needs to treat them
+uniformly: spot the URL, start the speculative build, gate its media ingestion, and inject a
+deterministic notice when the build outruns the post-route grace. The registry instances live
+in `gen_reply.py` (`LINK_CONTEXT_SOURCES`) as thin adapters over the builder functions: an
+adapter body resolves the builder name from that module's globals at call time, so a test
+monkeypatching `discordbot.cogs.gen_reply.build_*_context_messages` still intercepts the
+call. Adding a source is one builder module here, a `utils/` URL regex, and one registry
+entry.
 """
 
 import re

@@ -9,8 +9,8 @@ import threading
 import pytest
 
 from discordbot.utils.downloader import VideoMetadata, DownloadResult, VideoDownloader
-from discordbot.cogs._parse_bilibili import builder as bilibili_builder
-from discordbot.cogs._parse_bilibili.builder import (
+from discordbot.cogs._gen_reply.link_sources import bilibili as bilibili_builder
+from discordbot.cogs._gen_reply.link_sources.bilibili import (
     BILIBILI_CONTEXT_SEPARATOR,
     BILIBILI_UNREADABLE_NOTICE,
     BILIBILI_TOO_LONG_SEPARATOR,

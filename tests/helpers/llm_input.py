@@ -19,26 +19,26 @@ from collections.abc import Mapping, Iterator, Sequence
 
 from openai.types.responses import ResponseInputParam
 
-from discordbot.cogs._parse_douyin.builder import (
-    DOUYIN_BLOCKED_NOTICE,
-    DOUYIN_TIMEOUT_NOTICE,
-    DOUYIN_CONTEXT_SEPARATOR,
-    DOUYIN_UNAVAILABLE_NOTICE,
-    DOUYIN_TEXT_ONLY_SEPARATOR,
-)
 from discordbot.cogs._gen_reply.memory_tool import (
     render_tone_block,
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
 )
-from discordbot.cogs._parse_threads.builder import (
+from discordbot.cogs._gen_reply.link_sources.douyin import (
+    DOUYIN_BLOCKED_NOTICE,
+    DOUYIN_TIMEOUT_NOTICE,
+    DOUYIN_CONTEXT_SEPARATOR,
+    DOUYIN_UNAVAILABLE_NOTICE,
+    DOUYIN_TEXT_ONLY_SEPARATOR,
+)
+from discordbot.cogs._gen_reply.link_sources.threads import (
     THREADS_TIMEOUT_NOTICE,
     THREADS_CONTEXT_SEPARATOR,
     THREADS_UNAVAILABLE_NOTICE,
     THREADS_TEXT_ONLY_SEPARATOR,
 )
-from discordbot.cogs._parse_bilibili.builder import (
+from discordbot.cogs._gen_reply.link_sources.bilibili import (
     BILIBILI_TIMEOUT_NOTICE,
     BILIBILI_CONTEXT_SEPARATOR,
     BILIBILI_UNREADABLE_NOTICE,
