@@ -49,9 +49,9 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     """Runs one best-effort structured Responses.parse call, returning None on any failure.
 
     Owns the shared proxy call surface, the timeout, and the failure handling so each caller
-    only maps None to its own fallback: a timeout, an empty or refused output
-    (`ValidationError` from parsing no text), an incomplete (truncated) response, or any
-    other error all degrade to None.
+    only maps None to its own fallback: a timeout, an empty or refused output or a payload
+    that does not match `text_format` (both surface as `ValidationError`), an incomplete
+    (truncated) response, or any other error all degrade to None.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):
@@ -67,25 +67,39 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
                 extra_headers={"x-litellm-end-user-id": end_user_id},
                 extra_body={"mock_testing_fallbacks": False},
             )
-    except TimeoutError:
+    except TimeoutError as exc:
         logfire.warn(
             "Structured LLM request timed out; skipping",
             end_user_id=end_user_id,
+            model=model.name,
             timeout_seconds=timeout_seconds,
+            _exc_info=exc,
         )
         return None
-    except ValidationError:
-        logfire.warn("Structured LLM parse returned no text; skipping", end_user_id=end_user_id)
-        return None
-    except Exception:
+    except ValidationError as exc:
         logfire.warn(
-            "Structured LLM request failed; skipping", end_user_id=end_user_id, _exc_info=True
+            "Structured LLM parse returned no text or an off-schema payload; skipping",
+            end_user_id=end_user_id,
+            model=model.name,
+            _exc_info=exc,
+        )
+        return None
+    # Broad on purpose: the LiteLLM proxy surfaces openai.APIError, httpx transport errors and
+    # proxy-side 5xx bodies as unrelated types, and every failure here degrades to None.
+    except Exception as exc:
+        logfire.warn(
+            "Structured LLM request failed; skipping",
+            end_user_id=end_user_id,
+            model=model.name,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
         )
         return None
     if responses.status == "incomplete":
         logfire.warn(
             "Structured LLM response incomplete; skipping",
             end_user_id=end_user_id,
+            model=model.name,
             incomplete_details=str(responses.incomplete_details),
         )
         return None
@@ -120,16 +134,24 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
                 extra_headers={"x-litellm-end-user-id": end_user_id},
                 extra_body={"mock_testing_fallbacks": False},
             )
-    except TimeoutError:
+    except TimeoutError as exc:
         logfire.warn(
             "Text LLM request timed out; using fallback",
             end_user_id=end_user_id,
+            model=model.name,
             timeout_seconds=timeout_seconds,
+            _exc_info=exc,
         )
         return None
-    except Exception:
+    # Broad on purpose: this shared surface owns failure handling so every caller only maps
+    # None to its own fallback line; proxy, transport and SDK errors share no base class.
+    except Exception as exc:
         logfire.warn(
-            "Text LLM request failed; using fallback", end_user_id=end_user_id, _exc_info=True
+            "Text LLM request failed; using fallback",
+            end_user_id=end_user_id,
+            model=model.name,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
         )
         return None
     return output_text_or_empty(responses=responses).strip()

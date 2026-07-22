@@ -21,6 +21,7 @@ import threading
 from collections import OrderedDict
 from urllib.parse import urljoin, parse_qs, urlparse
 
+import logfire
 from pydantic import Field, BaseModel
 import requests
 from requests.exceptions import RequestException
@@ -641,7 +642,7 @@ class DouyinDownloader(BaseModel):
         filepath = Path(self.output_folder) / filename
 
         last_error: Exception | None = None
-        for _ in range(self.max_retries):
+        for attempt in range(self.max_retries):
             try:
                 with requests.Session() as session:
                     response = session.get(
@@ -664,6 +665,15 @@ class DouyinDownloader(BaseModel):
             except RequestException as e:
                 last_error = e
                 filepath.unlink(missing_ok=True)
+                logfire.debug(
+                    "Retrying a stalled Douyin media download",
+                    url=url,
+                    filename=filename,
+                    attempt=attempt + 1,
+                    max_retries=self.max_retries,
+                    error_type=type(e).__name__,
+                    _exc_info=True,
+                )
             except Exception:
                 # A local write can fail too (a full disk surfaces from `write`, not from the
                 # request), and that is not worth retrying; neither is an oversize file, which
@@ -673,7 +683,9 @@ class DouyinDownloader(BaseModel):
                 filepath.unlink(missing_ok=True)
                 raise
 
-        raise DouyinError(f"Failed to download Douyin media from {url}: {last_error}")
+        raise DouyinError(
+            f"Failed to download Douyin media from {url}: {last_error}"
+        ) from last_error
 
     @staticmethod
     def _reject_oversize_header(
