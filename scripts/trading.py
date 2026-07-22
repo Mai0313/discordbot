@@ -1,14 +1,11 @@
-"""Standalone TradingAgents run for GOOG with a self-contained config.
+"""Standalone (non-TUI) TradingAgents runner for a basket of tickers.
 
-Every run setting that used to live in .env is inlined here, so .env only needs
-to hold API keys (e.g. GOOGLE_API_KEY). That makes this script portable: copy
-it, tweak it into other states, or call it from elsewhere without depending on
-a particular .env. Provider is Gemini by default; switch by swapping the active
-block below for one of the commented ones.
+A scripted alternative to the TUI, meant to be runnable from any directory:
+every config value the `.env` + `DEFAULT_CONFIG` flow would resolve is set explicitly below, so the script does not depend on a discoverable `.env` (which is only found by walking up from the current working directory).
+Only the provider API key must be present in the environment (e.g. `GOOGLE_API_KEY`); results/cache/memory paths default to `~/.tradingagents` and are cwd-independent.
 
-These values reproduce the interactive `uv run tradingagents` run for
-GOOG + today + all analysts, with the model/language/thinking choices your .env
-was pinning moved in here.
+The interactive TUI selections are hardcoded instead: all four analysts, today's date, and the ticker list at the bottom.
+The commented provider blocks are ready-to-swap examples — uncomment one and comment out the active block.
 """
 
 import datetime
@@ -49,8 +46,8 @@ def run_trading_agents(stock: str) -> str:
     config["max_risk_discuss_rounds"] = 5
     config["max_recur_limit"] = 100
     config["news_article_limit"] = 20
-    config["global_news_article_limit"] = 100
-    config["global_news_lookback_days"] = 30
+    config["global_news_article_limit"] = 10
+    config["global_news_lookback_days"] = 7
     config["llm_max_retries"] = 3
 
     selected_analysts = ["market", "social", "news", "fundamentals"]
