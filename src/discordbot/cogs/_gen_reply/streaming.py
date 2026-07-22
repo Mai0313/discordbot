@@ -3,7 +3,6 @@
 import re
 import time
 import asyncio
-import contextlib
 from collections.abc import AsyncIterator
 
 import logfire
@@ -170,6 +169,9 @@ class ResponseStreamer(BaseModel):
     # Set when the reply message was deleted while streaming, so the media step knows the
     # difference between "never sent" (a real problem, worth a hint) and "sent then deleted".
     _reply_deleted: bool = PrivateAttr(default=False)
+    # Set once the preview editor has reported a failed snapshot write, so the 1s cadence does
+    # not repeat the same warn for the rest of the stream.
+    _preview_error_logged: bool = PrivateAttr(default=False)
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -266,8 +268,29 @@ class ResponseStreamer(BaseModel):
                     self._editor_stop.wait(), timeout=self.preview_interval_seconds
                 )
             except TimeoutError:
-                with contextlib.suppress(Exception):
+                try:
                     await self._write_preview_snapshot()
+                except NotFound:
+                    # The reply was deleted mid-stream; a normal end, handled again in
+                    # _write_final_message. Nothing to repair, so stop previewing.
+                    logfire.info(
+                        "Reply deleted while streaming; stopping preview edits",
+                        message_id=self.message.id,
+                    )
+                    return
+                except Exception as exc:
+                    # Broad on purpose: the preview is best-effort and must never break the
+                    # stream, but a persistent failure kills the whole live-preview UX, so the
+                    # first one is recorded. Logged once because displayed_content is not
+                    # advanced on failure, so the same error repeats every tick.
+                    if not self._preview_error_logged:
+                        self._preview_error_logged = True
+                        logfire.warn(
+                            "Preview snapshot edit failed; continuing to stream",
+                            message_id=self.message.id,
+                            error_type=type(exc).__name__,
+                            _exc_info=exc,
+                        )
             else:
                 return
 
@@ -281,8 +304,17 @@ class ResponseStreamer(BaseModel):
         if self._editor_task is None:
             return
         self._editor_stop.set()
-        with contextlib.suppress(Exception):
+        try:
             await self._editor_task
+        except Exception as exc:
+            # Broad on purpose: the editor is a best-effort UX task, its death must not sink
+            # the finished reply. Cancellation still propagates (it is a BaseException).
+            logfire.warn(
+                "Preview editor task crashed; the reply still finalizes without live preview",
+                message_id=self.message.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
         self._editor_task = None
 
     async def _write_final_message(self, content: str, footer: str) -> None:
@@ -532,10 +564,11 @@ class ResponseStreamer(BaseModel):
                 )
                 return own_images + ref_images
             return await self.input_builder.get_image_sources_with_mime(message=self.message)
-        except Exception:
+        except Exception as exc:  # broad: best-effort source load, see docstring
             logfire.warn(
                 "Inline image source load failed; generating without source pixels",
                 message_id=self.message.id,
+                error_type=type(exc).__name__,
                 _exc_info=True,
             )
             return []
@@ -775,18 +808,36 @@ class ResponseStreamer(BaseModel):
                 await reply.edit(files=files, allowed_mentions=AllowedMentions.none())
             elif content is not None:
                 await reply.edit(content=content, allowed_mentions=AllowedMentions.none())
-        except Exception:
+        except Exception as exc:
+            # Broad on purpose: this single edit is the best-effort delivery of every generated
+            # attachment and must never raise into the reply pipeline. error_type separates a
+            # deleted reply (NotFound) from a rejected payload (HTTPException, i.e. the planner
+            # mis-decided the upload limit).
             logfire.warn(
                 "Failed to attach generated media onto the reply",
                 message_id=self.message.id,
                 file_count=len(files),
-                _exc_info=True,
+                hosted_count=len(hosted_urls),
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
             await self._hint_media_unavailable(emoji="⚠️")
             return
         if follow_up is not None:
-            with contextlib.suppress(Exception):
+            try:
                 await reply.reply(content=follow_up, allowed_mentions=AllowedMentions.none())
+            except Exception as exc:
+                # Broad on purpose: a deleted parent or any Discord HTTP error must never raise
+                # into the reply pipeline. The follow-up IS the delivery of the hosted clip, so a
+                # failure here means the media is gone.
+                logfire.warn(
+                    "Hosted media link follow-up failed; the media URL was never posted",
+                    message_id=self.message.id,
+                    hosted_url_count=len(hosted_urls),
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+                await self._hint_media_unavailable(emoji="⚠️")
 
     async def stream(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""

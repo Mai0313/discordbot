@@ -199,6 +199,8 @@ class FakeReply:
         self.deleted = False
         # When set, edit() raises this instead of recording (simulates a deleted reply).
         self.edit_error: Exception | None = None
+        # When set, reply() raises this instead of recording (simulates a failed follow-up).
+        self.reply_error: Exception | None = None
         # Records the allowed_mentions arg of each edit/reply so tests can prove a media edit /
         # follow-up keeps AllowedMentions.none() (dropping it would re-ping the author).
         self.allowed_mentions_seen: list[object | None] = []
@@ -231,6 +233,8 @@ class FakeReply:
 
     async def reply(self, content: str, allowed_mentions: object | None = None) -> FakeReply:
         """Creates and records a follow-up reply in the chain."""
+        if self.reply_error is not None:
+            raise self.reply_error
         self.allowed_mentions_seen.append(allowed_mentions)
         child = FakeReply()
         child.content = content
@@ -1214,6 +1218,26 @@ async def test_finalize_media_edit_posts_followup_when_content_would_overflow(
     assert "media.test" not in (reply.content or "")
     assert any("media.test" in (child.content or "") for child in reply.replies)
     assert reply.allowed_mentions_seen[-1] is not None
+
+
+async def test_finalize_media_edit_hints_when_the_hosted_followup_fails(
+    economy_isolated_db: None,
+) -> None:
+    """A follow-up that never lands is the whole clip, so it earns the ⚠️ hint, not silence."""
+    del economy_isolated_db
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    reply = FakeReply()
+    reply.reply_error = RuntimeError("follow-up refused")
+    streamer.reply = reply
+    streamer.stored_content = "x" * (DISCORD_MESSAGE_LIMIT - 10)
+
+    await streamer._finalize_media_edit(
+        reply=reply, files=[], hosted_urls=["https://media.test/abc.wav"]
+    )
+
+    assert reply.replies == []
+    assert "⚠️" in message.added_reactions
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:

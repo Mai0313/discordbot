@@ -350,7 +350,7 @@ class MessageInputBuilder(BaseModel):
         for source in sources:
             required = self.required_modality(content_type=source.content_type)
             if required not in modalities:
-                logfire.warn(
+                logfire.info(
                     "gen_reply skipping unsupported attachment",
                     modality=required,
                     model=model_name,
@@ -376,6 +376,14 @@ class MessageInputBuilder(BaseModel):
             if source.kind == "image":
                 tasks.append(load_image_bytes(source=source.handle))
         loaded = await asyncio.gather(*tasks, return_exceptions=True)
+        for item in loaded:
+            if isinstance(item, BaseException):
+                logfire.warn(
+                    "failed to load a source image; generating without it",
+                    message_id=message.id,
+                    error_type=type(item).__name__,
+                    _exc_info=item,
+                )
         return [item for item in loaded if isinstance(item, tuple)]
 
     async def get_image_source_bytes(self, message: Message) -> list[bytes]:
@@ -397,9 +405,15 @@ class MessageInputBuilder(BaseModel):
             if source.content_type.startswith("video/") and isinstance(source.handle, Attachment):
                 try:
                     return [await load_attachment_bytes(attachment=source.handle)]
-                except Exception:
+                except Exception as exc:
+                    # Broad on purpose: a Discord/transport read failure must degrade to the
+                    # next clip, never escape into the VIDEO route's hard-fail path.
                     logfire.warn(
-                        "failed to read a source video attachment; trying the next", _exc_info=True
+                        "failed to read a source video attachment; trying the next",
+                        source_message_id=message.id,
+                        filename=source.handle.filename,
+                        error_type=type(exc).__name__,
+                        _exc_info=exc,
                     )
         return []
 
@@ -652,8 +666,16 @@ class MessageInputBuilder(BaseModel):
                 parts=attachment_parts,
                 has_attachments=bool(sources),
             )
-        except Exception:
+        except Exception as exc:
+            # Broad on purpose: this render feeds the answer request directly, so any failure
+            # (cold-start LiteLLM modality lookup, an unexpected nextcord shape) must degrade
+            # this one message to empty text rather than abort the reply. Per-attachment
+            # download/upload failures never reach here; the handlers drop them to None with
+            # their own step-named warn.
             logfire.warn(
-                "gen_reply failed to process message", message_id=message.id, _exc_info=True
+                "gen_reply failed to process message",
+                message_id=message.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
             return EasyInputMessageParam(role="user", content="")

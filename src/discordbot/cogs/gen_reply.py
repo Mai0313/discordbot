@@ -332,19 +332,33 @@ def _current_header(message: Message, has_reference: bool) -> EasyInputMessagePa
     )
 
 
-async def _discard_task[TaskResultT](task: asyncio.Task[TaskResultT]) -> None:
-    """Cancels and drains a speculative task so its exception is retrieved."""
+async def _discard_task[TaskResultT](
+    *, task: asyncio.Task[TaskResultT], label: str = "speculative", message_id: int | None = None
+) -> None:
+    """Cancels and drains a speculative task so its exception is retrieved.
+
+    The except is deliberately broad: this drains unrelated subsystems (prep, effort, parts,
+    threads, douyin, memory selection), so anything they can raise must be swallowed here rather
+    than surfacing on a route that already decided it does not need the result. `label` names
+    which one failed, since the tasks are otherwise indistinguishable at this point.
+    """
     task.cancel()
     try:
         await task
     except asyncio.CancelledError:
         pass
-    except Exception:
-        logfire.warn("Speculative reply context build failed off-route", _exc_info=True)
+    except Exception as exc:
+        logfire.warn(
+            "Speculative reply context build failed off-route",
+            task_label=label,
+            error_type=type(exc).__name__,
+            message_id=message_id,
+            _exc_info=exc,
+        )
 
 
 async def _await_gated[GatedT](
-    *, task: asyncio.Task[GatedT], route_done: asyncio.Event, grace_seconds: float
+    *, task: asyncio.Task[GatedT], label: str, route_done: asyncio.Event, grace_seconds: float
 ) -> GatedT:
     """Awaits a speculative side task, bounded by the route call instead of a fixed timeout.
 
@@ -362,12 +376,11 @@ async def _await_gated[GatedT](
         return await asyncio.wait_for(fut=task, timeout=grace_seconds)
     finally:
         route_wait.cancel()
-        with contextlib.suppress(BaseException):
+        # `route_done.wait()` has no other terminal state, so nothing else is worth catching.
+        with contextlib.suppress(asyncio.CancelledError):
             await route_wait
         if not task.done():
-            task.cancel()
-            with contextlib.suppress(BaseException):
-                await task
+            await _discard_task(task=task, label=label)
 
 
 def _log_pre_answer_latency(started: float, decision: str) -> None:
@@ -823,7 +836,7 @@ class ReplyGeneratorCogs(commands.Cog):
         except Exception:
             # Generation failing IS a real error and stays on the outer error path, but the
             # speculative context must not leak when we bail before consuming it.
-            await _discard_task(task=context_task)
+            await _discard_task(task=context_task, label="prep", message_id=message.id)
             raise
 
         # The video is already delivered, so from here a failure must never surface as an error:
@@ -864,7 +877,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         file_uri = await self._upload_video_for_reply(data=video_bytes)
         if file_uri is None:
-            await _discard_task(task=context_task)
+            await _discard_task(task=context_task, label="prep", message_id=message.id)
             return
         await self._stream_media_persona_reply(
             message=message,
@@ -956,11 +969,12 @@ class ReplyGeneratorCogs(commands.Cog):
                     extra_body={"mock_testing_fallbacks": False},
                 )
                 await streamer.stream(responses=responses)
-        except Exception:
+        except Exception as exc:
             logfire.warn(
                 "Media persona reply failed; leaving the delivered media without a reply",
                 media=media_noun,
                 message_id=message.id,
+                error_type=type(exc).__name__,
                 _exc_info=True,
             )
             # A fresh hosted-case base (reply was None) that never received content is a bare ping;
@@ -1033,7 +1047,7 @@ class ReplyGeneratorCogs(commands.Cog):
         except Exception:
             # Generation failing IS a real error and stays on the outer error path, but the
             # speculative context must not leak when we bail before consuming it.
-            await _discard_task(task=context_task)
+            await _discard_task(task=context_task, label="prep", message_id=message.id)
             raise
 
         # The image is already delivered, so from here a failure must never surface as an
@@ -1122,12 +1136,14 @@ class ReplyGeneratorCogs(commands.Cog):
                 route = RouteClassification(decision="QA", watch_video=parsed.watch_video)
             else:
                 route = parsed
-        except ValidationError:
-            # The model returned no text output (e.g. safety filter, empty response);
-            # model_validate_json(None) raises ValidationError before we can inspect output_parsed.
+        except ValidationError as exc:
+            # `responses.parse` validates before `output_parsed` is reachable, so an empty /
+            # safety-filtered response and a genuine schema mismatch both land here; the
+            # attached exception is the only way to tell them apart.
             logfire.warn(
-                "RouteClassification parse failed, model returned no text; defaulting to QA",
+                "RouteClassification parse failed; defaulting to QA",
                 message_id=message.id,
+                _exc_info=exc,
             )
             route = RouteClassification(decision="QA")
         # Route-call latency is logged on every path: this is the prime suspect for slow
@@ -1192,19 +1208,24 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         try:
             grade = await _await_gated(
-                task=effort_task, route_done=route_done, grace_seconds=EFFORT_GRACE_SECONDS
+                task=effort_task,
+                label="effort",
+                route_done=route_done,
+                grace_seconds=EFFORT_GRACE_SECONDS,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
             logfire.warn(
                 "Effort grading exceeded the post-route grace; defaulting to high effort",
                 grace_seconds=EFFORT_GRACE_SECONDS,
                 message_id=message.id,
+                _exc_info=exc,
             )
             return "high"
-        except Exception:
+        except Exception as e:
             logfire.warn(
                 "Effort grading failed; defaulting to high effort",
                 message_id=message.id,
+                error_type=type(e).__name__,
                 _exc_info=True,
             )
             return "high"
@@ -1223,28 +1244,38 @@ class ReplyGeneratorCogs(commands.Cog):
 
         On the post-route grace timeout it injects a short "could not read it in time" notice
         instead of nothing, so a slow build keeps deterministic context rather than re-exposing
-        the "I cannot open this link" fallback; on any other error (e.g. cancellation) it
-        returns []. The builders themselves never raise (they degrade to their own notices).
+        the "I cannot open this link" fallback; on any other unexpected error it returns []
+        (cancellation propagates). The builders themselves never raise (they degrade to their
+        own notices).
         """
         started = time.monotonic()
         try:
             blocks = await _await_gated(
-                task=link_task, route_done=route_done, grace_seconds=LINK_CONTEXT_GRACE_SECONDS
+                task=link_task,
+                label=source,
+                route_done=route_done,
+                grace_seconds=LINK_CONTEXT_GRACE_SECONDS,
             )
-        except TimeoutError:
+        except TimeoutError as exc:
             logfire.warn(
                 "Linked-post context exceeded the post-route grace; injecting timeout notice",
                 source=source,
                 grace_seconds=LINK_CONTEXT_GRACE_SECONDS,
                 message_id=message.id,
+                _exc_info=exc,
             )
             return on_timeout()
-        except Exception:
+        except Exception as exc:
+            # Broad on purpose: the builders are documented never to raise, so anything landing
+            # here is unexpected (a builder bug, or a fetch/WAF failure that escaped its own
+            # notice); error_type is what tells those apart in logs. CancelledError is a
+            # BaseException and deliberately propagates instead of being swallowed as "no link".
             logfire.warn(
                 "Linked-post context failed; answering without it",
                 source=source,
                 message_id=message.id,
-                _exc_info=True,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
             return []
         logfire.info(
@@ -1544,14 +1575,16 @@ class ReplyGeneratorCogs(commands.Cog):
                     with logfire.span("gen_reply memory selection"):
                         selection = await _await_gated(
                             task=selection_task,
+                            label="memory selection",
                             route_done=route_done,
                             grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
                         )
-                except TimeoutError:
+                except TimeoutError as exc:
                     logfire.warn(
                         "Memory selection exceeded the post-route grace; falling back to participant memory",
                         grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
                         message_id=message.id,
+                        _exc_info=exc,
                     )
                     memory_block, memory_labels = self._participant_memory_fallback(
                         message=message, allowed=allowed, read_context=read_context
@@ -1584,9 +1617,9 @@ class ReplyGeneratorCogs(commands.Cog):
             # If this prep is cancelled during the upload wait (a non-QA route discarding it)
             # before the gate resolves it, cancel the in-flight selection so it never orphans.
             if selection_task is not None and not selection_task.done():
-                selection_task.cancel()
-                with contextlib.suppress(BaseException):
-                    await selection_task
+                await _discard_task(
+                    task=selection_task, label="memory selection", message_id=message.id
+                )
 
         return ReplyContext(
             hist_messages=hist_messages,
@@ -1908,7 +1941,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 error_type=type(e).__name__,
                 _exc_info=True,
             )
-            with contextlib.suppress(Exception):
+            try:
                 reactions.advance(emoji="<:redcross:1517565100838355016>")
                 error_embed = Embed(
                     title="Something went wrong",
@@ -1928,6 +1961,15 @@ class ReplyGeneratorCogs(commands.Cog):
                         embeds=[error_embed], is_edit=False, target=message
                     )
                     await message.channel.send(content=None, embed=error_embed, **fresh_spacer)
+            except Exception as report_error:
+                # Broad on purpose: this is the last-resort user notice; nothing above it can
+                # recover, and it must not displace the original failure.
+                logfire.warn(
+                    "failed to deliver the pipeline failure notice",
+                    message_id=message.id,
+                    error_type=type(report_error).__name__,
+                    _exc_info=report_error,
+                )
         finally:
             await reactions.flush()
 
@@ -2022,13 +2064,17 @@ class ReplyGeneratorCogs(commands.Cog):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only
                     # in the status emoji and which media handler runs. Effort and Threads context
                     # are answer-only, so both are discarded here.
-                    await _discard_task(task=effort_task)
+                    await _discard_task(task=effort_task, label="effort", message_id=message.id)
                     effort_task = None
                     if threads_task is not None:
-                        await _discard_task(task=threads_task)
+                        await _discard_task(
+                            task=threads_task, label="threads", message_id=message.id
+                        )
                         threads_task = None
                     if douyin_task is not None:
-                        await _discard_task(task=douyin_task)
+                        await _discard_task(
+                            task=douyin_task, label="douyin", message_id=message.id
+                        )
                         douyin_task = None
                     reactions.advance(
                         emoji="<:image:1517559727880667226>"
@@ -2055,16 +2101,20 @@ class ReplyGeneratorCogs(commands.Cog):
                             context_task=media_context_task,
                         )
                 elif route.decision == "SUMMARY":
-                    await _discard_task(task=prep_task)
+                    await _discard_task(task=prep_task, label="prep", message_id=message.id)
                     prep_task = None
                     # A digest recaps channel history, not one linked post, so the Threads
                     # block is not injected here. A URL-bearing SUMMARY is already rerouted to
                     # QA in `_route_classify`, so this is normally None; discard defensively.
                     if threads_task is not None:
-                        await _discard_task(task=threads_task)
+                        await _discard_task(
+                            task=threads_task, label="threads", message_id=message.id
+                        )
                         threads_task = None
                     if douyin_task is not None:
-                        await _discard_task(task=douyin_task)
+                        await _discard_task(
+                            task=douyin_task, label="douyin", message_id=message.id
+                        )
                         douyin_task = None
                     reactions.advance(emoji="<:stacks:1517562531365912607>")
                     # so it neither biases the digest nor floods extraction, but the
@@ -2150,15 +2200,15 @@ class ReplyGeneratorCogs(commands.Cog):
                 reactions.advance(emoji="<:greencheck:1517565102424068226>")
         finally:
             if prep_task is not None:
-                await _discard_task(task=prep_task)
+                await _discard_task(task=prep_task, label="prep", message_id=message.id)
             if effort_task is not None:
-                await _discard_task(task=effort_task)
+                await _discard_task(task=effort_task, label="effort", message_id=message.id)
             if parts_task is not None:
-                await _discard_task(task=parts_task)
+                await _discard_task(task=parts_task, label="parts", message_id=message.id)
             if threads_task is not None:
-                await _discard_task(task=threads_task)
+                await _discard_task(task=threads_task, label="threads", message_id=message.id)
             if douyin_task is not None:
-                await _discard_task(task=douyin_task)
+                await _discard_task(task=douyin_task, label="douyin", message_id=message.id)
 
 
 def _can_launch_research(*, message: Message) -> bool:
@@ -2192,8 +2242,20 @@ async def _maybe_launch_research(
     launcher = getattr(cog, "launch", None)
     if launcher is None:
         return
-    with contextlib.suppress(Exception):
+    # Best-effort boundary: the research launch must never break an already-delivered reply, so
+    # the except stays broad. ResearchCogs.launch handles its expected outcomes by return value,
+    # so anything raising here is unexpected and the emitted brief is lost — markers.py already
+    # stripped it from the visible text.
+    try:
         await launcher(message=message, anchor=anchor, brief=brief)
+    except Exception as exc:
+        logfire.warn(
+            "deep research launch failed; the emitted brief was dropped",
+            message_id=message.id,
+            anchor_id=anchor.id if anchor is not None else None,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
 
 
 def setup(bot: commands.Bot) -> None:
