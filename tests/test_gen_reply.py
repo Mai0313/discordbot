@@ -4766,6 +4766,103 @@ async def test_on_message_cancels_bilibili_context_on_image_route(
     assert cancelled == [True]
 
 
+async def test_on_message_bilibili_keyless_disables_media_ingest(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A blank Gemini key turns the ingest flag off even with the kill-switch on.
+
+    The predicate needs both halves; without this the builder would be told it may upload
+    while holding no client to upload with.
+    """
+    cog = _cog()
+    cog.openai_client.responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    cog.config.gemini_api_key = ""
+    seen: list[tuple[object, bool]] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Records the client and flag the pipeline computed."""
+        del url, answer_model_is_gemini
+        seen.append((gemini_client, allow_media_ingest))
+        return _bilibili_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    assert seen == [(None, False)]
+
+
+async def test_on_message_finally_backstop_cancels_link_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pipeline failure before the QA resolve still cancels the in-flight link build.
+
+    The link tasks start before the route call, so a raising route reaches the finally with
+    the dict populated; the backstop there is the only thing cancelling a multi-hundred-MB
+    download on that path.
+    """
+    cog = _cog()
+    cog.config = _link_config()
+    cancelled: list[bool] = []
+
+    async def hanging_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Blocks until cancelled, recording the cancellation."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return []
+
+    async def raising_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Fails the pipeline after yielding so the build has started."""
+        del reference_messages, current_message
+        await asyncio.sleep(0)
+        raise RuntimeError("route exploded")
+
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
+        route_done: object,
+    ) -> ReplyContext:
+        """Keeps the speculative prep off the real memory and history paths."""
+        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        return ReplyContext()
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.build_bilibili_context_messages", hanging_builder
+    )
+    monkeypatch.setattr(cog, "_route_classify", raising_route)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=message)
+
+    assert cancelled == [True]
+
+
 async def test_on_message_bilibili_grace_timeout_injects_notice(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
