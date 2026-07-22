@@ -7,7 +7,7 @@ import re
 import json
 from types import SimpleNamespace
 import base64
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
@@ -85,6 +85,7 @@ from discordbot.cogs._gen_reply.attachment.select import build_attachment_handle
 from discordbot.cogs._gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
 from discordbot.cogs._gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
+from discordbot.cogs._gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs._gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
@@ -656,6 +657,32 @@ class FakeOpenAIClient:
         self.files = files or FakeOpenAIFiles()
 
 
+class FakeXAIFiles:
+    """Fake xAI Files API resource that records uploads."""
+
+    def __init__(self, file_id: str = "file-xai", expires_at: int | None = 4_070_908_800) -> None:
+        """Initializes fake upload output fields."""
+        self.file_id = file_id
+        self.expires_at = expires_at
+        self.create_calls: list[tuple[str, bytes, str, str, dict[str, object]]] = []
+
+    async def create(
+        self, file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
+    ) -> SimpleNamespace:
+        """Records an upload and returns a fake xAI file object."""
+        filename, data, content_type = file
+        self.create_calls.append((filename, data.read(), content_type, purpose, expires_after))
+        return SimpleNamespace(id=self.file_id, expires_at=self.expires_at, purpose=purpose)
+
+
+class FakeXAIClient:
+    """Fake xAI client exposing the async Files API used by GrokFileUploader."""
+
+    def __init__(self, files: FakeXAIFiles | None = None) -> None:
+        """Initializes the file resource."""
+        self.files = files or FakeXAIFiles()
+
+
 class FakeClient:
     """Fake OpenAI client with responses and images resources."""
 
@@ -688,6 +715,13 @@ def _fake_openai_uploader(files: FakeOpenAIFiles | None = None) -> OpenAIFileUpl
     """An OpenAIFileUploader with its lazy client pre-seeded to a fake."""
     uploader = OpenAIFileUploader(model_name=TEST_LLM_MODEL)
     uploader.__dict__["client"] = FakeOpenAIClient(files=files)
+    return uploader
+
+
+def _fake_grok_uploader(files: FakeXAIFiles | None = None) -> GrokFileUploader:
+    """A GrokFileUploader with its lazy xAI client pre-seeded to a fake."""
+    uploader = GrokFileUploader()
+    uploader.__dict__["xai_client"] = FakeXAIClient(files=files)
     return uploader
 
 
@@ -2929,6 +2963,107 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
 def test_gpt_attachment_handler_path_stays_disabled() -> None:
     """GPT models still use inline attachments until the OpenAI uploader branch is enabled."""
     assert isinstance(build_attachment_handler(model_name="gpt-5.1"), InlineRenderer)
+
+
+def test_grok_attachment_handler_path_stays_disabled() -> None:
+    """Grok models still use inline attachments until the xAI uploader branch is enabled."""
+    assert isinstance(build_attachment_handler(model_name="grok-4.5"), InlineRenderer)
+
+
+async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
+    """The xAI uploader references files by id and keeps images inline."""
+    files = FakeXAIFiles()
+    renderer = _fake_grok_uploader(files=files)
+
+    file_rendered = await renderer.render_file(
+        attachment=FakeAttachment(
+            filename="notes.txt", content_type="text/plain", payload=b"hello world"
+        ),
+        cache_key="notes.txt",
+    )
+    assert file_rendered is not None
+    file_part, file_expiry = file_rendered
+    assert file_part["type"] == "input_file"
+    assert file_part["file_id"] == "file-xai"
+    assert file_part["filename"] == "notes.txt"
+    assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
+
+    # xAI resolves no file id for image input, so an image is inlined instead of uploaded.
+    image_rendered = await renderer.render_image(
+        source=FakeAttachment(
+            filename="pic.png", content_type="image/png", payload=base64.b64decode(_png_b64())
+        ),
+        cache_key="pic.png",
+    )
+    assert image_rendered is not None
+    image_part, _image_expiry = image_rendered
+    assert image_part["type"] == "input_image"
+    assert image_part["image_url"].startswith("data:image/")
+
+    assert files.create_calls == [
+        (
+            "notes.txt",
+            b"hello world",
+            "text/plain",
+            "assistants",
+            {"anchor": "created_at", "seconds": 2_592_000},
+        )
+    ]
+
+
+async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.MonkeyPatch) -> None:
+    """XAI upload errors and id-less responses degrade to a dropped attachment."""
+    idless = _fake_grok_uploader(files=FakeXAIFiles(file_id=""))
+    assert (
+        await idless._upload_file(filename="bad.txt", data=b"x", content_type="text/plain") is None
+    )
+
+    boom = _fake_grok_uploader()
+
+    async def _raise(
+        file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
+    ) -> SimpleNamespace:
+        del file, purpose, expires_after
+        raise RuntimeError("upload failed")
+
+    monkeypatch.setattr(boom.xai_client.files, "create", _raise)
+    assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+
+
+async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unconfigured xAI key is reported as a missing key, not as an upload failure."""
+    monkeypatch.setenv("XAI_API_KEY", "")
+    # The SDK accepts an admin key in place of the missing one, which would let the upload
+    # call be reached (and attempted for real) instead of failing at client construction.
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    logged: list[str] = []
+
+    def record_error(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the missing-key log."""
+        del kwargs
+        logged.append(message)
+
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.attachment.grok_file_api.logfire.error", record_error
+    )
+    renderer = GrokFileUploader()
+    assert (
+        await renderer._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+    )
+    assert logged == ["xAI Files API key missing; dropping attachment"]
+
+
+async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
+    """A response without an expiry still bounds the render cache by the requested TTL."""
+    renderer = _fake_grok_uploader(files=FakeXAIFiles(expires_at=None))
+    uploaded = await renderer._upload_file(
+        filename="notes.txt", data=b"hello", content_type="text/plain"
+    )
+    assert uploaded is not None
+    _file_id, expires_at = uploaded
+    assert expires_at > datetime.now(tz=UTC) + timedelta(days=29)
 
 
 async def test_non_gemini_answer_model_inlines_attachments() -> None:
