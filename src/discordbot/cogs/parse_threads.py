@@ -17,10 +17,9 @@ the link context). Both are rare enough to accept rather than couple the cogs to
 import asyncio
 from pathlib import Path
 import tempfile
-import contextlib
 
 import logfire
-from nextcord import Color, Embed, Message, AllowedMentions
+from nextcord import Color, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
@@ -160,6 +159,119 @@ class ThreadsCogs(commands.Cog):
             )
         return embeds
 
+    async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
+        """Swaps the progress reaction for the failure cross."""
+        await update_reaction(
+            message=message,
+            bot_user=self.bot.user,
+            emoji="<:redcross:1517565100838355016>",
+            previous=current_emoji,
+        )
+
+    async def _deliver(
+        self, *, message: Message, url: str, results: list[ThreadsOutput], current_emoji: str
+    ) -> None:
+        """Plans the target's media, posts the expansion and marks the source done."""
+        target = results[-1]
+        # Broad on purpose: the delivery step must never escape into the listener, and its
+        # failures split three ways — the source message went away, the bot lacks a permission,
+        # or something unexpected lost the expansion.
+        try:
+            # Videos too big to attach are hosted on the external static server and linked
+            # instead of refusing the whole post; the rest attach natively. The planner
+            # reserves 1 MiB for the multipart envelope + embeds JSON and pulls the per-guild
+            # limit from nextcord (boost tier raises it to 50/100 MiB; a DM has the 10 MiB base).
+            items = [
+                MediaItem(source=path, filename=path.name)
+                for path in target.video_paths
+                if path.exists()
+            ]
+            plan = await self.media_delivery.plan(
+                items=items,
+                upload_limit=upload_limit_for(guild=message.guild),
+                envelope_margin=MEDIA_ENVELOPE_MARGIN,
+            )
+            if plan.dropped_items:
+                # An oversize video that could not be hosted (hosting off / failed) keeps
+                # today's whole-post ⚠️ refusal rather than posting a partial chain. Kept simple
+                # on purpose: in the near-unreachable hosting-on partial-failure case (one
+                # sibling video already moved into the serve dir, another's write fails) this
+                # leaves the moved file orphaned at an unposted URL; both serve-dir writes
+                # realistically succeed or fail together, so it is not worth a cleanup branch.
+                logfire.warn(
+                    "Threads videos could not be hosted; refusing the whole post",
+                    url=url,
+                    message_id=message.id,
+                    dropped=len(plan.dropped_items),
+                )
+                await update_reaction(
+                    message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
+                )
+                return
+
+            files = [item.to_file() for item in plan.native]
+            embeds = self._build_embeds(results=results)
+
+            try:
+                await message.edit(suppress=True)
+            # Broad on purpose: hiding Discord's own preview is cosmetic and must not abort the
+            # expansion. A persistent Forbidden means the guild lacks Manage Messages.
+            except Exception as error:
+                logfire.warn(
+                    "Could not suppress the source message embed",
+                    message_id=message.id,
+                    guild_id=message.guild.id if message.guild else None,
+                    error_type=type(error).__name__,
+                    _exc_info=error,
+                )
+
+            await message.reply(
+                content="\n".join(plan.hosted_urls) if plan.hosted_urls else None,
+                embeds=embeds,
+                mention_author=False,
+                allowed_mentions=AllowedMentions.none(),
+                **embed_spacer_payload(
+                    embeds=embeds, is_edit=False, target=message, extra_files=files
+                ),
+            )
+            await update_reaction(
+                message=message,
+                bot_user=self.bot.user,
+                emoji="<:greencheck:1517565102424068226>",
+                previous=current_emoji,
+            )
+        except Exception as error:
+            # A reply to a deleted source comes back as HTTP 50035, not only as NotFound.
+            gone = isinstance(error, NotFound) or (
+                isinstance(error, HTTPException) and error.code == 50035
+            )
+            if gone:
+                logfire.info(
+                    "Threads expansion target is gone",
+                    url=url,
+                    message_id=message.id,
+                    channel_id=message.channel.id,
+                )
+            elif isinstance(error, Forbidden):
+                logfire.warn(
+                    "Missing permission to post the Threads expansion",
+                    url=url,
+                    message_id=message.id,
+                    channel_id=message.channel.id,
+                    error_type=type(error).__name__,
+                    _exc_info=error,
+                )
+            else:
+                logfire.error(
+                    "Failed to send Threads expansion",
+                    url=url,
+                    message_id=message.id,
+                    channel_id=message.channel.id,
+                    error_type=type(error).__name__,
+                    _exc_info=error,
+                )
+            await self._mark_failed(message=message, current_emoji=current_emoji)
+
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
         """Listens for messages and parses Threads links.
@@ -188,9 +300,25 @@ class ThreadsCogs(commands.Cog):
             # off the event loop; the reply runs while the temp files still exist
             # and the matching exit cleans them up afterwards.
             parse_cm = self.downloader.parse(url)
-            results = await asyncio.to_thread(parse_cm.__enter__)
+            try:
+                results = await asyncio.to_thread(parse_cm.__enter__)
+            # Broad on purpose: a fetch failure must not escape into the listener; the ❌
+            # reaction is the user-visible outcome.
+            except Exception as error:
+                logfire.warn(
+                    "Threads parse failed",
+                    url=url,
+                    message_id=message.id,
+                    error_type=type(error).__name__,
+                    _exc_info=error,
+                )
+                await self._mark_failed(message=message, current_emoji=current_emoji)
+                return
             try:
                 if not results:
+                    logfire.info(
+                        "Threads parse returned no post; treating as unavailable", url=url
+                    )
                     await update_reaction(
                         message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
                     )
@@ -201,69 +329,32 @@ class ThreadsCogs(commands.Cog):
                 # it stays the ⚠️ refusal. (Image count is not guarded: _build_embeds caps the
                 # message at 10 embeds and shows as many images as fit.)
                 if len(target.text) > 4096:
+                    logfire.info(
+                        "Threads post exceeds the embed description limit; skipping expansion",
+                        url=url,
+                        text_length=len(target.text),
+                    )
                     await update_reaction(
                         message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
                     )
                     return
 
-                # Videos too big to attach are hosted on the external static server and linked
-                # instead of refusing the whole post; the rest attach natively. The planner
-                # reserves 1 MiB for the multipart envelope + embeds JSON and pulls the per-guild
-                # limit from nextcord (boost tier raises it to 50/100 MiB; a DM has the 10 MiB base).
-                items = [
-                    MediaItem(source=path, filename=path.name)
-                    for path in target.video_paths
-                    if path.exists()
-                ]
-                plan = await self.media_delivery.plan(
-                    items=items,
-                    upload_limit=upload_limit_for(guild=message.guild),
-                    envelope_margin=MEDIA_ENVELOPE_MARGIN,
-                )
-                if plan.dropped_items:
-                    # An oversize video that could not be hosted (hosting off / failed) keeps
-                    # today's whole-post ⚠️ refusal rather than posting a partial chain. Kept simple
-                    # on purpose: in the near-unreachable hosting-on partial-failure case (one
-                    # sibling video already moved into the serve dir, another's write fails) this
-                    # leaves the moved file orphaned at an unposted URL; both serve-dir writes
-                    # realistically succeed or fail together, so it is not worth a cleanup branch.
-                    await update_reaction(
-                        message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
-                    )
-                    return
-
-                files = [item.to_file() for item in plan.native]
-                embeds = self._build_embeds(results=results)
-
-                with contextlib.suppress(Exception):
-                    await message.edit(suppress=True)
-
-                await message.reply(
-                    content="\n".join(plan.hosted_urls) if plan.hosted_urls else None,
-                    embeds=embeds,
-                    mention_author=False,
-                    allowed_mentions=AllowedMentions.none(),
-                    **embed_spacer_payload(
-                        embeds=embeds, is_edit=False, target=message, extra_files=files
-                    ),
-                )
-                await update_reaction(
-                    message=message,
-                    bot_user=self.bot.user,
-                    emoji="<:greencheck:1517565102424068226>",
-                    previous=current_emoji,
+                await self._deliver(
+                    message=message, url=url, results=results, current_emoji=current_emoji
                 )
             finally:
                 await asyncio.to_thread(parse_cm.__exit__, None, None, None)
-        except Exception:
-            logfire.error("Failed to send Threads message", _exc_info=True)
-            with contextlib.suppress(Exception):
-                await update_reaction(
-                    message=message,
-                    bot_user=self.bot.user,
-                    emoji="<:redcross:1517565100838355016>",
-                    previous=current_emoji,
-                )
+        # Broad on purpose: the listener's last line of defence, covering the residual step (the
+        # temp-file cleanup) so nothing escapes into the dispatcher.
+        except Exception as error:
+            logfire.error(
+                "Threads expansion failed outside the parse and delivery steps",
+                url=url,
+                message_id=message.id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+            await self._mark_failed(message=message, current_emoji=current_emoji)
 
 
 def setup(bot: commands.Bot) -> None:

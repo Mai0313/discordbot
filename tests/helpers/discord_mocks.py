@@ -118,6 +118,8 @@ class FakeDiscordMessage:
 
     def __init__(self) -> None:
         """Initializes message mutation records."""
+        self.id = 1
+        self.channel = SimpleNamespace(id=2)
         self.edits: list[DiscordPayload] = []
         self.reactions: list[str] = []
         self.removed: list[tuple[str, FakeUser]] = []

@@ -3,7 +3,6 @@
 import asyncio
 from pathlib import Path
 import tempfile
-import contextlib
 
 import logfire
 import nextcord
@@ -133,8 +132,16 @@ class VideoCogs(commands.Cog):
                 await interaction.edit_original_message(
                     content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                 )
-        except Exception:
-            logfire.warn("Video download failed", _exc_info=True)
+        except Exception as error:
+            # Broad on purpose: the bot registers no application-command error handler, so
+            # anything escaping here would strand the user on "正在下載影片..." forever.
+            logfire.warn(
+                "Video download failed",
+                url=url,
+                quality=quality,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
             await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
 
     async def _handle_douyin(
@@ -184,7 +191,13 @@ class VideoCogs(commands.Cog):
             # Deliberately catches everything, not just DouyinError: this runs outside the
             # command's own try block and the bot registers no application-command error handler,
             # so anything escaping here would strand the user on "正在下載影片..." forever.
-            logfire.warn("Douyin download failed", _exc_info=True)
+            logfire.warn(
+                "Douyin download failed",
+                url=url,
+                quality=quality,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
             await self._edit_quietly(
                 interaction=interaction, content=douyin_failure_message(error=error)
             )
@@ -235,8 +248,12 @@ class VideoCogs(commands.Cog):
                 await self._deliver_douyin(
                     interaction=interaction, plan=plan, result=result, url=url
                 )
-        except Exception:
-            logfire.warn("Douyin delivery failed", _exc_info=True)
+        except Exception as error:
+            # Broad on purpose, for the same reason as the download step above: nothing may
+            # escape into the command with no error handler behind it.
+            logfire.warn(
+                "Douyin delivery failed", url=url, error_type=type(error).__name__, _exc_info=error
+            )
             await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
 
     async def _deliver_douyin(
@@ -263,6 +280,14 @@ class VideoCogs(commands.Cog):
                 f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
             )
         if plan.dropped_items:
+            logfire.warn(
+                "Douyin download dropped some media",
+                url=url,
+                dropped_count=len(plan.dropped_items),
+                native_count=len(plan.native),
+                hosted_count=len(plan.hosted_urls),
+                hosting_available=self.media_delivery.media_hosting.config.available,
+            )
             lines.append(f"-# 有 {len(plan.dropped_items)} 個檔案傳送失敗")
         # Hosted URLs must stay unwrapped to remain clickable, so they follow the subtext lines.
         lines.extend(plan.hosted_urls)
@@ -281,9 +306,20 @@ class VideoCogs(commands.Cog):
         )
 
     async def _edit_quietly(self, interaction: Interaction, content: str) -> None:
-        """Edits the deferred message, swallowing a failure to edit it."""
-        with contextlib.suppress(Exception):
+        """Edits the deferred message, swallowing a failure to edit it.
+
+        Broad on purpose: this is the last-resort reporter every failure path in the cog uses, so
+        it must never raise a second exception on top of the one being reported.
+        """
+        try:
             await interaction.edit_original_message(content=content)
+        except Exception as error:
+            logfire.warn(
+                "Could not report the failure to the user",
+                interaction_id=interaction.id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
 
     async def _deliver(
         self, interaction: Interaction, file_size_mb: float, file_path: Path, url: str

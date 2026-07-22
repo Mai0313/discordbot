@@ -179,7 +179,12 @@ async def _upload_target_media(
     parts: list[ResponseInputFileParam] = []
     for result in results:
         if isinstance(result, BaseException):
-            logfire.warn("Threads media ingestion failed for one item", _exc_info=result)
+            logfire.warn(
+                "Threads media ingestion failed for one item",
+                url=target.url,
+                error_type=type(result).__name__,
+                _exc_info=result,
+            )
             continue
         if result is not None:
             parts.append(result)
@@ -203,10 +208,24 @@ async def _target_media_parts(
                     target=target, gemini_client=gemini_client, download_dir=download_dir
                 )
     except TimeoutError:
-        logfire.warn("Threads media ingestion exceeded its bound; answering from text only")
+        logfire.warn(
+            "Threads media ingestion exceeded its bound; answering from text only",
+            url=target.url,
+            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+            image_count=len(target.image_urls),
+            video_count=len(target.video_urls),
+            _exc_info=True,
+        )
         return []
-    except Exception:
-        logfire.warn("Threads media ingestion failed; answering from text only", _exc_info=True)
+    # Broad on purpose: this is a best-effort degrade to the text-only block, which must never
+    # break the reply pipeline (`build_threads_context_messages` promises it never raises).
+    except Exception as error:
+        logfire.warn(
+            "Threads media ingestion failed; answering from text only",
+            url=target.url,
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
         return []
 
 
@@ -244,11 +263,19 @@ async def build_threads_context_messages(
         with logfire.span("gen_reply threads context"):
             downloader = ThreadsDownloader(output_folder=tempfile.gettempdir())
             results = await asyncio.to_thread(downloader.parse_metadata, url=url)
-    except Exception:
-        logfire.warn("Threads metadata parse failed; injecting unavailable notice", _exc_info=True)
+    # Broad on purpose: a parse error must degrade to the unavailable notice rather than break
+    # the reply pipeline, which relies on this builder never raising.
+    except Exception as error:
+        logfire.warn(
+            "Threads metadata parse failed; injecting unavailable notice",
+            url=url,
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
         return [_system_block(text=THREADS_UNAVAILABLE_NOTICE)]
 
     if not results:
+        logfire.info("Threads post unavailable for context; injecting unavailable notice", url=url)
         return [_system_block(text=THREADS_UNAVAILABLE_NOTICE)]
 
     # Trim a long chain to the target plus its nearest ancestors before rendering, so the

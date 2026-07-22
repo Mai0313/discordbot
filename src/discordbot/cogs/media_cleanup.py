@@ -74,8 +74,15 @@ class MediaCleanupCogs(commands.Cog):
             deleted, freed = await asyncio.to_thread(
                 self.media_hosting.run_maintenance, now=time.time()
             )
-        except Exception:
-            logfire.warn("Media cleanup sweep failed", _exc_info=True)
+        except Exception as error:
+            # Broad on purpose: a raise escaping into `cleanup_loop` stops the tasks.loop for the
+            # process lifetime, leaving the serve dir unbounded.
+            logfire.warn(
+                "Media cleanup sweep failed",
+                serve_dir=self.media_hosting.config.serve_dir,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
             return
         if deleted or freed:
             logfire.info("Media cleanup sweep", deleted_count=deleted, freed_bytes=freed)
