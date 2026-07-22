@@ -664,17 +664,14 @@ class FakeXAIFiles:
         """Initializes fake upload output fields."""
         self.file_id = file_id
         self.expires_at = expires_at
-        self.create_calls: list[tuple[str, bytes, str, str, dict[str, object] | None]] = []
+        self.create_calls: list[tuple[str, bytes, str, str, dict[str, object]]] = []
 
     async def create(
-        self,
-        file: tuple[str, BytesIO, str],
-        purpose: str,
-        extra_body: dict[str, object] | None = None,
+        self, file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
     ) -> SimpleNamespace:
         """Records an upload and returns a fake xAI file object."""
         filename, data, content_type = file
-        self.create_calls.append((filename, data.read(), content_type, purpose, extra_body))
+        self.create_calls.append((filename, data.read(), content_type, purpose, expires_after))
         return SimpleNamespace(id=self.file_id, expires_at=self.expires_at, purpose=purpose)
 
 
@@ -3004,7 +3001,13 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
     assert image_part["image_url"].startswith("data:image/")
 
     assert files.create_calls == [
-        ("notes.txt", b"hello world", "text/plain", "assistants", {"expires_after": 2_592_000})
+        (
+            "notes.txt",
+            b"hello world",
+            "text/plain",
+            "assistants",
+            {"anchor": "created_at", "seconds": 2_592_000},
+        )
     ]
 
 
@@ -3018,13 +3021,24 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     boom = _fake_grok_uploader()
 
     async def _raise(
-        file: tuple[str, BytesIO, str], purpose: str, extra_body: dict[str, object] | None = None
+        file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
     ) -> SimpleNamespace:
-        del file, purpose, extra_body
+        del file, purpose, expires_after
         raise RuntimeError("upload failed")
 
     monkeypatch.setattr(boom.xai_client.files, "create", _raise)
     assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+
+
+async def test_grok_file_uploader_without_a_key_drops_the_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unconfigured xAI key is reported as a missing key, not as an upload failure."""
+    monkeypatch.setenv("XAI_API_KEY", "")
+    renderer = GrokFileUploader()
+    assert (
+        await renderer._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+    )
 
 
 async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:

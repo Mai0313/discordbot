@@ -35,7 +35,7 @@ from typing import TYPE_CHECKING
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
 import logfire
 from nextcord import Attachment, StickerItem
 from pydantic import Field
@@ -86,8 +86,10 @@ class GrokFileUploader(AttachmentRenderer):
 
         Points at xAI's own host rather than the proxy base url, since LiteLLM refuses to route
         a file upload to xai. Built inside this module rather than via a shared factory while
-        the renderer is still disabled in `select.py`, like the Anthropic uploader's client. A
-        missing key does not fail construction; it surfaces at the upload call.
+        the renderer is still disabled in `select.py`, like the Anthropic uploader's client.
+        Unlike that one, an empty key fails here rather than at the request: `AsyncOpenAI`
+        raises `OpenAIError` at construction, so `_upload_file` resolves the client before the
+        upload call to keep a missing key from being logged as an upload failure.
 
         Returns:
             An OpenAI-compatible client reused across uploads.
@@ -144,8 +146,8 @@ class GrokFileUploader(AttachmentRenderer):
             try:
                 data, content_type = await load_data()
             except Exception as exc:
-                # Broad on purpose: `load_data` is caller-supplied and spans a CDN fetch plus a
-                # PIL decode, and any failure must degrade to dropping this one attachment.
+                # Broad on purpose: `load_data` is caller-supplied and spans a CDN fetch, and
+                # any failure must degrade to dropping this one attachment.
                 logfire.warn(
                     "failed to load attachment bytes for upload",
                     filename=filename,
@@ -165,19 +167,28 @@ class GrokFileUploader(AttachmentRenderer):
         """Uploads bytes to the xAI Files API and returns `(file_id, expires_at)`.
 
         `purpose` is accepted only for OpenAI SDK compatibility and xAI never reads it. The TTL
-        is the one xAI-shaped field: it is a bare number of seconds rather than OpenAI's
-        `{anchor, seconds}` object, so it rides in `extra_body`, which the SDK serializes as a
-        form field ahead of the file part, the order xAI requires.
+        keeps OpenAI's `{anchor, seconds}` shape, which xAI documents alongside a bare number of
+        seconds; either way the SDK sends it as a form field ahead of the file part, the order
+        xAI requires and rejects with a 400 when it is reversed.
         """
         started = time.monotonic()
         logfire.debug(
             "xai upload start", filename=filename, content_type=content_type, bytes=len(data)
         )
         try:
-            uploaded = await self.xai_client.files.create(
+            # Resolved outside the upload call so a missing key is not reported as an upload
+            # failure: an empty key makes the client constructor raise.
+            client = self.xai_client
+        except OpenAIError as exc:
+            logfire.error(
+                "xAI Files API key missing; dropping attachment", filename=filename, _exc_info=exc
+            )
+            return None
+        try:
+            uploaded = await client.files.create(
                 file=(filename, io.BytesIO(data), content_type),
                 purpose="assistants",
-                extra_body={"expires_after": GROK_FILE_EXPIRY_SECONDS},
+                expires_after={"anchor": "created_at", "seconds": GROK_FILE_EXPIRY_SECONDS},
             )
         except Exception as exc:
             # Broad on purpose: the SDK surfaces auth/quota, size/type rejection and transport
