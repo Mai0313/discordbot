@@ -281,8 +281,16 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
         return
     try:
         task.result()
-    except Exception:
-        logfire.warn("Background memory update failed", scope=scope, _exc_info=True)
+    except Exception as exc:
+        # Broad on purpose: `result()` re-raises whatever the whole pipeline raised
+        # (LLM, network, file IO), and this runs on the event loop as a done-callback,
+        # so anything escaping here is dropped by asyncio instead of handled.
+        logfire.warn(
+            "Background memory update failed",
+            scope=scope,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
     pending = _pending_updates.pop(scope, None)
     if pending is None:
         return
@@ -334,12 +342,19 @@ async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update
         draft = await extractor.extract(subject=subject, transcript=transcript)
         if draft is None:
             # The LLM path itself failed: keep the row (transcript intact) so the
-            # restart sweep retries it, no extra timeout needed.
+            # restart sweep retries it, no extra timeout needed. The cause detail is
+            # already logged upstream; this line adds the scope attribution.
+            logfire.warn(
+                "Memory extraction returned no draft; job parked for restart retry",
+                scope=scope,
+                flavor=flavor_of(scope=scope),
+            )
             await _safe(
                 coro=memory_db.mark_failed(scope=scope, token=token, error="extract failed")
             )
             return
         if not draft.has_signal or not draft.observations:
+            logfire.debug("Memory extraction found no signal", scope=scope)
             await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
         if cleared_since(scope=scope, started_at=started_at):
@@ -358,6 +373,11 @@ async def _run_memory_update(  # noqa: PLR0913 -- mirrors schedule_memory_update
             source=source,
         )
         if not deduped_observations:
+            logfire.debug(
+                "Memory extraction produced only duplicates",
+                scope=scope,
+                candidates=len(draft.observations),
+            )
             await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
         append_raw_entry(
@@ -455,6 +475,11 @@ async def _consolidate_locked(
     )
     if result is None:
         # LLM path failed; keep the raw entries so the next update retries.
+        logfire.warn(
+            "Memory consolidation LLM call failed; keeping raw batch",
+            scope=scope,
+            raw_entries=count_raw_entries(scope=scope),
+        )
         return
     if cleared_since(scope=scope, started_at=started_at):
         return
@@ -464,12 +489,26 @@ async def _consolidate_locked(
         # malformed (missing the exact header line, near-misses like `v10...` /
         # `v1: ...`): keep the raw batch for retry regardless of `changed`,
         # instead of discarding the accumulated signal.
+        logfire.warn(
+            "Memory consolidation rejected: malformed main rewrite; keeping raw batch",
+            scope=scope,
+            rewritten_chars=len(result.memory_markdown),
+            existing_chars=len(existing_main),
+            near_miss_header=result.memory_markdown.startswith("v1"),
+        )
         return
     if result.tone_markdown and not result.tone_markdown.startswith("## 語氣偏好"):
         # A malformed tone note rejects the batch like a malformed main rewrite: the
         # rewritten main may have moved tone bullets out on the promise they land in
         # the note, so consuming the batch here would silently lose the preference
         # from every injected tier. Keeping raw retries the whole consolidation.
+        logfire.warn(
+            "Memory consolidation rejected: malformed tone note; keeping raw batch",
+            scope=scope,
+            tone_chars=len(result.tone_markdown),
+            main_well_formed=is_well_formed,
+            main_chars=len(result.memory_markdown),
+        )
         return
     # The first rewrite that brings an untagged (pre-migration) file into the tagged
     # format legitimately sheds a lot of text (tone bullets move to tone.md, private
@@ -575,8 +614,15 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[_RegenerationResu
         return
     try:
         task.result()
-    except Exception:
-        logfire.warn("Background memory regeneration failed", scope=scope, _exc_info=True)
+    except Exception as exc:
+        # Broad on purpose: this is a done-callback boundary, so anything the
+        # rebuild raised must be swallowed here or asyncio drops it silently.
+        logfire.error(
+            "Background memory regeneration crashed",
+            scope=scope,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
 
 
 async def regenerate_main_memory(
@@ -618,9 +664,21 @@ async def regenerate_main_memory(
             today=datetime.now(UTC).date().isoformat(),
             compact=True,
         )
-        if result is None or not result.memory_markdown.startswith("v1\n"):
-            # LLM failure or malformed rewrite; a from-scratch rebuild has no
-            # prior size to compare, so the `v1` header check is the guard.
+        if result is None:
+            # The LLM path logs the cause but not the scope, and the command already
+            # told the user a rebuild was scheduled, so this is its only attribution.
+            logfire.warn("Memory regeneration LLM call failed; memory left untouched", scope=scope)
+            return "failed"
+        if not result.memory_markdown.startswith("v1\n"):
+            # A from-scratch rebuild has no prior size to compare, so the `v1`
+            # header check is the only guard; the user was already told a
+            # rebuild was scheduled, so this is their only trace of the failure.
+            logfire.warn(
+                "Memory regeneration produced a malformed rewrite",
+                scope=scope,
+                rewritten_chars=len(result.memory_markdown),
+                near_miss_header=result.memory_markdown.startswith("v1"),
+            )
             return "failed"
         if cleared_since(scope=scope, started_at=started_at):
             return "failed"

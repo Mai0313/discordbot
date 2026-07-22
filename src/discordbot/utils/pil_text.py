@@ -6,6 +6,7 @@ is the single source for those primitives so the two renderers stay aligned.
 """
 
 from PIL import ImageDraw, ImageFont
+import logfire
 
 type Font = ImageFont.ImageFont | ImageFont.FreeTypeFont
 
@@ -22,6 +23,10 @@ BOLD_FONT_CANDIDATES = (
     "DejaVuSans-Bold.ttf",
 )
 
+# One warn per weight: every render calls load_font several times, and a deployment can be
+# missing only the bold face.
+_font_fallback_warned: set[bool] = set()
+
 
 def load_font(size: int, bold: bool) -> Font:
     """Loads a CJK-capable font when available, else the Pillow default."""
@@ -31,6 +36,13 @@ def load_font(size: int, bold: bool) -> Font:
             return ImageFont.truetype(font=candidate, size=size)
         except OSError:
             continue
+    if bold not in _font_fallback_warned:
+        _font_fallback_warned.add(bold)
+        logfire.warn(
+            "No CJK font found; PNG renders fall back to the Pillow default",
+            bold=bold,
+            candidates=list(candidates),
+        )
     return ImageFont.load_default()
 
 

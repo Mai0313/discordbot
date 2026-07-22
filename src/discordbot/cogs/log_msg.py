@@ -232,8 +232,17 @@ class MessageLogger(BaseModel):
         """
         try:
             await self._save_messages()
-        except Exception:
-            logfire.error("Failed to log message", _exc_info=True)
+        except Exception as exc:
+            # Stays broad: this runs as a detached create_task, so anything not caught
+            # here surfaces only as "Task exception was never retrieved".
+            logfire.error(
+                "Failed to log message",
+                discord_message_id=self.message.id,
+                channel_id=self.channel_id_or_author_id,
+                source_type=self.source_type,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
 
 class LogMessageCog(commands.Cog):

@@ -202,13 +202,30 @@ async def _media_parts(
         async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
             return await _fetch_and_upload(url=url, post=post, gemini_client=gemini_client)
     except TimeoutError:
-        logfire.warn("Douyin media ingestion exceeded its bound; answering from the caption")
+        logfire.warn(
+            "Douyin media ingestion exceeded its bound; answering from the caption",
+            url=url,
+            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
+            _exc_info=True,
+        )
         return []
     except DouyinTooLargeError:
-        logfire.warn("Douyin clip exceeds the Files API ceiling; answering from the caption")
+        logfire.warn(
+            "Douyin clip exceeds the Files API ceiling; answering from the caption",
+            url=url,
+            max_bytes=FILES_API_MAX_BYTES,
+            _exc_info=True,
+        )
         return []
-    except Exception:
-        logfire.warn("Douyin media ingestion failed; answering from the caption", _exc_info=True)
+    except Exception as error:
+        # Broad on purpose: this must degrade to the caption-only block rather than raise into
+        # the reply pipeline, so the type is recorded as a field instead of by narrowing.
+        logfire.warn(
+            "Douyin media ingestion failed; answering from the caption",
+            url=url,
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
         return []
 
 
@@ -246,15 +263,31 @@ async def build_douyin_context_messages(
                 downloader = DouyinDownloader(output_folder=tempfile.gettempdir())
                 post = await asyncio.to_thread(downloader.parse_metadata, url=url)
         except DouyinBlockedError:
-            logfire.warn("Douyin blocked the context read; injecting the retryable notice")
+            logfire.warn(
+                "Douyin blocked the context read; injecting the retryable notice",
+                url=url,
+                _exc_info=True,
+            )
             return [_system_block(text=DOUYIN_BLOCKED_NOTICE)]
-        except DouyinUnavailableError:
+        except DouyinUnavailableError as error:
+            # A deleted or private post is a routine remote outcome, not a defect; the message
+            # is the only place Douyin's own filter reason lives.
+            logfire.info(
+                "Douyin post is deleted or private; injecting unavailable notice",
+                url=url,
+                reason=str(error),
+            )
             return [_system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
-        except Exception:
+        except Exception as error:
             # Anything else says nothing about the post: an unresolvable link, a transport
             # error, a changed payload shape. `DOUYIN_UNAVAILABLE_NOTICE` would have the model
             # assert the post is deleted, which for these is simply false.
-            logfire.warn("Douyin metadata read failed; injecting neutral notice", _exc_info=True)
+            logfire.warn(
+                "Douyin metadata read failed; injecting neutral notice",
+                url=url,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
             return [_system_block(text=DOUYIN_UNREADABLE_NOTICE)]
 
         media_parts: list[ResponseInputFileParam] = []

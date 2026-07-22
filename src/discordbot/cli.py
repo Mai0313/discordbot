@@ -123,7 +123,7 @@ class DiscordBot(commands.Bot):
         statuses = ["your mama"]
         random_status = secrets.choice(statuses)
         await self.change_presence(activity=Game(random_status))
-        logfire.info("Status Changed", new_status=self.activity.name)
+        logfire.debug("Status Changed", new_status=self.activity.name)
 
     @status_task.before_loop
     async def before_status_task(self) -> None:
@@ -147,22 +147,29 @@ class DiscordBot(commands.Bot):
             # both pass the check and double-credit; roll it back if the credit fails
             # so a transient error does not cost the user their reward window.
             self._message_reward_at[message.author.id] = now
+            guild = getattr(message, "guild", None)
             try:
-                avatar_url = await guild_avatar_url(
-                    user=message.author, guild=getattr(message, "guild", None)
-                )
+                avatar_url = await guild_avatar_url(user=message.author, guild=guild)
                 await credit_with_repayment(
                     user_id=message.author.id,
                     name=message.author.name,
                     avatar_url=avatar_url,
                     amount=BASE_MESSAGE_REWARD_AMOUNT,
                 )
-            except Exception:
+            except Exception as exc:
                 if last_rewarded_at is None:
                     self._message_reward_at.pop(message.author.id, None)
                 else:
                     self._message_reward_at[message.author.id] = last_rewarded_at
-                logfire.warn("Failed to award base message points", _exc_info=True)
+                # Broad on purpose: the reward is best-effort and must never stop
+                # process_commands, so every failure mode (DB, avatar fetch) is swallowed.
+                logfire.warn(
+                    "Failed to award base message points",
+                    user_id=message.author.id,
+                    guild_id=guild.id if guild else None,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
         await self.process_commands(message)
 
     async def on_command_completion(self, context: commands.Context) -> None:
@@ -217,14 +224,13 @@ class DiscordBot(commands.Bot):
             await context.send(
                 embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
             )
-            if context.guild:
-                logfire.warn(
-                    f"{context.author} (ID: {context.author.id}) tried to execute an owner only command in the guild {context.guild.name} (ID: {context.guild.id}), but the user is not an owner of the bot."
-                )
-            else:
-                logfire.warn(
-                    f"{context.author} (ID: {context.author.id}) tried to execute an owner only command in the bot's DMs, but the user is not an owner of the bot."
-                )
+            logfire.info(
+                "Owner-only command refused",
+                command=context.command.qualified_name if context.command else None,
+                author=str(context.author),
+                author_id=context.author.id,
+                guild_id=context.guild.id if context.guild else None,
+            )
         elif isinstance(error, commands.MissingPermissions):
             embed = Embed(
                 description="You are missing the permission(s) `"
@@ -265,7 +271,17 @@ class DiscordBot(commands.Bot):
                 embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
             )
         else:
-            pass
+            # nextcord wraps a command-body failure in CommandInvokeError, so report
+            # the unwrapped type to name the real defect.
+            original = getattr(error, "original", error)
+            logfire.error(
+                "Unhandled command error",
+                command=context.command.qualified_name if context.command else None,
+                guild_id=context.guild.id if context.guild else None,
+                author_id=context.author.id,
+                error_type=type(original).__name__,
+                _exc_info=error,
+            )
 
 
 def main() -> None:

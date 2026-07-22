@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
-import contextlib
 
 import logfire
 import nextcord
@@ -842,12 +841,25 @@ class DragonGateView(View):
             embeds.append(history_embed)
         self.clear_items()
         self.stop()
-        with contextlib.suppress(Exception):
+        try:
             await asyncio.wait_for(
                 message.edit(
                     **_dragon_gate_table_edit_kwargs(embeds=embeds, view=None, target=message)
                 ),
                 timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
+            )
+        except nextcord.NotFound:
+            # Opener deleted the public table before the round finished; nothing to render.
+            logfire.info("Dragon Gate table message gone before final edit", message_id=message.id)
+        # Broad on purpose: settlement is already committed, so this render must never
+        # raise back into the round and skip the cleanup scheduling below.
+        except Exception as exc:
+            logfire.warn(
+                "Dragon Gate final table edit failed; settled round never rendered",
+                message_id=message.id,
+                reason=reason,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
         schedule_public_message_delete(message=message, user_name=self.owner.account_name)
 

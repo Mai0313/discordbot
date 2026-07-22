@@ -76,7 +76,7 @@ uv run pre-commit run -a
 ## Code Conventions
 
 - Follow existing project patterns before adding a new abstraction.
-- Use `logfire.info`, `logfire.warn`, or `logfire.error(..., _exc_info=True)` for new logging.
+- Pick a log level with the ladder in [Logging](#logging) below.
 - Keep cog `setup(bot)` functions synchronous:
 
 ```python
@@ -98,6 +98,24 @@ def setup(bot: commands.Bot) -> None:
 - Avoid intermediate one-level aliases when directly using the original object is clearer.
 - Do not blanket `# noqa`. Use the narrowest rule-specific ignore with a short reason.
 - Keep comments focused on non-obvious behavior. Do not narrate the code or reference PR numbers in comments.
+
+## Logging
+
+Pick the level from how tolerable the failure is, not from how deep in the stack it happened. A routine, user-driven outcome such as a deleted message or a private remote post is not an error, and logging it as one makes real regressions unfindable.
+
+| Level           | Use for                                                                                                                                                                                                                | Exception    |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| `logfire.debug` | High-volume tracing that only helps while diagnosing one specific flow: per-attachment upload timings, per-tick internals, per-retry attempts. Never a failure on its own.                                             | optional     |
+| `logfire.info`  | A normal lifecycle event, or a routine user-driven outcome that is not a defect: a message or thread the user deleted, a private or removed remote post, a cancelled task, a kill-switch or unconfigured-feature skip. | usually none |
+| `logfire.warn`  | A degraded but handled outcome: the feature fell back, partially delivered, or dropped one item of many. A failed best-effort path belongs here.                                                                       | required     |
+| `logfire.error` | An unexpected failure that broke a user-visible deliverable, left state inconsistent, or points at a defect someone must look at.                                                                                      | required     |
+
+- Every log statement inside an `except` attaches the exception (`_exc_info=True`, or `_exc_info=exc` when the handler binds it), plus `error_type=type(exc).__name__` when the handler is broad.
+- Every log carries the structured fields that identify its subject (`message_id`, `url`, `scope`, `thread_id`, `filename`), so a recurrence is greppable without reading the traceback.
+- A broad `except Exception` or `contextlib.suppress(Exception)` is allowed only as a deliberate best-effort boundary. When it is, a comment says why it stays broad, and the handler still logs. `cogs/_memory/pipeline.py::_safe` is the reference shape.
+- Silent swallowing is reserved for inert cleanup where a log would be pure noise, such as removing a reaction or deleting an already-deleted message.
+- A coarse `except` spanning several distinct steps gets split so the message names the step that actually failed. Do not split when narrowing would let an exception escape into a listener or fire-and-forget task that cannot handle it; keep it broad and say so.
+- `LOG_LEVEL` sets the console and log-file floor, defaulting to `debug` so `./data/logs` holds the full trace.
 
 ## LLM And Media Paths
 

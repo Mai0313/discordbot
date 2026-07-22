@@ -26,7 +26,6 @@ post: telling someone their working link is dead is the worst failure this featu
 from typing import ClassVar
 import asyncio
 import tempfile
-import contextlib
 
 import logfire
 from nextcord import Embed, Message, AllowedMentions
@@ -38,6 +37,7 @@ from discordbot.utils.douyin import (
     DouyinDownload,
     DouyinDownloader,
     DouyinBlockedError,
+    DouyinUnavailableError,
     is_douyin_post_url,
 )
 from discordbot.typings.douyin import DouyinConfig
@@ -132,15 +132,22 @@ class DouyinCogs(commands.Cog):
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
         try:
             await self._expand(message=message, url=url, current_emoji=current_emoji)
-        except Exception:
-            logfire.error("Failed to expand Douyin link", _exc_info=True)
-            with contextlib.suppress(Exception):
-                await update_reaction(
-                    message=message,
-                    bot_user=self.bot.user,
-                    emoji="<:redcross:1517565100838355016>",
-                    previous=current_emoji,
-                )
+        except Exception as error:
+            # Broad on purpose: this is the listener's last boundary, and the cross reaction
+            # below is the only thing that tells the user the expansion is not coming.
+            logfire.error(
+                "Failed to expand Douyin link",
+                url=url,
+                message_id=message.id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+            await update_reaction(
+                message=message,
+                bot_user=self.bot.user,
+                emoji="<:redcross:1517565100838355016>",
+                previous=current_emoji,
+            )
 
     async def _expand(self, message: Message, url: str, current_emoji: str) -> None:
         """Fetches the post and posts it back, reporting every failure mode distinctly."""
@@ -198,9 +205,22 @@ class DouyinCogs(commands.Cog):
         the ⚠️ that means "this post could not be read". The reason is stated in the reply, so
         a reader is never left guessing which of the two happened.
         """
-        logfire.warn(
-            "Douyin expansion failed", url=url, error_type=type(error).__name__, _exc_info=error
-        )
+        if isinstance(error, DouyinUnavailableError):
+            # A deleted or private post is a routine remote outcome, not a defect; the message
+            # is the only place Douyin's own filter reason lives.
+            logfire.info(
+                "Douyin post is deleted or private",
+                url=url,
+                error_type=type(error).__name__,
+                reason=str(error),
+            )
+        else:
+            logfire.warn(
+                "Douyin expansion failed",
+                url=url,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
         emoji = self.blocked_emoji if isinstance(error, DouyinBlockedError) else "⚠️"
         await update_reaction(
             message=message, bot_user=self.bot.user, emoji=emoji, previous=current_emoji
@@ -244,8 +264,18 @@ class DouyinCogs(commands.Cog):
             )
             return
 
-        with contextlib.suppress(Exception):
+        # Broad on purpose: hiding the source preview is cosmetic, and the expansion below is
+        # already downloaded, so nothing here may abort it. A missing Manage Messages permission
+        # is the common case and is not actionable per message.
+        try:
             await message.edit(suppress=True)
+        except Exception as error:
+            logfire.debug(
+                "Could not suppress the source message embed",
+                message_id=message.id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
 
         await self._send(message=message, url=url, post=post, result=result, plan=plan)
         await update_reaction(
@@ -266,6 +296,14 @@ class DouyinCogs(commands.Cog):
                 f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
             )
         if plan.dropped_items:
+            logfire.warn(
+                "Douyin expansion dropped some media",
+                url=url,
+                dropped_count=len(plan.dropped_items),
+                native_count=len(plan.native),
+                hosted_count=len(plan.hosted_urls),
+                hosting_available=self.media_delivery.media_hosting.config.available,
+            )
             lines.append(f"-# 有 {len(plan.dropped_items)} 個檔案傳送失敗")
         # Hosted URLs must stay unwrapped and each on its own line to stay clickable and, under
         # ~100 MiB, to render Discord's inline player.

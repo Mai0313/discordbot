@@ -27,6 +27,8 @@ from nextcord import (
     Locale,
     Object,
     Message,
+    NotFound,
+    Forbidden,
     Interaction,
     SlashOption,
     TextChannel,
@@ -290,8 +292,17 @@ class ResearchCogs(commands.Cog):
             name = await self._generate_thread_name(brief=brief)
             try:
                 thread = await anchor.create_thread(name=name, auto_archive_duration=1440)
-            except Exception:
-                logfire.warn("failed to create research thread", message_id=anchor.id)
+            except Exception as exc:
+                # Broad: create_thread can fail on permissions, an LLM-authored name Discord
+                # rejects, or an outage; all of them end the launch the same way.
+                logfire.error(
+                    "failed to create research thread",
+                    message_id=anchor.id,
+                    owner_id=owner_id,
+                    channel_id=anchor.channel.id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
                 return "error", None
             agent = self.runtime_models.antigravity_model.name
             await db.upsert_session(
@@ -334,6 +345,8 @@ class ResearchCogs(commands.Cog):
                 phase="researching",
             )
 
+        # The agent run and the delivery are separate steps: both stay broad (a fire-and-forget task
+        # has nobody to raise to) but each names what actually failed.
         try:
             result = await stream_antigravity(
                 client=self.interactions_client,
@@ -343,6 +356,23 @@ class ResearchCogs(commands.Cog):
                 streamer=streamer,
                 on_created=_persist,
             )
+        except Exception as exc:
+            logfire.error(
+                "default research failed",
+                thread_id=thread.id,
+                agent=agent,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            await self._fail_run(
+                thread=thread,
+                owner_mention=owner_mention,
+                exc=exc,
+                status=status,
+                label="Antigravity",
+            )
+            return
+        try:
             await self._finish(
                 thread=thread,
                 owner_mention=owner_mention,
@@ -352,13 +382,20 @@ class ResearchCogs(commands.Cog):
                 offer_escalation=True,
             )
         except Exception as exc:
-            logfire.warn("default research failed", thread_id=thread.id, _exc_info=True)
-            await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
-            await self._finalize_status(
-                status=status, thread=thread, content="-# Research failed (Antigravity)"
+            logfire.error(
+                "research delivery failed",
+                thread_id=thread.id,
+                agent=agent,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
-            await db.set_phase(thread_id=thread.id, phase="failed")
-            self._active_threads.discard(thread.id)
+            await self._fail_run(
+                thread=thread,
+                owner_mention=owner_mention,
+                exc=exc,
+                status=status,
+                label="Antigravity",
+            )
 
     async def _run_deep_research(
         self, *, thread: "Thread", owner_mention: str, agent: str, previous_interaction_id: str
@@ -376,6 +413,7 @@ class ResearchCogs(commands.Cog):
                 phase="researching",
             )
 
+        # Same split as the default run, and broad for the same reason.
         try:
             result = await stream_deep_research(
                 client=self.interactions_client,
@@ -385,6 +423,19 @@ class ResearchCogs(commands.Cog):
                 streamer=streamer,
                 on_created=_persist,
             )
+        except Exception as exc:
+            logfire.error(
+                "deep research failed",
+                thread_id=thread.id,
+                agent=agent,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            await self._fail_run(
+                thread=thread, owner_mention=owner_mention, exc=exc, status=status, label=label
+            )
+            return
+        try:
             await self._finish(
                 thread=thread,
                 owner_mention=owner_mention,
@@ -394,15 +445,33 @@ class ResearchCogs(commands.Cog):
                 offer_escalation=False,
             )
         except Exception as exc:
-            logfire.warn("deep research failed", thread_id=thread.id, _exc_info=True)
-            await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
-            await self._finalize_status(
-                status=status,
-                thread=thread,
-                content=f"-# Research failed ({_tier_label(agent=agent)})",
+            logfire.error(
+                "deep research delivery failed",
+                thread_id=thread.id,
+                agent=agent,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
-            await db.set_phase(thread_id=thread.id, phase="failed")
-            self._active_threads.discard(thread.id)
+            await self._fail_run(
+                thread=thread, owner_mention=owner_mention, exc=exc, status=status, label=label
+            )
+
+    async def _fail_run(
+        self,
+        *,
+        thread: "Thread",
+        owner_mention: str,
+        exc: Exception,
+        status: Message | None,
+        label: str,
+    ) -> None:
+        """Tells the owner a run died, finalizes its status message, and frees the owner's slot."""
+        await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
+        await self._finalize_status(
+            status=status, thread=thread, content=f"-# Research failed ({label})"
+        )
+        await db.set_phase(thread_id=thread.id, phase="failed")
+        self._active_threads.discard(thread.id)
 
     async def _finish(  # noqa: PLR0913 -- terminal-result inputs plus the opening status message
         self,
@@ -469,10 +538,24 @@ class ResearchCogs(commands.Cog):
                     content=content, view=view, allowed_mentions=AllowedMentions.none()
                 )
                 return
-            except Exception:
-                logfire.warn("failed to finalize research status message", thread_id=thread.id)
-        with contextlib.suppress(Exception):
+            except Exception as exc:
+                # Broad: any Discord failure is recoverable by the fallback send below.
+                logfire.warn(
+                    "failed to edit research status message",
+                    thread_id=thread.id,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+        try:
             await thread.send(content=content, view=view, allowed_mentions=AllowedMentions.none())
+        except Exception as exc:
+            # Broad: callers record the terminal phase right after us and cannot handle a raise.
+            logfire.warn(
+                "failed to post terminal research status",
+                thread_id=thread.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     async def _post_failure(
         self,
@@ -496,13 +579,22 @@ class ResearchCogs(commands.Cog):
         )
         if exc is not None:
             embed.set_footer(text=type(exc).__name__)
-        with contextlib.suppress(Exception):
+        try:
             await thread.send(
                 content=f"{owner_mention} ⚠️",
                 embed=embed,
                 allowed_mentions=_owner_allowed_mentions(
                     owner_id=_owner_id_from_mention(mention=owner_mention)
                 ),
+            )
+        except Exception as send_exc:
+            # Broad: every caller runs its cleanup (phase write, slot release) right after us, so
+            # this last user-facing step must never raise.
+            logfire.warn(
+                "failed to post research failure notice",
+                thread_id=thread.id,
+                error_type=type(send_exc).__name__,
+                _exc_info=send_exc,
             )
 
     # ----- escalation (Deep Research) -----------------------------------------------------
@@ -570,7 +662,14 @@ class ResearchCogs(commands.Cog):
                 thread=thread, owner_mention=owner_mention, plan=plan, agent=agent, status=status
             )
         except Exception as exc:
-            logfire.warn("research planning failed", thread_id=thread.id, _exc_info=True)
+            # Broad: the terminal catch-all for a minutes-long external agent run.
+            logfire.error(
+                "research planning failed",
+                thread_id=thread.id,
+                agent=agent,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
             await db.set_phase(thread_id=thread.id, phase="failed")
             self._active_threads.discard(thread.id)
@@ -822,7 +921,14 @@ class ResearchCogs(commands.Cog):
                 thread=thread, owner_mention=owner_mention, plan=plan, agent=agent, status=status
             )
         except Exception as exc:
-            logfire.warn("research re-planning failed", thread_id=thread.id, _exc_info=True)
+            # Broad: the terminal catch-all for a minutes-long external agent run.
+            logfire.error(
+                "research re-planning failed",
+                thread_id=thread.id,
+                agent=agent,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
             await db.set_phase(thread_id=thread.id, phase="failed")
             self._active_threads.discard(thread.id)
@@ -856,11 +962,11 @@ class ResearchCogs(commands.Cog):
         thread = await self._fetch_thread(thread_id=session.thread_id)
         if thread is None:
             return
-        with contextlib.suppress(Exception):
-            await thread.send(
-                content=f"<@{session.owner_id}> 重啟了,剛剛的研究計畫失效,要的話重新發起一次深度研究",
-                allowed_mentions=_owner_allowed_mentions(owner_id=session.owner_id),
-            )
+        await self._safe_send(
+            thread=thread,
+            content=f"<@{session.owner_id}> 重啟了,剛剛的研究計畫失效,要的話重新發起一次深度研究",
+            allowed_mentions=_owner_allowed_mentions(owner_id=session.owner_id),
+        )
 
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
         """Resumes one research session, delivering when it settles."""
@@ -914,11 +1020,11 @@ class ResearchCogs(commands.Cog):
         """Tells a thread its interrupted research could not be resumed after a restart (best-effort)."""
         if thread is None:
             return
-        with contextlib.suppress(Exception):
-            await thread.send(
-                content=f"<@{owner_id}> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
-                allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
-            )
+        await self._safe_send(
+            thread=thread,
+            content=f"<@{owner_id}> 重啟後沒辦法接回剛剛的研究,麻煩重新發起一次",
+            allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
+        )
 
     async def _fetch_thread(self, *, thread_id: int) -> "Thread | None":
         """Returns the thread by id from cache or a REST fetch, or None when gone."""
@@ -927,7 +1033,19 @@ class ResearchCogs(commands.Cog):
             return cached
         try:
             fetched = await self.bot.fetch_channel(thread_id)
-        except Exception:
+        except (NotFound, Forbidden):
+            logfire.info("research thread is gone; skipping", thread_id=thread_id)
+            return None
+        # Broad on purpose: every caller treats None as "gone" and returns, so a transient REST
+        # or transport failure must not raise into a resume sweep. It is logged apart from the
+        # deleted case so the two stop looking the same in the log.
+        except Exception as exc:
+            logfire.warn(
+                "could not fetch the research thread; treating it as gone",
+                thread_id=thread_id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             return None
         return fetched
 
@@ -951,8 +1069,15 @@ class ResearchCogs(commands.Cog):
             if view is not None:
                 return await thread.send(content=content, view=view, allowed_mentions=mentions)
             return await thread.send(content=content, allowed_mentions=mentions)
-        except Exception:
-            logfire.warn("failed to send research thread message", thread_id=thread.id)
+        except Exception as exc:
+            # Broad: every caller treats a missing message as a degraded outcome, never a failure.
+            logfire.warn(
+                "failed to send research thread message",
+                thread_id=thread.id,
+                has_view=view is not None,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             return None
 
 

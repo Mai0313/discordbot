@@ -119,12 +119,16 @@ class OpenAIFileUploader(AttachmentRenderer):
         async with self._media_semaphore:
             try:
                 data, content_type = await load_data()
-            except Exception:
+            except Exception as exc:
+                # Broad on purpose: `load_data` is caller-supplied and spans a CDN fetch plus a
+                # PIL decode, and any failure must degrade to dropping this one attachment.
                 logfire.warn(
                     "failed to load attachment bytes for upload",
                     filename=filename,
                     cache_key=loggable_cache_key(cache_key=cache_key),
                     allow_dead_cache=allow_dead_cache,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
                 )
                 if allow_dead_cache:
                     self._mark_dead(cache_key=cache_key)
@@ -148,8 +152,17 @@ class OpenAIFileUploader(AttachmentRenderer):
                 expires_after={"anchor": "created_at", "seconds": OPENAI_FILE_EXPIRY_SECONDS},
                 extra_body={"model": self.model_name},
             )
-        except Exception:
-            logfire.warn("failed to upload attachment to OpenAI Files API", filename=filename)
+        except Exception as exc:
+            # Broad on purpose: the SDK surfaces auth/quota, mime/purpose rejection and transport
+            # errors as unrelated types; any of them just drops this one attachment.
+            logfire.warn(
+                "failed to upload attachment to OpenAI Files API",
+                filename=filename,
+                content_type=content_type,
+                purpose=purpose,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             return None
         if uploaded.status == "error":
             logfire.warn("OpenAI file upload failed processing", filename=filename)

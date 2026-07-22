@@ -129,5 +129,9 @@ class MemoryPagesView(View):
         for child in self.children:
             if isinstance(child, Button):
                 child.disabled = True
+        # Inert cleanup: the ephemeral response may already be dismissed or gone,
+        # and there is nothing left to degrade. Broad on purpose: nextcord runs
+        # `on_timeout` in a bare `create_task`, so a narrower filter would let an
+        # aiohttp transport error escape into a task that cannot handle it.
         with contextlib.suppress(Exception):
             await self._origin.edit_original_response(view=self)

@@ -2398,7 +2398,18 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Service boundary returns t
                 )
             )
             raise
+        # Broad on purpose: any wallet failure must still flip the committed operation to
+        # RECONCILE_REQUIRED instead of escaping with the two databases out of step.
         except Exception as exc:
+            logfire.error(
+                "Stock wallet delta failed after operation was planned; manual reconciliation required",
+                operation_id=operation_id,
+                user_id=user_id,
+                symbol=plan.symbol,
+                requested_action=plan.requested_action,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             await _mark_operation(
                 operation_id=operation_id,
                 status=StockOperationStatus.RECONCILE_REQUIRED,
@@ -2441,7 +2452,19 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Service boundary returns t
                 )
             )
             raise
+        # Broad on purpose: any finalization failure must still flip the operation to
+        # RECONCILE_REQUIRED instead of escaping with the wallet already moved.
         except Exception as exc:
+            logfire.error(
+                "Stock finalization failed after wallet was applied; manual reconciliation required",
+                operation_id=operation_id,
+                user_id=user_id,
+                symbol=plan.symbol,
+                requested_action=plan.requested_action,
+                wallet_delta=plan.wallet_delta,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             await _mark_operation(
                 operation_id=operation_id,
                 status=StockOperationStatus.RECONCILE_REQUIRED,

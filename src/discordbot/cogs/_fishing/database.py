@@ -665,13 +665,16 @@ async def purchase_gear(
                 now=_database_now(),
             )
             await session.commit()
-    except Exception:
+    # Broad on purpose: any games.db failure after the economy.db debit must reach
+    # the refund below rather than propagate and leave the player charged.
+    except Exception as exc:
         logfire.warn(
             "Fishing gear grant failed after wallet debit; refunding",
             user_id=user_id,
             gear_id=gear_id,
             amount=total_cost,
-            _exc_info=True,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
         )
         refund = await apply_ordered_wallet_deltas(
             user_id=user_id,
@@ -803,12 +806,16 @@ async def settle_cast(  # noqa: PLR0913 -- a cast needs identity, bait, avatar, 
         )
         new_balance = credit.new_balance
         status = CastStatus.SUCCESS
-    except Exception:
-        logfire.warn(
-            "Fishing payout credit failed after catch logged",
+    # Broad on purpose: the catch is already committed to games.db, so any economy-side
+    # failure must still return a CastResult instead of dropping the player's cast UI.
+    # Nothing retries this payout, so the log line is the only repair record.
+    except Exception as exc:
+        logfire.error(
+            "Fishing payout credit failed after catch logged; manual repair needed",
             user_id=user_id,
             amount=roll.value,
-            _exc_info=True,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
         )
         new_balance = await get_balance(user_id=user_id)
         status = CastStatus.PAYOUT_DEFERRED

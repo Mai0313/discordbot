@@ -9,7 +9,15 @@ import contextlib
 from urllib.parse import urlparse
 from collections.abc import Iterator
 
-from pydantic import Field, BaseModel, ValidationInfo, computed_field, field_validator
+import logfire
+from pydantic import (
+    Field,
+    BaseModel,
+    ValidationInfo,
+    ValidationError,
+    computed_field,
+    field_validator,
+)
 import requests
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
@@ -562,7 +570,24 @@ class ThreadsDownloader(BaseModel):
                     post, parents = thread_data.find_post_with_parents(post_code=post_code)
                     if post:
                         return post, parents
-            except (json.JSONDecodeError, ValueError):
+            except json.JSONDecodeError:
+                logfire.debug(
+                    "Skipped a non-JSON Threads SJS block", post_code=post_code, _exc_info=True
+                )
+                continue
+            except ValidationError:
+                logfire.warn(
+                    "Threads payload no longer matches the parser schema; abandoning this SJS block",
+                    post_code=post_code,
+                    _exc_info=True,
+                )
+                continue
+            except ValueError:
+                # json.loads can also raise a plain ValueError (e.g. the int-string conversion
+                # limit); keep the skip so a later SJS block can still yield the post.
+                logfire.warn(
+                    "Skipped an unparsable Threads SJS block", post_code=post_code, _exc_info=True
+                )
                 continue
 
         return None, []

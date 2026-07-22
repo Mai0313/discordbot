@@ -278,7 +278,11 @@ class ImageGenerator(BaseModel):
             if image_b64 is not None:
                 return base64.b64decode(image_b64)
             if attempt == 0:
-                logfire.warn("Image operation returned an empty result; retrying once")
+                logfire.info(
+                    "Image operation returned an empty result; retrying once",
+                    model=self.image_model.name,
+                    edit=bool(image_bytes_list),
+                )
         raise ValueError("Image operation returned no image data after one retry")
 
     async def generate(
@@ -298,9 +302,15 @@ class ImageGenerator(BaseModel):
                 image = await self.render(
                     prompt=user_prompt, end_user_id=end_user_id, image_bytes_list=image_bytes_list
                 )
-        except Exception:
+        except Exception as exc:
+            # Broad on purpose: the inline-marker boundary must degrade to "reply without an
+            # image" whether the render timed out, came back empty, or the provider errored.
             logfire.warn(
-                "Inline image generation failed; replying without an image", _exc_info=True
+                "Inline image generation failed; replying without an image",
+                error_type=type(exc).__name__,
+                end_user_id=end_user_id,
+                edit=bool(image_bytes_list),
+                _exc_info=exc,
             )
             return None
         logfire.info(
@@ -391,8 +401,13 @@ class PromptGenerator(BaseModel):
                         extra_body={"mock_testing_fallbacks": False},
                     )
             refined = output_text_or_empty(responses=responses).strip()
-        except Exception:
-            logfire.warn("Prompt refinement failed; using raw user prompt", _exc_info=True)
+        except Exception as exc:
+            logfire.warn(
+                "Prompt refinement failed; using raw user prompt",
+                error_type=type(exc).__name__,
+                end_user_id=end_user_id,
+                _exc_info=exc,
+            )
             return user_prompt
         logfire.info(
             "gen_reply prompt refine done",
@@ -472,15 +487,17 @@ class VoiceGenerator(BaseModel):
                 _exc_info=True,
             )
             return VoiceClip(outcome=VoiceOutcome.TIMEOUT)
-        except Exception:
-            # Any other provider error (most often the clip was refused, e.g. policy). The
-            # caller marks the message with a warning hint and degrades to a text reply.
+        except Exception as exc:
+            # Any other provider error (most often the clip was refused, e.g. policy), and broad
+            # because the proxy can fail in any shape. The caller marks the message with a warning
+            # hint and degrades to a text reply; error_type separates a refusal from a proxy 500.
             logfire.warn(
                 "Voice synthesis failed; replying without audio",
                 model=self.model_name,
                 end_user_id=end_user_id,
                 text_chars=len(spoken),
-                _exc_info=True,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
             return VoiceClip(outcome=VoiceOutcome.ERROR)
 
@@ -641,11 +658,16 @@ class VideoGenerator(BaseModel):
         while True:
             try:
                 return await self.client.aio.files.download(file=uri)
-            except Exception:
+            except Exception as exc:
                 if time.monotonic() >= deadline:
                     raise
                 attempt += 1
-                logfire.debug("gen_reply video download not ready; retrying", attempt=attempt)
+                logfire.debug(
+                    "gen_reply video download not ready; retrying",
+                    attempt=attempt,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
                 await asyncio.sleep(2.0)
 
     async def _upload_source_video(self, *, source_video: tuple[bytes, str]) -> str:
@@ -728,8 +750,12 @@ class MusicGenerator(BaseModel):
                 logfire.warn("Inline music generation returned no audio; replying without music")
                 return None
             clip = base64.b64decode(audio.data)
-        except Exception:
-            logfire.warn("Inline music generation failed; replying without music", _exc_info=True)
+        except Exception as exc:
+            logfire.warn(
+                "Inline music generation failed; replying without music",
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             return None
         logfire.info(
             "gen_reply inline music generated",

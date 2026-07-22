@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from types import TracebackType, SimpleNamespace
-from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
 from datetime import UTC, datetime, timedelta
 
 import nextcord
 from nextcord import Embed
 from nextcord.ext import commands
+from logfire._internal.constants import LEVEL_NUMBERS
 
 from discordbot import cli
 from discordbot.cogs import (
@@ -28,6 +29,7 @@ from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput
+from discordbot.typings.config import LoggingConfig
 from discordbot.typings.economy import (
     PortfolioView,
     LoanLenderType,
@@ -2102,6 +2104,7 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         send=record_context_send,
         guild=SimpleNamespace(name="Guild", id=1),
         author=FakeUser(user_id=1),
+        command=SimpleNamespace(qualified_name="demo"),
     )
     await cli.DiscordBot.on_command_error(bot, context, commands.NotOwner())
     await cli.DiscordBot.on_command_error(
@@ -2112,6 +2115,28 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     )
     await cli.DiscordBot.on_command_error(bot, context, commands.CommandNotFound("nope"))
     assert len(sent) == 4
+
+    # An error the handler has no branch for used to vanish at no level at all; it now
+    # reports the type nextcord wrapped, not the wrapper.
+    logged: list[dict[str, Any]] = []
+
+    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the unhandled-command-error log."""
+        logged.append(kwargs)
+
+    monkeypatch.setattr(cli.logfire, "error", record_error)
+    await cli.DiscordBot.on_command_error(
+        bot, context, commands.CommandInvokeError(ValueError("boom"))
+    )
+    assert len(sent) == 4
+    assert logged[-1]["error_type"] == "ValueError"
+    assert logged[-1]["command"] == "demo"
+
+
+def test_log_level_setting_accepts_only_real_logfire_levels() -> None:
+    """`LOG_LEVEL` is checked against logfire's own table, not a hand-copied list."""
+    accepted = set(get_args(LoggingConfig.model_fields["log_level"].annotation))
+    assert accepted == set(LEVEL_NUMBERS)
 
 
 async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(

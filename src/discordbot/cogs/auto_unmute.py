@@ -5,7 +5,7 @@ from functools import cached_property
 
 from openai import AsyncOpenAI
 import logfire
-from nextcord import User, Guild, Member, Message, Forbidden, AuditLogAction
+from nextcord import User, Guild, Member, Message, Forbidden, HTTPException, AuditLogAction
 from nextcord.abc import Messageable
 from nextcord.ext import commands
 
@@ -84,8 +84,17 @@ class AutoUnmuteCogs(commands.Cog):
             return
         try:
             await self._handle_self_timeout(member=after, until=after_until)
-        except Exception:
-            logfire.error("auto-unmute flow failed", _exc_info=True)
+        except Exception as exc:
+            # Stays broad: nextcord's dispatcher swallows anything escaping a listener,
+            # so this is the last place the residual failure can be reported.
+            logfire.error(
+                "auto-unmute flow failed",
+                guild_id=after.guild.id,
+                guild_name=after.guild.name,
+                until=after_until.isoformat(),
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
 
     async def _handle_self_timeout(self, member: Member, until: datetime) -> None:
         """Looks up who timed us out, releases the timeout, and posts an AI reply.
@@ -97,10 +106,14 @@ class AutoUnmuteCogs(commands.Cog):
         moderator, reason = await self._lookup_audit(guild=member.guild)
         try:
             await member.edit(timeout=None, reason="auto-unmute")
-        except Exception:
-            logfire.warn(
-                f"failed to clear self timeout in {member.guild.name} (missing moderate_members?)",
-                _exc_info=True,
+        except HTTPException as exc:
+            # Forbidden subclasses HTTPException, so the missing-moderate_members case lands here.
+            logfire.error(
+                "failed to clear self timeout (missing moderate_members?)",
+                guild_id=member.guild.id,
+                guild_name=member.guild.name,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
         ai_reply = await self._generate_reply(
             guild_name=member.guild.name, moderator=moderator, reason=reason, until=until
@@ -109,15 +122,18 @@ class AutoUnmuteCogs(commands.Cog):
             return
         channel = self._resolve_channel(guild=member.guild)
         if channel is None:
-            logfire.warn(f"no sendable channel for auto-unmute reply in {member.guild.name}")
+            logfire.info("no sendable channel for auto-unmute reply", guild_id=member.guild.id)
             return
         try:
             await channel.send(content=ai_reply)
-        except Exception:
+        except HTTPException as exc:
+            # A timed-out bot's send is denied, which arrives as Forbidden (an HTTPException).
             logfire.warn(
-                f"failed to send auto-unmute reply in {member.guild.name} "
-                "(timed-out bot's send may be blocked)",
-                _exc_info=True,
+                "failed to send auto-unmute reply",
+                guild_id=member.guild.id,
+                channel_id=channel.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
 
     async def _lookup_audit(self, guild: Guild) -> tuple[Member | User | None, str | None]:
@@ -137,8 +153,15 @@ class AutoUnmuteCogs(commands.Cog):
                 if not hasattr(entry.changes.after, "communication_disabled_until"):
                     continue
                 return entry.user, entry.reason
-        except Forbidden:
-            logfire.warn(f"missing view_audit_log permission in {guild.name}")
+        except Forbidden as exc:
+            logfire.warn("missing view_audit_log permission", guild_id=guild.id, _exc_info=exc)
+        except HTTPException as exc:
+            logfire.warn(
+                "audit log lookup failed",
+                guild_id=guild.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
         return None, None
 
     def _resolve_channel(self, guild: Guild) -> Messageable | None:

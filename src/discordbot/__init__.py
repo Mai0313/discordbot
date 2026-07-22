@@ -9,6 +9,8 @@ from importlib.metadata import version
 import dotenv
 import logfire
 
+from discordbot.typings.config import LoggingConfig
+
 dotenv.load_dotenv()
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 __version__ = version("discordbot")
@@ -57,7 +59,12 @@ class _TeeStream:
 
 
 def setup_logging() -> None:
-    """Configures logging with logfire, teeing output to a file."""
+    """Configures logging with logfire, teeing output to a file.
+
+    The floor is `LOG_LEVEL` (default `debug`), so `./data/logs` keeps the full trace
+    a debugging session needs while a deployment that only wants outcomes can raise it
+    without touching code. See the logging ladder in `.github/CONTRIBUTING.md`.
+    """
     # LiteLLM forwards Responses API output as ResponseReasoningItem objects that
     # pydantic's discriminated-union serializer does not recognise, producing a
     # noisy multi-line UserWarning on every reply. The payload still streams fine.
@@ -78,7 +85,7 @@ def setup_logging() -> None:
             span_style="show-parents",
             include_timestamps=True,
             verbose=True,
-            min_log_level="debug",
+            min_log_level=LoggingConfig().log_level,
             output=cast("TextIO", _TeeStream(console=sys.stdout, file=log_file)),
         ),
     )

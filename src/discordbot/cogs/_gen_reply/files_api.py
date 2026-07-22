@@ -102,15 +102,21 @@ async def upload_to_files_api(
             while uploaded.state == FileState.PROCESSING:
                 await asyncio.sleep(1.0)
                 uploaded = await client.aio.files.get(name=file_name)
-    except TimeoutError:
+    except TimeoutError as exc:
         logfire.warn(
             "files api upload did not finish in time",
             name=display_name,
             timeout_seconds=timeout_seconds,
+            _exc_info=exc,
         )
         return None
-    except Exception:
-        logfire.warn("files api upload failed", name=display_name, _exc_info=True)
+    except Exception as exc:
+        logfire.warn(
+            "files api upload failed",
+            name=display_name,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
         return None
     if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
         logfire.warn(

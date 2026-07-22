@@ -163,8 +163,16 @@ async def track_public_message(
         return None
     try:
         await asyncio.to_thread(_track_public_message_sync, record=record)
-    except Exception:
-        logfire.error("Failed to track pending public response", _exc_info=True)
+    # Stays broad: a narrowed handler would let a RuntimeError from a closing executor escape
+    # into a fire-and-forget task and skip the in-process deletion entirely.
+    except Exception as exc:
+        logfire.warn(
+            "Failed to track pending public response",
+            message_id=record.message_id,
+            channel_id=record.channel_id,
+            error_type=type(exc).__name__,
+            _exc_info=True,
+        )
     return record
 
 
@@ -172,16 +180,29 @@ async def forget_public_message(message_id: int) -> None:
     """Deletes a public message cleanup record."""
     try:
         await asyncio.to_thread(_forget_public_message_sync, message_id=message_id)
-    except Exception:
-        logfire.error("Failed to forget pending public response", _exc_info=True)
+    # Stays broad for the same reason as tracking; the stale row self-heals on the next
+    # delete_tracked_public_messages sweep via its NotFound branch.
+    except Exception as exc:
+        logfire.warn(
+            "Failed to forget pending public response",
+            message_id=message_id,
+            error_type=type(exc).__name__,
+            _exc_info=True,
+        )
 
 
 async def list_pending_public_messages() -> list[PendingPublicMessage]:
     """Returns public messages left over from a previous process."""
     try:
         return await asyncio.to_thread(_list_pending_public_messages_sync)
-    except Exception:
-        logfire.error("Failed to list pending public responses", _exc_info=True)
+    # The one error of the trio: unlike a single lost bookkeeping row, an empty list disables
+    # the whole restart sweep for this process, so every stale message stays on screen.
+    except Exception as exc:
+        logfire.error(
+            "Failed to list pending public responses",
+            error_type=type(exc).__name__,
+            _exc_info=True,
+        )
         return []
 
 
@@ -204,7 +225,12 @@ async def delete_public_message(message: Message, message_id: int | None = None)
     except NotFound:
         pass
     except (Forbidden, HTTPException):
-        logfire.warn("Failed to delete public response", _exc_info=True)
+        logfire.warn(
+            "Failed to delete public response",
+            message_id=resolved_message_id,
+            channel_id=getattr(getattr(message, "channel", None), "id", None),
+            _exc_info=True,
+        )
         return False
     if isinstance(resolved_message_id, int):
         await forget_public_message(message_id=resolved_message_id)

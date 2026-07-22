@@ -317,7 +317,11 @@ class MediaHostingService(BaseModel):
             return None
         ext = _normalize_suffix(suffix=suffix)
         if ext is None:
-            logfire.debug("Media hosting refused a non-allowlisted suffix", suffix=suffix)
+            logfire.warn(
+                "Media hosting refused a non-allowlisted suffix; the item will be dropped",
+                suffix=suffix,
+                size_bytes=len(data),
+            )
             return None
         serve = self._serve_dir()
         if serve is None:
@@ -330,9 +334,17 @@ class MediaHostingService(BaseModel):
         try:
             tmp.write_bytes(data)
             url = self._finalize(serve=serve, name=name, tmp=tmp)
-        except Exception:
-            logfire.warn("Failed to host media bytes", _exc_info=True)
-            with contextlib.suppress(Exception):
+        # Broad on purpose: any write / filesystem error must degrade to a drop, never raise into
+        # a reply pipeline.
+        except Exception as exc:
+            logfire.warn(
+                "Failed to host media bytes",
+                name=name,
+                size_bytes=len(data),
+                error_type=type(exc).__name__,
+                _exc_info=True,
+            )
+            with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
             return None
         self.enforce_cap(now=time.time())
@@ -344,7 +356,8 @@ class MediaHostingService(BaseModel):
         The file is hashed by a streaming read (never loaded whole into memory), so a multi-GB clip
         stays flat. On a dedup HIT the source is left in place for the caller's own cleanup; on a
         miss it is copied into a serve-dir temp, `os.replace`d onto the final name, and the source is
-        unlinked. The size cap is enforced after a successful host.
+        unlinked (a failed unlink still returns the URL: the file is already published). The size cap
+        is enforced after a successful host.
 
         Returns:
             The public URL, or None when hosting is unavailable / the serve dir is missing / the
@@ -354,8 +367,10 @@ class MediaHostingService(BaseModel):
             return None
         ext = _normalize_suffix(suffix=file_path.suffix)
         if ext is None:
-            logfire.debug(
-                "Media hosting refused a non-allowlisted suffix", suffix=file_path.suffix
+            logfire.warn(
+                "Media hosting refused a non-allowlisted suffix; the item will be dropped",
+                suffix=file_path.suffix,
+                path=str(file_path),
             )
             return None
         serve = self._serve_dir()
@@ -363,8 +378,13 @@ class MediaHostingService(BaseModel):
             return None
         try:
             name = f"{_hash_file(file_path)}{ext}"
-        except OSError:
-            logfire.warn("Failed to hash media file", _exc_info=True)
+        except OSError as exc:
+            logfire.warn(
+                "Failed to hash media file",
+                path=str(file_path),
+                error_type=type(exc).__name__,
+                _exc_info=True,
+            )
             return None
         hit = self._dedup_hit(serve=serve, name=name)
         if hit is not None:
@@ -372,13 +392,41 @@ class MediaHostingService(BaseModel):
         tmp = serve / f"{_TEMP_PREFIX}{secrets.token_urlsafe(8)}"
         try:
             shutil.copy2(str(file_path), str(tmp))
-            url = self._finalize(serve=serve, name=name, tmp=tmp)
-            file_path.unlink(missing_ok=True)
-        except Exception:
-            logfire.warn("Failed to host media file", _exc_info=True)
-            with contextlib.suppress(Exception):
+        # Broad on purpose: any copy / filesystem error must degrade to a drop, never raise
+        # into a reply pipeline.
+        except Exception as exc:
+            logfire.warn(
+                "Failed to copy media into the serve dir",
+                path=str(file_path),
+                error_type=type(exc).__name__,
+                _exc_info=True,
+            )
+            with contextlib.suppress(OSError):
                 tmp.unlink(missing_ok=True)
             return None
+        try:
+            url = self._finalize(serve=serve, name=name, tmp=tmp)
+        # Broad on purpose: same boundary; a half-finalized host must not surface a URL.
+        except Exception as exc:
+            logfire.warn(
+                "Failed to finalize hosted media",
+                name=name,
+                error_type=type(exc).__name__,
+                _exc_info=True,
+            )
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+            return None
+        # Published from here on: a failed source cleanup must not report the item as dropped.
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logfire.debug(
+                "Hosted media published but the source file could not be removed",
+                path=str(file_path),
+                error_type=type(exc).__name__,
+                _exc_info=True,
+            )
         self.enforce_cap(now=time.time())
         return url
 

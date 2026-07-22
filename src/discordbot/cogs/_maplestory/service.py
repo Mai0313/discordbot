@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 import logfire
-from pydantic import BaseModel, ConfigDict, PrivateAttr
+from pydantic import BaseModel, ConfigDict, PrivateAttr, ValidationError
 
 from .models import NPC, Quest, Scroll, Monster, Useable, MapEntry, MiscItem, Equipment, MapleStats
 
@@ -23,10 +23,23 @@ def _load_json[T: BaseModel](path: Path, model: type[T]) -> list[T]:
         with path.open(encoding="utf-8") as f:
             raw = json.load(f)
         return [model.model_validate(item) for item in raw]
-    except FileNotFoundError:
-        logfire.warning(f"找不到資料檔案 {path}")
-    except (json.JSONDecodeError, Exception) as exc:
-        logfire.error(f"無法載入 {path}: {exc}")
+    except FileNotFoundError as exc:
+        logfire.warn(
+            "maplestory data file missing, category stays empty",
+            path=str(path),
+            model=model.__name__,
+            _exc_info=exc,
+        )
+    except (json.JSONDecodeError, ValidationError, OSError, UnicodeDecodeError, TypeError) as exc:
+        # TypeError covers a JSON document that parses but is not a list, which
+        # would otherwise escape into the synchronous cog load and kill startup.
+        logfire.error(
+            "failed to load maplestory data",
+            path=str(path),
+            model=model.__name__,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )
     return []
 
 
@@ -36,7 +49,17 @@ def _load_translations(data_dir: Path) -> dict[str, dict[str, str]]:
     try:
         with path.open(encoding="utf-8") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+    except FileNotFoundError as exc:
+        logfire.warn(
+            "maplestory translations.json missing, names stay untranslated",
+            path=str(path),
+            _exc_info=exc,
+        )
+        return {}
+    except json.JSONDecodeError as exc:
+        logfire.error(
+            "failed to parse maplestory translations.json", path=str(path), _exc_info=exc
+        )
         return {}
 
 
