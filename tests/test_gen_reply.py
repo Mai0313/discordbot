@@ -7,7 +7,7 @@ import re
 import json
 from types import SimpleNamespace
 import base64
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
@@ -3030,15 +3030,29 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
 
 
-async def test_grok_file_uploader_without_a_key_drops_the_attachment(
+async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An unconfigured xAI key is reported as a missing key, not as an upload failure."""
     monkeypatch.setenv("XAI_API_KEY", "")
+    # The SDK accepts an admin key in place of the missing one, which would let the upload
+    # call be reached (and attempted for real) instead of failing at client construction.
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    logged: list[str] = []
+
+    def record_error(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the missing-key log."""
+        del kwargs
+        logged.append(message)
+
+    monkeypatch.setattr(
+        "discordbot.cogs._gen_reply.attachment.grok_file_api.logfire.error", record_error
+    )
     renderer = GrokFileUploader()
     assert (
         await renderer._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
     )
+    assert logged == ["xAI Files API key missing; dropping attachment"]
 
 
 async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
