@@ -700,9 +700,9 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         return MemoryExtractorAI(
             client=self.openai_client,
-            extract_model=self.runtime_models.extract_model,
+            extract_model=self.runtime_models.memory_extractor_model,
             evaluate_model=self.runtime_models.memory_evaluator_model,
-            consolidate_model=self.runtime_models.memories_model,
+            consolidate_model=self.runtime_models.memory_consolidator_model,
         )
 
     @cached_property
@@ -716,9 +716,9 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         return MemoryExtractorAI(
             client=self.openai_client,
-            extract_model=self.runtime_models.extract_model,
+            extract_model=self.runtime_models.memory_extractor_model,
             evaluate_model=self.runtime_models.memory_evaluator_model,
-            consolidate_model=self.runtime_models.memories_model,
+            consolidate_model=self.runtime_models.memory_consolidator_model,
             phase1_prompt=SERVER_PHASE1_PROMPT,
             evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
             consolidate_prompt=SERVER_PHASE2_PROMPT,
@@ -998,14 +998,14 @@ class ReplyGeneratorCogs(commands.Cog):
             message=message,
             reply=reply,
             context_task=context_task,
-            model=self.runtime_models.video_reply_model,
+            model=self.runtime_models.media_reply_model,
             system_prompt=VIDEO_REPLY_PROMPT,
             focus_part=ResponseInputFileParam(type="input_file", file_id=file_uri),
             media_noun="video",
             span_name="gen_reply video reply",
         )
 
-    async def _stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the model / prompt / focus part / noun / span differ per route
+    async def _stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the prompt / focus part / noun / span differ per route
         self,
         *,
         message: Message,
@@ -1172,7 +1172,7 @@ class ReplyGeneratorCogs(commands.Cog):
             message=message,
             reply=reply,
             context_task=context_task,
-            model=self.runtime_models.image_reply_model,
+            model=self.runtime_models.media_reply_model,
             system_prompt=IMAGE_REPLY_PROMPT,
             focus_part=ResponseInputImageParam(
                 image_url=convert_base64_to_data_uri(
@@ -1225,16 +1225,16 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         message_list = [*reference_messages, *current_message]
 
-        route_model = self.runtime_models.route_model
+        fast_model = self.runtime_models.fast_model
         started = time.monotonic()
         try:
             with logfire.span("gen_reply route"):
                 responses = await self.openai_client.responses.parse(
-                    model=route_model.name,
+                    model=fast_model.name,
                     instructions=ROUTE_PROMPT,
                     input=cast("ResponseInputParam", message_list),
                     text_format=RouteClassification,
-                    reasoning=route_model.reasoning,
+                    reasoning=fast_model.reasoning,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": message.author.name},
                     extra_body={"mock_testing_fallbacks": False},
@@ -1286,15 +1286,15 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         message_list = [*reference_messages, *current_message]
 
-        effort_model = self.runtime_models.effort_model
+        fast_model = self.runtime_models.fast_model
         started = time.monotonic()
         with logfire.span("gen_reply effort"):
             responses = await self.openai_client.responses.parse(
-                model=effort_model.name,
+                model=fast_model.name,
                 instructions=EFFORT_PROMPT,
                 input=cast("ResponseInputParam", message_list),
                 text_format=EffortGrade,
-                reasoning=effort_model.reasoning,
+                reasoning=fast_model.reasoning,
                 service_tier="auto",
                 extra_headers={"x-litellm-end-user-id": message.author.name},
                 extra_body={"mock_testing_fallbacks": False},

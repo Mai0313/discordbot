@@ -48,4 +48,4 @@ def test_the_default_effort_is_the_gemini_floor() -> None:
 def test_the_catalog_exposes_the_tiers_under_test() -> None:
     """Guards the sweep itself: a catalog that stopped exposing tiers would pass vacuously."""
     models = _catalog_models()
-    assert {"route_model", "effort_model", "tool_model", "slow_model"} <= set(models)
+    assert {"fast_model", "tool_model", "media_reply_model", "slow_model"} <= set(models)

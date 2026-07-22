@@ -3053,7 +3053,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
-    assert cog.openai_client.responses.parse_models[0] == cog.runtime_models.route_model.name
+    assert cog.openai_client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
@@ -3078,10 +3078,10 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     # No director: the raw request reaches images.generate directly.
     assert cog.openai_client.images.generate_prompts == ["image"]
     # The image is delivered first, then a conversational reply streams onto that same
-    # message via the flash image_reply_model with no tools.
+    # message via the flash media_reply_model with no tools.
     assert message.replies[-1].file is not None
     assert (
-        cog.openai_client.responses.create_models[-1] == cog.runtime_models.image_reply_model.name
+        cog.openai_client.responses.create_models[-1] == cog.runtime_models.media_reply_model.name
     )
     assert cog.openai_client.responses.create_streams[-1] is True
     assert cog.openai_client.responses.create_tools[-1] is None
@@ -3341,7 +3341,7 @@ async def test_handle_image_reply_refines_prompt_before_generate() -> None:
     assert cog.openai_client.responses.create_streams == [False, True]
     assert cog.openai_client.responses.create_models == [
         cog.runtime_models.prompt_model.name,
-        cog.runtime_models.image_reply_model.name,
+        cog.runtime_models.media_reply_model.name,
     ]
     # The director runs on IMAGE_PROMPT with the grounding tools available.
     assert cog.openai_client.responses.create_instructions[0] == IMAGE_PROMPT
@@ -3366,7 +3366,7 @@ async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
     # The raw prompt reaches images.generate; the only create is the streaming persona reply.
     assert cog.openai_client.images.generate_prompts == ["draw a cat"]
     assert cog.openai_client.responses.create_streams == [True]
-    assert cog.openai_client.responses.create_models == [cog.runtime_models.image_reply_model.name]
+    assert cog.openai_client.responses.create_models == [cog.runtime_models.media_reply_model.name]
 
 
 async def test_handle_image_reply_injects_only_user_memory() -> None:
@@ -3589,7 +3589,7 @@ async def test_handle_video_reply_refines_prompt_before_render(
     assert cog.openai_client.responses.create_streams == [False, True]
     assert cog.openai_client.responses.create_models == [
         cog.runtime_models.prompt_model.name,
-        cog.runtime_models.video_reply_model.name,
+        cog.runtime_models.media_reply_model.name,
     ]
     assert cog.openai_client.responses.create_instructions[0] == VIDEO_PROMPT
     # The reply (the last create) watches the generated video: referenced as an input_file part.
@@ -3631,7 +3631,7 @@ async def test_handle_video_reply_refine_disabled_sends_raw_prompt(
     create_input = cog.gemini_client.create_inputs[0]
     assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
     assert cog.openai_client.responses.create_streams == [True]
-    assert cog.openai_client.responses.create_models == [cog.runtime_models.video_reply_model.name]
+    assert cog.openai_client.responses.create_models == [cog.runtime_models.media_reply_model.name]
 
 
 async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3781,7 +3781,7 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
 
     routed = await _route(cog=cog, message=message)
     assert routed.decision == "QA"
-    assert cog.openai_client.responses.parse_models[0] == cog.runtime_models.route_model.name
+    assert cog.openai_client.responses.parse_models[0] == cog.runtime_models.fast_model.name
 
 
 @pytest.mark.parametrize(
@@ -5262,11 +5262,16 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     assert scheduled[0]["full_reply"] == "完整回覆"
     assert scheduled[0]["extractor"] is cog.memory_extractor
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
-    assert cog.memory_extractor.extract_model.name == cog.runtime_models.extract_model.name
+    assert (
+        cog.memory_extractor.extract_model.name == cog.runtime_models.memory_extractor_model.name
+    )
     assert (
         cog.memory_extractor.evaluate_model.name == cog.runtime_models.memory_evaluator_model.name
     )
-    assert cog.memory_extractor.consolidate_model.name == cog.runtime_models.memories_model.name
+    assert (
+        cog.memory_extractor.consolidate_model.name
+        == cog.runtime_models.memory_consolidator_model.name
+    )
 
 
 async def test_handle_message_reply_without_stored_memory_keeps_instructions(

@@ -16,9 +16,9 @@ console = Console()
 config = LLMConfig()
 
 # Mirror the @property values in cogs/gen_reply.py. Update here when the bot's
-# image_model / image_reply_model swap, otherwise this script tests stale models.
+# image_model / media_reply_model swap, otherwise this script tests stale models.
 IMAGE_MODEL = ModelSettings(name="gemini-3.1-flash-image")
-IMAGE_REPLY_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
+MEDIA_REPLY_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
 
 
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
@@ -65,7 +65,7 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
 
     image_url = convert_base64_to_data_uri(base64_image=image_b64)
     reply_responses = client.responses.create(
-        model=IMAGE_REPLY_MODEL.name,
+        model=MEDIA_REPLY_MODEL.name,
         instructions=IMAGE_REPLY_PROMPT,
         input=[
             {
@@ -82,7 +82,7 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
                 ],
             }
         ],
-        reasoning=IMAGE_REPLY_MODEL.reasoning,
+        reasoning=MEDIA_REPLY_MODEL.reasoning,
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "image_dev"},
         extra_body={"mock_testing_fallbacks": False},

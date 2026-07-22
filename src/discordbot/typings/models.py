@@ -186,34 +186,23 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="gemini-flash-latest", effort="high")
 
     @property
-    def image_reply_model(self) -> ModelSettings:
-        """The model settings for the conversational reply that rides a generated image.
+    def media_reply_model(self) -> ModelSettings:
+        """The model settings for the conversational reply that rides generated media.
 
-        Callers: `_handle_image_reply`.
+        Callers: `_stream_media_persona_reply` (via `_handle_image_reply` and
+        `_handle_video_reply`).
 
-        Returns:
-            Flash, the middle tier between the flash-lite caption it replaces and the
-            gemini-pro answer model: it reads conversation history and the selected user
-            memory and answers in persona while holding the image it just made,
-            rather than coldly describing it. `effort="low"` keeps it snappy yet still
-            emits a reasoning summary, so the streaming reasoning preview shows; the image is
-            already on screen, so this text streams in after with no added image latency.
-        """
-        return ModelSettings(name="gemini-flash-latest", effort="low")
-
-    @property
-    def video_reply_model(self) -> ModelSettings:
-        """The model settings for the conversational reply that rides a generated video.
-
-        Callers: `_handle_video_reply`.
+        One tier for both routes because they are the same task on the same shared streamer:
+        only the system prompt and the focus part differ per route. Flash, the middle tier
+        between the flash-lite caption it replaces and the gemini-pro answer model, and it
+        ingests video as well as images: it reads conversation history and the selected user
+        memory, then answers in persona while holding the image or clip it just made rather
+        than coldly describing it.
 
         Returns:
-            Flash (which ingests video), mirroring `image_reply_model`: it watches the
-            generated video the bot just made, reads conversation history and the selected
-            user memory, and answers in persona holding the clip rather than coldly
-            describing it. `effort="low"` keeps it snappy yet still emits a reasoning summary;
-            the video is already on screen, so this text streams in after with no added video
-            latency.
+            Flash with `effort="low"`, which keeps it snappy yet still emits a reasoning
+            summary so the streaming reasoning preview shows. The media is already on screen,
+            so this text streams in after with no added generation latency.
         """
         return ModelSettings(name="gemini-flash-latest", effort="low")
 
@@ -231,45 +220,23 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def fast_model(self) -> ModelSettings:
-        """The model settings for lightweight reply-generation tasks.
+        """The model settings for lightweight, single-shot tasks.
 
-        Callers: `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
+        Callers: `_route_classify`, `_grade_effort`, `AutoUnmuteCogs._generate_reply`,
+        `StockNewsAI`, the research thread title.
+
+        This is the difficulty tier, not a purpose: everything routed here is one short call
+        whose job is either a narrow classification or a throwaway line of text. The route
+        picks the reply mode and the effort grade decides how hard the answer model should
+        think; both follow simple rules, so flash-lite is enough and the QA critical path
+        stays short (the grade runs in parallel with the route under the same `route_done`
+        gate, so its latency hides behind the route entirely).
 
         Returns:
-            Fast model settings used for short auto-unmute replies and stock
-            news generation.
+            Fast minimal-thinking settings.
         """
         fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
         return fast_model
-
-    @property
-    def route_model(self) -> ModelSettings:
-        """The model settings for the route classification decision.
-
-        Callers: `_route_classify`.
-
-        Returns:
-            Fast minimal-thinking settings for the route classification call. The route's
-            only job is picking the reply mode; the effort grade runs as a separate
-            parallel call on `effort_model`, so flash-lite is enough here and keeps the
-            QA critical path short.
-        """
-        return ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
-
-    @property
-    def effort_model(self) -> ModelSettings:
-        """The model settings for the answer-effort grading decision.
-
-        Callers: `_grade_effort`.
-
-        Returns:
-            Fast minimal-thinking settings for the effort grading call that runs in parallel
-            with the route. Grading how much the answer model should think follows simple
-            complexity rules, so flash-lite is enough; the call is bounded by the same
-            `route_done` gate as memory selection, so its latency hides behind the route
-            and adds nothing to the critical path.
-        """
-        return ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
 
     @property
     def tool_model(self) -> ModelSettings:
@@ -307,35 +274,44 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
-    def extract_model(self) -> ModelSettings:
-        """The model settings for phase-1 per-user memory extraction.
+    def memory_extractor_model(self) -> ModelSettings:
+        """The model settings for phase-1 memory extraction.
 
-        Callers: `MemoryExtractorAI.extract`.
+        Callers: `MemoryExtractorAI.extract` (its `extract_model` field).
 
         Returns:
-            Model settings for the background memory extraction call.
+            Model settings for the background memory extraction call. Kept apart from the
+            evaluator and consolidator tiers so the recall-oriented first pass can be
+            downgraded on its own if the evaluator proves able to carry the precision.
         """
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
     def memory_evaluator_model(self) -> ModelSettings:
-        """The model settings for strict phase-1 memory quality evaluation.
+        """The model settings for the strict phase-1.5 memory quality review.
 
-        Callers: `MemoryExtractorAI.extract`.
+        Callers: `MemoryExtractorAI.extract` (its optional `evaluate_model` field).
 
         Returns:
-            Model settings for the background memory evaluator call.
+            Model settings for the background memory evaluator call: the last LLM gate before
+            an observation reaches long-term storage, so it tightens `sharing` and `durability`
+            (downgrade-only), dedupes by `normalized_key`, and strips personal-attack wording.
+            Its own tier because that gate may need to stay strong even when the extraction
+            pass ahead of it is downgraded.
         """
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
     @property
-    def memories_model(self) -> ModelSettings:
+    def memory_consolidator_model(self) -> ModelSettings:
         """The model settings for phase-2 memory consolidation.
 
-        Callers: `MemoryExtractorAI.consolidate`.
+        Callers: `MemoryExtractorAI.consolidate` (its `consolidate_model` field), which also
+        backs `regenerate_main_memory`.
 
         Returns:
-            Model settings for the background memory consolidation call.
+            Model settings for the background memory consolidation call. The heaviest of the
+            three memory tiers: it rewrites the whole `main.md` plus the tone note in one pass,
+            so a weaker model here loses memory rather than just failing to record it.
         """
         return ModelSettings(name="gemini-pro-latest", effort="high")
 
