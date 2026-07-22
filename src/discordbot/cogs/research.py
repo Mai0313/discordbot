@@ -27,6 +27,8 @@ from nextcord import (
     Locale,
     Object,
     Message,
+    NotFound,
+    Forbidden,
     Interaction,
     SlashOption,
     TextChannel,
@@ -1031,7 +1033,19 @@ class ResearchCogs(commands.Cog):
             return cached
         try:
             fetched = await self.bot.fetch_channel(thread_id)
-        except Exception:
+        except (NotFound, Forbidden):
+            logfire.info("research thread is gone; skipping", thread_id=thread_id)
+            return None
+        # Broad on purpose: every caller treats None as "gone" and returns, so a transient REST
+        # or transport failure must not raise into a resume sweep. It is logged apart from the
+        # deleted case so the two stop looking the same in the log.
+        except Exception as exc:
+            logfire.warn(
+                "could not fetch the research thread; treating it as gone",
+                thread_id=thread_id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
             return None
         return fetched
 

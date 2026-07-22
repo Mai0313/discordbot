@@ -36,11 +36,13 @@ class EconomyConfig(BaseSettings):
 class LoggingConfig(BaseSettings):
     """Console and log-file verbosity, loaded from environment variables."""
 
-    log_level: Literal["trace", "debug", "info", "warn", "error", "fatal"] = Field(
-        "debug",
-        description="Lowest severity written to the console and to ./data/logs. Defaults to debug so the log file keeps the full trace; raise it to info on a deployment that only wants outcomes.",
-        examples=["debug", "info"],
-        validation_alias=AliasChoices("LOG_LEVEL"),
+    log_level: Literal["trace", "debug", "info", "notice", "warn", "warning", "error", "fatal"] = (
+        Field(
+            "debug",
+            description="Lowest severity written to the console and to ./data/logs. Defaults to debug so the log file keeps the full trace; raise it to info on a deployment that only wants outcomes.",
+            examples=["debug", "info"],
+            validation_alias=AliasChoices("LOG_LEVEL"),
+        )
     )
 
 
