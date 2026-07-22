@@ -15,6 +15,8 @@ class LLMConfig(BaseSettings):
             the Gemini Files API directly, so uploads can be polled to ACTIVE.
         anthropic_api_key: The Anthropic key used to upload attachments to the
             Anthropic Files API directly (the side-channel for Claude answer models).
+        xai_api_key: The xAI key used to upload attachments to the xAI Files API
+            directly (the side-channel for Grok answer models, which the proxy cannot route).
         inline_voice_enabled: Kill-switch for spoken QA replies; when false the answer
             model's voice marker is still stripped but no audio clip is synthesized.
         inline_image_enabled: Kill-switch for inline generated images on QA replies; when
@@ -69,6 +71,12 @@ class LLMConfig(BaseSettings):
         description="The Anthropic API key for direct Anthropic Files API uploads.",
         examples=["sk-ant-..."],
         validation_alias=AliasChoices("ANTHROPIC_API_KEY"),
+    )
+    xai_api_key: str = Field(
+        default="",
+        description="The xAI API key for direct xAI Files API uploads.",
+        examples=["xai-..."],
+        validation_alias=AliasChoices("XAI_API_KEY"),
     )
     inline_voice_enabled: bool = Field(
         default=True,
