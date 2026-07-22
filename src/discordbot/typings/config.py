@@ -1,3 +1,5 @@
+from typing import Literal
+
 import dotenv
 from pydantic import Field, AliasChoices
 from pydantic_settings import BaseSettings
@@ -31,4 +33,15 @@ class EconomyConfig(BaseSettings):
     )
 
 
-__all__ = ["DiscordConfig", "EconomyConfig"]
+class LoggingConfig(BaseSettings):
+    """Console and log-file verbosity, loaded from environment variables."""
+
+    log_level: Literal["trace", "debug", "info", "warn", "error", "fatal"] = Field(
+        "debug",
+        description="Lowest severity written to the console and to ./data/logs. Defaults to debug so the log file keeps the full trace; raise it to info on a deployment that only wants outcomes.",
+        examples=["debug", "info"],
+        validation_alias=AliasChoices("LOG_LEVEL"),
+    )
+
+
+__all__ = ["DiscordConfig", "EconomyConfig", "LoggingConfig"]
