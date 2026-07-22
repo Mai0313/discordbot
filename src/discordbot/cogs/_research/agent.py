@@ -189,12 +189,14 @@ async def _poll_until_terminal(
     while True:
         try:
             interaction = await client.aio.interactions.get(id=interaction_id)
-        except Exception:
+        except Exception as exc:
             consecutive_errors += 1
             logfire.warn(
                 "research poll error; retrying",
                 interaction_id=interaction_id,
                 consecutive_errors=consecutive_errors,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
             if consecutive_errors >= MAX_CONSECUTIVE_POLL_ERRORS:
                 raise
@@ -266,6 +268,24 @@ class _StreamDriver(BaseModel):
         )
         return cast("AsyncIterator[InteractionSSEEvent]", responses)
 
+    async def _persist_created(
+        self, *, interaction_id: str, on_created: "CreatedCallback"
+    ) -> None:
+        """Records the captured interaction id and hands it to the caller's persist callback."""
+        self.interaction_id = interaction_id
+        try:
+            await on_created(interaction_id)
+        except Exception as exc:
+            # Broad: the callback is a caller-supplied DB write. Losing it does not stop this run,
+            # but a restart cannot resume an unpersisted id, and raising here would kill the live
+            # view for the rest of the run.
+            logfire.error(
+                "failed to persist research interaction id",
+                interaction_id=interaction_id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+
     async def events(
         self,
         *,
@@ -285,16 +305,20 @@ class _StreamDriver(BaseModel):
                     if event_id:
                         self.last_event_id = event_id
                     if event.event_type == "interaction.created" and not self.interaction_id:
-                        self.interaction_id = str(event.interaction.id or "")
-                        await on_created(self.interaction_id)
+                        await self._persist_created(
+                            interaction_id=str(event.interaction.id or ""), on_created=on_created
+                        )
                     if _is_terminal_event(event=event):
                         terminal = True
                     yield event
-            except Exception:
+            except Exception as exc:
+                # Broad: the SDK surfaces transport/SSE failures as arbitrary exception types; the
+                # reconnect below is the handling, so every type is tolerated here.
                 logfire.warn(
                     "research stream dropped; will reconnect",
                     interaction_id=self.interaction_id,
-                    _exc_info=True,
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
                 )
             if terminal:
                 return

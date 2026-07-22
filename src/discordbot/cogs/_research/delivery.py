@@ -160,6 +160,8 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
             files=files if is_last else [],
             view=view if is_last else None,
             allowed_mentions=allowed_mentions,
+            chunk_index=index,
+            is_last=is_last,
         )
 
 
@@ -171,6 +173,8 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / v
     files: list[File],
     view: View | None,
     allowed_mentions: AllowedMentions,
+    chunk_index: int,
+    is_last: bool,
 ) -> None:
     """Edits the opening status message (when given) or sends a new message, with optional files/view."""
     if status is not None:
@@ -186,8 +190,15 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / v
             else:
                 await status.edit(content=content, allowed_mentions=allowed_mentions)
             return
-        except Exception:
-            logfire.warn("failed to edit research status into report", thread_id=thread.id)
+        except Exception as exc:
+            # Broad: any Discord failure here is recoverable by the fallback send below.
+            logfire.warn(
+                "failed to edit research status into report",
+                thread_id=thread.id,
+                chunk_index=chunk_index,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
     try:
         if files and view is not None:
             await thread.send(
@@ -199,5 +210,18 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / v
             await thread.send(content=content, view=view, allowed_mentions=allowed_mentions)
         else:
             await thread.send(content=content, allowed_mentions=allowed_mentions)
-    except Exception:
-        logfire.warn("failed to post research report message", thread_id=thread.id)
+    except Exception as exc:
+        # Broad on purpose: last resort of a best-effort delivery, so it must not abort the
+        # caller's phase bookkeeping. Only the last chunk carries the file, ping, footer and
+        # escalation view, so losing it breaks the deliverable; an earlier one is partial.
+        log = logfire.error if is_last else logfire.warn
+        log(
+            "failed to post research report message",
+            thread_id=thread.id,
+            chunk_index=chunk_index,
+            is_last=is_last,
+            has_files=bool(files),
+            has_view=view is not None,
+            error_type=type(exc).__name__,
+            _exc_info=exc,
+        )

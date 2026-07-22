@@ -152,8 +152,19 @@ class ResearchProgressStreamer(BaseModel):
         if self._editor_task is None:
             return
         self._editor_stop.set()
-        with contextlib.suppress(Exception):
+        try:
             await self._editor_task
+        except Exception as exc:
+            # Broad: the editor already suppresses its own Discord writes, so anything here is
+            # unexpected; swallowing keeps the preview best-effort. Catching Exception rather than
+            # BaseException keeps cancellation propagating, as the stop-by-event contract needs.
+            logfire.warn(
+                "research preview editor ended with an error",
+                message_id=self.status.id if self.status is not None else None,
+                label=self.label,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
         self._editor_task = None
 
     async def stream(self, *, events: AsyncIterator["InteractionSSEEvent"]) -> None:
