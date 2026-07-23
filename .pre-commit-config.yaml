@@ -120,7 +120,6 @@ repos:
     rev: v2.3.0
     hooks:
       - id: mypy
-        exclude: '^(tests|scripts)/'
         additional_dependencies:
           - "Pydantic"
           - "Types-requests"
