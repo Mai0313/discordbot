@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
 from datetime import UTC, datetime, timedelta
 
 import nextcord
-from nextcord import Guild, Embed, Member
+from nextcord import Embed, Guild, Member
 from nextcord.ext import commands
 from logfire._internal.constants import LEVEL_NUMBERS
 
@@ -28,7 +28,7 @@ from discordbot.cogs._economy import views, interactions
 from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
-from discordbot.utils.threads import ThreadsOutput
+from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
 from discordbot.typings.config import LoggingConfig
 from discordbot.typings.economy import (
     PortfolioView,
@@ -53,11 +53,7 @@ from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.cogs.parse_threads import ThreadsCogs
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
-from discordbot.utils.media_delivery import (
-    MediaHostingConfig,
-    MediaHostingService,
-    MediaDeliveryPlanner,
-)
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs._games.blackjack import Card
 from discordbot.cogs._economy.database import (
     VIP_PURCHASE_COST,
@@ -71,6 +67,7 @@ from discordbot.cogs._games.blackjack_views import BlackjackLobbyView
 from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
 
 from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
+from tests.helpers.casting import as_bot, as_message, as_interaction, make_media_hosting_config
 from tests.helpers.discord_mocks import (
     FakeUser,
     DiscordPayload,
@@ -225,17 +222,17 @@ def _thread_output(
 
 async def test_template_on_message_and_ping() -> None:
     """Verifies template debug reaction and ping command response."""
-    cog = TemplateCogs(bot=SimpleNamespace(latency=0.123))
+    cog = TemplateCogs(bot=as_bot(fake=SimpleNamespace(latency=0.123)))
     message = FakeDiscordMessage()
-    message.author = FakeUser(bot=False)
-    message.content = "debug"
-    await cog.on_message(message=message)
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "debug"
+    await cog.on_message(message=as_message(fake=message))
     assert message.reactions == ["🤬"]
 
     bot_message = FakeDiscordMessage()
-    bot_message.author = FakeUser(bot=True)
-    bot_message.content = "debug"
-    await cog.on_message(message=bot_message)
+    bot_message.__dict__["author"] = FakeUser(bot=True)
+    bot_message.__dict__["content"] = "debug"
+    await cog.on_message(message=as_message(fake=bot_message))
     assert bot_message.reactions == []
 
     interaction = FakeInteraction(user=FakeUser(display_name="Alice"))
@@ -249,15 +246,13 @@ async def test_video_deliver_and_download_branches(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verifies video delivery, oversize URL fallback, hosting-off, and download error branches."""
-    cog = VideoCogs(bot=SimpleNamespace())
+    cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
     serve_dir = tmp_path / "serve"
     serve_dir.mkdir()  # the serve dir is a pre-existing host mount; the bot never creates it
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
-            config=MediaHostingConfig(
-                MEDIA_HOSTING_ENABLED=True,
-                MEDIA_HOSTING_BASE_URL="https://media.test",
-                MEDIA_HOSTING_SERVE_DIR=str(serve_dir),
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
             )
         )
     )
@@ -268,7 +263,7 @@ async def test_video_deliver_and_download_branches(
 
     interaction = FakeInteraction()
     await cog._deliver(
-        interaction=interaction,
+        interaction=as_interaction(fake=interaction),
         file_size_mb=1.25,
         file_path=small,
         url="https://source.test/video",
@@ -297,9 +292,7 @@ async def test_video_deliver_and_download_branches(
     # Too big + hosting unavailable: fall back to the "file too large" message.
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
-            config=MediaHostingConfig(
-                MEDIA_HOSTING_ENABLED=True, MEDIA_HOSTING_BASE_URL="", MEDIA_HOSTING_SERVE_DIR=""
-            )
+            config=make_media_hosting_config(enabled=True, base_url="", serve_dir="")
         )
     )
     big2 = tmp_path / "big2.mp4"
@@ -334,7 +327,7 @@ class _RaiseDownloader:
 async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) -> None:
     """Verifies Threads embed building and on_message success/warning/error paths."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
-    cog = ThreadsCogs(bot=bot)
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
     video_file = tmp_path / "clip.mp4"
     video_file.write_bytes(data=b"123")
 
@@ -344,63 +337,70 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     )
     embeds = cog._build_embeds(results=[parent, target])
     assert len(embeds) == 3
-    assert "點此觀看影片" in embeds[0].description
+    first_description = embeds[0].description
+    assert first_description is not None
+    assert "點此觀看影片" in first_description
     assert ThreadsCogs._gradient_color(index=0, total=1) == nextcord.Color.default()
 
     no_match = FakeDiscordMessage()
-    no_match.author = FakeUser(bot=False)
-    no_match.content = "hello"
-    await cog.on_message(message=no_match)
+    no_match.__dict__["author"] = FakeUser(bot=False)
+    no_match.__dict__["content"] = "hello"
+    await cog.on_message(message=as_message(fake=no_match))
     assert no_match.reactions == []
 
     success_message = FakeDiscordMessage()
-    success_message.author = FakeUser(bot=False)
-    success_message.content = "https://www.threads.net/@alice/post/abc"
-    success_message.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-    cog.downloader = ThreadsDownloaderStub(
-        results=[_thread_output(video_paths=[video_file], image_urls=[])]
+    success_message.__dict__["author"] = FakeUser(bot=False)
+    success_message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    success_message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    cog.downloader = cast(
+        "ThreadsDownloader",
+        ThreadsDownloaderStub(results=[_thread_output(video_paths=[video_file], image_urls=[])]),
     )
-    await cog.on_message(message=success_message)
+    await cog.on_message(message=as_message(fake=success_message))
     assert success_message.suppressed
     assert success_message.replies[0]["files"]
     assert success_message.reactions[-1] == "<:greencheck:1517565102424068226>"
 
     warning_message = FakeDiscordMessage()
-    warning_message.author = FakeUser(bot=False)
-    warning_message.content = "https://www.threads.net/@alice/post/abc"
-    warning_message.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-    cog.downloader = ThreadsDownloaderStub(results=[])
-    await cog.on_message(message=warning_message)
+    warning_message.__dict__["author"] = FakeUser(bot=False)
+    warning_message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    warning_message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    cog.downloader = cast("ThreadsDownloader", ThreadsDownloaderStub(results=[]))
+    await cog.on_message(message=as_message(fake=warning_message))
     assert warning_message.reactions[-1] == "⚠️"
 
     error_message = FakeDiscordMessage()
-    error_message.author = FakeUser(bot=False)
-    error_message.content = "https://www.threads.net/@alice/post/abc"
-    error_message.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-    cog.downloader = ThreadsDownloaderStub(results=RuntimeError("parse failed"))
-    await cog.on_message(message=error_message)
+    error_message.__dict__["author"] = FakeUser(bot=False)
+    error_message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    error_message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    cog.downloader = cast(
+        "ThreadsDownloader", ThreadsDownloaderStub(results=RuntimeError("parse failed"))
+    )
+    await cog.on_message(message=as_message(fake=error_message))
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
 
 
 async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
     """A mention (or a DM) hands the link to gen_reply, so the cog must not also expand it."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
-    cog = ThreadsCogs(bot=bot)
-    cog.downloader = ThreadsDownloaderStub(results=RuntimeError("must not be called"))
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
+    cog.downloader = cast(
+        "ThreadsDownloader", ThreadsDownloaderStub(results=RuntimeError("must not be called"))
+    )
 
     mentioned = FakeDiscordMessage()
-    mentioned.author = FakeUser(bot=False)
-    mentioned.content = "<@999> https://www.threads.net/@alice/post/abc"
-    mentioned.guild = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-    await cog.on_message(message=mentioned)
+    mentioned.__dict__["author"] = FakeUser(bot=False)
+    mentioned.__dict__["content"] = "<@999> https://www.threads.net/@alice/post/abc"
+    mentioned.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    await cog.on_message(message=as_message(fake=mentioned))
     assert mentioned.reactions == []
     assert mentioned.replies == []
 
     direct_message = FakeDiscordMessage()
-    direct_message.author = FakeUser(bot=False)
-    direct_message.content = "https://www.threads.net/@alice/post/abc"
-    direct_message.guild = None  # a DM always reaches gen_reply, mention or not
-    await cog.on_message(message=direct_message)
+    direct_message.__dict__["author"] = FakeUser(bot=False)
+    direct_message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    direct_message.__dict__["guild"] = None  # a DM always reaches gen_reply, mention or not
+    await cog.on_message(message=as_message(fake=direct_message))
     assert direct_message.reactions == []
     assert direct_message.replies == []
 
@@ -408,14 +408,12 @@ async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
 async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
     """A Threads video too big to attach is hosted as a URL instead of a ⚠️ refusal."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
-    cog = ThreadsCogs(bot=bot)
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
     (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
-            config=MediaHostingConfig(
-                MEDIA_HOSTING_ENABLED=True,
-                MEDIA_HOSTING_BASE_URL="https://media.test",
-                MEDIA_HOSTING_SERVE_DIR=str(tmp_path / "serve"),
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=str(tmp_path / "serve")
             )
         )
     )
@@ -423,15 +421,16 @@ async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
     video_file.write_bytes(data=b"123")
 
     message = FakeDiscordMessage()
-    message.author = FakeUser(bot=False)
-    message.content = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
     # A tiny ceiling drives max_size negative, so the 3-byte video counts as oversized.
-    message.guild = SimpleNamespace(filesize_limit=4)
-    cog.downloader = ThreadsDownloaderStub(
-        results=[_thread_output(video_paths=[video_file], image_urls=[])]
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=4)
+    cog.downloader = cast(
+        "ThreadsDownloader",
+        ThreadsDownloaderStub(results=[_thread_output(video_paths=[video_file], image_urls=[])]),
     )
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     # The video was hosted (its URL rides the reply content) and moved out of the temp dir.
     content = message.replies[0].get("content") or ""
@@ -443,14 +442,12 @@ async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
 async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> None:
     """A post with one small and one oversize video attaches the small and links only the big one."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
-    cog = ThreadsCogs(bot=bot)
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
     (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
-            config=MediaHostingConfig(
-                MEDIA_HOSTING_ENABLED=True,
-                MEDIA_HOSTING_BASE_URL="https://media.test",
-                MEDIA_HOSTING_SERVE_DIR=str(tmp_path / "serve"),
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=str(tmp_path / "serve")
             )
         )
     )
@@ -460,16 +457,17 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
     big.write_bytes(data=b"0" * (2 * 1024 * 1024))
 
     message = FakeDiscordMessage()
-    message.author = FakeUser(bot=False)
-    message.content = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
     # The ceiling clears the small clip plus the 1 MiB envelope margin but not the 2 MiB clip,
     # so only the big one is peeled to a hosted URL while the small one attaches natively.
-    message.guild = SimpleNamespace(filesize_limit=1024 * 1024 + 200)
-    cog.downloader = ThreadsDownloaderStub(
-        results=[_thread_output(video_paths=[small, big], image_urls=[])]
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=1024 * 1024 + 200)
+    cog.downloader = cast(
+        "ThreadsDownloader",
+        ThreadsDownloaderStub(results=[_thread_output(video_paths=[small, big], image_urls=[])]),
     )
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     content = message.replies[0].get("content") or ""
     hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
@@ -482,24 +480,25 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
 async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Path) -> None:
     """With hosting off, an oversize Threads video refuses the whole post (pre-#325 ⚠️ behavior)."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
-    cog = ThreadsCogs(bot=bot)
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
     # Explicitly disabled planner — never the no-arg default, whose config is `available` on a dev
     # box where .env enables hosting (it would write into the live serve dir).
     cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False))
+        media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
     )
     video_file = tmp_path / "clip.mp4"
     video_file.write_bytes(data=b"123")
 
     message = FakeDiscordMessage()
-    message.author = FakeUser(bot=False)
-    message.content = "https://www.threads.net/@alice/post/abc"
-    message.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling -> the video is oversize
-    cog.downloader = ThreadsDownloaderStub(
-        results=[_thread_output(video_paths=[video_file], image_urls=[])]
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=4)  # tiny ceiling -> video oversize
+    cog.downloader = cast(
+        "ThreadsDownloader",
+        ThreadsDownloaderStub(results=[_thread_output(video_paths=[video_file], image_urls=[])]),
     )
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     # No host available + oversize -> whole-post ⚠️ refusal, no reply, and the file is left in place.
     assert message.reactions[-1] == "⚠️"
@@ -517,18 +516,23 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
     channel = FakeSendChannel(sent=sent)
     bot_user = FakeUser(user_id=999, name="bot", display_name="Bot")
     bot = SimpleNamespace(user=bot_user)
-    cog = AutoUnmuteCogs(bot=bot)
+    cog = AutoUnmuteCogs(bot=as_bot(fake=bot))
 
-    guild = SimpleNamespace(
-        id=123,
-        name="Guild",
-        get_channel=lambda channel_id: channel,
-        system_channel=None,
-        audit_logs=lambda action, limit: _audit_entries(bot_user),
+    guild = cast(
+        "Guild",
+        SimpleNamespace(
+            id=123,
+            name="Guild",
+            get_channel=lambda channel_id: channel,
+            system_channel=None,
+            audit_logs=lambda action, limit: _audit_entries(bot_user),
+        ),
     )
     await cog.on_message(
-        message=SimpleNamespace(
-            guild=guild, author=FakeUser(bot=False), channel=SimpleNamespace(id=456)
+        message=as_message(
+            fake=SimpleNamespace(
+                guild=guild, author=FakeUser(bot=False), channel=SimpleNamespace(id=456)
+            )
         )
     )
     assert cog._last_active_channel == {123: 456}
@@ -536,6 +540,7 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
     monkeypatch.setattr(auto_unmute, "Messageable", FakeSendChannel)
     assert cog._resolve_channel(guild=guild) is channel
     moderator, reason = await cog._lookup_audit(guild=guild)
+    assert moderator is not None
     assert moderator.name == "moderator"
     assert reason == "testing"
 
@@ -550,16 +555,20 @@ async def test_auto_unmute_tracks_audit_and_generates_reply(
     )
     assert reply == "not today"
 
-    member = SimpleNamespace(
-        id=999,
-        guild=guild,
-        communication_disabled_until=datetime.now(tz=UTC) + timedelta(minutes=5),
-        edit=lambda **kwargs: _async_none(),
+    self_timeout_until = datetime.now(tz=UTC) + timedelta(minutes=5)
+    member = cast(
+        "Member",
+        SimpleNamespace(
+            id=999,
+            guild=guild,
+            communication_disabled_until=self_timeout_until,
+            edit=lambda **kwargs: _async_none(),
+        ),
     )
-    await cog._handle_self_timeout(member=member, until=member.communication_disabled_until)
+    await cog._handle_self_timeout(member=member, until=self_timeout_until)
     assert sent == ["not today"]
 
-    before = SimpleNamespace(communication_disabled_until=None)
+    before = cast("Member", SimpleNamespace(communication_disabled_until=None))
     after = member
     handled: list[SelfTimeoutCall] = []
 
@@ -638,7 +647,7 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "checkin", fake_checkin)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
-    cog = EconomyCogs(bot=bot)
+    cog = EconomyCogs(bot=as_bot(fake=bot))
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.balance.callback(cog, interaction, member=None)
     await EconomyCogs.leaderboard.callback(cog, interaction)
@@ -702,10 +711,18 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     # localized title/labels: cash 150, debt principal 30, stock net 200, total 315, BCAT position.
     assert_embed_title_prefix(embed=balance_embed, prefix="💰")
     assert "315" in (balance_embed.description or "")
-    assert "150" in assert_embed_has_field(embed=balance_embed, name="現金").value
-    assert "30" in assert_embed_has_field(embed=balance_embed, name="債務").value
-    assert "200" in assert_embed_has_field(embed=balance_embed, name="股票淨值").value
-    assert "BCAT" in assert_embed_has_field(embed=balance_embed, name="股票部位").value
+    cash_value = assert_embed_has_field(embed=balance_embed, name="現金").value
+    assert cash_value is not None
+    assert "150" in cash_value
+    debt_value = assert_embed_has_field(embed=balance_embed, name="債務").value
+    assert debt_value is not None
+    assert "30" in debt_value
+    stock_net_value = assert_embed_has_field(embed=balance_embed, name="股票淨值").value
+    assert stock_net_value is not None
+    assert "200" in stock_net_value
+    stock_position_value = assert_embed_has_field(embed=balance_embed, name="股票部位").value
+    assert stock_position_value is not None
+    assert "BCAT" in stock_position_value
     borrow_embed = interaction.followup.sent[8]["embed"]
     # The footer explains the loan-decision timeout; assert the behavioral 180s, not the copy.
     assert "180" in (borrow_embed.footer.text or "")
@@ -721,13 +738,17 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     await EconomyCogs.balance.callback(
         cog, inspected_member, member=FakeUser(user_id=2, name="bob", display_name="Bob")
     )
-    assert "Bob" in inspected_member.followup.sent[0]["embed"].description
+    inspected_description = inspected_member.followup.sent[0]["embed"].description
+    assert inspected_description is not None
+    assert "Bob" in inspected_description
 
     bot_receiver = FakeInteraction(user=FakeUser(user_id=1))
     await EconomyCogs.give.callback(
         cog, bot_receiver, member=FakeUser(user_id=3, name="bot", bot=True), amount="1"
     )
-    assert "轉帳完成" in bot_receiver.followup.sent[0]["embed"].title
+    bot_receiver_title = bot_receiver.followup.sent[0]["embed"].title
+    assert bot_receiver_title is not None
+    assert "轉帳完成" in bot_receiver_title
 
 
 async def test_central_bank_decision_buttons_require_banker_and_allow_self_approval(
@@ -755,7 +776,7 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
     monkeypatch.setattr(views, "accept_loan_proposal", fake_accept_for_button)
     monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
     view = CentralBankLoanDecisionView(
-        bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))),
         proposal_id=42,
         creator_id=1,
         allow_self_approval=True,
@@ -767,19 +788,19 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
     )
 
     denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
-    await approve_button.callback(denied)
+    await approve_button.callback(as_interaction(fake=denied))
     assert denied.response.sent[0]["ephemeral"] is True
     assert captured_accept_kwargs == {}
 
     allowed = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
-    await approve_button.callback(allowed)
+    await approve_button.callback(as_interaction(fake=allowed))
     assert captured_accept_kwargs["proposal_id"] == 42
     assert captured_accept_kwargs["actor_id"] == 1
     assert captured_accept_kwargs["allow_central_bank_self_approval"] is True
     assert allowed.response.edited[0]["view"] is None
 
     cancel_view = CentralBankLoanDecisionView(
-        bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))),
         proposal_id=43,
         creator_id=1,
     )
@@ -789,12 +810,12 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
         if getattr(child, "custom_id", "") == "central_bank:cancel"
     )
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
-    await cancel_button.callback(denied_cancel)
+    await cancel_button.callback(as_interaction(fake=denied_cancel))
     assert denied_cancel.response.sent[0]["ephemeral"] is True
     assert captured_cancel_kwargs == {}
 
     allowed_cancel = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
-    await cancel_button.callback(allowed_cancel)
+    await cancel_button.callback(as_interaction(fake=allowed_cancel))
     assert captured_cancel_kwargs == {"proposal_id": 43, "actor_id": 1}
     assert allowed_cancel.response.edited[0]["view"] is None
 
@@ -831,12 +852,12 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     )
 
     denied_approve = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
-    await approve_button.callback(denied_approve)
+    await approve_button.callback(as_interaction(fake=denied_approve))
     assert denied_approve.response.sent[0]["ephemeral"] is True
     assert captured_accept_kwargs == {}
 
     allowed_approve = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
-    await approve_button.callback(allowed_approve)
+    await approve_button.callback(as_interaction(fake=allowed_approve))
     assert captured_accept_kwargs["proposal_id"] == 42
     assert captured_accept_kwargs["actor_id"] == 2
     assert allowed_approve.response.edited[0]["view"] is None
@@ -848,12 +869,12 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
         if getattr(child, "custom_id", "") == "credit:reject"
     )
     denied_reject = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
-    await reject_button.callback(denied_reject)
+    await reject_button.callback(as_interaction(fake=denied_reject))
     assert denied_reject.response.sent[0]["ephemeral"] is True
     assert captured_reject_kwargs == {}
 
     allowed_reject = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
-    await reject_button.callback(allowed_reject)
+    await reject_button.callback(as_interaction(fake=allowed_reject))
     assert captured_reject_kwargs == {"proposal_id": 43, "actor_id": 2}
     assert allowed_reject.response.edited[0]["view"] is None
 
@@ -864,12 +885,12 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
         if getattr(child, "custom_id", "") == "credit:cancel"
     )
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
-    await cancel_button.callback(denied_cancel)
+    await cancel_button.callback(as_interaction(fake=denied_cancel))
     assert denied_cancel.response.sent[0]["ephemeral"] is True
     assert captured_cancel_kwargs == {}
 
     allowed_cancel = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
-    await cancel_button.callback(allowed_cancel)
+    await cancel_button.callback(as_interaction(fake=allowed_cancel))
     assert captured_cancel_kwargs == {"proposal_id": 44, "actor_id": 1}
     assert allowed_cancel.response.edited[0]["view"] is None
 
@@ -900,24 +921,28 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
 
     credit_message = FakeDiscordMessage()
     credit_view = CreditLoanDecisionView(proposal_id=42, lender_id=2, creator_id=1)
-    credit_view.message = credit_message
+    credit_view.message = as_message(fake=credit_message)
     await credit_view.on_timeout()
 
     central_message = FakeDiscordMessage()
     central_view = CentralBankLoanDecisionView(
-        bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")),
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))),
         proposal_id=43,
         creator_id=1,
     )
-    central_view.message = central_message
+    central_view.message = as_message(fake=central_message)
     await central_view.on_timeout()
 
     assert rejected == [42, 43]
     assert scheduled == [credit_message, central_message]
     assert credit_message.edits[0]["view"] is None
     assert central_message.edits[0]["view"] is None
-    assert "逾時" in credit_message.edits[0]["embed"].title
-    assert "逾時" in central_message.edits[0]["embed"].title
+    credit_timeout_title = credit_message.edits[0]["embed"].title
+    assert credit_timeout_title is not None
+    assert "逾時" in credit_timeout_title
+    central_timeout_title = central_message.edits[0]["embed"].title
+    assert central_timeout_title is not None
+    assert "逾時" in central_timeout_title
 
 
 async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -936,7 +961,9 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(economy, "get_admin", fake_get_admin_false)
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance_guard)
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
     await EconomyCogs.admin_refund_tax.callback(
@@ -945,7 +972,9 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
 
     assert called is False
     assert interaction.followup.sent[0].get("ephemeral") is True
-    assert "權限不足" in interaction.followup.sent[0]["embed"].title
+    admin_rejection_title = interaction.followup.sent[0]["embed"].title
+    assert admin_rejection_title is not None
+    assert "權限不足" in admin_rejection_title
 
 
 def test_parse_admin_amount_accepts_formatted_text() -> None:
@@ -976,7 +1005,9 @@ async def test_economy_admin_tax_accepts_string_amounts(monkeypatch: pytest.Monk
     monkeypatch.setattr(
         interactions, "schedule_public_message_delete", ignore_scheduled_public_message
     )
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
     await EconomyCogs.admin_refund_tax.callback(
@@ -1006,7 +1037,9 @@ async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         interactions, "schedule_public_message_delete", ignore_scheduled_public_message
     )
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     interaction = FakeInteraction(user=FakeUser(user_id=1))
     bot_member = FakeUser(user_id=999, name="discordbot", display_name="Dealer", bot=True)
 
@@ -1033,7 +1066,9 @@ async def test_economy_admin_tax_rejects_invalid_amount_text(
         return BalanceAdjustmentResult(new_balance=0, applied_delta=0)
 
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance_guard)
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
     await EconomyCogs.admin_collect_tax.callback(
@@ -1043,7 +1078,9 @@ async def test_economy_admin_tax_rejects_invalid_amount_text(
     assert called is False
     assert interaction.response.sent[0]["ephemeral"] is True
     assert interaction.response.sent[0]["embed"].title == "收稅失敗"
-    assert "金額格式錯誤" in interaction.response.sent[0]["embed"].description
+    collect_tax_description = interaction.response.sent[0]["embed"].description
+    assert collect_tax_description is not None
+    assert "金額格式錯誤" in collect_tax_description
     assert interaction.followup.sent == []
 
 
@@ -1073,9 +1110,13 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     sender = FakeUser(user_id=1, name="alice")
     receiver = FakeUser(user_id=2, name="bob")
     cached_sender = FakeUser(user_id=1, name="alice")
-    cached_sender.guild_avatar = SimpleNamespace(url="https://example.test/alice-server.png")
+    cached_sender.__dict__["guild_avatar"] = SimpleNamespace(
+        url="https://example.test/alice-server.png"
+    )
     cached_receiver = FakeUser(user_id=2, name="bob")
-    cached_receiver.guild_avatar = SimpleNamespace(url="https://example.test/bob-server.png")
+    cached_receiver.__dict__["guild_avatar"] = SimpleNamespace(
+        url="https://example.test/bob-server.png"
+    )
     members = {cached_sender.id: cached_sender, cached_receiver.id: cached_receiver}
 
     async def fail_fetch_member(user_id: int) -> FakeUser:
@@ -1089,7 +1130,9 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         interactions, "schedule_public_message_delete", ignore_scheduled_public_message
     )
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     await EconomyCogs.give.callback(cog, interaction, member=receiver, amount="100")
 
@@ -1130,7 +1173,7 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(
         interactions, "schedule_public_message_delete", ignore_scheduled_public_message
     )
-    cog = EconomyCogs(bot=SimpleNamespace(user=bot_receiver))
+    cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace(user=bot_receiver)))
 
     await EconomyCogs.give.callback(cog, interaction, member=bot_receiver, amount="100")
 
@@ -1141,7 +1184,9 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
         "receiver_name": "discordbot",
         "amount": 100,
     }
-    assert "轉帳完成" in interaction.followup.sent[0]["embed"].title
+    give_bot_receiver_title = interaction.followup.sent[0]["embed"].title
+    assert give_bot_receiver_title is not None
+    assert "轉帳完成" in give_bot_receiver_title
 
 
 async def test_economy_money_commands_accept_large_string_amounts(
@@ -1192,7 +1237,9 @@ async def test_economy_money_commands_accept_large_string_amounts(
     monkeypatch.setattr(
         interactions, "schedule_public_message_delete", ignore_scheduled_public_message
     )
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
     big_text = "9,007,199,254,740,993"
     member = FakeUser(user_id=2, name="bob")
@@ -1261,14 +1308,18 @@ async def test_economy_money_commands_reject_invalid_amount_text(
     monkeypatch.setattr(economy, "call_personal_loans", guard_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", guard_payment)
     monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     member = FakeUser(user_id=2, name="bob")
 
     def assert_rejected(interaction: FakeInteraction, expected_title: str) -> None:
         """Asserts an ephemeral malformed-amount rejection with no mutation followup."""
         assert interaction.response.sent[0]["ephemeral"] is True
         assert interaction.response.sent[0]["embed"].title == expected_title
-        assert "金額格式錯誤" in interaction.response.sent[0]["embed"].description
+        rejection_description = interaction.response.sent[0]["embed"].description
+        assert rejection_description is not None
+        assert "金額格式錯誤" in rejection_description
         assert interaction.followup.sent == []
 
     rejections: list[tuple[str, Callable[[FakeInteraction], Awaitable[None]]]] = [
@@ -1328,15 +1379,20 @@ async def test_loss_leaderboard_uses_daily_loss_copy(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(economy, "top_losers", daily_losses)
     monkeypatch.setattr(interactions, "schedule_public_message_delete", record_scheduled)
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
     await EconomyCogs.loss_leaderboard.callback(cog, interaction)
 
     embed = interaction.followup.sent[0]["embed"]
+    assert embed.title is not None
     assert "今日輸局累計" in embed.title
+    assert embed.description is not None
     assert "累計輸" in embed.description
     assert interaction.followup.sent[0]["files"][0].filename == "economy_loss_leaderboard.png"
+    assert embed.footer.text is not None
     assert "贏回來不抵扣" in embed.footer.text
     assert len(scheduled) == 1
 
@@ -1359,13 +1415,17 @@ async def test_loss_leaderboard_empty_state_copy(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(economy, "top_losers", no_daily_losses)
     monkeypatch.setattr(interactions, "schedule_public_message_delete", record_scheduled)
-    cog = EconomyCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = EconomyCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     interaction = FakeInteraction(user=FakeUser(user_id=1))
 
     await EconomyCogs.loss_leaderboard.callback(cog, interaction)
 
     embed = interaction.followup.sent[0]["embed"]
+    assert embed.title is not None
     assert "今日輸局累計" in embed.title
+    assert embed.description is not None
     assert "今天還沒有人輸錢" in embed.description
     assert len(scheduled) == 1
 
@@ -1650,7 +1710,9 @@ async def test_bot_blackjack_participant_spreads_bet_by_true_count(
     """The bot's Kelly wager rises with a favorable channel true count."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     async def fake_get_account(*, user_id: int) -> object:
         return SimpleNamespace(balance=1_000_000, total_earned=0, total_spent=0)
@@ -1696,7 +1758,9 @@ def test_games_commands_are_grouped_under_games() -> None:
 
 async def test_blackjack_history_missing_user_sends_notice() -> None:
     """A missing interaction user gets feedback instead of an empty deferred response."""
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     interaction = FakeInteraction()
     cast("Any", interaction).user = None
 
@@ -1728,7 +1792,9 @@ async def test_games_commands_run_with_patched_settlement(
     monkeypatch.setattr(games, "schedule_public_message_delete", ignore_scheduled_public_message)
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     blackjack_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, blackjack_interaction, bet="10")
@@ -1763,7 +1829,9 @@ async def test_blackjack_lobby_start_is_owner_only(
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     monkeypatch.setattr(games, "get_balance", fake_game_balance)
 
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="10")
@@ -1774,7 +1842,7 @@ async def test_blackjack_lobby_start_is_owner_only(
         child for child in lobby_view.children if getattr(child, "label", "") == "開始"
     )
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
-    await start_button.callback(other_interaction)
+    await start_button.callback(as_interaction(fake=other_interaction))
 
     assert other_interaction.response.sent
     assert isinstance(other_interaction.response.sent[0]["content"], str)
@@ -1793,7 +1861,9 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="1,000,000")
@@ -1807,8 +1877,8 @@ async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
         child for child in lobby_view.children if getattr(child, "label", "") == "加入"
     )
     join_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
-    join_interaction.message = FakeDiscordMessage()
-    await join_button.callback(join_interaction)
+    join_interaction.message = as_message(fake=FakeDiscordMessage())
+    await join_button.callback(as_interaction(fake=join_interaction))
 
     bob = lobby_view.participants[1]
     assert bob.display_name == "Bob"
@@ -1829,7 +1899,9 @@ async def test_refresh_participants_preserves_existing_blackjack_wagers(
         return {1: 500, 999: 1_000}[user_id]
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
     owner = GameParticipant(
         user_id=1,
         account_name="alice",
@@ -1868,7 +1940,9 @@ async def test_blackjack_string_bet_accepts_large_formatted_amount(
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="9,007,199,254,740,993")
@@ -1882,7 +1956,9 @@ async def test_blackjack_string_bet_accepts_large_formatted_amount(
 
 async def test_blackjack_string_bet_rejects_invalid_text() -> None:
     """Verifies invalid text is rejected before wager preparation."""
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="not a number")
@@ -1908,7 +1984,9 @@ async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
 
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
@@ -1927,7 +2005,9 @@ async def test_blackjack_zero_bet_rejects_empty_balance(monkeypatch: pytest.Monk
     monkeypatch.setattr(games, "schedule_public_message_delete", ignore_scheduled_public_message)
     monkeypatch.setattr(games, "get_balance", _empty_game_balance)
 
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.blackjack.callback(cog, owner_interaction, bet="0")
@@ -1948,7 +2028,9 @@ async def test_dragon_gate_rejects_empty_balance_with_spacer(
     monkeypatch.setattr(games, "schedule_public_message_delete", ignore_scheduled_public_message)
     monkeypatch.setattr(games, "get_balance", _empty_game_balance)
 
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dragon_gate.callback(cog, owner_interaction)
@@ -1969,7 +2051,9 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
         games, "fetch_dragon_gate_jackpot_snapshot", fake_dragon_gate_jackpot_snapshot
     )
 
-    cog = GamesCogs(bot=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    cog = GamesCogs(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
+    )
 
     owner_interaction = FakeInteraction(user=FakeUser(user_id=1))
     await GamesCogs.dragon_gate.callback(cog, owner_interaction)
@@ -1980,7 +2064,7 @@ async def test_dragon_gate_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyP
         child for child in lobby_view.children if getattr(child, "label", "") == "開始"
     )
     other_interaction = FakeInteraction(user=FakeUser(user_id=2, name="bob", display_name="Bob"))
-    await start_button.callback(other_interaction)
+    await start_button.callback(as_interaction(fake=other_interaction))
 
     assert other_interaction.response.sent
     assert isinstance(other_interaction.response.sent[0]["content"], str)
@@ -1998,12 +2082,22 @@ async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.Mon
         calls.append(bot)
 
     monkeypatch.setattr(games, "delete_tracked_public_messages", record_cleanup)
-    cog = GamesCogs(bot=bot)
+    cog = GamesCogs(bot=as_bot(fake=bot))
 
     await cog.on_ready()
     await cog.on_ready()
 
     assert calls == [bot]
+
+
+def _as_discord_bot(fake: object) -> cli.DiscordBot:
+    """Views a bot double as cli.DiscordBot for its own unbound method calls."""
+    return cast("cli.DiscordBot", fake)
+
+
+def _as_command_context(fake: object) -> commands.Context[commands.Bot]:
+    """Views a context double as commands.Context for on_command_error."""
+    return cast("commands.Context[commands.Bot]", fake)
 
 
 def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2038,7 +2132,7 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
     for module in [video, games, economy, template, parse_threads, parse_douyin, auto_unmute]:
         monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
         monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
-        module.setup(bot=bot)
+        module.setup(bot=as_bot(fake=bot))
     assert [type(item[0]) for item in added] == [
         VideoCogs,
         GamesCogs,
@@ -2059,7 +2153,7 @@ def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
         loaded.append((modules, stop_at_error))
 
     bot = SimpleNamespace(load_extensions=record_load_extensions)
-    cli.DiscordBot._load_cogs_sync(bot)
+    cli.DiscordBot._load_cogs_sync(_as_discord_bot(fake=bot))
     assert loaded[0][1] is True
     assert "discordbot.cogs.template" in loaded[0][0]
 
@@ -2087,10 +2181,14 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         _message_reward_at={},
     )
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
-    await cli.DiscordBot.on_message(bot, message=user_message)
+    await cli.DiscordBot.on_message(
+        _as_discord_bot(fake=bot), message=as_message(fake=user_message)
+    )
     assert processed == [user_message]
     assert rewards[0]["amount"] == cli.BASE_MESSAGE_REWARD_AMOUNT
-    await cli.DiscordBot.on_message(bot, message=SimpleNamespace(author=bot.user))
+    await cli.DiscordBot.on_message(
+        _as_discord_bot(fake=bot), message=as_message(fake=SimpleNamespace(author=bot.user))
+    )
     assert len(processed) == 1
     assert len(rewards) == 1
 
@@ -2106,14 +2204,24 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         author=FakeUser(user_id=1),
         command=SimpleNamespace(qualified_name="demo"),
     )
-    await cli.DiscordBot.on_command_error(bot, context, commands.NotOwner())
     await cli.DiscordBot.on_command_error(
-        bot, context, commands.MissingPermissions(missing_permissions=["kick_members"])
+        _as_discord_bot(fake=bot), _as_command_context(fake=context), commands.NotOwner()
     )
     await cli.DiscordBot.on_command_error(
-        bot, context, commands.BotMissingPermissions(missing_permissions=["send_messages"])
+        _as_discord_bot(fake=bot),
+        _as_command_context(fake=context),
+        commands.MissingPermissions(missing_permissions=["kick_members"]),
     )
-    await cli.DiscordBot.on_command_error(bot, context, commands.CommandNotFound("nope"))
+    await cli.DiscordBot.on_command_error(
+        _as_discord_bot(fake=bot),
+        _as_command_context(fake=context),
+        commands.BotMissingPermissions(missing_permissions=["send_messages"]),
+    )
+    await cli.DiscordBot.on_command_error(
+        _as_discord_bot(fake=bot),
+        _as_command_context(fake=context),
+        commands.CommandNotFound("nope"),
+    )
     assert len(sent) == 4
 
     # An error the handler has no branch for used to vanish at no level at all; it now
@@ -2126,7 +2234,9 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(cli.logfire, "error", record_error)
     await cli.DiscordBot.on_command_error(
-        bot, context, commands.CommandInvokeError(ValueError("boom"))
+        _as_discord_bot(fake=bot),
+        _as_command_context(fake=context),
+        commands.CommandInvokeError(ValueError("boom")),
     )
     assert len(sent) == 4
     assert logged[-1]["error_type"] == "ValueError"
@@ -2160,13 +2270,13 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
     )
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
 
-    await cli.DiscordBot.on_message(bot, message=message)
-    await cli.DiscordBot.on_message(bot, message=message)
+    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
+    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
     assert len(rewards) == 1
 
     # Backdate the last-reward stamp so the cooldown window has elapsed.
     bot._message_reward_at[1] -= cli.MESSAGE_REWARD_COOLDOWN_SECONDS + 1
-    await cli.DiscordBot.on_message(bot, message=message)
+    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
     assert len(rewards) == 2
 
 
@@ -2195,7 +2305,8 @@ async def test_cli_message_reward_cooldown_prunes_expired_users(
     )
 
     await cli.DiscordBot.on_message(
-        bot, message=SimpleNamespace(author=FakeUser(user_id=3, bot=False))
+        _as_discord_bot(fake=bot),
+        message=as_message(fake=SimpleNamespace(author=FakeUser(user_id=3, bot=False))),
     )
 
     assert 1 not in bot._message_reward_at
@@ -2228,9 +2339,9 @@ async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
     )
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
 
-    await cli.DiscordBot.on_message(bot, message=message)
+    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
     # The first credit failed, so the slot is rolled back and the next message retries.
     assert 1 not in bot._message_reward_at
-    await cli.DiscordBot.on_message(bot, message=message)
+    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
     assert attempts == 2
     assert bot._message_reward_at.get(1) is not None

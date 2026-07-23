@@ -758,8 +758,9 @@ def test_local_write_failure_leaves_no_partial_file(
             original_write(data)
             raise OSError(28, "No space left on device")
 
-        # simulating a mid-write disk failure
-        handle.write = write  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
+        # Simulate a mid-write disk failure; the instance-dict write shadows the
+        # bound method without tripping either checker's method-assign rule.
+        handle.__dict__["write"] = write
         return handle
 
     monkeypatch.setattr(Path, "open", failing_open)
