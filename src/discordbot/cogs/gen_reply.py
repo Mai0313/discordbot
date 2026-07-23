@@ -1068,7 +1068,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 memory_lookups=context.memory_labels,
                 input_tokens=context.selection_input_tokens,
                 output_tokens=context.selection_output_tokens,
-                model_effort=model.effort,
+                model_effort=model.effort or "",
             )
             with logfire.span(span_name, model=model.name):
                 responses = await self.openai_client.responses.create(

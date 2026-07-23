@@ -400,12 +400,18 @@ class ResponseStreamer(BaseModel):
         Only accumulates state; the snapshot editor task renders it to Discord, so this
         loop never blocks on a Discord edit between deltas.
         """
+        # Discriminate on the `type` literal, never isinstance against the SDK event classes:
+        # the YouTube path's `adapt_interactions_stream` yields duck-typed namespaces that carry
+        # only the field names read here, so an isinstance check would silently drop its events.
         async for response in responses:
-            if response.type in {"response.created", "response.completed"}:
+            if response.type == "response.created":
                 # Capture the model on `created` too so the usage footer never falls back
                 # to an empty model name (and $0.00000000) when a stream ends without a
-                # clean `completed` event. Usage only arrives on `completed`.
+                # clean `completed` event.
                 self.model_name = response.response.model
+            elif response.type == "response.completed":
+                self.model_name = response.response.model
+                # Usage only arrives on `completed`.
                 if response.response.usage:
                     self.input_tokens += response.response.usage.input_tokens
                     self.output_tokens += response.response.usage.output_tokens

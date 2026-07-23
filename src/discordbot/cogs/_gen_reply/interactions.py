@@ -157,7 +157,7 @@ async def adapt_interactions_stream(
     `_consume` switches on `response.type` and reads `response.delta` /
     `response.response.model` / `response.response.usage.{input,output}_tokens`. The
     Interactions stream uses different names (`event_type`, `delta.text`,
-    `interaction.model`, `metadata.usage.total_*_tokens`), so each event is remapped onto a
+    `interaction.model`, `interaction.usage.total_*_tokens`), so each event is remapped onto a
     minimal namespace with the OpenAI-Responses field names. Usage is emitted exactly once on
     `interaction.completed` because `_consume` accumulates it with `+=` over a token seed from
     the earlier selection call; a per-step emit would double-count.
@@ -189,11 +189,11 @@ async def adapt_interactions_stream(
                         SimpleNamespace(type="response.reasoning_summary_text.delta", delta=text),
                     )
         elif event.event_type == "interaction.completed":
-            # Usage rides the completed interaction; `metadata.usage` is optional and often
-            # absent, so read the interaction first and only fall back to metadata.
+            # Usage rides the completed interaction; `metadata.total_usage` is optional and
+            # often absent, so read the interaction first and only fall back to metadata.
             usage = event.interaction.usage
             if usage is None and event.metadata is not None:
-                usage = event.metadata.usage
+                usage = event.metadata.total_usage
             usage_ns = (
                 SimpleNamespace(
                     input_tokens=usage.total_input_tokens or 0,
