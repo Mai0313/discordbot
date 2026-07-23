@@ -5,17 +5,14 @@ import base64
 from typing import TYPE_CHECKING, cast
 from pathlib import Path
 
+from google import genai
 from nextcord import AllowedMentions
 
 from discordbot.cogs import research as research_cog
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._research import agent
 from discordbot.cogs._research import database as rdb
-from discordbot.utils.media_delivery import (
-    MediaHostingConfig,
-    MediaHostingService,
-    MediaDeliveryPlanner,
-)
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
 from discordbot.cogs._research.delivery import (
     split_report,
@@ -24,8 +21,13 @@ from discordbot.cogs._research.delivery import (
 )
 from discordbot.cogs._research.streaming import ResearchProgressStreamer
 
+from tests.helpers.casting import make_media_hosting_config
+
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     from nextcord import Thread, Message
+    from google.genai.interactions import InteractionSSEEvent
 
     from discordbot.cogs._research.database import ResearchPhase
 
@@ -33,7 +35,7 @@ if TYPE_CHECKING:
 def _disabled_delivery() -> MediaDeliveryPlanner:
     """A planner whose host is off, so report files attach natively exactly as before hosting."""
     return MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False))
+        media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
     )
 
 
@@ -196,6 +198,24 @@ def _fake_client(*, streams: list[_FakeStream], terminal: object) -> SimpleNames
     )
 
 
+def _as_client(fake: SimpleNamespace) -> genai.Client:
+    """Views a fake client double as the genai.Client a production signature expects."""
+    return cast("genai.Client", fake)
+
+
+def _as_event(fake: object) -> "InteractionSSEEvent":
+    """Views a fabricated SSE event double as the real SDK union a production signature expects.
+
+    Production discriminates on `.event_type`, not isinstance, so a SimpleNamespace event is safe.
+    """
+    return cast("InteractionSSEEvent", fake)
+
+
+def _as_event_stream(fake: "_FakeStream") -> "AsyncIterator[InteractionSSEEvent]":
+    """Views a fabricated SSE stream double as the real SDK event stream a signature expects."""
+    return cast("AsyncIterator[InteractionSSEEvent]", fake)
+
+
 def _created_event(*, interaction_id: str = "int_9", event_id: str = "e1") -> SimpleNamespace:
     return SimpleNamespace(
         event_type="interaction.created",
@@ -242,7 +262,7 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
         persisted.append(interaction_id)
 
     result = await agent.stream_antigravity(
-        client=client,
+        client=_as_client(client),
         agent="antigravity-preview-05-2026",
         brief="b",
         system_instruction="sys",
@@ -280,7 +300,7 @@ async def test_stream_reconnects_when_stream_ends_without_terminal(monkeypatch) 
         return None
 
     result = await agent.stream_antigravity(
-        client=client,
+        client=_as_client(client),
         agent="a",
         brief="b",
         system_instruction="s",
@@ -310,7 +330,7 @@ async def test_stream_reconnects_after_a_mid_stream_drop(monkeypatch) -> None:  
         return None
 
     result = await agent.stream_antigravity(
-        client=client,
+        client=_as_client(client),
         agent="a",
         brief="b",
         system_instruction="s",
@@ -339,7 +359,7 @@ async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) ->
     # Streaming exhausts its reconnects, so the driver degrades to the poll and still returns the
     # authoritative terminal result.
     result = await agent.stream_antigravity(
-        client=client,
+        client=_as_client(client),
         agent="a",
         brief="b",
         system_instruction="s",
@@ -363,7 +383,7 @@ async def test_stream_antigravity_reraises_when_create_never_yields_an_id() -> N
     raised = False
     try:
         await agent.stream_antigravity(
-            client=client,
+            client=_as_client(client),
             agent="a",
             brief="b",
             system_instruction="s",
@@ -381,7 +401,7 @@ async def test_resume_research_stream_drives_from_get_stream() -> None:
     )
     streamer = ResearchProgressStreamer(status=None, label="Deep Research")
     result = await agent.resume_research_stream(
-        client=client, interaction_id="int_9", streamer=streamer
+        client=_as_client(client), interaction_id="int_9", streamer=streamer
     )
     # Resume re-attaches via get(stream=True) and never calls create.
     assert client.aio.interactions.create_kwargs == {}
@@ -401,7 +421,7 @@ async def test_stream_plan_passes_research_tools_and_returns_plan() -> None:
     )
     streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Planning")
     plan = await agent.stream_plan(
-        client=client,
+        client=_as_client(client),
         agent="deep-research-preview-04-2026",
         brief="b",
         system_instruction="sys",
@@ -429,7 +449,7 @@ async def test_stream_refine_passes_research_tools_and_returns_plan() -> None:
     )
     streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Re-planning")
     plan = await agent.stream_refine(
-        client=client,
+        client=_as_client(client),
         agent="deep-research-preview-04-2026",
         previous_interaction_id="plan_v1",
         feedback="tighten the scope",
@@ -442,18 +462,20 @@ async def test_stream_refine_passes_research_tools_and_returns_plan() -> None:
 
 
 def test_is_terminal_event_classifies_statuses() -> None:
-    assert agent._is_terminal_event(event=_completed_event()) is True
+    assert agent._is_terminal_event(event=_as_event(_completed_event())) is True
     assert (
         agent._is_terminal_event(
-            event=SimpleNamespace(event_type="error", error=SimpleNamespace(message="boom"))
+            event=_as_event(
+                SimpleNamespace(event_type="error", error=SimpleNamespace(message="boom"))
+            )
         )
         is True
     )
     running = SimpleNamespace(event_type="interaction.status_update", status="in_progress")
-    assert agent._is_terminal_event(event=running) is False
+    assert agent._is_terminal_event(event=_as_event(running)) is False
     failed = SimpleNamespace(event_type="interaction.status_update", status="budget_exceeded")
-    assert agent._is_terminal_event(event=failed) is True
-    assert agent._is_terminal_event(event=_thought_event("x")) is False
+    assert agent._is_terminal_event(event=_as_event(failed)) is True
+    assert agent._is_terminal_event(event=_as_event(_thought_event("x"))) is False
 
 
 def test_to_result_extracts_text_image_and_usage() -> None:
@@ -515,12 +537,14 @@ def test_latest_thought_reads_thought_step_summary() -> None:
 
 def test_streamer_feed_accumulates_only_thought_summaries() -> None:
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
-    streamer._feed(event=_thought_event("searching..."))
+    streamer._feed(event=_as_event(_thought_event("searching...")))
     text_delta = SimpleNamespace(
         event_type="step.delta", event_id="x", delta=SimpleNamespace(type="text", text="body")
     )
-    streamer._feed(event=text_delta)  # report text is delivered separately, not shown as reasoning
-    streamer._feed(event=_created_event())  # non-delta events are ignored
+    streamer._feed(
+        event=_as_event(text_delta)
+    )  # report text is delivered separately, not reasoning
+    streamer._feed(event=_as_event(_created_event()))  # non-delta events are ignored
     assert streamer.reasoning == "searching..."
 
 
@@ -538,7 +562,7 @@ async def test_streamer_write_snapshot_edits_and_skips_unchanged() -> None:
     streamer = ResearchProgressStreamer(status=status, label="Antigravity", reasoning="thinking")
     await streamer._write_preview_snapshot()
     assert len(status.edits) == 1
-    assert status.edits[0]["allowed_mentions"].everyone is False
+    assert cast("AllowedMentions", status.edits[0]["allowed_mentions"]).everyone is False
     # A second write of the same rendered snapshot is a no-op, so the editor never spams edits.
     streamer._displayed = streamer._render_preview()
     await streamer._write_preview_snapshot()
@@ -550,7 +574,9 @@ async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
     streamer = ResearchProgressStreamer(
         status=status, label="Antigravity", preview_interval_seconds=0.01
     )
-    await streamer.stream(events=_FakeStream([_thought_event("aaa"), _thought_event("bbb")]))
+    await streamer.stream(
+        events=_as_event_stream(_FakeStream([_thought_event("aaa"), _thought_event("bbb")]))
+    )
     assert streamer.reasoning == "aaabbb"
     assert streamer._editor_task is None  # the cadence editor is always stopped in finally
 
@@ -601,7 +627,9 @@ def test_owner_allowed_mentions_blocks_everyone_and_roles() -> None:
     mentions = research_cog._owner_allowed_mentions(owner_id=42)
     assert mentions.everyone is False
     assert mentions.roles is False
-    assert [obj.id for obj in mentions.users] == [42]
+    users = mentions.users
+    assert isinstance(users, list)
+    assert [obj.id for obj in users] == [42]
 
 
 def test_failure_text_distinguishes_budget() -> None:
@@ -924,10 +952,8 @@ async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
     thread.guild = SimpleNamespace(filesize_limit=4)  # tiny ceiling so research.md is oversize
     planner = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
-            config=MediaHostingConfig(
-                MEDIA_HOSTING_ENABLED=True,
-                MEDIA_HOSTING_BASE_URL="https://media.test",
-                MEDIA_HOSTING_SERVE_DIR=str(tmp_path),
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=str(tmp_path)
             )
         )
     )

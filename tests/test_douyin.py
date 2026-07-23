@@ -28,12 +28,9 @@ from discordbot.utils.douyin import (
     is_douyin_post_url,
 )
 from discordbot.typings.video import VideoQuality
-from discordbot.utils.media_delivery import (
-    MediaHostingConfig,
-    MediaHostingService,
-    MediaDeliveryPlanner,
-)
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 
+from tests.helpers.casting import as_bot, make_media_hosting_config
 from tests.helpers.discord_mocks import FakeInteraction
 
 # These downloaders are only ever asked to parse, never to write, so the folder is inert.
@@ -761,7 +758,9 @@ def test_local_write_failure_leaves_no_partial_file(
             original_write(data)
             raise OSError(28, "No space left on device")
 
-        handle.write = write  # type: ignore[assignment]  # simulating a mid-write disk failure
+        # Simulate a mid-write disk failure; the instance-dict write shadows the
+        # bound method without tripping either checker's method-assign rule.
+        handle.__dict__["write"] = write
         return handle
 
     monkeypatch.setattr(Path, "open", failing_open)
@@ -793,7 +792,7 @@ def _install_cog(
     monkeypatch: pytest.MonkeyPatch, outcome: DouyinDownload | BaseException
 ) -> tuple[VideoCogs, _StubDouyinDownloader]:
     """Builds a VideoCogs wired to a stub Douyin downloader."""
-    cog = VideoCogs(bot=object())
+    cog = VideoCogs(bot=as_bot(fake=object()))
     stub = _StubDouyinDownloader(outcome=outcome)
     monkeypatch.setattr(video, "DouyinDownloader", lambda output_folder: stub)
     return cog, stub
@@ -875,10 +874,8 @@ async def test_cog_keeps_every_url_when_a_whole_gallery_is_hosted(
     )
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
-            config=MediaHostingConfig(
-                MEDIA_HOSTING_ENABLED=True,
-                MEDIA_HOSTING_BASE_URL="https://media.test",
-                MEDIA_HOSTING_SERVE_DIR=serve_dir.as_posix(),
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=serve_dir.as_posix()
             )
         )
     )
@@ -978,10 +975,8 @@ async def test_cog_posts_the_hosted_url_when_the_clip_is_oversize(
     )
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
-            config=MediaHostingConfig(
-                MEDIA_HOSTING_ENABLED=True,
-                MEDIA_HOSTING_BASE_URL="https://media.test",
-                MEDIA_HOSTING_SERVE_DIR=serve_dir.as_posix(),
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=serve_dir.as_posix()
             )
         )
     )

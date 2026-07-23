@@ -9,15 +9,27 @@ from openai import OpenAI
 from anthropic import Anthropic
 from rich.console import Console
 from google.genai.types import HttpOptions
+from openai.types.responses import (
+    ResponseCreatedEvent,
+    ResponseCompletedEvent,
+    ResponseTextDeltaEvent,
+    ResponseReasoningTextDeltaEvent,
+    ResponseReasoningSummaryTextDeltaEvent,
+)
 from google.genai.interactions import (
+    StepDelta,
+    TextDelta,
     URLContext,
+    TextContent,
     GoogleSearch,
     AllowlistParam,
     EnvironmentParam,
     TextContentParam,
     VideoContentParam,
     AllowlistEntryParam,
+    ThoughtSummaryDelta,
     GenerationConfigParam,
+    InteractionCreatedEvent,
 )
 
 from discordbot.typings.llm import LLMConfig
@@ -25,6 +37,8 @@ from discordbot.typings.models import ModelSettings
 from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
+    from anthropic.types.tool_param import ToolParam as AnthropicToolParam
+    from openai.types.responses.tool_param import ToolParam
     from openai.types.responses.response_input_param import ResponseInputParam
     from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 
@@ -69,14 +83,13 @@ def gen_reply(user_prompt: str) -> None:
     )
     model_name = ""
     for response in responses:
-        if response.type in {"response.created", "response.completed"}:
+        if isinstance(response, (ResponseCreatedEvent, ResponseCompletedEvent)):
             model_name = response.response.model
-        elif response.type in {
-            "response.reasoning_summary_text.delta",
-            "response.reasoning_text.delta",
-        }:
+        elif isinstance(
+            response, (ResponseReasoningSummaryTextDeltaEvent, ResponseReasoningTextDeltaEvent)
+        ):
             console.print(f"[dim]{response.delta}[/dim]", end="")
-        elif response.type == "response.output_text.delta":
+        elif isinstance(response, ResponseTextDeltaEvent):
             console.print(response.delta, end="")
     end = time.time()
     console.print(f"\n{responses.response.headers}")
@@ -95,7 +108,7 @@ def gen_reply_chat(user_prompt: str) -> None:
         user_prompt: User message to send as the single prompt input.
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
-    tools: list[ChatCompletionToolUnionParam] = SLOW_MODEL.tools
+    tools: list[ToolParam] = SLOW_MODEL.tools
     start = time.time()
     responses = client.chat.completions.create(
         model=SLOW_MODEL.name,
@@ -106,7 +119,9 @@ def gen_reply_chat(user_prompt: str) -> None:
         reasoning_effort=SLOW_MODEL.effort,
         stream=True,
         stream_options={"include_usage": True},
-        tools=tools,
+        # Responses-API tool shape (SLOW_MODEL.tools) sent through the Chat Completions
+        # endpoint; LiteLLM translates it, but the two SDKs' tool TypedDicts differ statically.
+        tools=cast("list[ChatCompletionToolUnionParam]", tools),
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "prompt_dev"},
         extra_body={
@@ -150,6 +165,9 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
             },
         ),
     )
+    thinking_level = SLOW_MODEL.effort
+    if thinking_level not in {"minimal", "low", "medium", "high"}:
+        raise RuntimeError(f"Unsupported Gemini interactions thinking level: {thinking_level}")
     start = time.time()
     responses = client.interactions.create(
         model=SLOW_MODEL.name,
@@ -162,7 +180,7 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
             type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
         ),
         generation_config=GenerationConfigParam(
-            thinking_level=SLOW_MODEL.effort, thinking_summaries="auto"
+            thinking_level=thinking_level, thinking_summaries="auto"
         ),
         tools=[
             URLContext(type="url_context"),
@@ -172,17 +190,22 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
     )
     # `stream=True` returns the event stream, but a plain `str` model name misses the SDK's
     # `Model` literal overloads, so the call types as `Interaction | Stream[...]`. Narrow by
-    # excluding the interaction (it is iterable but not an iterator).
+    # excluding the interaction (it is iterable but not an iterator). Pydantic's `Interaction`
+    # also implements `__iter__` (field iteration), so ty keeps a residual `tuple[str, Any]`
+    # branch through the isinstance guard; cast the stream to the events we actually read.
     if not isinstance(responses, Iterator):
         raise RuntimeError("Gemini interactions.create returned an interaction, not a stream")
+    stream = cast("Iterator[InteractionCreatedEvent | StepDelta]", responses)
     model_name = ""
-    for response in responses:
-        if response.event_type == "interaction.created":
-            model_name = response.interaction.model
-        if response.event_type == "step.delta":
-            if response.delta.type == "thought_summary":
+    for response in stream:
+        if isinstance(response, InteractionCreatedEvent):
+            model_name = response.interaction.model or ""
+        elif isinstance(response, StepDelta):
+            if isinstance(response.delta, ThoughtSummaryDelta) and isinstance(
+                response.delta.content, TextContent
+            ):
                 console.print(f"[dim]{response.delta.content.text}[/dim]", end="")
-            elif response.delta.type == "text":
+            elif isinstance(response.delta, TextDelta):
                 console.print(response.delta.text, end="")
     end = time.time()
     console.print(f"\n{model_name} on Gemini SDK takes {end - start:.2f} seconds")
@@ -207,7 +230,8 @@ def gen_reply_anthropic(user_prompt: str) -> None:
         thinking={"type": "adaptive"},
         system=REPLY_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
-        tools=SLOW_MODEL.tools,
+        # Same cross-SDK tool shape note as `gen_reply_chat`.
+        tools=cast("list[AnthropicToolParam]", SLOW_MODEL.tools),
     ) as responses:
         model_name = ""
         for response in responses:

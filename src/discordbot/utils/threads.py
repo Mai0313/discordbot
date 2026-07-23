@@ -2,6 +2,7 @@
 
 import re
 import json
+from typing import Any
 from pathlib import Path
 from datetime import UTC, datetime
 from functools import cached_property
@@ -539,9 +540,9 @@ class ThreadsDownloader(BaseModel):
             raise RuntimeError(f"Failed to fetch HTML from {url}: {e}") from e
 
     @staticmethod
-    def _find_keys(obj: dict | list | str | float | None, key: str) -> list:
+    def _find_keys(obj: dict[str, Any] | list[Any] | str | float | None, key: str) -> list[Any]:
         """Recursively searches for all occurrences of a key in a JSON-like object."""
-        results: list = []
+        results: list[Any] = []
         if isinstance(obj, dict):
             for k, v in obj.items():
                 if k == key and isinstance(v, list | dict):

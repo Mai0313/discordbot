@@ -2,6 +2,12 @@ from typing import TYPE_CHECKING, cast
 
 from openai import OpenAI
 from rich.console import Console
+from openai.types.responses import (
+    ResponseTextDoneEvent,
+    ResponseTextDeltaEvent,
+    ResponseReasoningTextDeltaEvent,
+    ResponseReasoningSummaryTextDeltaEvent,
+)
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
@@ -50,14 +56,13 @@ def gen_reply(user_prompt: str) -> None:
     )
     full_content = ""
     for response in responses:
-        if response.type in {
-            "response.reasoning_summary_text.delta",
-            "response.reasoning_text.delta",
-        }:
+        if isinstance(
+            response, (ResponseReasoningSummaryTextDeltaEvent, ResponseReasoningTextDeltaEvent)
+        ):
             console.print(f"[dim]{response.delta}[/dim]", end="")
-        elif response.type == "response.output_text.delta":
+        elif isinstance(response, ResponseTextDeltaEvent):
             console.print(response.delta, end="")
-        elif response.type == "response.output_text.done":
+        elif isinstance(response, ResponseTextDoneEvent):
             full_content = response.text
     audio_responses = client.audio.speech.create(
         input=full_content,

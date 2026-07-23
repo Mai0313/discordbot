@@ -10,8 +10,9 @@ The commented provider blocks are ready-to-swap examples — uncomment one and c
 
 import datetime
 
-from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.graph.trading_graph import TradingAgentsGraph
+# Not a pyproject dependency; kept for a future feature and runs outside this env.
+from tradingagents.default_config import DEFAULT_CONFIG  # ty: ignore[unresolved-import]
+from tradingagents.graph.trading_graph import TradingAgentsGraph  # ty: ignore[unresolved-import]
 
 
 def run_trading_agents(stock: str) -> str:

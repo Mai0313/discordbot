@@ -10,10 +10,12 @@ path; bot-turn tests cover the deterministic bot player decisions.
 
 from types import SimpleNamespace
 from random import Random
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from nextcord import Embed, Interaction
+from nextcord.ui import Button
 
 from discordbot.cogs._games import blackjack_views
 from discordbot.typings.games import (
@@ -26,6 +28,8 @@ from discordbot.cogs._games.shoe import BlackjackShoeStore
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embeds
+
+from tests.helpers.casting import as_message
 
 
 def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
@@ -70,7 +74,7 @@ def _button_states(view: BlackjackView) -> dict[str, bool]:
     states: dict[str, bool] = {}
     for child in view.children:
         cid = getattr(child, "custom_id", None)
-        if cid is not None:
+        if cid is not None and isinstance(child, Button):
             states[cid] = bool(child.disabled)
     return states
 
@@ -350,7 +354,9 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled(
 
     notices: list[str] = []
 
-    async def _fake_notice(*, interaction: Interaction, content: str, log_message: str) -> None:
+    async def _fake_notice(
+        *, interaction: Interaction[Any], content: str, log_message: str
+    ) -> None:
         notices.append(content)
 
     monkeypatch.setattr(
@@ -637,7 +643,7 @@ async def test_history_persistence_uses_scheduled_dealer_snapshot(
     monkeypatch.setattr(blackjack_views, "record_blackjack_history", fake_record_blackjack_history)
     round_state.dealer.append(Card(rank="K", suit="♣"))
     await view._record_history_later(
-        message=SimpleNamespace(id=999, guild=SimpleNamespace(id=888)),
+        message=as_message(fake=SimpleNamespace(id=999, guild=SimpleNamespace(id=888))),
         results=[
             BlackjackPlayerResult(
                 participant=round_state.players[0].participant,

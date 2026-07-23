@@ -38,7 +38,7 @@ def gen_reply_oai(user_prompt: str) -> RunResult:
             model=AGENT_MODEL.name,
             base_url=config.base_url,
             api_key=config.api_key,
-            should_replay_reasoning_content=True,
+            should_replay_reasoning_content=lambda _context: True,
         ),
     )
 
@@ -47,7 +47,7 @@ def gen_reply_oai(user_prompt: str) -> RunResult:
     return result
 
 
-def gen_reply_gemini(user_prompt: str) -> RunResult:
+def gen_reply_gemini(user_prompt: str) -> None:
     client = genai.Client()
     responses = client.interactions.create(
         agent="antigravity-preview-05-2026",
@@ -72,7 +72,7 @@ def gen_reply_gemini(user_prompt: str) -> RunResult:
         f.write(orjson.dumps(responses_list, option=orjson.OPT_INDENT_2))
 
 
-async def gen_reply_agy(user_prompt: str) -> RunResult:
+async def gen_reply_agy(user_prompt: str) -> None:
     agent_config = antigravity.LocalAgentConfig(
         system_instructions=REPLY_PROMPT, api_key=config.gemini_api_key
     )

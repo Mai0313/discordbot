@@ -11,10 +11,11 @@ from discordbot.utils.media_delivery import (
     _TEMP_PREFIX,
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
-    MediaHostingConfig,
     MediaHostingService,
     MediaDeliveryPlanner,
 )
+
+from tests.helpers.casting import make_media_hosting_config
 
 
 def _service(
@@ -27,12 +28,12 @@ def _service(
 ) -> MediaHostingService:
     """Builds a host writer whose config points at a temp serve dir (via the env aliases)."""
     return MediaHostingService(
-        config=MediaHostingConfig(
-            MEDIA_HOSTING_ENABLED=enabled,
-            MEDIA_HOSTING_BASE_URL=base_url,
-            MEDIA_HOSTING_SERVE_DIR=str(serve_dir),
-            MEDIA_HOSTING_MAX_BYTES=max_bytes,
-            MEDIA_HOSTING_RETENTION_HOURS=retention_hours,
+        config=make_media_hosting_config(
+            enabled=enabled,
+            base_url=base_url,
+            serve_dir=str(serve_dir),
+            max_bytes=max_bytes,
+            retention_hours=retention_hours,
         )
     )
 
@@ -233,11 +234,7 @@ def test_empty_base_url_returns_none(tmp_path: Path) -> None:
 def test_empty_serve_dir_returns_none() -> None:
     """An empty serve dir leaves the fallback inert."""
     service = MediaHostingService(
-        config=MediaHostingConfig(
-            MEDIA_HOSTING_ENABLED=True,
-            MEDIA_HOSTING_BASE_URL="https://media.test",
-            MEDIA_HOSTING_SERVE_DIR="",
-        )
+        config=make_media_hosting_config(enabled=True, base_url="https://media.test", serve_dir="")
     )
     assert service.publish_bytes(data=b"x", suffix=".png") is None
 
@@ -415,7 +412,7 @@ def test_cleanup_no_op_on_missing_serve_dir(tmp_path: Path) -> None:
 
 def test_empty_config_is_unavailable() -> None:
     """Empty base_url / serve_dir make the service unavailable (the test-green guard)."""
-    config = MediaHostingConfig(MEDIA_HOSTING_BASE_URL="", MEDIA_HOSTING_SERVE_DIR="")
+    config = make_media_hosting_config(enabled=True, base_url="", serve_dir="")
     assert config.available is False
 
 

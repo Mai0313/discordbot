@@ -502,6 +502,47 @@ class VoiceGenerator(BaseModel):
             return VoiceClip(outcome=VoiceOutcome.ERROR)
 
 
+class _RenderedVideo(Protocol):
+    """The attributes read off a completed omni interaction's `output_video`."""
+
+    @property
+    def uri(self) -> str | None: ...
+
+
+class _RenderedAudio(Protocol):
+    """The attributes read off a completed Lyria interaction's `output_audio`."""
+
+    @property
+    def data(self) -> str | None: ...
+
+    @property
+    def mime_type(self) -> str | None: ...
+
+
+class _InteractionResult(Protocol):
+    """Structural view of a non-streaming `interactions.create` result.
+
+    The genai response class cannot be named: `google.genai.interactions` star-imports
+    `Interaction` from both the request-union alias (which carries none of these attributes)
+    and the response module, and only the runtime import order makes the response class win,
+    so a nominal cast would type the wrong object. Excluding the stream with `isinstance`
+    is not enough either, since `AsyncStream` is only structurally an `AsyncIterator`, so the
+    checker keeps it in the union; the read attributes are declared here and cast to instead.
+    """
+
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def output_text(self) -> str | None: ...
+
+    @property
+    def output_video(self) -> _RenderedVideo | None: ...
+
+    @property
+    def output_audio(self) -> _RenderedAudio | None: ...
+
+
 class VideoGenerator(BaseModel):
     """Native Gemini (omni) video render behind the VIDEO route and the QA-route `<generate-video>` marker.
 
@@ -599,24 +640,22 @@ class VideoGenerator(BaseModel):
                 generation_config=generation_config,
                 timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
             )
-        # No `stream=True`, so this is the interaction rather than an event stream. Narrowed by
-        # excluding the stream instead of casting to `google.genai.interactions.Interaction`:
-        # that module star-imports the name from both `triggers` (an alias for the union of the
-        # two *request* models, which carry no `output_video` / `status` / `output_text`) and
-        # `types.interactions` (the response class), and only the runtime import order makes the
-        # response class win, so the cast named the request union and typed the wrong object.
+        # No `stream=True`, so this is the interaction rather than an event stream: exclude the
+        # stream at runtime, then read the result through the structural `_InteractionResult`
+        # view (its docstring has why the genai response class cannot be named or narrowed to).
         if isinstance(interaction, AsyncIterator):
             raise RuntimeError("Video generation returned an event stream, not an interaction")
-        video = interaction.output_video
-        if interaction.status != "completed" or video is None or video.uri is None:
+        result = cast("_InteractionResult", interaction)
+        video = result.output_video
+        if result.status != "completed" or video is None or video.uri is None:
             logfire.warn(
                 "gen_reply video generation failed",
-                status=str(interaction.status),
+                status=str(result.status),
                 task=task_label,
-                note=interaction.output_text,
+                note=result.output_text,
             )
             raise RuntimeError(
-                f"Video generation failed: status={interaction.status} note={interaction.output_text!r}"
+                f"Video generation failed: status={result.status} note={result.output_text!r}"
             )
         logfire.debug(
             "gen_reply video job done", task=task_label, render_seconds=time.monotonic() - started
@@ -745,7 +784,11 @@ class MusicGenerator(BaseModel):
                     input=user_prompt,
                     system_instruction=MUSIC_STYLE_DIRECTIVE,
                 )
-            audio = interaction.output_audio
+            # No `stream=True`, so this is the interaction rather than an event stream (read via
+            # `_InteractionResult`, see its docstring); the guard lands in the except -> None path.
+            if isinstance(interaction, AsyncIterator):
+                raise RuntimeError("Music generation returned an event stream, not an interaction")
+            audio = cast("_InteractionResult", interaction).output_audio
             if audio is None or not audio.data:
                 logfire.warn("Inline music generation returned no audio; replying without music")
                 return None

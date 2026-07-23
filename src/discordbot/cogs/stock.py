@@ -57,7 +57,7 @@ class StockCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def stock(self, interaction: Interaction) -> None:
+    async def stock(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the public stock market list."""
         await interaction.response.defer()
         user = require_stock_user(interaction=interaction)

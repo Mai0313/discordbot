@@ -2,9 +2,11 @@
 
 import io
 from types import SimpleNamespace
+from typing import cast
 import asyncio
 from pathlib import Path
 
+from google import genai
 from google.genai.types import FileState
 
 from discordbot.cogs._gen_reply.files_api import (
@@ -45,9 +47,9 @@ class _Files:
         return self._file(FileState.PROCESSING if self._remaining > 0 else self.final_state)
 
 
-def _client(files: _Files) -> SimpleNamespace:
+def _client(files: _Files) -> genai.Client:
     """Wraps a fake Files resource in the client shape the helper reaches through."""
-    return SimpleNamespace(aio=SimpleNamespace(files=files))
+    return cast("genai.Client", SimpleNamespace(aio=SimpleNamespace(files=files)))
 
 
 async def test_upload_returns_the_active_uri() -> None:

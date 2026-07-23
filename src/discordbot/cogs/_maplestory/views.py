@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import nextcord
 from nextcord import Embed, Interaction, SelectOption
-from nextcord.ui import View, Select
+from nextcord.ui import View, StringSelect
 
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
@@ -26,6 +26,8 @@ from .embeds import (
 )
 
 if TYPE_CHECKING:
+    from nextcord.ext import commands
+
     from .service import MapleStoryService
 
 
@@ -128,7 +130,9 @@ class MapleDropSearchView(View):
         max_values=1,
         options=[SelectOption(label="載入中...", value="loading")],
     )
-    async def select_result(self, select: Select, interaction: Interaction) -> None:
+    async def select_result(
+        self, select: StringSelect[MapleDropSearchView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Handles the selection of a search result.
 
         Args:
@@ -149,9 +153,10 @@ class MapleDropSearchView(View):
             else None
         )
 
-        if embed:
+        message = interaction.message
+        if embed and message is not None:
             await interaction.followup.edit_message(
-                message_id=interaction.message.id,
+                message_id=message.id,
                 embed=embed,
                 view=None,
                 **embed_spacer_payload(embeds=[embed], is_edit=True, target=interaction),
@@ -163,4 +168,6 @@ class MapleDropSearchView(View):
         Args:
             options: A list of SelectOption objects.
         """
-        self.select_result.options = options[:25]
+        for child in self.children:
+            if isinstance(child, StringSelect):
+                child.options = options[:25]

@@ -1,15 +1,26 @@
 """Tests for guild-aware Discord avatar selection."""
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
-
-import nextcord
+from typing import TYPE_CHECKING, cast
 
 from discordbot import cli
-from discordbot.utils.avatars import guild_avatar_url
+from discordbot.utils.avatars import AvatarUser, guild_avatar_url
+
+from tests.helpers.casting import as_message, make_not_found
 
 if TYPE_CHECKING:
     import pytest
+    from nextcord import Guild
+
+
+def _as_avatar_user(fake: object) -> AvatarUser:
+    """Views a fake user as the AvatarUser protocol `guild_avatar_url` expects."""
+    return cast("AvatarUser", fake)
+
+
+def _as_guild(fake: object) -> "Guild | None":
+    """Views a fake guild as the nextcord Guild `guild_avatar_url` expects."""
+    return cast("Guild | None", fake)
 
 
 class FakeUser:
@@ -20,6 +31,7 @@ class FakeUser:
         self.id = user_id
         self.name = "tester"
         self.display_avatar = SimpleNamespace(url=avatar_url)
+        self.bot = False
 
 
 class FakeMember(FakeUser):
@@ -60,8 +72,7 @@ class FakeGuild:
         self.fetch_count += 1
         if self.fetched_member is not None and self.fetched_member.id == user_id:
             return self.fetched_member
-        response = SimpleNamespace(status=404, reason="Not Found")
-        raise nextcord.NotFound(response=response, message="member not found")
+        raise make_not_found(message="member not found")
 
 
 async def test_guild_avatar_url_prefers_cached_guild_avatar() -> None:
@@ -71,7 +82,9 @@ async def test_guild_avatar_url_prefers_cached_guild_avatar() -> None:
         fetched_member=None,
     )
 
-    avatar_url = await guild_avatar_url(user=FakeUser(), guild=guild)
+    avatar_url = await guild_avatar_url(
+        user=_as_avatar_user(fake=FakeUser()), guild=_as_guild(fake=guild)
+    )
 
     assert avatar_url == "https://cdn.test/cached.png"
     assert guild.fetch_count == 0
@@ -84,7 +97,9 @@ async def test_guild_avatar_url_fetches_member_when_cache_misses() -> None:
         fetched_member=FakeMember(guild_avatar_url="https://cdn.test/fetched.png"),
     )
 
-    avatar_url = await guild_avatar_url(user=FakeUser(), guild=guild)
+    avatar_url = await guild_avatar_url(
+        user=_as_avatar_user(fake=FakeUser()), guild=_as_guild(fake=guild)
+    )
 
     assert avatar_url == "https://cdn.test/fetched.png"
     assert guild.fetch_count == 1
@@ -95,7 +110,8 @@ async def test_guild_avatar_url_falls_back_to_global_avatar() -> None:
     guild = FakeGuild(cached_member=None, fetched_member=None)
 
     avatar_url = await guild_avatar_url(
-        user=FakeUser(avatar_url="https://cdn.test/global.png"), guild=guild
+        user=_as_avatar_user(fake=FakeUser(avatar_url="https://cdn.test/global.png")),
+        guild=_as_guild(fake=guild),
     )
 
     assert avatar_url == "https://cdn.test/global.png"
@@ -137,6 +153,6 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
         user=object(), process_commands=noop_process_commands, _message_reward_at={}
     )
 
-    await cli.DiscordBot.on_message(bot, message=message)
+    await cli.DiscordBot.on_message(cast("cli.DiscordBot", bot), message=as_message(fake=message))
 
     assert captured_avatar_url == "https://cdn.test/server.png"

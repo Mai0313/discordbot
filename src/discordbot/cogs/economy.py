@@ -106,7 +106,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def admin(self, interaction: Interaction) -> None:
+    async def admin(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for economy admin operations."""
 
     @admin.subcommand(
@@ -120,7 +120,7 @@ class EconomyCogs(commands.Cog):
     )
     async def admin_refund_tax(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member = SlashOption(
             name="member",
             description=f"The member or bot to receive the {CURRENCY_NAME}.",
@@ -169,7 +169,7 @@ class EconomyCogs(commands.Cog):
     )
     async def admin_collect_tax(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member = SlashOption(
             name="member",
             description=f"The member or bot to debit the {CURRENCY_NAME} from.",
@@ -208,7 +208,12 @@ class EconomyCogs(commands.Cog):
         )
 
     async def _run_admin_adjustment(
-        self, interaction: Interaction, member: Member, action: str, title: str, delta: int
+        self,
+        interaction: Interaction[commands.Bot],
+        member: Member,
+        action: str,
+        title: str,
+        delta: int,
     ) -> None:
         """Runs a gated admin balance adjustment and publishes successful results."""
         if interaction.user is None:
@@ -261,7 +266,7 @@ class EconomyCogs(commands.Cog):
     )
     async def balance(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member | None = SlashOption(
             name="member",
             description="Member to inspect; defaults to yourself.",
@@ -308,7 +313,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def leaderboard(self, interaction: Interaction) -> None:
+    async def leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
         """Replies with the top 10 point holders.
 
         Args:
@@ -344,7 +349,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def loss_leaderboard(self, interaction: Interaction) -> None:
+    async def loss_leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
         """Replies with the top 10 gross casino losses for the current day.
 
         Args:
@@ -382,7 +387,7 @@ class EconomyCogs(commands.Cog):
     )
     async def give(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member = SlashOption(
             name="member",
             description=f"The member or bot to receive the {CURRENCY_NAME}.",
@@ -485,7 +490,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def casino(self, interaction: Interaction) -> None:
+    async def casino(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the casino system's accumulated P&L (was `/house`)."""
         await interaction.response.defer()
         snapshot = await get_casino_ledger()
@@ -502,7 +507,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def pocat(self, interaction: Interaction) -> None:
+    async def pocat(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the bot player's `user_wallet` balance and gross flows."""
         await interaction.response.defer()
         if self.bot.user is None:
@@ -544,7 +549,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def credit(self, interaction: Interaction) -> None:
+    async def credit(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for personal credit operations."""
 
     @credit.subcommand(
@@ -558,7 +563,7 @@ class EconomyCogs(commands.Cog):
     )
     async def credit_borrow(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member = SlashOption(
             name="member",
             description="The member you want to borrow from.",
@@ -688,7 +693,7 @@ class EconomyCogs(commands.Cog):
     )
     async def credit_repay(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member = SlashOption(
             name="member",
             description="The lender to repay.",
@@ -769,7 +774,7 @@ class EconomyCogs(commands.Cog):
     )
     async def credit_call(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member = SlashOption(
             name="member",
             description="The borrower to collect from.",
@@ -842,7 +847,7 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "active personal loan contracts を表示します。",
         },
     )
-    async def credit_status(self, interaction: Interaction) -> None:
+    async def credit_status(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the caller's active personal credit contracts."""
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
@@ -873,7 +878,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def central_bank(self, interaction: Interaction) -> None:
+    async def central_bank(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for central bank operations."""
 
     @central_bank.subcommand(
@@ -887,7 +892,7 @@ class EconomyCogs(commands.Cog):
     )
     async def central_bank_borrow(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         amount: str = SlashOption(
             name="amount",
             description=f"How much {CURRENCY_NAME} to request. Commas are allowed.",
@@ -973,7 +978,7 @@ class EconomyCogs(commands.Cog):
     )
     async def central_bank_repay(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         amount: str = SlashOption(
             name="amount",
             description="Maximum amount to repay. Commas are allowed.",
@@ -1035,7 +1040,7 @@ class EconomyCogs(commands.Cog):
     )
     async def central_bank_call(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member = SlashOption(
             name="member",
             description="The borrower to collect from.",
@@ -1114,7 +1119,7 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "中央銀行の lending capacity を表示します。",
         },
     )
-    async def central_bank_status(self, interaction: Interaction) -> None:
+    async def central_bank_status(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows central bank lending capacity."""
         await interaction.response.defer()
         exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
@@ -1138,7 +1143,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def checkin_command(self, interaction: Interaction) -> None:
+    async def checkin_command(self, interaction: Interaction[commands.Bot]) -> None:
         """Claims today's check-in reward; ephemeral so only the caller sees it.
 
         Args:
@@ -1182,7 +1187,7 @@ class EconomyCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def vip_command(self, interaction: Interaction) -> None:
+    async def vip_command(self, interaction: Interaction[commands.Bot]) -> None:
         """Buys the permanent VIP perk for a one-time fixed cost.
 
         Args:

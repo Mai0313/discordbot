@@ -6,20 +6,20 @@ from collections.abc import Callable, Iterable
 
 import logfire
 from nextcord import Message
-from nextcord.ui import Item, View
+from nextcord.ui import Item, View, Button
 from nextcord.errors import DiscordServerError
 
 
 def disable_view_components(
-    children: Iterable[Item], component_types: tuple[type[Item], ...]
+    children: Iterable[Item[View]], component_types: tuple[type[Button[View]], ...]
 ) -> None:
     """Disables view children matching any supplied component type."""
     for child in children:
-        if isinstance(child, component_types):
+        if isinstance(child, component_types) and isinstance(child, Button):
             child.disabled = True
 
 
-def set_view_item_visible(view: View, item: Item, visible: bool) -> None:
+def set_view_item_visible(view: View, item: Item[View], visible: bool) -> None:
     """Adds or removes one view item without recreating the component."""
     if visible and item not in view.children:
         view.add_item(item=item)

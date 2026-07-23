@@ -6,6 +6,7 @@ import contextlib
 import nextcord
 from nextcord import Embed, Locale, Interaction, SelectOption
 from nextcord.ui import View, StringSelect
+from nextcord.ext import commands
 
 from discordbot.cogs._help.content import CATEGORY_ORDER, OVERVIEW_VALUE, resolve_guide
 from discordbot.cogs._help.presentation import build_section_embed, build_overview_embed
@@ -29,8 +30,8 @@ class HelpView(View):
         self._requester_name = requester_name
         self._requester_avatar_url = requester_avatar_url
         self._active = OVERVIEW_VALUE
-        self._origin: Interaction | None = None
-        self._select = cast("StringSelect", self.category_select)
+        self._origin: Interaction[commands.Bot] | None = None
+        self._select = cast("StringSelect[HelpView]", self.category_select)
         self._select.placeholder = self.guide.select_placeholder
         self._sync_options()
 
@@ -42,7 +43,7 @@ class HelpView(View):
             requester_avatar_url=self._requester_avatar_url,
         )
 
-    def bind_origin(self, interaction: Interaction) -> None:
+    def bind_origin(self, interaction: Interaction[commands.Bot]) -> None:
         """Records the originating interaction so timeout can disable the menu."""
         self._origin = interaction
 
@@ -87,7 +88,9 @@ class HelpView(View):
         max_values=1,
         options=[SelectOption(label="loading", value="loading")],
     )
-    async def category_select(self, select: StringSelect, interaction: Interaction) -> None:
+    async def category_select(
+        self, select: StringSelect["HelpView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Swaps the embed in place to the chosen category."""
         self._active = select.values[0]
         self._sync_options()
@@ -99,4 +102,4 @@ class HelpView(View):
             return
         self._select.disabled = True
         with contextlib.suppress(Exception):
-            await self._origin.edit_original_response(view=self)
+            await self._origin.edit_original_message(view=self)

@@ -112,13 +112,12 @@ def extract_json_list(text: str, key: str) -> list[JsonRecord] | None:
 
 def _get_nested_dict(d: Mapping[str, JsonValue], *keys: str) -> dict[str, str]:
     """Traverse nested dicts safely, returning {} if any key is missing."""
-    current: JsonValue | Mapping[str, JsonValue] = d
+    current: Mapping[str, JsonValue] = d
     for k in keys:
-        if not isinstance(current, Mapping):
+        nested = current.get(k)
+        if not isinstance(nested, dict):
             return {}
-        current = current.get(k, {})
-    if not isinstance(current, dict):
-        return {}
+        current = nested
     return {key: value for key, value in current.items() if isinstance(value, str)}
 
 

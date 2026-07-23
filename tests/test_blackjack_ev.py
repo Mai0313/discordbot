@@ -1,6 +1,6 @@
 """Deterministic tests for the hole-card-aware Blackjack EV engine."""
 
-from discordbot.typings.games import Card
+from discordbot.typings.games import Card, DealerOutcome, ActionEvAnalysis
 from discordbot.cogs._games.blackjack_ev import (
     _add_value,
     compute_action_evs,
@@ -22,7 +22,7 @@ def _full_shoe() -> list[Card]:
     return [_card(rank=rank) for rank in ranks] * 16
 
 
-def _distribution_total(outcome: object) -> float:
+def _distribution_total(outcome: DealerOutcome) -> float:
     """Sums the six dealer-outcome probabilities."""
     return (
         outcome.bust_probability
@@ -34,7 +34,7 @@ def _distribution_total(outcome: object) -> float:
     )
 
 
-def _ev_for(analysis: object, action: str) -> float:
+def _ev_for(analysis: ActionEvAnalysis, action: str) -> float:
     """Returns the computed EV for a single action."""
     return next(item.expected_value for item in analysis.action_evs if item.action == action)
 

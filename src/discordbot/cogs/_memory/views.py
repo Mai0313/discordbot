@@ -6,6 +6,7 @@ import contextlib
 import nextcord
 from nextcord import Embed, ButtonStyle, Interaction
 from nextcord.ui import View, Button
+from nextcord.ext import commands
 
 MEMORY_VIEW_TIMEOUT_SECONDS = 180
 
@@ -86,10 +87,10 @@ class MemoryPagesView(View):
         self.footer_text = footer_text
         self.title = title
         self.page_index = 0
-        self._origin: Interaction | None = None
+        self._origin: Interaction[commands.Bot] | None = None
         self._sync_buttons()
 
-    def bind_origin(self, interaction: Interaction) -> None:
+    def bind_origin(self, interaction: Interaction[commands.Bot]) -> None:
         """Records the originating interaction so timeout can disable the buttons."""
         self._origin = interaction
 
@@ -105,18 +106,24 @@ class MemoryPagesView(View):
 
     def _sync_buttons(self) -> None:
         """Disables the boundary buttons at the first and last page."""
-        cast("Button", self.previous_page).disabled = self.page_index <= 0
-        cast("Button", self.next_page).disabled = self.page_index >= len(self.pages) - 1
+        cast("Button[MemoryPagesView]", self.previous_page).disabled = self.page_index <= 0
+        cast("Button[MemoryPagesView]", self.next_page).disabled = (
+            self.page_index >= len(self.pages) - 1
+        )
 
     @nextcord.ui.button(label="◀ 上一頁", style=ButtonStyle.secondary)
-    async def previous_page(self, _button: Button, interaction: Interaction) -> None:
+    async def previous_page(
+        self, _button: Button["MemoryPagesView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Shows the previous page in place."""
         self.page_index = max(self.page_index - 1, 0)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
 
     @nextcord.ui.button(label="下一頁 ▶", style=ButtonStyle.secondary)
-    async def next_page(self, _button: Button, interaction: Interaction) -> None:
+    async def next_page(
+        self, _button: Button["MemoryPagesView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Shows the next page in place."""
         self.page_index = min(self.page_index + 1, len(self.pages) - 1)
         self._sync_buttons()
@@ -134,4 +141,4 @@ class MemoryPagesView(View):
         # `on_timeout` in a bare `create_task`, so a narrower filter would let an
         # aiohttp transport error escape into a task that cannot handle it.
         with contextlib.suppress(Exception):
-            await self._origin.edit_original_response(view=self)
+            await self._origin.edit_original_message(view=self)

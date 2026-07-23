@@ -1,8 +1,10 @@
 """Tests for the Threads-context builder that feeds linked posts to the answer model."""
 
 from types import SimpleNamespace
+from typing import cast
 from pathlib import Path
 
+from google import genai
 import pytest
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
@@ -15,6 +17,8 @@ from discordbot.cogs._gen_reply.link_sources.threads import (
     THREADS_TEXT_ONLY_SEPARATOR,
     build_threads_context_messages,
 )
+
+from tests.helpers.casting import step_dicts
 
 _URL = "https://www.threads.com/@alice/post/ABC123"
 
@@ -103,9 +107,9 @@ def _stub_media(
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
 
 
-def _client() -> SimpleNamespace:
+def _client() -> genai.Client:
     """A stand-in Gemini client; the stubbed upload never reaches through it."""
-    return SimpleNamespace()
+    return cast("genai.Client", SimpleNamespace())
 
 
 async def test_media_is_uploaded_and_referenced_by_files_uri(
@@ -128,9 +132,9 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
     )
 
     assert len(blocks) == 2
-    assert blocks[0]["content"][0]["text"] == THREADS_CONTEXT_SEPARATOR
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
 
-    parts = blocks[1]["content"]
+    parts = step_dicts(steps=blocks[1]["content"])
     assert parts[0]["type"] == "input_text"
     assert "@alice" in parts[0]["text"]
     assert "TARGET" in parts[0]["text"]
@@ -189,10 +193,12 @@ async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.Monke
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    media = [
+        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
+    ]
     assert len(media) == 1
     assert len(uploads.calls) == 1
-    text = blocks[1]["content"][0]["text"]
+    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
     assert "ancestor" in text  # the ancestor still supplies context, just no media
 
 
@@ -206,7 +212,9 @@ async def test_build_caps_media_parts(monkeypatch: pytest.MonkeyPatch) -> None:
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    media = [
+        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
+    ]
     assert len(media) == MAX_THREADS_MEDIA_PARTS
 
 
@@ -226,7 +234,9 @@ async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.Mon
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    media = [
+        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
+    ]
     assert len(media) == MAX_THREADS_MEDIA_PARTS
     names = [part["filename"] for part in media]
     assert sum(name.endswith(".mp4") for name in names) == 1  # only the leftover slot
@@ -246,7 +256,9 @@ async def test_a_full_image_budget_leaves_no_room_for_video(
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    media = [
+        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
+    ]
     assert len(media) == MAX_THREADS_MEDIA_PARTS
     assert all(part["filename"].endswith(".jpg") for part in media)
 
@@ -264,7 +276,7 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    text = blocks[1]["content"][0]["text"]
+    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
     # The target and the nearest ancestors are kept; the oldest posts are dropped.
     assert "TARGET" in text
     assert f"post {MAX_THREADS_POSTS + 3}" in text  # the target (last) survives
@@ -285,7 +297,7 @@ async def test_build_without_a_key_rides_urls_as_text(monkeypatch: pytest.Monkey
         url=_URL, answer_model_is_gemini=True, gemini_client=None
     )
 
-    assert blocks[0]["content"][0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
     assert uploads.calls == []
 
 
@@ -302,8 +314,8 @@ async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPat
     )
 
     # The separator must not claim the media was fetched, since only its URLs are supplied.
-    assert blocks[0]["content"][0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
-    parts = blocks[1]["content"]
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
+    parts = step_dicts(steps=blocks[1]["content"])
     assert [part["type"] for part in parts] == ["input_text"]
     text = parts[0]["text"]
     assert "https://cdn.test/a.jpg" in text
@@ -322,8 +334,8 @@ async def test_failed_media_degrades_to_an_honest_text_block(
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    assert blocks[0]["content"][0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
-    parts = blocks[1]["content"]
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
+    parts = step_dicts(steps=blocks[1]["content"])
     assert [part["type"] for part in parts] == ["input_text"]
     assert "https://cdn.test/a.jpg" in parts[0]["text"]
 
@@ -339,8 +351,8 @@ async def test_failed_upload_degrades_to_an_honest_text_block(
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    assert blocks[0]["content"][0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
-    assert [part["type"] for part in blocks[1]["content"]] == ["input_text"]
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
+    assert [part["type"] for part in step_dicts(steps=blocks[1]["content"])] == ["input_text"]
 
 
 async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -355,8 +367,10 @@ async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.Monk
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    assert blocks[0]["content"][0]["text"] == THREADS_CONTEXT_SEPARATOR
-    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
+    media = [
+        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
+    ]
     assert [part["filename"] for part in media] == ["threads_video_0.mp4"]
 
 
@@ -369,7 +383,7 @@ async def test_text_only_post_keeps_the_context_separator(monkeypatch: pytest.Mo
         url=_URL, answer_model_is_gemini=True, gemini_client=_client()
     )
 
-    assert blocks[0]["content"][0]["text"] == THREADS_CONTEXT_SEPARATOR
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
 
 
 async def test_build_empty_post_returns_unavailable_notice(
@@ -384,7 +398,7 @@ async def test_build_empty_post_returns_unavailable_notice(
 
     assert len(blocks) == 1
     assert blocks[0]["role"] == "system"
-    assert blocks[0]["content"][0]["text"] == THREADS_UNAVAILABLE_NOTICE
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_UNAVAILABLE_NOTICE
 
 
 async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -401,4 +415,4 @@ async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.Mon
     )
 
     assert len(blocks) == 1
-    assert blocks[0]["content"][0]["text"] == THREADS_UNAVAILABLE_NOTICE
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_UNAVAILABLE_NOTICE

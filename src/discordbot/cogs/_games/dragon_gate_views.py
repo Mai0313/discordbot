@@ -61,6 +61,8 @@ from discordbot.cogs._economy.presentation import amount_code, currency_text
 if TYPE_CHECKING:
     from random import Random
 
+    from nextcord.ext import commands
+
     from discordbot.typings.economy import JackpotSnapshot
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
@@ -427,15 +429,17 @@ class DragonGateView(View):
         self._jackpot_generation = jackpot_generation
         self._final_balances: dict[int, int] = dict(final_balances)
         self._refunded_to_pool: dict[int, int] = {}
-        self._buttons: dict[str, Button] = {
-            "dg:higher": cast("Button", self.choose_higher),
-            "dg:lower": cast("Button", self.choose_lower),
-            "dg:leave": cast("Button", self.leave_table),
+        self._buttons: dict[str, Button[DragonGateView]] = {
+            "dg:higher": cast('Button["DragonGateView"]', self.choose_higher),
+            "dg:lower": cast('Button["DragonGateView"]', self.choose_lower),
+            "dg:leave": cast('Button["DragonGateView"]', self.leave_table),
         }
-        self._selects: dict[str, StringSelect] = {"dg:bet": cast("StringSelect", self.bet_select)}
+        self._selects: dict[str, StringSelect[DragonGateView]] = {
+            "dg:bet": cast('StringSelect["DragonGateView"]', self.bet_select)
+        }
         self.sync_controls()
 
-    async def interaction_check(self, interaction: Interaction) -> bool:
+    async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:
         """Restricts bet/direction to the active player; leave is open to all seated."""
         if self._settled or interaction.user is None:
             return False
@@ -474,14 +478,18 @@ class DragonGateView(View):
     @nextcord.ui.button(
         label="同點猜大", emoji="⬆️", style=ButtonStyle.secondary, custom_id="dg:higher", row=1
     )
-    async def choose_higher(self, _button: Button, interaction: Interaction) -> None:
+    async def choose_higher(
+        self, _button: Button[DragonGateView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Chooses higher for a same-point gate."""
         await self._choose_direction(interaction=interaction, direction="higher")
 
     @nextcord.ui.button(
         label="同點猜小", emoji="⬇️", style=ButtonStyle.secondary, custom_id="dg:lower", row=1
     )
-    async def choose_lower(self, _button: Button, interaction: Interaction) -> None:
+    async def choose_lower(
+        self, _button: Button[DragonGateView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Chooses lower for a same-point gate."""
         await self._choose_direction(interaction=interaction, direction="lower")
 
@@ -497,18 +505,24 @@ class DragonGateView(View):
         ],
         row=2,
     )
-    async def bet_select(self, select: StringSelect, interaction: Interaction) -> None:
+    async def bet_select(
+        self, select: StringSelect[DragonGateView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Routes the bet select choice to a fixed amount or a custom modal."""
         await self._handle_bet_choice(choice=select.values[0], interaction=interaction)
 
     @nextcord.ui.button(
         label="離桌", emoji="🚪", style=ButtonStyle.danger, custom_id="dg:leave", row=0
     )
-    async def leave_table(self, _button: Button, interaction: Interaction) -> None:
+    async def leave_table(
+        self, _button: Button[DragonGateView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Lets any seated player withdraw mid-table without ending the round."""
         await self._handle_leave(interaction=interaction)
 
-    async def _handle_bet_choice(self, choice: str, interaction: Interaction) -> None:
+    async def _handle_bet_choice(
+        self, choice: str, interaction: Interaction[commands.Bot]
+    ) -> None:
         """Routes a select-menu choice to a fixed bet or custom modal."""
         if choice == "custom":
             if self.round_state.needs_pair_choice():
@@ -529,7 +543,9 @@ class DragonGateView(View):
             amount = self._active_max_bet()
         await self._place_select_bet(interaction=interaction, amount=amount)
 
-    async def submit_custom_bet(self, interaction: Interaction, raw_amount: str | None) -> None:
+    async def submit_custom_bet(
+        self, interaction: Interaction[commands.Bot], raw_amount: str | None
+    ) -> None:
         """Handles the custom bet modal submission."""
         amount = parse_wager_amount(raw_amount=raw_amount)
         if amount is None:
@@ -598,7 +614,7 @@ class DragonGateView(View):
         )
 
     async def _choose_direction(
-        self, interaction: Interaction, direction: DragonGateDirection
+        self, interaction: Interaction[commands.Bot], direction: DragonGateDirection
     ) -> None:
         """Stores a high or low choice for the active pair gate."""
         await interaction.response.defer()
@@ -652,13 +668,13 @@ class DragonGateView(View):
         user_id = active.participant.user_id if active is not None else None
         return self._max_bet_for(user_id=user_id)
 
-    async def _place_select_bet(self, interaction: Interaction, amount: int) -> None:
+    async def _place_select_bet(self, interaction: Interaction[commands.Bot], amount: int) -> None:
         """Defers a select interaction and places the chosen fixed bet."""
         await interaction.response.defer()
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
     async def _place_bet_locked_by_interaction(
-        self, interaction: Interaction, amount: int
+        self, interaction: Interaction[commands.Bot], amount: int
     ) -> None:
         """Resolves a bet, settles it against the jackpot, and refreshes the table."""
         if interaction.user is None:
@@ -729,7 +745,7 @@ class DragonGateView(View):
                 )
             )
 
-    async def _handle_leave(self, interaction: Interaction) -> None:
+    async def _handle_leave(self, interaction: Interaction[commands.Bot]) -> None:
         """Withdraws a seated player and refunds positive table delta to the jackpot."""
         if interaction.user is None:
             return
@@ -870,11 +886,11 @@ class DragonGateView(View):
                 return participant
         return None
 
-    def _button(self, custom_id: str) -> Button:
+    def _button(self, custom_id: str) -> Button[DragonGateView]:
         """Returns a button component by custom ID."""
         return self._buttons[custom_id]
 
-    def _select(self, custom_id: str) -> StringSelect:
+    def _select(self, custom_id: str) -> StringSelect[DragonGateView]:
         """Returns a string select component by custom ID."""
         return self._selects[custom_id]
 
@@ -886,7 +902,7 @@ class DragonGateView(View):
         return f"現在輪到 {active_turn.participant.display_name}"
 
     async def _send_bet_error_notice(
-        self, interaction: Interaction, error: DragonGateError
+        self, interaction: Interaction[commands.Bot], error: DragonGateError
     ) -> None:
         """Maps Dragon Gate rule errors to user-facing ephemeral notices."""
         if isinstance(error, DragonGatePairChoiceRequiredError):
@@ -910,7 +926,7 @@ class DragonGateView(View):
             content = "這桌已經不能操作了"
         await self._send_notice(interaction=interaction, content=content)
 
-    async def _send_notice(self, interaction: Interaction, content: str) -> None:
+    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
         """Sends a private action notice to the interacting user."""
         await send_ephemeral_notice(
             interaction=interaction,
@@ -918,7 +934,9 @@ class DragonGateView(View):
             log_message="Failed to send Dragon Gate action notice",
         )
 
-    async def on_error(self, error: Exception, item: Item, interaction: Interaction) -> None:
+    async def on_error(
+        self, error: Exception, item: Item[DragonGateView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Logs active-table component failures instead of only printing to stderr."""
         logfire.error(
             "Dragon Gate action interaction failed",
@@ -935,7 +953,7 @@ class DragonGateBetModal(Modal):
         """Initializes the modal with a range-aware amount input."""
         super().__init__(title="自訂下注")
         self.view = view
-        self.amount: TextInput = TextInput(
+        self.amount: TextInput[View] = TextInput(
             label="下注金額",
             placeholder=f"{minimum:,} 到 {maximum:,}",
             min_length=1,
@@ -944,7 +962,7 @@ class DragonGateBetModal(Modal):
         )
         self.add_item(item=self.amount)
 
-    async def callback(self, interaction: Interaction) -> None:
+    async def callback(self, interaction: Interaction[commands.Bot]) -> None:
         """Submits the custom bet amount back to the active table view."""
         await self.view.submit_custom_bet(interaction=interaction, raw_amount=self.amount.value)
 

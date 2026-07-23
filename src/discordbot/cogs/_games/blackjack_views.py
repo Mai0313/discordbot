@@ -77,6 +77,8 @@ if TYPE_CHECKING:
     from random import Random
     from collections.abc import Coroutine
 
+    from nextcord.ext import commands
+
     from discordbot.cogs._games.shoe import BlackjackShoeStore
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 6
@@ -627,20 +629,20 @@ class BlackjackView(View):
         self._peek_animated = False
         self._state_revision = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
-        self._action_buttons: dict[str, Button] = {
-            "bj:hit": cast("Button", self.hit),
-            "bj:stand": cast("Button", self.stand),
-            "bj:double": cast("Button", self.double),
-            "bj:split": cast("Button", self.split),
-            "bj:surrender": cast("Button", self.surrender),
+        self._action_buttons: dict[str, Button[BlackjackView]] = {
+            "bj:hit": cast('Button["BlackjackView"]', self.hit),
+            "bj:stand": cast('Button["BlackjackView"]', self.stand),
+            "bj:double": cast('Button["BlackjackView"]', self.double),
+            "bj:split": cast('Button["BlackjackView"]', self.split),
+            "bj:surrender": cast('Button["BlackjackView"]', self.surrender),
         }
-        self._insurance_buttons: tuple[Button, Button] = (
-            cast("Button", self.insure_yes),
-            cast("Button", self.insure_no),
+        self._insurance_buttons: tuple[Button[BlackjackView], Button[BlackjackView]] = (
+            cast('Button["BlackjackView"]', self.insure_yes),
+            cast('Button["BlackjackView"]', self.insure_no),
         )
         self.sync_buttons()
 
-    async def interaction_check(self, interaction: Interaction) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
+    async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:  # noqa: PLR0911 -- phase + identity gating naturally fans out into early returns
         """Restricts buttons to the active player (or any undecided insurance player)."""
         if self._settled:
             await send_ephemeral_notice(
@@ -696,7 +698,9 @@ class BlackjackView(View):
     @nextcord.ui.button(
         label="再要一張", emoji="🃏", style=ButtonStyle.primary, custom_id="bj:hit", row=0
     )
-    async def hit(self, _button: Button, interaction: Interaction) -> None:
+    async def hit(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Handles the active player's Hit button."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -725,7 +729,9 @@ class BlackjackView(View):
     @nextcord.ui.button(
         label="停手", emoji="✋", style=ButtonStyle.secondary, custom_id="bj:stand", row=0
     )
-    async def stand(self, _button: Button, interaction: Interaction) -> None:
+    async def stand(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Handles the active player's Stand button."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -754,7 +760,9 @@ class BlackjackView(View):
     @nextcord.ui.button(
         label="加倍", emoji="💰", style=ButtonStyle.success, custom_id="bj:double", row=1
     )
-    async def double(self, _button: Button, interaction: Interaction) -> None:
+    async def double(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Doubles the active hand's bet and finishes it after one draw."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -783,7 +791,9 @@ class BlackjackView(View):
     @nextcord.ui.button(
         label="分牌", emoji="🪓", style=ButtonStyle.success, custom_id="bj:split", row=1
     )
-    async def split(self, _button: Button, interaction: Interaction) -> None:
+    async def split(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Splits the active pair into two sibling sub-hands."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -812,7 +822,9 @@ class BlackjackView(View):
     @nextcord.ui.button(
         label="投降", emoji="🏳️", style=ButtonStyle.danger, custom_id="bj:surrender", row=1
     )
-    async def surrender(self, _button: Button, interaction: Interaction) -> None:
+    async def surrender(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Surrenders the active hand for a half-bet refund."""
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
@@ -841,7 +853,9 @@ class BlackjackView(View):
     @nextcord.ui.button(
         label="保險 ½", emoji="🛡️", style=ButtonStyle.success, custom_id="bj:insure_yes", row=1
     )
-    async def insure_yes(self, _button: Button, interaction: Interaction) -> None:
+    async def insure_yes(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Takes insurance for the calling player."""
         await interaction.response.defer()
         if interaction.message is None:
@@ -889,7 +903,9 @@ class BlackjackView(View):
     @nextcord.ui.button(
         label="不保險", emoji="❌", style=ButtonStyle.secondary, custom_id="bj:insure_no", row=1
     )
-    async def insure_no(self, _button: Button, interaction: Interaction) -> None:
+    async def insure_no(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Declines insurance for the calling player."""
         await interaction.response.defer()
         if interaction.message is None:
@@ -1199,7 +1215,7 @@ class BlackjackView(View):
         )
 
     async def _reject_stale_action_locked(
-        self, interaction: Interaction, message: Message
+        self, interaction: Interaction[commands.Bot], message: Message
     ) -> None:
         """Sends a private stale-action notice and refreshes the table."""
         await send_ephemeral_notice(

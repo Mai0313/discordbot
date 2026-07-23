@@ -7,11 +7,24 @@ title carries its category marker — and hand the field back so the caller chec
 only the value that actually encodes behavior (an amount, a status).
 """
 
+from typing import Protocol
+
 from nextcord import Embed
-from nextcord.embeds import EmbedProxy
 
 
-def assert_embed_has_field(embed: Embed, name: str) -> EmbedProxy:
+class EmbedField(Protocol):
+    """The field shape ``Embed.fields`` yields at runtime.
+
+    Mirrors nextcord's TYPE_CHECKING-only ``_EmbedFieldProxy`` so this module
+    never imports a private name.
+    """
+
+    name: str | None
+    value: str | None
+    inline: bool
+
+
+def assert_embed_has_field(embed: Embed, name: str) -> EmbedField:
     """Asserts a field with the given name exists and returns it for value checks."""
     for field in embed.fields:
         if field.name == name:
