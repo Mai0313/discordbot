@@ -9,7 +9,7 @@ text), fixed 16:9, `delivery="uri"`, single `files.download` (the interaction on
 
 import time
 import base64
-from typing import Literal
+from typing import Literal, Protocol, cast
 from pathlib import Path
 from collections.abc import Iterator
 
@@ -17,9 +17,11 @@ from google import genai
 from rich.console import Console
 from google.genai.types import FileState
 from google.genai.interactions import (
+    VideoContent,
     TextContentParam,
     VideoConfigParam,
     ImageContentParam,
+    InteractionStatus,
     VideoContentParam,
     GenerationConfigParam,
     VideoResponseFormatParam,
@@ -35,6 +37,19 @@ config = LLMConfig()
 # otherwise this script tests a stale model.
 VIDEO_MODEL = ModelSettings(name="gemini-omni-flash-preview")
 MAX_REFERENCE_IMAGES = 3
+
+
+class _VideoInteractionResult(Protocol):
+    """Attributes read off the completed interaction (not `stream=True` here).
+
+    Named locally instead of `google.genai.interactions.Interaction`: that module star-imports
+    the name from both the request union and the response class, so naming it in an
+    annotation/cast risks binding the wrong one (see `VideoGenerator.render`).
+    """
+
+    status: InteractionStatus
+    output_text: str | None
+    output_video: VideoContent | None
 
 
 def _upload_source_video(client: genai.Client, path: str) -> str:
@@ -121,12 +136,13 @@ def gen_video(
     # binds to the request union (see `VideoGenerator.render`).
     if isinstance(interaction, Iterator):
         raise RuntimeError("Video generation returned an event stream, not an interaction")
-    console.print(f"status={interaction.status}")
+    result = cast("_VideoInteractionResult", interaction)
+    console.print(f"status={result.status}")
 
-    video = interaction.output_video
-    if interaction.status != "completed" or video is None or video.uri is None:
+    video = result.output_video
+    if result.status != "completed" or video is None or video.uri is None:
         raise RuntimeError(
-            f"Video generation failed: status={interaction.status} note={interaction.output_text!r}"
+            f"Video generation failed: status={result.status} note={result.output_text!r}"
         )
 
     console.print("[bold]Downloading video...[/bold]")
