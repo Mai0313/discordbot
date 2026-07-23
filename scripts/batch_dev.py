@@ -2,7 +2,7 @@
 
 import json
 import time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 from pathlib import Path
 from collections.abc import Sequence
 
@@ -24,8 +24,9 @@ config = LLMConfig()
 # dev we pin to the off-peak default. Swap manually when testing peak behaviour.
 SLOW_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
 
-BATCH_ENDPOINT = "/v1/responses"
-BATCH_COMPLETION_WINDOW = "24h"
+# Both are Literal in the Batch API signature, so they carry the same literal type here.
+BATCH_ENDPOINT: Literal["/v1/responses"] = "/v1/responses"
+BATCH_COMPLETION_WINDOW: Literal["24h"] = "24h"
 BATCH_POLL_INTERVAL_SECONDS = 10
 BATCH_TERMINAL_STATUSES = {"completed", "failed", "expired", "cancelled"}
 DEV_END_USER_ID = "batch_dev"

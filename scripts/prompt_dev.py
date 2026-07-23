@@ -2,6 +2,7 @@
 
 import time
 from typing import TYPE_CHECKING, cast
+from collections.abc import Iterator
 
 from google import genai
 from openai import OpenAI
@@ -131,6 +132,9 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
     Args:
         user_prompt: User message to send as the comparison prompt.
         video_uri: Optional URI of a video to include as input content, for testing Gemini's video understanding capabilities.
+
+    Raises:
+        RuntimeError: The SDK returned an interaction instead of the requested event stream.
     """
     client = genai.Client(
         api_key=config.api_key,
@@ -166,6 +170,11 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
         ],
         stream=True,
     )
+    # `stream=True` returns the event stream, but a plain `str` model name misses the SDK's
+    # `Model` literal overloads, so the call types as `Interaction | Stream[...]`. Narrow by
+    # excluding the interaction (it is iterable but not an iterator).
+    if not isinstance(responses, Iterator):
+        raise RuntimeError("Gemini interactions.create returned an interaction, not a stream")
     model_name = ""
     for response in responses:
         if response.event_type == "interaction.created":

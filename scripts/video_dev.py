@@ -9,7 +9,9 @@ text), fixed 16:9, `delivery="uri"`, single `files.download` (the interaction on
 
 import time
 import base64
+from typing import Literal
 from pathlib import Path
+from collections.abc import Iterator
 
 from google import genai
 from rich.console import Console
@@ -39,10 +41,13 @@ def _upload_source_video(client: genai.Client, path: str) -> str:
     """Uploads a source clip to the Files API and returns its ACTIVE uri."""
     mime = f"video/{Path(path).suffix.lstrip('.') or 'mp4'}"
     uploaded = client.files.upload(file=path, config={"mime_type": mime})
+    file_name = uploaded.name
+    if file_name is None:
+        raise RuntimeError("Source video upload returned no file name")
     while uploaded.state == FileState.PROCESSING:
         console.print("Uploading source video... (PROCESSING)")
         time.sleep(2)
-        uploaded = client.files.get(name=uploaded.name)
+        uploaded = client.files.get(name=file_name)
     if uploaded.state != FileState.ACTIVE or uploaded.uri is None:
         raise RuntimeError(f"Source video upload failed: state={uploaded.state}")
     return uploaded.uri
@@ -63,11 +68,15 @@ def gen_video(
         source_video_path: Optional local video file to edit in place.
 
     Raises:
-        RuntimeError: The interaction did not complete with a video.
+        RuntimeError: The SDK returned an event stream instead of an interaction, or the
+            interaction did not complete with a video.
     """
     client = genai.Client(api_key=config.gemini_api_key)
 
-    content: list[object] = [TextContentParam(type="text", text=user_prompt)]
+    content: list[TextContentParam | ImageContentParam | VideoContentParam] = [
+        TextContentParam(type="text", text=user_prompt)
+    ]
+    task: Literal["text_to_video", "reference_to_video", "edit"]
     if source_video_path is not None:
         video_uri = _upload_source_video(client=client, path=source_video_path)
         content = [
@@ -107,6 +116,11 @@ def gen_video(
         response_format=response_format,
         generation_config=GenerationConfigParam(video_config=VideoConfigParam(task=task)),
     )
+    # No `stream=True`, so this is the interaction rather than an event stream. Narrowed by
+    # excluding the stream instead of naming `google.genai.interactions.Interaction`, which mypy
+    # binds to the request union (see `VideoGenerator.render`).
+    if isinstance(interaction, Iterator):
+        raise RuntimeError("Video generation returned an event stream, not an interaction")
     console.print(f"status={interaction.status}")
 
     video = interaction.output_video
