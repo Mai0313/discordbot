@@ -6,6 +6,7 @@ are pinned here against the real production renderers and database helpers.
 
 import pytest
 import nextcord
+from openai.types.responses import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.cogs._economy.database import adjust_balance
 from discordbot.cogs._gen_reply.memory_tool import (
@@ -39,9 +40,9 @@ def _answer_request(
     memory_ids: dict[int, str] | None = None,
     server_memory: str | None = None,
     callable_ids: dict[int, str] | None = None,
-) -> list[object]:
+) -> ResponseInputParam:
     """Builds a recorded answer input mirroring what the pipeline assembles."""
-    request: list[object] = []
+    request: ResponseInputParam = []
     if callable_ids is not None:
         request.append(render_callable_users_block(allowed=callable_ids))
     if server_memory is not None:
@@ -52,7 +53,7 @@ def _answer_request(
             for uid, body in memory_ids.items()
         ]
         request.append(render_memory_context_block(memories=memories))
-    request.append({"role": "user", "content": "hi"})
+    request.append(EasyInputMessageParam(role="user", content="hi"))
     return request
 
 
@@ -119,7 +120,10 @@ class _Recorder:
             [{"name": "get_user_memory"}],
             [{"type": "web_search"}],
         ]
-        self.create_inputs: list[object] = [["selection"], ["answer"]]
+        self.create_inputs: list[ResponseInputParam | str] = [
+            [EasyInputMessageParam(role="user", content="selection")],
+            [EasyInputMessageParam(role="user", content="answer")],
+        ]
 
 
 def test_request_index_maps_phase_to_position() -> None:
@@ -127,7 +131,9 @@ def test_request_index_maps_phase_to_position() -> None:
     recorder = _Recorder()
     assert request_index(responses=recorder, phase="selection") == 0
     assert request_index(responses=recorder, phase="answer") == 1
-    assert request_input(responses=recorder, phase="answer") == ["answer"]
+    assert request_input(responses=recorder, phase="answer") == [
+        EasyInputMessageParam(role="user", content="answer")
+    ]
 
 
 def test_tool_names_for_call_reads_offered_tools() -> None:

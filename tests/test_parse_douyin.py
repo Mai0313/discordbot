@@ -1,6 +1,7 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
 from types import SimpleNamespace
+from typing import Any
 import asyncio
 from pathlib import Path
 
@@ -123,8 +124,12 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
     return resolved_uploads, recorded
 
 
-async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, object]]:
-    """Runs the builder with the flags most tests share."""
+async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any]]:
+    """Runs the builder with the flags most tests share.
+
+    The blocks are `EasyInputMessageParam`s, whose `content` is a union the assertions below
+    index into part by part; `Any` is what lets them read as plain JSON.
+    """
     return await build_douyin_context_messages(
         url=_URL,
         answer_model_is_gemini=gemini,

@@ -7,7 +7,7 @@ import re
 import json
 from types import SimpleNamespace
 import base64
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
@@ -695,6 +695,22 @@ class FakeClient:
         """Initializes fake OpenAI resource objects."""
         self.responses = FakeResponses()
         self.images = FakeImages()
+
+
+def _recorded_content_parts(
+    request: ResponseInputParam | str, index: int = 0
+) -> list[dict[str, Any]]:
+    """Returns the content parts of one item of a recorded `responses.create` input.
+
+    The recorder keeps the real `ResponseInputParam` annotation, a union of ~30 TypedDicts
+    that no structural assertion can index into, while the recorded payloads are plain
+    heterogeneous JSON. This is the single place that narrows them back to JSON.
+    """
+    assert not isinstance(request, str)
+    item = cast("dict[str, Any]", request[index])
+    parts = item["content"]
+    assert isinstance(parts, list)
+    return parts
 
 
 def _png_b64() -> str:
@@ -2269,8 +2285,9 @@ async def test_youtube_qa_uses_interactions_backend(
     last_step_parts = fake.recorder.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url} in last_step_parts
     # The shared streamer rendered the reply and a footer from the Interactions usage.
-    assert "watched it" in message.replies[0].content
-    assert "⬆ 12 ⬇ 34" in message.replies[0].content
+    reply_content = message.replies[0].content or ""
+    assert "watched it" in reply_content
+    assert "⬆ 12 ⬇ 34" in reply_content
     # A persistent watch reaction marks that the reply was grounded in the video.
     assert "<:youtube:1517546722535018596>" in message.added_reactions
 
@@ -3371,7 +3388,7 @@ async def test_prompt_generator_refines_with_grounding() -> None:
     assert client.responses.create_instructions == [IMAGE_PROMPT]
     assert client.responses.create_tools == [[{"googleSearch": {}}, {"urlContext": {}}]]
     # The raw request rides as the input_text part the director rewrites.
-    request_text = client.responses.create_inputs[0][0]["content"][0]["text"]
+    request_text = _recorded_content_parts(request=client.responses.create_inputs[0])[0]["text"]
     assert "draw a cat" in request_text
 
 
@@ -3404,12 +3421,12 @@ async def test_prompt_generator_error_falls_back_to_raw() -> None:
     """Any director error falls back to the raw prompt instead of raising into the route."""
     client = FakeClient()
 
-    async def _boom(**kwargs: object) -> object:
+    async def _boom(*args: object, **kwargs: object) -> object:
         """Fails the director call."""
-        del kwargs
+        del args, kwargs
         raise RuntimeError("director boom")
 
-    client.responses.create = _boom
+    client.responses.create = _boom  # type: ignore[method-assign]  # simulating a failing call
     generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
 
     refined = await generator.refine(
@@ -3433,7 +3450,7 @@ async def test_prompt_generator_rides_source_images_as_input() -> None:
         image_bytes_list=[base64.b64decode(_png_b64())],
     )
 
-    director_content = client.responses.create_inputs[0][0]["content"]
+    director_content = _recorded_content_parts(request=client.responses.create_inputs[0])
     assert director_content[0]["type"] == "input_text"
     assert any(part.get("type") == "input_image" for part in director_content)
 
@@ -6858,11 +6875,11 @@ async def test_memory_selection_timeout_fallback_skips_locked_author_memory(
 
 def test_can_launch_research_requires_guild_text_channel() -> None:
     text = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.TextChannel))
-    assert _can_launch_research(message=text) is True  # type: ignore[arg-type]  # SimpleNamespace stub
+    assert _can_launch_research(message=text) is True
     thread = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.Thread))
-    assert _can_launch_research(message=thread) is False  # type: ignore[arg-type]  # SimpleNamespace stub
+    assert _can_launch_research(message=thread) is False
     dm = SimpleNamespace(guild=None, channel=MagicMock(spec=nextcord.TextChannel))
-    assert _can_launch_research(message=dm) is False  # type: ignore[arg-type]  # SimpleNamespace stub
+    assert _can_launch_research(message=dm) is False
 
 
 async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(

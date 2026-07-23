@@ -149,9 +149,13 @@ class _FakeResponse:
 
 def _install_session(
     monkeypatch: pytest.MonkeyPatch, handler: Callable[[str, dict[str, object]], _FakeResponse]
-) -> list[dict[str, object]]:
-    """Replaces requests.Session with a stub driven by `handler`; returns the captured calls."""
-    calls: list[dict[str, object]] = []
+) -> list[dict[str, Any]]:
+    """Replaces requests.Session with a stub driven by `handler`; returns the captured calls.
+
+    A captured call is the request kwargs bag, so `Any` is what lets an assertion reach into a
+    nested value such as `calls[0]["headers"]["User-Agent"]`.
+    """
+    calls: list[dict[str, Any]] = []
 
     class _FakeSession:
         def __enter__(self) -> Self:
@@ -745,16 +749,19 @@ def test_local_write_failure_leaves_no_partial_file(
 
     real_open = Path.open
 
-    def failing_open(self: Path, *args: object, **kwargs: object) -> IO[bytes]:
-        """Writes a partial file and then fails, as a full disk would."""
-        handle = real_open(self, *args, **kwargs)  # type: ignore[arg-type]  # passthrough stub
+    def failing_open(self: Path, mode: str = "r") -> IO[bytes]:
+        """Writes a partial file and then fails, as a full disk would.
+
+        The downloader only ever opens with a positional mode, so the stub mirrors that shape.
+        """
+        handle: IO[bytes] = real_open(self, mode)
         original_write = handle.write
 
         def write(data: bytes) -> int:
             original_write(data)
             raise OSError(28, "No space left on device")
 
-        handle.write = write  # type: ignore[method-assign]  # simulating a mid-write disk failure
+        handle.write = write  # type: ignore[assignment]  # simulating a mid-write disk failure
         return handle
 
     monkeypatch.setattr(Path, "open", failing_open)

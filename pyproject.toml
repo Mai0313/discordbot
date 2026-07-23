@@ -516,7 +516,8 @@ plugins = ["pydantic.mypy"]
 # strict = true
 explicit_package_bases = true
 cache_dir = "~/.cache/.mypy_cache"
-exclude = ["^tests/", "^scripts/"]
+# Uncomment to go back to checking `src/` only; this line alone does it, the hook needs no exclude.
+# exclude = ["^tests/", "^scripts/"]
 ignore_missing_imports = true
 warn_unused_configs = true
 warn_return_any = false

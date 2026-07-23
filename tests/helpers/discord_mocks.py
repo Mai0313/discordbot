@@ -41,6 +41,7 @@ class OriginalEditPayload(TypedDict, total=False):
 
     content: str
     file: File
+    files: list[File]
     allowed_mentions: AllowedMentions
 
 
