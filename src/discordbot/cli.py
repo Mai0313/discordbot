@@ -97,11 +97,13 @@ class DiscordBot(commands.Bot):
         """
         if self._initial_setup_done:
             return
-        self._initial_setup_done = True
-
         bot_user = self.user
         if bot_user is None:
+            # Never expected once on_ready fires; leave the latch unset so a reconnect retries.
+            logfire.warn("on_ready fired without a logged-in user; skipping initial setup")
             return
+        self._initial_setup_done = True
+
         logfire.info(
             "Logged in",
             bot_name=bot_user.name,
