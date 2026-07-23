@@ -51,7 +51,12 @@ from discordbot.cogs._gen_reply.markers import (
     scrub_markers_for_preview,
 )
 from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
-from discordbot.cogs._gen_reply.streaming import DISCORD_MESSAGE_LIMIT, ResponseStreamer
+from discordbot.cogs._gen_reply.streaming import (
+    DISCORD_MESSAGE_LIMIT,
+    REASONING_PREVIEW_MAX_CHARS,
+    REASONING_PREVIEW_MAX_LINES,
+    ResponseStreamer,
+)
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
     VOICE_TIMEOUT_SECONDS,
@@ -6337,7 +6342,7 @@ async def test_streamer_reasoning_preview_then_content_overwrites() -> None:
 
 
 def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
-    """A long think keeps only its newest tail lines under the Discord limit."""
+    """A long think keeps only its newest tail lines within the short preview window."""
     streamer = ResponseStreamer(message=FakeMessage())
     streamer.reasoning_content = "\n".join(f"thought line {i} " + "x" * 80 for i in range(60))
 
@@ -6349,6 +6354,34 @@ def test_streamer_reasoning_preview_keeps_newest_lines_within_limit() -> None:
     assert all(line.startswith("-# ") for line in lines)
     assert "thought line 59" in preview
     assert "thought line 9 " not in preview
+    # Header plus at most the capped number of thought lines, and a short body overall.
+    assert len(lines) <= REASONING_PREVIEW_MAX_LINES + 1
+    assert len(preview) - len(lines[0]) <= REASONING_PREVIEW_MAX_CHARS + len("-# ") * len(lines)
+
+
+def test_streamer_reasoning_preview_caps_short_line_count() -> None:
+    """Many short thought lines are trimmed to the newest few, not stacked up."""
+    streamer = ResponseStreamer(message=FakeMessage())
+    streamer.reasoning_content = "\n".join(f"step {i}" for i in range(20))
+
+    lines = streamer._render_preview().splitlines()
+
+    assert len(lines) == REASONING_PREVIEW_MAX_LINES + 1
+    assert lines[-1] == "-# step 19"
+    assert "step 15" not in "\n".join(lines)
+
+
+def test_streamer_reasoning_preview_keeps_tail_of_one_long_paragraph() -> None:
+    """A single paragraph wider than the budget still shows its newest words."""
+    streamer = ResponseStreamer(message=FakeMessage())
+    streamer.reasoning_content = "a" * 900 + " ending words"
+
+    lines = streamer._render_preview().splitlines()
+
+    assert len(lines) == 2
+    assert lines[1].startswith("-# …")
+    assert lines[1].endswith("ending words")
+    assert len(lines[1]) <= REASONING_PREVIEW_MAX_CHARS + len("-# …")
 
 
 def test_streamer_reasoning_preview_escapes_mentions() -> None:

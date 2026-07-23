@@ -53,6 +53,13 @@ INLINE_VIDEO_FILENAME = "generated.mp4"
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 DISCORD_MESSAGE_LIMIT = 2000
 
+# The thinking preview is a live glance, not a transcript: keep only the newest few subtext
+# lines so a long think never grows into a wall of text above the reply. The char budget is
+# the load-bearing half, since one thought line is often a whole paragraph that Discord wraps
+# into several rendered lines; the line cap only stops many short lines from stacking up.
+REASONING_PREVIEW_MAX_LINES = 4
+REASONING_PREVIEW_MAX_CHARS = 320
+
 
 class ResponseStreamer(BaseModel):
     """Renders one streaming Responses API reply onto a Discord message.
@@ -203,8 +210,10 @@ class ResponseStreamer(BaseModel):
 
         The reasoning preview shows the tail of the model's thought summary as `-#`
         subtext lines under a `message` app-emoji header, so the user watches the thinking until
-        the first real content delta replaces it. The window keeps the newest lines that
-        fit one Discord message, so a long think never hits the 2000-char limit.
+        the first real content delta replaces it. The window keeps only the newest lines within
+        `REASONING_PREVIEW_MAX_LINES` / `REASONING_PREVIEW_MAX_CHARS`, so a long think stays a
+        few rendered lines tall instead of filling the message. A single paragraph wider than the
+        budget keeps its own tail behind an ellipsis, so the newest thought always shows.
         """
         if self.content_started:
             return scrub_markers_for_preview(text=self.stored_content)[:DISCORD_MESSAGE_LIMIT]
@@ -213,17 +222,19 @@ class ResponseStreamer(BaseModel):
         # Mentions are escaped because this transient text is never meant to ping;
         # the real reply may mention people, the thought process must not.
         tail = escape_mentions(self.reasoning_content[-1500:])
-        lines = [f"-# {line}" for line in tail.splitlines() if line.strip()]
+        lines = [line for line in tail.splitlines() if line.strip()]
         header = "-# <:message:1517560873000898860> Thinking..."
-        budget = DISCORD_MESSAGE_LIMIT - len(header)
+        budget = REASONING_PREVIEW_MAX_CHARS
         kept: list[str] = []
-        for line in reversed(lines):
-            if budget - (len(line) + 1) < 0:
+        for line in reversed(lines[-REASONING_PREVIEW_MAX_LINES:]):
+            if len(line) > budget:
+                if not kept:
+                    kept.append(f"…{line[-budget:]}")
                 break
             kept.append(line)
             budget -= len(line) + 1
         kept.reverse()
-        return "\n".join([header, *kept])
+        return "\n".join([header, *(f"-# {line}" for line in kept)])
 
     async def _reply_or_send(self, content: str) -> Message:
         """Replies to the source message, sending unparented if it was deleted.
