@@ -116,6 +116,14 @@ repos:
   #       language: system
   #       entry: bash -c 'if command -v code2flow >/dev/null 2>&1; then code2flow **/**/*.py -o ./.github/code2flow/flow.png; else echo "code2flow not installed, skipping"; fi'
 
+  - repo: https://github.com/astral-sh/ty-pre-commit
+    rev: v0.0.63
+    hooks:
+      - id: ty
+        # ty checks the whole repo (src, tests, scripts), so its environment
+        # needs every dependency group, not just the default ones.
+        args: ["--all-groups"]
+
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v2.3.0
     hooks:

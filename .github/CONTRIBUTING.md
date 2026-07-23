@@ -158,7 +158,7 @@ The pre-commit gate is the canonical local quality check:
 uv run pre-commit run -a
 ```
 
-It runs Ruff formatting and linting, mypy with the Pydantic plugin, Markdown formatting, ShellCheck, codespell, gitleaks, uv lock checks, and standard file hygiene hooks.
+It runs Ruff formatting and linting, ty type checking, mypy with the Pydantic plugin, Markdown formatting, ShellCheck, codespell, gitleaks, uv lock checks, and standard file hygiene hooks.
 
 ## Documentation
 
