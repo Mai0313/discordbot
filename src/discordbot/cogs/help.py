@@ -37,16 +37,19 @@ class HelpCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def help(self, interaction: Interaction) -> None:
+    async def help(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows a category-driven guide on how to use this bot.
 
         Args:
             interaction: The interaction that triggered the command.
         """
+        user = interaction.user
+        if user is None:
+            return
         view = HelpView(
-            locale=interaction.locale,
-            requester_name=interaction.user.display_name,
-            requester_avatar_url=interaction.user.display_avatar.url,
+            locale=interaction.locale or "",
+            requester_name=user.display_name,
+            requester_avatar_url=user.display_avatar.url,
         )
         await interaction.response.send_message(
             embed=view.initial_embed(), view=view, ephemeral=True

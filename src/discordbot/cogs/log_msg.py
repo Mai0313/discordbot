@@ -183,7 +183,9 @@ class MessageLogger(BaseModel):
         if isinstance(self.message.channel, DMChannel):
             author_name = self.message.author.display_name
             return f"DM_{author_name}_{self.message.author.id}"
-        return f"channel_{self.message.channel.name}_{self.message.channel.id}"
+        channel = self.message.channel
+        channel_name = getattr(channel, "name", None) or channel.id
+        return f"channel_{channel_name}_{channel.id}"
 
     @computed_field
     @property
@@ -302,7 +304,7 @@ class LogMessageCog(commands.Cog):
         asyncio.create_task(MessageLogger(message=after).log())  # noqa: RUF006
 
     @commands.Cog.listener()
-    async def on_command_completion(self, context: commands.Context) -> None:
+    async def on_command_completion(self, context: commands.Context[commands.Bot]) -> None:
         """Listens for command completions and logs the message that triggered it.
 
         Args:

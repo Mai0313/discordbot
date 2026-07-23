@@ -14,7 +14,7 @@ import re
 import json
 import time
 import types
-from typing import ClassVar
+from typing import Any, ClassVar
 from pathlib import Path
 from functools import cached_property
 import threading
@@ -241,7 +241,7 @@ class DouyinDownload(BaseModel):
 # 403 on download, which is worse than re-fetching. Bounded like the other long-lived caches in
 # this project (see `_gen_reply/attachment/base.py`) so a long-running bot cannot accumulate one
 # full payload per link it has ever seen.
-_PAYLOAD_CACHE: OrderedDict[str, tuple[float, dict]] = OrderedDict()
+_PAYLOAD_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _PAYLOAD_CACHE_TTL_SECONDS = 300.0
 _PAYLOAD_CACHE_MAX_ENTRIES = 128
 
@@ -418,7 +418,7 @@ class DouyinDownloader(BaseModel):
         # against the request URL rather than trusting the header verbatim.
         return urljoin(url, location)
 
-    def _fetch_share_payload(self, aweme_id: str) -> dict:
+    def _fetch_share_payload(self, aweme_id: str) -> dict[str, Any]:
         """Fetches and parses the share page for a post id.
 
         Args:
@@ -475,7 +475,7 @@ class DouyinDownloader(BaseModel):
         return info
 
     @staticmethod
-    def _find_video_info(router_data: dict) -> dict | None:
+    def _find_video_info(router_data: dict[str, Any]) -> dict[str, Any] | None:
         """Finds the `videoInfoRes` object inside `loaderData`.
 
         The `loaderData` key is named after the URL path that was fetched (`note_(id)/page` for a
@@ -499,7 +499,7 @@ class DouyinDownloader(BaseModel):
         return None
 
     @staticmethod
-    def _first_item(info: dict, aweme_id: str) -> dict:
+    def _first_item(info: dict[str, Any], aweme_id: str) -> dict[str, Any]:
         """Returns the post object, translating Douyin's soft failures into errors.
 
         Douyin answers a deleted, private or region-locked post with HTTP 200, an empty
@@ -563,12 +563,12 @@ class DouyinDownloader(BaseModel):
         )
 
     @staticmethod
-    def _video_id(item: dict) -> str:
+    def _video_id(item: dict[str, Any]) -> str:
         """Reads the internal video id used to build a play URL."""
         return ((item.get("video") or {}).get("play_addr") or {}).get("uri") or ""
 
     @staticmethod
-    def _image_urls(images: list) -> list[str]:
+    def _image_urls(images: list[Any]) -> list[str]:
         """Picks one watermark-free URL per image.
 
         Despite the names, `url_list` holds the clean images and `download_url_list` holds the

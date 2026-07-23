@@ -131,7 +131,7 @@ class AutoUnmuteCogs(commands.Cog):
             logfire.warn(
                 "failed to send auto-unmute reply",
                 guild_id=member.guild.id,
-                channel_id=channel.id,
+                channel_id=getattr(channel, "id", None),
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )

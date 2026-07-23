@@ -51,7 +51,7 @@ class TemplateCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def ping(self, interaction: Interaction) -> None:
+    async def ping(self, interaction: Interaction[commands.Bot]) -> None:
         """Checks the bot's response time.
 
         Args:
@@ -66,10 +66,11 @@ class TemplateCogs(commands.Cog):
             timestamp=nextcord.utils.utcnow(),
         )
         embed.add_field(name="Bot Latency", value=f"`{bot_latency}ms`")
-        embed.set_footer(
-            text=f"Requested by {interaction.user.display_name}",
-            icon_url=interaction.user.display_avatar.url,
-        )
+        user = interaction.user
+        if user is not None:
+            embed.set_footer(
+                text=f"Requested by {user.display_name}", icon_url=user.display_avatar.url
+            )
 
         await interaction.followup.send(
             embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction)

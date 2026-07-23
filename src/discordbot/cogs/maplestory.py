@@ -28,7 +28,7 @@ _ERROR_COLOR = 0xFF0000
 
 
 async def _send_maple_followup(
-    interaction: Interaction, embed: Embed, view: View | None = None
+    interaction: Interaction[commands.Bot], embed: Embed, view: View | None = None
 ) -> None:
     """Sends a MapleStory result embed at a uniform width."""
     payload = embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction)
@@ -70,14 +70,16 @@ class MapleStoryCogs(commands.Cog):
             return equipment_label
         return self._translate(category="misc", name=item)
 
-    async def _send_error(self, interaction: Interaction) -> None:
+    async def _send_error(self, interaction: Interaction[commands.Bot]) -> None:
         """Sends a generic error message to the user."""
         embed = Embed(
             title=":x: 錯誤", description="無法載入資料，請聯絡管理員", color=_ERROR_COLOR
         )
         await _send_maple_followup(interaction=interaction, embed=embed)
 
-    async def _send_not_found(self, interaction: Interaction, kind: str, query: str) -> None:
+    async def _send_not_found(
+        self, interaction: Interaction[commands.Bot], kind: str, query: str
+    ) -> None:
         """Sends a 'not found' message to the user."""
         embed = Embed(
             title=":mag: 搜尋結果",
@@ -95,7 +97,7 @@ class MapleStoryCogs(commands.Cog):
             Locale.ja: "メイプルストーリー Artale データを検索します。",
         },
     )
-    async def maplestory(self, interaction: Interaction) -> None:
+    async def maplestory(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for MapleStory Artale data queries."""
 
     # ── /maplestory monster ─────────────────────────────────────────
@@ -111,7 +113,7 @@ class MapleStoryCogs(commands.Cog):
     )
     async def maple_monster(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         name: str = SlashOption(
             name="name",
             description="Monster name to search",
@@ -167,7 +169,7 @@ class MapleStoryCogs(commands.Cog):
     )
     async def maple_equip(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         name: str = SlashOption(
             name="name",
             description="Equipment name to search",
@@ -227,7 +229,7 @@ class MapleStoryCogs(commands.Cog):
     )
     async def maple_scroll(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         name: str = SlashOption(
             name="name",
             description="Scroll name to search",
@@ -287,7 +289,7 @@ class MapleStoryCogs(commands.Cog):
     )
     async def maple_npc(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         name: str = SlashOption(
             name="name",
             description="NPC name to search",
@@ -342,7 +344,7 @@ class MapleStoryCogs(commands.Cog):
     )
     async def maple_quest(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         name: str = SlashOption(
             name="name",
             description="Quest name to search",
@@ -400,7 +402,7 @@ class MapleStoryCogs(commands.Cog):
     )
     async def maple_map(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         name: str = SlashOption(
             name="name",
             description="Map name to search",
@@ -460,7 +462,7 @@ class MapleStoryCogs(commands.Cog):
     )
     async def maple_item(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         name: str = SlashOption(
             name="name",
             description="Item name to search",
@@ -522,7 +524,7 @@ class MapleStoryCogs(commands.Cog):
             Locale.ja: "メイプルストーリーデータベース統計を表示",
         },
     )
-    async def maple_stats(self, interaction: Interaction) -> None:
+    async def maple_stats(self, interaction: Interaction[commands.Bot]) -> None:
         """Gets MapleStory database statistics.
 
         Args:

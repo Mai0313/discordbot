@@ -83,7 +83,10 @@ class DiscordBot(commands.Bot):
 
     async def on_connect(self) -> None:
         """Called when the bot has successfully connected to Discord."""
-        logfire.info("Bot Connected", bot_name=self.user.name, bot_id=self.user.id)
+        bot_user = self.user
+        if bot_user is None:
+            return
+        logfire.info("Bot Connected", bot_name=bot_user.name, bot_id=bot_user.id)
 
     async def on_ready(self) -> None:
         """Called when the bot is ready; performs first-time-only setup.
@@ -96,9 +99,12 @@ class DiscordBot(commands.Bot):
             return
         self._initial_setup_done = True
 
+        bot_user = self.user
+        if bot_user is None:
+            return
         logfire.info(
             "Logged in",
-            bot_name=self.user.name,
+            bot_name=bot_user.name,
             discord_version=nextcord.__version__,
             python_version=platform.python_version(),
             system=f"{platform.system()} {platform.release()} ({os.name})",
@@ -114,7 +120,7 @@ class DiscordBot(commands.Bot):
         invite_url = (
             f"https://discord.com/oauth2/authorize?client_id={app_info.id}&permissions=8&scope=bot"
         )
-        logfire.info("Bot Started", bot_name=self.user.name, bot_id=self.user.id)
+        logfire.info("Bot Started", bot_name=bot_user.name, bot_id=bot_user.id)
         logfire.info("Invite Link", invite_url=invite_url)
 
     @tasks.loop(minutes=1.0)
@@ -123,7 +129,9 @@ class DiscordBot(commands.Bot):
         statuses = ["your mama"]
         random_status = secrets.choice(statuses)
         await self.change_presence(activity=Game(random_status))
-        logfire.debug("Status Changed", new_status=self.activity.name)
+        activity = self.activity
+        if activity is not None and activity.name is not None:
+            logfire.debug("Status Changed", new_status=activity.name)
 
     @status_task.before_loop
     async def before_status_task(self) -> None:
@@ -172,13 +180,16 @@ class DiscordBot(commands.Bot):
                 )
         await self.process_commands(message)
 
-    async def on_command_completion(self, context: commands.Context) -> None:
+    async def on_command_completion(self, context: commands.Context[commands.Bot]) -> None:
         """Handles successful command execution.
 
         Args:
             context: The context of the command that was executed.
         """
-        full_command_name = context.command.qualified_name
+        command = context.command
+        if command is None:
+            return
+        full_command_name = command.qualified_name
         split = full_command_name.split(" ")
         executed_command = str(split[0])
         logfire.info("Command Received", command=executed_command)
@@ -193,8 +204,8 @@ class DiscordBot(commands.Bot):
 
     async def on_command_error(
         self,
-        context: commands.Context,
-        error: commands.CommandOnCooldown
+        context: commands.Context[commands.Bot],
+        exception: commands.CommandOnCooldown
         | commands.NotOwner
         | commands.MissingPermissions
         | commands.BotMissingPermissions
@@ -206,10 +217,10 @@ class DiscordBot(commands.Bot):
 
         Args:
             context: The context of the command that failed.
-            error: The exception that was raised.
+            exception: The exception that was raised.
         """
-        if isinstance(error, commands.CommandOnCooldown):
-            minutes, seconds = divmod(error.retry_after, 60)
+        if isinstance(exception, commands.CommandOnCooldown):
+            minutes, seconds = divmod(exception.retry_after, 60)
             hours, minutes = divmod(minutes, 60)
             hours = hours % 24
             embed = Embed(
@@ -219,7 +230,7 @@ class DiscordBot(commands.Bot):
             await context.send(
                 embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
             )
-        elif isinstance(error, commands.NotOwner):
+        elif isinstance(exception, commands.NotOwner):
             embed = Embed(description="You are not the owner of the bot!", color=0xE02B2B)
             await context.send(
                 embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
@@ -231,40 +242,40 @@ class DiscordBot(commands.Bot):
                 author_id=context.author.id,
                 guild_id=context.guild.id if context.guild else None,
             )
-        elif isinstance(error, commands.MissingPermissions):
+        elif isinstance(exception, commands.MissingPermissions):
             embed = Embed(
                 description="You are missing the permission(s) `"
-                + ", ".join(error.missing_permissions)
+                + ", ".join(exception.missing_permissions)
                 + "` to execute this command!",
                 color=0xE02B2B,
             )
             await context.send(
                 embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
             )
-        elif isinstance(error, commands.BotMissingPermissions):
+        elif isinstance(exception, commands.BotMissingPermissions):
             embed = Embed(
                 description="I am missing the permission(s) `"
-                + ", ".join(error.missing_permissions)
+                + ", ".join(exception.missing_permissions)
                 + "` to fully perform this command!",
                 color=0xE02B2B,
             )
             await context.send(
                 embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
             )
-        elif isinstance(error, commands.MissingRequiredArgument):
+        elif isinstance(exception, commands.MissingRequiredArgument):
             embed = Embed(
                 title="Error!",
                 # We need to capitalize because the command arguments have no capital letter in the code and they are the first word in the error message.
-                description=str(error).capitalize(),
+                description=str(exception).capitalize(),
                 color=0xE02B2B,
             )
             await context.send(
                 embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
             )
-        elif isinstance(error, commands.CommandNotFound):
+        elif isinstance(exception, commands.CommandNotFound):
             embed = Embed(
                 title="Error!",
-                description=f"Command {error.command_name} not found",
+                description=f"Command {exception.command_name} not found",
                 color=0xE02B2B,
             )
             await context.send(
@@ -273,14 +284,14 @@ class DiscordBot(commands.Bot):
         else:
             # nextcord wraps a command-body failure in CommandInvokeError, so report
             # the unwrapped type to name the real defect.
-            original = getattr(error, "original", error)
+            original = getattr(exception, "original", exception)
             logfire.error(
                 "Unhandled command error",
                 command=context.command.qualified_name if context.command else None,
                 guild_id=context.guild.id if context.guild else None,
                 author_id=context.author.id,
                 error_type=type(original).__name__,
-                _exc_info=error,
+                _exc_info=exception,
             )
 
 

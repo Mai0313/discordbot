@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import nextcord
 from nextcord import ButtonStyle, Interaction
 from nextcord.ui import View, Button
+from nextcord.ext import commands
 
 if TYPE_CHECKING:
     from discordbot.cogs.research import ResearchCogs
@@ -20,7 +21,7 @@ ESCALATION_VIEW_TIMEOUT_SECONDS = 1800.0
 PLAN_VIEW_TIMEOUT_SECONDS = 1800.0
 
 
-async def _is_owner(*, interaction: Interaction, owner_id: int) -> bool:
+async def _is_owner(*, interaction: Interaction[commands.Bot], owner_id: int) -> bool:
     """Returns True for the owner's click; otherwise denies ephemerally and returns False."""
     if interaction.user is not None and interaction.user.id == owner_id:
         return True
@@ -37,14 +38,20 @@ class ResultEscalationView(View):
         super().__init__(timeout=ESCALATION_VIEW_TIMEOUT_SECONDS)
         self.cog = cog
         self.owner_id = owner_id
-        # Presence-based: drop the Max button entirely when the tier is disabled.
+        # Presence-based: drop the Max button entirely when the tier is disabled. Looked up from
+        # `children` because `View.__init__` replaces the decorated callback with the real Button.
         if not max_enabled:
-            self.remove_item(self.escalate_max)
+            for child in self.children:
+                if isinstance(child, Button) and child.custom_id == "research:escalate_max":
+                    self.remove_item(item=child)
+                    break
 
     @nextcord.ui.button(
         label="升級 Deep Research", style=ButtonStyle.primary, custom_id="research:escalate_dr"
     )
-    async def escalate_dr(self, _button: Button, interaction: Interaction) -> None:
+    async def escalate_dr(
+        self, _button: Button["ResultEscalationView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         if not await _is_owner(interaction=interaction, owner_id=self.owner_id):
             return
         await self.cog.on_escalate(interaction=interaction, view=self, max_tier=False)
@@ -52,7 +59,9 @@ class ResultEscalationView(View):
     @nextcord.ui.button(
         label="Deep Research Max", style=ButtonStyle.danger, custom_id="research:escalate_max"
     )
-    async def escalate_max(self, _button: Button, interaction: Interaction) -> None:
+    async def escalate_max(
+        self, _button: Button["ResultEscalationView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         if not await _is_owner(interaction=interaction, owner_id=self.owner_id):
             return
         await self.cog.on_escalate(interaction=interaction, view=self, max_tier=True)
@@ -88,7 +97,9 @@ class PlanApprovalView(View):
     @nextcord.ui.button(
         label="接受並開始", style=ButtonStyle.success, custom_id="research:plan_accept"
     )
-    async def accept(self, _button: Button, interaction: Interaction) -> None:
+    async def accept(
+        self, _button: Button["PlanApprovalView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         if not await _is_owner(interaction=interaction, owner_id=self.owner_id):
             return
         await self.cog.on_accept_plan(interaction=interaction, view=self)
@@ -96,7 +107,9 @@ class PlanApprovalView(View):
     @nextcord.ui.button(
         label="修改計畫", style=ButtonStyle.secondary, custom_id="research:plan_modify"
     )
-    async def modify(self, _button: Button, interaction: Interaction) -> None:
+    async def modify(
+        self, _button: Button["PlanApprovalView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         if not await _is_owner(interaction=interaction, owner_id=self.owner_id):
             return
         await self.cog.on_modify_plan(interaction=interaction, view=self)

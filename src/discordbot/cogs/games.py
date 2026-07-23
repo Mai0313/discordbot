@@ -172,7 +172,7 @@ class GamesCogs(commands.Cog):
 
     async def _prepare_participant(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         wager: int,
         mode: WagerMode,
         insufficient_embed_builder: Callable[[int], Embed],
@@ -264,7 +264,7 @@ class GamesCogs(commands.Cog):
         description_localizations={Locale.zh_TW: "小遊戲指令", Locale.ja: "ゲームコマンド。"},
         nsfw=False,
     )
-    async def games(self, interaction: Interaction) -> None:
+    async def games(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for casino games."""
 
     @games.subcommand(
@@ -278,7 +278,7 @@ class GamesCogs(commands.Cog):
     )
     async def blackjack(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         bet: str = SlashOption(
             name="bet",
             description=f"Table stake in {CURRENCY_NAME}; enter 0 to go all in. Commas are allowed.",
@@ -382,7 +382,7 @@ class GamesCogs(commands.Cog):
             Locale.ja: "共有ジャックポットのインビトウィーン table を開きます。",
         },
     )
-    async def dragon_gate(self, interaction: Interaction) -> None:
+    async def dragon_gate(self, interaction: Interaction[commands.Bot]) -> None:
         """Opens a 射龍門 lobby. The owner starts the table from the lobby.
 
         Args:
@@ -451,7 +451,7 @@ class GamesCogs(commands.Cog):
     )
     async def blackjack_history(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         member: Member | None = SlashOption(
             name="member",
             description="Player to inspect; defaults to yourself.",
@@ -507,7 +507,7 @@ class GamesCogs(commands.Cog):
             Locale.ja: "釣りパネルを開いて、道具購入とキャストで遊びます。",
         },
     )
-    async def fishing(self, interaction: Interaction) -> None:
+    async def fishing(self, interaction: Interaction[commands.Bot]) -> None:
         """Opens the personal fishing panel as one public, in-place message.
 
         Args:

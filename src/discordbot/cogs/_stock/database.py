@@ -5,7 +5,7 @@ from __future__ import annotations
 from time import monotonic
 import uuid
 from random import Random, SystemRandom
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 from datetime import datetime, timedelta
 
@@ -73,6 +73,8 @@ from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
     from collections.abc import Callable, Awaitable
+
+    from sqlalchemy.engine import CursorResult
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/stock.db")
 _schema_ready_for: AsyncEngine | None = None
@@ -954,10 +956,13 @@ async def _insert_price_tick_or_existing(
     session: AsyncSession, symbol: str, price_cents: int, created_at: datetime
 ) -> int:
     """Inserts a tick once and returns the persisted price for that boundary."""
-    result = await session.execute(
-        statement=insert(StockPriceTick)
-        .values(symbol=symbol, price_cents=price_cents, created_at=created_at)
-        .on_conflict_do_nothing(index_elements=["symbol", "created_at"])
+    result = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            statement=insert(StockPriceTick)
+            .values(symbol=symbol, price_cents=price_cents, created_at=created_at)
+            .on_conflict_do_nothing(index_elements=["symbol", "created_at"])
+        ),
     )
     if result.rowcount:
         return price_cents
@@ -2369,7 +2374,9 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Service boundary returns t
                 effective_now=effective_now,
                 rng=rng,
             )
-            if not plan.success:
+            # success=True is only ever built as a _StockOperationPlan; the
+            # isinstance check makes that discrimination visible to type checkers.
+            if not plan.success or not isinstance(plan, _StockOperationPlan):
                 await session.rollback()
                 return plan
             plan = plan.model_copy(
@@ -2641,17 +2648,20 @@ async def reset_all_positions() -> int:
     await _ensure_schema()
     now = _database_now()
     async with open_stock_session() as session:
-        result = await session.execute(
-            statement=update(StockPosition).values(
-                long_shares=0,
-                long_cost_basis=0,
-                short_shares=0,
-                short_entry_value=0,
-                short_collateral=0,
-                realized_pnl=0,
-                version=StockPosition.version + 1,
-                updated_at=now,
-            )
+        result = cast(
+            "CursorResult[Any]",
+            await session.execute(
+                statement=update(StockPosition).values(
+                    long_shares=0,
+                    long_cost_basis=0,
+                    short_shares=0,
+                    short_entry_value=0,
+                    short_collateral=0,
+                    realized_pnl=0,
+                    version=StockPosition.version + 1,
+                    updated_at=now,
+                )
+            ),
         )
         await session.execute(
             statement=update(StockOperation)

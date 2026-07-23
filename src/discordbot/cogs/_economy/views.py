@@ -34,7 +34,7 @@ class LoanDecisionViewBase(View):
 
     message: Message | None
 
-    def _schedule_cleanup(self, interaction: Interaction | None = None) -> None:
+    def _schedule_cleanup(self, interaction: Interaction[commands.Bot] | None = None) -> None:
         """Schedules the public request message for cleanup after a terminal state."""
         message = self.message or getattr(interaction, "message", None)
         if message is None:
@@ -82,14 +82,14 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
             )
         self._schedule_cleanup()
 
-    async def _send_permission_denied(self, interaction: Interaction) -> None:
+    async def _send_permission_denied(self, interaction: Interaction[commands.Bot]) -> None:
         """Replies privately when a non-banker clicks a decision button."""
         embed = build_error_embed(
             title="權限不足", description="### 只有央行成員可以處理央行借款申請"
         )
         await send_ephemeral_response(interaction=interaction, embed=embed)
 
-    async def _is_central_banker(self, interaction: Interaction) -> bool:
+    async def _is_central_banker(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user can decide central-bank proposals."""
         if interaction.user is None:
             return False
@@ -106,7 +106,11 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         custom_id="central_bank:approve",
         row=0,
     )
-    async def approve(self, _button: Button, interaction: Interaction) -> None:
+    async def approve(
+        self,
+        _button: Button["CentralBankLoanDecisionView"],
+        interaction: Interaction[commands.Bot],
+    ) -> None:
         """Approves the central-bank request when clicked by a central banker."""
         if interaction.user is None:
             return
@@ -144,7 +148,11 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
     @nextcord.ui.button(
         label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="central_bank:reject", row=0
     )
-    async def reject(self, _button: Button, interaction: Interaction) -> None:
+    async def reject(
+        self,
+        _button: Button["CentralBankLoanDecisionView"],
+        interaction: Interaction[commands.Bot],
+    ) -> None:
         """Rejects the central-bank request when clicked by a central banker."""
         if interaction.user is None:
             return
@@ -178,7 +186,11 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         custom_id="central_bank:cancel",
         row=0,
     )
-    async def cancel(self, _button: Button, interaction: Interaction) -> None:
+    async def cancel(
+        self,
+        _button: Button["CentralBankLoanDecisionView"],
+        interaction: Interaction[commands.Bot],
+    ) -> None:
         """Cancels the central-bank request when clicked by its creator."""
         if interaction.user is None:
             return
@@ -237,12 +249,14 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
             )
         self._schedule_cleanup()
 
-    async def _send_permission_denied(self, interaction: Interaction, description: str) -> None:
+    async def _send_permission_denied(
+        self, interaction: Interaction[commands.Bot], description: str
+    ) -> None:
         """Replies privately when a user clicks a button they cannot use."""
         embed = build_error_embed(title="權限不足", description=description)
         await send_ephemeral_response(interaction=interaction, embed=embed)
 
-    async def _require_lender(self, interaction: Interaction) -> bool:
+    async def _require_lender(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user is the requested lender."""
         if interaction.user is None:
             return False
@@ -256,7 +270,9 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     @nextcord.ui.button(
         label="批准", emoji="✅", style=ButtonStyle.success, custom_id="credit:approve", row=0
     )
-    async def approve(self, _button: Button, interaction: Interaction) -> None:
+    async def approve(
+        self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Approves the personal credit request when clicked by the lender."""
         if interaction.user is None or not await self._require_lender(interaction=interaction):
             return
@@ -290,7 +306,9 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     @nextcord.ui.button(
         label="拒絕", emoji="✖️", style=ButtonStyle.danger, custom_id="credit:reject", row=0
     )
-    async def reject(self, _button: Button, interaction: Interaction) -> None:
+    async def reject(
+        self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Rejects the personal credit request when clicked by the lender."""
         if interaction.user is None or not await self._require_lender(interaction=interaction):
             return
@@ -317,7 +335,9 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     @nextcord.ui.button(
         label="取消", emoji="🚫", style=ButtonStyle.secondary, custom_id="credit:cancel", row=0
     )
-    async def cancel(self, _button: Button, interaction: Interaction) -> None:
+    async def cancel(
+        self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Cancels the personal credit request when clicked by its creator."""
         if interaction.user is None:
             return

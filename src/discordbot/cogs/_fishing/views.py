@@ -10,7 +10,8 @@ import asyncio
 
 import nextcord
 from nextcord import User, Member, Message, ButtonStyle, Interaction, SelectOption
-from nextcord.ui import Modal, Button, TextInput, StringSelect
+from nextcord.ui import View, Modal, Button, TextInput, StringSelect
+from nextcord.ext import commands
 
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.fishing import (
@@ -53,7 +54,7 @@ from discordbot.cogs._fishing.presentation import (
 CAST_ANIMATION_SECONDS = 1.0
 
 
-def require_fishing_user(interaction: Interaction) -> User | Member:
+def require_fishing_user(interaction: Interaction[commands.Bot]) -> User | Member:
     """Returns the interaction user or fails before any fishing state can be written."""
     if interaction.user is None:
         raise RuntimeError("Fishing interaction is missing Discord user identity")
@@ -79,7 +80,9 @@ class FishingPanelView(FishingPublicView):
     @nextcord.ui.button(
         label="拋竿", emoji="🎣", style=ButtonStyle.primary, custom_id="fishing:cast", row=0
     )
-    async def cast(self, _button: Button, interaction: Interaction) -> None:
+    async def cast(
+        self, _button: Button["FishingPanelView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Starts a cast from the panel."""
         self.stop()
         await begin_cast(interaction=interaction, owner_id=self.owner_id)
@@ -87,7 +90,9 @@ class FishingPanelView(FishingPublicView):
     @nextcord.ui.button(
         label="商店", emoji="🛒", style=ButtonStyle.secondary, custom_id="fishing:shop", row=0
     )
-    async def shop(self, _button: Button, interaction: Interaction) -> None:
+    async def shop(
+        self, _button: Button["FishingPanelView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Opens the gear shop."""
         self.stop()
         await show_shop(interaction=interaction, owner_id=self.owner_id)
@@ -95,7 +100,9 @@ class FishingPanelView(FishingPublicView):
     @nextcord.ui.button(
         label="排行榜", emoji="🏆", style=ButtonStyle.secondary, custom_id="fishing:board", row=1
     )
-    async def leaderboard(self, _button: Button, interaction: Interaction) -> None:
+    async def leaderboard(
+        self, _button: Button["FishingPanelView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Shows the top-catches leaderboard."""
         self.stop()
         await show_leaderboard(interaction=interaction, owner_id=self.owner_id)
@@ -103,7 +110,9 @@ class FishingPanelView(FishingPublicView):
     @nextcord.ui.button(
         label="我的紀錄", emoji="📊", style=ButtonStyle.secondary, custom_id="fishing:stats", row=1
     )
-    async def stats(self, _button: Button, interaction: Interaction) -> None:
+    async def stats(
+        self, _button: Button["FishingPanelView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Shows personal fishing stats and recent catches."""
         self.stop()
         await show_stats(interaction=interaction, owner_id=self.owner_id)
@@ -119,7 +128,7 @@ class FishingShopView(FishingPublicView):
         super().__init__(owner_id=owner_id)
         self.rods = rods
         self.baits = baits
-        rod_select = cast("StringSelect", self.rod_select)
+        rod_select = cast('StringSelect["FishingShopView"]', self.rod_select)
         rod_select.options = [
             SelectOption(
                 label=gear_option_label(gear=rod),
@@ -128,7 +137,7 @@ class FishingShopView(FishingPublicView):
             )
             for rod in rods
         ] or [SelectOption(label="目前沒有釣竿", value="none")]
-        bait_select = cast("StringSelect", self.bait_select)
+        bait_select = cast('StringSelect["FishingShopView"]', self.bait_select)
         bait_select.options = [
             SelectOption(
                 label=gear_option_label(gear=bait),
@@ -146,7 +155,9 @@ class FishingShopView(FishingPublicView):
         custom_id="fishing:shop:rod",
         row=0,
     )
-    async def rod_select(self, select: StringSelect, interaction: Interaction) -> None:
+    async def rod_select(
+        self, select: StringSelect["FishingShopView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Buys the selected rod and refreshes the shop."""
         value = select.values[0]
         if value in {"none", "loading"}:
@@ -172,7 +183,9 @@ class FishingShopView(FishingPublicView):
         custom_id="fishing:shop:bait",
         row=1,
     )
-    async def bait_select(self, select: StringSelect, interaction: Interaction) -> None:
+    async def bait_select(
+        self, select: StringSelect["FishingShopView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Opens the quantity modal for the selected bait."""
         value = select.values[0]
         if value in {"none", "loading"}:
@@ -191,7 +204,9 @@ class FishingShopView(FishingPublicView):
     @nextcord.ui.button(
         label="返回", emoji="↩️", style=ButtonStyle.secondary, custom_id="fishing:shop:back", row=2
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["FishingShopView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the main panel."""
         self.stop()
         await show_panel(interaction=interaction, owner_id=self.owner_id)
@@ -213,7 +228,7 @@ class FishingBaitQtyModal(Modal):
         self.owner_id = owner_id
         self.parent = parent
         self.message = message
-        self.quantity: TextInput = TextInput(
+        self.quantity: TextInput[View] = TextInput(
             label="數量",
             placeholder="輸入要購買的數量，例如 10",
             min_length=1,
@@ -223,7 +238,7 @@ class FishingBaitQtyModal(Modal):
         )
         self.add_item(item=self.quantity)
 
-    async def callback(self, interaction: Interaction) -> None:
+    async def callback(self, interaction: Interaction[commands.Bot]) -> None:
         """Parses the quantity and buys the bait."""
         user = require_fishing_user(interaction=interaction)
         if self.owner_id != user.id:
@@ -260,7 +275,7 @@ class FishingBaitSelectView(FishingPublicView):
     def __init__(self, owner_id: int, bait_options: list[SelectOption]) -> None:
         """Initializes the bait picker from owned bait stacks."""
         super().__init__(owner_id=owner_id)
-        bait_select = cast("StringSelect", self.bait_select)
+        bait_select = cast('StringSelect["FishingBaitSelectView"]', self.bait_select)
         bait_select.options = bait_options
 
     @nextcord.ui.string_select(
@@ -271,7 +286,9 @@ class FishingBaitSelectView(FishingPublicView):
         custom_id="fishing:cast:bait",
         row=0,
     )
-    async def bait_select(self, select: StringSelect, interaction: Interaction) -> None:
+    async def bait_select(
+        self, select: StringSelect["FishingBaitSelectView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Casts with the selected bait."""
         self.stop()
         await run_cast(interaction=interaction, owner_id=self.owner_id, bait_id=select.values[0])
@@ -279,7 +296,9 @@ class FishingBaitSelectView(FishingPublicView):
     @nextcord.ui.button(
         label="返回", emoji="↩️", style=ButtonStyle.secondary, custom_id="fishing:cast:back", row=1
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["FishingBaitSelectView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the main panel."""
         self.stop()
         await show_panel(interaction=interaction, owner_id=self.owner_id)
@@ -291,7 +310,9 @@ class FishingPostCastView(FishingPublicView):
     @nextcord.ui.button(
         label="再拋一次", emoji="🎣", style=ButtonStyle.primary, custom_id="fishing:recast", row=0
     )
-    async def recast(self, _button: Button, interaction: Interaction) -> None:
+    async def recast(
+        self, _button: Button["FishingPostCastView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Starts another cast."""
         self.stop()
         await begin_cast(interaction=interaction, owner_id=self.owner_id)
@@ -303,7 +324,9 @@ class FishingPostCastView(FishingPublicView):
         custom_id="fishing:postcast:shop",
         row=0,
     )
-    async def shop(self, _button: Button, interaction: Interaction) -> None:
+    async def shop(
+        self, _button: Button["FishingPostCastView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Opens the gear shop."""
         self.stop()
         await show_shop(interaction=interaction, owner_id=self.owner_id)
@@ -315,7 +338,9 @@ class FishingPostCastView(FishingPublicView):
         custom_id="fishing:postcast:back",
         row=0,
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["FishingPostCastView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the main panel."""
         self.stop()
         await show_panel(interaction=interaction, owner_id=self.owner_id)
@@ -327,7 +352,9 @@ class FishingNavView(FishingPublicView):
     @nextcord.ui.button(
         label="返回", emoji="↩️", style=ButtonStyle.secondary, custom_id="fishing:nav:back", row=0
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["FishingNavView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the main panel."""
         self.stop()
         await show_panel(interaction=interaction, owner_id=self.owner_id)
@@ -343,7 +370,9 @@ class FishingErrorView(FishingPublicView):
         custom_id="fishing:error:shop",
         row=0,
     )
-    async def shop(self, _button: Button, interaction: Interaction) -> None:
+    async def shop(
+        self, _button: Button["FishingErrorView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Opens the gear shop."""
         self.stop()
         await show_shop(interaction=interaction, owner_id=self.owner_id)
@@ -351,7 +380,9 @@ class FishingErrorView(FishingPublicView):
     @nextcord.ui.button(
         label="返回", emoji="↩️", style=ButtonStyle.secondary, custom_id="fishing:error:back", row=0
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["FishingErrorView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the main panel."""
         self.stop()
         await show_panel(interaction=interaction, owner_id=self.owner_id)
@@ -381,7 +412,7 @@ def _cast_failure_message(status: CastStatus) -> str:
 
 
 async def _purchase_and_refresh_shop(
-    interaction: Interaction,
+    interaction: Interaction[commands.Bot],
     owner_id: int,
     gear_id: str,
     quantity: int,
@@ -401,7 +432,7 @@ async def _purchase_and_refresh_shop(
     )
 
 
-async def show_panel(interaction: Interaction, owner_id: int) -> None:
+async def show_panel(interaction: Interaction[commands.Bot], owner_id: int) -> None:
     """Renders the main fishing panel into the public message."""
     user = require_fishing_user(interaction=interaction)
     panel = await get_fishing_panel(user_id=user.id)
@@ -414,7 +445,10 @@ async def show_panel(interaction: Interaction, owner_id: int) -> None:
 
 
 async def show_shop(
-    interaction: Interaction, owner_id: int, notice: str = "", message: Message | None = None
+    interaction: Interaction[commands.Bot],
+    owner_id: int,
+    notice: str = "",
+    message: Message | None = None,
 ) -> None:
     """Renders the gear shop into the public message."""
     user = require_fishing_user(interaction=interaction)
@@ -429,7 +463,7 @@ async def show_shop(
     )
 
 
-async def show_leaderboard(interaction: Interaction, owner_id: int) -> None:
+async def show_leaderboard(interaction: Interaction[commands.Bot], owner_id: int) -> None:
     """Renders the top-catches leaderboard into the public message."""
     catches = await fetch_top_catches(limit=10)
     grade_map = await get_grade_config_map()
@@ -440,7 +474,7 @@ async def show_leaderboard(interaction: Interaction, owner_id: int) -> None:
     )
 
 
-async def show_stats(interaction: Interaction, owner_id: int) -> None:
+async def show_stats(interaction: Interaction[commands.Bot], owner_id: int) -> None:
     """Renders personal fishing stats into the public message."""
     user = require_fishing_user(interaction=interaction)
     panel = await get_fishing_panel(user_id=user.id)
@@ -452,7 +486,7 @@ async def show_stats(interaction: Interaction, owner_id: int) -> None:
     )
 
 
-async def begin_cast(interaction: Interaction, owner_id: int) -> None:
+async def begin_cast(interaction: Interaction[commands.Bot], owner_id: int) -> None:
     """Validates gear then casts directly or asks which bait to use."""
     user = require_fishing_user(interaction=interaction)
     panel = await get_fishing_panel(user_id=user.id)
@@ -493,7 +527,7 @@ async def begin_cast(interaction: Interaction, owner_id: int) -> None:
     )
 
 
-async def run_cast(interaction: Interaction, owner_id: int, bait_id: str) -> None:
+async def run_cast(interaction: Interaction[commands.Bot], owner_id: int, bait_id: str) -> None:
     """Runs the two-beat cast animation and settles the catch."""
     await edit_owned_public_message(
         interaction=interaction, embed=build_casting_embed(), view=None

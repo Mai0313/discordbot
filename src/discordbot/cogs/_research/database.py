@@ -22,7 +22,7 @@ from typing import Any, Literal, cast
 from datetime import datetime
 
 from pydantic import Field, BaseModel
-from sqlalchemy import String, Integer, DateTime, event, select, update
+from sqlalchemy import String, Integer, DateTime, CursorResult, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -261,14 +261,17 @@ async def claim_research(*, thread_id: int, plan_interaction_id: str) -> bool:
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        result = await session.execute(
-            statement=update(ResearchSessionRow)
-            .where(
-                ResearchSessionRow.thread_id == thread_id,
-                ResearchSessionRow.phase == "planning",
-                ResearchSessionRow.interaction_id == plan_interaction_id,
-            )
-            .values(phase="researching", interaction_id=None, updated_at=now)
+        result = cast(
+            "CursorResult[Any]",
+            await session.execute(
+                statement=update(ResearchSessionRow)
+                .where(
+                    ResearchSessionRow.thread_id == thread_id,
+                    ResearchSessionRow.phase == "planning",
+                    ResearchSessionRow.interaction_id == plan_interaction_id,
+                )
+                .values(phase="researching", interaction_id=None, updated_at=now)
+            ),
         )
         await session.commit()
         return bool(result.rowcount and result.rowcount > 0)
@@ -283,10 +286,15 @@ async def claim_planning(*, thread_id: int) -> bool:
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        result = await session.execute(
-            statement=update(ResearchSessionRow)
-            .where(ResearchSessionRow.thread_id == thread_id, ResearchSessionRow.phase == "done")
-            .values(phase="planning", updated_at=now)
+        result = cast(
+            "CursorResult[Any]",
+            await session.execute(
+                statement=update(ResearchSessionRow)
+                .where(
+                    ResearchSessionRow.thread_id == thread_id, ResearchSessionRow.phase == "done"
+                )
+                .values(phase="planning", updated_at=now)
+            ),
         )
         await session.commit()
         return bool(result.rowcount and result.rowcount > 0)
@@ -302,14 +310,17 @@ async def cancel_stale_plan(*, thread_id: int, plan_interaction_id: str) -> bool
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
-        result = await session.execute(
-            statement=update(ResearchSessionRow)
-            .where(
-                ResearchSessionRow.thread_id == thread_id,
-                ResearchSessionRow.phase == "planning",
-                ResearchSessionRow.interaction_id == plan_interaction_id,
-            )
-            .values(phase="cancelled", updated_at=now)
+        result = cast(
+            "CursorResult[Any]",
+            await session.execute(
+                statement=update(ResearchSessionRow)
+                .where(
+                    ResearchSessionRow.thread_id == thread_id,
+                    ResearchSessionRow.phase == "planning",
+                    ResearchSessionRow.interaction_id == plan_interaction_id,
+                )
+                .values(phase="cancelled", updated_at=now)
+            ),
         )
         await session.commit()
         return bool(result.rowcount and result.rowcount > 0)

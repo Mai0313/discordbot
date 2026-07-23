@@ -6,7 +6,8 @@ from typing import cast
 import nextcord
 from nextcord import File, User, Embed, Member, Message, ButtonStyle, Interaction, SelectOption
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
-from nextcord.ui import Modal, Button, TextInput, StringSelect
+from nextcord.ui import View, Modal, Button, TextInput, StringSelect
+from nextcord.ext import commands
 
 from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
 from discordbot.utils.avatars import guild_avatar_url
@@ -38,7 +39,7 @@ MARKET_PAGE_SIZE = 25
 SELECT_OPTION_LABEL_LIMIT = 100
 
 
-def require_stock_user(interaction: Interaction) -> User | Member:
+def require_stock_user(interaction: Interaction[commands.Bot]) -> User | Member:
     """Returns the interaction user or fails before any stock state can be written."""
     if interaction.user is None:
         raise RuntimeError("Stock interaction is missing Discord user identity")
@@ -85,7 +86,7 @@ class _StockQuantitySubmission(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
-    interaction: SkipValidation[Interaction] = Field(
+    interaction: SkipValidation[Interaction[commands.Bot]] = Field(
         ..., description="Discord interaction that submitted the quantity."
     )
     symbol: str = Field(..., description="Stock symbol being operated on.")
@@ -114,7 +115,7 @@ class StockMarketView(StockPublicView):
         page_quotes = quotes[
             self.page_index * MARKET_PAGE_SIZE : (self.page_index + 1) * MARKET_PAGE_SIZE
         ]
-        self._select = cast("StringSelect", self.stock_select)
+        self._select = cast("StringSelect[StockMarketView]", self.stock_select)
         self._select.options = [
             SelectOption(
                 label=_select_option_label(symbol=quote.profile.symbol, name=quote.profile.name),
@@ -123,8 +124,8 @@ class StockMarketView(StockPublicView):
             )
             for quote in page_quotes
         ] or [SelectOption(label="目前沒有股票", value="none", description="請稍後再試")]
-        self._previous_page = cast("Button", self.previous_page)
-        self._next_page = cast("Button", self.next_page)
+        self._previous_page = cast("Button[StockMarketView]", self.previous_page)
+        self._next_page = cast("Button[StockMarketView]", self.next_page)
         self._previous_page.disabled = self.page_index <= 0
         self._next_page.disabled = self.page_index >= self.page_count - 1
 
@@ -136,7 +137,9 @@ class StockMarketView(StockPublicView):
         custom_id="stock:select",
         row=0,
     )
-    async def stock_select(self, select: StringSelect, interaction: Interaction) -> None:
+    async def stock_select(
+        self, select: StringSelect["StockMarketView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Shows a public detail view for the selected stock."""
         symbol = select.values[0]
         if symbol in {"loading", "none"}:
@@ -153,21 +156,27 @@ class StockMarketView(StockPublicView):
     @nextcord.ui.button(
         label="上一頁", emoji="◀️", style=ButtonStyle.secondary, custom_id="stock:page:prev", row=1
     )
-    async def previous_page(self, _button: Button, interaction: Interaction) -> None:
+    async def previous_page(
+        self, _button: Button["StockMarketView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Moves the market list to the previous page."""
         await self._show_page(interaction=interaction, page_index=self.page_index - 1)
 
     @nextcord.ui.button(
         label="下一頁", emoji="▶️", style=ButtonStyle.secondary, custom_id="stock:page:next", row=1
     )
-    async def next_page(self, _button: Button, interaction: Interaction) -> None:
+    async def next_page(
+        self, _button: Button["StockMarketView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Moves the market list to the next page."""
         await self._show_page(interaction=interaction, page_index=self.page_index + 1)
 
     @nextcord.ui.button(
         label="教學", emoji="📘", style=ButtonStyle.secondary, custom_id="stock:tutorial", row=2
     )
-    async def tutorial(self, _button: Button, interaction: Interaction) -> None:
+    async def tutorial(
+        self, _button: Button["StockMarketView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Shows the stock tutorial in the public stock message."""
         self.stop()
         await edit_owned_public_message(
@@ -176,7 +185,7 @@ class StockMarketView(StockPublicView):
             view=StockTutorialView(owner_id=self.owner_id),
         )
 
-    async def _show_page(self, interaction: Interaction, page_index: int) -> None:
+    async def _show_page(self, interaction: Interaction[commands.Bot], page_index: int) -> None:
         """Edits the market list to a bounded page index."""
         self.stop()
         normalized_page = min(max(page_index, 0), self.page_count - 1)
@@ -201,7 +210,9 @@ class StockTutorialView(StockPublicView):
     @nextcord.ui.button(
         label="返回列表", emoji="↩️", style=ButtonStyle.secondary, custom_id="stock:tutorial:back"
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["StockTutorialView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the market list."""
         quotes = await list_market_quotes()
         embed, file = build_market_message_payload(quotes=quotes)
@@ -225,7 +236,9 @@ class StockDetailView(StockPublicView):
     @nextcord.ui.button(
         label="操作股票", emoji="🧾", style=ButtonStyle.primary, custom_id="stock:operate", row=0
     )
-    async def operate(self, _button: Button, interaction: Interaction) -> None:
+    async def operate(
+        self, _button: Button["StockDetailView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Shows action selection before opening the quantity modal."""
         self.stop()
         await edit_stock_action_prompt(
@@ -235,7 +248,9 @@ class StockDetailView(StockPublicView):
     @nextcord.ui.button(
         label="近期新聞", emoji="📰", style=ButtonStyle.secondary, custom_id="stock:news", row=0
     )
-    async def news(self, _button: Button, interaction: Interaction) -> None:
+    async def news(
+        self, _button: Button["StockDetailView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Shows recent deterministic news in the public stock message."""
         news = await get_stock_news(symbol=self.symbol)
         self.stop()
@@ -248,7 +263,9 @@ class StockDetailView(StockPublicView):
     @nextcord.ui.button(
         label="返回列表", emoji="↩️", style=ButtonStyle.secondary, custom_id="stock:back", row=1
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["StockDetailView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the public market list."""
         quotes = await list_market_quotes()
         embed, file = build_market_message_payload(quotes=quotes)
@@ -272,7 +289,9 @@ class StockNewsControlsView(StockPublicView):
     @nextcord.ui.button(
         label="返回明細", emoji="↩️", style=ButtonStyle.secondary, custom_id="stock:news:back"
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["StockNewsControlsView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the public stock detail view."""
         self.stop()
         await edit_stock_detail(
@@ -307,7 +326,9 @@ class StockActionView(StockPublicView):
         custom_id="stock:action",
         row=0,
     )
-    async def action_select(self, select: StringSelect, interaction: Interaction) -> None:
+    async def action_select(
+        self, select: StringSelect["StockActionView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Opens the quantity modal for the selected operation."""
         await interaction.response.send_modal(
             modal=StockQuantityModal(
@@ -326,7 +347,9 @@ class StockActionView(StockPublicView):
         custom_id="stock:action:back",
         row=1,
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["StockActionView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the public stock detail view."""
         self.stop()
         await edit_stock_detail(
@@ -349,7 +372,9 @@ class StockPostTradeView(StockPublicView):
         custom_id="stock:refresh",
         row=0,
     )
-    async def refresh(self, _button: Button, interaction: Interaction) -> None:
+    async def refresh(
+        self, _button: Button["StockPostTradeView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Edits the public message into a fresh detail view."""
         self.stop()
         await edit_stock_detail(
@@ -363,7 +388,9 @@ class StockPostTradeView(StockPublicView):
         custom_id="stock:post:back",
         row=0,
     )
-    async def back(self, _button: Button, interaction: Interaction) -> None:
+    async def back(
+        self, _button: Button["StockPostTradeView"], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Returns to the public market list."""
         quotes = await list_market_quotes()
         embed, file = build_market_message_payload(quotes=quotes)
@@ -394,7 +421,7 @@ class StockQuantityModal(Modal):
         self.message = message
         self.parent = parent
         self.owner_id = owner_id
-        self.quantity: TextInput = TextInput(
+        self.quantity: TextInput[View] = TextInput(
             label="數量",
             placeholder="請輸入股數，或輸入 ALL",
             min_length=1,
@@ -404,7 +431,7 @@ class StockQuantityModal(Modal):
         )
         self.add_item(item=self.quantity)
 
-    async def callback(self, interaction: Interaction) -> None:
+    async def callback(self, interaction: Interaction[commands.Bot]) -> None:
         """Submits the quantity to the stock settlement service."""
         await submit_stock_quantity(
             submission=_StockQuantitySubmission(
@@ -419,7 +446,10 @@ class StockQuantityModal(Modal):
         )
 
     async def submit_quantity(
-        self, interaction: Interaction, raw_quantity: str, action: StockAction | None = None
+        self,
+        interaction: Interaction[commands.Bot],
+        raw_quantity: str,
+        action: StockAction | None = None,
     ) -> None:
         """Submits a raw quantity string to the stock settlement service."""
         await submit_stock_quantity(
@@ -435,7 +465,9 @@ class StockQuantityModal(Modal):
         )
 
 
-async def edit_stock_detail(interaction: Interaction, symbol: str, owner_id: int) -> None:
+async def edit_stock_detail(
+    interaction: Interaction[commands.Bot], symbol: str, owner_id: int
+) -> None:
     """Shows or edits a public stock detail view for one interaction."""
     user = require_stock_user(interaction=interaction)
     if not interaction.response.is_done():
@@ -461,7 +493,9 @@ async def edit_stock_detail(interaction: Interaction, symbol: str, owner_id: int
     )
 
 
-async def edit_stock_action_prompt(interaction: Interaction, symbol: str, owner_id: int) -> None:
+async def edit_stock_action_prompt(
+    interaction: Interaction[commands.Bot], symbol: str, owner_id: int
+) -> None:
     """Shows the operation dropdown with fresh stock and position context."""
     user = require_stock_user(interaction=interaction)
     if not interaction.response.is_done():

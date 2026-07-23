@@ -22,6 +22,8 @@ if TYPE_CHECKING:
     from random import Random
     from collections.abc import Iterable
 
+    from nextcord.ext import commands
+
     from discordbot.typings.games import GameParticipant, RefreshParticipantsResult
 
 
@@ -33,7 +35,7 @@ class PrepareParticipant(Protocol):
     stays uniform across lobbies.
     """
 
-    async def __call__(self, interaction: Interaction) -> GameParticipant | None:
+    async def __call__(self, interaction: Interaction[commands.Bot]) -> GameParticipant | None:
         """Returns a prepared participant or sends the interaction error."""
 
 
@@ -108,7 +110,9 @@ class BaseGameLobbyView(View):
         schedule_public_message_delete(message=self.message, user_name=self.owner.account_name)
 
     @nextcord.ui.button(label="加入", emoji="✅", style=ButtonStyle.success)
-    async def join(self, _button: Button, interaction: Interaction) -> None:
+    async def join(
+        self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Adds the interacting user to the lobby."""
         if interaction.user is None:
             return
@@ -132,7 +136,9 @@ class BaseGameLobbyView(View):
             )
 
     @nextcord.ui.button(label="離開", emoji="🚪", style=ButtonStyle.secondary)
-    async def leave(self, _button: Button, interaction: Interaction) -> None:
+    async def leave(
+        self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Removes the interacting user from the lobby."""
         if interaction.user is None:
             return
@@ -153,7 +159,9 @@ class BaseGameLobbyView(View):
             )
 
     @nextcord.ui.button(label="開始", emoji="▶️", style=ButtonStyle.primary)
-    async def start(self, _button: Button, interaction: Interaction) -> None:
+    async def start(
+        self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
+    ) -> None:
         """Starts the game if the lobby owner pressed the button."""
         if interaction.user is None:
             return
@@ -193,13 +201,18 @@ class BaseGameLobbyView(View):
             **embed_spacer_payload(embeds=[embed], is_edit=True, target=message),
         )
 
-    async def _send_notice(self, interaction: Interaction, content: str) -> None:
+    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
         """Sends a private lobby notice to the interacting user."""
         await send_ephemeral_notice(
             interaction=interaction, content=content, log_message="Failed to send lobby notice"
         )
 
-    async def on_error(self, error: Exception, item: Item, interaction: Interaction) -> None:
+    async def on_error(
+        self,
+        error: Exception,
+        item: Item[BaseGameLobbyView],
+        interaction: Interaction[commands.Bot],
+    ) -> None:
         """Logs lobby component failures instead of only printing to stderr."""
         logfire.error(
             "Lobby interaction failed",

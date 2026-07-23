@@ -100,7 +100,7 @@ class MemoryCogs(commands.Cog):
         },
         nsfw=False,
     )
-    async def memory(self, interaction: Interaction) -> None:
+    async def memory(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for memory management."""
 
     @memory.subcommand(
@@ -112,7 +112,7 @@ class MemoryCogs(commands.Cog):
             Locale.ja: "ボットがあなたについて記憶している内容を表示します。",
         },
     )
-    async def memory_show(self, interaction: Interaction) -> None:
+    async def memory_show(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the caller's consolidated memory, paginated."""
         if interaction.user is None:
             return
@@ -138,7 +138,7 @@ class MemoryCogs(commands.Cog):
             Locale.ja: "このサーバーについてボットが記憶している内容を確認します。",
         },
     )
-    async def memory_server(self, interaction: Interaction) -> None:
+    async def memory_server(self, interaction: Interaction[commands.Bot]) -> None:
         """Subcommand group for per-server memory viewing."""
 
     @memory_server.subcommand(
@@ -150,7 +150,7 @@ class MemoryCogs(commands.Cog):
             Locale.ja: "このサーバーのコミュニティについてボットが記憶している内容を表示します。",
         },
     )
-    async def memory_server_show(self, interaction: Interaction) -> None:
+    async def memory_server_show(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the bot's consolidated memory of the current server, paginated."""
         if interaction.guild is None or self.bot.user is None:
             # Per-server memory only exists inside a guild; there is no scope in DMs.
@@ -175,7 +175,7 @@ class MemoryCogs(commands.Cog):
 
     async def _show_memory(  # noqa: PLR0913 -- display strings plus the optional tone section
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         scope: str,
         title: str,
         empty_description: str,
@@ -216,7 +216,7 @@ class MemoryCogs(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     async def _send_memory_pages(
-        self, interaction: Interaction, text: str, footer_text: str, title: str
+        self, interaction: Interaction[commands.Bot], text: str, footer_text: str, title: str
     ) -> None:
         """Sends paginated memory pages, attaching the pager only when needed."""
         pages = paginate_on_lines(text=text, limit=MEMORY_PAGE_MAX_CHARS)
@@ -243,7 +243,7 @@ class MemoryCogs(commands.Cog):
             Locale.ja: "観察ログだけを使って、あなたに関する記憶を一から作り直します。",
         },
     )
-    async def memory_regenerate(self, interaction: Interaction) -> None:
+    async def memory_regenerate(self, interaction: Interaction[commands.Bot]) -> None:
         """Schedules a background rebuild of the caller's memory from evidence alone."""
         if interaction.user is None:
             return

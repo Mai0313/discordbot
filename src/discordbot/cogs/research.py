@@ -26,6 +26,7 @@ from nextcord import (
     Embed,
     Locale,
     Object,
+    Thread,
     Message,
     NotFound,
     Forbidden,
@@ -65,8 +66,6 @@ from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 if TYPE_CHECKING:
     from typing import Any
     from collections.abc import Coroutine
-
-    from nextcord import Thread
 
 # How long the modify flow waits for the owner to type their changes in the thread.
 MODIFY_WAIT_TIMEOUT_SECONDS = 600.0
@@ -219,7 +218,7 @@ class ResearchCogs(commands.Cog):
     )
     async def deep_research(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         topic: str = SlashOption(
             name="topic",
             description="What to research (a clear, self-contained topic).",
@@ -600,13 +599,13 @@ class ResearchCogs(commands.Cog):
     # ----- escalation (Deep Research) -----------------------------------------------------
 
     async def on_escalate(
-        self, *, interaction: Interaction, view: ResultEscalationView, max_tier: bool
+        self, *, interaction: Interaction[commands.Bot], view: ResultEscalationView, max_tier: bool
     ) -> None:
         """Escalation button: opens a Deep Research plan discussion."""
         with contextlib.suppress(Exception):
             await interaction.response.edit_message(view=None)
         thread = interaction.channel
-        if thread is None:
+        if not isinstance(thread, Thread):
             return
         existing = await db.active_thread_for_owner(owner_id=view.owner_id)
         if existing is not None and existing != thread.id:
@@ -778,12 +777,14 @@ class ResearchCogs(commands.Cog):
                 allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
             )
 
-    async def on_accept_plan(self, *, interaction: Interaction, view: PlanApprovalView) -> None:
+    async def on_accept_plan(
+        self, *, interaction: Interaction[commands.Bot], view: PlanApprovalView
+    ) -> None:
         """Approve button: runs the full Deep Research from the approved plan."""
         with contextlib.suppress(Exception):
             await interaction.response.edit_message(view=None)
         thread = interaction.channel
-        if thread is None:
+        if not isinstance(thread, Thread):
             return
         # Atomic claim: a double-click can fire two callbacks before the view-removal edit lands, so
         # only the call that wins the planning->researching transition spawns the paid run. Guarded
@@ -803,10 +804,12 @@ class ResearchCogs(commands.Cog):
             )
         )
 
-    async def on_modify_plan(self, *, interaction: Interaction, view: PlanApprovalView) -> None:
+    async def on_modify_plan(
+        self, *, interaction: Interaction[commands.Bot], view: PlanApprovalView
+    ) -> None:
         """Modify button: waits for the owner to type changes, then re-plans."""
         thread = interaction.channel
-        if thread is None:
+        if not isinstance(thread, Thread):
             return
         # Idempotency: a double-click would install two `wait_for` listeners, so one feedback
         # message would spawn competing `_run_refine` plans against the same interaction. Ignore a
@@ -821,8 +824,10 @@ class ResearchCogs(commands.Cog):
             await interaction.response.send_message(
                 content="好,直接在這個 thread 打你想調整的地方,我會重新規劃(10 分鐘內回覆有效)"
             )
-            with contextlib.suppress(Exception):
-                await interaction.message.edit(view=None)
+            plan_message = interaction.message
+            if plan_message is not None:
+                with contextlib.suppress(Exception):
+                    await plan_message.edit(view=None)
 
             def _is_owner_reply(candidate: "Message") -> bool:
                 return (
@@ -1029,7 +1034,7 @@ class ResearchCogs(commands.Cog):
     async def _fetch_thread(self, *, thread_id: int) -> "Thread | None":
         """Returns the thread by id from cache or a REST fetch, or None when gone."""
         cached = self.bot.get_channel(thread_id)
-        if cached is not None:
+        if isinstance(cached, Thread):
             return cached
         try:
             fetched = await self.bot.fetch_channel(thread_id)
@@ -1047,7 +1052,7 @@ class ResearchCogs(commands.Cog):
                 _exc_info=exc,
             )
             return None
-        return fetched
+        return fetched if isinstance(fetched, Thread) else None
 
     # ----- helpers ------------------------------------------------------------------------
 

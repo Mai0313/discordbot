@@ -61,7 +61,7 @@ class VideoCogs(commands.Cog):
     )
     async def download_video(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         url: str = SlashOption(
             description="Video URL, or the share text containing it (YouTube, Instagram, X, Douyin, etc.)",
             required=True,
@@ -145,7 +145,11 @@ class VideoCogs(commands.Cog):
             await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
 
     async def _handle_douyin(
-        self, interaction: Interaction, url: str, quality: VideoQuality, upload_limit: int
+        self,
+        interaction: Interaction[commands.Bot],
+        url: str,
+        quality: VideoQuality,
+        upload_limit: int,
     ) -> None:
         """Downloads a Douyin video or photo post and sends it back.
 
@@ -173,7 +177,7 @@ class VideoCogs(commands.Cog):
 
     async def _download_and_deliver_douyin(
         self,
-        interaction: Interaction,
+        interaction: Interaction[commands.Bot],
         url: str,
         quality: VideoQuality,
         upload_limit: int,
@@ -257,7 +261,11 @@ class VideoCogs(commands.Cog):
             await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
 
     async def _deliver_douyin(
-        self, interaction: Interaction, plan: MediaPlan, result: DouyinDownload, url: str
+        self,
+        interaction: Interaction[commands.Bot],
+        plan: MediaPlan,
+        result: DouyinDownload,
+        url: str,
     ) -> None:
         """Edits the placeholder into the final Douyin response.
 
@@ -305,7 +313,7 @@ class VideoCogs(commands.Cog):
             content="\n".join(lines), allowed_mentions=AllowedMentions.none()
         )
 
-    async def _edit_quietly(self, interaction: Interaction, content: str) -> None:
+    async def _edit_quietly(self, interaction: Interaction[commands.Bot], content: str) -> None:
         """Edits the deferred message, swallowing a failure to edit it.
 
         Broad on purpose: this is the last-resort reporter every failure path in the cog uses, so
@@ -322,7 +330,11 @@ class VideoCogs(commands.Cog):
             )
 
     async def _deliver(
-        self, interaction: Interaction, file_size_mb: float, file_path: Path, url: str
+        self,
+        interaction: Interaction[commands.Bot],
+        file_size_mb: float,
+        file_path: Path,
+        url: str,
     ) -> None:
         """Edits the deferred placeholder into the final downloaded file response."""
         body = f"-# 檔案大小: {file_size_mb:.1f}MB\n-# 來源: <{url}>"
@@ -333,7 +345,7 @@ class VideoCogs(commands.Cog):
         )
 
     async def _deliver_url(
-        self, interaction: Interaction, file_size_mb: float, public_url: str
+        self, interaction: Interaction[commands.Bot], file_size_mb: float, public_url: str
     ) -> None:
         """Edits the placeholder into a hosted-URL response for a file too big to upload.
 

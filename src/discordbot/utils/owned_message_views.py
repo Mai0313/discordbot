@@ -7,11 +7,13 @@ own embeds, controls, and notice text.
 """
 
 from io import BytesIO
+from typing import cast
 from collections.abc import Callable
 
 import logfire
-from nextcord import File, Embed, Message, NotFound, Interaction
+from nextcord import File, Embed, Message, NotFound, Attachment, Interaction
 from nextcord.ui import View
+from nextcord.ext import commands
 
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import (
@@ -21,7 +23,9 @@ from discordbot.utils.message_cleanup import (
 )
 
 
-async def send_ephemeral_notice(interaction: Interaction, content: str, log_message: str) -> None:
+async def send_ephemeral_notice(
+    interaction: Interaction[commands.Bot], content: str, log_message: str
+) -> None:
     """Sends an ephemeral interaction notice with response/followup fallback."""
     try:
         if interaction.response.is_done():
@@ -53,7 +57,7 @@ class OwnedPublicView(View):
         """Records the message this view should update or delete."""
         self.message = message
 
-    async def interaction_check(self, interaction: Interaction) -> bool:
+    async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:
         """Allows only the user who opened this panel to operate it."""
         if interaction.user is None:
             raise RuntimeError("Interaction is missing Discord user identity")
@@ -97,7 +101,7 @@ def _fresh_extra_files(file_factory: Callable[[], File] | None) -> list[File] | 
 
 
 async def edit_owned_public_message(
-    interaction: Interaction,
+    interaction: Interaction[commands.Bot],
     embed: Embed,
     view: OwnedPublicView | None,
     file: File | None = None,
@@ -108,41 +112,46 @@ async def edit_owned_public_message(
     if view is not None:
         view.bind_message(message=target_message)
     file_factory = _fresh_file_factory(file=file)
-    kwargs: dict[str, object] = {
-        "embed": embed,
-        "view": view,
-        **embed_spacer_payload(
-            embeds=[embed],
-            is_edit=True,
-            target=target_message or interaction,
-            extra_files=_fresh_extra_files(file_factory=file_factory),
-        ),
-    }
+    edit_spacer = embed_spacer_payload(
+        embeds=[embed],
+        is_edit=True,
+        target=target_message or interaction,
+        extra_files=_fresh_extra_files(file_factory=file_factory),
+    )
+    edit_files = cast("list[File]", edit_spacer.get("files", []))
+    edit_attachments = cast("list[Attachment]", edit_spacer.get("attachments", []))
     if not interaction.response.is_done():
-        edited = await interaction.response.edit_message(**kwargs)
+        edited = await interaction.response.edit_message(
+            embed=embed, view=view, files=edit_files, attachments=edit_attachments
+        )
         if isinstance(edited, Message) and view is not None:
             view.bind_message(message=edited)
         return
     if target_message is not None:
         try:
-            await target_message.edit(**kwargs)
+            await target_message.edit(
+                embed=embed, view=view, files=edit_files, attachments=edit_attachments
+            )
             return
         except NotFound:
             message_id = getattr(target_message, "id", None)
             if isinstance(message_id, int):
                 await forget_public_message(message_id=message_id)
-    followup_kwargs: dict[str, object] = {
-        "embed": embed,
-        "view": view,
-        "wait": True,
-        **embed_spacer_payload(
-            embeds=[embed],
-            is_edit=False,
-            target=interaction,
-            extra_files=_fresh_extra_files(file_factory=file_factory),
-        ),
-    }
-    sent_message = await interaction.followup.send(**followup_kwargs)
+    followup_spacer = embed_spacer_payload(
+        embeds=[embed],
+        is_edit=False,
+        target=interaction,
+        extra_files=_fresh_extra_files(file_factory=file_factory),
+    )
+    followup_files = cast("list[File]", followup_spacer.get("files", []))
+    if view is not None:
+        sent_message = await interaction.followup.send(
+            embed=embed, view=view, wait=True, files=followup_files
+        )
+    else:
+        sent_message = await interaction.followup.send(
+            embed=embed, wait=True, files=followup_files
+        )
     if view is not None:
         view.bind_message(message=sent_message)
     user_name = getattr(interaction.user, "name", None)

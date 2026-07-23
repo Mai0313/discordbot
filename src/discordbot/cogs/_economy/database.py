@@ -117,6 +117,7 @@ from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
     from sqlalchemy.sql.elements import ColumnElement
 
 # SELECT-then-conditional-UPDATE loops keep a small retry budget. With WAL +
@@ -1803,7 +1804,7 @@ async def _insert_first_checkin_in_session(
         )
         .on_conflict_do_nothing(index_elements=["user_id"])
     )
-    insert_result = await session.execute(statement=insert_stmt)
+    insert_result = cast("CursorResult[Any]", await session.execute(statement=insert_stmt))
     if (insert_result.rowcount or 0) == 0:
         return None
     credit_result = await session.execute(
