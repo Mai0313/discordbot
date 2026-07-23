@@ -2,6 +2,7 @@
 
 import time
 from types import SimpleNamespace
+from typing import Unpack, TypedDict
 import asyncio
 from pathlib import Path
 
@@ -87,8 +88,18 @@ class _StubDownloader:
         )
 
 
+class _StubOptions(TypedDict, total=False):
+    """Canned per-stage outcomes a test forwards through `_cog` to the stub downloader."""
+
+    post: DouyinPost | None
+    files: list[tuple[str, bytes]] | None
+    parse_error: Exception | None
+    download_error: Exception | None
+    total_images: int
+
+
 def _cog(
-    bot_id: int = 999, **downloader_kwargs: object
+    bot_id: int = 999, **downloader_kwargs: Unpack[_StubOptions]
 ) -> tuple[DouyinCogs, dict[str, _StubDownloader]]:
     """Builds a cog wired to a stub downloader and a hosting-off delivery planner."""
     cog = DouyinCogs(bot=SimpleNamespace(user=SimpleNamespace(id=bot_id)))
@@ -120,6 +131,13 @@ def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> Fak
     message.content = content
     message.guild = SimpleNamespace(filesize_limit=filesize_limit)
     return message
+
+
+def _reply_body(*, message: FakeDiscordMessage) -> str:
+    """Returns the first reply's text, failing loudly when the cog posted none."""
+    content = message.replies[0]["content"]
+    assert content is not None
+    return content
 
 
 async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
@@ -199,7 +217,7 @@ async def test_a_blocked_request_is_never_reported_as_a_missing_post() -> None:
     await cog.on_message(message=message)
 
     assert message.reactions[-1] == DouyinCogs.blocked_emoji
-    body = message.replies[0]["content"]
+    body = _reply_body(message=message)
     assert "稍後再試" in body
     assert "刪除" not in body  # never conflated with a deleted or private post
 
@@ -212,7 +230,7 @@ async def test_a_deleted_post_says_so() -> None:
     await cog.on_message(message=message)
 
     assert message.reactions[-1] == "⚠️"
-    assert "刪除" in message.replies[0]["content"]
+    assert "刪除" in _reply_body(message=message)
 
 
 async def test_an_oversize_post_points_at_the_command() -> None:
@@ -223,7 +241,7 @@ async def test_an_oversize_post_points_at_the_command() -> None:
     await cog.on_message(message=message)
 
     assert message.reactions[-1] == "⚠️"
-    assert "/download_video" in message.replies[0]["content"]
+    assert "/download_video" in _reply_body(message=message)
 
 
 async def test_a_parse_failure_still_answers() -> None:
@@ -270,7 +288,7 @@ async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
 
     await cog.on_message(message=message)
 
-    content = message.replies[0]["content"]
+    content = _reply_body(message=message)
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
     assert message.reactions[-1] == _GREEN
 
@@ -283,7 +301,7 @@ async def test_an_unhostable_oversize_clip_says_so() -> None:
     await cog.on_message(message=message)
 
     assert message.reactions[-1] == "⚠️"
-    assert "檔案大小超過" in message.replies[0]["content"]
+    assert "檔案大小超過" in _reply_body(message=message)
     assert not message.suppressed  # nothing was posted, so the source keeps its own preview
 
 
@@ -298,7 +316,7 @@ async def test_a_capped_gallery_reports_what_it_left_out() -> None:
 
     await cog.on_message(message=message)
 
-    assert "已省略 9 張圖片" in message.replies[0]["content"]
+    assert "已省略 9 張圖片" in _reply_body(message=message)
     assert message.reactions[-1] == _GREEN
 
 
@@ -365,6 +383,6 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     await cog.on_message(message=message)
 
     assert message.reactions[-1] == "⚠️"
-    body = message.replies[0]["content"]
+    body = _reply_body(message=message)
     assert "稍後再試" in body
     assert "刪除" not in body

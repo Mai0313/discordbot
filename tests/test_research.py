@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 import base64
+from typing import TYPE_CHECKING, cast
 from pathlib import Path
 
 from nextcord import AllowedMentions
@@ -22,6 +23,11 @@ from discordbot.cogs._research.delivery import (
     split_report_by_sections,
 )
 from discordbot.cogs._research.streaming import ResearchProgressStreamer
+
+if TYPE_CHECKING:
+    from nextcord import Thread, Message
+
+    from discordbot.cogs._research.database import ResearchPhase
 
 
 def _disabled_delivery() -> MediaDeliveryPlanner:
@@ -676,7 +682,13 @@ async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: N
 
 
 async def test_list_resumable_only_returns_researching(research_isolated_db: None) -> None:
-    for thread_id, phase in ((20, "researching"), (21, "planning"), (22, "done")):
+    # One session per phase, so only the researching one may come back as resumable.
+    seeded: tuple[tuple[int, ResearchPhase], ...] = (
+        (20, "researching"),
+        (21, "planning"),
+        (22, "done"),
+    )
+    for thread_id, phase in seeded:
         await rdb.upsert_session(
             thread_id=thread_id,
             owner_id=thread_id,
@@ -686,7 +698,7 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
             agent="deep-research-preview-04-2026",
             interaction_id="int_x",
             brief="b",
-            phase=phase,  # type: ignore[arg-type]  # the test deliberately exercises each phase
+            phase=phase,
         )
     resumable = await rdb.list_resumable()
     assert {session.thread_id for session in resumable} == {20}
@@ -788,7 +800,13 @@ async def test_cancel_stale_plan_matches_current_interaction(research_isolated_d
 
 
 async def test_clear_stale_planning_cancels_only_planning(research_isolated_db: None) -> None:
-    for thread_id, phase in ((40, "planning"), (41, "researching"), (42, "planning")):
+    # Two planning sessions plus a researching one, so only the planning pair may be cancelled.
+    seeded: tuple[tuple[int, ResearchPhase], ...] = (
+        (40, "planning"),
+        (41, "researching"),
+        (42, "planning"),
+    )
+    for thread_id, phase in seeded:
         await rdb.upsert_session(
             thread_id=thread_id,
             owner_id=thread_id,
@@ -798,7 +816,7 @@ async def test_clear_stale_planning_cancels_only_planning(research_isolated_db: 
             agent="deep-research-preview-04-2026",
             interaction_id="int_x",
             brief="b",
-            phase=phase,  # type: ignore[arg-type]  # the test deliberately exercises each phase
+            phase=phase,
         )
     cleared = await rdb.clear_stale_planning()
     assert {session.thread_id for session in cleared} == {40, 42}
@@ -857,8 +875,8 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     # A report chunk that sits just under the 2000-char message cap; appending the footer inline
     # would overflow, so it must ride its own trailing message.
     await deliver_report(
-        thread=thread,  # type: ignore[arg-type]  # minimal Thread double for the delivery path
-        status=status,  # type: ignore[arg-type]  # minimal status-message double
+        thread=cast("Thread", thread),  # minimal Thread double for the delivery path
+        status=cast("Message", status),  # minimal status-message double
         owner_mention="<@1>",
         result=_completed_result(report_text="X" * 1990),
         footer=footer,
@@ -883,8 +901,8 @@ async def test_delivery_inlines_footer_for_short_reports() -> None:
     status = _FakeStatusMessage()
     thread = _FakeThread()
     await deliver_report(
-        thread=thread,  # type: ignore[arg-type]  # minimal Thread double for the delivery path
-        status=status,  # type: ignore[arg-type]  # minimal status-message double
+        thread=cast("Thread", thread),  # minimal Thread double for the delivery path
+        status=cast("Message", status),  # minimal status-message double
         owner_mention="<@1>",
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
@@ -914,8 +932,8 @@ async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
         )
     )
     await deliver_report(
-        thread=thread,  # type: ignore[arg-type]  # minimal Thread double for the delivery path
-        status=status,  # type: ignore[arg-type]  # minimal status-message double
+        thread=cast("Thread", thread),  # minimal Thread double for the delivery path
+        status=cast("Message", status),  # minimal status-message double
         owner_mention="<@1>",
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
@@ -941,8 +959,8 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
     thread = _FakeThread()
     thread.guild = SimpleNamespace(filesize_limit=100)  # each file fits, md + png together do not
     await deliver_report(
-        thread=thread,  # type: ignore[arg-type]  # minimal Thread double for the delivery path
-        status=status,  # type: ignore[arg-type]  # minimal status-message double
+        thread=cast("Thread", thread),  # minimal Thread double for the delivery path
+        status=cast("Message", status),  # minimal status-message double
         owner_mention="<@1>",
         result=_completed_result(report_text="R" * 60, image_bytes=b"x" * 60),
         footer="-# footer",
