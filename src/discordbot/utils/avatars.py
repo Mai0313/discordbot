@@ -9,8 +9,13 @@ from nextcord import Asset, Guild, Member, HTTPException
 class AvatarUser(Protocol):
     """Discord user-like object with enough identity for avatar lookup."""
 
-    id: int
-    display_avatar: Asset
+    # Read-only properties: nextcord's User/Member expose these as properties,
+    # which cannot satisfy a mutable protocol attribute.
+    @property
+    def id(self) -> int: ...
+
+    @property
+    def display_avatar(self) -> Asset: ...
 
 
 async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:

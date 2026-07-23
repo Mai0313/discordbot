@@ -153,7 +153,10 @@ class ResponseStreamer(BaseModel):
     media_delivery: MediaDeliveryPlanner = Field(
         default_factory=lambda: MediaDeliveryPlanner(
             media_hosting=MediaHostingService(
-                config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False)
+                # model_validate: the alias kwarg form is invisible to type
+                # checkers without a pydantic plugin (ty), and env merging is
+                # irrelevant for an all-disabled config.
+                config=MediaHostingConfig.model_validate({"MEDIA_HOSTING_ENABLED": False})
             )
         ),
         description=(

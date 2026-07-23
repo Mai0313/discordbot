@@ -6,6 +6,7 @@ from pathlib import Path
 
 import logfire
 from nextcord import Message, NotFound, Forbidden, HTTPException
+from nextcord.abc import Messageable
 from pydantic import Field, BaseModel
 from sqlalchemy import Engine, text, event, create_engine
 from nextcord.ext import commands
@@ -209,9 +210,9 @@ async def list_pending_public_messages() -> list[PendingPublicMessage]:
 async def _fetch_tracked_message(bot: commands.Bot, record: PendingPublicMessage) -> Message:
     """Fetches a tracked message from a concrete Discord channel."""
     channel = bot.get_channel(record.channel_id)
-    if channel is None or not hasattr(channel, "fetch_message"):
+    if channel is None or not isinstance(channel, Messageable):
         channel = await bot.fetch_channel(record.channel_id)
-    if not hasattr(channel, "fetch_message"):
+    if not isinstance(channel, Messageable):
         msg = f"Channel {record.channel_id} cannot fetch messages"
         raise TypeError(msg)
     return await channel.fetch_message(record.message_id)

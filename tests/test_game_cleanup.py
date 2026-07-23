@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 import nextcord
-from nextcord import Message, Interaction
+from nextcord import Message
+from nextcord.abc import Messageable
 
 from discordbot.cogs._economy import interactions
 from discordbot.utils.message_cleanup import (
@@ -19,15 +20,10 @@ from discordbot.utils.message_cleanup import (
     schedule_public_message_delete,
 )
 
+from tests.helpers.casting import as_message, as_interaction, make_not_found
+
 if TYPE_CHECKING:
     from nextcord.ext import commands
-
-
-class _ResponseStub:
-    """Minimal HTTP response shape used by nextcord exceptions."""
-
-    status = 404
-    reason = "Not Found"
 
 
 class _DeletableMessageStub:
@@ -62,7 +58,7 @@ class _AlreadyDeletedMessageStub:
 
     async def delete(self) -> None:
         """Raises the same exception nextcord raises for missing messages."""
-        raise nextcord.NotFound(response=_ResponseStub(), message="missing")
+        raise make_not_found()
 
 
 class _ChannelStub:
@@ -99,18 +95,24 @@ class _FetchedMessageStub:
         self.deleted.append((self.channel_id, self.message_id))
 
 
-class _FetchMessageChannelStub:
-    """Minimal message channel returned by the fake bot."""
+class _FetchMessageChannelStub(Messageable):
+    """Minimal message channel returned by the fake bot.
+
+    Subclasses ``Messageable`` because production code narrows channels with
+    ``isinstance(channel, Messageable)`` before fetching.
+    """
 
     def __init__(self, channel_id: int, deleted: list[tuple[int, int]]) -> None:
         """Stores channel identity and the shared deletion recorder."""
         self.channel_id = channel_id
         self.deleted = deleted
 
-    async def fetch_message(self, message_id: int, /) -> _FetchedMessageStub:
-        """Returns a fetched message stub."""
-        return _FetchedMessageStub(
-            channel_id=self.channel_id, message_id=message_id, deleted=self.deleted
+    async def fetch_message(self, message_id: int, /) -> Message:
+        """Returns a fetched message stub typed as the Message the base declares."""
+        return as_message(
+            fake=_FetchedMessageStub(
+                channel_id=self.channel_id, message_id=message_id, deleted=self.deleted
+            )
         )
 
 
@@ -318,7 +320,7 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
     embed = nextcord.Embed(title="balance")
 
     await interactions.send_expiring_followup(
-        interaction=cast("Interaction", interaction), embed=embed
+        interaction=as_interaction(fake=interaction), embed=embed
     )
 
     assert interaction.followup.sent_wait is True
@@ -349,7 +351,7 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
     embed = nextcord.Embed(title="balance")
 
     await interactions.send_private_followup(
-        interaction=cast("Interaction", interaction), embed=embed
+        interaction=as_interaction(fake=interaction), embed=embed
     )
 
     assert interaction.followup.sent_ephemeral is True
