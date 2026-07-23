@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Unpack, TypedDict
+from typing import TYPE_CHECKING, Any, Unpack, TypedDict, cast
 
 import pytest
 from nextcord import File, Embed, Locale, Attachment, SelectOption
@@ -55,8 +55,12 @@ from discordbot.cogs._maplestory.models import (
 )
 from discordbot.cogs._maplestory.service import MapleStoryService, _load_json, _load_translations
 
+from tests.helpers.casting import as_bot, as_interaction
+
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from nextcord.ui import StringSelect
 
 type JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -206,6 +210,7 @@ def test_maplestory_quest_reward_defaults_are_isolated() -> None:
     """Quest reward and quest list defaults are isolated."""
     first_reward = QuestReward()
     second_reward = QuestReward()
+    assert isinstance(first_reward.items, dict)
     first_reward.items["items"] = [CollectItem(name="Potion", quantity=1)]
     assert second_reward.items == {}
 
@@ -487,13 +492,17 @@ def test_maplestory_service_loads_searches_and_caches(service: MapleStoryService
     assert service.translate(category="missing", name="Slime") == "Slime"
     assert service.search_monsters_by_name(query="slime")[0].display_name == "綠水靈"
     assert service.search_monsters_by_name(query="綠")[0].name == "Slime"
-    assert service.get_monster(name="綠水靈").name == "Slime"
+    monster = service.get_monster(name="綠水靈")
+    assert monster is not None
+    assert monster.name == "Slime"
     assert service.get_monster(name="missing") is None
     assert [
         monster.name for monster in service.get_monsters_by_drop(item_name="Wooden Sword")
     ] == ["Slime"]
     assert service.search_equipment_by_name(query="wooden")
-    assert service.get_equipment(name="木劍").name == "Wooden Sword"
+    equipment = service.get_equipment(name="木劍")
+    assert equipment is not None
+    assert equipment.name == "Wooden Sword"
     assert service.get_equipment(name="missing") is None
     assert service.search_scrolls_by_name(query="gloves")
     assert service.search_npcs_by_name(query="shop")
@@ -577,6 +586,14 @@ def test_maplestory_embeds_include_expected_sections(service: MapleStoryService)
     assert _truncate(text="abcdef", limit=5) == "ab..."
 
 
+def _select_result(view: MapleDropSearchView) -> StringSelect[Any]:
+    """Views the decorated `select_result` callback as the StringSelect item it becomes at runtime.
+
+    `View.__init__` setattr-replaces the decorated class attribute with the real component.
+    """
+    return cast("StringSelect[Any]", view.select_result)
+
+
 async def test_maplestory_view_resolvers_and_selection(service: MapleStoryService) -> None:
     """Verifies resolver dispatch and select option truncation."""
     for search_type, name in [
@@ -596,7 +613,7 @@ async def test_maplestory_view_resolvers_and_selection(service: MapleStoryServic
     drop_view.set_options(
         options=[SelectOption(label=f"Option {i}", value=str(i)) for i in range(30)]
     )
-    assert len(drop_view.select_result.options) == 25
+    assert len(_select_result(view=drop_view).options) == 25
 
 
 async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
@@ -604,15 +621,16 @@ async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
 ) -> None:
     """Verifies that the dropdown handles loading and valid selections."""
     view = MapleDropSearchView(service=service, search_type="monster", query="slime")
+    select_result = _select_result(view=view)
     interaction = _FakeInteraction()
-    view.select_result._selected_values = ["loading"]
-    await view.select_result.callback(interaction)
+    select_result._selected_values = ["loading"]
+    await select_result.callback(as_interaction(fake=interaction))
     assert interaction.response.deferred
     assert interaction.followup.sent[0]["content"] == "請先選擇有效的結果"
 
     valid_interaction = _FakeInteraction()
-    view.select_result._selected_values = ["Slime"]
-    await view.select_result.callback(valid_interaction)
+    select_result._selected_values = ["Slime"]
+    await select_result.callback(as_interaction(fake=valid_interaction))
     assert valid_interaction.followup.edited[0]["message_id"] == 777
     assert isinstance(valid_interaction.followup.edited[0]["embed"], Embed)
     assert valid_interaction.followup.edited[0]["view"] is None
@@ -626,7 +644,7 @@ async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
 @pytest.fixture
 def maple_cog(maple_data_dir: Path) -> MapleStoryCogs:
     """Returns a MapleStory cog backed by the generated fixture data."""
-    return MapleStoryCogs(bot=SimpleNamespace(), data_dir=maple_data_dir)
+    return MapleStoryCogs(bot=as_bot(fake=SimpleNamespace()), data_dir=maple_data_dir)
 
 
 def test_maplestory_commands_are_grouped_under_maplestory() -> None:
@@ -684,6 +702,7 @@ async def test_maplestory_commands_send_multi_result_view(maple_cog: MapleStoryC
     await MapleStoryCogs.maple_monster.callback(maple_cog, interaction, name="Slime")
     payload = interaction.followup.sent[0]
     assert isinstance(payload["embed"], Embed)
+    assert payload["embed"].description is not None
     assert "找到 2 個相關怪物" in payload["embed"].description
     assert isinstance(payload["view"], MapleDropSearchView)
     assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME
@@ -696,6 +715,7 @@ async def test_maplestory_commands_send_not_found_and_stats(maple_cog: MapleStor
     await MapleStoryCogs.maple_equip.callback(maple_cog, missing_interaction, name="missing")
     missing_embed = missing_interaction.followup.sent[0]["embed"]
     assert isinstance(missing_embed, Embed)
+    assert missing_embed.description is not None
     assert "找不到名稱包含" in missing_embed.description
 
     stats_interaction = _FakeInteraction()
@@ -707,7 +727,7 @@ async def test_maplestory_commands_send_not_found_and_stats(maple_cog: MapleStor
 
 async def test_maplestory_command_error_path_when_data_missing(tmp_path: Path) -> None:
     """Verifies commands send the generic error embed when data is unavailable."""
-    cog = MapleStoryCogs(bot=SimpleNamespace(), data_dir=tmp_path / "empty")
+    cog = MapleStoryCogs(bot=as_bot(fake=SimpleNamespace()), data_dir=tmp_path / "empty")
     interaction = _FakeInteraction()
     await MapleStoryCogs.maple_stats.callback(cog, interaction)
     embed = interaction.followup.sent[0]["embed"]
@@ -728,7 +748,7 @@ def test_maplestory_setup_registers_cog(monkeypatch: pytest.MonkeyPatch) -> None
 
     bot = SimpleNamespace(add_cog=record_cog)
 
-    maplestory.setup(bot=bot)
+    maplestory.setup(bot=as_bot(fake=bot))
 
     assert isinstance(added[0][0], MapleStoryCogs)
     assert added[0][1] is True

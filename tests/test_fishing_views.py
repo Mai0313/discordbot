@@ -47,6 +47,8 @@ from discordbot.cogs._fishing.presentation import (
     build_leaderboard_embed,
 )
 
+from tests.helpers.casting import as_interaction
+
 _GRADE_MAP = {grade.grade: grade for grade in build_default_catalog().grades}
 
 
@@ -128,7 +130,7 @@ class InteractionStub:
 
 
 def _panel(
-    rod: GearView | None = None, durability: int = 0, baits: tuple = ()
+    rod: GearView | None = None, durability: int = 0, baits: tuple[BaitStackView, ...] = ()
 ) -> FishingPanelData:
     """Builds a panel payload for embed tests."""
     return FishingPanelData(
@@ -234,9 +236,12 @@ def test_casting_stats_error_embeds_within_limits() -> None:
 async def test_interaction_check_allows_owner_blocks_others() -> None:
     """Only the panel owner passes the interaction check."""
     view = FishingPanelView(owner_id=1)
-    assert await view.interaction_check(interaction=InteractionStub(user_id=1)) is True
+    assert (
+        await view.interaction_check(interaction=as_interaction(fake=InteractionStub(user_id=1)))
+        is True
+    )
     intruder = InteractionStub(user_id=2, name="bob")
-    assert await view.interaction_check(interaction=intruder) is False
+    assert await view.interaction_check(interaction=as_interaction(fake=intruder)) is False
     assert intruder.response.sent  # an ephemeral notice was sent
 
 
@@ -244,7 +249,7 @@ async def test_interaction_check_allows_owner_blocks_others() -> None:
 async def test_show_panel_builds_panel_view() -> None:
     """show_panel edits the message with a panel view owned by the caller."""
     interaction = InteractionStub(user_id=1)
-    await show_panel(interaction=interaction, owner_id=1)
+    await show_panel(interaction=as_interaction(fake=interaction), owner_id=1)
     assert interaction.response.sent
     assert interaction.response.sent[-1]["view"].owner_id == 1
 
@@ -260,7 +265,7 @@ async def test_show_shop_and_leaderboard_and_stats_render() -> None:
         await fdb.upsert_gear(gear=gear)
     for nav in (show_shop, show_leaderboard, show_stats):
         interaction = InteractionStub(user_id=1)
-        await nav(interaction=interaction, owner_id=1)
+        await nav(interaction=as_interaction(fake=interaction), owner_id=1)
         assert interaction.response.sent[-1]["view"].owner_id == 1
 
 
@@ -284,7 +289,7 @@ async def test_begin_cast_runs_two_beat_animation(monkeypatch: pytest.MonkeyPatc
     await purchase_gear(user_id=1, name="alice", gear_id="bait_worm", quantity=5)
 
     interaction = InteractionStub(user_id=1)
-    await begin_cast(interaction=interaction, owner_id=1)
+    await begin_cast(interaction=as_interaction(fake=interaction), owner_id=1)
     assert interaction.response.sent  # casting beat used the component response
     assert interaction.message.edits  # reveal edited the original message
     assert interaction.message.edits[-1]["view"].__class__.__name__ == "FishingPostCastView"
@@ -294,5 +299,5 @@ async def test_begin_cast_runs_two_beat_animation(monkeypatch: pytest.MonkeyPatc
 async def test_begin_cast_without_rod_shows_error() -> None:
     """Casting with no rod routes to the error view."""
     interaction = InteractionStub(user_id=1)
-    await begin_cast(interaction=interaction, owner_id=1)
+    await begin_cast(interaction=as_interaction(fake=interaction), owner_id=1)
     assert interaction.response.sent[-1]["view"].__class__.__name__ == "FishingErrorView"

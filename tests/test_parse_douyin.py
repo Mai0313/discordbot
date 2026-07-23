@@ -1,7 +1,7 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 from pathlib import Path
 
@@ -27,6 +27,11 @@ from discordbot.cogs._gen_reply.link_sources.douyin import (
     DOUYIN_TEXT_ONLY_SEPARATOR,
     build_douyin_context_messages,
 )
+
+from tests.helpers.casting import step_dicts
+
+if TYPE_CHECKING:
+    from google import genai
 
 _URL = "https://v.douyin.com/abc123"
 
@@ -128,14 +133,15 @@ async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any
     """Runs the builder with the flags most tests share.
 
     The blocks are `EasyInputMessageParam`s, whose `content` is a union the assertions below
-    index into part by part; `Any` is what lets them read as plain JSON.
+    index into part by part; `step_dicts` is what lets them read as plain JSON.
     """
-    return await build_douyin_context_messages(
+    blocks = await build_douyin_context_messages(
         url=_URL,
         answer_model_is_gemini=gemini,
-        gemini_client=SimpleNamespace(),
+        gemini_client=cast("genai.Client", SimpleNamespace()),
         allow_media_ingest=ingest,
     )
+    return step_dicts(steps=blocks)
 
 
 async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
@@ -293,8 +299,10 @@ async def test_a_missing_key_reads_the_caption_instead_of_raising(
     """No key means no client to upload with, which is a text-only read, not a failure."""
     uploads, _ = _stub_douyin(monkeypatch)
 
-    blocks = await build_douyin_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
+    blocks = step_dicts(
+        steps=await build_douyin_context_messages(
+            url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
+        )
     )
 
     assert blocks[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
@@ -356,11 +364,25 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     release = asyncio.Event()
 
     class _SlowUploads(_Uploads):
-        async def __call__(self, **kwargs: object) -> dict[str, str] | None:
+        async def __call__(
+            self,
+            *,
+            client: object,
+            source: object,
+            mime_type: str,
+            filename: str,
+            timeout_seconds: float,
+        ) -> dict[str, str] | None:
             """Blocks inside the upload until the test lets it finish."""
             started.set()
             await release.wait()
-            return await super().__call__(**kwargs)  # type: ignore[arg-type]
+            return await super().__call__(
+                client=client,
+                source=source,
+                mime_type=mime_type,
+                filename=filename,
+                timeout_seconds=timeout_seconds,
+            )
 
     monkeypatch.setattr(douyin_builder, "upload_as_input_file", _SlowUploads())
     slow = asyncio.create_task(_build())
@@ -368,14 +390,16 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         await asyncio.wait_for(started.wait(), timeout=5.0)
 
         # A different link must get through while the first build sits in its upload.
-        other = await asyncio.wait_for(
-            build_douyin_context_messages(
-                url="https://v.douyin.com/other",
-                answer_model_is_gemini=True,
-                gemini_client=SimpleNamespace(),
-                allow_media_ingest=False,
-            ),
-            timeout=5.0,
+        other = step_dicts(
+            steps=await asyncio.wait_for(
+                build_douyin_context_messages(
+                    url="https://v.douyin.com/other",
+                    answer_model_is_gemini=True,
+                    gemini_client=cast("genai.Client", SimpleNamespace()),
+                    allow_media_ingest=False,
+                ),
+                timeout=5.0,
+            )
         )
         assert other[0]["content"][0]["text"] == DOUYIN_TEXT_ONLY_SEPARATOR
     finally:

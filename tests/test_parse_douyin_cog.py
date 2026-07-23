@@ -2,11 +2,12 @@
 
 import time
 from types import SimpleNamespace
-from typing import Unpack, TypedDict
+from typing import TYPE_CHECKING, Unpack, TypedDict, cast
 import asyncio
 from pathlib import Path
 
 import pytest
+from nextcord import Message
 
 from discordbot.cogs import parse_douyin
 from discordbot.utils.douyin import (
@@ -18,13 +19,13 @@ from discordbot.utils.douyin import (
     DouyinUnavailableError,
 )
 from discordbot.cogs.parse_douyin import DouyinCogs
-from discordbot.utils.media_delivery import (
-    MediaHostingConfig,
-    MediaHostingService,
-    MediaDeliveryPlanner,
-)
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 
+from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
 from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
+
+if TYPE_CHECKING:
+    from discordbot.typings.douyin import DouyinConfig
 
 _URL = "https://v.douyin.com/abc123"
 _GREEN = "<:greencheck:1517565102424068226>"
@@ -102,15 +103,15 @@ def _cog(
     bot_id: int = 999, **downloader_kwargs: Unpack[_StubOptions]
 ) -> tuple[DouyinCogs, dict[str, _StubDownloader]]:
     """Builds a cog wired to a stub downloader and a hosting-off delivery planner."""
-    cog = DouyinCogs(bot=SimpleNamespace(user=SimpleNamespace(id=bot_id)))
+    cog = DouyinCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_id))))
     # Pinned explicitly: DouyinConfig reads the real environment (typings/douyin.py loads .env
     # at import), so a dev box with DOUYIN_AUTO_EXPAND_ENABLED=false would silently turn every
     # test below into a no-op that still passes.
-    cog.config = SimpleNamespace(auto_expand_enabled=True)
+    cog.config = cast("DouyinConfig", SimpleNamespace(auto_expand_enabled=True))
     # Explicitly disabled planner — never the no-arg default, whose config is `available` on a
     # dev box where .env enables hosting (it would write into the live serve dir).
     cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(config=MediaHostingConfig(MEDIA_HOSTING_ENABLED=False))
+        media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
     )
     made: dict[str, _StubDownloader] = {}
 
@@ -120,17 +121,28 @@ def _cog(
         made["stub"] = stub
         return stub
 
-    cog.downloader_factory = factory
+    cog.__dict__["downloader_factory"] = factory
     return cog, made
 
 
-def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> FakeDiscordMessage:
+class _DouyinMessage(FakeDiscordMessage):
+    """Adds the author/content/guild fields `DouyinCogs.on_message` reads."""
+
+    def __init__(self, author: FakeUser, content: str, guild: object) -> None:
+        """Builds a message double carrying the fields the cog inspects."""
+        super().__init__()
+        self.author = author
+        self.content = content
+        self.guild = guild
+
+
+def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> _DouyinMessage:
     """Builds a guild message carrying a Douyin link."""
-    message = FakeDiscordMessage()
-    message.author = FakeUser(bot=False)
-    message.content = content
-    message.guild = SimpleNamespace(filesize_limit=filesize_limit)
-    return message
+    return _DouyinMessage(
+        author=FakeUser(bot=False),
+        content=content,
+        guild=SimpleNamespace(filesize_limit=filesize_limit),
+    )
 
 
 def _reply_body(*, message: FakeDiscordMessage) -> str:
@@ -145,7 +157,7 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
     cog, made = _cog()
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.suppressed
     reply = message.replies[0]
@@ -162,13 +174,13 @@ async def test_a_message_addressed_to_the_bot_is_left_alone() -> None:
     cog, made = _cog()
 
     mentioned = _message(content=f"<@999> what is this {_URL}")
-    await cog.on_message(message=mentioned)
+    await cog.on_message(message=as_message(fake=mentioned))
     assert mentioned.reactions == []
     assert mentioned.replies == []
 
     direct_message = _message()
     direct_message.guild = None  # a DM always reaches gen_reply, mention or not
-    await cog.on_message(message=direct_message)
+    await cog.on_message(message=as_message(fake=direct_message))
     assert direct_message.reactions == []
     assert direct_message.replies == []
 
@@ -180,7 +192,7 @@ async def test_a_message_without_a_link_is_ignored() -> None:
     cog, made = _cog()
     message = _message(content="just chatting")
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions == []
     assert made == {}
@@ -192,7 +204,7 @@ async def test_a_bot_author_is_ignored() -> None:
     message = _message()
     message.author = FakeUser(bot=True)
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert made == {}
 
@@ -200,10 +212,10 @@ async def test_a_bot_author_is_ignored() -> None:
 async def test_the_kill_switch_stops_every_request() -> None:
     """Auto-expansion is the one lever that stops the bot talking to Douyin during a WAF ban."""
     cog, made = _cog()
-    cog.config = SimpleNamespace(auto_expand_enabled=False)
+    cog.config = cast("DouyinConfig", SimpleNamespace(auto_expand_enabled=False))
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions == []
     assert made == {}
@@ -214,7 +226,7 @@ async def test_a_blocked_request_is_never_reported_as_a_missing_post() -> None:
     cog, _ = _cog(download_error=DouyinBlockedError("bot wall"))
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == DouyinCogs.blocked_emoji
     body = _reply_body(message=message)
@@ -227,7 +239,7 @@ async def test_a_deleted_post_says_so() -> None:
     cog, _ = _cog(download_error=DouyinUnavailableError("filtered"))
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
     assert "刪除" in _reply_body(message=message)
@@ -238,7 +250,7 @@ async def test_an_oversize_post_points_at_the_command() -> None:
     cog, _ = _cog(download_error=DouyinTooLargeError("too big"))
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
     assert "/download_video" in _reply_body(message=message)
@@ -249,7 +261,7 @@ async def test_a_parse_failure_still_answers() -> None:
     cog, _ = _cog(parse_error=DouyinError("unreadable"))
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
     assert message.replies[0]["content"] == "-# 檔案無法下載"
@@ -259,14 +271,15 @@ async def test_an_unexpected_failure_marks_the_message() -> None:
     """A failure outside the fetch must not leave the source silently unmarked."""
     cog, _ = _cog()
 
-    async def boom(**_: object) -> None:
+    async def boom(*, message: Message, url: str, current_emoji: str) -> None:
         """Fails the way a Discord API error would."""
+        del message, url, current_emoji
         raise RuntimeError("discord exploded")
 
-    cog._expand = boom
+    cog.__dict__["_expand"] = boom
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == _RED
 
@@ -277,16 +290,14 @@ async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
     (tmp_path / "serve").mkdir()  # pre-existing host mount; the bot never creates the serve dir
     cog.media_delivery = MediaDeliveryPlanner(
         media_hosting=MediaHostingService(
-            config=MediaHostingConfig(
-                MEDIA_HOSTING_ENABLED=True,
-                MEDIA_HOSTING_BASE_URL="https://media.test",
-                MEDIA_HOSTING_SERVE_DIR=str(tmp_path / "serve"),
+            config=make_media_hosting_config(
+                enabled=True, base_url="https://media.test", serve_dir=str(tmp_path / "serve")
             )
         )
     )
     message = _message(filesize_limit=4)  # tiny ceiling -> the clip counts as oversize
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     content = _reply_body(message=message)
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
@@ -298,7 +309,7 @@ async def test_an_unhostable_oversize_clip_says_so() -> None:
     cog, _ = _cog()
     message = _message(filesize_limit=4)
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
     assert "檔案大小超過" in _reply_body(message=message)
@@ -314,7 +325,7 @@ async def test_a_capped_gallery_reports_what_it_left_out() -> None:
     )
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert "已省略 9 張圖片" in _reply_body(message=message)
     assert message.reactions[-1] == _GREEN
@@ -329,7 +340,7 @@ async def test_the_parsed_post_is_handed_to_the_download() -> None:
     cog, made = _cog()
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     stub = made["stub"]
     assert stub.download_calls == 1
@@ -350,7 +361,7 @@ async def test_a_non_post_link_is_left_alone() -> None:
         cog, made = _cog()
         message = _message(content=content)
 
-        await cog.on_message(message=message)
+        await cog.on_message(message=as_message(fake=message))
 
         assert message.reactions == [], content
         assert message.replies == [], content
@@ -375,12 +386,12 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
         time.sleep(1.0)
         raise AssertionError("should have been abandoned")
 
-    cog.downloader_factory = lambda output_folder: SimpleNamespace(
+    cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
         parse_metadata=never_returns, download=never_returns
     )
     message = _message()
 
-    await cog.on_message(message=message)
+    await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
     body = _reply_body(message=message)

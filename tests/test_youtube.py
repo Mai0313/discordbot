@@ -1,6 +1,7 @@
 """Tests for YouTube URL detection and the Gemini Interactions answer-path adapters."""
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 from collections.abc import AsyncIterator
 
 import pytest
@@ -10,6 +11,12 @@ from discordbot.cogs._gen_reply.interactions import (
     to_interactions_input,
     adapt_interactions_stream,
 )
+
+from tests.helpers.casting import step_dicts
+
+if TYPE_CHECKING:
+    from google.genai.interactions import InteractionSSEEvent
+    from openai.types.responses.response_input_param import ResponseInputParam
 
 
 @pytest.mark.parametrize(
@@ -69,8 +76,11 @@ def test_to_interactions_input_maps_roles_and_appends_video() -> None:
         {"role": "user", "content": [{"type": "input_text", "text": "what happens here"}]},
     ]
 
-    steps = to_interactions_input(
-        answer_input=answer_input, youtube_url="https://youtu.be/abcdefghijk"
+    steps = step_dicts(
+        steps=to_interactions_input(
+            answer_input=cast("ResponseInputParam", answer_input),
+            youtube_url="https://youtu.be/abcdefghijk",
+        )
     )
 
     # system + user coalesce into one user_input step; assistant is its own model_output step.
@@ -99,8 +109,11 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
         }
     ]
 
-    steps = to_interactions_input(
-        answer_input=answer_input, youtube_url="https://youtu.be/abcdefghijk"
+    steps = step_dicts(
+        steps=to_interactions_input(
+            answer_input=cast("ResponseInputParam", answer_input),
+            youtube_url="https://youtu.be/abcdefghijk",
+        )
     )
 
     parts = steps[-1]["content"]
@@ -114,7 +127,9 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
 
 def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
     """Empty content is dropped, and a video with no prior user step still gets one."""
-    steps = to_interactions_input(answer_input=[], youtube_url="https://youtu.be/abcdefghijk")
+    steps = step_dicts(
+        steps=to_interactions_input(answer_input=[], youtube_url="https://youtu.be/abcdefghijk")
+    )
     assert len(steps) == 1
     assert steps[0]["type"] == "user_input"
     assert steps[0]["content"] == [{"type": "video", "uri": "https://youtu.be/abcdefghijk"}]
@@ -152,11 +167,24 @@ async def _aiter(events: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace
         yield event
 
 
+def _as_stream(events: list[SimpleNamespace]) -> "AsyncIterator[InteractionSSEEvent]":
+    """Views the fabricated events as the real SDK stream the adapter consumes.
+
+    Production discriminates on `.event_type`, not isinstance, so SimpleNamespace events are safe.
+    """
+    return cast("AsyncIterator[InteractionSSEEvent]", _aiter(events=events))
+
+
+def _ns(event: object) -> SimpleNamespace:
+    """Narrows an adapted event to the namespace shape the adapter fabricates."""
+    assert isinstance(event, SimpleNamespace)
+    return event
+
+
 async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     """Interactions events become Responses-shaped events the streamer consumes."""
-    out = [
-        event async for event in adapt_interactions_stream(stream=_aiter(_interaction_events()))
-    ]
+    stream = adapt_interactions_stream(stream=_as_stream(events=_interaction_events()))
+    out = [event async for event in stream]
 
     types = [event.type for event in out]
     assert types == [
@@ -166,12 +194,12 @@ async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
         "response.output_text.delta",
         "response.completed",
     ]
-    assert out[0].response.model == "gemini-3.1-pro-preview"
-    assert out[1].delta == "hmm"
-    assert out[2].delta == "Hello"
+    assert _ns(event=out[0]).response.model == "gemini-3.1-pro-preview"
+    assert _ns(event=out[1]).delta == "hmm"
+    assert _ns(event=out[2]).delta == "Hello"
     # Usage is emitted once, on completion, with the Responses field names.
-    assert out[-1].response.usage.input_tokens == 12
-    assert out[-1].response.usage.output_tokens == 34
+    assert _ns(event=out[-1]).response.usage.input_tokens == 12
+    assert _ns(event=out[-1]).response.usage.output_tokens == 34
 
 
 async def test_adapt_interactions_stream_raises_on_error_event() -> None:
@@ -179,5 +207,5 @@ async def test_adapt_interactions_stream_raises_on_error_event() -> None:
     events = [SimpleNamespace(event_type="error", error="boom")]
 
     with pytest.raises(RuntimeError):
-        async for _ in adapt_interactions_stream(stream=_aiter(events)):
+        async for _ in adapt_interactions_stream(stream=_as_stream(events=events)):
             pass

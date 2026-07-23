@@ -147,7 +147,8 @@ async def test_help_response_is_ephemeral_with_a_view() -> None:
     )
 
     await HelpCogs.help.callback(
-        HelpCogs(bot=cast("commands.Bot", SimpleNamespace())), cast("Interaction", interaction)
+        HelpCogs(bot=cast("commands.Bot", SimpleNamespace())),
+        cast("Interaction[commands.Bot]", interaction),
     )
 
     assert interaction.response.sent["ephemeral"] is True

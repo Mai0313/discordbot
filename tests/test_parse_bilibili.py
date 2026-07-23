@@ -2,11 +2,12 @@
 
 import time
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 import asyncio
 from pathlib import Path
 import threading
 
+from google import genai
 import pytest
 
 from discordbot.utils.downloader import VideoMetadata, DownloadResult, VideoDownloader
@@ -21,7 +22,14 @@ from discordbot.cogs._gen_reply.link_sources.bilibili import (
     build_bilibili_context_messages,
 )
 
+from tests.helpers.casting import step_dicts
+
 _URL = "https://www.bilibili.com/video/BV1jpK86hEc8"
+
+
+def _fake_client() -> genai.Client:
+    """Stands in for a Gemini client the builder never actually calls through."""
+    return cast("genai.Client", SimpleNamespace())
 
 
 def _metadata(
@@ -120,14 +128,15 @@ async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any
     """Runs the builder with the flags most tests share.
 
     The blocks are `EasyInputMessageParam`s, whose `content` is a union the assertions below
-    index into part by part; `Any` is what lets them read as plain JSON.
+    index into part by part; `step_dicts` is what lets them read as plain JSON.
     """
-    return await build_bilibili_context_messages(
+    blocks = await build_bilibili_context_messages(
         url=_URL,
         answer_model_is_gemini=gemini,
-        gemini_client=SimpleNamespace(),
+        gemini_client=_fake_client(),
         allow_media_ingest=ingest,
     )
+    return step_dicts(steps=blocks)
 
 
 async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
@@ -259,8 +268,10 @@ async def test_a_missing_key_reads_the_text_instead_of_raising(
     """No key means no client to upload with, which is a text-only read, not a failure."""
     uploads, _ = _stub_bilibili(monkeypatch)
 
-    blocks = await build_bilibili_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
+    blocks = step_dicts(
+        steps=await build_bilibili_context_messages(
+            url=_URL, answer_model_is_gemini=True, gemini_client=None, allow_media_ingest=True
+        )
     )
 
     assert blocks[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
@@ -307,11 +318,13 @@ async def test_a_resolved_short_link_lists_both_urls(monkeypatch: pytest.MonkeyP
     _stub_bilibili(monkeypatch, metadata=_metadata(webpage_url=_URL))
     short_url = "https://b23.tv/abc123X"
 
-    blocks = await build_bilibili_context_messages(
-        url=short_url,
-        answer_model_is_gemini=True,
-        gemini_client=SimpleNamespace(),
-        allow_media_ingest=True,
+    blocks = step_dicts(
+        steps=await build_bilibili_context_messages(
+            url=short_url,
+            answer_model_is_gemini=True,
+            gemini_client=_fake_client(),
+            allow_media_ingest=True,
+        )
     )
 
     text = blocks[1]["content"][0]["text"]
@@ -489,11 +502,25 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     release = asyncio.Event()
 
     class _SlowUploads(_Uploads):
-        async def __call__(self, **kwargs: object) -> dict[str, str] | None:
+        async def __call__(
+            self,
+            *,
+            client: object,
+            source: object,
+            mime_type: str,
+            filename: str,
+            timeout_seconds: float,
+        ) -> dict[str, str] | None:
             """Blocks inside the upload until the test lets it finish."""
             started.set()
             await release.wait()
-            return await super().__call__(**kwargs)  # type: ignore[arg-type]
+            return await super().__call__(
+                client=client,
+                source=source,
+                mime_type=mime_type,
+                filename=filename,
+                timeout_seconds=timeout_seconds,
+            )
 
     monkeypatch.setattr(bilibili_builder, "upload_as_input_file", _SlowUploads())
     slow = asyncio.create_task(_build())
@@ -501,14 +528,16 @@ async def test_the_fetch_bound_is_released_before_the_upload(
         await asyncio.wait_for(started.wait(), timeout=5.0)
 
         # A different link must get through while the first build sits in its upload.
-        other = await asyncio.wait_for(
-            build_bilibili_context_messages(
-                url="https://www.bilibili.com/video/av170001",
-                answer_model_is_gemini=True,
-                gemini_client=SimpleNamespace(),
-                allow_media_ingest=False,
-            ),
-            timeout=5.0,
+        other = step_dicts(
+            steps=await asyncio.wait_for(
+                build_bilibili_context_messages(
+                    url="https://www.bilibili.com/video/av170001",
+                    answer_model_is_gemini=True,
+                    gemini_client=_fake_client(),
+                    allow_media_ingest=False,
+                ),
+                timeout=5.0,
+            )
         )
         assert other[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
     finally:

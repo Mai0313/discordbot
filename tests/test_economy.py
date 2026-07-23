@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 import pytest
 from sqlalchemy import text, select, update
+from nextcord.ui import Button
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.typings.games import (
@@ -68,6 +69,7 @@ from discordbot.cogs._economy.database import (
 from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_player
 from discordbot.cogs._games.blackjack_views import BlackjackView, build_final_embeds
 
+from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.economy_invariants import (
     assert_wallet_consistent,
     assert_daily_casino_stats,
@@ -853,7 +855,10 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
         author_name="alice",
     )
 
-    await asyncio.gather(view.finalize(message=message), view.finalize(message=message))
+    await asyncio.gather(
+        view.finalize(message=as_message(fake=message)),
+        view.finalize(message=as_message(fake=message)),
+    )
 
     assert await get_balance(user_id=1) == 150
     _ledger = await get_casino_ledger()
@@ -895,7 +900,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
         starter_id=1,
         author_name="alice",
     )
-    view.message = message
+    view.message = as_message(fake=message)
 
     await view.on_timeout()
 
@@ -943,7 +948,7 @@ async def test_blackjack_view_dealer_plays_h17_rule(monkeypatch: pytest.MonkeyPa
     message = _MessageStub()
     view = BlackjackView(round_state=round_state, starter_id=1, author_name="alice")
 
-    await view.finalize(message=message)
+    await view.finalize(message=as_message(fake=message))
 
     assert [str(card) for card in view.round_state.dealer] == ["10♣", "3♦", "5♣"]
     assert view.round_state.dealer_played is True
@@ -1020,7 +1025,7 @@ async def test_blackjack_view_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatc
     message = _MessageStub()
     view = BlackjackView(round_state=round_state, starter_id=1, author_name="alice")
 
-    await view.finalize(message=message)
+    await view.finalize(message=as_message(fake=message))
 
     # Soft 17 must trigger at least one draw, landing the dealer above 17.
     assert len(view.round_state.dealer) >= 3
@@ -1090,16 +1095,28 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         author_name="alice",
     )
 
-    hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
-    stand_button = next(child for child in view.children if child.custom_id == "bj:stand")
-    stand_task = asyncio.create_task(coro=stand_button.callback(_InteractionStub(message=message)))
+    hit_button = next(
+        child
+        for child in view.children
+        if isinstance(child, Button) and child.custom_id == "bj:hit"
+    )
+    stand_button = next(
+        child
+        for child in view.children
+        if isinstance(child, Button) and child.custom_id == "bj:stand"
+    )
+    stand_task = asyncio.create_task(
+        coro=stand_button.callback(as_interaction(fake=_InteractionStub(message=message)))
+    )
     await settlement_started.wait()
 
     assert message.edit_calls == 1
     in_flight_view = cast("BlackjackView", message.edits[0]["view"])
-    assert all(child.disabled for child in in_flight_view.children)
+    assert all(child.disabled for child in in_flight_view.children if isinstance(child, Button))
 
-    hit_task = asyncio.create_task(coro=hit_button.callback(_InteractionStub(message=message)))
+    hit_task = asyncio.create_task(
+        coro=hit_button.callback(as_interaction(fake=_InteractionStub(message=message)))
+    )
     await asyncio.sleep(delay=0)
 
     assert len(view.round_state.players[0].hands[0].cards) == 2
@@ -1135,9 +1152,13 @@ async def test_blackjack_view_rejects_stale_double_without_mutating_next_player(
     message = _MessageStub()
     view = BlackjackView(round_state=round_state, starter_id=1, author_name="alice")
 
-    double_button = next(child for child in view.children if child.custom_id == "bj:double")
+    double_button = next(
+        child
+        for child in view.children
+        if isinstance(child, Button) and child.custom_id == "bj:double"
+    )
     interaction = _InteractionStub(message=message, user_id=1)
-    await double_button.callback(interaction)
+    await double_button.callback(as_interaction(fake=interaction))
 
     assert bob.bet == 50
     assert [str(card) for card in bob.cards] == ["5♣", "6♦"]
@@ -1176,9 +1197,13 @@ async def test_blackjack_view_rejects_stale_hit_without_drawing_for_next_player(
     message = _MessageStub()
     view = BlackjackView(round_state=round_state, starter_id=1, author_name="alice")
 
-    hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
+    hit_button = next(
+        child
+        for child in view.children
+        if isinstance(child, Button) and child.custom_id == "bj:hit"
+    )
     interaction = _InteractionStub(message=message, user_id=1)
-    await hit_button.callback(interaction)
+    await hit_button.callback(as_interaction(fake=interaction))
 
     assert [str(card) for card in bob.cards] == ["5♣", "6♦"]
     assert interaction.followup.sent[0]["content"] == "這個操作已經失效，請看最新牌桌"
@@ -1222,8 +1247,12 @@ async def test_blackjack_view_hit_draws_for_active_split_hand(
     message = _MessageStub()
     view = BlackjackView(round_state=round_state, starter_id=1, author_name="alice")
 
-    hit_button = next(child for child in view.children if child.custom_id == "bj:hit")
-    await hit_button.callback(_InteractionStub(message=message, user_id=1))
+    hit_button = next(
+        child
+        for child in view.children
+        if isinstance(child, Button) and child.custom_id == "bj:hit"
+    )
+    await hit_button.callback(as_interaction(fake=_InteractionStub(message=message, user_id=1)))
 
     assert [str(card) for card in player.hands[1].cards] == ["9♣", "2♦", "5♣"]
     assert message.edit_calls == 1

@@ -13,6 +13,8 @@ from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownloader
 from discordbot.typings.video import VideoQuality
 from discordbot.utils.downloader import VideoDownloader, DownloadStoppedError
 
+from tests.helpers.casting import as_bot
+
 
 def _install_youtube_dl_stub(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -364,5 +366,5 @@ def test_every_quality_preset_is_answered_everywhere() -> None:
     assert set(DouyinDownloader.quality_ratios) == presets
     assert set(QUALITY_CHOICES.values()) == presets
 
-    cog = VideoCogs(bot=object())
+    cog = VideoCogs(bot=as_bot(fake=object()))
     assert cog.download_video.options["quality"].default in presets

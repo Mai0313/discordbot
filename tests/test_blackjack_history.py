@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.typings.games import (
     Card,
+    SettleOutcome,
     GameParticipant,
     BlackjackHistoryHand,
     BlackjackPlayerResult,
@@ -62,7 +63,7 @@ def _participant(*, user_id: int, name: str, bet: int) -> GameParticipant:
 def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
     *,
     participant: GameParticipant,
-    outcome: str,
+    outcome: SettleOutcome,
     delta: int,
     hands: list[BlackjackHandSettlement],
     insurance: BlackjackInsuranceSettlement | None = None,
@@ -85,7 +86,7 @@ def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
     return BlackjackPlayerResult(participant=participant, settlement=settlement)
 
 
-def _record_view(*, delta: int, outcome: str) -> BlackjackHistoryRecord:
+def _record_view(*, delta: int, outcome: SettleOutcome) -> BlackjackHistoryRecord:
     """Builds a read-model record without touching the database."""
     return BlackjackHistoryRecord(
         round_id="r",

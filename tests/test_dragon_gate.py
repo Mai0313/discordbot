@@ -44,10 +44,14 @@ from discordbot.cogs._games.dragon_gate_views import (
     build_dragon_gate_in_progress_embed,
 )
 
+from tests.helpers.casting import as_message, as_interaction
+
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     from _typeshed import SupportsLenAndGetItem
+
+    from discordbot.cogs._games.lobby import PrepareParticipant
 
 T = TypeVar("T")
 
@@ -315,7 +319,7 @@ def _component_rows(view: DragonGateView) -> dict[str, int | None]:
     return rows
 
 
-def _attached_button(view: DragonGateView, custom_id: str) -> Button:
+def _attached_button(view: DragonGateView, custom_id: str) -> Button[Any]:
     """Returns an attached button by custom ID."""
     for child in view.children:
         if isinstance(child, Button) and child.custom_id == custom_id:
@@ -323,7 +327,7 @@ def _attached_button(view: DragonGateView, custom_id: str) -> Button:
     raise AssertionError(f"Missing attached button: {custom_id}")
 
 
-def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect:
+def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect[Any]:
     """Returns an attached select menu by custom ID."""
     for child in view.children:
         if isinstance(child, StringSelect) and child.custom_id == custom_id:
@@ -547,7 +551,9 @@ async def test_edit_message_with_retry_rebuilds_payload_between_attempts(
         payloads.append(file_marker)
         return {"files": [file_marker]}
 
-    result = await edit_message_with_retry(message=message, kwargs_factory=kwargs_factory)
+    result = await edit_message_with_retry(
+        message=as_message(fake=message), kwargs_factory=kwargs_factory
+    )
 
     assert result is message
     assert sleep_delays == [0.5]
@@ -650,30 +656,30 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
         system_name="Dealer",
         system_avatar_url="",
-        prepare_participant=prepare_participant,
+        prepare_participant=cast("PrepareParticipant", prepare_participant),
         refresh_participants=refresh_participants,
         initial_jackpot=state.jackpot,
     )
-    view.message = message
+    view.message = as_message(fake=message)
 
     join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
-    await join_button.callback(InteractionStub(user_id=2, message=message))
+    await join_button.callback(as_interaction(fake=InteractionStub(user_id=2, message=message)))
     assert view.participants == [owner, bob]
     join_embed = message.edits[-1]["embed"]
     assert isinstance(join_embed, Embed)
     assert isinstance(join_embed.description, str)
 
     leave_button = next(child for child in view.children if getattr(child, "label", "") == "離開")
-    await leave_button.callback(InteractionStub(user_id=2, message=message))
+    await leave_button.callback(as_interaction(fake=InteractionStub(user_id=2, message=message)))
     assert view.participants == [owner]
 
     start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
     other_interaction = InteractionStub(user_id=2, message=message)
-    await start_button.callback(other_interaction)
+    await start_button.callback(as_interaction(fake=other_interaction))
     assert other_interaction.response.sent
 
     owner_interaction = InteractionStub(user_id=1, message=message)
-    await start_button.callback(owner_interaction)
+    await start_button.callback(as_interaction(fake=owner_interaction))
     assert isinstance(message.edits[-1]["view"], DragonGateView)
     assert state.calls == [
         {
@@ -732,16 +738,16 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
         system_name="Dealer",
         system_avatar_url="",
-        prepare_participant=prepare_participant,
+        prepare_participant=cast("PrepareParticipant", prepare_participant),
         refresh_participants=refresh_participants,
         initial_jackpot=100_000,
     )
-    view.message = message
+    view.message = as_message(fake=message)
 
     join_button = next(child for child in view.children if getattr(child, "label", "") == "加入")
-    await join_button.callback(InteractionStub(user_id=2, message=message))
+    await join_button.callback(as_interaction(fake=InteractionStub(user_id=2, message=message)))
     start_button = next(child for child in view.children if getattr(child, "label", "") == "開始")
-    await start_button.callback(InteractionStub(user_id=1, message=message))
+    await start_button.callback(as_interaction(fake=InteractionStub(user_id=1, message=message)))
 
     assert view.participants == [owner]
     assert view._started is False
@@ -771,14 +777,14 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
     assert _component_ids(view=view) == {"dg:higher", "dg:lower", "dg:leave"}
     assert _attached_button(view=view, custom_id="dg:higher").disabled is False
 
     choose_higher = _attached_button(view=view, custom_id="dg:higher")
     await choose_higher.callback(
-        InteractionStub(user_id=1, message=message, custom_id="dg:higher")
+        as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:higher"))
     )
     assert round_state.active_turn is not None
     assert round_state.active_turn.direction == "higher"
@@ -786,7 +792,10 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     assert _attached_select(view=view, custom_id="dg:bet").disabled is False
 
     await view._handle_bet_choice(
-        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="min",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
 
     # 7-pair, higher, third = 8 → pair_win at +bet (MIN_BET = 20)
@@ -814,14 +823,17 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 100},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     # The 100,000 pool is bounded down to the player's 100 balance.
     assert view._active_max_bet() == 100
 
     await view._handle_bet_choice(
-        choice="max", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="max",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
 
     # Gate win pays only the balance-bounded 100, closing the free-option.
@@ -848,7 +860,7 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 15},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     # Balance 15 is below the 20 minimum, so betting is unavailable instead of
@@ -857,7 +869,7 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     assert _component_ids(view=view) == {"dg:leave"}
 
     interaction = InteractionStub(user_id=1, message=message, custom_id="dg:bet")
-    await view._handle_bet_choice(choice="min", interaction=interaction)
+    await view._handle_bet_choice(choice="min", interaction=as_interaction(fake=interaction))
     assert state.calls == []
     assert interaction.followup.sent[-1]["content"] == "餘額不足以下注，請先離桌"
 
@@ -882,11 +894,14 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
         jackpot_snapshot=state.jackpot,
         final_balances={1: 500_000},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     await view._handle_bet_choice(
-        choice="max", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="max",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
 
     # gate_win for the full pot → pool replenished, table finalised, no refund follow-up
@@ -946,11 +961,14 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
         jackpot_generation=2,
         final_balances={1: 500_000},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     await view._handle_bet_choice(
-        choice="max", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="max",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
 
     assert round_state.player_delta(user_id=1) == 7_000
@@ -985,11 +1003,14 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 30},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     await view._handle_bet_choice(
-        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="min",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
 
     # MIN_BET 20 pillar hit (-40) clamps to the 30 balance, busting the player.
@@ -1035,11 +1056,14 @@ async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 30, 2: 100_000},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     await view._handle_bet_choice(
-        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="min",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
 
     # MIN_BET 20 pillar hit (-40) clamps to the 30 balance, busting only Alice.
@@ -1076,16 +1100,21 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     await view._handle_bet_choice(
-        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="min",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
     assert round_state.player_delta(user_id=1) == 20
 
     leave_button = _attached_button(view=view, custom_id="dg:leave")
-    await leave_button.callback(InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
+    await leave_button.callback(
+        as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
+    )
 
     # Bet settled +20 into Alice. Leave refunds 20 back into the pool.
     assert [call["player_delta"] for call in state.calls] == [20, -20]
@@ -1118,12 +1147,13 @@ async def test_dragon_gate_view_bet_uses_live_wallet_not_stale_cache(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     # 500 is under the stale 1,000 cache but over the live 100 balance, so it is rejected.
     await view.submit_custom_bet(
-        interaction=InteractionStub(user_id=1, message=message), raw_amount="500"
+        interaction=as_interaction(fake=InteractionStub(user_id=1, message=message)),
+        raw_amount="500",
     )
 
     assert state.calls == []
@@ -1152,16 +1182,21 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     await view._handle_bet_choice(
-        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="min",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
     assert round_state.player_delta(user_id=1) == -20
 
     leave_button = _attached_button(view=view, custom_id="dg:leave")
-    await leave_button.callback(InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
+    await leave_button.callback(
+        as_interaction(fake=InteractionStub(user_id=1, message=message, custom_id="dg:leave"))
+    )
 
     # Single bet settled -20; leave path does not append another settlement.
     assert [call["player_delta"] for call in state.calls] == [-20]
@@ -1188,14 +1223,16 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet(
     )
 
     non_active = InteractionStub(user_id=2, message=MessageStub(), custom_id="dg:bet")
-    assert await view.interaction_check(interaction=non_active) is False
+    assert await view.interaction_check(interaction=as_interaction(fake=non_active)) is False
     assert non_active.response.sent
 
     leave_ok = InteractionStub(user_id=2, message=MessageStub(), custom_id="dg:leave")
-    assert await view.interaction_check(interaction=leave_ok) is True
+    assert await view.interaction_check(interaction=as_interaction(fake=leave_ok)) is True
 
     invalid = InteractionStub(user_id=1, message=MessageStub())
-    await view.submit_custom_bet(interaction=invalid, raw_amount="not a number")
+    await view.submit_custom_bet(
+        interaction=as_interaction(fake=invalid), raw_amount="not a number"
+    )
     assert invalid.response.sent
 
 
@@ -1238,11 +1275,14 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000},
     )
-    view.message = message
+    view.message = as_message(fake=message)
     view.sync_controls()
 
     await view._handle_bet_choice(
-        choice="min", interaction=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        choice="min",
+        interaction=as_interaction(
+            fake=InteractionStub(user_id=1, message=message, custom_id="dg:bet")
+        ),
     )
     assert round_state.player_delta(user_id=1) == 20
 

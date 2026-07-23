@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from io import BytesIO
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 from datetime import datetime
 
 from PIL import Image
 import pytest
 from nextcord import File, Embed, Locale
+from nextcord.ui import StringSelect
 
 from discordbot.cogs import stock
 from discordbot.utils import owned_message_views
@@ -18,6 +19,7 @@ from discordbot.cogs.stock import StockCogs
 from discordbot.cogs._stock import views as stock_views
 from discordbot.typings.stock import (
     StockAction,
+    StockNewsView,
     StockMarketQuote,
     StockProfileView,
     StockPositionView,
@@ -46,6 +48,11 @@ from discordbot.cogs._stock.presentation import (
     build_stock_detail_embed,
     _build_market_board_image_cached,
 )
+
+from tests.helpers.casting import as_bot, as_message, as_interaction, make_not_found
+
+if TYPE_CHECKING:
+    from discordbot.cogs._stock.news import StockNewsAI
 
 BCAT_SYMBOL = "BCAT"
 BCAT_NAME = "破貓科技股份有限公司"
@@ -120,8 +127,7 @@ class DeletedMessageStub(MessageStub):
 
     async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double
         """Raises the same exception nextcord emits for deleted messages."""
-        response = SimpleNamespace(status=404, reason="Not Found", headers={})
-        raise stock_views.nextcord.NotFound(response=response, message="missing")
+        raise make_not_found(message="missing")
 
 
 class UserStub:
@@ -240,7 +246,7 @@ def test_stock_setup_is_sync_and_adds_cog_with_override() -> None:
             """Records add_cog arguments."""
             calls.append({"cog": cog, "override": override})
 
-    stock.setup(BotStub())
+    stock.setup(bot=as_bot(fake=BotStub()))
 
     assert isinstance(calls[0]["cog"], StockCogs)
     assert calls[0]["override"] is True
@@ -271,7 +277,7 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
     monkeypatch.setattr(stock, "list_market_quotes", fake_list_market_quotes)
     monkeypatch.setattr(stock, "_schedule_stock_news_refresh", fake_schedule_stock_news_refresh)
     monkeypatch.setattr(stock, "track_public_message", fake_track)
-    cog = StockCogs(bot=SimpleNamespace())
+    cog = StockCogs(bot=as_bot(fake=SimpleNamespace()))
     cog.__dict__["news_ai"] = SimpleNamespace(generate=lambda _profile: None)
     interaction = InteractionStub()
 
@@ -305,7 +311,7 @@ async def test_stock_news_background_refresh_is_deduped(monkeypatch: pytest.Monk
     monkeypatch.setattr(stock, "ensure_due_stock_news", fake_ensure_due_stock_news)
     monkeypatch.setattr(stock, "_stock_news_refresh_task", None)
     monkeypatch.setattr(stock, "_stock_news_refresh_task_loop", None)
-    news_ai = SimpleNamespace(generate=lambda _context: None)
+    news_ai = cast("StockNewsAI", SimpleNamespace(generate=lambda _context: None))
 
     stock._schedule_stock_news_refresh(news_ai=news_ai)
     await started.wait()
@@ -336,7 +342,7 @@ async def test_stock_command_raises_when_interaction_has_no_user(
         return (_quote(),)
 
     monkeypatch.setattr(stock, "list_market_quotes", fake_list_market_quotes)
-    cog = StockCogs(bot=SimpleNamespace())
+    cog = StockCogs(bot=as_bot(fake=SimpleNamespace()))
     interaction = InteractionStub(user_id=None)
 
     with pytest.raises(RuntimeError, match="missing Discord user identity"):
@@ -352,8 +358,11 @@ async def test_stock_public_view_rejects_non_owner_interaction() -> None:
     view = StockMarketView(quotes=(_quote(),), owner_id=1)
     intruder = InteractionStub(user_id=2, name="bob")
 
-    assert await view.interaction_check(interaction=InteractionStub(user_id=1)) is True
-    assert await view.interaction_check(interaction=intruder) is False
+    assert (
+        await view.interaction_check(interaction=as_interaction(fake=InteractionStub(user_id=1)))
+        is True
+    )
+    assert await view.interaction_check(interaction=as_interaction(fake=intruder)) is False
     assert intruder.response.sent[0]["ephemeral"] is True
     assert "只有發起者" in intruder.response.sent[0]["content"]
 
@@ -374,9 +383,10 @@ async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.Monke
     monkeypatch.setattr(stock_views, "edit_stock_detail", fake_edit_stock_detail)
     view = StockMarketView(quotes=(_quote(),), owner_id=1)
     interaction = InteractionStub()
-    view.stock_select._selected_values = [BCAT_SYMBOL]
+    stock_select = cast("StringSelect[StockMarketView]", view.stock_select)
+    stock_select._selected_values = [BCAT_SYMBOL]
 
-    await view.stock_select.callback(interaction)
+    await stock_select.callback(interaction=as_interaction(fake=interaction))
 
     assert selected == [BCAT_SYMBOL]
     assert interaction.user is not None
@@ -388,7 +398,8 @@ async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.Monke
 async def test_stock_market_select_truncates_long_company_names() -> None:
     """The market dropdown keeps option labels inside Discord's limit."""
     view = StockMarketView(quotes=(_quote(name="長" * 128),), owner_id=1)
-    option = view.stock_select.options[0]
+    stock_select = cast("StringSelect[StockMarketView]", view.stock_select)
+    option = stock_select.options[0]
 
     assert len(option.label) == stock_views.SELECT_OPTION_LABEL_LIMIT
     assert option.label.startswith(f"{BCAT_SYMBOL} · 長")
@@ -401,6 +412,7 @@ def test_stock_market_embed_uses_board_attachment_for_rows() -> None:
     embed = build_market_embed(quotes=(_quote(),), board_filename=filename)
 
     assert embed.image.url == f"attachment://{filename}"
+    assert embed.description is not None
     assert "市值" not in embed.description
     assert "100,000,000" not in embed.description
 
@@ -471,7 +483,7 @@ async def test_stock_detail_buttons_edit_same_public_message(
 ) -> None:
     """Detail buttons edit the original public message instead of sending followups."""
 
-    async def fake_news(symbol: str) -> tuple:
+    async def fake_news(symbol: str) -> tuple[StockNewsView, ...]:
         """Returns no fake news."""
         return ()
 
@@ -502,7 +514,7 @@ async def test_stock_detail_buttons_edit_same_public_message(
     )
 
     operate_interaction = InteractionStub()
-    await operate.callback(operate_interaction)
+    await operate.callback(as_interaction(fake=operate_interaction))
     assert operate_interaction.response.deferred
     embed = operate_interaction.message.edits[0]["embed"]
     assert isinstance(embed, Embed)
@@ -513,12 +525,12 @@ async def test_stock_detail_buttons_edit_same_public_message(
     assert isinstance(operate_interaction.message.edits[0]["view"], StockActionView)
 
     news_interaction = InteractionStub()
-    await news.callback(news_interaction)
+    await news.callback(as_interaction(fake=news_interaction))
     assert "近期新聞" in news_interaction.response.sent[0]["embed"].title
     assert news_interaction.response.sent[0]["view"].owner_id == view.owner_id
 
     back_interaction = InteractionStub()
-    await back.callback(back_interaction)
+    await back.callback(as_interaction(fake=back_interaction))
     assert isinstance(back_interaction.response.sent[0]["view"], StockMarketView)
     assert back_interaction.response.sent[0]["view"].owner_id == view.owner_id
 
@@ -532,6 +544,7 @@ def test_stock_detail_embed_uses_localized_user_labels() -> None:
     assert "可用資金" in field_names
     assert "目前操作 user" not in field_names
     assert "操作 user 資金" not in field_names
+    assert embed.description is not None
     assert "市值 `1億`" in embed.description
 
 
@@ -601,13 +614,14 @@ def test_stock_detail_embed_compacts_recent_trades() -> None:
 async def test_stock_action_dropdown_launches_quantity_modal() -> None:
     """Action dropdown launches one modal with only the quantity input."""
     view = StockActionView(symbol=BCAT_SYMBOL, owner_id=1)
-    action_select = next(
+    child = next(
         child for child in view.children if getattr(child, "custom_id", "") == "stock:action"
     )
-    action_select._selected_values = [StockAction.SHORT.value]
+    assert isinstance(child, StringSelect)
+    child._selected_values = [StockAction.SHORT.value]
 
     interaction = InteractionStub()
-    await action_select.callback(interaction)
+    await child.callback(interaction=as_interaction(fake=interaction))
 
     assert interaction.response.modals[0].action == StockAction.SHORT
     assert interaction.response.modals[0].owner_id == view.owner_id
@@ -644,7 +658,7 @@ async def test_stock_modal_rejects_non_owner_before_settlement(
     modal = StockQuantityModal(symbol=BCAT_SYMBOL, action=StockAction.BUY, owner_id=1)
     intruder = InteractionStub(user_id=2, name="bob")
 
-    await modal.submit_quantity(interaction=intruder, raw_quantity="1")
+    await modal.submit_quantity(interaction=as_interaction(fake=intruder), raw_quantity="1")
 
     assert calls == []
     assert intruder.response.sent[0]["ephemeral"] is True
@@ -676,7 +690,7 @@ async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
     modal = StockQuantityModal(symbol=BCAT_SYMBOL, action=StockAction.BUY, owner_id=1)
     interaction = InteractionStub()
 
-    await modal.submit_quantity(interaction=interaction, raw_quantity="abc")
+    await modal.submit_quantity(interaction=as_interaction(fake=interaction), raw_quantity="abc")
 
     assert interaction.response.deferred
     assert not interaction.response.deferred_ephemeral
@@ -730,7 +744,7 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
     modal = StockQuantityModal(symbol=BCAT_SYMBOL, action=StockAction.BUY, owner_id=1)
     interaction = InteractionStub()
 
-    await modal.submit_quantity(interaction=interaction, raw_quantity="1")
+    await modal.submit_quantity(interaction=as_interaction(fake=interaction), raw_quantity="1")
 
     assert not interaction.response.deferred_ephemeral
     assert "交易完成" in interaction.message.edits[0]["embed"].title
@@ -789,11 +803,11 @@ async def test_edit_owned_public_message_recovers_when_target_was_deleted(
     chart_file = File(fp=BytesIO(b"chart-bytes"), filename="chart.png")
 
     await owned_message_views.edit_owned_public_message(
-        interaction=interaction,
+        interaction=as_interaction(fake=interaction),
         embed=Embed(title="股票交易完成"),
         view=view,
         file=chart_file,
-        message=interaction.message,
+        message=as_message(fake=interaction.message),
     )
 
     assert interaction.followup.sent[0].get("ephemeral") is not True
@@ -819,7 +833,7 @@ async def test_stock_public_view_timeout_deletes_bound_message(
     monkeypatch.setattr(owned_message_views, "delete_public_message", fake_delete)
     message = MessageStub()
     view = StockPublicView(owner_id=1)
-    view.bind_message(message=message)
+    view.bind_message(message=as_message(fake=message))
 
     await view.on_timeout()
 

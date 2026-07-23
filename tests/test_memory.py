@@ -3,7 +3,7 @@
 import re
 import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 from pathlib import Path
 import contextlib
@@ -922,7 +922,8 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
     async def slow_parse(**kwargs: object) -> SimpleNamespace:
         inputs = kwargs["input"]
         assert isinstance(inputs, list)
-        seen_replies.append(str(inputs[0]["content"]))
+        first = cast("dict[str, object]", inputs[0])
+        seen_replies.append(str(first["content"]))
         started.set()
         if not release.is_set():
             await release.wait()
@@ -1113,7 +1114,8 @@ async def test_pipeline_compaction_triggers_past_main_size(
         seen_instructions.append(str(kwargs["instructions"]))
         inputs = kwargs["input"]
         assert isinstance(inputs, list)
-        seen_inputs.append(str(inputs[0]["content"]))
+        first = cast("dict[str, object]", inputs[0])
+        seen_inputs.append(str(first["content"]))
         return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
@@ -1248,7 +1250,7 @@ async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> 
     write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -1264,7 +1266,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
     )
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
     sent = interaction.response.sent
     assert sent["ephemeral"] is True
     view = sent["view"]
@@ -1281,7 +1283,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
 async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -1505,7 +1507,7 @@ async def test_memory_regenerate_command_schedules_in_background(
     # Evidence must exist or the command short-circuits before scheduling.
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     interaction = _regen_interaction()
-    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction[Any]", interaction))
 
     # The command replies immediately and never blocks on the rebuild, so it
     # neither defers nor uses a followup.
@@ -1533,7 +1535,7 @@ async def test_memory_regenerate_command_reports_no_evidence(
     monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
     # No raw or detail evidence exists for this scope.
     interaction = _regen_interaction()
-    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction[Any]", interaction))
 
     # Without evidence the background task would no-op, so nothing is scheduled
     # and the user is told there is nothing to rebuild yet.
@@ -1559,7 +1561,7 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
 
     monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
     interaction = _regen_interaction()
-    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction[Any]", interaction))
 
     # Rejected up front: nothing scheduled, no defer, just the ephemeral notice.
     assert scheduled is False
@@ -1584,7 +1586,9 @@ async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_d
 
     assert scheduled is True
     # The actual rebuild runs as a background task; await it to observe the write.
-    await pipeline._regeneration_tasks.get(key=USER_SCOPE)
+    task = pipeline._regeneration_tasks.get(key=USER_SCOPE)
+    assert task is not None
+    await task
     assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n背景重建後的記憶"
 
 
@@ -1611,7 +1615,9 @@ async def test_schedule_memory_regeneration_dedupes_in_flight(
     # A rebuild already in flight must not double-schedule the whole-file rewrite.
     assert second is False
     release.set()
-    await pipeline._regeneration_tasks.get(key=USER_SCOPE)
+    task = pipeline._regeneration_tasks.get(key=USER_SCOPE)
+    assert task is not None
+    await task
 
 
 def test_paginate_on_lines_single_page_passthrough() -> None:
@@ -1658,13 +1664,13 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
         footer_text=memory_footer_text(pending_count=1),
         title="🧠 我對你的記憶",
     )
-    prev_button = cast("Button", view.previous_page)
-    next_button = cast("Button", view.next_page)
+    prev_button = cast("Button[Any]", view.previous_page)
+    next_button = cast("Button[Any]", view.next_page)
     assert prev_button.disabled is True
     assert next_button.disabled is False
 
     interaction = SimpleNamespace(response=EditResponseStub())
-    await next_button.callback(cast("Interaction", interaction))
+    await next_button.callback(cast("Interaction[Any]", interaction))
     assert view.page_index == 1
     embed = interaction.response.edited["embed"]
     assert isinstance(embed, Embed)
@@ -1673,11 +1679,11 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
     assert "1 筆" in (embed.footer.text or "")
     assert prev_button.disabled is False
 
-    await next_button.callback(cast("Interaction", interaction))
+    await next_button.callback(cast("Interaction[Any]", interaction))
     assert view.page_index == 2
     assert next_button.disabled is True
 
-    await prev_button.callback(cast("Interaction", interaction))
+    await prev_button.callback(cast("Interaction[Any]", interaction))
     assert view.page_index == 1
     edited_embed = interaction.response.edited["embed"]
     assert isinstance(edited_embed, Embed)
@@ -1705,7 +1711,7 @@ async def test_memory_pages_view_timeout_disables_buttons() -> None:
             self.edited = kwargs
 
     origin = OriginStub()
-    view.bind_origin(interaction=cast("Interaction", origin))
+    view.bind_origin(interaction=cast("Interaction[Any]", origin))
     await view.on_timeout()
     assert origin.edited["view"] is view
     assert all(child.disabled for child in view.children if isinstance(child, Button))
@@ -1769,7 +1775,7 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 第一筆觀察")
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "1 筆" in (embed.description or "")
@@ -1784,7 +1790,7 @@ async def test_memory_show_strips_version_header_and_counts_pending(
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 新觀察")
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert (embed.description or "").startswith("## 使用者輪廓")
@@ -1798,7 +1804,7 @@ async def test_memory_show_does_not_corrupt_malformed_version_token(
     write_main_memory(scope=USER_SCOPE, content="v10 是一段被手動編輯的內容", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction", interaction))
+    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     # Only an exact `v1\n` header is stripped; `v10...` must survive intact.
@@ -2292,7 +2298,8 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         inputs = kwargs["input"]
         assert isinstance(inputs, list)
-        seen_inputs.append(str(inputs[0]["content"]))
+        first = cast("dict[str, object]", inputs[0])
+        seen_inputs.append(str(first["content"]))
         return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
@@ -2573,10 +2580,11 @@ async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir
         token=7,
     )
     captured_at = time.monotonic()
+    extractor, _ = _extractor()
     pipeline._pending_updates[USER_SCOPE] = pipeline._PendingMemoryUpdate(
         subject=f"target_user_id: {USER_ID}",
         transcript="Alice (alice) [id: 123456789]: 哈囉",
-        extractor=object(),
+        extractor=extractor,
         identity=IDENTITY,
         captured_at=captured_at,
         token=7,
@@ -2958,7 +2966,8 @@ async def test_pipeline_consolidation_writes_tone_note(
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         inputs = kwargs["input"]
         assert isinstance(inputs, list)
-        seen_inputs.append(str(inputs[0]["content"]))
+        first = cast("dict[str, object]", inputs[0])
+        seen_inputs.append(str(first["content"]))
         return _parsed(output=parsed_outputs.pop(0))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)

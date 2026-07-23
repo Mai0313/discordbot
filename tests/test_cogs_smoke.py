@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
 from datetime import UTC, datetime, timedelta
 
 import nextcord
-from nextcord import Embed
+from nextcord import Guild, Embed, Member
 from nextcord.ext import commands
 from logfire._internal.constants import LEVEL_NUMBERS
 
