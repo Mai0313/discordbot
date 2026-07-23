@@ -1700,7 +1700,7 @@ async def test_memory_pages_view_timeout_disables_buttons() -> None:
             """Initializes the recorded payload."""
             self.edited: dict[str, object] = {}
 
-        async def edit_original_response(self, **kwargs: object) -> None:
+        async def edit_original_message(self, **kwargs: object) -> None:
             """Records the edit payload."""
             self.edited = kwargs
 
