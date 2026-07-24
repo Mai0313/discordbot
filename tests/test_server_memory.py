@@ -1,7 +1,6 @@
 """Tests for the bot's per-server (community) long-term memory flavor."""
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
 from pathlib import Path
 
 from nextcord import Embed
@@ -22,9 +21,7 @@ from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
 
-if TYPE_CHECKING:
-    from nextcord import Interaction
-    from nextcord.ext import commands
+from tests.helpers.casting import as_bot, as_interaction
 
 BOT_ID = 555
 GUILD_ID = 777
@@ -176,7 +173,7 @@ class ResponseStub:
 def _server_cog() -> MemoryCogs:
     """Builds a MemoryCogs whose bot exposes a stable user id."""
     bot = SimpleNamespace(user=SimpleNamespace(id=BOT_ID))
-    return MemoryCogs(bot=cast("commands.Bot", bot))
+    return MemoryCogs(bot=as_bot(fake=bot))
 
 
 def _guild_interaction(guild_id: int | None = GUILD_ID) -> SimpleNamespace:
@@ -193,7 +190,7 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
     )
     cog = _server_cog()
     interaction = _guild_interaction()
-    await MemoryCogs.memory_server_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -203,7 +200,7 @@ async def test_memory_server_show_displays_stored_memory(memory_isolated_dir: Pa
 async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     cog = _server_cog()
     interaction = _guild_interaction()
-    await MemoryCogs.memory_server_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "還沒有對這個伺服器的記憶" in (embed.description or "")
@@ -212,7 +209,7 @@ async def test_memory_server_show_handles_empty_memory(memory_isolated_dir: Path
 async def test_memory_server_show_blocks_dms(memory_isolated_dir: Path) -> None:
     cog = _server_cog()
     interaction = _guild_interaction(guild_id=None)
-    await MemoryCogs.memory_server_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_server_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "只能在伺服器" in (embed.description or "")

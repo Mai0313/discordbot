@@ -2,18 +2,16 @@
 
 import ast
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
 from pathlib import Path
 
-from nextcord import Embed, Locale, Interaction
+from nextcord import Embed, Locale
 from nextcord.ui import View
 
 from discordbot.cogs.help import HelpCogs
 from discordbot.cogs._help.views import HelpView
 from discordbot.cogs._help.content import HELP_CONTENT, CATEGORY_ORDER, OVERVIEW_VALUE
 
-if TYPE_CHECKING:
-    from nextcord.ext import commands
+from tests.helpers.casting import as_bot, as_interaction
 
 _LOCALES = ("default", Locale.zh_TW, Locale.ja)
 
@@ -147,8 +145,7 @@ async def test_help_response_is_ephemeral_with_a_view() -> None:
     )
 
     await HelpCogs.help.callback(
-        HelpCogs(bot=cast("commands.Bot", SimpleNamespace())),
-        cast("Interaction[commands.Bot]", interaction),
+        HelpCogs(bot=as_bot(fake=SimpleNamespace())), as_interaction(fake=interaction)
     )
 
     assert interaction.response.sent["ephemeral"] is True

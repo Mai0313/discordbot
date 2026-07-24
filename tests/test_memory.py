@@ -78,10 +78,10 @@ from discordbot.cogs._memory.extraction import (
     observation_key_sources_from_text,
 )
 
+from tests.helpers.casting import as_bot, as_interaction
+
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
-    from nextcord import Interaction
-    from nextcord.ext import commands
 
 USER_ID = 123456789
 
@@ -1243,14 +1243,14 @@ def _interaction(user_id: int = USER_ID) -> SimpleNamespace:
 
 def _memory_cog() -> MemoryCogs:
     """Builds a MemoryCogs instance with a stub bot."""
-    return MemoryCogs(bot=cast("commands.Bot", SimpleNamespace()))
+    return MemoryCogs(bot=as_bot(fake=SimpleNamespace()))
 
 
 async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
     write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -1266,7 +1266,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
     )
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     sent = interaction.response.sent
     assert sent["ephemeral"] is True
     view = sent["view"]
@@ -1283,7 +1283,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
 async def test_memory_show_handles_empty_memory(memory_isolated_dir: Path) -> None:
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
@@ -1507,7 +1507,7 @@ async def test_memory_regenerate_command_schedules_in_background(
     # Evidence must exist or the command short-circuits before scheduling.
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     interaction = _regen_interaction()
-    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # The command replies immediately and never blocks on the rebuild, so it
     # neither defers nor uses a followup.
@@ -1535,7 +1535,7 @@ async def test_memory_regenerate_command_reports_no_evidence(
     monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
     # No raw or detail evidence exists for this scope.
     interaction = _regen_interaction()
-    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # Without evidence the background task would no-op, so nothing is scheduled
     # and the user is told there is nothing to rebuild yet.
@@ -1561,7 +1561,7 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
 
     monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
     interaction = _regen_interaction()
-    await MemoryCogs.memory_regenerate.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
     # Rejected up front: nothing scheduled, no defer, just the ephemeral notice.
     assert scheduled is False
@@ -1670,7 +1670,7 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
     assert next_button.disabled is False
 
     interaction = SimpleNamespace(response=EditResponseStub())
-    await next_button.callback(cast("Interaction[Any]", interaction))
+    await next_button.callback(as_interaction(fake=interaction))
     assert view.page_index == 1
     embed = interaction.response.edited["embed"]
     assert isinstance(embed, Embed)
@@ -1679,11 +1679,11 @@ async def test_memory_pages_view_navigates_and_disables_bounds() -> None:
     assert "1 筆" in (embed.footer.text or "")
     assert prev_button.disabled is False
 
-    await next_button.callback(cast("Interaction[Any]", interaction))
+    await next_button.callback(as_interaction(fake=interaction))
     assert view.page_index == 2
     assert next_button.disabled is True
 
-    await prev_button.callback(cast("Interaction[Any]", interaction))
+    await prev_button.callback(as_interaction(fake=interaction))
     assert view.page_index == 1
     edited_embed = interaction.response.edited["embed"]
     assert isinstance(edited_embed, Embed)
@@ -1711,7 +1711,7 @@ async def test_memory_pages_view_timeout_disables_buttons() -> None:
             self.edited = kwargs
 
     origin = OriginStub()
-    view.bind_origin(interaction=cast("Interaction[Any]", origin))
+    view.bind_origin(interaction=as_interaction(fake=origin))
     await view.on_timeout()
     assert origin.edited["view"] is view
     assert all(child.disabled for child in view.children if isinstance(child, Button))
@@ -1775,7 +1775,7 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 第一筆觀察")
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert "1 筆" in (embed.description or "")
@@ -1790,7 +1790,7 @@ async def test_memory_show_strips_version_header_and_counts_pending(
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 新觀察")
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     assert (embed.description or "").startswith("## 使用者輪廓")
@@ -1804,7 +1804,7 @@ async def test_memory_show_does_not_corrupt_malformed_version_token(
     write_main_memory(scope=USER_SCOPE, content="v10 是一段被手動編輯的內容", identity=IDENTITY)
     cog = _memory_cog()
     interaction = _interaction()
-    await MemoryCogs.memory_show.callback(cog, cast("Interaction[Any]", interaction))
+    await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
     # Only an exact `v1\n` header is stripped; `v10...` must survive intact.

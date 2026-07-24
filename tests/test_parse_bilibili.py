@@ -1,13 +1,11 @@
 """Tests for the Bilibili-context builder that feeds linked videos to the answer model."""
 
 import time
-from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any
 import asyncio
 from pathlib import Path
 import threading
 
-from google import genai
 import pytest
 
 from discordbot.utils.downloader import VideoMetadata, DownloadResult, VideoDownloader
@@ -22,14 +20,9 @@ from discordbot.cogs._gen_reply.link_sources.bilibili import (
     build_bilibili_context_messages,
 )
 
-from tests.helpers.casting import step_dicts
+from tests.helpers.casting import step_dicts, make_stub_gemini_client
 
 _URL = "https://www.bilibili.com/video/BV1jpK86hEc8"
-
-
-def _fake_client() -> genai.Client:
-    """Stands in for a Gemini client the builder never actually calls through."""
-    return cast("genai.Client", SimpleNamespace())
 
 
 def _metadata(
@@ -133,7 +126,7 @@ async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any
     blocks = await build_bilibili_context_messages(
         url=_URL,
         answer_model_is_gemini=gemini,
-        gemini_client=_fake_client(),
+        gemini_client=make_stub_gemini_client(),
         allow_media_ingest=ingest,
     )
     return step_dicts(steps=blocks)
@@ -322,7 +315,7 @@ async def test_a_resolved_short_link_lists_both_urls(monkeypatch: pytest.MonkeyP
         steps=await build_bilibili_context_messages(
             url=short_url,
             answer_model_is_gemini=True,
-            gemini_client=_fake_client(),
+            gemini_client=make_stub_gemini_client(),
             allow_media_ingest=True,
         )
     )
@@ -533,7 +526,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
                 build_bilibili_context_messages(
                     url="https://www.bilibili.com/video/av170001",
                     answer_model_is_gemini=True,
-                    gemini_client=_fake_client(),
+                    gemini_client=make_stub_gemini_client(),
                     allow_media_ingest=False,
                 ),
                 timeout=5.0,
