@@ -299,9 +299,9 @@ class ThreadsCogs(commands.Cog):
             # parse() blocks on HTTP fetch + media downloads, so run its enter
             # off the event loop; the reply runs while the temp files still exist
             # and the matching exit cleans them up afterwards.
-            parse_cm = self.downloader.parse(url)
+            parse_cm = self.downloader.parse(url=url)
             try:
-                results = await asyncio.to_thread(parse_cm.__enter__)
+                conversation = await asyncio.to_thread(parse_cm.__enter__)
             # Broad on purpose: a fetch failure must not escape into the listener; the ❌
             # reaction is the user-visible outcome.
             except Exception as error:
@@ -315,6 +315,9 @@ class ThreadsCogs(commands.Cog):
                 await self._mark_failed(message=message, current_emoji=current_emoji)
                 return
             try:
+                # The expansion shows the reply chain only; the comments the parse also carries
+                # are gen_reply's to read, and there is no embed budget left for them here.
+                results = conversation.chain
                 if not results:
                     logfire.info(
                         "Threads parse returned no post; treating as unavailable", url=url
