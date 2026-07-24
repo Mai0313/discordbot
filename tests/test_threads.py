@@ -447,6 +447,40 @@ def test_a_section_header_ends_the_targets_own_replies(
     ]
 
 
+def test_a_target_with_no_author_collects_no_comments(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty author matches every post whose `reply_to_author` is missing, so it matches none."""
+    html = _sjs_html(
+        [{"post": {"code": "TARGET", "caption": {"text": "Author data missing"}}}],
+        [_thread_post_payload(code="R1", username="commenter", text="Comment")],
+    )
+    _stub_html(monkeypatch, html)
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert [post.text for post in conversation.chain] == ["Author data missing"]
+    assert conversation.reply_branches == []
+
+
+def test_a_page_without_the_post_yields_an_empty_conversation(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page carrying no such post reads as empty, which is the callers' "unavailable" signal."""
+    _stub_html(
+        monkeypatch,
+        _sjs_html([
+            _thread_post_payload(code="SOMEONE_ELSE", username="other", text="Other post")
+        ]),
+    )
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert conversation.chain == []
+    assert conversation.target is None
+    assert conversation.reply_branches == []
+
+
 def test_a_malformed_thread_does_not_cost_the_target(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
