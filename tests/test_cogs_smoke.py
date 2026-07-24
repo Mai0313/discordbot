@@ -132,6 +132,11 @@ class DownloaderStub:
         return self.results.pop(0)
 
 
+# Body of the comment every readable ParseResultStub conversation carries, so a test can assert
+# the Discord expansion never renders it.
+_STUB_COMMENT_TEXT = "a stranger's comment the expansion must ignore"
+
+
 class ParseResultStub:
     """Context manager stub for Threads parse results."""
 
@@ -140,10 +145,22 @@ class ParseResultStub:
         self.results = results
 
     def __enter__(self) -> ThreadsConversation:
-        """Returns the parsed conversation or raises the configured parsing error."""
+        """Returns the parsed conversation or raises the configured parsing error.
+
+        A readable post always comes back carrying a comment, because that is what production
+        yields now: the expansion is supposed to ignore them, and a stub with no comments in it
+        cannot tell "ignores them" apart from "never saw any".
+        """
         if isinstance(self.results, BaseException):
             raise self.results
-        return ThreadsConversation(chain=self.results)
+        return ThreadsConversation(
+            chain=self.results,
+            reply_branches=(
+                [[_thread_output(text=_STUB_COMMENT_TEXT, image_urls=["https://x.test/c.png"])]]
+                if self.results
+                else []
+            ),
+        )
 
     def __exit__(
         self,
@@ -367,6 +384,12 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     assert success_message.suppressed
     assert success_message.replies[0]["files"]
     assert success_message.reactions[-1] == "<:greencheck:1517565102424068226>"
+    # The parse now carries the comments too, but the expansion shows the chain only: the
+    # 10-embed cap belongs to the linked post, and a comment would push its own images out.
+    assert all(
+        _STUB_COMMENT_TEXT not in (embed.description or "")
+        for embed in success_message.replies[0]["embeds"]
+    )
 
     warning_message = FakeDiscordMessage()
     warning_message.__dict__["author"] = FakeUser(bot=False)

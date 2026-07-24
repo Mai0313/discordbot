@@ -288,9 +288,11 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     """The comments under the post carry the discussion, so they ride in the same text block."""
+    target = _post(text="target")
+    target.reply_count = 40  # the page ships a ranked sample, so the two counts differ
     _stub_parse(
         monkeypatch,
-        [_post(text="target")],
+        [target],
         branches=[
             [
                 _post(text="first comment", author="bob", reply_to="alice"),
@@ -308,14 +310,17 @@ async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyP
     text = step_dicts(steps=blocks[1]["content"])[0]["text"]
     assert "first comment" in text
     assert "second comment" in text
+    # The linked post comes first: the discussion is context for it, not the other way round.
+    assert text.index("TARGET (the post the user linked)") < text.index("first comment")
     # A branch stays together and the nested comment names who it answers, so the tree survives
     # being flattened into text.
     assert text.index("first comment") < text.index("answering bob") < text.index("second comment")
     assert "nested comment by the linked post's own author, replying to @bob" in text
     assert text.count("a comment on the linked post, by a reader") == 2
-    # The header separates the two counts: the page ships a ranked SAMPLE of the direct comments
-    # plus whatever is nested under them, so one flat total would read as a contradiction.
-    assert "2 of its 2 direct comments" in text
+    # The header separates the two counts, and they are deliberately different here: the page
+    # ships a ranked SAMPLE of the direct comments plus whatever is nested under them, so one
+    # flat total (or the two counts swapped) would read as a contradiction.
+    assert "2 of its 40 direct comments" in text
     assert "plus 1 nested replies" in text
 
 
