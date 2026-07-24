@@ -19,9 +19,9 @@ jobs:
       (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: read
-      issues: read
+      contents: write # Required for Claude to push fixes to a branch
+      pull-requests: write # Required for Claude to open PRs and reply to reviews
+      issues: write # Required for Claude to comment on issues
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
     steps:
@@ -29,6 +29,17 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      # The action loads settings from the `user` source, so a CLAUDE.md placed in the
+      # runner's HOME is picked up as global memory alongside the repo's own CLAUDE.md.
+      # Skipped entirely when the variable is unset.
+      - name: Install global CLAUDE.md
+        if: vars.AGENT_GLOBAL_CLAUDE_MD_URL != ''
+        env:
+          URL: ${{ vars.AGENT_GLOBAL_CLAUDE_MD_URL }}
+        run: |
+          mkdir -p "${HOME}/.claude"
+          curl -fsSL "${URL}" -o "${HOME}/.claude/CLAUDE.md"
 
       - name: Run Claude Code
         id: claude
@@ -40,10 +51,17 @@ jobs:
           additional_permissions: |
             actions: read
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
+          # Skills come from a plugin marketplace. Both are newline-separated and
+          # optional, so an unconfigured repo runs with the built-in skills only.
+          # AGENT_PLUGIN_MARKETPLACES: git URLs, e.g. https://github.com/OWNER/skills.git
+          # AGENT_PLUGINS: plugin names, e.g. personal@marketplace-name
+          plugin_marketplaces: ${{ vars.AGENT_PLUGIN_MARKETPLACES }}
+          plugins: ${{ vars.AGENT_PLUGINS }}
 
-          # Optional: Add claude_args to customize behavior and configuration
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
-          # claude_args: '--allowed-tools Bash(gh pr *)'
+          # Merged into the runner's ~/.claude/settings.json. Only settings that mean
+          # something headless belong here; TUI keys are deliberately left out.
+          settings: |
+            {
+              "effortLevel": "high",
+              "attribution": { "pr": "", "sessionUrl": false }
+            }
