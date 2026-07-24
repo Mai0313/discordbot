@@ -61,8 +61,12 @@ MAX_THREADS_POSTS = 6
 MAX_THREADS_REPLIES = 30
 
 # The pipeline's own inline markers, opening or closing. Quoted post text is the one place they
-# can arrive written by someone else; `_defuse_markers` has the why.
-_MARKER_TAG_RE = re.compile(r"</?(generate-(?:voice|image|music|video)|deep-research)>")
+# can arrive written by someone else; `_defuse_markers` has the why. Case-insensitive because
+# `markers.py` extracts case-insensitively, and a defusing pass that is stricter than the
+# extraction it defends against is no defence at all.
+_MARKER_TAG_RE = re.compile(
+    r"</?(generate-(?:voice|image|music|video)|deep-research)>", flags=re.IGNORECASE
+)
 
 # Closes the quoted block. The guard on the separator opens the data; this one closes it, which
 # matters once the quoted text runs to thousands of characters written by strangers and the
