@@ -28,7 +28,7 @@ from discordbot.cogs._economy import views, interactions
 from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
-from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
+from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
 from discordbot.typings.config import LoggingConfig
 from discordbot.typings.economy import (
     PortfolioView,
@@ -139,11 +139,11 @@ class ParseResultStub:
         """Stores parsed results or the error to raise on entry."""
         self.results = results
 
-    def __enter__(self) -> list[ThreadsOutput]:
-        """Returns parsed posts or raises the configured parsing error."""
+    def __enter__(self) -> ThreadsConversation:
+        """Returns the parsed conversation or raises the configured parsing error."""
         if isinstance(self.results, BaseException):
             raise self.results
-        return self.results
+        return ThreadsConversation(chain=self.results)
 
     def __exit__(
         self,
