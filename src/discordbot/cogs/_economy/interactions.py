@@ -1,6 +1,6 @@
 """Shared send/edit helpers for economy interaction responses."""
 
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 from nextcord import File, Embed, Message, Interaction
 from nextcord.ui import View
@@ -24,16 +24,13 @@ async def send_expiring_followup(
 ) -> None:
     """Sends a game-related economy embed and schedules its cleanup."""
     extra_files = [file] if file is not None else None
-    kwargs: dict[str, Any] = {
-        "embed": embed,
-        "wait": True,
-        **embed_spacer_payload(
-            embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files
-        ),
-    }
+    spacer = embed_spacer_payload(
+        embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files
+    )
     if view is not None:
-        kwargs["view"] = view
-    message = await interaction.followup.send(**kwargs)
+        message = await interaction.followup.send(embed=embed, view=view, wait=True, **spacer)
+    else:
+        message = await interaction.followup.send(embed=embed, wait=True, **spacer)
     user_name = interaction.user.name if interaction.user is not None else None
     schedule_public_message_delete(message=message, user_name=user_name)
 
