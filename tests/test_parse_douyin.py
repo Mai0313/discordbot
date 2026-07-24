@@ -1,7 +1,6 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
-from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 import asyncio
 from pathlib import Path
 
@@ -28,10 +27,7 @@ from discordbot.cogs._gen_reply.link_sources.douyin import (
     build_douyin_context_messages,
 )
 
-from tests.helpers.casting import step_dicts
-
-if TYPE_CHECKING:
-    from google import genai
+from tests.helpers.casting import step_dicts, make_stub_gemini_client
 
 _URL = "https://v.douyin.com/abc123"
 
@@ -138,7 +134,7 @@ async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any
     blocks = await build_douyin_context_messages(
         url=_URL,
         answer_model_is_gemini=gemini,
-        gemini_client=cast("genai.Client", SimpleNamespace()),
+        gemini_client=make_stub_gemini_client(),
         allow_media_ingest=ingest,
     )
     return step_dicts(steps=blocks)
@@ -395,7 +391,7 @@ async def test_the_fetch_bound_is_released_before_the_upload(
                 build_douyin_context_messages(
                     url="https://v.douyin.com/other",
                     answer_model_is_gemini=True,
-                    gemini_client=cast("genai.Client", SimpleNamespace()),
+                    gemini_client=make_stub_gemini_client(),
                     allow_media_ingest=False,
                 ),
                 timeout=5.0,

@@ -5,7 +5,6 @@ import base64
 from typing import TYPE_CHECKING, cast
 from pathlib import Path
 
-from google import genai
 from nextcord import AllowedMentions
 
 from discordbot.cogs import research as research_cog
@@ -21,12 +20,15 @@ from discordbot.cogs._research.delivery import (
 )
 from discordbot.cogs._research.streaming import ResearchProgressStreamer
 
-from tests.helpers.casting import make_media_hosting_config
+from tests.helpers.casting import (
+    as_client,
+    as_message,
+    make_media_hosting_config,
+    as_interaction_event_stream,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from nextcord import Thread, Message
+    from nextcord import Thread
     from google.genai.interactions import InteractionSSEEvent
 
     from discordbot.cogs._research.database import ResearchPhase
@@ -198,22 +200,12 @@ def _fake_client(*, streams: list[_FakeStream], terminal: object) -> SimpleNames
     )
 
 
-def _as_client(fake: SimpleNamespace) -> genai.Client:
-    """Views a fake client double as the genai.Client a production signature expects."""
-    return cast("genai.Client", fake)
-
-
 def _as_event(fake: object) -> "InteractionSSEEvent":
     """Views a fabricated SSE event double as the real SDK union a production signature expects.
 
     Production discriminates on `.event_type`, not isinstance, so a SimpleNamespace event is safe.
     """
     return cast("InteractionSSEEvent", fake)
-
-
-def _as_event_stream(fake: "_FakeStream") -> "AsyncIterator[InteractionSSEEvent]":
-    """Views a fabricated SSE stream double as the real SDK event stream a signature expects."""
-    return cast("AsyncIterator[InteractionSSEEvent]", fake)
 
 
 def _created_event(*, interaction_id: str = "int_9", event_id: str = "e1") -> SimpleNamespace:
@@ -262,7 +254,7 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
         persisted.append(interaction_id)
 
     result = await agent.stream_antigravity(
-        client=_as_client(client),
+        client=as_client(fake=client),
         agent="antigravity-preview-05-2026",
         brief="b",
         system_instruction="sys",
@@ -300,7 +292,7 @@ async def test_stream_reconnects_when_stream_ends_without_terminal(monkeypatch) 
         return None
 
     result = await agent.stream_antigravity(
-        client=_as_client(client),
+        client=as_client(fake=client),
         agent="a",
         brief="b",
         system_instruction="s",
@@ -330,7 +322,7 @@ async def test_stream_reconnects_after_a_mid_stream_drop(monkeypatch) -> None:  
         return None
 
     result = await agent.stream_antigravity(
-        client=_as_client(client),
+        client=as_client(fake=client),
         agent="a",
         brief="b",
         system_instruction="s",
@@ -359,7 +351,7 @@ async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) ->
     # Streaming exhausts its reconnects, so the driver degrades to the poll and still returns the
     # authoritative terminal result.
     result = await agent.stream_antigravity(
-        client=_as_client(client),
+        client=as_client(fake=client),
         agent="a",
         brief="b",
         system_instruction="s",
@@ -383,7 +375,7 @@ async def test_stream_antigravity_reraises_when_create_never_yields_an_id() -> N
     raised = False
     try:
         await agent.stream_antigravity(
-            client=_as_client(client),
+            client=as_client(fake=client),
             agent="a",
             brief="b",
             system_instruction="s",
@@ -401,7 +393,7 @@ async def test_resume_research_stream_drives_from_get_stream() -> None:
     )
     streamer = ResearchProgressStreamer(status=None, label="Deep Research")
     result = await agent.resume_research_stream(
-        client=_as_client(client), interaction_id="int_9", streamer=streamer
+        client=as_client(fake=client), interaction_id="int_9", streamer=streamer
     )
     # Resume re-attaches via get(stream=True) and never calls create.
     assert client.aio.interactions.create_kwargs == {}
@@ -421,7 +413,7 @@ async def test_stream_plan_passes_research_tools_and_returns_plan() -> None:
     )
     streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Planning")
     plan = await agent.stream_plan(
-        client=_as_client(client),
+        client=as_client(fake=client),
         agent="deep-research-preview-04-2026",
         brief="b",
         system_instruction="sys",
@@ -449,7 +441,7 @@ async def test_stream_refine_passes_research_tools_and_returns_plan() -> None:
     )
     streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Re-planning")
     plan = await agent.stream_refine(
-        client=_as_client(client),
+        client=as_client(fake=client),
         agent="deep-research-preview-04-2026",
         previous_interaction_id="plan_v1",
         feedback="tighten the scope",
@@ -575,7 +567,9 @@ async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
         status=status, label="Antigravity", preview_interval_seconds=0.01
     )
     await streamer.stream(
-        events=_as_event_stream(_FakeStream([_thought_event("aaa"), _thought_event("bbb")]))
+        events=as_interaction_event_stream(
+            fake=_FakeStream([_thought_event("aaa"), _thought_event("bbb")])
+        )
     )
     assert streamer.reasoning == "aaabbb"
     assert streamer._editor_task is None  # the cadence editor is always stopped in finally
@@ -904,7 +898,7 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     # would overflow, so it must ride its own trailing message.
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
-        status=cast("Message", status),  # minimal status-message double
+        status=as_message(fake=status),  # minimal status-message double
         owner_mention="<@1>",
         result=_completed_result(report_text="X" * 1990),
         footer=footer,
@@ -930,7 +924,7 @@ async def test_delivery_inlines_footer_for_short_reports() -> None:
     thread = _FakeThread()
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
-        status=cast("Message", status),  # minimal status-message double
+        status=as_message(fake=status),  # minimal status-message double
         owner_mention="<@1>",
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
@@ -959,7 +953,7 @@ async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
     )
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
-        status=cast("Message", status),  # minimal status-message double
+        status=as_message(fake=status),  # minimal status-message double
         owner_mention="<@1>",
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
@@ -986,7 +980,7 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
     thread.guild = SimpleNamespace(filesize_limit=100)  # each file fits, md + png together do not
     await deliver_report(
         thread=cast("Thread", thread),  # minimal Thread double for the delivery path
-        status=cast("Message", status),  # minimal status-message double
+        status=as_message(fake=status),  # minimal status-message double
         owner_mention="<@1>",
         result=_completed_result(report_text="R" * 60, image_bytes=b"x" * 60),
         footer="-# footer",

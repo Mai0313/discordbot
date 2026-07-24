@@ -1,10 +1,7 @@
 """Tests for the Threads-context builder that feeds linked posts to the answer model."""
 
-from types import SimpleNamespace
-from typing import cast
 from pathlib import Path
 
-from google import genai
 import pytest
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader
@@ -18,7 +15,7 @@ from discordbot.cogs._gen_reply.link_sources.threads import (
     build_threads_context_messages,
 )
 
-from tests.helpers.casting import step_dicts
+from tests.helpers.casting import step_dicts, make_stub_gemini_client
 
 _URL = "https://www.threads.com/@alice/post/ABC123"
 
@@ -107,11 +104,6 @@ def _stub_media(
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
 
 
-def _client() -> genai.Client:
-    """A stand-in Gemini client; the stubbed upload never reaches through it."""
-    return cast("genai.Client", SimpleNamespace())
-
-
 async def test_media_is_uploaded_and_referenced_by_files_uri(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -128,7 +120,7 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert len(blocks) == 2
@@ -157,7 +149,7 @@ async def test_images_are_downscaled_before_upload(monkeypatch: pytest.MonkeyPat
     _stub_media(monkeypatch, uploads=uploads)
 
     await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     source, mime_type, _ = uploads.calls[0]
@@ -172,7 +164,7 @@ async def test_video_is_uploaded_from_disk_and_cleaned_up(monkeypatch: pytest.Mo
     _stub_media(monkeypatch, uploads=uploads)
 
     await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     source, mime_type, _ = uploads.calls[0]
@@ -190,7 +182,7 @@ async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.Monke
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     media = [
@@ -209,7 +201,7 @@ async def test_build_caps_media_parts(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_media(monkeypatch, uploads=_Uploads())
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     media = [
@@ -231,7 +223,7 @@ async def test_videos_share_the_media_budget_with_images(monkeypatch: pytest.Mon
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     media = [
@@ -253,7 +245,7 @@ async def test_a_full_image_budget_leaves_no_room_for_video(
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     media = [
@@ -273,7 +265,7 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
     _stub_media(monkeypatch, uploads=_Uploads())
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     text = step_dicts(steps=blocks[1]["content"])[0]["text"]
@@ -310,7 +302,7 @@ async def test_build_non_gemini_rides_urls_as_text(monkeypatch: pytest.MonkeyPat
     _stub_media(monkeypatch, uploads=uploads)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=False, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=False, gemini_client=make_stub_gemini_client()
     )
 
     # The separator must not claim the media was fetched, since only its URLs are supplied.
@@ -331,7 +323,7 @@ async def test_failed_media_degrades_to_an_honest_text_block(
     _stub_media(monkeypatch, uploads=_Uploads(), image_fetch_fails=True)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
@@ -348,7 +340,7 @@ async def test_failed_upload_degrades_to_an_honest_text_block(
     _stub_media(monkeypatch, uploads=_Uploads(fail=True))
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_TEXT_ONLY_SEPARATOR
@@ -364,7 +356,7 @@ async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.Monk
     _stub_media(monkeypatch, uploads=uploads, image_fetch_fails=True)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
@@ -380,7 +372,7 @@ async def test_text_only_post_keeps_the_context_separator(monkeypatch: pytest.Mo
     _stub_media(monkeypatch, uploads=_Uploads())
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
@@ -393,7 +385,7 @@ async def test_build_empty_post_returns_unavailable_notice(
     _stub_parse(monkeypatch, [])
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert len(blocks) == 1
@@ -411,7 +403,7 @@ async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.Mon
     monkeypatch.setattr(target=ThreadsDownloader, name="parse_metadata", value=boom)
 
     blocks = await build_threads_context_messages(
-        url=_URL, answer_model_is_gemini=True, gemini_client=_client()
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
     assert len(blocks) == 1

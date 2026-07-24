@@ -17,7 +17,15 @@ from nextcord.ext import commands
 from discordbot.utils.media_delivery import MediaHostingConfig
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
+    from google import genai
     from aiohttp import ClientResponse
+    from nextcord import Guild
+    from google.genai.interactions import InteractionSSEEvent
+
+    from discordbot import cli
+    from discordbot.utils.avatars import AvatarUser
 
 
 def as_message(fake: object) -> Message:
@@ -35,6 +43,26 @@ def as_bot(fake: object) -> commands.Bot:
     return cast("commands.Bot", fake)
 
 
+def as_discord_bot(fake: object) -> "cli.DiscordBot":
+    """Views a bot double as cli.DiscordBot for its own unbound method calls."""
+    return cast("cli.DiscordBot", fake)
+
+
+def as_command_context(fake: object) -> "commands.Context[commands.Bot]":
+    """Views a context double as the commands.Context a command handler expects."""
+    return cast("commands.Context[commands.Bot]", fake)
+
+
+def as_avatar_user(fake: object) -> "AvatarUser":
+    """Views a fake user double as the AvatarUser protocol ``guild_avatar_url`` expects."""
+    return cast("AvatarUser", fake)
+
+
+def as_guild(fake: object) -> "Guild | None":
+    """Views a fake guild double as the nextcord Guild ``guild_avatar_url`` expects."""
+    return cast("Guild | None", fake)
+
+
 def step_dicts(steps: object) -> list[dict[str, Any]]:
     """Views a typed input/step list as plain dicts for key-level assertions.
 
@@ -44,6 +72,25 @@ def step_dicts(steps: object) -> list[dict[str, Any]]:
     is safe.
     """
     return cast("list[dict[str, Any]]", steps)
+
+
+def as_client(fake: object) -> "genai.Client":
+    """Views a fake Gemini client double as the genai.Client a production signature expects."""
+    return cast("genai.Client", fake)
+
+
+def make_stub_gemini_client() -> "genai.Client":
+    """Builds an empty Gemini client stub for paths that never call through it."""
+    return as_client(fake=SimpleNamespace())
+
+
+def as_interaction_event_stream(fake: object) -> "AsyncIterator[InteractionSSEEvent]":
+    """Views a fabricated SSE stream double as the SDK event stream a signature expects.
+
+    Production discriminates on ``.event_type``, not isinstance, so ``SimpleNamespace``
+    events are safe.
+    """
+    return cast("AsyncIterator[InteractionSSEEvent]", fake)
 
 
 def make_not_found(message: str = "missing") -> NotFound:

@@ -1,6 +1,5 @@
 """Tests for public response cleanup helpers."""
 
-from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
 
@@ -20,10 +19,7 @@ from discordbot.utils.message_cleanup import (
     schedule_public_message_delete,
 )
 
-from tests.helpers.casting import as_message, as_interaction, make_not_found
-
-if TYPE_CHECKING:
-    from nextcord.ext import commands
+from tests.helpers.casting import as_bot, as_message, as_interaction, make_not_found
 
 
 class _DeletableMessageStub:
@@ -222,7 +218,7 @@ async def test_delete_public_message_after_waits_then_deletes() -> None:
     """Public response cleanup deletes the message after the configured delay."""
     message = _DeletableMessageStub()
 
-    await delete_public_message_after(message=cast("Message", message), delay=0)
+    await delete_public_message_after(message=as_message(fake=message), delay=0)
 
     assert message.delete_calls == 1
 
@@ -240,20 +236,20 @@ async def test_track_public_message_persists_message_identity() -> None:
         user_name="alice",
     )
 
-    record = await track_public_message(message=cast("Message", message), user_name="alice")
+    record = await track_public_message(message=as_message(fake=message), user_name="alice")
 
     assert record == expected
     assert await list_pending_public_messages() == [expected]
-    await track_public_message(message=cast("Message", message))
+    await track_public_message(message=as_message(fake=message))
     assert await list_pending_public_messages() == [expected]
 
 
 async def test_delete_public_message_after_forgets_successful_cleanup() -> None:
     """Successful TTL cleanup removes the persisted restart record."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await track_public_message(message=cast("Message", message))
+    await track_public_message(message=as_message(fake=message))
 
-    await delete_public_message_after(message=cast("Message", message), delay=0)
+    await delete_public_message_after(message=as_message(fake=message), delay=0)
 
     assert message.delete_calls == 1
     assert await list_pending_public_messages() == []
@@ -262,10 +258,10 @@ async def test_delete_public_message_after_forgets_successful_cleanup() -> None:
 async def test_delete_tracked_public_messages_deletes_stale_restart_records() -> None:
     """Startup cleanup deletes persisted Discord messages and clears the records."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await track_public_message(message=cast("Message", message))
+    await track_public_message(message=as_message(fake=message))
     bot = _BotStub()
 
-    await delete_tracked_public_messages(bot=cast("commands.Bot", bot))
+    await delete_tracked_public_messages(bot=as_bot(fake=bot))
 
     assert bot.deleted == [(20, 10)]
     assert bot.fetch_calls == [20]
@@ -275,10 +271,10 @@ async def test_delete_tracked_public_messages_deletes_stale_restart_records() ->
 async def test_delete_tracked_public_messages_skips_non_messageable_cached_channel() -> None:
     """Cached PartialMessageable-like channels should be resolved via fetch_channel first."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await track_public_message(message=cast("Message", message))
+    await track_public_message(message=as_message(fake=message))
     bot = _BotStub(cached_channel=_NonMessageableChannelStub())
 
-    await delete_tracked_public_messages(bot=cast("commands.Bot", bot))
+    await delete_tracked_public_messages(bot=as_bot(fake=bot))
 
     assert bot.deleted == [(20, 10)]
     assert bot.fetch_calls == [20]
@@ -288,9 +284,9 @@ async def test_delete_tracked_public_messages_skips_non_messageable_cached_chann
 async def test_delete_tracked_public_messages_keeps_unresolved_channel_records() -> None:
     """Startup cleanup keeps records when it cannot resolve a message-fetchable channel."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
-    await track_public_message(message=cast("Message", message))
+    await track_public_message(message=as_message(fake=message))
 
-    await delete_tracked_public_messages(bot=cast("commands.Bot", _UnfetchableBotStub()))
+    await delete_tracked_public_messages(bot=as_bot(fake=_UnfetchableBotStub()))
 
     assert await list_pending_public_messages() == [
         PendingPublicMessage(channel_id=20, message_id=10)
@@ -362,7 +358,7 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
 async def test_delete_public_message_after_ignores_already_deleted_message() -> None:
     """Manual deletion before cleanup should not surface as a task failure."""
     await delete_public_message_after(
-        message=cast("Message", _AlreadyDeletedMessageStub()), delay=0
+        message=as_message(fake=_AlreadyDeletedMessageStub()), delay=0
     )
 
 
@@ -384,7 +380,7 @@ async def test_schedule_public_message_delete_uses_default_ttl(
         fake_delete_public_message_after,
     )
 
-    schedule_public_message_delete(message=cast("Message", _DeletableMessageStub()))
+    schedule_public_message_delete(message=as_message(fake=_DeletableMessageStub()))
     await asyncio.sleep(delay=0)
 
     assert scheduled_delay == PUBLIC_MESSAGE_TTL_SECONDS

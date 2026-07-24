@@ -12,10 +12,9 @@ from discordbot.cogs._gen_reply.interactions import (
     adapt_interactions_stream,
 )
 
-from tests.helpers.casting import step_dicts
+from tests.helpers.casting import step_dicts, as_interaction_event_stream
 
 if TYPE_CHECKING:
-    from google.genai.interactions import InteractionSSEEvent
     from openai.types.responses.response_input_param import ResponseInputParam
 
 
@@ -167,14 +166,6 @@ async def _aiter(events: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace
         yield event
 
 
-def _as_stream(events: list[SimpleNamespace]) -> "AsyncIterator[InteractionSSEEvent]":
-    """Views the fabricated events as the real SDK stream the adapter consumes.
-
-    Production discriminates on `.event_type`, not isinstance, so SimpleNamespace events are safe.
-    """
-    return cast("AsyncIterator[InteractionSSEEvent]", _aiter(events=events))
-
-
 def _ns(event: object) -> SimpleNamespace:
     """Narrows an adapted event to the namespace shape the adapter fabricates."""
     assert isinstance(event, SimpleNamespace)
@@ -183,7 +174,9 @@ def _ns(event: object) -> SimpleNamespace:
 
 async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     """Interactions events become Responses-shaped events the streamer consumes."""
-    stream = adapt_interactions_stream(stream=_as_stream(events=_interaction_events()))
+    stream = adapt_interactions_stream(
+        stream=as_interaction_event_stream(fake=_aiter(events=_interaction_events()))
+    )
     out = [event async for event in stream]
 
     types = [event.type for event in out]
@@ -207,5 +200,7 @@ async def test_adapt_interactions_stream_raises_on_error_event() -> None:
     events = [SimpleNamespace(event_type="error", error="boom")]
 
     with pytest.raises(RuntimeError):
-        async for _ in adapt_interactions_stream(stream=_as_stream(events=events)):
+        async for _ in adapt_interactions_stream(
+            stream=as_interaction_event_stream(fake=_aiter(events=events))
+        ):
             pass

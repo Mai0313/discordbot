@@ -2,7 +2,6 @@
 
 import io
 from types import SimpleNamespace
-from typing import cast
 import asyncio
 from pathlib import Path
 
@@ -14,6 +13,8 @@ from discordbot.cogs._gen_reply.files_api import (
     upload_to_files_api,
     upload_as_input_file,
 )
+
+from tests.helpers.casting import as_client
 
 
 class _Files:
@@ -49,7 +50,7 @@ class _Files:
 
 def _client(files: _Files) -> genai.Client:
     """Wraps a fake Files resource in the client shape the helper reaches through."""
-    return cast("genai.Client", SimpleNamespace(aio=SimpleNamespace(files=files)))
+    return as_client(fake=SimpleNamespace(aio=SimpleNamespace(files=files)))
 
 
 async def test_upload_returns_the_active_uri() -> None:

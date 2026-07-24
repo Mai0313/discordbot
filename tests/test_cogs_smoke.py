@@ -67,7 +67,14 @@ from discordbot.cogs._games.blackjack_views import BlackjackLobbyView
 from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
 
 from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
-from tests.helpers.casting import as_bot, as_message, as_interaction, make_media_hosting_config
+from tests.helpers.casting import (
+    as_bot,
+    as_message,
+    as_discord_bot,
+    as_interaction,
+    as_command_context,
+    make_media_hosting_config,
+)
 from tests.helpers.discord_mocks import (
     FakeUser,
     DiscordPayload,
@@ -2090,16 +2097,6 @@ async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.Mon
     assert calls == [bot]
 
 
-def _as_discord_bot(fake: object) -> cli.DiscordBot:
-    """Views a bot double as cli.DiscordBot for its own unbound method calls."""
-    return cast("cli.DiscordBot", fake)
-
-
-def _as_command_context(fake: object) -> commands.Context[commands.Bot]:
-    """Views a context double as commands.Context for on_command_error."""
-    return cast("commands.Context[commands.Bot]", fake)
-
-
 def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies every cog setup function registers the expected cog type."""
     added: list[
@@ -2153,7 +2150,7 @@ def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
         loaded.append((modules, stop_at_error))
 
     bot = SimpleNamespace(load_extensions=record_load_extensions)
-    cli.DiscordBot._load_cogs_sync(_as_discord_bot(fake=bot))
+    cli.DiscordBot._load_cogs_sync(as_discord_bot(fake=bot))
     assert loaded[0][1] is True
     assert "discordbot.cogs.template" in loaded[0][0]
 
@@ -2182,12 +2179,12 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     )
     user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
     await cli.DiscordBot.on_message(
-        _as_discord_bot(fake=bot), message=as_message(fake=user_message)
+        as_discord_bot(fake=bot), message=as_message(fake=user_message)
     )
     assert processed == [user_message]
     assert rewards[0]["amount"] == cli.BASE_MESSAGE_REWARD_AMOUNT
     await cli.DiscordBot.on_message(
-        _as_discord_bot(fake=bot), message=as_message(fake=SimpleNamespace(author=bot.user))
+        as_discord_bot(fake=bot), message=as_message(fake=SimpleNamespace(author=bot.user))
     )
     assert len(processed) == 1
     assert len(rewards) == 1
@@ -2205,21 +2202,21 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         command=SimpleNamespace(qualified_name="demo"),
     )
     await cli.DiscordBot.on_command_error(
-        _as_discord_bot(fake=bot), _as_command_context(fake=context), commands.NotOwner()
+        as_discord_bot(fake=bot), as_command_context(fake=context), commands.NotOwner()
     )
     await cli.DiscordBot.on_command_error(
-        _as_discord_bot(fake=bot),
-        _as_command_context(fake=context),
+        as_discord_bot(fake=bot),
+        as_command_context(fake=context),
         commands.MissingPermissions(missing_permissions=["kick_members"]),
     )
     await cli.DiscordBot.on_command_error(
-        _as_discord_bot(fake=bot),
-        _as_command_context(fake=context),
+        as_discord_bot(fake=bot),
+        as_command_context(fake=context),
         commands.BotMissingPermissions(missing_permissions=["send_messages"]),
     )
     await cli.DiscordBot.on_command_error(
-        _as_discord_bot(fake=bot),
-        _as_command_context(fake=context),
+        as_discord_bot(fake=bot),
+        as_command_context(fake=context),
         commands.CommandNotFound("nope"),
     )
     assert len(sent) == 4
@@ -2234,8 +2231,8 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
 
     monkeypatch.setattr(cli.logfire, "error", record_error)
     await cli.DiscordBot.on_command_error(
-        _as_discord_bot(fake=bot),
-        _as_command_context(fake=context),
+        as_discord_bot(fake=bot),
+        as_command_context(fake=context),
         commands.CommandInvokeError(ValueError("boom")),
     )
     assert len(sent) == 4
@@ -2270,13 +2267,13 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
     )
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
 
-    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
-    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     assert len(rewards) == 1
 
     # Backdate the last-reward stamp so the cooldown window has elapsed.
     bot._message_reward_at[1] -= cli.MESSAGE_REWARD_COOLDOWN_SECONDS + 1
-    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     assert len(rewards) == 2
 
 
@@ -2305,7 +2302,7 @@ async def test_cli_message_reward_cooldown_prunes_expired_users(
     )
 
     await cli.DiscordBot.on_message(
-        _as_discord_bot(fake=bot),
+        as_discord_bot(fake=bot),
         message=as_message(fake=SimpleNamespace(author=FakeUser(user_id=3, bot=False))),
     )
 
@@ -2339,9 +2336,9 @@ async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
     )
     message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
 
-    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     # The first credit failed, so the slot is rolled back and the next message retries.
     assert 1 not in bot._message_reward_at
-    await cli.DiscordBot.on_message(_as_discord_bot(fake=bot), message=as_message(fake=message))
+    await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     assert attempts == 2
     assert bot._message_reward_at.get(1) is not None
