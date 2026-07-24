@@ -149,6 +149,10 @@ async def test_media_is_uploaded_and_referenced_by_files_uri(
     assert not any(part["type"] == "input_image" for part in parts)
     # The filename keeps a real extension: the native Interactions bridge classifies by it.
     assert [part["filename"] for part in media] == ["threads_image_0.jpg", "threads_video_0.mp4"]
+    # The fence closes PAST the attachments: an instruction-shaped screenshot is the one part of
+    # this block nothing inspected, so it must not sit after the end-of-data marker.
+    assert parts[-1]["type"] == "input_text"
+    assert parts[-1]["text"] == THREADS_CONTEXT_TRAILER
 
 
 async def test_images_are_downscaled_before_upload(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -321,7 +325,7 @@ async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyP
     # ships a ranked SAMPLE of the direct comments plus whatever is nested under them, so one
     # flat total (or the two counts swapped) would read as a contradiction.
     assert "2 of its 40 direct comments" in text
-    assert "plus 1 nested replies" in text
+    assert "plus 1 of the 1 nested replies" in text
 
 
 async def test_a_comment_by_the_post_author_is_labelled_as_theirs(
@@ -390,6 +394,11 @@ async def test_one_deep_branch_cannot_starve_the_top_ranked_comments(
     for index in range(5):
         assert f"top comment {index}" in text
     assert text.count("[REPLY (") == MAX_THREADS_REPLIES
+    # A trimmed branch says so, and the header counts the nested layer against what the page
+    # carried — otherwise the model reads the last comment it was given as where the argument
+    # ended, and reports the trimmed count as the size of the discussion.
+    assert "further replies under this comment were not included" in text
+    assert f"of the {len(flame_war) - 1} nested replies the page carried" in text
 
 
 async def test_a_trailing_empty_comment_is_dropped_but_a_middle_one_survives(
@@ -470,6 +479,27 @@ async def test_a_post_whose_comments_the_page_withheld_says_so(
 
     text = step_dicts(steps=blocks[1]["content"])[0]["text"]
     assert "reports 381 replies, but the page did not include any of them" in text
+    assert "Do not state or imply that the post has no comments" in text
+
+
+async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A page whose only comment has no readable body did carry it, so saying otherwise is false."""
+    _stub_parse(
+        monkeypatch,
+        [_post(text="target")],
+        branches=[[_post(text="", author="bob", reply_to="alice")]],
+    )
+    _stub_media(monkeypatch, uploads=_Uploads())
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+    )
+
+    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    assert "carried 1 comment(s) under the linked post" in text
+    assert "did not include any of them" not in text
     assert "Do not state or imply that the post has no comments" in text
 
 
