@@ -36,7 +36,7 @@ jobs:
           # contents/pull-requests/issues write. Everything beyond that has to be
           # requested here.
           additional_permissions: |
-            actions: write
+            actions: read
 
           # Personal skills. The action adds the marketplace and installs the plugin
           # before the session starts, so these behave exactly like a local install.
