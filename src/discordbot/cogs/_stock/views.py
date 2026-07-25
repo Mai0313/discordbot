@@ -372,10 +372,15 @@ class StockPostTradeView(StockPublicView):
         custom_id="stock:refresh",
         row=0,
     )
-    async def refresh(
+    async def refresh_detail(
         self, _button: Button["StockPostTradeView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Edits the public message into a fresh detail view."""
+        """Edits the public message into a fresh detail view.
+
+        Not named `refresh`: nextcord's `View.__init__` rebinds every button callback
+        onto its own name, so that spelling would shadow `View.refresh(components)`
+        and crash the gateway's `MESSAGE_UPDATE` handler.
+        """
         self.stop()
         await edit_stock_detail(
             interaction=interaction, symbol=self.symbol, owner_id=self.owner_id
