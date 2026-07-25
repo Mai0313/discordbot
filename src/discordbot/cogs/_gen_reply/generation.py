@@ -522,12 +522,13 @@ class _RenderedAudio(Protocol):
 class _InteractionResult(Protocol):
     """Structural view of a non-streaming `interactions.create` result.
 
-    The genai response class cannot be named: `google.genai.interactions` star-imports
-    `Interaction` from both the request-union alias (which carries none of these attributes)
-    and the response module, and only the runtime import order makes the response class win,
-    so a nominal cast would type the wrong object. Excluding the stream with `isinstance`
-    is not enough either, since `AsyncStream` is only structurally an `AsyncIterator`, so the
-    checker keeps it in the union; the read attributes are declared here and cast to instead.
+    Excluding the stream with `isinstance` does not narrow the call's return type, since
+    `AsyncStream` is only structurally an `AsyncIterator` and so stays in the union; the read
+    attributes are declared here and cast to instead. Naming the response class is its own
+    trap: `google.genai.interactions` star-imports `Interaction` from both the request-union
+    alias (which carries none of these attributes) and the response module, and only the
+    runtime import order makes the response class win. `ty` resolves it to the response class;
+    mypy bound the request union, which is what a nominal cast used to get wrong.
     """
 
     @property

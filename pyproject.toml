@@ -163,7 +163,6 @@ exclude = [
     "/.nox",
     "/.cache",
     "/.pytest_cache",
-    "/.mypy_cache",
     "/.tox",
     "/.venv",
     "/.git",
@@ -512,7 +511,8 @@ ignore-words-list = ["useable", "checkin"]
 #         ty         #
 # ================== #
 
-# Gradually migrating from mypy to ty; ty runs before mypy in pre-commit.
+# ty is the only type checker; mypy was removed in #356 because its pre-commit hook
+# could not resolve this package and so reported success on an unchecked tree.
 # https://docs.astral.sh/ty/reference/configuration
 # https://docs.astral.sh/ty/reference/rules
 # Based on: https://docs.astral.sh/ty/coming-from-mypy-or-pyright/#stricter-checking-with-ty
@@ -522,6 +522,11 @@ missing-type-argument = "error"
 possibly-unresolved-reference = "warn"
 unsupported-dynamic-base = "warn"
 
+# Both default to "warn" and gate only through `error-on-warning`, a default ty
+# itself changed in 0.0.52. Stated outright so the gate does not rest on it.
+pydantic-discarded-extra-argument = "error"
+redundant-cast = "error"
+
 # NOTE: the following rules are known to have a significant number of false positives,
 # which is mostly unavoidable. Enable them at your own risk!
 division-by-zero = "warn"
@@ -530,41 +535,3 @@ possibly-missing-import = "warn"
 
 [tool.ty.analysis]
 strict-literal-narrowing = true
-
-
-# ================== #
-#        Mypy        #
-# ================== #
-
-[tool.mypy]
-plugins = ["pydantic.mypy"]
-# strict = true
-explicit_package_bases = true
-cache_dir = "~/.cache/.mypy_cache"
-# Uncomment to go back to checking `src/` only; this line alone does it, the hook needs no exclude.
-# exclude = ["^tests/", "^scripts/"]
-ignore_missing_imports = true
-warn_unused_configs = true
-warn_return_any = false
-warn_redundant_casts = true
-warn_unused_ignores = true
-disable_error_code = ["attr-defined", "prop-decorator"]
-follow_imports = "silent"
-
-# from https://blog.wolt.com/engineering/2021/09/30/professional-grade-mypy-configuration/
-# no_implicit_reexport = true
-# no_implicit_optional = true
-# check_untyped_defs = true
-# show_error_codes = true
-
-# disallow_untyped_defs = true
-# disallow_incomplete_defs = true
-# disallow_any_generics = true
-# disallow_untyped_decorators = true
-# disallow_any_unimported = true
-
-[tool.pydantic-mypy]
-init_forbid_extra = true
-init_typed = true
-warn_required_dynamic_aliases = false
-warn_untyped_fields = true

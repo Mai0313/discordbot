@@ -357,7 +357,7 @@ def test_every_quality_preset_is_answered_everywhere() -> None:
     """A preset added to the type has to be answered by every site that maps one.
 
     The option's own default is read off the registered command rather than spelled out here:
-    nextcord types `SlashOption(default=...)` as `Any`, so it is the one preset site mypy
+    nextcord types `SlashOption(default=...)` as `Any`, so it is the one preset site `ty`
     cannot see, and it is the value every `/download_video` without an explicit quality carries.
     """
     presets = set(get_args(VideoQuality))
