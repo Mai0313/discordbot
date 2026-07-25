@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
-import pkgutil
-import importlib
+from pkgutil import walk_packages
+from importlib import import_module
 
 from nextcord.ui import View
 
+# Namespace import: the package object itself is the input, for its `__path__`.
 import discordbot
 
 
 def _import_every_module() -> None:
     """Imports the whole package so every `View` subclass is registered."""
-    for module in pkgutil.walk_packages(discordbot.__path__, prefix=f"{discordbot.__name__}."):
-        importlib.import_module(module.name)
+    for module in walk_packages(path=discordbot.__path__, prefix=f"{discordbot.__name__}."):
+        import_module(name=module.name)
 
 
 def _view_subclasses() -> set[type[View]]:
