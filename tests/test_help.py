@@ -73,6 +73,7 @@ def _module_command_paths(module: Path) -> set[str]:
             if parent is None:
                 continue
             name = _declared_name(decorator=decorator, callback=node.name)
+            assert node.name not in declarations, f"{module.name}: two callbacks named {node.name}"
             declarations[node.name] = (parent, name)
     paths: dict[str, str] = {}
     pending = dict(declarations)
@@ -129,6 +130,13 @@ def test_slash_command_scan_resolves_subcommands() -> None:
     # A nested group: `memory server` is itself a subcommand of `memory`.
     assert "memory server show" in paths
     assert not {"memory", "memory server", "credit"} & paths
+
+
+def test_help_mention_matching_rejects_a_prefix_only_hit() -> None:
+    """A documented sibling must not cover an undocumented one by prefix."""
+    body = "`/games blackjack_history [member] [count]` — recent Blackjack rounds"
+    assert _mentions_command(body=body, command="games blackjack_history")
+    assert not _mentions_command(body=body, command="games blackjack")
 
 
 def test_help_mentions_every_non_help_slash_command() -> None:

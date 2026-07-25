@@ -225,7 +225,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "個人借貸\n"
                     "`/credit borrow` — 向指定成員提出借款申請\n"
                     "`/credit repay` — 還款給指定貸方\n"
-                    "`/credit call` — 向借你錢的人催收\n"
+                    "`/credit call` — 向欠你錢的借方催收\n"
                     "`/credit status` — 查看你的有效個人借貸\n\n"
                     "央行借貸\n"
                     "`/central_bank borrow` — 向中央銀行申請借款\n"
