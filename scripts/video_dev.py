@@ -132,8 +132,8 @@ def gen_video(
         generation_config=GenerationConfigParam(video_config=VideoConfigParam(task=task)),
     )
     # No `stream=True`, so this is the interaction rather than an event stream. Narrowed by
-    # excluding the stream instead of naming `google.genai.interactions.Interaction`, which mypy
-    # binds to the request union (see `VideoGenerator.render`).
+    # excluding the stream instead of naming `google.genai.interactions.Interaction`, which the
+    # checker binds to the request union (see `VideoGenerator.render`).
     if isinstance(interaction, Iterator):
         raise RuntimeError("Video generation returned an event stream, not an interaction")
     result = cast("_VideoInteractionResult", interaction)

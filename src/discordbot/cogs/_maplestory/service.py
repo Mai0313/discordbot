@@ -77,7 +77,7 @@ class MapleStoryService(BaseModel):
     _maps: list[MapEntry] = PrivateAttr(default_factory=list)
     _misc: list[MiscItem] = PrivateAttr(default_factory=list)
     _translations: dict[str, dict[str, str]] = PrivateAttr(default_factory=dict)
-    # Caches — typed per-category to avoid mypy issues with generic dict
+    # Caches — typed per-category to avoid type-checker issues with generic dict
     _monster_cache: dict[str, list[Monster]] = PrivateAttr(default_factory=dict)
     _equip_cache: dict[str, list[Equipment]] = PrivateAttr(default_factory=dict)
     _scroll_cache: dict[str, list[Scroll]] = PrivateAttr(default_factory=dict)

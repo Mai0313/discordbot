@@ -75,7 +75,7 @@ class ResearchProgressStreamer(BaseModel):
         """Accumulates one event's thought-summary text; ignores every other event/delta.
 
         Branch on `event.event_type` (then `delta.type`) directly so the discriminated unions
-        narrow for mypy, exactly like `adapt_interactions_stream`. Only a `step.delta` carrying a
+        narrow for the checker, exactly like `adapt_interactions_stream`. Only a `step.delta` carrying a
         `thought_summary` contributes to the live view; unknown deltas/events are skipped per the
         API's forward-compatibility guidance.
         """
