@@ -68,7 +68,7 @@ class LinkContextSource(BaseModel):
     )
     search_reference_chain: bool = Field(
         default=False,
-        description="Whether a link in the replied-to message also selects this source.",
+        description="Whether a link in the reply-reference chain also selects this source.",
         examples=[True],
     )
     build: SkipValidation[LinkContextBuilder] = Field(

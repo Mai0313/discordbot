@@ -1881,8 +1881,9 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         answer_input.extend(context.reference_messages)
         # The linked post(s) the user pointed at ride just before the current message, each
-        # block led by its own separator; empty unless the message carried a link a registered
-        # source reads. The order inside is LINK_CONTEXT_SOURCES order.
+        # block led by its own separator; empty unless a registered source found a link to read
+        # (in this message, or for Threads the one it replies to). The order inside is
+        # LINK_CONTEXT_SOURCES order.
         answer_input.extend(context.link_blocks)
         answer_input.extend(context.current_message)
 
