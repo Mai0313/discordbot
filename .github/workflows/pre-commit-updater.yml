@@ -28,17 +28,9 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Pre-Commit
-        id: update-hooks
         run: |
-          # `|| true` so dropping the ty hook one day degrades to the old behavior
-          # instead of failing the step.
-          ty_rev() { grep -A1 ty-pre-commit .pre-commit-config.yaml | grep rev: || true; }
-          before=$(ty_rev)
           uvx pre-commit autoupdate -j 8
           uvx pre-commit run -a
-          if [ "$(ty_rev)" = "$before" ]; then
-            echo "ty-unchanged=true" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Create Pull Request
         id: create-pr
@@ -51,12 +43,9 @@ jobs:
           commit-message: "chore: update pre-commit hooks"
           delete-branch: true
 
-      # ty is the only type-check gate and its 0.0.x releases do not promise stable
-      # diagnostics, so a bump of it waits for a human. The step above already ran
-      # it against the whole repo, so the PR carries that result either way.
       - name: Auto Merge Pull Request
         continue-on-error: true
-        if: ${{ steps.create-pr.outputs.pull-request-url && steps.update-hooks.outputs.ty-unchanged == 'true' }}
+        if: ${{ steps.create-pr.outputs.pull-request-url }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
