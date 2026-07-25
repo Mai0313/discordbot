@@ -204,14 +204,12 @@ def _authored_link_texts(message: Message) -> list[str]:
     so a scan keyed on it would read the thread's top post rather than the one the human
     linked — and it disappears entirely when an oversize video pushes hosted URLs into
     `content`. A link a person typed always lives in `content` (or in the content of what they
-    forwarded), so nothing human-written is lost. The usage footer is stripped for the same
-    reason `snapshot_text` strips it: the bot's own replies pass through here too.
+    forwarded), so nothing human-written is lost. The bot's own replies pass through here too,
+    so every span gets the `get_cleaned_content` / `snapshot_text` usage-footer strip: the
+    footer carries the memory labels, which are display names their owners choose.
     """
-    texts = [(message.content or "").strip()]
-    texts.extend(
-        USAGE_FOOTER_RE.sub("", snapshot.content).strip() for snapshot in message.snapshots
-    )
-    return texts
+    spans = [message.content or "", *(snapshot.content for snapshot in message.snapshots)]
+    return [USAGE_FOOTER_RE.sub("", span).strip() for span in spans]
 
 
 def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str] | None:
