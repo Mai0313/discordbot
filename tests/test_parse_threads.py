@@ -315,7 +315,7 @@ async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyP
     assert "first comment" in text
     assert "second comment" in text
     # The linked post comes first: the discussion is context for it, not the other way round.
-    assert text.index("TARGET (the post the user linked)") < text.index("first comment")
+    assert text.index("TARGET (the linked post)") < text.index("first comment")
     # A branch stays together and the nested comment names who it answers, so the tree survives
     # being flattened into text.
     assert text.index("first comment") < text.index("answering bob") < text.index("second comment")
