@@ -124,23 +124,6 @@ repos:
         # needs every dependency group, not just the default ones.
         args: ["--all-groups"]
 
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v2.3.0
-    hooks:
-      - id: mypy
-        additional_dependencies:
-          - "Pydantic"
-          - "Types-requests"
-          - "Types-urllib3"
-          - "openai"
-          - "google-genai"
-          - "anthropic"
-          - "sqlalchemy[asyncio]"
-          - "pydantic-settings"
-          - "pillow"
-          - "logfire"
-          - "rich"
-
   # - repo: local
   #   hooks:
   #     - id: update-version
