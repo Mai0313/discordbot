@@ -7,12 +7,11 @@ media ingestion, and inject a deterministic notice when the build outruns the po
 grace. How far to look is per-source rather than global (`search_reference_chain`): Threads
 also reads a link the user only replied to, while Douyin and Bilibili stay on the triggering
 message, since their value is the clip rather than a discussion and both are rate-limit
-sensitive. The registry instances live
-in `gen_reply.py` (`LINK_CONTEXT_SOURCES`) as thin adapters over the builder functions: an
-adapter body resolves the builder name from that module's globals at call time, so a test
-monkeypatching `discordbot.cogs.gen_reply.build_*_context_messages` still intercepts the
-call. Adding a source is one builder module here, a `utils/` URL regex, and one registry
-entry.
+sensitive. The registry instances live in `gen_reply.py` (`LINK_CONTEXT_SOURCES`) as thin
+adapters over the builder functions: an adapter body resolves the builder name from that
+module's globals at call time, so a test monkeypatching
+`discordbot.cogs.gen_reply.build_*_context_messages` still intercepts the call. Adding a
+source is one builder module here, a `utils/` URL regex, and one registry entry.
 """
 
 import re
