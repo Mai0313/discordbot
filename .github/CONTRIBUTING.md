@@ -65,7 +65,7 @@ docs: simplify user README
 
 - Add or update tests for behavior changes.
 - Update user-facing docs when commands, configuration, or visible behavior changes.
-- For slash-command behavior, update `_HELP_CONTENT` in `src/discordbot/cogs/help.py` in the same change and keep `tests/test_help.py` passing.
+- For slash-command behavior, update `HELP_CONTENT` in `src/discordbot/cogs/_help/content.py` in the same change and keep `tests/test_help.py` passing. The guard covers group subcommands, so each `/<group> <subcommand>` needs its own line in every locale.
 - Run local checks before opening the PR:
 
 ```bash
