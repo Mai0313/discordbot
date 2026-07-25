@@ -2,13 +2,16 @@
 
 Each source (Threads, Douyin, Bilibili, ...) keeps its own builder module beside this one in
 this package; the model here only carries the wiring `gen_reply` needs to treat them
-uniformly: spot the URL, start the speculative build, gate its media ingestion, and inject a
-deterministic notice when the build outruns the post-route grace. The registry instances live
-in `gen_reply.py` (`LINK_CONTEXT_SOURCES`) as thin adapters over the builder functions: an
-adapter body resolves the builder name from that module's globals at call time, so a test
-monkeypatching `discordbot.cogs.gen_reply.build_*_context_messages` still intercepts the
-call. Adding a source is one builder module here, a `utils/` URL regex, and one registry
-entry.
+uniformly: spot the URL, decide how far to look for it, start the speculative build, gate its
+media ingestion, and inject a deterministic notice when the build outruns the post-route
+grace. How far to look is per-source rather than global (`search_reference_chain`): Threads
+also reads a link the user only replied to, while Douyin and Bilibili stay on the triggering
+message, since their value is the clip rather than a discussion and both are rate-limit
+sensitive. The registry instances live in `gen_reply.py` (`LINK_CONTEXT_SOURCES`) as thin
+adapters over the builder functions: an adapter body resolves the builder name from that
+module's globals at call time, so a test monkeypatching
+`discordbot.cogs.gen_reply.build_*_context_messages` still intercepts the call. Adding a
+source is one builder module here, a `utils/` URL regex, and one registry entry.
 """
 
 import re
@@ -58,10 +61,15 @@ class LinkContextSource(BaseModel):
         examples=["douyin"],
     )
     url_pattern: SkipValidation[re.Pattern[str]] = Field(
-        ..., description="The first match in the message selects the URL to read."
+        ..., description="The first match in the scanned message selects the URL to read."
     )
     url_filter: SkipValidation[LinkUrlFilter | None] = Field(
         default=None, description="Optional post-match guard; None accepts every pattern match."
+    )
+    search_reference_chain: bool = Field(
+        default=False,
+        description="Whether a link in the reply-reference chain also selects this source.",
+        examples=[True],
     )
     build: SkipValidation[LinkContextBuilder] = Field(
         ..., description="Adapter starting the context build with the normalized keyword set."

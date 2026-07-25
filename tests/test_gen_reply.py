@@ -24,10 +24,12 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs.gen_reply import (
+    LINK_CONTEXT_SOURCES,
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
     _can_launch_research,
+    _link_url_for_source,
     _build_runtime_instructions,
 )
 from discordbot.typings.models import (
@@ -120,6 +122,8 @@ if TYPE_CHECKING:
     from nextcord import Attachment
     from openai.types.responses import ResponseStreamEvent
     from openai.types.responses.response_input_param import ResponseInputParam
+
+    from discordbot.cogs._gen_reply.link_sources import LinkContextSource
 
 
 class FakeGuild:
@@ -2475,6 +2479,148 @@ def test_find_youtube_url_skips_captioned_forward_embed(monkeypatch: pytest.Monk
     assert _find_youtube_url(message=as_message(fake=message)) is None
 
 
+def _link_source(name: str) -> LinkContextSource:
+    """The live registry entry for one linked-content source, so the tests pin the real wiring."""
+    return next(source for source in LINK_CONTEXT_SOURCES if source.name == name)
+
+
+_THREADS_POST_URL = "https://www.threads.com/@a/post/ABC123"
+
+
+def test_link_url_for_source_searches_the_replied_to_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Threads reads a link the user only replied to, like YouTube already does."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    referenced = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}")
+    referenced.id = 555
+    message = FakeMessage(content="<@999> 這篇底下在吵什麼")
+    message.reference = FakeReference(resolved=referenced)
+
+    found = _link_url_for_source(
+        source=_link_source(name="threads"), message=as_message(fake=message)
+    )
+    assert found == _THREADS_POST_URL
+
+
+def test_link_url_for_source_prefers_the_current_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a Threads link on both, the one the user typed wins over the replied-to one."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    referenced = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}")
+    referenced.id = 555
+    own_url = "https://www.threads.com/@b/post/XYZ789"
+    message = FakeMessage(content=f"<@999> 跟這篇比 {own_url}")
+    message.reference = FakeReference(resolved=referenced)
+
+    found = _link_url_for_source(
+        source=_link_source(name="threads"), message=as_message(fake=message)
+    )
+    assert found == own_url
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("douyin", "https://v.douyin.com/abc123"),
+        # A real BV id (BV plus exactly 10 base-62 chars): a short one does not match
+        # `BILIBILI_URL_RE` at all, so the assertion below would hold for the wrong reason.
+        ("bilibili", "https://www.bilibili.com/video/BV1jpK86hEc8"),
+    ],
+)
+def test_link_url_for_source_leaves_the_clip_sources_on_the_current_message(
+    monkeypatch: pytest.MonkeyPatch, name: str, url: str
+) -> None:
+    """Douyin and Bilibili never widen to the reply chain: their value is the clip, and both
+    are rate-limit sensitive, so a passing mention one hop away is not worth a fetch.
+    """
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    referenced = FakeMessage(content=f"看看這個 {url}")
+    referenced.id = 555
+    message = FakeMessage(content="<@999> 這在講什麼")
+    message.reference = FakeReference(resolved=referenced)
+
+    assert (
+        _link_url_for_source(source=_link_source(name=name), message=as_message(fake=message))
+        is None
+    )
+
+
+def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bot's own Threads expansion is not a trigger, because its first permalink is wrong.
+
+    `parse_threads._build_embeds` renders the reply chain root-first with one permalink per
+    post, so a first-match scan of that message would fetch the thread's top post rather than
+    the one the human linked. One hop out only what the author actually typed counts.
+    """
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    root_url = "https://www.threads.com/@a/post/ROOT111"
+    expansion = FakeMessage(content="")  # an expansion posts embeds with no content of its own
+    expansion.id = 555
+    expansion.embeds = [
+        Embed(description="the thread's top post", url=root_url),
+        Embed(description="the post the human linked", url=_THREADS_POST_URL),
+    ]
+    message = FakeMessage(content="<@999> 留言在說什麼")
+    message.reference = FakeReference(resolved=expansion)
+
+    threads = _link_source(name="threads")
+    assert _link_url_for_source(source=threads, message=as_message(fake=message)) is None
+    # The hazard itself, so this test fails if the narrow scan is ever widened: the same embeds
+    # scanned in full hand back the ROOT, not the post the human linked. On the triggering
+    # message that is still the behavior, since there the user chose to send that card.
+    assert _link_url_for_source(source=threads, message=as_message(fake=expansion)) == root_url
+
+
+def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A display name in the bot's own footer cannot choose the post the next reply fetches.
+
+    The footer credits looked-up memory owners by display name, and a name is user-chosen and
+    long enough to hold a whole Threads permalink, so the span has to go before the scan.
+    """
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    footer = (
+        "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
+        f"\n-# <:tag:1517563887573143595> {_THREADS_POST_URL} 的記憶"
+    )
+    answer = FakeMessage(content=f"這是我的回答{footer}")
+    answer.id = 555
+    message = FakeMessage(content="<@999> 再說清楚一點")
+    message.reference = FakeReference(resolved=answer)
+
+    threads = _link_source(name="threads")
+    assert _link_url_for_source(source=threads, message=as_message(fake=message)) is None
+    # The body above the footer is still scanned, so the strip is what did the work here.
+    answer.content = f"這是我的回答 {_THREADS_POST_URL}{footer}"
+    assert (
+        _link_url_for_source(source=threads, message=as_message(fake=message)) == _THREADS_POST_URL
+    )
+
+
+def test_link_url_for_source_reads_a_forwarded_link_in_the_replied_to_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forward counts for what its author wrote, on the same terms as a typed link."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    forward = FakeMessage(content="")  # a pure forward puts its payload in snapshots
+    forward.id = 555
+    forward.snapshots = [FakeSnapshot(content=f"看看這篇 {_THREADS_POST_URL}")]
+    message = FakeMessage(content="<@999> 這篇底下在吵什麼")
+    message.reference = FakeReference(resolved=forward)
+
+    threads = _link_source(name="threads")
+    assert (
+        _link_url_for_source(source=threads, message=as_message(fake=message)) == _THREADS_POST_URL
+    )
+    # A forwarded link CARD is not: it carries the same root-first hazard as the message's own
+    # embeds, and forwarding the bot's expansion is exactly how one would arrive here.
+    forward.snapshots = [FakeSnapshot(embeds=[Embed(url=_THREADS_POST_URL)])]
+    assert _link_url_for_source(source=threads, message=as_message(fake=message)) is None
+
+
 def _media_builder() -> MessageInputBuilder:
     """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
     return MessageInputBuilder(
@@ -4742,6 +4888,98 @@ async def test_on_message_injects_threads_context_before_current(
         index for index, head in enumerate(headers) if head.startswith("==== Current Message")
     )
     assert separator_index < current_index
+
+
+async def test_on_message_injects_threads_context_from_the_replied_to_message(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mentioning the bot in a reply to someone else's Threads link still reads that post.
+
+    The expansion the cog already posted shows the chain, never the comments, so a reply asking
+    about the discussion has nothing else to answer from.
+    """
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    seen_urls: list[str] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable Threads block instead of hitting the network."""
+        del answer_model_is_gemini, gemini_client
+        seen_urls.append(url)
+        return _threads_block()
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.build_threads_context_messages", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+
+    parent = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}", author=FakeAuthor(user_id=4))
+    parent.id = 988
+    message = FakeMessage(content="<@999> 這篇底下在吵什麼", author=FakeAuthor(user_id=1))
+    message.reference = FakeReference(resolved=parent)
+    await cog.on_message(message=as_message(fake=message))
+
+    assert seen_urls == [_THREADS_POST_URL]
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
+
+
+# Per clip source: the gen_reply global its builder is monkeypatched onto, a URL its regex
+# really matches (a short BV id matches nothing, so the assertions would hold either way),
+# the block its fake returns, and the predicate that spots that block in the answer input.
+_CLIP_SOURCE_CASES = {
+    "douyin": (
+        "build_douyin_context_messages",
+        "https://v.douyin.com/abc123",
+        _douyin_block,
+        has_douyin_context_block,
+    ),
+    "bilibili": (
+        "build_bilibili_context_messages",
+        "https://www.bilibili.com/video/BV1jpK86hEc8",
+        _bilibili_block,
+        has_bilibili_context_block,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_CLIP_SOURCE_CASES))
+async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """Only Threads widened to the reply chain; the clip sources stay on the current message."""
+    builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    cog.config = _link_config()
+    called: list[str] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Records any call so the test can assert the chain never starts one."""
+        del answer_model_is_gemini, gemini_client, allow_media_ingest
+        called.append(url)
+        return block()
+
+    monkeypatch.setattr(f"discordbot.cogs.gen_reply.{builder}", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+
+    parent = FakeMessage(content=f"看看這個 {url}", author=FakeAuthor(user_id=4))
+    parent.id = 988
+    message = FakeMessage(content="<@999> 這在講什麼", author=FakeAuthor(user_id=1))
+    message.reference = FakeReference(resolved=parent)
+    await cog.on_message(message=as_message(fake=message))
+
+    assert called == []
+    assert not has_block(request=request_input(responses=_recorded(cog).responses, phase="answer"))
 
 
 async def test_on_message_cancels_threads_context_on_image_route(

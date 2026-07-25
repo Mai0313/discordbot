@@ -2,8 +2,10 @@
 
 `gen_reply` answers a message only when it is a DM or explicitly mentions the bot. The link
 expansion cogs (`parse_threads`, `parse_douyin`) use the same test in reverse: a message the
-reply pipeline will answer is left alone, so a link is either expanded into the channel or
-answered about, never both.
+reply pipeline will answer is left alone, so a link in ONE message is either expanded into the
+channel or answered about, never both. Across two messages it can be both: `gen_reply` also
+reads a Threads link the user only replied to (#377), so a link expanded when posted is read
+again if someone later replies to that message and mentions the bot.
 
 Lives in `utils/` rather than on `MessageInputBuilder` because the expansion cogs have no
 input builder and must not import a peer cog to reach one.

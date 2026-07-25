@@ -12,6 +12,11 @@ That predicate is deliberately coarser than `gen_reply`'s own guards, so a few a
 messages get neither treatment: one typed inside an active research thread (the reply
 pipeline skips those), and one the router sends to IMAGE / VIDEO (those routes discard
 the link context). Both are rare enough to accept rather than couple the cogs together.
+
+The one-download rule is per message, not per link: `gen_reply` also reads a Threads link the
+user only replied to (#377), so a post expanded here is read again when someone replies to
+that message and mentions the bot. That is a separate ask for the comments, which this cog
+has no embed budget to show. It cannot be triggered by replying to the expansion itself.
 """
 
 import asyncio

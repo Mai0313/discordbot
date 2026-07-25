@@ -50,6 +50,7 @@ from discordbot.utils.media_delivery import (
     build_media_delivery_planner,
 )
 from discordbot.cogs._gen_reply.input import (
+    USAGE_FOOTER_RE,
     MessageInputBuilder,
     sanitize_identity,
     render_author_identity,
@@ -193,13 +194,64 @@ def _message_link_texts(message: Message) -> list[str]:
     return texts
 
 
-def _first_url_match(pattern: re.Pattern[str], message: Message) -> re.Match[str] | None:
-    """First match of a URL pattern across a message's content, embeds, and forwarded snapshots."""
-    for text in _message_link_texts(message=message):
+def _authored_link_texts(message: Message) -> list[str]:
+    """The text spans a message's author actually wrote, for scanning a message replied to.
+
+    Narrower than `_message_link_texts` by exactly one thing: an embed card never counts,
+    neither the message's own nor a forwarded snapshot's. One hop out an embed is a card the
+    author did not write, and the bot's own Threads expansion is the common one:
+    `parse_threads._build_embeds` emits one permalink per post in the reply chain, ROOT first,
+    so a scan keyed on it would read the thread's top post rather than the one the human
+    linked — and it disappears entirely when an oversize video pushes hosted URLs into
+    `content`. A link a person typed always lives in `content` (or in the content of what they
+    forwarded), so nothing human-written is lost. The bot's own replies pass through here too,
+    so every span gets the `get_cleaned_content` / `snapshot_text` usage-footer strip: the
+    footer carries the memory labels, which are display names their owners choose.
+    """
+    spans = [message.content or "", *(snapshot.content for snapshot in message.snapshots)]
+    return [USAGE_FOOTER_RE.sub("", span).strip() for span in spans]
+
+
+def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str] | None:
+    """First match of a URL pattern across one message's already-rendered text spans."""
+    for text in texts:
         match = pattern.search(string=text)
         if match:
             return match
     return None
+
+
+def _link_url_for_source(source: LinkContextSource, message: Message) -> str | None:
+    """The URL one link source should read: the current message's, else the replied-to one's.
+
+    The current message always wins. A source that opts into `search_reference_chain` then
+    falls back to the reply-reference chain, the same walk `_find_youtube_url` does, so
+    "@bot 這篇底下在吵什麼" sent as a reply to someone else's link still reads the post; one
+    that does not opt in never looks past the triggering message. The chain is scanned with
+    `_authored_link_texts`, which is what keeps the bot's own expansion from triggering a read
+    of the wrong post.
+
+    A source's `url_filter` rejects a matched link it cannot read (e.g. a Douyin profile or
+    live room, whose regex matches the host, not the path), which would only spend a
+    rate-limited request to say so. It applies to the chosen match alone: a rejected link
+    drops the source rather than sending the scan hunting for a second URL.
+    """
+    match = _first_url_match(
+        pattern=source.url_pattern, texts=_message_link_texts(message=message)
+    )
+    if match is None and source.search_reference_chain:
+        for ref in _walk_reference_chain(message=message):
+            match = _first_url_match(
+                pattern=source.url_pattern, texts=_authored_link_texts(message=ref)
+            )
+            if match is not None:
+                break
+    if match is None:
+        return None
+    url = match.group(0)
+    if source.url_filter is not None and not source.url_filter(url=url):
+        return None
+    return url
 
 
 def _source_channel_is_public(message: Message) -> bool:
@@ -253,17 +305,20 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
 
 def _youtube_url_in_message(message: Message) -> str | None:
     """Returns the first YouTube URL in a message's text, embeds, or forwarded snapshots, if any."""
-    match = _first_url_match(pattern=YOUTUBE_URL_RE, message=message)
+    match = _first_url_match(pattern=YOUTUBE_URL_RE, texts=_message_link_texts(message=message))
     return match.group(0) if match else None
 
 
 def _find_youtube_url(message: Message) -> str | None:
     """Finds a YouTube URL in the current message or the reply-reference chain.
 
-    Unlike Threads (whose `parse_threads` cog re-injects a replied-to post as an embed),
-    a YouTube link has no such cog, so a reply to a message that merely links a video would
-    otherwise be missed; the reference chain is searched so "summarize this" on a replied-to
-    video still watches it. The current message wins, then the nearest reference outward.
+    A reply to a message that merely links a video would otherwise be missed, so the chain is
+    searched too and "summarize this" on a replied-to video still watches it. The current
+    message wins, then the nearest reference outward. Threads reaches one hop the same way
+    (`_link_url_for_source`, `search_reference_chain`); Douyin and Bilibili deliberately do
+    not, since their value is the clip rather than a discussion and both are rate-limit
+    sensitive. This one keeps scanning embeds out there — a YouTube link card is the link
+    itself, not a rendering of some other post the way a Threads expansion is.
     """
     found = _youtube_url_in_message(message=message)
     if found is not None:
@@ -463,6 +518,10 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="threads",
         url_pattern=THREADS_URL_RE,
+        # The one source that reads a link the user only replied to: what it fetches is the
+        # discussion under the post, which the `parse_threads` expansion deliberately does not
+        # show, so "@bot 這篇底下在吵什麼" on someone else's link has nothing else to answer from.
+        search_reference_chain=True,
         build=_build_threads_link_context,
         on_timeout=threads_timeout_context_messages,
         media_ingest_allowed=_threads_media_ingest_allowed,
@@ -1243,7 +1302,10 @@ class ReplyGeneratorCogs(commands.Cog):
             if parsed is None:
                 route = RouteClassification(decision="QA")
             elif parsed.decision == "SUMMARY" and (
-                _first_url_match(pattern=_MESSAGE_URL_RE, message=message) is not None
+                _first_url_match(
+                    pattern=_MESSAGE_URL_RE, texts=_message_link_texts(message=message)
+                )
+                is not None
             ):
                 # A summary request carrying a URL is really a QA recap of that link, not a
                 # recap of channel history, so steer it back to QA. Preserve watch_video so a
@@ -1819,8 +1881,9 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         answer_input.extend(context.reference_messages)
         # The linked post(s) the user pointed at ride just before the current message, each
-        # block led by its own separator; empty unless the message carried a link a registered
-        # source reads. The order inside is LINK_CONTEXT_SOURCES order.
+        # block led by its own separator; empty unless a registered source found a link to read
+        # (in this message, or for Threads the one it replies to). The order inside is
+        # LINK_CONTEXT_SOURCES order.
         answer_input.extend(context.link_blocks)
         answer_input.extend(context.current_message)
 
@@ -2112,21 +2175,15 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
                 # A link a registered source can read (Threads, Douyin) is self-parsed into
                 # answer-context blocks: metadata text always, the media downloaded and
-                # uploaded to the Files API when the source allows it. Started here so the
-                # fetch (the slow half) overlaps the whole route/prep window for free; only
-                # the QA route consumes the blocks, other routes cancel the tasks. Resolution
-                # is route_done-gated like effort, never a fixed wait.
+                # uploaded to the Files API when the source allows it. Where the link may sit
+                # is the source's own call (`_link_url_for_source`): Threads also reads one the
+                # user only replied to. Started here so the fetch (the slow half) overlaps the
+                # whole route/prep window for free; only the QA route consumes the blocks,
+                # other routes cancel the tasks. Resolution is route_done-gated like effort,
+                # never a fixed wait.
                 for link_source in LINK_CONTEXT_SOURCES:
-                    link_match = _first_url_match(pattern=link_source.url_pattern, message=message)
-                    if link_match is None:
-                        continue
-                    link_url = link_match.group(0)
-                    # A source's url_filter rejects a matched link it cannot read (e.g. a
-                    # Douyin profile or live room, whose regex matches the host, not the
-                    # path), which would only spend a rate-limited request to say so.
-                    if link_source.url_filter is not None and not link_source.url_filter(
-                        url=link_url
-                    ):
+                    link_url = _link_url_for_source(source=link_source, message=message)
+                    if link_url is None:
                         continue
                     link_tasks[link_source.name] = asyncio.create_task(
                         coro=link_source.build(
