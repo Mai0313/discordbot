@@ -116,7 +116,7 @@ FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from collections.abc import Callable, AsyncIterator
+    from collections.abc import AsyncIterator
 
     from aiohttp import ClientResponse
     from nextcord import Attachment
@@ -2522,7 +2522,9 @@ def test_link_url_for_source_prefers_the_current_message(monkeypatch: pytest.Mon
     ("name", "url"),
     [
         ("douyin", "https://v.douyin.com/abc123"),
-        ("bilibili", "https://www.bilibili.com/video/BV1x"),
+        # A real BV id (BV plus exactly 10 base-62 chars): a short one does not match
+        # `BILIBILI_URL_RE` at all, so the assertion below would hold for the wrong reason.
+        ("bilibili", "https://www.bilibili.com/video/BV1jpK86hEc8"),
     ],
 )
 def test_link_url_for_source_leaves_the_clip_sources_on_the_current_message(
@@ -2553,10 +2555,11 @@ def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message(
     the one the human linked. One hop out only what the author actually typed counts.
     """
     monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    root_url = "https://www.threads.com/@a/post/ROOT111"
     expansion = FakeMessage(content="")  # an expansion posts embeds with no content of its own
     expansion.id = 555
     expansion.embeds = [
-        Embed(description="the thread's top post", url="https://www.threads.com/@a/post/ROOT111"),
+        Embed(description="the thread's top post", url=root_url),
         Embed(description="the post the human linked", url=_THREADS_POST_URL),
     ]
     message = FakeMessage(content="<@999> 留言在說什麼")
@@ -2564,9 +2567,10 @@ def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message(
 
     threads = _link_source(name="threads")
     assert _link_url_for_source(source=threads, message=as_message(fake=message)) is None
-    # The same embeds on the triggering message itself still count: there the user chose to
-    # send that card, so this is a deliberate asymmetry rather than a blanket embed rule.
-    assert _link_url_for_source(source=threads, message=as_message(fake=expansion)) is not None
+    # The hazard itself, so this test fails if the narrow scan is ever widened: the same embeds
+    # scanned in full hand back the ROOT, not the post the human linked. On the triggering
+    # message that is still the behavior, since there the user chose to send that card.
+    assert _link_url_for_source(source=threads, message=as_message(fake=expansion)) == root_url
 
 
 def _media_builder() -> MessageInputBuilder:
@@ -4876,25 +4880,31 @@ async def test_on_message_injects_threads_context_from_the_replied_to_message(
     assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
 
 
-@pytest.mark.parametrize(
-    ("builder", "url", "has_block"),
-    [
-        ("build_douyin_context_messages", "https://v.douyin.com/abc123", has_douyin_context_block),
-        (
-            "build_bilibili_context_messages",
-            "https://www.bilibili.com/video/BV1x",
-            has_bilibili_context_block,
-        ),
-    ],
-)
+# Per clip source: the gen_reply global its builder is monkeypatched onto, a URL its regex
+# really matches (a short BV id matches nothing, so the assertions would hold either way),
+# the block its fake returns, and the predicate that spots that block in the answer input.
+_CLIP_SOURCE_CASES = {
+    "douyin": (
+        "build_douyin_context_messages",
+        "https://v.douyin.com/abc123",
+        _douyin_block,
+        has_douyin_context_block,
+    ),
+    "bilibili": (
+        "build_bilibili_context_messages",
+        "https://www.bilibili.com/video/BV1jpK86hEc8",
+        _bilibili_block,
+        has_bilibili_context_block,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_CLIP_SOURCE_CASES))
 async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
-    memory_isolated_dir: object,
-    monkeypatch: pytest.MonkeyPatch,
-    builder: str,
-    url: str,
-    has_block: Callable[..., bool],
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
     """Only Threads widened to the reply chain; the clip sources stay on the current message."""
+    builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
     cog.config = _link_config()
@@ -4906,7 +4916,7 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
         """Records any call so the test can assert the chain never starts one."""
         del answer_model_is_gemini, gemini_client, allow_media_ingest
         called.append(url)
-        return _douyin_block()
+        return block()
 
     monkeypatch.setattr(f"discordbot.cogs.gen_reply.{builder}", fake_builder)
     monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
