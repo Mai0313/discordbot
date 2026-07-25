@@ -2573,6 +2573,54 @@ def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message(
     assert _link_url_for_source(source=threads, message=as_message(fake=expansion)) == root_url
 
 
+def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A display name in the bot's own footer cannot choose the post the next reply fetches.
+
+    The footer credits looked-up memory owners by display name, and a name is user-chosen and
+    long enough to hold a whole Threads permalink, so the span has to go before the scan.
+    """
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    footer = (
+        "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
+        f"\n-# <:tag:1517563887573143595> {_THREADS_POST_URL} 的記憶"
+    )
+    answer = FakeMessage(content=f"這是我的回答{footer}")
+    answer.id = 555
+    message = FakeMessage(content="<@999> 再說清楚一點")
+    message.reference = FakeReference(resolved=answer)
+
+    threads = _link_source(name="threads")
+    assert _link_url_for_source(source=threads, message=as_message(fake=message)) is None
+    # The body above the footer is still scanned, so the strip is what did the work here.
+    answer.content = f"這是我的回答 {_THREADS_POST_URL}{footer}"
+    assert (
+        _link_url_for_source(source=threads, message=as_message(fake=message)) == _THREADS_POST_URL
+    )
+
+
+def test_link_url_for_source_reads_a_forwarded_link_in_the_replied_to_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A forward counts for what its author wrote, on the same terms as a typed link."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    forward = FakeMessage(content="")  # a pure forward puts its payload in snapshots
+    forward.id = 555
+    forward.snapshots = [FakeSnapshot(content=f"看看這篇 {_THREADS_POST_URL}")]
+    message = FakeMessage(content="<@999> 這篇底下在吵什麼")
+    message.reference = FakeReference(resolved=forward)
+
+    threads = _link_source(name="threads")
+    assert (
+        _link_url_for_source(source=threads, message=as_message(fake=message)) == _THREADS_POST_URL
+    )
+    # A forwarded link CARD is not: it carries the same root-first hazard as the message's own
+    # embeds, and forwarding the bot's expansion is exactly how one would arrive here.
+    forward.snapshots = [FakeSnapshot(embeds=[Embed(url=_THREADS_POST_URL)])]
+    assert _link_url_for_source(source=threads, message=as_message(fake=message)) is None
+
+
 def _media_builder() -> MessageInputBuilder:
     """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
     return MessageInputBuilder(
