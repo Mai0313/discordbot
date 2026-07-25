@@ -25,7 +25,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 ## Features
 
 - **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos from a prompt or attached images, edit a referenced video, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background — privacy-scoped by source, so something told in one server never surfaces in another (only your tone preferences and clearly harmless general facts carry over) — manageable with `/memory show` and `/memory regenerate`.
-- **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain. Mention the bot alongside the link instead and it reads the post and answers about it.
+- **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain. Mention the bot alongside the link instead and it reads the post together with the comments under it and answers about it.
 - **Douyin parser**: paste a Douyin link and the bot posts the video (or the photo post's images) straight into the channel. Mention the bot alongside the link instead and it watches the clip and answers about it.
 - **Bilibili Q&A**: mention the bot with a Bilibili video link and it watches the video and answers about it. A bare link is not auto-expanded; `/download_video` still downloads the file.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites. Douyin is supported too, watermark free and including photo posts. Files too large to upload are served as a link instead.
@@ -40,7 +40,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | Command                                                          | What it does                                                                                                           |
 | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `@bot <message>`                                                 | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                              |
-| _Threads URL_                                                    | Automatically expands Threads posts and media, unless the bot is mentioned (then it answers about the post instead).   |
+| _Threads URL_                                                    | Automatically expands Threads posts and media, unless the bot is mentioned (then it answers about the comments too).   |
 | _Douyin URL_                                                     | Automatically posts the video or photos, unless the bot is mentioned (then it answers about it).                       |
 | _Bilibili URL + mention_                                         | Watches the linked video and answers about it (a bare link is not auto-expanded).                                      |
 | `/download_video <url> [quality]`                                | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                              |

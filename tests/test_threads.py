@@ -75,12 +75,18 @@ def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
 
     assert second.image_urls == []
     assert second.video_paths == []
+    assert second.reply_to_username == ""
 
 
 def _thread_post_payload(
-    code: str, username: str, text: str, reply_to_username: str = ""
+    code: str, username: str, text: str, reply_to_username: str = "", video_url: str = ""
 ) -> dict[str, object]:
     """Returns a minimal Threads post payload with parser-relevant fields."""
+    media: dict[str, object] = (
+        {"video_versions": [{"url": video_url}]}
+        if video_url
+        else {"image_versions2": {"candidates": [{"url": f"https://cdn.example/{code}.jpg"}]}}
+    )
     return {
         "post": {
             "code": code,
@@ -89,7 +95,7 @@ def _thread_post_payload(
                 "username": username,
                 "profile_pic_url": f"https://cdn.example/{username}.jpg",
             },
-            "image_versions2": {"candidates": [{"url": f"https://cdn.example/{code}.jpg"}]},
+            **media,
             "text_post_app_info": {
                 "direct_reply_count": 1,
                 "repost_count": 2,
@@ -108,25 +114,37 @@ def _thread_post_payload(
     }
 
 
-def _thread_html(post_code: str) -> str:
-    """Builds deterministic Threads SJS HTML for parser tests."""
+def _section_header(label: str) -> dict[str, object]:
+    """Returns the node Threads inserts between a post's own replies and the filler below."""
+    return {"header": label, "thread_items": [], "thread_type": "header", "id": "0"}
+
+
+def _sjs_html(*threads: list[object] | dict[str, object]) -> str:
+    """Builds deterministic Threads SJS HTML holding one node per thread, in page order.
+
+    Mirrors how a real post page serialises itself: the chain ending at the target, every reply
+    branch under it, and any section header between them are sibling `edges[].node` entries in
+    one script block. A plain list becomes a thread node; a dict rides through as-is, which is
+    how `_section_header` gets in.
+    """
     payload = {
         "require": [
             {
                 "__bbox": {
                     "result": {
                         "data": {
-                            "thread_items": [
-                                _thread_post_payload(
-                                    code="ROOT", username="root_author", text="Root post"
-                                ),
-                                _thread_post_payload(
-                                    code=post_code,
-                                    username="target_author",
-                                    text=f"Target post {post_code}",
-                                    reply_to_username="root_author",
-                                ),
-                            ]
+                            "data": {
+                                "edges": [
+                                    {
+                                        "node": (
+                                            entry
+                                            if isinstance(entry, dict)
+                                            else {"thread_type": "thread", "thread_items": entry}
+                                        )
+                                    }
+                                    for entry in threads
+                                ]
+                            }
                         }
                     }
                 }
@@ -136,6 +154,19 @@ def _thread_html(post_code: str) -> str:
     return (
         f'<html><script type="application/json" data-sjs>{json.dumps(obj=payload)}</script></html>'
     )
+
+
+def _thread_html(post_code: str) -> str:
+    """Builds deterministic Threads SJS HTML for parser tests."""
+    return _sjs_html([
+        _thread_post_payload(code="ROOT", username="root_author", text="Root post"),
+        _thread_post_payload(
+            code=post_code,
+            username="target_author",
+            text=f"Target post {post_code}",
+            reply_to_username="root_author",
+        ),
+    ])
 
 
 @pytest.mark.parametrize(
@@ -163,9 +194,10 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
 
-    with downloader.parse(url=url) as results:
-        assert results, "should yield at least one post"
-        target = results[-1]
+    with downloader.parse(url=url) as conversation:
+        assert conversation.chain, "should yield at least one post"
+        target = conversation.target
+        assert target is not None
         assert target.text or target.image_urls or target.video_urls, "post should have content"
         assert target.author_name, "author_name should not be empty"
         assert target.taken_at is not None, "taken_at should not be None"
@@ -224,41 +256,14 @@ def test_threads_url_re_rejects_non_posts(text: str) -> None:
 
 def _thread_html_with_video(post_code: str) -> str:
     """Builds Threads SJS HTML whose single target post carries a video rendition."""
-    payload = {
-        "require": [
-            {
-                "__bbox": {
-                    "result": {
-                        "data": {
-                            "thread_items": [
-                                {
-                                    "post": {
-                                        "code": post_code,
-                                        "caption": {"text": f"Video post {post_code}"},
-                                        "user": {"username": "vid_author", "profile_pic_url": ""},
-                                        "video_versions": [
-                                            {"url": f"https://cdn.example/{post_code}.mp4"}
-                                        ],
-                                        "text_post_app_info": {
-                                            "direct_reply_count": 0,
-                                            "repost_count": 0,
-                                            "quote_count": 0,
-                                            "reshare_count": 0,
-                                        },
-                                        "like_count": 0,
-                                        "taken_at": 1_735_689_600,
-                                    }
-                                }
-                            ]
-                        }
-                    }
-                }
-            }
-        ]
-    }
-    return (
-        f'<html><script type="application/json" data-sjs>{json.dumps(obj=payload)}</script></html>'
-    )
+    return _sjs_html([
+        _thread_post_payload(
+            code=post_code,
+            username="vid_author",
+            text=f"Video post {post_code}",
+            video_url=f"https://cdn.example/{post_code}.mp4",
+        )
+    ])
 
 
 def test_parse_metadata_returns_chain_without_downloading(
@@ -280,12 +285,272 @@ def test_parse_metadata_returns_chain_without_downloading(
     monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fail_download)
 
-    results = downloader.parse_metadata(url=url)
+    conversation = downloader.parse_metadata(url=url)
 
-    assert results, "should return at least the target post"
-    target = results[-1]
+    assert conversation.chain, "should return at least the target post"
+    target = conversation.target
+    assert target is not None
     assert target.video_urls == [f"https://cdn.example/{threads_url.post_code}.mp4"]
-    assert all(post.video_paths == [] for post in results)
+    assert all(post.video_paths == [] for post in conversation.posts)
+
+
+_REPLIES_TARGET_URL = "https://www.threads.com/@target_author/post/TARGET"
+
+
+def _thread_html_with_replies() -> str:
+    """Builds SJS HTML mixing the target's chain, its reply branches, and posts that are neither.
+
+    A real post page serialises all of these into one block, so the parser has to tell them
+    apart by who each thread's first post answers.
+    """
+    return _sjs_html(
+        # The chain ending at the target.
+        [
+            _thread_post_payload(code="ROOT", username="root_author", text="Root post"),
+            _thread_post_payload(
+                code="TARGET",
+                username="target_author",
+                text="Target post",
+                reply_to_username="root_author",
+            ),
+        ],
+        # One branch: a direct comment plus the exchange nested under it.
+        [
+            _thread_post_payload(
+                code="R1",
+                username="commenter",
+                text="First comment",
+                reply_to_username="target_author",
+            ),
+            _thread_post_payload(
+                code="R1A",
+                username="target_author",
+                text="Author answers",
+                reply_to_username="commenter",
+            ),
+            _thread_post_payload(
+                code="R1B",
+                username="commenter",
+                text="Commenter again",
+                reply_to_username="target_author",
+            ),
+        ],
+        # A second direct comment, with nothing nested under it.
+        [
+            _thread_post_payload(
+                code="R2",
+                username="other",
+                text="Second comment",
+                reply_to_username="target_author",
+            )
+        ],
+        # A sibling: it answers the target's own parent, so it belongs to the root, not here.
+        [
+            _thread_post_payload(
+                code="SIBLING",
+                username="stranger",
+                text="Answering the root instead",
+                reply_to_username="root_author",
+            )
+        ],
+        # A post answering nobody: a recommendation, or a reply whose parent was deleted.
+        [_thread_post_payload(code="RECO", username="unrelated", text="Recommended post")],
+    )
+
+
+def _stub_html(monkeypatch: pytest.MonkeyPatch, html: str) -> None:
+    """Serves one canned page for every fetch, so no test touches the network."""
+
+    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+        """Returns the canned HTML regardless of url."""
+        del url
+        return html
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+
+
+def test_parse_metadata_collects_the_reply_branches(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The comments under the target come back as branches, nesting preserved."""
+    _stub_html(monkeypatch, _thread_html_with_replies())
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
+    assert [[post.author_name for post in branch] for branch in conversation.reply_branches] == [
+        ["commenter", "target_author", "commenter"],
+        ["other"],
+    ]
+    # A nested comment carries who it answers, which is what renders its place in the branch.
+    nested = conversation.reply_branches[0][1]
+    assert nested.reply_to_username == "commenter"
+    assert nested.url == "https://www.threads.com/@target_author/post/R1A"
+
+
+def test_parse_metadata_drops_threads_that_do_not_answer_the_target(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sibling reply and a recommended post share the block but are not comments on the target."""
+    _stub_html(monkeypatch, _thread_html_with_replies())
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    codes = {post.url.rsplit("/", 1)[-1] for post in conversation.posts}
+    assert "SIBLING" not in codes
+    assert "RECO" not in codes
+
+
+def test_a_section_header_ends_the_targets_own_replies(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Threads pads a thin post with replies to the ROOT, and only the header separates them.
+
+    On a post that is its author's own reply to their own post, the padding answers the same
+    username the target does, so the author test alone would hand every one of those unrelated
+    comments to the wrong post.
+    """
+    html = _sjs_html(
+        [
+            _thread_post_payload(code="ROOT", username="target_author", text="Root post"),
+            _thread_post_payload(
+                code="TARGET",
+                username="target_author",
+                text="The author's own follow-up",
+                reply_to_username="target_author",
+            ),
+        ],
+        [
+            _thread_post_payload(
+                code="MINE",
+                username="commenter",
+                text="A comment on the follow-up",
+                reply_to_username="target_author",
+            )
+        ],
+        _section_header(label="More replies to target_author"),
+        [
+            _thread_post_payload(
+                code="FILLER",
+                username="stranger",
+                text="Actually a comment on the root",
+                reply_to_username="target_author",
+            )
+        ],
+    )
+    _stub_html(monkeypatch, html)
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert [[post.text for post in branch] for branch in conversation.reply_branches] == [
+        ["A comment on the follow-up"]
+    ]
+
+
+def test_a_target_with_no_author_collects_no_comments(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An empty author matches every post whose `reply_to_author` is missing, so it matches none."""
+    html = _sjs_html(
+        [{"post": {"code": "TARGET", "caption": {"text": "Author data missing"}}}],
+        [_thread_post_payload(code="R1", username="commenter", text="Comment")],
+    )
+    _stub_html(monkeypatch, html)
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert [post.text for post in conversation.chain] == ["Author data missing"]
+    assert conversation.reply_branches == []
+
+
+def test_a_page_without_the_post_yields_an_empty_conversation(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page carrying no such post reads as empty, which is the callers' "unavailable" signal."""
+    _stub_html(
+        monkeypatch,
+        _sjs_html([
+            _thread_post_payload(code="SOMEONE_ELSE", username="other", text="Other post")
+        ]),
+    )
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert conversation.chain == []
+    assert conversation.target is None
+    assert conversation.reply_branches == []
+
+
+def test_a_malformed_thread_does_not_cost_the_target(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One unparsable thread costs that thread only, never the target sharing its block."""
+    html = _sjs_html(
+        ["not a thread item at all"],
+        [_thread_post_payload(code="TARGET", username="target_author", text="Target post")],
+        [
+            _thread_post_payload(
+                code="R1", username="commenter", text="Comment", reply_to_username="target_author"
+            )
+        ],
+    )
+    _stub_html(monkeypatch, html)
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert [post.text for post in conversation.chain] == ["Target post"]
+    assert [[post.text for post in branch] for branch in conversation.reply_branches] == [
+        ["Comment"]
+    ]
+
+
+def test_parse_downloads_the_target_video_and_no_others(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A comment's clip is never written to disk; only the linked post's is."""
+    html = _sjs_html(
+        [
+            _thread_post_payload(
+                code="TARGET",
+                username="target_author",
+                text="Target post",
+                video_url="https://cdn.example/target.mp4",
+            )
+        ],
+        [
+            _thread_post_payload(
+                code="R1",
+                username="commenter",
+                text="Comment with a clip",
+                reply_to_username="target_author",
+                video_url="https://cdn.example/reply.mp4",
+            )
+        ],
+    )
+    _stub_html(monkeypatch, html)
+
+    with downloader.parse(url=_REPLIES_TARGET_URL) as conversation:
+        target = conversation.target
+        assert target is not None
+        assert len(target.video_paths) == 1
+        assert target.video_paths[0].exists()
+        reply = conversation.reply_branches[0][0]
+        assert reply.video_urls == ["https://cdn.example/reply.mp4"]
+        assert reply.video_paths == []
+        downloaded = target.video_paths[0]
+
+    assert not downloaded.exists()  # the context manager cleans up what it downloaded
+
+
+def test_parse_and_parse_metadata_agree_when_nothing_downloads(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two entry points are one walk: with no video to download they are indistinguishable."""
+    _stub_html(monkeypatch, _thread_html_with_replies())
+
+    metadata = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+    with downloader.parse(url=_REPLIES_TARGET_URL) as parsed:
+        assert parsed == metadata
 
 
 def test_post_tolerates_null_string_fields() -> None:
