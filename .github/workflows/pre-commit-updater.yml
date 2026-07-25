@@ -29,7 +29,10 @@ jobs:
 
       - name: Update Pre-Commit
         run: |
-          uvx pre-commit autoupdate -j 8
+          # ty is held back to the reviewed PR below, so a ty release that changes
+          # its diagnostics cannot block every other hook from updating here.
+          mapfile -t repos < <(sed -n 's/^[[:space:]]*-[[:space:]]*repo:[[:space:]]*\(.*\)/\1/p' .pre-commit-config.yaml | grep -v ty-pre-commit)
+          uvx pre-commit autoupdate -j 8 "${repos[@]/#/--repo=}"
           uvx pre-commit run -a
 
       - name: Create Pull Request
@@ -50,3 +53,21 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh pr merge --squash --delete-branch "${{ steps.create-pr.outputs.pull-request-url }}"
+
+      # ty is the only type-check gate and its releases do not promise stable
+      # diagnostics, so its bump gets its own PR that a human merges. Nothing is
+      # run against it here; the PR's own checks are what report a bad release.
+      - name: Update ty
+        run: |
+          git reset --hard HEAD
+          uvx pre-commit autoupdate --repo https://github.com/astral-sh/ty-pre-commit
+
+      - name: Create ty Pull Request
+        uses: peter-evans/create-pull-request@v8.1.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: chore/ty-hook  # push from this branch
+          title: "chore: Update ty pre-commit hook"
+          body: "Update the ty hook to its latest version. Merge once the checks pass."
+          commit-message: "chore: update ty pre-commit hook"
+          delete-branch: true
