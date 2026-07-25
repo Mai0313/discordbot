@@ -512,11 +512,18 @@ async def test_a_post_whose_comments_the_page_withheld_says_so(
 async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A page whose only comment has no readable body did carry it, so saying otherwise is false."""
+    """A page whose comments have no readable body did carry them, so saying otherwise is false."""
+    target = _post(text="target")
+    target.reply_count = 40
     _stub_parse(
         monkeypatch,
-        [_post(text="target")],
-        branches=[[_post(text="", author="bob", reply_to="alice")]],
+        [target],
+        branches=[
+            [
+                _post(text="", author="bob", reply_to="alice"),
+                _post(text="", author="carol", reply_to="bob"),
+            ]
+        ],
     )
     _stub_media(monkeypatch, uploads=_Uploads())
 
@@ -525,7 +532,9 @@ async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_mi
     )
 
     text = step_dicts(steps=blocks[1]["content"])[0]["text"]
-    assert "carried 1 comment(s) under the linked post" in text
+    # Comments, not branches: this branch holds two, and the post's own count stays in the
+    # message, since this notice runs instead of the one that would have reported it.
+    assert "carried 2 comment(s) under the linked post, which reports 40 replies in total" in text
     assert "did not include any of them" not in text
     assert "Do not state or imply that the post has no comments" in text
 

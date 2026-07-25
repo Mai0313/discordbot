@@ -310,7 +310,7 @@ def _render_reply(*, post: ThreadsOutput, depth: int, target_author: str) -> str
 
 
 def _render_reply_sections(
-    *, selected: list[BranchSelection], target: ThreadsOutput, branch_count: int
+    *, selected: list[BranchSelection], target: ThreadsOutput, carried: int
 ) -> list[str]:
     """Renders the comments, led by a header stating exactly how much of the discussion this is.
 
@@ -323,11 +323,15 @@ def _render_reply_sections(
     if not selected:
         # The page ships only a sample of the replies, and a throttled fetch can carry none at
         # all, so silence here would read as "nobody commented" on a post that says otherwise.
-        if branch_count:
+        if carried:
+            # Keeps the post's own count too: this branch runs INSTEAD of the one below, so
+            # dropping it would hand the model a small absolute number for a post the page
+            # itself says has hundreds of replies.
             return [
-                f"---- The page carried {branch_count:,} comment(s) under the linked post, but "
-                "none of them had any readable text or media, so what they say is unknown. Do "
-                "not state or imply that the post has no comments. ----"
+                f"---- The page carried {carried:,} comment(s) under the linked post, which "
+                f"reports {target.reply_count:,} replies in total, but none of the ones it "
+                "carried had any readable text or media, so what they say is unknown. Do not "
+                "state or imply that the post has no comments. ----"
             ]
         if target.reply_count > 0:
             return [
@@ -539,7 +543,8 @@ async def build_threads_context_messages(
                 branches=conversation.reply_branches, limit=MAX_THREADS_REPLIES
             ),
             target=target,
-            branch_count=len(conversation.reply_branches),
+            # Comments, not branches: a branch is a sub-conversation and can hold several.
+            carried=sum(len(branch) for branch in conversation.reply_branches),
         )
     )
     media_parts: list[ResponseInputFileParam] = []
