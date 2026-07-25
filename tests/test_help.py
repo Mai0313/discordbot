@@ -1,5 +1,6 @@
 """Tests for keeping the localized help guide aligned with slash commands."""
 
+import re
 import ast
 from types import SimpleNamespace
 from pathlib import Path
@@ -24,23 +25,93 @@ _SELECT_LABEL_LIMIT = 100
 _SELECT_DESCRIPTION_LIMIT = 100
 
 
-def _slash_command_names() -> set[str]:
-    """Returns slash command names declared by top-level cogs."""
-    names: set[str] = set()
+def _declared_parent(decorator: ast.Call) -> str | None:
+    """Returns a subcommand's parent callback, `""` for a root command, `None` if unrelated."""
+    func = decorator.func
+    if isinstance(func, ast.Name):
+        return "" if func.id == "slash_command" else None
+    if not isinstance(func, ast.Attribute):
+        return None
+    if func.attr == "slash_command":
+        return ""
+    if func.attr != "subcommand":
+        return None
+    assert isinstance(func.value, ast.Name), "a subcommand must hang off a named group callback"
+    return func.value.id
+
+
+def _declared_name(decorator: ast.Call, callback: str) -> str:
+    """Returns the command name a decorator declares.
+
+    nextcord takes `name` as its first positional parameter and defaults an omitted one
+    to the callback name, so both forms resolve here instead of being skipped.
+    """
+    declared: ast.expr | None = next(
+        (keyword.value for keyword in decorator.keywords if keyword.arg == "name"), None
+    )
+    if declared is None and decorator.args:
+        declared = decorator.args[0]
+    if declared is None:
+        return callback
+    name = declared.value if isinstance(declared, ast.Constant) else None
+    assert isinstance(name, str), f"{callback}: a slash command name must be a literal string"
+    return name
+
+
+def _module_command_paths(module: Path) -> set[str]:
+    """Returns the command paths one cog module declares that a user can run."""
+    parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
+    # Callback name -> (parent callback, or "" for a root command; own command name).
+    declarations: dict[str, tuple[str, str]] = {}
+    for node in ast.walk(node=parsed):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not isinstance(decorator, ast.Call):
+                continue
+            parent = _declared_parent(decorator=decorator)
+            if parent is None:
+                continue
+            name = _declared_name(decorator=decorator, callback=node.name)
+            assert node.name not in declarations, f"{module.name}: two callbacks named {node.name}"
+            declarations[node.name] = (parent, name)
+    paths: dict[str, str] = {}
+    pending = dict(declarations)
+    while pending:
+        resolved = {
+            callback: f"{paths[parent]} {name}" if parent else name
+            for callback, (parent, name) in pending.items()
+            if not parent or parent in paths
+        }
+        # A parent that never resolves means an unsupported declaration form; say so loudly
+        # instead of dropping the commands under it, which is the gap this scan closed.
+        assert resolved, f"{module.name}: unresolved subcommand groups {sorted(pending)}"
+        paths.update(resolved)
+        pending = {name: value for name, value in pending.items() if name not in resolved}
+    groups = {parent for parent, _ in declarations.values() if parent}
+    return {path for callback, path in paths.items() if callback not in groups}
+
+
+def _slash_command_paths() -> set[str]:
+    """Returns every slash command a user can invoke, group subcommands included.
+
+    Group nodes are left out: `/credit` cannot be invoked on its own, and every leaf
+    under it is required anyway.
+    """
+    paths: set[str] = set()
     cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
-    for path in cogs_dir.glob(pattern="*.py"):
-        parsed = ast.parse(source=path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(node=parsed):
-            if not isinstance(node, ast.Call):
-                continue
-            if not isinstance(node.func, ast.Attribute) or node.func.attr != "slash_command":
-                continue
-            for keyword in node.keywords:
-                if keyword.arg != "name" or not isinstance(keyword.value, ast.Constant):
-                    continue
-                if isinstance(keyword.value.value, str):
-                    names.add(keyword.value.value)
-    return names
+    for module in cogs_dir.glob(pattern="*.py"):
+        paths |= _module_command_paths(module=module)
+    return paths
+
+
+def _mentions_command(body: str, command: str) -> bool:
+    """Reports whether a help body names exactly this command.
+
+    The trailing lookahead stops a documented sibling from covering an undocumented one
+    by prefix, so `/games blackjack_history` never answers for `/games blackjack`.
+    """
+    return re.search(pattern=rf"/{re.escape(pattern=command)}(?![\w-])", string=body) is not None
 
 
 def _guide_text(locale: "Locale | str") -> str:
@@ -52,12 +123,32 @@ def _guide_text(locale: "Locale | str") -> str:
     return "\n".join(parts)
 
 
+def test_slash_command_scan_resolves_subcommands() -> None:
+    """The scan must reach group subcommands, since a silent shrink is what it guards against."""
+    paths = _slash_command_paths()
+    assert {"maplestory monster", "credit borrow", "games blackjack_history"} <= paths
+    # A nested group: `memory server` is itself a subcommand of `memory`.
+    assert "memory server show" in paths
+    assert not {"memory", "memory server", "credit"} & paths
+
+
+def test_help_mention_matching_rejects_a_prefix_only_hit() -> None:
+    """A documented sibling must not cover an undocumented one by prefix."""
+    body = "`/games blackjack_history [member] [count]` — recent Blackjack rounds"
+    assert _mentions_command(body=body, command="games blackjack_history")
+    assert not _mentions_command(body=body, command="games blackjack")
+
+
 def test_help_mentions_every_non_help_slash_command() -> None:
     """Every non-help slash command should be discoverable from every localized help body."""
-    commands = _slash_command_names() - {"help"}
+    commands = _slash_command_paths() - {"help"}
     for locale in _LOCALES:
         body = _guide_text(locale=locale)
-        missing = sorted(f"/{command}" for command in commands if f"/{command}" not in body)
+        missing = sorted(
+            f"/{command}"
+            for command in commands
+            if not _mentions_command(body=body, command=command)
+        )
         assert not missing, f"{locale} help is missing slash commands: {missing}"
 
 
