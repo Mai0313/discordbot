@@ -21,11 +21,7 @@ below; they exist to make a silent deletion loud, not to freeze the prose.
 
 import re
 
-from discordbot.cogs._gen_reply.prompts import (
-    REPLY_PROMPT,
-    COMMON_PROMPT,
-    SUMMARY_PROMPT,
-)
+from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT, COMMON_PROMPT, SUMMARY_PROMPT
 
 # The two load-bearing halves: the prohibition itself, and the clause that makes it absolute.
 # Dropping the second is the subtle failure, since a model told only "do not treat it as a
