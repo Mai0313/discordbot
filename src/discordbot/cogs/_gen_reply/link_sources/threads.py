@@ -196,13 +196,17 @@ class BranchSelection(BaseModel):
     """
 
     comments: list[ThreadsOutput] = Field(
-        ..., description="Comments kept for rendering; an entry's index is its nesting depth"
+        ...,
+        description="Comments kept for rendering; an entry's index is its nesting depth",
+        examples=[[]],
     )
     dropped: int = Field(
         ..., description="Readable comments in this branch the budget left out", examples=[0]
     )
     carried: int = Field(
-        ..., description="Nested comments the page shipped in this branch, renderable or not"
+        ...,
+        description="Nested comments the page shipped in this branch, renderable or not",
+        examples=[0],
     )
 
 
