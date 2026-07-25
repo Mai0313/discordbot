@@ -401,6 +401,33 @@ async def test_one_deep_branch_cannot_starve_the_top_ranked_comments(
     assert f"of the {len(flame_war) - 1} nested replies the page carried" in text
 
 
+async def test_an_unrenderable_tail_still_counts_as_a_reply_the_page_carried(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It has nothing to render, but the header's count is a claim about the page, not about us."""
+    _stub_parse(
+        monkeypatch,
+        [_post(text="target")],
+        branches=[
+            [
+                _post(text="head", author="bob", reply_to="alice"),
+                _post(text="readable nested", author="carol", reply_to="bob"),
+                _post(text="", author="dave", reply_to="carol"),
+            ]
+        ],
+    )
+    _stub_media(monkeypatch, uploads=_Uploads())
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+    )
+
+    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    assert "1 of the 2 nested replies the page carried" in text
+    # The empty one holds nothing, so it is never announced as content withheld from the model.
+    assert "further replies under this comment were not included" not in text
+
+
 async def test_a_trailing_empty_comment_is_dropped_but_a_middle_one_survives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
