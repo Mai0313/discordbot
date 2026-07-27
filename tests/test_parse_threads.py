@@ -14,6 +14,7 @@ from discordbot.cogs._gen_reply.link_sources.threads import (
     THREADS_CONTEXT_SEPARATOR,
     THREADS_UNAVAILABLE_NOTICE,
     THREADS_TEXT_ONLY_SEPARATOR,
+    THREADS_PARTIAL_MEDIA_SEPARATOR,
     build_threads_context_messages,
 )
 
@@ -678,7 +679,11 @@ async def test_failed_upload_degrades_to_an_honest_text_block(
 
 
 async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Media items are independent, so an expired image url still leaves the video attached."""
+    """Media items are independent, so an expired image url still leaves the video attached.
+
+    What survives is the video; what must NOT survive is the separator claiming the post's media
+    while one of three signed CDN urls expired between the page fetch and the upload.
+    """
     _stub_parse(
         monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]
     )
@@ -689,11 +694,71 @@ async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.Monk
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_CONTEXT_SEPARATOR
-    media = [
-        part for part in step_dicts(steps=blocks[1]["content"]) if part["type"] == "input_file"
-    ]
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
+    parts = step_dicts(steps=blocks[1]["content"])
+    media = [part for part in parts if part["type"] == "input_file"]
     assert [part["filename"] for part in media] == ["threads_video_0.mp4"]
+    # The image that never arrived is named and handed over as a URL, so the model can say it
+    # only has the link instead of describing a picture it never received.
+    text = parts[0]["text"]
+    assert "1 item(s) reached you and 1 did not" in text
+    assert "Images NOT attached (1)" in text
+    assert "https://cdn.test/a.jpg" in text
+    assert "Videos NOT attached" not in text
+
+
+async def test_a_carousel_past_the_cap_names_the_images_it_left_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nothing failed here: the budget alone withheld five images, and silence would claim them."""
+    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS + 5)]
+    _stub_parse(monkeypatch, [_post(images=images)])
+    _stub_media(monkeypatch, uploads=_Uploads())
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+    )
+
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
+    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    assert f"{MAX_THREADS_MEDIA_PARTS} item(s) reached you and 5 did not" in text
+    assert "Images NOT attached (5)" in text
+    assert images[MAX_THREADS_MEDIA_PARTS] in text
+
+
+async def test_a_video_squeezed_out_by_the_image_budget_is_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A full image budget drops every video outright, which the block used to pass over."""
+    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS)]
+    _stub_parse(monkeypatch, [_post(images=images, videos=["https://cdn.test/v.mp4"])])
+    _stub_media(monkeypatch, uploads=_Uploads())
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+    )
+
+    assert step_dicts(steps=blocks[0]["content"])[0]["text"] == THREADS_PARTIAL_MEDIA_SEPARATOR
+    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    assert "Videos NOT attached (1), URLs only: https://cdn.test/v.mp4" in text
+    assert "Images NOT attached" not in text
+
+
+async def test_a_url_list_longer_than_the_cap_still_states_its_true_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trimmed URL list is the same lie in a smaller font unless it says what it trimmed."""
+    images = [f"https://cdn.test/{index}.jpg" for index in range(MAX_THREADS_MEDIA_PARTS + 3)]
+    _stub_parse(monkeypatch, [_post(images=images)])
+    _stub_media(monkeypatch, uploads=_Uploads())
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=make_stub_gemini_client()
+    )
+
+    text = step_dicts(steps=blocks[1]["content"])[0]["text"]
+    assert f"Images NOT attached ({MAX_THREADS_MEDIA_PARTS + 3})" in text
+    assert "plus 3 more whose URLs are not listed here" in text
 
 
 async def test_text_only_post_keeps_the_context_separator(monkeypatch: pytest.MonkeyPatch) -> None:

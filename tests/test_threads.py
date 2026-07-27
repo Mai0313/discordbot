@@ -78,10 +78,21 @@ def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
     assert second.reply_to_username == ""
 
 
-def _thread_post_payload(
-    code: str, username: str, text: str, reply_to_username: str = "", video_url: str = ""
+def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field of a post
+    code: str,
+    username: str,
+    text: str,
+    reply_to_username: str = "",
+    video_url: str = "",
+    is_reply: bool | None = None,
+    quotes: str = "",
+    root_post_username: str = "",
 ) -> dict[str, object]:
-    """Returns a minimal Threads post payload with parser-relevant fields."""
+    """Returns a minimal Threads post payload with parser-relevant fields.
+
+    `is_reply`, `quotes` and `root_post_username` are the fields of the one real shape Threads
+    serialises without a `reply_to_author`: a reply that is also a quote post.
+    """
     media: dict[str, object] = (
         {"video_versions": [{"url": video_url}]}
         if video_url
@@ -101,12 +112,21 @@ def _thread_post_payload(
                 "repost_count": 2,
                 "quote_count": 3,
                 "reshare_count": 4,
-                "is_reply": bool(reply_to_username),
+                "is_reply": bool(reply_to_username) if is_reply is None else is_reply,
                 "reply_to_author": (
                     {"username": reply_to_username, "profile_pic_url": ""}
                     if reply_to_username
                     else None
                 ),
+                "root_post_author": (
+                    {"username": root_post_username, "profile_pic_url": ""}
+                    if root_post_username
+                    else None
+                ),
+                "share_info": {
+                    "quoted_post": {"code": quotes} if quotes else None,
+                    "reposted_post": None,
+                },
             },
             "like_count": 5,
             "taken_at": 1_735_689_600,
@@ -447,6 +467,124 @@ def test_a_section_header_ends_the_targets_own_replies(
     ]
 
 
+def _quote_reply_html(
+    *, quote_root: str = "target_author", extra: dict[str, object] | list[object] | None = None
+) -> str:
+    """Builds a page whose one comment is a quote post Threads serialised with no reply author.
+
+    Measured against the live page for `@chengweilai2/post/DZZImVsCWU-`: the branch holding
+    `DZiDgrkCeNt` comes back `is_reply: true` with `reply_to_author: null`, a populated
+    `share_info.quoted_post`, and `root_post_author` naming the thread's root author.
+    """
+    threads: list[list[object] | dict[str, object]] = [
+        [
+            _thread_post_payload(code="ROOT", username="target_author", text="Root post"),
+            _thread_post_payload(
+                code="TARGET",
+                username="target_author",
+                text="Target post",
+                reply_to_username="target_author",
+            ),
+        ],
+        [
+            _thread_post_payload(
+                code="QUOTED_REPLY",
+                username="quoter",
+                text="A reply that also quotes another post",
+                is_reply=True,
+                quotes="SOMEWHERE_ELSE",
+                root_post_username=quote_root,
+            )
+        ],
+    ]
+    if extra is not None:
+        threads.append(extra)
+    return _sjs_html(*threads)
+
+
+def test_a_quote_post_reply_is_kept_despite_a_null_reply_to_author(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Threads omits the author on a reply that is also a quote post; it is still a real reply."""
+    _stub_html(monkeypatch, _quote_reply_html())
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert [[post.text for post in branch] for branch in conversation.reply_branches] == [
+        ["A reply that also quotes another post"]
+    ]
+
+
+def test_a_quote_post_rooted_in_another_thread_is_still_dropped(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The relaxed test is not "any quote post": one from elsewhere names a different root."""
+    _stub_html(monkeypatch, _quote_reply_html(quote_root="somebody_else"))
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert conversation.reply_branches == []
+
+
+def test_a_post_answering_nobody_is_still_dropped_when_it_quotes_nothing(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recommendation and a deleted-parent reply both answer nobody, and neither is a comment."""
+    html = _quote_reply_html(
+        extra=[
+            _thread_post_payload(
+                code="RECO",
+                username="unrelated",
+                text="Recommended post",
+                is_reply=True,
+                root_post_username="target_author",
+            )
+        ]
+    )
+    _stub_html(monkeypatch, html)
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    codes = {post.url.rsplit("/", 1)[-1] for post in conversation.posts}
+    assert "RECO" not in codes
+    assert "QUOTED_REPLY" in codes
+
+
+def test_the_filler_section_still_ends_the_replies_for_a_quote_post(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The header remains the boundary: the relaxation must not reach past it into the padding."""
+    _stub_html(
+        monkeypatch,
+        _sjs_html(
+            [
+                _thread_post_payload(code="ROOT", username="target_author", text="Root post"),
+                _thread_post_payload(
+                    code="TARGET",
+                    username="target_author",
+                    text="Target post",
+                    reply_to_username="target_author",
+                ),
+            ],
+            _section_header(label="More replies to target_author"),
+            [
+                _thread_post_payload(
+                    code="FILLER_QUOTE",
+                    username="stranger",
+                    text="A quote post answering the root",
+                    is_reply=True,
+                    quotes="SOMEWHERE_ELSE",
+                    root_post_username="target_author",
+                )
+            ],
+        ),
+    )
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert conversation.reply_branches == []
+
+
 def test_a_target_with_no_author_collects_no_comments(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -479,6 +617,81 @@ def test_a_page_without_the_post_yields_an_empty_conversation(
     assert conversation.chain == []
     assert conversation.target is None
     assert conversation.reply_branches == []
+
+
+def _count_fetches(monkeypatch: pytest.MonkeyPatch, pages: list[str]) -> list[str]:
+    """Serves `pages` in order (the last one repeating) and records every fetched URL."""
+    fetched: list[str] = []
+
+    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+        """Hands back the page for this attempt."""
+        fetched.append(url)
+        return pages[min(len(fetched) - 1, len(pages) - 1)]
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    monkeypatch.setattr(
+        target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS", value=0.0
+    )
+    return fetched
+
+
+# What the platform's soft throttle answers with: 200, a few hundred KB of shell, and no post
+# JSON anywhere. It is the shape a retry is for, and the shape a deleted post does NOT have.
+_THROTTLED_PAGE = "<html><head><title></title></head><body>shell</body></html>"
+
+
+def test_a_page_carrying_no_post_json_is_fetched_again(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The throttle is transient, and both entry points are one-shot, so it costs a real failure."""
+    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE, _thread_html_with_replies()])
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == 2
+    assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
+
+
+def test_a_page_that_answered_without_the_post_is_not_retried(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A private or deleted post gets a full payload that just lacks it; retrying only stalls."""
+    answered = _sjs_html([
+        _thread_post_payload(code="SOMEONE_ELSE", username="other", text="Other post")
+    ])
+    fetched = _count_fetches(monkeypatch, [answered])
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == 1
+    assert conversation.chain == []
+
+
+def test_the_empty_page_retries_are_bounded(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A throttle that never clears must not keep the reply pipeline waiting indefinitely."""
+    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE])
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == threads_module.THREADS_EMPTY_PAGE_RETRIES + 1
+    assert conversation.chain == []
+
+
+def test_the_retry_deadline_stops_further_attempts(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The attempt count is not the only bound: a run of slow fetches spends the budget instead."""
+    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE])
+    monkeypatch.setattr(
+        target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS", value=0.0
+    )
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == 1
+    assert conversation.chain == []
 
 
 def test_a_malformed_thread_does_not_cost_the_target(
