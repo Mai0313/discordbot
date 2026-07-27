@@ -253,6 +253,31 @@ class LinkedInlineMedia(MediaContainer):
     caption: Caption | None = Field(default=None, description="Linked media caption")
 
 
+class QuotedPost(_ThreadsModel):
+    """Represents the post a quote post embeds.
+
+    Only its presence is read: it is the tell that a reply Threads serialised without a
+    `reply_to_author` is a quote post rather than an unrelated thread sharing the block.
+
+    Attributes:
+        code: Quoted post short code.
+    """
+
+    code: str = Field(default="", description="Quoted post short code")
+
+
+class ShareInfo(_ThreadsModel):
+    """Represents what a post quotes or reposts.
+
+    Attributes:
+        quoted_post: The post this one quotes, absent when it quotes nothing.
+    """
+
+    quoted_post: QuotedPost | None = Field(
+        default=None, description="The post this one quotes, absent when it quotes nothing"
+    )
+
+
 class TextPostAppInfo(_ThreadsModel):
     """Represents Threads-specific post metadata and engagement fields.
 
@@ -266,6 +291,8 @@ class TextPostAppInfo(_ThreadsModel):
         linked_inline_media: Inline media attached through a link preview.
         is_reply: Whether this post is a reply to another post.
         reply_to_author: User this post is directly replying to, if any.
+        root_post_author: Author of the post at the top of this post's thread.
+        share_info: What this post quotes or reposts.
     """
 
     direct_reply_count: int | None = Field(default=None, description="Number of direct replies")
@@ -286,6 +313,12 @@ class TextPostAppInfo(_ThreadsModel):
     )
     reply_to_author: User | None = Field(
         default=None, description="User this post is directly replying to"
+    )
+    root_post_author: User | None = Field(
+        default=None, description="Author of the post at the top of this post's thread"
+    )
+    share_info: ShareInfo | None = Field(
+        default=None, description="What this post quotes or reposts"
     )
 
 
@@ -407,6 +440,31 @@ class Post(MediaContainer):
         if self.text_post_app_info and self.text_post_app_info.reply_to_author:
             return self.text_post_app_info.reply_to_author.username
         return ""
+
+    @property
+    def root_post_username(self) -> str:
+        """The username of the author of the post at the top of this post's thread.
+
+        Returns:
+            Username from `text_post_app_info.root_post_author`, or an empty string when the
+            field is missing (as it is on a post that is not itself a reply).
+        """
+        if self.text_post_app_info and self.text_post_app_info.root_post_author:
+            return self.text_post_app_info.root_post_author.username
+        return ""
+
+    @property
+    def is_quote_post(self) -> bool:
+        """Whether this post embeds another post as a quote.
+
+        Returns:
+            True when `text_post_app_info.share_info.quoted_post` is present.
+        """
+        return bool(
+            self.text_post_app_info
+            and self.text_post_app_info.share_info
+            and self.text_post_app_info.share_info.quoted_post
+        )
 
     @property
     def media_urls(self) -> list[str]:
@@ -688,8 +746,39 @@ class ThreadsDownloader(BaseModel):
         return threads
 
     @staticmethod
+    def _answers_the_target(*, head: Post, target_author: str, root_author: str) -> bool:
+        """Whether a branch's first post is a comment on the target rather than page filler.
+
+        The author it answers is the primary test. Threads omits that field on at least one
+        real shape though — a reply that is ALSO a quote post comes back with a null
+        `reply_to_author` (and a misleading item-level `parent_post_unavailable_reason:
+        "default"`, while the parent is alive) — so a second, narrower test catches exactly
+        that shape: the post says it is a reply, it quotes another post, and it names the
+        target's own thread root as its root. Every one of those has to hold, which is what
+        keeps the relaxation from re-opening the filler section the author test guards: a
+        recommended post is not a reply, an ordinary comment carries the author it answers,
+        and a thread from elsewhere on the page names a different root.
+
+        Args:
+            head: The branch's first post.
+            target_author: Username of the target post's author.
+            root_author: Username of the author of the post at the top of the target's chain.
+
+        Returns:
+            True when the branch hangs off the target.
+        """
+        if head.reply_to_username:
+            return head.reply_to_username == target_author
+        return bool(
+            head.is_reply
+            and head.is_quote_post
+            and root_author
+            and head.root_post_username == root_author
+        )
+
+    @staticmethod
     def _collect_reply_branches(
-        threads: list[ThreadData], chain_index: int, target_author: str
+        threads: list[ThreadData], chain_index: int, target_author: str, root_author: str
     ) -> list[list[Post]]:
         """Returns the reply branches under the target, in the order the page ranked them.
 
@@ -701,20 +790,17 @@ class ThreadsDownloader(BaseModel):
         - The section header ends the target's own replies, so the scan stops at the first one.
           It is the only tell that works when the target is its author's own reply to their own
           post, because the filler then answers the same username the target does.
-        - A branch's first post carries the author it answers, which rejects the filler whenever
-          those two authors differ, plus a sibling reply to the target's own parent and (if
-          Threads ever moves them into this block) the recommended posts it keeps in a separate
-          one today.
-
-        The known cost of the author test is a direct reply that Threads serialises with a null
-        `reply_to_author` — observed on a reply that is also a quote post. Dropping one real
-        comment is the safe side of that trade: attributing a stranger's comment to the wrong
-        post is a mistake the model would then repeat as fact.
+        - A branch's first post has to answer the target, which rejects the filler whenever those
+          two authors differ, plus a sibling reply to the target's own parent and (if Threads ever
+          moves them into this block) the recommended posts it keeps in a separate one today.
+          `_answers_the_target` owns that second test, including the one real shape Threads
+          serialises without naming the author it answers.
 
         Args:
             threads: Every thread parsed out of the SJS block holding the target, in page order.
             chain_index: Index of the thread holding the target's own chain.
             target_author: Username of the target post's author.
+            root_author: Username of the author of the post at the top of the target's chain.
 
         Returns:
             One list per reply branch, each ordered from the direct reply outward.
@@ -730,7 +816,9 @@ class ThreadsDownloader(BaseModel):
             if index == chain_index:
                 continue
             posts = thread.posts
-            if posts and posts[0].reply_to_username == target_author:
+            if posts and ThreadsDownloader._answers_the_target(
+                head=posts[0], target_author=target_author, root_author=root_author
+            ):
                 branches.append(posts)
         return branches
 
@@ -761,10 +849,14 @@ class ThreadsDownloader(BaseModel):
                 post, parents = thread.find_post_with_parents(post_code=post_code)
                 if not post:
                     continue
+                chain = [*parents, post]
                 return ThreadsPage(
-                    chain=[*parents, post],
+                    chain=chain,
                     reply_branches=self._collect_reply_branches(
-                        threads=threads, chain_index=index, target_author=post.author_name
+                        threads=threads,
+                        chain_index=index,
+                        target_author=post.author_name,
+                        root_author=chain[0].author_name,
                     ),
                 )
 
