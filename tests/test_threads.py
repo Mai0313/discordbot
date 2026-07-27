@@ -619,6 +619,81 @@ def test_a_page_without_the_post_yields_an_empty_conversation(
     assert conversation.reply_branches == []
 
 
+def _count_fetches(monkeypatch: pytest.MonkeyPatch, pages: list[str]) -> list[str]:
+    """Serves `pages` in order (the last one repeating) and records every fetched URL."""
+    fetched: list[str] = []
+
+    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+        """Hands back the page for this attempt."""
+        fetched.append(url)
+        return pages[min(len(fetched) - 1, len(pages) - 1)]
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    monkeypatch.setattr(
+        target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS", value=0.0
+    )
+    return fetched
+
+
+# What the platform's soft throttle answers with: 200, a few hundred KB of shell, and no post
+# JSON anywhere. It is the shape a retry is for, and the shape a deleted post does NOT have.
+_THROTTLED_PAGE = "<html><head><title></title></head><body>shell</body></html>"
+
+
+def test_a_page_carrying_no_post_json_is_fetched_again(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The throttle is transient, and both entry points are one-shot, so it costs a real failure."""
+    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE, _thread_html_with_replies()])
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == 2
+    assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
+
+
+def test_a_page_that_answered_without_the_post_is_not_retried(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A private or deleted post gets a full payload that just lacks it; retrying only stalls."""
+    answered = _sjs_html([
+        _thread_post_payload(code="SOMEONE_ELSE", username="other", text="Other post")
+    ])
+    fetched = _count_fetches(monkeypatch, [answered])
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == 1
+    assert conversation.chain == []
+
+
+def test_the_empty_page_retries_are_bounded(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A throttle that never clears must not keep the reply pipeline waiting indefinitely."""
+    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE])
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == threads_module.THREADS_EMPTY_PAGE_RETRIES + 1
+    assert conversation.chain == []
+
+
+def test_the_retry_deadline_stops_further_attempts(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The attempt count is not the only bound: a run of slow fetches spends the budget instead."""
+    fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE])
+    monkeypatch.setattr(
+        target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS", value=0.0
+    )
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == 1
+    assert conversation.chain == []
+
+
 def test_a_malformed_thread_does_not_cost_the_target(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:

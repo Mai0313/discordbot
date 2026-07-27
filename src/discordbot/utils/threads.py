@@ -2,6 +2,7 @@
 
 import re
 import json
+import time
 from typing import Any
 from pathlib import Path
 from datetime import UTC, datetime
@@ -584,6 +585,30 @@ class ThreadsPage(BaseModel):
         return self.chain[-1] if self.chain else None
 
 
+class ParsedPage(BaseModel):
+    """One fetched page's outcome: what it yielded, and whether it was an answer at all.
+
+    `carried_post_json` is what separates the platform's soft throttle from a real answer that
+    simply does not hold the post. A throttled fetch comes back 200 with a few hundred KB of
+    shell carrying no post JSON anywhere; a private, deleted, or mistyped post comes back with
+    a full payload (the recommendation rail Threads pads the page with) that just does not
+    contain the requested code. Only the first is worth fetching again.
+
+    Attributes:
+        page: The posts this page yielded; empty when it held no such post.
+        carried_post_json: Whether any script block on the page held post JSON at all.
+    """
+
+    page: ThreadsPage = Field(
+        ..., description="The posts this page yielded; empty when it held no such post"
+    )
+    carried_post_json: bool = Field(
+        ...,
+        description="Whether any script block on the page held post JSON at all",
+        examples=[True],
+    )
+
+
 class ThreadsOutput(BaseModel):
     """Output model for a single Threads post.
 
@@ -677,6 +702,26 @@ class ThreadsConversation(BaseModel):
 _SJS_PATTERN = re.compile(
     r'<script type="application/json"[^>]*data-sjs>(.*?)</script>', re.DOTALL
 )
+
+# Extra attempts spent on a page that came back carrying no post JSON at all, which is the
+# platform's soft throttle rather than an answer about the post (see `ParsedPage`). Both entry
+# points are one-shot — the user pastes a link or mentions the bot once — so a throttle that a
+# second fetch usually clears would otherwise spend a real user-visible failure on nothing. A
+# page that DID answer, without the post in it, is never retried: that is what keeps a private
+# or deleted post a fast failure instead of a slow one.
+THREADS_EMPTY_PAGE_RETRIES = 2
+
+# Pause between those attempts. Short on purpose: the throttle is transient, and this sits on
+# the reply pipeline's critical path, ahead of the media fetch.
+THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS = 0.8
+
+# Ceiling on the whole retry loop, measured from the first attempt, and sized against the reply
+# pipeline rather than against the fetch: a retry that eventually succeeds is followed by the
+# media step, which already claims almost all of `LINK_CONTEXT_GRACE_SECONDS` on its own
+# (`LINK_MEDIA_TIMEOUT_SECONDS`). Two more healthy fetches (~3s each) fit inside this; a run of
+# slow ones stops early instead of pushing the whole block past the grace. A retry that never
+# succeeds costs nothing extra downstream, since an unreadable post skips the media step.
+THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS = 10.0
 
 
 class ThreadsDownloader(BaseModel):
@@ -822,8 +867,9 @@ class ThreadsDownloader(BaseModel):
                 branches.append(posts)
         return branches
 
-    def _parse_page_from_html(self, html: str, post_code: str) -> ThreadsPage:
+    def _parse_page_from_html(self, html: str, post_code: str) -> ParsedPage:
         """Parses the target post, its ancestors, and its replies from the SJS script tags."""
+        carried_post_json = False
         for match in _SJS_PATTERN.finditer(string=html):
             text = match.group(1)
             if "thread_items" not in text:
@@ -844,23 +890,30 @@ class ThreadsDownloader(BaseModel):
                 )
                 continue
 
+            # Set only once a block actually parsed: the flag means "the server sent a payload we
+            # could read", so a truncated block that carries the substring and nothing usable is
+            # retried like the throttle it resembles rather than reported as an answer.
+            carried_post_json = True
             threads = self._collect_threads(data=data, post_code=post_code)
             for index, thread in enumerate(threads):
                 post, parents = thread.find_post_with_parents(post_code=post_code)
                 if not post:
                     continue
                 chain = [*parents, post]
-                return ThreadsPage(
-                    chain=chain,
-                    reply_branches=self._collect_reply_branches(
-                        threads=threads,
-                        chain_index=index,
-                        target_author=post.author_name,
-                        root_author=chain[0].author_name,
+                return ParsedPage(
+                    page=ThreadsPage(
+                        chain=chain,
+                        reply_branches=self._collect_reply_branches(
+                            threads=threads,
+                            chain_index=index,
+                            target_author=post.author_name,
+                            root_author=chain[0].author_name,
+                        ),
                     ),
+                    carried_post_json=True,
                 )
 
-        return ThreadsPage()
+        return ParsedPage(page=ThreadsPage(), carried_post_json=carried_post_json)
 
     @staticmethod
     def _determine_extension(media_url: str) -> str:
@@ -914,6 +967,12 @@ class ThreadsDownloader(BaseModel):
     def extract_post_data(self, url: str) -> ThreadsPage:
         """Extracts the target post, its parents, and its replies from a Threads URL.
 
+        A fetch that comes back with no post JSON at all is retried, bounded by
+        `THREADS_EMPTY_PAGE_RETRIES` and `THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS`: that shape
+        is the platform throttling this fingerprint, and a second attempt usually clears it. A
+        page that answered without holding the post is returned as-is, so a private or deleted
+        post still fails on the first attempt.
+
         Args:
             url: The raw Threads post URL.
 
@@ -921,8 +980,29 @@ class ThreadsDownloader(BaseModel):
             The parsed page; its `target` is None when the post could not be found.
         """
         threads_url = ThreadsURL(raw_url=url)
-        html = self._fetch_html(url=threads_url.clean_url)
-        return self._parse_page_from_html(html=html, post_code=threads_url.post_code)
+        deadline = time.monotonic() + THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS
+        attempts = 0
+        for attempt in range(THREADS_EMPTY_PAGE_RETRIES + 1):
+            attempts = attempt + 1
+            html = self._fetch_html(url=threads_url.clean_url)
+            parsed = self._parse_page_from_html(html=html, post_code=threads_url.post_code)
+            if parsed.page.chain or parsed.carried_post_json:
+                return parsed.page
+            if attempt == THREADS_EMPTY_PAGE_RETRIES or time.monotonic() >= deadline:
+                break
+            logfire.info(
+                "Threads answered without any post JSON; fetching the page again",
+                post_code=threads_url.post_code,
+                attempt=attempts,
+                html_length=len(html),
+            )
+            time.sleep(THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS)
+        logfire.warn(
+            "Threads kept answering without any post JSON; treating the post as unreadable",
+            post_code=threads_url.post_code,
+            attempts=attempts,
+        )
+        return ThreadsPage()
 
     @staticmethod
     def _post_url(post: Post) -> str:
