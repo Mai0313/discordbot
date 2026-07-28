@@ -40,6 +40,9 @@ class OriginalEditPayload(TypedDict, total=False):
     """Payload captured from fake original interaction edits."""
 
     content: str
+    embed: Embed
+    embeds: list[Embed]
+    view: View | None
     file: File
     files: list[File]
     allowed_mentions: AllowedMentions

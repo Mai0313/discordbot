@@ -1,9 +1,10 @@
-"""Slash commands for viewing and regenerating long-term memory.
+"""Slash commands for viewing, regenerating, and clearing long-term memory.
 
-`/memory show` and `/memory regenerate` operate on the caller's own per-user
-memory; `/memory server show` views the bot's per-server (community) memory for
-the current guild. All three are read-only or rebuild-only by design: there is
-no user-facing clear, so memory is never deleted from chat.
+`/memory show`, `/memory regenerate` and `/memory clear` operate on the caller's
+own per-user memory; `/memory server show` views the bot's per-server
+(community) memory for the current guild. Only the personal scope is erasable
+from chat, and only behind a confirmation: server memory stays
+operator-maintained.
 """
 
 from functools import cached_property
@@ -27,9 +28,11 @@ from discordbot.cogs._memory.views import (
     MEMORY_EMBED_COLOR,
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
+    MemoryClearConfirmView,
     paginate_on_lines,
     build_memory_embed,
     memory_footer_text,
+    build_clear_confirm_embed,
 )
 from discordbot.cogs._gen_reply.input import render_author_identity
 from discordbot.cogs._memory.pipeline import (
@@ -287,6 +290,27 @@ class MemoryCogs(commands.Cog):
             color = _WARN_EMBED_COLOR
         embed = Embed(title=_REGEN_TITLE, description=description, color=color)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @memory.subcommand(
+        name="clear",
+        description="Erase everything the bot remembers about you.",
+        name_localizations={Locale.zh_TW: "清除", Locale.ja: "削除"},
+        description_localizations={
+            Locale.zh_TW: "清除 bot 對你的所有長期記憶",
+            Locale.ja: "あなたについてボットが記憶している内容をすべて削除します。",
+        },
+    )
+    async def memory_clear(self, interaction: Interaction[commands.Bot]) -> None:
+        """Asks for confirmation before erasing the caller's own memory."""
+        if interaction.user is None:
+            return
+        # The wipe is irreversible and covers tiers `/memory show` never displays,
+        # so the command only opens the prompt; the view owns the clear itself.
+        view = MemoryClearConfirmView(scope=user_scope(user_id=interaction.user.id))
+        await interaction.response.send_message(
+            embed=build_clear_confirm_embed(), view=view, ephemeral=True
+        )
+        view.bind_origin(interaction=interaction)
 
 
 def setup(bot: commands.Bot) -> None:

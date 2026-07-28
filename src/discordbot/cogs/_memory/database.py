@@ -6,7 +6,9 @@ yet flushed to `raw.md`. Success is *recorded* (`status='done'`, `transcript`
 cleared) rather than the row deleted, so the table doubles as an inspectable
 per-scope processing state; an LLM failure parks the row at `status='failed'`
 with its transcript kept, so the restart sweep retries it without any timeout
-tuning.
+tuning. A user-requested memory clear is the one caller that deletes a row
+outright (`delete_job`), since the staged transcript is exactly the content the
+clear erases and a surviving row would resume it after the next restart.
 
 Engine, PRAGMA hooks, and the schema bootstrap follow `cogs/_research/database.py`
 exactly: a module-level `AsyncEngine` singleton on the shared `reply.db` (a
@@ -29,7 +31,7 @@ from typing import Any, Literal, cast
 from datetime import datetime
 
 from pydantic import Field, BaseModel
-from sqlalchemy import Text, String, Integer, DateTime, event, select, update
+from sqlalchemy import Text, String, Integer, DateTime, CursorResult, event, delete, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -250,6 +252,30 @@ async def mark_failed(*, scope: str, token: int, error: str) -> None:
             .values(status="failed", last_error=error[:_MAX_ERROR_CHARS], updated_at=now)
         )
         await session.commit()
+
+
+async def delete_job(*, scope: str) -> bool:
+    """Drops a scope's row entirely, for a user-requested memory clear.
+
+    Deletion rather than a `mark_done` transition, for two reasons: the row's
+    `transcript` holds the very conversation the user asked to erase, and the
+    terminal transitions are token-guarded while a clear holds no token. Removing
+    the row is also what keeps the clear whole, since `list_resumable` would
+    otherwise hand the restart sweep a turn that rebuilds the wiped memory.
+
+    Returns:
+        True when a row existed and was removed.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        result = cast(
+            "CursorResult[Any]",
+            await session.execute(
+                statement=delete(MemoryJobRow).where(MemoryJobRow.scope == scope)
+            ),
+        )
+        await session.commit()
+        return bool(result.rowcount and result.rowcount > 0)
 
 
 async def list_resumable() -> list[MemoryJob]:

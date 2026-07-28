@@ -88,6 +88,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "Memory\n"
                     "`/memory show` — see what I remember about you\n"
                     "`/memory regenerate` — rebuild my memory of you in the background\n"
+                    "`/memory clear` — erase everything I remember about you\n"
                     "`/memory server show` — see what I remember about this server"
                 ),
             ),
@@ -192,6 +193,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "記憶\n"
                     "`/memory show` — 看我記得你什麼\n"
                     "`/memory regenerate` — 在背景重建我對你的記憶\n"
+                    "`/memory clear` — 清掉我對你的所有記憶\n"
                     "`/memory server show` — 看我記得這個伺服器什麼"
                 ),
             ),
@@ -296,6 +298,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "メモリー\n"
                     "`/memory show` — 覚えている内容を表示\n"
                     "`/memory regenerate` — バックグラウンドで記憶を作り直す\n"
+                    "`/memory clear` — あなたに関する記憶をすべて削除\n"
                     "`/memory server show` — このサーバーについて覚えている内容を表示"
                 ),
             ),
