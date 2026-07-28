@@ -2549,6 +2549,26 @@ async def test_db_bootstrap_drops_a_legacy_row_the_new_scope_already_holds(
     }
 
 
+async def test_db_bootstrap_keeps_the_newest_turn_when_two_bot_ids_staged_one_guild(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One guild can hold a row per bot id it was ever staged under, and only one of
+    # them can keep the renamed key, so the re-key resolves it by token like every
+    # other write in this table.
+    await memory_db.upsert_pending(
+        scope="999/555", flavor="server", subject="s", transcript="舊", identity="", token=1
+    )
+    await memory_db.upsert_pending(
+        scope="1000/555", flavor="server", subject="s", transcript="新", identity="", token=2
+    )
+    monkeypatch.setattr(memory_db, "_schema_ready_for", None)
+    job = await memory_db.get_job(scope=server_scope(server_id=555))
+    assert job is not None
+    assert job.transcript == "新"
+    assert await memory_db.get_job(scope="999/555") is None
+    assert await memory_db.get_job(scope="1000/555") is None
+
+
 async def test_db_list_resumable_excludes_done(memory_isolated_dir: Path) -> None:
     await memory_db.upsert_pending(
         scope="111", flavor="user", subject="s", transcript="a", identity="", token=1

@@ -136,16 +136,22 @@ async def _rekey_legacy_server_scopes(conn: AsyncConnection) -> None:
     directory was renamed points at a path the running code no longer writes: the
     restart sweep would resume that transcript into a phantom `<bot_id>/<server_id>`
     directory instead of the guild's real memory. Re-keying is a plain rename of a
-    handful of rows (one per guild at most), idempotent, and self-retiring once no
-    legacy row is left; a legacy row whose target key already exists is dropped
-    rather than updated, both to keep the primary key intact and because the
-    new-key row can only have been written after the rename, so it is the newer
-    turn the token guard would have kept anyway.
+    handful of rows (one guild can have one per bot id it was staged under),
+    idempotent, and self-retiring once no legacy row is left; a legacy row whose
+    target key is already taken is dropped rather than updated, both to keep the
+    primary key intact and because the row holding it is the newer turn the token
+    guard would have kept anyway — a `bot_memories/` row can only have been written
+    after the rename, and the newest-token ordering below is what makes that true
+    for a guild whose rows are spread over two bot ids as well.
     """
     # Read every server row and partition in Python rather than filtering by a LIKE
-    # prefix: there is one such row per guild at most, and `bot_memories` carries a
-    # `_`, which LIKE would read as a wildcard unless escaped.
-    result = await conn.execute(select(MemoryJobRow.scope).where(MemoryJobRow.flavor == "server"))
+    # prefix: there is one such row per guild and bot id, and `bot_memories` carries
+    # a `_`, which LIKE would read as a wildcard unless escaped.
+    result = await conn.execute(
+        statement=select(MemoryJobRow.scope)
+        .where(MemoryJobRow.flavor == "server")
+        .order_by(MemoryJobRow.token.desc())
+    )
     server_scopes = result.scalars().all()
     prefix = f"{BOT_MEMORY_DIR_NAME}/"
     legacy_scopes = [
@@ -158,10 +164,10 @@ async def _rekey_legacy_server_scopes(conn: AsyncConnection) -> None:
         _, _, server_id = scope.partition("/")
         target = f"{BOT_MEMORY_DIR_NAME}/{server_id}"
         if target in taken:
-            await conn.execute(delete(MemoryJobRow).where(MemoryJobRow.scope == scope))
+            await conn.execute(statement=delete(MemoryJobRow).where(MemoryJobRow.scope == scope))
             continue
         await conn.execute(
-            update(MemoryJobRow).where(MemoryJobRow.scope == scope).values(scope=target)
+            statement=update(MemoryJobRow).where(MemoryJobRow.scope == scope).values(scope=target)
         )
         taken.add(target)
     logfire.info("re-keyed legacy server memory jobs", count=len(legacy_scopes))
