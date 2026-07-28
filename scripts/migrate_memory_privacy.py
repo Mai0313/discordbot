@@ -89,9 +89,10 @@ def _repoint_store_root(folder: Path) -> None:
 def _resolve_user_ids(folder: Path) -> list[int]:
     """Returns the user ids for a single-user directory or a memories root.
 
-    Mirrors `regen_memories._resolve_user_ids`; the bot's own server-memory
-    parent directory is numeric too but carries no top-level `main.md`, so the
-    per-user no-main skip below drops it naturally.
+    Mirrors `regen_memories._resolve_user_ids`; the bot's own server-memory parent
+    directory (`bot_memories`) is not numeric, and a numeric symlink left behind by
+    the rename carries no top-level `main.md`, so the per-user no-main skip below
+    drops it naturally.
     """
     if folder.name.isdigit():
         return [int(folder.name)]

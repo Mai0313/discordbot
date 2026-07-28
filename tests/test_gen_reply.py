@@ -5519,7 +5519,7 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
         identity="U1 (u1) [id: 1]",
     )
     write_main_memory(
-        scope=server_scope(bot_id=999, server_id=1),
+        scope=server_scope(server_id=1),
         content="v1\n\n## 伺服器輪廓\n社群風格",
         identity="Test Guild [id: 1]",
     )
@@ -5815,7 +5815,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     assert "get_user_memory" not in tool_names_for_call(
         responses=_recorded(cog).responses, n=answer_idx
     )
-    assert scheduled == [user_scope(user_id=1), server_scope(bot_id=999, server_id=1)]
+    assert scheduled == [user_scope(user_id=1), server_scope(server_id=1)]
 
 
 async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
@@ -5881,7 +5881,7 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
     assert not has_memory_context_block(request=answer)
     assert "get_user_memory" not in tool_names_for_call(responses=_recorded(cog).responses, n=0)
     # The per-user update is skipped, but the server-scope update still runs in a public guild.
-    assert scheduled == [server_scope(bot_id=999, server_id=1)]
+    assert scheduled == [server_scope(server_id=1)]
 
 
 async def test_process_single_message_neutralizes_spoofed_identity(
@@ -6299,7 +6299,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     if server_nick is not None:
         nick_id, nick_name, nick_alias = server_nick
         write_main_memory(
-            scope=server_scope(bot_id=999, server_id=1),
+            scope=server_scope(server_id=1),
             content=f"v1\n\n## 成員稱呼\n* {nick_name}(社群暱稱:{nick_alias})[id: {nick_id}]",
             identity="Test Guild [id: 1]",
         )
@@ -6556,7 +6556,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_main_memory(
-        scope=server_scope(bot_id=999, server_id=1),
+        scope=server_scope(server_id=1),
         content="v1\n\n## 伺服器輪廓\n社群風格",
         identity="Test Guild [id: 1]",
     )
@@ -6582,7 +6582,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert (extract_server_memory_block(request=answer) is not None) == expect_server_read
 
-    server_scope_value = server_scope(bot_id=999, server_id=1)
+    server_scope_value = server_scope(server_id=1)
     name_to_scope = {"user": user_scope(user_id=1), "server": server_scope_value}
     assert [update["scope"] for update in scheduled] == [
         name_to_scope[name] for name in expect_scopes
@@ -7221,7 +7221,7 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     cog.__dict__["server_memory_extractor"] = server_sentinel
 
     user_job_scope = user_scope(user_id=1)
-    server_job_scope = server_scope(bot_id=999, server_id=2)
+    server_job_scope = server_scope(server_id=2)
     sweep_scope = user_scope(user_id=3)
     jobs = [
         memory_db.MemoryJob(

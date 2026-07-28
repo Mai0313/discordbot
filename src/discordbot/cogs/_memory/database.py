@@ -16,7 +16,9 @@ per-instance `cached_property` engine would leak the pool / dialect cache), with
 this module owning its own `Base` and the `memory_job` table, distinct from
 research's `research` table in the same file. No money columns, so no
 `StoredInteger`. Like research it avoids `from __future__ import annotations`:
-SQLAlchemy resolves the `Mapped[datetime]` columns at class-definition time.
+SQLAlchemy resolves the `Mapped[datetime]` columns at class-definition time. The
+one addition is `_rekey_legacy_server_scopes`, a self-retiring rename of server
+rows still keyed on the bot id, run under the same one-shot bootstrap.
 
 The version / ordering token is `time.time_ns()` (an INTEGER), not a `DateTime`:
 `database_now()` is Asia/Taipei wall-clock with microsecond collisions and
@@ -30,13 +32,15 @@ stale turn's write no-ops once a newer turn has overwritten the scope's row.
 from typing import Any, Literal, cast
 from datetime import datetime
 
+import logfire
 from pydantic import Field, BaseModel
 from sqlalchemy import Text, String, Integer, DateTime, CursorResult, event, delete, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncConnection, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.utils.timezone import database_now as _database_now
+from discordbot.cogs._memory.store import BOT_MEMORY_DIR_NAME
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 
@@ -78,7 +82,7 @@ class MemoryJobRow(Base):
     """One scope's persisted phase-1 extraction turn.
 
     Attributes:
-        scope: Opaque memory scope (``<user_id>`` or ``<bot_id>/<server_id>``); primary key.
+        scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
         flavor: ``user`` or ``server`` so the restart sweep picks the matching extractor.
         subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
         transcript: The rendered phase-1 input; set to NULL once the turn is ``done``.
@@ -125,6 +129,44 @@ _schema_ready_for: AsyncEngine | None = None
 _schema_lock = LoopLocalLock()
 
 
+async def _rekey_legacy_server_scopes(conn: AsyncConnection) -> None:
+    """Moves server rows still keyed on the bot id onto the `bot_memories/` scope.
+
+    The scope column is the store path, so a row staged before the memories
+    directory was renamed points at a path the running code no longer writes: the
+    restart sweep would resume that transcript into a phantom `<bot_id>/<server_id>`
+    directory instead of the guild's real memory. Re-keying is a plain rename of a
+    handful of rows (one per guild at most), idempotent, and self-retiring once no
+    legacy row is left; a legacy row whose target key already exists is dropped
+    rather than updated, both to keep the primary key intact and because the
+    new-key row can only have been written after the rename, so it is the newer
+    turn the token guard would have kept anyway.
+    """
+    # Read every server row and partition in Python rather than filtering by a LIKE
+    # prefix: there is one such row per guild at most, and `bot_memories` carries a
+    # `_`, which LIKE would read as a wildcard unless escaped.
+    result = await conn.execute(select(MemoryJobRow.scope).where(MemoryJobRow.flavor == "server"))
+    server_scopes = result.scalars().all()
+    prefix = f"{BOT_MEMORY_DIR_NAME}/"
+    legacy_scopes = [
+        scope for scope in server_scopes if "/" in scope and not scope.startswith(prefix)
+    ]
+    if not legacy_scopes:
+        return
+    taken = {scope for scope in server_scopes if scope.startswith(prefix)}
+    for scope in legacy_scopes:
+        _, _, server_id = scope.partition("/")
+        target = f"{BOT_MEMORY_DIR_NAME}/{server_id}"
+        if target in taken:
+            await conn.execute(delete(MemoryJobRow).where(MemoryJobRow.scope == scope))
+            continue
+        await conn.execute(
+            update(MemoryJobRow).where(MemoryJobRow.scope == scope).values(scope=target)
+        )
+        taken.add(target)
+    logfire.info("re-keyed legacy server memory jobs", count=len(legacy_scopes))
+
+
 async def _ensure_schema() -> None:
     """Bootstraps the `memory_job` table once per engine (loop-local-locked)."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
@@ -140,6 +182,7 @@ async def _ensure_schema() -> None:
             return
         async with _engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            await _rekey_legacy_server_scopes(conn=conn)
         _schema_ready_for = _engine
 
 

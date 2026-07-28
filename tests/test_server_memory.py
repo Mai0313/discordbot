@@ -7,6 +7,7 @@ from nextcord import Embed
 
 from discordbot.cogs.memory import MemoryCogs
 from discordbot.cogs._memory.store import (
+    BOT_MEMORY_DIR_NAME,
     user_scope,
     server_scope,
     read_main_memory,
@@ -25,7 +26,7 @@ from tests.helpers.casting import as_bot, as_interaction
 
 BOT_ID = 555
 GUILD_ID = 777
-SERVER_SCOPE = server_scope(bot_id=BOT_ID, server_id=GUILD_ID)
+SERVER_SCOPE = server_scope(server_id=GUILD_ID)
 SERVER_IDENTITY = render_server_identity(server_name="My Server", server_id=GUILD_ID)
 
 
@@ -34,15 +35,16 @@ SERVER_IDENTITY = render_server_identity(server_name="My Server", server_id=GUIL
 # ---------------------------------------------------------------------------
 
 
-def test_server_scope_nests_under_bot_id() -> None:
-    assert server_scope(bot_id=BOT_ID, server_id=GUILD_ID) == f"{BOT_ID}/{GUILD_ID}"
+def test_server_scope_nests_under_the_fixed_bot_directory() -> None:
+    # Fixed and non-numeric, so it never depends on which bot account is running.
+    assert server_scope(server_id=GUILD_ID) == f"{BOT_MEMORY_DIR_NAME}/{GUILD_ID}"
 
 
 def test_user_and_server_scopes_never_collide() -> None:
     # A user scope is a bare snowflake; a server scope always carries a `/`.
     assert "/" not in user_scope(user_id=GUILD_ID)
-    assert "/" in server_scope(bot_id=BOT_ID, server_id=GUILD_ID)
-    assert user_scope(user_id=GUILD_ID) != server_scope(bot_id=BOT_ID, server_id=GUILD_ID)
+    assert "/" in server_scope(server_id=GUILD_ID)
+    assert user_scope(user_id=GUILD_ID) != server_scope(server_id=GUILD_ID)
 
 
 def test_server_scope_isolated_from_user_scope_on_disk(memory_isolated_dir: Path) -> None:
@@ -58,7 +60,7 @@ def test_server_scope_isolated_from_user_scope_on_disk(memory_isolated_dir: Path
     assert "個人" in read_main_memory(scope=user_scope(user_id=GUILD_ID))
     assert "社群" in read_main_memory(scope=SERVER_SCOPE)
     assert "個人" not in read_main_memory(scope=SERVER_SCOPE)
-    assert (memory_isolated_dir / str(BOT_ID) / str(GUILD_ID) / "main.md").exists()
+    assert (memory_isolated_dir / BOT_MEMORY_DIR_NAME / str(GUILD_ID) / "main.md").exists()
 
 
 # ---------------------------------------------------------------------------

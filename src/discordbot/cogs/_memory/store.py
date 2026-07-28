@@ -2,8 +2,8 @@
 
 A scope is a relative path under ``data/memories/`` that doubles as the
 registry key. Per-user memory uses ``user_scope(user_id)`` (``<user_id>``);
-the bot's own per-server memory uses ``server_scope(bot_id, server_id)``
-(``<bot_id>/<server_id>``). Both share the exact same file layout: ``main.md``
+the bot's own per-server memory uses ``server_scope(server_id)``
+(``bot_memories/<server_id>``). Both share the exact same file layout: ``main.md``
 is the consolidated hot tier injected into reply prompts, ``raw.md``
 accumulates phase-1 raw extraction entries until consolidation rewrites the
 main file, ``main.bak.md`` keeps the previous main generation as a manual
@@ -39,6 +39,11 @@ from discordbot.cogs._memory.constants import (
 
 _MEMORY_DIR = Path("./data/memories")
 
+# Fixed parent directory for the bot's own per-server memory. Deliberately not the
+# bot's user id: a numeric directory is indistinguishable from a user scope on disk,
+# and it strands the whole server memory the moment the bot account changes.
+BOT_MEMORY_DIR_NAME = "bot_memories"
+
 # Raw entries start with a `## <ISO-8601 timestamp>` header line. Extraction
 # output is bullet-style prose, so the date prefix doubles as the split marker.
 _RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
@@ -63,9 +68,9 @@ def user_scope(user_id: int) -> str:
     return str(user_id)
 
 
-def server_scope(bot_id: int, server_id: int) -> str:
+def server_scope(server_id: int) -> str:
     """Returns the storage scope for the bot's memory of one server."""
-    return f"{bot_id}/{server_id}"
+    return f"{BOT_MEMORY_DIR_NAME}/{server_id}"
 
 
 def _scope_has_memory(scope: str) -> bool:
@@ -74,13 +79,18 @@ def _scope_has_memory(scope: str) -> bool:
 
 
 def iter_scopes() -> list[str]:
-    """Returns every scope with on-disk memory (user = flat, server = nested).
+    """Returns every scope with on-disk memory (user = flat, server = under the bot dir).
 
     Walks `data/memories/`: a top-level dir holding `main.md` / `raw.md` is a user
-    scope (`<user_id>`); otherwise its child dirs holding those files are
-    `<bot_id>/<server_id>` server scopes. Used by the restart consolidation sweep
-    to find scopes whose raw backlog still needs digesting even when no extraction
-    job is pending for them.
+    scope (`<user_id>`), and the child dirs of `bot_memories/` holding those files
+    are the `bot_memories/<server_id>` server scopes. Used by the restart
+    consolidation sweep to find scopes whose raw backlog still needs digesting even
+    when no extraction job is pending for them.
+
+    `bot_memories` is the only directory descended into, which is what keeps the
+    sweep correct while a pre-rename `<bot_id>` path lingers as a symlink to it:
+    that path carries no top-level memory file of its own, so it contributes no
+    scope and the same server memory is never swept twice under two names.
     """
     scopes: list[str] = []
     if not _MEMORY_DIR.is_dir():
@@ -88,11 +98,12 @@ def iter_scopes() -> list[str]:
     for top in sorted(_MEMORY_DIR.iterdir()):
         if not top.is_dir():
             continue
-        if _scope_has_memory(scope=top.name):
-            scopes.append(top.name)
+        if top.name != BOT_MEMORY_DIR_NAME:
+            if _scope_has_memory(scope=top.name):
+                scopes.append(top.name)
             continue
         for nested in sorted(top.iterdir()):
-            scope = f"{top.name}/{nested.name}"
+            scope = f"{BOT_MEMORY_DIR_NAME}/{nested.name}"
             if nested.is_dir() and _scope_has_memory(scope=scope):
                 scopes.append(scope)
     return scopes
