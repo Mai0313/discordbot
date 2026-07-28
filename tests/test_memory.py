@@ -2662,15 +2662,27 @@ async def test_consolidate_if_needed_skips_under_threshold(
 
 def test_iter_scopes_finds_user_and_server_scopes(memory_isolated_dir: Path) -> None:
     user = user_scope(user_id=USER_ID)
-    server = server_scope(bot_id=999, server_id=555)
+    server = server_scope(server_id=555)
     append_raw_entry(scope=user, entry_text="- u")
     append_raw_entry(scope=server, entry_text="- s")
     assert set(iter_scopes()) == {user, server}
 
 
+def test_iter_scopes_only_descends_into_the_bot_memory_directory(
+    memory_isolated_dir: Path,
+) -> None:
+    server = server_scope(server_id=555)
+    append_raw_entry(scope=server, entry_text="- s")
+    # Nested memory anywhere else is not a scope, so a stray directory (or a symlink
+    # to `bot_memories`) can never hand the sweep the same memory under a second name.
+    (memory_isolated_dir / "999" / "555").mkdir(parents=True)
+    (memory_isolated_dir / "999" / "555" / "raw.md").write_text("- s", encoding="utf-8")
+    assert iter_scopes() == [server]
+
+
 def test_flavor_of_distinguishes_user_and_server() -> None:
     assert pipeline.flavor_of(scope=user_scope(user_id=USER_ID)) == "user"
-    assert pipeline.flavor_of(scope=server_scope(bot_id=1, server_id=2)) == "server"
+    assert pipeline.flavor_of(scope=server_scope(server_id=2)) == "server"
 
 
 def test_needs_consolidation_reflects_threshold(
@@ -3073,7 +3085,7 @@ async def test_consolidate_if_needed_server_scope_never_writes_tone(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
-    scope = server_scope(bot_id=999, server_id=555)
+    scope = server_scope(server_id=555)
     append_raw_entry(scope=scope, entry_text="- 第一筆")
     append_raw_entry(scope=scope, entry_text="- 第二筆")
     extractor, fake_client = _extractor()

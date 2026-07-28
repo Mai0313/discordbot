@@ -78,7 +78,7 @@ class MemoryJobRow(Base):
     """One scope's persisted phase-1 extraction turn.
 
     Attributes:
-        scope: Opaque memory scope (``<user_id>`` or ``<bot_id>/<server_id>``); primary key.
+        scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
         flavor: ``user`` or ``server`` so the restart sweep picks the matching extractor.
         subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
         transcript: The rendered phase-1 input; set to NULL once the turn is ``done``.

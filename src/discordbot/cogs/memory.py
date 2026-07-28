@@ -155,7 +155,7 @@ class MemoryCogs(commands.Cog):
     )
     async def memory_server_show(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the bot's consolidated memory of the current server, paginated."""
-        if interaction.guild is None or self.bot.user is None:
+        if interaction.guild is None:
             # Per-server memory only exists inside a guild; there is no scope in DMs.
             embed = Embed(
                 title=_SERVER_MEMORY_TITLE,
@@ -164,7 +164,7 @@ class MemoryCogs(commands.Cog):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        scope = server_scope(bot_id=self.bot.user.id, server_id=interaction.guild.id)
+        scope = server_scope(server_id=interaction.guild.id)
         await self._show_memory(
             interaction=interaction,
             scope=scope,

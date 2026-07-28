@@ -1584,11 +1584,9 @@ class ReplyGeneratorCogs(commands.Cog):
         LLM latency. Returns "" for DMs (no guild), the SUMMARY route, or an empty memory.
         Read once per reply and shared by the selection and answer phases.
         """
-        if not memory_enabled or self.bot.user is None or message.guild is None:
+        if not memory_enabled or message.guild is None:
             return ""
-        return read_main_memory(
-            scope=server_scope(bot_id=self.bot.user.id, server_id=message.guild.id)
-        )
+        return read_main_memory(scope=server_scope(server_id=message.guild.id))
 
     def _schedule_server_memory_update(
         self, *, message: Message, message_list: list[EasyInputMessageParam], full_reply: str
@@ -1600,12 +1598,12 @@ class ReplyGeneratorCogs(commands.Cog):
         for channels not visible to `@everyone`, so private / restricted-channel content
         never enters the server-wide memory any member can read.
         """
-        if self.bot.user is None or message.guild is None:
+        if message.guild is None:
             return
         if not _source_channel_is_public(message=message):
             return
         schedule_memory_update(
-            scope=server_scope(bot_id=self.bot.user.id, server_id=message.guild.id),
+            scope=server_scope(server_id=message.guild.id),
             subject=f"target_server_id: {message.guild.id}",
             message_list=message_list,
             full_reply=full_reply,
