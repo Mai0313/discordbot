@@ -131,7 +131,8 @@ GEMINI_API_KEY=your_google_ai_studio_key
 - `database/stock.db`：DB-managed 模拟 stock profile、float supply、price tick、position、trade operation、ordered trade leg 与 AI-or-fallback stock news。
 - `database/games.db`：每位玩家的 Blackjack 对局历史、钓鱼目录与每位用户的装备、鱼饵与渔获记录，以及公开 expiring response 的清理追踪（guild/channel 名称、user name、channel ID 与 message ID），用于 bot 重启后的清理。
 - 临时 media 下载使用项目根目录的 `tmp/` scratch folder（不在 `data/` 底下），发送完成后即删除。
-- `memories/`：每个 Discord user id 一个文件夹的纯文本 markdown 个人长期记忆，由你的对话在后台积累，并在后续 AI 回复时注入。
+- `database/reply.db`：后台 AI 的作业状态，包含某位用户或服务器目前排定的记忆抽取工作（在处理完成前会保留那段对话的文字），以及 deep research session，两者都是为了在重启后还能接着跑。
+- `memories/`：每个 Discord user id 一个文件夹的纯文本 markdown 个人长期记忆，由你的对话在后台积累，并在后续 AI 回复时注入。`/memory clear` 可以清掉自己的记忆，包含排定中的抽取工作。
 
 当 bot 需要用 AI 回复时，当前上下文中的相关文字、支持的附件、embedded media 与参与者身份会送到你配置的 LLM endpoint。本项目不会把这些资料送到其他服务。
 

@@ -131,7 +131,8 @@ This bot stores runtime data locally under `data/`; SQLite databases live in `da
 - `database/stock.db`: DB-managed simulated stock profiles, float supply, price ticks, positions, trade operations, ordered trade legs, and AI-or-fallback stock news.
 - `database/games.db`: per-player Blackjack round history, the fishing catalog plus per-user gear, bait, and catch history, and cleanup tracking (guild/channel names, user names, channel IDs, and message IDs) for public expiring responses that should be removed after restart.
 - Temporary media downloads use the project-root `tmp/` scratch folder (not under `data/`) and are deleted after sending.
-- `memories/`: per-user long-term memory as plaintext markdown files in one folder per Discord user id, built in the background from your conversations and injected into future AI replies.
+- `database/reply.db`: background AI bookkeeping — the memory-extraction turn currently staged for a user or server (holding that conversation's rendered text until it has been processed) and deep research sessions, both so they survive a restart.
+- `memories/`: per-user long-term memory as plaintext markdown files in one folder per Discord user id, built in the background from your conversations and injected into future AI replies. `/memory clear` erases your own, staged extraction turn included.
 
 When the bot responds with AI, relevant text, supported attachments, embedded media, and participant identity from the active context are sent to the configured LLM endpoint. Data is not sent to any other service by this project.
 

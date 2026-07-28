@@ -52,7 +52,7 @@ _REGEN_COOLDOWN_DESCRIPTION = "記憶重建剛執行過，請稍後再試。"
 
 
 class MemoryCogs(commands.Cog):
-    """Provides the long-term memory viewing and regeneration commands.
+    """Provides the long-term memory viewing, regeneration, and clearing commands.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
