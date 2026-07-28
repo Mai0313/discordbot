@@ -19,7 +19,6 @@ from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs._memory import pipeline
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.store import (
-    BOT_MEMORY_DIR_NAME,
     clear_raw,
     read_tone,
     scope_lock,
@@ -2501,74 +2500,6 @@ async def test_db_mark_failed_keeps_transcript(memory_isolated_dir: Path) -> Non
     assert job.last_error == "boom"
 
 
-async def test_db_bootstrap_rekeys_a_legacy_server_scope(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await memory_db.upsert_pending(
-        scope="999/555", flavor="server", subject="s", transcript="逐字稿", identity="", token=1
-    )
-    await memory_db.upsert_pending(
-        scope=USER_SCOPE, flavor="user", subject="s", transcript="個人", identity="", token=1
-    )
-    # The bootstrap runs once per engine, so a restart is what re-runs the re-key.
-    monkeypatch.setattr(memory_db, "_schema_ready_for", None)
-    assert await memory_db.get_job(scope="999/555") is None
-    job = await memory_db.get_job(scope=server_scope(server_id=555))
-    assert job is not None
-    assert job.transcript == "逐字稿"
-    assert job.status == "pending"
-    # A user scope is a bare snowflake and is never touched by the rename.
-    user_job = await memory_db.get_job(scope=USER_SCOPE)
-    assert user_job is not None
-    assert user_job.transcript == "個人"
-
-
-async def test_db_bootstrap_drops_a_legacy_row_the_new_scope_already_holds(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    await memory_db.upsert_pending(
-        scope="999/555", flavor="server", subject="s", transcript="舊", identity="", token=1
-    )
-    await memory_db.upsert_pending(
-        scope=server_scope(server_id=555),
-        flavor="server",
-        subject="s",
-        transcript="新",
-        identity="",
-        token=2,
-    )
-    monkeypatch.setattr(memory_db, "_schema_ready_for", None)
-    # The re-key keeps the row written after the rename and drops the stale key,
-    # so the primary key survives and the restart sweep resumes one turn, not two.
-    assert await memory_db.get_job(scope="999/555") is None
-    job = await memory_db.get_job(scope=server_scope(server_id=555))
-    assert job is not None
-    assert job.transcript == "新"
-    assert {resumable.scope for resumable in await memory_db.list_resumable()} == {
-        server_scope(server_id=555)
-    }
-
-
-async def test_db_bootstrap_keeps_the_newest_turn_when_two_bot_ids_staged_one_guild(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # One guild can hold a row per bot id it was ever staged under, and only one of
-    # them can keep the renamed key, so the re-key resolves it by token like every
-    # other write in this table.
-    await memory_db.upsert_pending(
-        scope="999/555", flavor="server", subject="s", transcript="舊", identity="", token=1
-    )
-    await memory_db.upsert_pending(
-        scope="1000/555", flavor="server", subject="s", transcript="新", identity="", token=2
-    )
-    monkeypatch.setattr(memory_db, "_schema_ready_for", None)
-    job = await memory_db.get_job(scope=server_scope(server_id=555))
-    assert job is not None
-    assert job.transcript == "新"
-    assert await memory_db.get_job(scope="999/555") is None
-    assert await memory_db.get_job(scope="1000/555") is None
-
-
 async def test_db_list_resumable_excludes_done(memory_isolated_dir: Path) -> None:
     await memory_db.upsert_pending(
         scope="111", flavor="user", subject="s", transcript="a", identity="", token=1
@@ -2737,24 +2668,16 @@ def test_iter_scopes_finds_user_and_server_scopes(memory_isolated_dir: Path) -> 
     assert set(iter_scopes()) == {user, server}
 
 
-def test_iter_scopes_ignores_a_bot_id_symlink_left_by_the_migration(
+def test_iter_scopes_only_descends_into_the_bot_memory_directory(
     memory_isolated_dir: Path,
 ) -> None:
     server = server_scope(server_id=555)
     append_raw_entry(scope=server, entry_text="- s")
-    # The live migration renames the bot-id dir and leaves the old numeric path
-    # behind as a symlink, so both names reach the same memory for a while.
-    (memory_isolated_dir / "999").symlink_to(memory_isolated_dir / BOT_MEMORY_DIR_NAME)
-    # One scope, so the restart sweep cannot consolidate the same memory twice.
-    assert iter_scopes() == [server]
-
-
-def test_iter_scopes_skips_an_unmigrated_bot_id_directory(memory_isolated_dir: Path) -> None:
-    # No legacy-layout fallback: memory still sitting under the old numeric path is
-    # not swept, which is what the one-time move on disk is for.
+    # Nested memory anywhere else is not a scope, so a stray directory (or a symlink
+    # to `bot_memories`) can never hand the sweep the same memory under a second name.
     (memory_isolated_dir / "999" / "555").mkdir(parents=True)
     (memory_isolated_dir / "999" / "555" / "raw.md").write_text("- s", encoding="utf-8")
-    assert iter_scopes() == []
+    assert iter_scopes() == [server]
 
 
 def test_flavor_of_distinguishes_user_and_server() -> None:

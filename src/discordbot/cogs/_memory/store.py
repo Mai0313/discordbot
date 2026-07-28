@@ -87,10 +87,9 @@ def iter_scopes() -> list[str]:
     consolidation sweep to find scopes whose raw backlog still needs digesting even
     when no extraction job is pending for them.
 
-    `bot_memories` is the only directory descended into, which is what keeps the
-    sweep correct while a pre-rename `<bot_id>` path lingers as a symlink to it:
-    that path carries no top-level memory file of its own, so it contributes no
-    scope and the same server memory is never swept twice under two names.
+    `bot_memories` is the only directory descended into: nested memory anywhere else
+    is not a scope, so a stray directory (or a symlink to this one) can never hand
+    the sweep the same memory a second time under another name.
     """
     scopes: list[str] = []
     if not _MEMORY_DIR.is_dir():

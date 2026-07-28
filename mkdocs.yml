@@ -162,7 +162,6 @@ nav:
       - batch_dev: Scripts/batch_dev.md
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
-      - migrate_memory_privacy: Scripts/migrate_memory_privacy.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
       - regen_memories: Scripts/regen_memories.md
