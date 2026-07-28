@@ -42,6 +42,7 @@ from discordbot.cogs._memory.store import (
 from discordbot.cogs._memory.views import (
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
+    MemoryClearConfirmView,
     paginate_on_lines,
     memory_footer_text,
 )
@@ -79,6 +80,7 @@ from discordbot.cogs._memory.extraction import (
 )
 
 from tests.helpers.casting import as_bot, as_interaction
+from tests.helpers.discord_mocks import FakeInteraction
 
 if TYPE_CHECKING:
     from openai import AsyncOpenAI
@@ -1722,6 +1724,7 @@ def test_memory_commands_have_localizations() -> None:
         MemoryCogs.memory,
         MemoryCogs.memory_show,
         MemoryCogs.memory_regenerate,
+        MemoryCogs.memory_clear,
         MemoryCogs.memory_server,
         MemoryCogs.memory_server_show,
     ):
@@ -3132,3 +3135,368 @@ async def test_regenerate_main_memory_clears_stale_tone_on_empty_output(
 
     assert result == "regenerated"
     assert read_tone(scope=USER_SCOPE) == ""
+
+
+# ---------------------------------------------------------------------------
+# personal memory clear (/memory clear)
+# ---------------------------------------------------------------------------
+
+
+def _confirm_button(view: MemoryClearConfirmView) -> "Button[Any]":
+    """Returns the view's confirm button, which `View.__init__` bound over the callback."""
+    return cast("Button[Any]", view.confirm_clear)
+
+
+def _populate_every_tier() -> None:
+    """Writes one entry into every personal memory tier, backup generation included."""
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊記憶", identity=IDENTITY)
+    # The second write is what leaves a `main.bak.md` generation behind.
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n新記憶", identity=IDENTITY)
+    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短")
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 輕鬆")
+
+
+async def test_db_delete_job_removes_the_row_and_is_idempotent(memory_isolated_dir: Path) -> None:
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE, flavor="user", subject="s", transcript="逐字稿", identity="", token=1
+    )
+    assert await memory_db.delete_job(scope=USER_SCOPE) is True
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    # Idempotent: a repeated clear reports that there was nothing left to remove.
+    assert await memory_db.delete_job(scope=USER_SCOPE) is False
+
+
+async def test_clear_scope_memory_removes_every_tier(memory_isolated_dir: Path) -> None:
+    """A clear has to take the files AND the staged turn, or the wipe partly returns."""
+    _populate_every_tier()
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject=f"target_user_id: {USER_ID}",
+        transcript="清除前的對話",
+        identity=IDENTITY,
+        token=1,
+    )
+
+    assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
+
+    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert read_tone(scope=USER_SCOPE) == ""
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    assert read_detail_tail(scope=USER_SCOPE, max_chars=10_000) == ""
+    assert not (memory_isolated_dir / str(USER_ID)).exists()
+    # Nothing the restart sweep could resume, and no transcript left in reply.db.
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    assert await memory_db.list_resumable() == []
+
+
+async def test_clear_scope_memory_reports_nothing_to_clear(memory_isolated_dir: Path) -> None:
+    assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is False
+
+
+async def test_clear_scope_memory_removes_a_staged_turn_without_files(
+    memory_isolated_dir: Path,
+) -> None:
+    """A scope whose only trace is a staged transcript still has something to erase."""
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="s",
+        transcript="清除前的對話",
+        identity="",
+        token=1,
+    )
+    assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+
+
+async def test_clear_scope_memory_drops_the_deferred_replay(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The deferred turn holds a pre-clear transcript in memory and in reply.db."""
+    extractor, fake_client = _extractor()
+    first_started = asyncio.Event()
+    release = asyncio.Event()
+    parse_calls = 0
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        nonlocal parse_calls
+        parse_calls += 1
+        if parse_calls == 1:
+            first_started.set()
+            await release.wait()
+        return _parsed(output=_draft("不該被寫入"))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    for reply in ("一", "二"):
+        pipeline.schedule_memory_update(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}",
+            message_list=_user_message(),
+            full_reply=reply,
+            extractor=extractor,
+            identity=IDENTITY,
+        )
+        await first_started.wait()
+    assert USER_SCOPE in pipeline._pending_updates
+
+    await pipeline.clear_scope_memory(scope=USER_SCOPE)
+
+    assert USER_SCOPE not in pipeline._pending_updates
+    release.set()
+    await _wait_for_inflight()
+    # Neither the in-flight turn nor the dropped replay may write anything back,
+    # and no row may survive for the restart sweep to resume.
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    assert await pipeline.safe_list_resumable() == []
+
+
+async def test_a_row_write_racing_the_clear_retires_itself(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row that commits just after the clear's delete must retire itself.
+
+    The clear cannot delete a row that has not been written yet, so the writer
+    re-reads the clear stamp after committing. Without that the row survives with
+    the erased conversation and the restart sweep resumes it.
+    """
+    captured_at = time.monotonic()
+    write_started = asyncio.Event()
+    release = asyncio.Event()
+    real_upsert = memory_db.upsert_pending
+
+    async def slow_upsert(  # noqa: PLR0913 -- mirrors the patched signature
+        *, scope: str, flavor: str, subject: str, transcript: str, identity: str, token: int
+    ) -> None:
+        write_started.set()
+        await release.wait()
+        await real_upsert(
+            scope=scope,
+            flavor=memory_db.cast_flavor(value=flavor),
+            subject=subject,
+            transcript=transcript,
+            identity=identity,
+            token=token,
+        )
+
+    monkeypatch.setattr(memory_db, "upsert_pending", slow_upsert)
+    staging = asyncio.create_task(
+        pipeline._stage_turn(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}",
+            transcript="清除前的對話",
+            identity=IDENTITY,
+            token=1,
+            captured_at=captured_at,
+        )
+    )
+    await write_started.wait()
+    await pipeline.clear_scope_memory(scope=USER_SCOPE)
+    release.set()
+    await staging
+
+    # The row landed after the delete, so nothing but the writer could retire it.
+    assert await pipeline.safe_list_resumable() == []
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+    assert job.transcript is None
+
+
+async def test_memory_update_scheduled_before_a_clear_never_starts(
+    memory_isolated_dir: Path,
+) -> None:
+    """A turn captured just before the clear must abort, not race it by microseconds.
+
+    The worker times itself from the enqueue, so a clear landing while the task is
+    still queued is newer than the turn and wins.
+    """
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _draft("不該被寫入")
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    # The task has not run a single step yet; the clear lands first.
+    await pipeline.clear_scope_memory(scope=USER_SCOPE)
+    await _wait_for_inflight()
+
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    # The aborted turn stages no row either, so the restart sweep has nothing.
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+
+
+async def test_memory_clear_command_only_opens_the_confirmation(memory_isolated_dir: Path) -> None:
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊記憶", identity=IDENTITY)
+    cog = _memory_cog()
+    interaction = _interaction()
+
+    await MemoryCogs.memory_clear.callback(cog, as_interaction(fake=interaction))
+
+    assert interaction.response.sent["ephemeral"] is True
+    view = interaction.response.sent["view"]
+    assert isinstance(view, MemoryClearConfirmView)
+    assert view.scope == USER_SCOPE
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    assert "沒辦法復原" in (embed.description or "")
+    # Bound, or an abandoned one-click wipe prompt would never go inert.
+    assert view._origin is interaction
+    # The command itself must never delete: that is the confirm button's job.
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n舊記憶"
+
+
+async def test_memory_clear_confirm_button_erases_memory(memory_isolated_dir: Path) -> None:
+    _populate_every_tier()
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="s",
+        transcript="清除前的對話",
+        identity="",
+        token=1,
+    )
+    view = MemoryClearConfirmView(scope=USER_SCOPE)
+    interaction = FakeInteraction()
+
+    await _confirm_button(view=view).callback(as_interaction(fake=interaction))
+
+    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    # Acked before the work so a slow clear cannot miss Discord's response window.
+    assert interaction.response.deferred is True
+    payload = interaction.edits[-1]
+    assert payload["view"] is None
+    embed = payload["embed"]
+    assert isinstance(embed, Embed)
+    assert "都清掉了" in (embed.description or "")
+    assert view.is_finished() is True
+
+
+async def test_memory_clear_confirm_button_reports_an_empty_scope(
+    memory_isolated_dir: Path,
+) -> None:
+    view = MemoryClearConfirmView(scope=USER_SCOPE)
+    interaction = FakeInteraction()
+
+    await _confirm_button(view=view).callback(as_interaction(fake=interaction))
+
+    embed = interaction.edits[-1]["embed"]
+    assert isinstance(embed, Embed)
+    assert "沒有東西需要清除" in (embed.description or "")
+
+
+async def test_memory_clear_cancel_button_keeps_memory(memory_isolated_dir: Path) -> None:
+    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊記憶", identity=IDENTITY)
+    view = MemoryClearConfirmView(scope=USER_SCOPE)
+    interaction = FakeInteraction()
+
+    await cast("Button[Any]", view.cancel_clear).callback(as_interaction(fake=interaction))
+
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n舊記憶"
+    # A cancel must not even stamp the scope, or it would abort in-flight turns.
+    assert cleared_since(scope=USER_SCOPE, started_at=0.0) is False
+    edited = interaction.response.edited[-1]
+    embed = edited["embed"]
+    assert isinstance(embed, Embed)
+    assert "已取消" in (embed.description or "")
+    assert edited["view"] is None
+
+
+async def test_memory_clear_second_click_does_not_overwrite_the_outcome(
+    memory_isolated_dir: Path,
+) -> None:
+    """A double click must not re-run the clear and report "nothing to clear"."""
+    _populate_every_tier()
+    view = MemoryClearConfirmView(scope=USER_SCOPE)
+    first = FakeInteraction()
+    await _confirm_button(view=view).callback(as_interaction(fake=first))
+
+    second = FakeInteraction()
+    await _confirm_button(view=view).callback(as_interaction(fake=second))
+
+    # The second press is acked and dropped, leaving the first press's message.
+    assert second.response.deferred is True
+    assert second.edits == []
+    embed = first.edits[-1]["embed"]
+    assert isinstance(embed, Embed)
+    assert "都清掉了" in (embed.description or "")
+
+
+async def test_memory_clear_failure_keeps_memory_and_says_so(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A reply.db failure must not half-clear: the row deletion runs before any unlink."""
+    _populate_every_tier()
+
+    async def exploding_delete(*, scope: str) -> bool:
+        raise RuntimeError("reply.db unavailable")
+
+    monkeypatch.setattr(memory_db, "delete_job", exploding_delete)
+    view = MemoryClearConfirmView(scope=USER_SCOPE)
+    interaction = FakeInteraction()
+
+    await _confirm_button(view=view).callback(as_interaction(fake=interaction))
+
+    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n新記憶"
+    assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 輕鬆"
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    embed = interaction.edits[-1]["embed"]
+    assert isinstance(embed, Embed)
+    assert "沒有完成" in (embed.description or "")
+    # The stamp is deliberately NOT rolled back, which is why the message must
+    # not claim nothing happened: turns in flight for this scope still abort.
+    assert cleared_since(scope=USER_SCOPE, started_at=0.0) is True
+
+
+async def test_memory_clear_reports_a_file_failure_without_claiming_success(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The file half walks the tiers one at a time, so it can stop part way.
+
+    The message must not claim the memory survived intact (the reply.db row is
+    already gone by then) nor that the clear succeeded; a retry finishes it.
+    """
+    _populate_every_tier()
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="s",
+        transcript="清除前的對話",
+        identity="",
+        token=1,
+    )
+
+    def exploding_clear(*, scope: str) -> bool:
+        raise PermissionError("tone.md is read-only")
+
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.clear_memory", exploding_clear)
+    view = MemoryClearConfirmView(scope=USER_SCOPE)
+    interaction = FakeInteraction()
+
+    await _confirm_button(view=view).callback(as_interaction(fake=interaction))
+
+    embed = interaction.edits[-1]["embed"]
+    assert isinstance(embed, Embed)
+    assert "沒有完成" in (embed.description or "")
+    # The row went before the files, so a retry is what finishes the job.
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+
+
+async def test_memory_clear_view_timeout_disables_buttons() -> None:
+    view = MemoryClearConfirmView(scope=USER_SCOPE)
+    # Without a bound origin the timeout is a silent no-op.
+    await view.on_timeout()
+
+    origin = FakeInteraction()
+    view.bind_origin(interaction=as_interaction(fake=origin))
+    await view.on_timeout()
+
+    # An idle prompt goes inert rather than staying a live one-click wipe.
+    assert origin.edits[-1]["view"] is view
+    assert all(child.disabled for child in view.children if isinstance(child, Button))
