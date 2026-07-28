@@ -2275,7 +2275,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     # reference/current parts are still reused here.
                     context = await self._prepare_reply_context(
                         message=message,
-                        history_limit=100,
+                        history_limit=200,
                         memory_enabled=False,
                         parts_task=parts_task,
                         text_parts=(text_reference, text_current),
