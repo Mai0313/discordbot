@@ -755,6 +755,44 @@ def _stub_share_redirect(
     return fetched
 
 
+def test_fetch_page_reports_where_the_request_landed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every share link rests on this one line, and a fetch that echoed its own URL would pass.
+
+    The parser tests all stub the fetch, so nothing else exercises what the real one reports: a
+    fetch that stopped following redirects, or handed back the URL it asked for, would leave
+    every `/share/` link unreadable with all of them still green.
+    """
+    landed = "https://www.threads.com/@target_author/post/TARGET?xmt=AQF0p6Ufiuvt"
+
+    class _Response:
+        """A response that came back from somewhere other than it was asked for."""
+
+        text = "<html>the post page</html>"
+        url = landed
+
+        def raise_for_status(self) -> None:
+            """Accepts the transfer."""
+
+    requested: list[str] = []
+
+    def fake_get(url: str, **kwargs: object) -> _Response:
+        """Records what was asked for and answers as the redirect chain's last hop."""
+        del kwargs
+        requested.append(url)
+        return _Response()
+
+    monkeypatch.setattr(target=threads_module.requests, name="get", value=fake_get)
+    downloader = ThreadsDownloader(output_folder=str(tmp_path))
+
+    fetched = downloader._fetch_page(url=_SHARE_URL)
+
+    assert requested == [_SHARE_URL]
+    assert fetched.html == "<html>the post page</html>"
+    assert fetched.final_url == landed
+
+
 def test_a_share_link_reads_the_post_its_redirect_names(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -768,7 +806,7 @@ def test_a_share_link_reads_the_post_its_redirect_names(
     conversation = downloader.parse_metadata(url=_SHARE_URL)
 
     assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
-    assert fetched == [ThreadsURL(raw_url=_SHARE_URL).clean_url]
+    assert fetched == ["https://www.threads.net/share/DfX81RWN8"]
 
 
 def test_a_share_links_retry_asks_for_the_resolved_post(
@@ -784,8 +822,8 @@ def test_a_share_links_retry_asks_for_the_resolved_post(
     conversation = downloader.parse_metadata(url=_SHARE_URL)
 
     assert fetched == [
-        ThreadsURL(raw_url=_SHARE_URL).clean_url,
-        ThreadsURL(raw_url=_REPLIES_TARGET_URL).clean_url,
+        "https://www.threads.net/share/DfX81RWN8",
+        "https://www.threads.net/@target_author/post/TARGET",
     ]
     assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
 
