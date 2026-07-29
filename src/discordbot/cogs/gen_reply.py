@@ -1667,9 +1667,9 @@ class ReplyGeneratorCogs(commands.Cog):
         # built-in tools always available and any selected memory injected as context. The
         # allowlist (conversation authors + mentioned users, minus the bot) is the permission
         # boundary.
-        # The split is deliberate, not a hard limit: by default LiteLLM silently drops grounding
-        # when a function tool and built-in search/url tools mix, and the Gemini 3
-        # include_server_side_tool_invocations opt-out that lifts it is Preview-only. Splitting
+        # The split is deliberate, not a hard limit: the two tool kinds CAN ride one request (see
+        # CLAUDE.md's Responses API Gotchas for the per-surface gate), it just costs an extra_body
+        # flag whose absence silently zeroes the grounding. Splitting
         # also keeps selection on a cheaper/faster model off the answer's critical path and stays
         # provider-neutral (OpenAI / Claude mix tools fine), so it stays correct if the answer
         # model changes.
