@@ -16,7 +16,7 @@ uv-install:  ## Install uv on your system
 	@echo 'Installed uv, please re-open your bash terminal or zsh terminal.'
 
 fmt: ## Run pre-commit hooks
-	uv run pre-commit run -a
+	uvx pre-commit run -a
 
 test: ## Run all tests
 	uv run pytest

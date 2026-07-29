@@ -9,7 +9,7 @@ All tooling runs through `uv`.
 ```bash
 uv run discordbot                # run the bot
 uv run pytest                    # tests, coverage gate: 80% (--cov-fail-under)
-uv run pre-commit run -a         # canonical pre-push check (= make fmt)
+uvx pre-commit run -a         # canonical pre-push check (= make fmt)
 make gen-docs                    # regenerate docs/ from sources
 ```
 

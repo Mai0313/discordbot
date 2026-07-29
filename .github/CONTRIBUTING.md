@@ -31,12 +31,12 @@ Useful checks:
 
 ```bash
 uv run pytest
-uv run pre-commit run -a
+uvx pre-commit run -a
 make fmt
 make gen-docs
 ```
 
-`make fmt` runs the same project-level check as `uv run pre-commit run -a`. `make gen-docs` regenerates `docs/` from the README files, `CONTRIBUTING.md`, and Python sources.
+`make fmt` runs the same project-level check as `uvx pre-commit run -a`. `make gen-docs` regenerates `docs/` from the README files, `CONTRIBUTING.md`, and Python sources.
 
 ## Project Layout
 
@@ -70,7 +70,7 @@ docs: simplify user README
 
 ```bash
 uv run pytest
-uv run pre-commit run -a
+uvx pre-commit run -a
 ```
 
 ## Code Conventions
@@ -155,7 +155,7 @@ Coverage must stay at or above 80%. CI runs tests on Python 3.12 and 3.13 for pu
 The pre-commit gate is the canonical local quality check:
 
 ```bash
-uv run pre-commit run -a
+uvx pre-commit run -a
 ```
 
 It runs Ruff formatting and linting, ty type checking, Markdown formatting, ShellCheck, codespell, gitleaks, uv lock checks, and standard file hygiene hooks.
