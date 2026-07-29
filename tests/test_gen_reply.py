@@ -2503,6 +2503,22 @@ def test_link_url_for_source_searches_the_replied_to_message(
     assert found == _THREADS_POST_URL
 
 
+def test_link_url_for_source_finds_the_threads_share_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The share button copies `/share/<code>`, which the registry has to select like any post.
+
+    It resolves to the same post as the canonical form, and it is what the mobile app offers,
+    so a pattern that missed it would leave the answer turn with no post context at all.
+    """
+    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    share_url = "https://www.threads.com/share/DfX81RWN8"
+    message = FakeMessage(content=f"<@999> 這篇在說什麼 {share_url}")
+
+    found = _link_url_for_source(
+        source=_link_source(name="threads"), message=as_message(fake=message)
+    )
+    assert found == share_url
+
+
 def test_link_url_for_source_prefers_the_current_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """With a Threads link on both, the one the user typed wins over the replied-to one."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
