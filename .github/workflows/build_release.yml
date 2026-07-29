@@ -9,8 +9,8 @@ on:
 permissions: write-all
 
 concurrency:
-  group: ${{ github.workflow }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -167,7 +167,7 @@ jobs:
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.UV_PUBLISH_TOKEN }}
         run: |
-          uv publish
+          uv publish --check-url https://pypi.org/simple/
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v7
