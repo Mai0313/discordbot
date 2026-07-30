@@ -1,5 +1,6 @@
 """Tests for the Threads-context builder that feeds linked posts to the answer model."""
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -737,6 +738,99 @@ async def test_the_target_keeps_first_claim_on_the_media_budget(
         "Images of the post it quotes NOT attached (1), URLs only: https://cdn.test/squeezed.jpg"
         in text
     )
+
+
+async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two posts' clips share one scratch dir, so a reused name swaps their bytes silently.
+
+    Both posts write to disk before upload, so without the prefix the target's part carries the
+    quoted post's clip and vice versa — wrong content under a confident attribution, which is
+    worse than either clip going missing.
+    """
+    _stub_parse(
+        monkeypatch,
+        [
+            _post(
+                text="t",
+                videos=["https://cdn.test/target.mp4"],
+                quoted=_quoted(videos=["https://cdn.test/quoted.mp4"]),
+            )
+        ],
+    )
+    written: list[str] = []
+
+    def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
+        """Records the on-disk name each clip claims, then writes bytes naming its source."""
+        path = Path(self.output_folder) / filename
+        path.write_bytes(url.encode())
+        written.append(filename)
+        return path
+
+    uploaded: list[tuple[str, bytes]] = []
+
+    async def record_upload(
+        *, client: object, source: object, mime_type: str, filename: str, timeout_seconds: float
+    ) -> dict[str, str]:
+        """Reads the bytes the builder hands over, before it deletes the file again."""
+        del client, mime_type, timeout_seconds
+        # A local read of a temp file the test itself wrote, so blocking here is the point:
+        # awaiting a thread would let the builder unlink it first.
+        uploaded.append((filename, Path(str(source)).read_bytes()))  # noqa: ASYNC240
+        return {"type": "input_file", "file_id": f"https://files.test/{filename}"}
+
+    _stub_media(monkeypatch, uploads=_Uploads())
+    monkeypatch.setattr(threads_builder, "upload_as_input_file", record_upload)
+    monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
+
+    await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+    )
+
+    assert written == ["threads_video_0.mp4", "threads_quoted_video_0.mp4"]
+    # Each part carries ITS OWN clip: one shared filename uploads one post's bytes as the other's,
+    # which is wrong content under a confident attribution.
+    assert uploaded == [
+        ("threads_video_0.mp4", b"https://cdn.test/target.mp4"),
+        ("threads_quoted_video_0.mp4", b"https://cdn.test/quoted.mp4"),
+    ]
+
+
+async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The degrade has to report BOTH posts' media, or the quoted post's vanishes without a word."""
+    _stub_parse(
+        monkeypatch,
+        [
+            _post(
+                text="t",
+                images=["https://cdn.test/target.jpg"],
+                quoted=_quoted(images=["https://cdn.test/quoted.jpg"]),
+            )
+        ],
+    )
+    _stub_media(monkeypatch, uploads=_Uploads())
+    monkeypatch.setattr(threads_builder, "LINK_MEDIA_TIMEOUT_SECONDS", 0.01)
+
+    async def never_returns(source: str) -> tuple[bytes, str]:
+        """Outlasts the bound, so the whole ingest degrades."""
+        del source
+        await asyncio.sleep(delay=5)
+        raise AssertionError("the bound should have fired first")
+
+    monkeypatch.setattr(threads_builder, "load_image_bytes", never_returns)
+
+    blocks = await build_threads_context_messages(
+        url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
+    )
+
+    parts = step_dicts(steps=blocks[1]["content"])
+    assert [part["type"] for part in parts] == ["input_text"]
+    text = parts[0]["text"]
+    assert "Images of the linked post NOT attached (1)" in text
+    assert "Images of the post it quotes NOT attached (1)" in text
 
 
 async def test_a_quoted_posts_urls_ride_as_text_for_a_model_that_cannot_read_them(
