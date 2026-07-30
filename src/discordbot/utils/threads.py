@@ -24,16 +24,25 @@ import requests
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
 # cog (which expands it into embeds) and gen_reply (which self-parses it into answer
-# context). Matches `@user/post/<code>` on both threads.net and threads.com. The shortcode +
-# query tail is matched as ASCII URL characters only and must END on `[A-Za-z0-9_-]` (the only
+# context). Matches the two shapes that name a post on both threads.net and threads.com: the
+# canonical `@user/post/<code>`, and the `share/<code>` form the app's share button copies. Both
+# paths are anchored, so a profile or any other Threads page still matches nothing. The shortcode
+# + query tail is matched as ASCII URL characters only and must END on `[A-Za-z0-9_-]` (the only
 # characters a valid Threads code or query value ends in). Restricting to ASCII stops the match
 # at any non-ASCII terminator, and the trailing class strips ASCII sentence punctuation, so a
 # link written mid-sentence is matched cleanly in both English (`.../post/ABC123.`) and zh/ja
 # (`...ABC123。`, `...ABC123】super`) text instead of swallowing the terminator into the code,
 # which would otherwise make the parse fail on an otherwise valid link.
 THREADS_URL_RE = re.compile(
-    r"https?://(?:www\.)?threads\.(?:net|com)/@[^/]+/post/[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]"
+    r"https?://(?:www\.)?threads\.(?:net|com)/(?:@[^/]+/post|share)/"
+    r"[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]"
 )
+
+# The canonical post path, and the only shape that names its own post. A `share/<code>` link
+# carries a code unrelated to the post's (`DfX81RWN8` for a post whose own code is `DZZImVsCWU-`)
+# and the page's JSON never carries it, so the share form names its post only through the redirect
+# it answers with; `ThreadsURL.post_code` and `ThreadsDownloader.extract_post_data` have the rest.
+_POST_PATH_RE = re.compile(r"^/@[^/]+/post/([^/]+)/?$")
 
 
 class _ThreadsModel(BaseModel):
@@ -60,6 +69,10 @@ class _ThreadsModel(BaseModel):
 class ThreadsURL(BaseModel):
     """Parses and normalises a Threads post URL.
 
+    Handles both shapes `THREADS_URL_RE` accepts, but only the canonical one names its post:
+    `post_code` is empty for a `share/<code>` link, which is the signal to resolve it by fetching
+    (see `ThreadsDownloader.extract_post_data`).
+
     Attributes:
         raw_url: Original Threads URL provided by the caller.
     """
@@ -84,15 +97,18 @@ class ThreadsURL(BaseModel):
     @computed_field
     @cached_property
     def post_code(self) -> str:
-        """The post short code extracted from the URL.
+        """The post short code the URL names.
+
+        Read off the canonical `/@<user>/post/<code>` path rather than taken as the last path
+        segment, so a URL that names no post yields nothing instead of a segment of whatever it
+        does name. That distinction is the whole share-link handling: the share form's own code
+        is not the post's, so an empty result here means "fetch it and read the redirect".
 
         Returns:
-            The last path segment from the raw URL, or an empty string for an
-            empty path.
+            The short code, or an empty string when the URL is not a canonical post URL.
         """
-        parsed = urlparse(self.raw_url)
-        path_parts = parsed.path.strip("/").split("/")
-        return path_parts[-1] if path_parts else ""
+        match = _POST_PATH_RE.match(string=urlparse(self.raw_url).path)
+        return match.group(1) if match else ""
 
 
 class User(_ThreadsModel):
@@ -585,6 +601,26 @@ class ThreadsPage(BaseModel):
         return self.chain[-1] if self.chain else None
 
 
+class FetchedPage(BaseModel):
+    """One page as it came back: its HTML, and the URL the request actually ended on.
+
+    `final_url` is what makes a `share/<code>` link readable. That form names its post nowhere
+    else — its code is unrelated to the post's and appears nowhere in the page — so the redirect
+    the fetch already followed is the only thing that names it. Reading it off the response costs
+    nothing, while resolving it separately would spend another round trip on the reply pipeline's
+    critical path.
+
+    Attributes:
+        html: The fetched page's HTML body.
+        final_url: The URL the request ended on, after every redirect it followed.
+    """
+
+    html: str = Field(..., description="The fetched page's HTML body")
+    final_url: str = Field(
+        ..., description="The URL the request ended on, after every redirect it followed"
+    )
+
+
 class ParsedPage(BaseModel):
     """One fetched page's outcome: what it yielded, and whether it was an answer at all.
 
@@ -735,13 +771,17 @@ class ThreadsDownloader(BaseModel):
         ..., description="Directory where downloaded media files are written"
     )
 
-    def _fetch_html(self, url: str) -> str:
-        """Fetches the HTML content of the given URL."""
+    def _fetch_page(self, url: str) -> FetchedPage:
+        """Fetches the given URL, returning its HTML and the URL the request ended on.
+
+        Redirects are followed, as they always were, but where they land is now part of the
+        result: a `share/<code>` link names its post only there. See `FetchedPage`.
+        """
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
         try:
             response = requests.get(url=url, headers=headers, timeout=15)
             response.raise_for_status()
-            return response.text
+            return FetchedPage(html=response.text, final_url=response.url)
         except requests.RequestException as e:
             raise RuntimeError(f"Failed to fetch HTML from {url}: {e}") from e
 
@@ -967,6 +1007,12 @@ class ThreadsDownloader(BaseModel):
     def extract_post_data(self, url: str) -> ThreadsPage:
         """Extracts the target post, its parents, and its replies from a Threads URL.
 
+        A `share/<code>` link names no post of its own, so its code comes from where the fetch
+        landed instead of from the URL the user pasted; the remaining attempts then go straight
+        to that canonical URL rather than through the share hop again. A share link that lands
+        anywhere but a post URL is reported unreadable rather than parsed for: the post code
+        would be empty, and an empty code matches any post payload serialised without one.
+
         A fetch that comes back with no post JSON at all is retried, bounded by
         `THREADS_EMPTY_PAGE_RETRIES` and `THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS`: that shape
         is the platform throttling this fingerprint, and a second attempt usually clears it. A
@@ -974,32 +1020,45 @@ class ThreadsDownloader(BaseModel):
         post still fails on the first attempt.
 
         Args:
-            url: The raw Threads post URL.
+            url: The raw Threads post URL, canonical or share form.
 
         Returns:
             The parsed page; its `target` is None when the post could not be found.
         """
         threads_url = ThreadsURL(raw_url=url)
+        fetch_url = threads_url.clean_url
+        post_code = threads_url.post_code
         deadline = time.monotonic() + THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS
         attempts = 0
         for attempt in range(THREADS_EMPTY_PAGE_RETRIES + 1):
             attempts = attempt + 1
-            html = self._fetch_html(url=threads_url.clean_url)
-            parsed = self._parse_page_from_html(html=html, post_code=threads_url.post_code)
+            fetched = self._fetch_page(url=fetch_url)
+            if not post_code:
+                resolved = ThreadsURL(raw_url=fetched.final_url)
+                post_code = resolved.post_code
+                if not post_code:
+                    logfire.info(
+                        "A Threads share link did not lead to a post; treating it as unreadable",
+                        url=url,
+                        final_url=fetched.final_url,
+                    )
+                    return ThreadsPage()
+                fetch_url = resolved.clean_url
+            parsed = self._parse_page_from_html(html=fetched.html, post_code=post_code)
             if parsed.page.chain or parsed.carried_post_json:
                 return parsed.page
             if attempt == THREADS_EMPTY_PAGE_RETRIES or time.monotonic() >= deadline:
                 break
             logfire.info(
                 "Threads answered without any post JSON; fetching the page again",
-                post_code=threads_url.post_code,
+                post_code=post_code,
                 attempt=attempts,
-                html_length=len(html),
+                html_length=len(fetched.html),
             )
             time.sleep(THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS)
         logfire.warn(
             "Threads kept answering without any post JSON; treating the post as unreadable",
-            post_code=threads_url.post_code,
+            post_code=post_code,
             attempts=attempts,
         )
         return ThreadsPage()

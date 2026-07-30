@@ -13,6 +13,7 @@ from discordbot.utils.threads import (
     ThreadData,
     ThreadItem,
     ThreadsURL,
+    FetchedPage,
     ThreadsOutput,
     ThreadsDownloader,
 )
@@ -207,12 +208,12 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
     threads_url = ThreadsURL(raw_url=url)
     fetched_urls: list[str] = []
 
-    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
         """Returns deterministic HTML for the requested Threads URL."""
         fetched_urls.append(url)
-        return _thread_html(post_code=threads_url.post_code)
+        return FetchedPage(html=_thread_html(post_code=threads_url.post_code), final_url=url)
 
-    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
 
     with downloader.parse(url=url) as conversation:
         assert conversation.chain, "should yield at least one post"
@@ -252,6 +253,16 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
             "貼文【https://www.threads.com/@a/post/ABC123】super",
             "https://www.threads.com/@a/post/ABC123",
         ),
+        # The form the app's share button copies. The trailing slash falls outside the match,
+        # which the platform accepts: the share URL redirects with or without it.
+        (
+            "分享給你 https://www.threads.com/share/DfX81RWN8/ 快看",
+            "https://www.threads.com/share/DfX81RWN8",
+        ),
+        (
+            "https://www.threads.net/share/DfX81RWN8?xmt=AQF0p6Ufiuvt",
+            "https://www.threads.net/share/DfX81RWN8?xmt=AQF0p6Ufiuvt",
+        ),
     ],
 )
 def test_threads_url_re_matches_post_links(text: str, expected: str) -> None:
@@ -267,11 +278,34 @@ def test_threads_url_re_matches_post_links(text: str, expected: str) -> None:
         "no url here at all",
         "https://www.threads.com/@profile_only",
         "https://www.instagram.com/p/ABC/",
+        # Both share-shaped rejections: the segment has to be exactly `share`, and it has to
+        # carry a code, or the widened pattern would start swallowing pages that are not posts.
+        "https://www.threads.com/shared/DfX81RWN8",
+        "https://www.threads.com/share/",
     ],
 )
 def test_threads_url_re_rejects_non_posts(text: str) -> None:
     """Profile URLs, Instagram URLs, and plain text are not matched as posts."""
     assert THREADS_URL_RE.search(string=text) is None
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://www.threads.com/@a/post/ABC123", "ABC123"),
+        ("https://www.threads.com/@a/post/ABC123/", "ABC123"),
+        ("https://www.threads.net/@c.d/post/Q_-1?hl=zh", "Q_-1"),
+        # A share link's own code is not the post's, and the page's JSON never carries it, so
+        # the URL names no post at all; only the redirect it answers with does.
+        ("https://www.threads.com/share/DfX81RWN8", ""),
+        ("https://www.threads.com/share/DfX81RWN8/", ""),
+        ("https://www.threads.com/@profile_only", ""),
+        ("https://www.threads.com/login", ""),
+    ],
+)
+def test_threads_url_post_code_names_only_a_canonical_post(url: str, expected: str) -> None:
+    """Reading the last path segment would hand the parser a code no post on the page has."""
+    assert ThreadsURL(raw_url=url).post_code == expected
 
 
 def _thread_html_with_video(post_code: str) -> str:
@@ -293,16 +327,17 @@ def test_parse_metadata_returns_chain_without_downloading(
     url = "https://www.threads.com/@root_author/post/TARGET"
     threads_url = ThreadsURL(raw_url=url)
 
-    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
         """Returns deterministic HTML with a video target for the requested URL."""
-        del url
-        return _thread_html_with_video(post_code=threads_url.post_code)
+        return FetchedPage(
+            html=_thread_html_with_video(post_code=threads_url.post_code), final_url=url
+        )
 
     def fail_download(self: ThreadsDownloader, url: str, filename: str) -> None:
         """Fails loudly if the metadata path ever tries to download media."""
         raise AssertionError("parse_metadata must not download media")
 
-    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fail_download)
 
     conversation = downloader.parse_metadata(url=url)
@@ -381,12 +416,11 @@ def _thread_html_with_replies() -> str:
 def _stub_html(monkeypatch: pytest.MonkeyPatch, html: str) -> None:
     """Serves one canned page for every fetch, so no test touches the network."""
 
-    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
-        """Returns the canned HTML regardless of url."""
-        del url
-        return html
+    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
+        """Returns the canned HTML regardless of url, as a fetch that no redirect moved."""
+        return FetchedPage(html=html, final_url=url)
 
-    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
 
 
 def test_parse_metadata_collects_the_reply_branches(
@@ -623,12 +657,12 @@ def _count_fetches(monkeypatch: pytest.MonkeyPatch, pages: list[str]) -> list[st
     """Serves `pages` in order (the last one repeating) and records every fetched URL."""
     fetched: list[str] = []
 
-    def fake_fetch_html(self: ThreadsDownloader, url: str) -> str:
+    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
         """Hands back the page for this attempt."""
         fetched.append(url)
-        return pages[min(len(fetched) - 1, len(pages) - 1)]
+        return FetchedPage(html=pages[min(len(fetched) - 1, len(pages) - 1)], final_url=url)
 
-    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_html", value=fake_fetch_html)
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
     monkeypatch.setattr(
         target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS", value=0.0
     )
@@ -692,6 +726,125 @@ def test_the_retry_deadline_stops_further_attempts(
 
     assert len(fetched) == 1
     assert conversation.chain == []
+
+
+_SHARE_URL = "https://www.threads.com/share/DfX81RWN8"
+
+
+def _stub_share_redirect(
+    monkeypatch: pytest.MonkeyPatch, *, final_url: str, pages: list[str]
+) -> list[str]:
+    """Serves `pages` in order (the last repeating) and redirects the share URL to `final_url`.
+
+    Mirrors the live shape measured on `/share/DfX81RWN8`: the share link answers 302 with the
+    canonical post URL, so the fetch of it comes back from somewhere else than it asked for,
+    while a fetch of the canonical URL stays where it was.
+    """
+    fetched: list[str] = []
+
+    def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
+        """Hands back the page for this attempt, moved only when the share URL was asked for."""
+        fetched.append(url)
+        html = pages[min(len(fetched) - 1, len(pages) - 1)]
+        return FetchedPage(html=html, final_url=final_url if "/share/" in url else url)
+
+    monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
+    monkeypatch.setattr(
+        target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS", value=0.0
+    )
+    return fetched
+
+
+def test_fetch_page_reports_where_the_request_landed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every share link rests on this one line, and a fetch that echoed its own URL would pass.
+
+    The parser tests all stub the fetch, so nothing else exercises what the real one reports: a
+    fetch that stopped following redirects, or handed back the URL it asked for, would leave
+    every `/share/` link unreadable with all of them still green.
+    """
+    landed = "https://www.threads.com/@target_author/post/TARGET?xmt=AQF0p6Ufiuvt"
+
+    class _Response:
+        """A response that came back from somewhere other than it was asked for."""
+
+        text = "<html>the post page</html>"
+        url = landed
+
+        def raise_for_status(self) -> None:
+            """Accepts the transfer."""
+
+    requested: list[str] = []
+
+    def fake_get(url: str, **kwargs: object) -> _Response:
+        """Records what was asked for and answers as the redirect chain's last hop."""
+        del kwargs
+        requested.append(url)
+        return _Response()
+
+    monkeypatch.setattr(target=threads_module.requests, name="get", value=fake_get)
+    downloader = ThreadsDownloader(output_folder=str(tmp_path))
+
+    fetched = downloader._fetch_page(url=_SHARE_URL)
+
+    assert requested == [_SHARE_URL]
+    assert fetched.html == "<html>the post page</html>"
+    assert fetched.final_url == landed
+
+
+def test_a_share_link_reads_the_post_its_redirect_names(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The share form names no post, so where the fetch landed is the only thing that does."""
+    fetched = _stub_share_redirect(
+        monkeypatch,
+        final_url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
+        pages=[_thread_html_with_replies()],
+    )
+
+    conversation = downloader.parse_metadata(url=_SHARE_URL)
+
+    assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
+    assert fetched == ["https://www.threads.net/share/DfX81RWN8"]
+
+
+def test_a_share_links_retry_asks_for_the_resolved_post(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once the redirect has named the post, a throttle retry has no reason to walk it again."""
+    fetched = _stub_share_redirect(
+        monkeypatch,
+        final_url=_REPLIES_TARGET_URL,
+        pages=[_THROTTLED_PAGE, _thread_html_with_replies()],
+    )
+
+    conversation = downloader.parse_metadata(url=_SHARE_URL)
+
+    assert fetched == [
+        "https://www.threads.net/share/DfX81RWN8",
+        "https://www.threads.net/@target_author/post/TARGET",
+    ]
+    assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
+
+
+def test_a_share_link_leading_anywhere_else_is_never_parsed(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No code came back, and an empty code would match any post serialised without one.
+
+    The page served here is exactly that trap: a post whose payload carries no `code` at all.
+    """
+    fetched = _stub_share_redirect(
+        monkeypatch,
+        final_url="https://www.threads.com/login",
+        pages=[_sjs_html([_thread_post_payload(code="", username="other", text="Codeless post")])],
+    )
+
+    conversation = downloader.parse_metadata(url=_SHARE_URL)
+
+    assert conversation.chain == []
+    assert len(fetched) == 1
 
 
 def test_a_malformed_thread_does_not_cost_the_target(
