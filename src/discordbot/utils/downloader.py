@@ -121,7 +121,13 @@ class VideoDownloader(BaseModel):
         }
 
     def _resolve_facebook_share_url(self, url: str) -> str:
-        """Follows redirects for facebook.com/share/... links to obtain the real target."""
+        """Follows redirects for facebook.com/share/... links to obtain the real target.
+
+        Only where the request landed is wanted, never the page itself, so the GET fallback
+        streams: requests still follows the whole redirect chain and reports `response.url`,
+        but the final page's body is left on the wire instead of being downloaded and thrown
+        away. The HEAD attempt above it never had a body to begin with.
+        """
         headers = self._default_http_headers()
         with Session() as session:
             for method_name in ("head", "get"):
@@ -132,6 +138,7 @@ class VideoDownloader(BaseModel):
                         allow_redirects=True,
                         headers=headers,
                         timeout=SHARE_RESOLVE_TIMEOUT_SECONDS,
+                        stream=True,
                     )
                 except RequestException:
                     continue
