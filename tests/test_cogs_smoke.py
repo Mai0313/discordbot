@@ -220,20 +220,23 @@ class FakeGeneratedResponse:
         ]
 
 
-def _thread_output(
+def _thread_output(  # noqa: PLR0913 -- one knob per ThreadsOutput field the embeds render
     text: str = "hello",
     image_urls: list[str] | None = None,
     video_paths: list[Path] | None = None,
     video_urls: list[str] | None = None,
+    author_name: str = "alice",
+    quoted: ThreadsOutput | None = None,
+    quoted_unavailable: bool = False,
 ) -> ThreadsOutput:
     """Builds a parsed Threads output fixture."""
     return ThreadsOutput(
         text=text,
-        url="https://www.threads.net/@alice/post/abc",
+        url=f"https://www.threads.net/@{author_name}/post/abc",
         image_urls=image_urls or [],
         video_urls=video_urls or [],
         video_paths=video_paths or [],
-        author_name="alice",
+        author_name=author_name,
         author_icon_url="https://example.test/avatar.png",
         like_count=1,
         reply_count=2,
@@ -241,6 +244,8 @@ def _thread_output(
         quote_count=4,
         reshare_count=5,
         taken_at=datetime(2026, 1, 1, tzinfo=UTC),
+        quoted=quoted,
+        quoted_unavailable=quoted_unavailable,
     )
 
 
@@ -408,6 +413,72 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     )
     await cog.on_message(message=as_message(fake=error_message))
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
+
+
+async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
+    """The quoted post is the subject of a quote post, so it earns its own marked embed."""
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    quoted = _thread_output(
+        text="the original argument",
+        author_name="bob",
+        video_urls=["https://example.test/quoted.mp4"],
+    )
+    target = _thread_output(text="這根本是胡說", image_urls=["https://example.test/1.png"])
+    target.quoted = quoted
+
+    embeds = cog._build_embeds(results=[target])
+
+    assert len(embeds) == 2
+    # The target owns the message, so it stays first and the quoted post hangs off the end. That
+    # root-first ordering is load-bearing elsewhere (see the gen_reply embed-card scan).
+    assert embeds[0].description == "這根本是胡說"
+    quoted_embed = embeds[1]
+    assert quoted_embed.author.name == "bob"
+    assert quoted_embed.description is not None
+    assert quoted_embed.description.startswith("🔗 **被引用的貼文**")
+    assert "the original argument" in quoted_embed.description
+    # Its clip is never downloaded, so it is linked instead of showing as an empty embed.
+    assert "點此觀看影片" in quoted_embed.description
+    # Off the greyscale chain gradient on purpose: it is not a layer of the thread.
+    assert quoted_embed.colour == nextcord.Color.blurple()
+
+
+async def test_threads_cog_keeps_the_commentary_beside_a_quoted_gallery() -> None:
+    """The shape that motivated this: one line over someone else's ten-image carousel.
+
+    Letting the gallery compete freely for the 10-embed cap drops the commentary that owns the
+    message, which would leave the reader the same fragment showing the quoted post exists to fix.
+    """
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    quoted = _thread_output(
+        text="the subject",
+        author_name="bob",
+        image_urls=[f"https://example.test/{index}.png" for index in range(10)],
+    )
+    target = _thread_output(text="一句話評論")
+    target.quoted = quoted
+
+    embeds = cog._build_embeds(results=[target])
+
+    assert len(embeds) == 10
+    assert embeds[0].description == "一句話評論"
+    assert embeds[1].description is not None
+    assert embeds[1].description.startswith("🔗 **被引用的貼文**")
+    # Nine of the quoted post's ten images fit; the tenth loses to the commentary, not the reverse.
+    assert sum(1 for embed in embeds if embed.image) == 9
+
+
+async def test_threads_cog_notes_a_quoted_post_that_is_gone() -> None:
+    """A gone quoted post has nothing to show, so it rides on the target instead of an embed."""
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    target = _thread_output(text="回應一下")
+    target.quoted_unavailable = True
+
+    embeds = cog._build_embeds(results=[target])
+
+    assert len(embeds) == 1
+    assert embeds[0].description is not None
+    assert "引用的貼文目前無法瀏覽" in embeds[0].description
 
 
 async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:

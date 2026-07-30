@@ -38,6 +38,17 @@ from discordbot.utils.media_delivery import (
     build_media_delivery_planner,
 )
 
+# Stripe for the post a quote post quotes. Deliberately off the greyscale chain gradient
+# (`_gradient_color`, which spans 0x40-0xC0 and reserves pure black for "no stripe"): a quoted
+# post is not a layer of the thread, so a shade from that ramp would read as one.
+_QUOTED_POST_COLOR = Color.blurple()
+
+# Appended to the target's own embed when it quotes a post Threads no longer serves. It rides on
+# the target rather than taking an embed slot of its own: there is no content to show, and the
+# tombstone Threads sends carries neither a username nor a shortcode, so there is not even a
+# permalink to offer. Never worded as a deletion — the payload says "unavailable", nothing more.
+_QUOTED_UNAVAILABLE_HINT = "\n\n🔗 *引用的貼文目前無法瀏覽(可能已刪除或改為私人)*"
+
 
 class ThreadsCogs(commands.Cog):
     """Expands Threads links into Discord embeds and media attachments.
@@ -94,7 +105,12 @@ class ThreadsCogs(commands.Cog):
         return embed
 
     def _build_post_embeds(
-        self, output: ThreadsOutput, color: Color, image_count: int, is_target: bool
+        self,
+        output: ThreadsOutput,
+        color: Color,
+        image_count: int,
+        is_target: bool,
+        is_quoted: bool = False,
     ) -> list[Embed]:
         """Builds the embeds for one post, showing `image_count` of its images.
 
@@ -104,62 +120,98 @@ class ThreadsCogs(commands.Cog):
         """
         main_embed = self._build_post_embed(output=output, color=color)
         embeds = [main_embed]
+        # A quoted post sits outside the chain the gradient describes, so it says what it is:
+        # without the line it reads as one more post in the thread rather than as the post the
+        # linked one is arguing with, and by a different author at that.
+        if is_quoted:
+            main_embed.description = f"🔗 **被引用的貼文**\n\n{main_embed.description or ''}"
         if image_count > 0:
             main_embed.set_image(url=output.image_urls[0])
             for img_url in output.image_urls[1:image_count]:
                 extra = Embed(url=output.url)
                 extra.set_image(url=img_url)
                 embeds.append(extra)
-        # Target videos are downloaded and attached as files; ancestor videos are not,
-        # so surface a link hint — otherwise a video-only parent shows as an empty embed.
+        # Target videos are downloaded and attached as files; ancestor and quoted-post videos
+        # are not, so surface a link hint — otherwise a video-only parent shows as an empty
+        # embed, and a quoted clip would look like a quoted post with nothing in it.
         if not is_target and output.video_urls and output.url:
             hint = f"\n\n🎬 [點此觀看影片]({output.url})"
             main_embed.description = (main_embed.description or "") + hint
+        if output.quoted_unavailable:
+            main_embed.description = (main_embed.description or "") + _QUOTED_UNAVAILABLE_HINT
         return embeds
 
     def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
-        """Builds a list of embeds for a Threads reply chain.
+        """Builds a list of embeds for a Threads reply chain, plus the post it quotes.
 
         Args:
             results: Ordered chain `[root, ..., direct_parent, target]`.
         """
-        # Discord caps a single message at 10 embeds, one image each. The posted URL is
-        # the target (last item) and owns the message, so its images claim slots first,
-        # then the direct parent's, on up the chain; a post that loses the image race
-        # still earns a text-only context embed, but only from slots no image needed.
+        # Discord caps a single message at 10 embeds, one image each. The posted URL is the
+        # target (last item) and owns the message, so an embed for its own words is reserved
+        # first, then one for the post it quotes; images then claim what is left in the same
+        # order, target, quoted, direct parent, on up the chain. An ancestor that loses the
+        # image race still earns a text-only context embed, but only from slots no image needed.
         max_embeds = 10
         # A chain deeper than the embed cap can't show every post; keep the target and its
         # nearest ancestors, which are the most relevant context.
         if len(results) > max_embeds:
             results = results[-max_embeds:]
         chain_depth = len(results)
+        # The post the target quotes is not a chain member: it is what the target is talking
+        # about, by someone who never joined this thread. So it is allocated alongside the chain
+        # but emitted after it.
+        quoted = results[-1].quoted if results else None
+        posts = [*results, *([quoted] if quoted is not None else [])]
+        quoted_index = chain_depth if quoted is not None else -1
 
-        priority = list(reversed(range(chain_depth)))  # target, direct parent, ..., root
-        image_count = [0] * chain_depth
+        # Allocation order: the target, then the post it quotes, then up the chain towards the
+        # root. Emission order is different (root first, quoted last) — see the loop below.
+        priority = [chain_depth - 1, quoted_index, *reversed(range(chain_depth - 1))]
+        priority = [index for index in priority if index >= 0]
+
+        # One embed per slot, each carrying at most one image.
+        slots = [0] * len(posts)
         budget = max_embeds
+        # The target's embed and the quoted post's are both reserved ahead of every image,
+        # including their own. Without it a quote post — a line of commentary over someone
+        # else's ten-image carousel, which is the shape that motivated showing the quoted post
+        # at all — spends the whole budget on that carousel and drops the commentary that owns
+        # the message. The same reservation covers a text-only target under an image-heavy
+        # ancestor, which the image-first pass could already starve.
+        for index in (chain_depth - 1, quoted_index):
+            if index >= 0:
+                slots[index] = 1
+                budget -= 1
+
         for index in priority:
-            take = min(len(results[index].image_urls), budget)
-            image_count[index] = take
+            take = min(max(len(posts[index].image_urls) - slots[index], 0), budget)
+            slots[index] += take
             budget -= take
 
-        keep_text = [False] * chain_depth
         for index in priority:
             if budget <= 0:
                 break
-            if image_count[index] == 0:
-                keep_text[index] = True
+            if slots[index] == 0:
+                slots[index] = 1
                 budget -= 1
 
         embeds: list[Embed] = []
-        for index, output in enumerate(results):
-            if image_count[index] == 0 and not keep_text[index]:
+        for index, output in enumerate(posts):
+            if slots[index] == 0:
                 continue
+            is_quoted = index == quoted_index
             embeds.extend(
                 self._build_post_embeds(
                     output=output,
-                    color=self._gradient_color(index=index, total=chain_depth),
-                    image_count=image_count[index],
+                    color=(
+                        _QUOTED_POST_COLOR
+                        if is_quoted
+                        else self._gradient_color(index=index, total=chain_depth)
+                    ),
+                    image_count=min(slots[index], len(output.image_urls)),
                     is_target=index == chain_depth - 1,
+                    is_quoted=is_quoted,
                 )
             )
         return embeds
@@ -335,12 +387,18 @@ class ThreadsCogs(commands.Cog):
                 target = results[-1]
                 # A text body past the embed-description limit cannot be rescued by hosting, so
                 # it stays the ⚠️ refusal. (Image count is not guarded: _build_embeds caps the
-                # message at 10 embeds and shows as many images as fit.)
-                if len(target.text) > 4096:
+                # message at 10 embeds and shows as many images as fit.) The post it quotes gets
+                # its own embed and so its own description, hence the same guard: Threads caps a
+                # post well below this, so this is a backstop against a payload that surprises
+                # us, not a limit any real post reaches.
+                longest_text = max(
+                    len(target.text), len(target.quoted.text) if target.quoted else 0
+                )
+                if longest_text > 4096:
                     logfire.info(
                         "Threads post exceeds the embed description limit; skipping expansion",
                         url=url,
-                        text_length=len(target.text),
+                        text_length=longest_text,
                     )
                     await update_reaction(
                         message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
