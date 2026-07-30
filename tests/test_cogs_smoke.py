@@ -481,6 +481,82 @@ async def test_threads_cog_notes_a_quoted_post_that_is_gone() -> None:
     assert "引用的貼文目前無法瀏覽" in embeds[0].description
 
 
+async def test_threads_cog_reserves_the_quoted_posts_slot_against_an_ancestors_gallery() -> None:
+    """The quoted post's reservation only bites when something else wants the last slot.
+
+    A text-only target quoting a text-only post leaves the whole budget to an image-heavy
+    ancestor, so without the reservation the ancestor's tenth image takes the slot and the quoted
+    post disappears from a message that is supposed to be about it.
+    """
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    ancestor = _thread_output(
+        text="ancestor",
+        author_name="root",
+        image_urls=[f"https://example.test/{index}.png" for index in range(10)],
+    )
+    target = _thread_output(text="commentary")
+    target.quoted = _thread_output(text="the post being argued with", author_name="bob")
+
+    embeds = cog._build_embeds(results=[ancestor, target])
+
+    assert len(embeds) == 10
+    descriptions = [embed.description or "" for embed in embeds]
+    assert any(text.startswith("🔗 **被引用的貼文**") for text in descriptions)
+    assert "commentary" in descriptions
+    # The ancestor gives up its tenth image, not the target or the quoted post.
+    assert sum(1 for embed in embeds if embed.image) == 8
+
+
+async def test_threads_cog_says_nothing_about_an_ancestors_quote() -> None:
+    """The expansion shows the target's quote only, so an ancestor's must not be half-announced.
+
+    `_build_output` fills `quoted_unavailable` on every parsed post, so an ungated hint told the
+    reader about an ancestor's quote in exactly the case where there was nothing to show, while an
+    ancestor quoting a live post said nothing at all.
+    """
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    root = _thread_output(text="root commentary", author_name="root")
+    root.quoted_unavailable = True
+
+    embeds = cog._build_embeds(results=[root, _thread_output(text="target")])
+
+    assert embeds[0].description == "root commentary"
+    assert all("引用的貼文目前無法瀏覽" not in (embed.description or "") for embed in embeds)
+
+
+async def test_threads_cog_measures_the_rendered_description_against_the_embed_limit() -> None:
+    """The marker prefix and the hints are appended after any check on the raw body.
+
+    A body sitting just under 4096 therefore crossed it once rendered, turning the ⚠️ skip the
+    guard exists for into a Discord 400 and a ❌.
+    """
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    target = _thread_output(text="t")
+    target.quoted = _thread_output(text="q" * 4096, author_name="bob")
+
+    embeds = cog._build_embeds(results=[target])
+
+    # The guard now reads exactly this quantity, so it sees the overflow the raw text hid.
+    assert max(len(embed.description or "") for embed in embeds) > 4096
+
+
+async def test_threads_cog_refuses_an_oversize_quoted_post_with_a_warning() -> None:
+    """The user-visible outcome of that overflow is the ⚠️ skip, never the ❌ a 400 would give."""
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    target = _thread_output(text="t")
+    target.quoted = _thread_output(text="q" * 4096, author_name="bob")
+    cog.downloader = cast("ThreadsDownloader", ThreadsDownloaderStub(results=[target]))
+
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.reactions[-1] == "⚠️"
+    assert message.replies == []
+
+
 async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
     """A mention (or a DM) hands the link to gen_reply, so the cog must not also expand it."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))

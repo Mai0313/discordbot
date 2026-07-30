@@ -137,7 +137,12 @@ class ThreadsCogs(commands.Cog):
         if not is_target and output.video_urls and output.url:
             hint = f"\n\n🎬 [點此觀看影片]({output.url})"
             main_embed.description = (main_embed.description or "") + hint
-        if output.quoted_unavailable:
+        # Only for the target, because the target's quote is the only one this expansion shows at
+        # all. `_build_output` fills `quoted` / `quoted_unavailable` on every post it parses, so
+        # without the gate an ancestor that quotes a DEAD post says so while an ancestor that
+        # quotes a live one says nothing — telling the reader about a quote in exactly the case
+        # where there is nothing to see.
+        if is_target and output.quoted_unavailable:
             main_embed.description = (main_embed.description or "") + _QUOTED_UNAVAILABLE_HINT
         return embeds
 
@@ -226,9 +231,19 @@ class ThreadsCogs(commands.Cog):
         )
 
     async def _deliver(
-        self, *, message: Message, url: str, results: list[ThreadsOutput], current_emoji: str
+        self,
+        *,
+        message: Message,
+        url: str,
+        results: list[ThreadsOutput],
+        embeds: list[Embed],
+        current_emoji: str,
     ) -> None:
-        """Plans the target's media, posts the expansion and marks the source done."""
+        """Plans the target's media, posts the expansion and marks the source done.
+
+        The embeds arrive already built rather than being rebuilt here, so the description-length
+        guard in `on_message` measured the very list that gets sent.
+        """
         target = results[-1]
         # Broad on purpose: the delivery step must never escape into the listener, and its
         # failures split three ways — the source message went away, the bot lacks a permission,
@@ -267,7 +282,6 @@ class ThreadsCogs(commands.Cog):
                 return
 
             files = [item.to_file() for item in plan.native]
-            embeds = self._build_embeds(results=results)
 
             try:
                 await message.edit(suppress=True)
@@ -385,15 +399,20 @@ class ThreadsCogs(commands.Cog):
                     return
 
                 target = results[-1]
-                # A text body past the embed-description limit cannot be rescued by hosting, so
-                # it stays the ⚠️ refusal. (Image count is not guarded: _build_embeds caps the
-                # message at 10 embeds and shows as many images as fit.) The post it quotes gets
-                # its own embed and so its own description, hence the same guard: Threads caps a
-                # post well below this, so this is a backstop against a payload that surprises
-                # us, not a limit any real post reaches.
-                longest_text = max(
-                    len(target.text), len(target.quoted.text) if target.quoted else 0
-                )
+                if target.quoted_unavailable:
+                    # A routine user-driven outcome (a removed remote post), so info, not warn.
+                    # Logged because it is common — measured at 15 of 96 live quote relations —
+                    # and otherwise invisible in `data/logs`.
+                    logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
+                embeds = self._build_embeds(results=results)
+                # Measured on the RENDERED descriptions rather than on `target.text`: the quoted
+                # post's marker prefix, an ancestor's video hint and the unavailable hint are all
+                # appended by `_build_post_embeds` AFTER any check on the raw body, so a text
+                # sitting just under the limit crossed it and turned a ⚠️ skip into a Discord 400
+                # and a ❌. A body past the limit cannot be rescued by hosting, so it stays the ⚠️
+                # refusal. (Image count is not guarded: _build_embeds caps the message at 10
+                # embeds and shows as many images as fit.)
+                longest_text = max((len(embed.description or "") for embed in embeds), default=0)
                 if longest_text > 4096:
                     logfire.info(
                         "Threads post exceeds the embed description limit; skipping expansion",
@@ -406,7 +425,11 @@ class ThreadsCogs(commands.Cog):
                     return
 
                 await self._deliver(
-                    message=message, url=url, results=results, current_emoji=current_emoji
+                    message=message,
+                    url=url,
+                    results=results,
+                    embeds=embeds,
+                    current_emoji=current_emoji,
                 )
             finally:
                 await asyncio.to_thread(parse_cm.__exit__, None, None, None)
