@@ -21,6 +21,7 @@ from pydantic import (
     field_validator,
 )
 import requests
+from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
 # cog (which expands it into embeds) and gen_reply (which self-parses it into answer
@@ -283,29 +284,65 @@ class LinkedInlineMedia(MediaContainer):
     caption: Caption | None = Field(default=None, description="Linked media caption")
 
 
-class QuotedPost(_ThreadsModel):
-    """Represents the post a quote post embeds.
-
-    Only its presence is read: it is the tell that a reply Threads serialised without a
-    `reply_to_author` is a quote post rather than an unrelated thread sharing the block.
-
-    Attributes:
-        code: Quoted post short code.
-    """
-
-    code: str = Field(default="", description="Quoted post short code")
-
-
 class ShareInfo(_ThreadsModel):
     """Represents what a post quotes or reposts.
+
+    `quoted_post` is a WHOLE post payload, not a reference: measured live across 96 quote
+    relations it carries `user`, `caption` / `text_fragments`, `image_versions2` /
+    `carousel_media` / `video_versions`, `like_count`, `taken_at` and its own
+    `text_post_app_info`, and it arrives at full depth whenever the quoting post is the page target
+    (it can still be the tombstone `Post.is_unavailable` describes) — which is the only case
+    either caller reads. So it is typed as `Post`, which makes
+    `Post -> TextPostAppInfo -> ShareInfo -> Post` a real cycle, hence the forward reference. No
+    `model_rebuild()` is needed for it: measured in a cold process, `Post` is already
+    `__pydantic_complete__` at import because pydantic resolves the reference as a self-reference,
+    and `ShareInfo`'s own standalone schema heals on first use. What the cycle DOES cost is blast
+    radius, which `_isolate_quoted_post` below contains.
+
+    Two sibling fields are deliberately NOT modelled, each because a guess would be worse than
+    the omission. `quoted_attachment_post` is a separate, mutually exclusive carrier (3 of 404
+    posts, never non-null alongside `quoted_post`, and the only one shipping a ready-made
+    `permalink`) whose relationship to the quoting post was never established, so rendering it
+    as "the post it quotes" could mislabel it. `reposted_post` — a reshare carrying no comment
+    of its own — was never non-null across the 351 posts that carry the key, so its shape is
+    simply unknown. `quoted_attachment_post_unavailable` is modelled by neither: see
+    `Post.is_unavailable` for why the flag is not the tell it looks like.
 
     Attributes:
         quoted_post: The post this one quotes, absent when it quotes nothing.
     """
 
-    quoted_post: QuotedPost | None = Field(
+    quoted_post: "Post | None" = Field(
         default=None, description="The post this one quotes, absent when it quotes nothing"
     )
+
+    @field_validator("quoted_post", mode="wrap")
+    @classmethod
+    def _isolate_quoted_post(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
+    ) -> object | None:
+        """Drops an unparsable quoted post instead of failing the post that quotes it.
+
+        Typing this field as a whole `Post` pulls every model in this module into the validation
+        of the node that also holds the TARGET, and `_collect_threads` discards a thread node on
+        any `ValidationError` — so without this, one unmodelled shape anywhere inside a quoted
+        payload costs the linked post itself. Measured on the way in: a `quoted_post` carrying
+        `image_versions2: {"candidates": null}`, `text_fragments: {"fragments": null}`,
+        `carousel_media: [null]` or a non-numeric `like_count` each took the target down with it,
+        and it did not even have to be the TARGET's own quoted post — an ancestor's was enough.
+
+        This is the same isolation `_collect_threads` gives a reply branch, one level lower: the
+        quote is the most disposable thing in the payload, and losing only it degrades to exactly
+        the pre-quote-post behaviour.
+        """
+        try:
+            return handler(value)
+        except ValidationError:
+            logfire.warn(
+                "A quoted Threads post no longer matches the parser schema; dropping just it",
+                _exc_info=True,
+            )
+            return None
 
 
 class TextPostAppInfo(_ThreadsModel):
@@ -320,6 +357,7 @@ class TextPostAppInfo(_ThreadsModel):
         link_preview_attachment: Preview metadata for shared links.
         linked_inline_media: Inline media attached through a link preview.
         is_reply: Whether this post is a reply to another post.
+        is_post_unavailable: Whether the post this info belongs to is deleted or private.
         reply_to_author: User this post is directly replying to, if any.
         root_post_author: Author of the post at the top of this post's thread.
         share_info: What this post quotes or reposts.
@@ -340,6 +378,13 @@ class TextPostAppInfo(_ThreadsModel):
     )
     is_reply: bool | None = Field(
         default=None, description="True when this post is a reply to another post"
+    )
+    # Declared nullable like every other optional scalar here rather than `bool` with a False
+    # default: Threads serialises an absent optional as an explicit null, and `_ThreadsModel`
+    # coerces one only on `str` fields, so a plain `bool` would raise and take the whole thread
+    # node down with it (`_collect_threads` drops a node that fails validation).
+    is_post_unavailable: bool | None = Field(
+        default=None, description="True when this post is deleted or private"
     )
     reply_to_author: User | None = Field(
         default=None, description="User this post is directly replying to"
@@ -484,17 +529,58 @@ class Post(MediaContainer):
         return ""
 
     @property
+    def quoted_post(self) -> "Post | None":
+        """The post this one quotes, as the whole payload Threads ships for it.
+
+        Returns:
+            The quoted post, or None when this post quotes nothing.
+        """
+        if self.text_post_app_info and self.text_post_app_info.share_info:
+            return self.text_post_app_info.share_info.quoted_post
+        return None
+
+    @property
     def is_quote_post(self) -> bool:
         """Whether this post embeds another post as a quote.
 
         Returns:
             True when `text_post_app_info.share_info.quoted_post` is present.
         """
-        return bool(
-            self.text_post_app_info
-            and self.text_post_app_info.share_info
-            and self.text_post_app_info.share_info.quoted_post
-        )
+        return self.quoted_post is not None
+
+    @property
+    def is_unavailable(self) -> bool:
+        """Whether Threads reports this post itself as deleted or private.
+
+        This is the ONLY tell for a quoted post that is gone, and it is not the one the field
+        names suggest. Measured live: `share_info.quoted_attachment_post_unavailable` was False
+        in all 465 nodes sampled, INCLUDING all 15 whose quoted post was genuinely gone — it
+        belongs to the mutually exclusive `quoted_attachment_post` family, not to `quoted_post`.
+        The gone state instead arrives as a tombstone inside `quoted_post` itself: every field
+        null bar `id`, `pk` and a `text_post_app_info` holding only this flag. 15 of 96 quote
+        relations were that shape, so it is an ordinary outcome, not an exotic one.
+
+        Returns:
+            True when `text_post_app_info.is_post_unavailable` is set.
+        """
+        return bool(self.text_post_app_info and self.text_post_app_info.is_post_unavailable)
+
+    @property
+    def is_readable(self) -> bool:
+        """Whether this payload holds enough of a post to render at all.
+
+        Both halves earn their keep on the tombstone above: the flag is the platform's own
+        statement, and the content test catches a payload that carries nothing to show whether
+        or not the flag came with it. A tombstone yields no username and no shortcode either, so
+        there is not even a permalink to fall back on.
+
+        Returns:
+            True when the post is not reported unavailable and has an author, code, text or
+            media to render.
+        """
+        if self.is_unavailable:
+            return False
+        return bool(self.author_name or self.code or self.caption_text or self.media_urls)
 
     @property
     def media_urls(self) -> list[str]:
@@ -676,6 +762,8 @@ class ThreadsOutput(BaseModel):
         quote_count: Number of quote posts.
         reshare_count: Total reshare count.
         taken_at: Post creation time.
+        quoted: The post this one quotes, when it quotes a readable one.
+        quoted_unavailable: Whether this post quotes a post Threads reports as gone.
     """
 
     text: str = Field(default="", description="Extracted post text")
@@ -700,6 +788,18 @@ class ThreadsOutput(BaseModel):
     quote_count: int = Field(default=0, description="Number of quote posts")
     reshare_count: int = Field(default=0, description="Total reshare count")
     taken_at: datetime | None = Field(default=None, description="Post creation time")
+    # Its own media stays URL-only: `video_paths` is always empty here because neither caller
+    # downloads a quoted clip (the expansion links it, the reply pipeline uploads from the URL),
+    # which is also what keeps `parse` and `parse_metadata` producing equal trees.
+    quoted: "ThreadsOutput | None" = Field(
+        default=None,
+        description="The post this one quotes, absent when it quotes nothing readable",
+    )
+    quoted_unavailable: bool = Field(
+        default=False,
+        description="Whether this post quotes a post Threads reports as deleted or private",
+        examples=[False],
+    )
 
     def unlink(self) -> None:
         """Deletes downloaded video files for this post."""
@@ -1087,8 +1187,19 @@ class ThreadsDownloader(BaseModel):
             return f"{_CANONICAL_THREADS_ORIGIN}/@{username}/post/{code}"
         return ""
 
-    def _build_output(self, post: Post, url: str, download: bool) -> ThreadsOutput:
-        """Builds a ThreadsOutput object from a Post object."""
+    def _build_output(
+        self, post: Post, url: str, download: bool, include_quoted: bool = True
+    ) -> ThreadsOutput:
+        """Builds a ThreadsOutput object from a Post object.
+
+        `include_quoted` is how the quoted post is bounded to ONE level, and one level is what
+        the platform serialises rather than a limit chosen here. Measured live: a quote-of-a-quote
+        (2 of 96 relations) comes back as a username-only stub — no code, no caption, no counters,
+        no media — and the same post was observed full at depth 0 and stubbed at depth 1 on one
+        page, so the degradation is a serialisation-depth artifact. Threads does supply a
+        `quoted_post_caption` preview string ("<username>: <text>") exactly where that stub
+        appears, if a second level is ever worth rendering.
+        """
         post_code = post.code or "unknown"
         image_urls: list[str] = []
         video_urls: list[str] = []
@@ -1108,6 +1219,18 @@ class ThreadsDownloader(BaseModel):
 
         taken_at = datetime.fromtimestamp(post.taken_at, tz=UTC) if post.taken_at else None
 
+        quoted_post = post.quoted_post if include_quoted else None
+        quoted = (
+            self._build_output(
+                post=quoted_post,
+                url=self._post_url(post=quoted_post),
+                download=False,
+                include_quoted=False,
+            )
+            if quoted_post is not None and quoted_post.is_readable
+            else None
+        )
+
         return ThreadsOutput(
             text=post.caption_text,
             url=url,
@@ -1123,6 +1246,10 @@ class ThreadsDownloader(BaseModel):
             quote_count=post.quote_count,
             reshare_count=post.reshare_count,
             taken_at=taken_at,
+            quoted=quoted,
+            # Only ever set when the post DOES quote something and that something came back
+            # unreadable, so a post quoting nothing is never reported as quoting a dead post.
+            quoted_unavailable=quoted_post is not None and quoted is None,
         )
 
     def _build_conversation(self, *, url: str, download: bool) -> ThreadsConversation:
