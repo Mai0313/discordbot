@@ -7,6 +7,7 @@ import threading
 
 import pytest
 
+from discordbot.utils import downloader as downloader_module
 from discordbot.cogs.video import QUALITY_CHOICES, VideoCogs
 from discordbot.utils.urls import extract_first_url
 from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownloader
@@ -115,6 +116,62 @@ def test_download_resolves_facebook_share_links(
     assert captured_calls == [
         {"url": "https://www.facebook.com/reel/828357636228730", "download": True}
     ]
+
+
+def test_facebook_share_resolution_never_downloads_the_page(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only where the request landed is wanted, so the body is left on the wire.
+
+    Every other test stubs the resolver out, so without this one a request that downloads a
+    full Facebook page to read a single header stays green forever.
+    """
+    requests_made: list[dict[str, object]] = []
+
+    class _Response:
+        """A share link that answered from the post it points at."""
+
+        url = "https://www.facebook.com/watch?v=828357636228730"
+
+        def close(self) -> None:
+            """Releases the connection without the body ever being read."""
+
+    class _SessionStub:
+        """Records how each attempt was made."""
+
+        def __enter__(self) -> Self:
+            """Returns the stub session."""
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_val: BaseException | None,
+            exc_tb: TracebackType | None,
+        ) -> None:
+            """Matches requests.Session's context-manager shape."""
+
+        def head(self, url: str, **kwargs: object) -> _Response:
+            """Records a HEAD attempt."""
+            requests_made.append({"method": "head", "url": url, **kwargs})
+            return _Response()
+
+        def get(self, url: str, **kwargs: object) -> _Response:
+            """Records a GET attempt."""
+            requests_made.append({"method": "get", "url": url, **kwargs})
+            return _Response()
+
+    monkeypatch.setattr(target=downloader_module, name="Session", value=_SessionStub)
+    downloader = VideoDownloader(output_folder=tmp_path.as_posix())
+
+    resolved = downloader._resolve_facebook_share_url(
+        "https://www.facebook.com/share/r/17h4SsC2p1"
+    )
+
+    assert resolved == "https://www.facebook.com/watch?v=828357636228730"
+    assert [request["method"] for request in requests_made] == ["head"]
+    assert all(request["stream"] for request in requests_made)
+    assert all(request["allow_redirects"] for request in requests_made)
 
 
 def _install_metadata_stub(
