@@ -2,6 +2,7 @@
 
 import json
 import shutil
+from typing import cast
 from pathlib import Path
 
 import pytest
@@ -73,10 +74,13 @@ def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
 
     first.image_urls.append("https://cdn.example/image.jpg")
     first.video_paths.append(tmp_path / "clip.mp4")
+    first.quoted = ThreadsOutput(text="quoted")
 
     assert second.image_urls == []
     assert second.video_paths == []
     assert second.reply_to_username == ""
+    assert second.quoted is None
+    assert second.quoted_unavailable is False
 
 
 def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field of a post
@@ -86,19 +90,29 @@ def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field
     reply_to_username: str = "",
     video_url: str = "",
     is_reply: bool | None = None,
-    quotes: str = "",
+    quotes: dict[str, object] | str = "",
     root_post_username: str = "",
+    quoted_attachment_unavailable: bool = False,
 ) -> dict[str, object]:
     """Returns a minimal Threads post payload with parser-relevant fields.
 
     `is_reply`, `quotes` and `root_post_username` are the fields of the one real shape Threads
     serialises without a `reply_to_author`: a reply that is also a quote post.
+
+    `quotes` takes either shape the parser has to read. A bare shortcode is all the
+    reply-admission tests need, since only presence is read there; a dict is a whole nested post
+    payload, which is what Threads actually ships and what gets rendered. `_quoted_payload` builds
+    one from this same function, so a quoted post cannot drift from a top-level one.
     """
     media: dict[str, object] = (
         {"video_versions": [{"url": video_url}]}
         if video_url
         else {"image_versions2": {"candidates": [{"url": f"https://cdn.example/{code}.jpg"}]}}
     )
+    if isinstance(quotes, dict):
+        quoted_post: dict[str, object] | None = quotes
+    else:
+        quoted_post = {"code": quotes} if quotes else None
     return {
         "post": {
             "code": code,
@@ -125,13 +139,65 @@ def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field
                     else None
                 ),
                 "share_info": {
-                    "quoted_post": {"code": quotes} if quotes else None,
+                    "quoted_post": quoted_post,
                     "reposted_post": None,
+                    # Threads ships this alongside every `share_info`, and it is NOT the tell its
+                    # name suggests: measured False even on posts whose quoted post was gone.
+                    "quoted_attachment_post_unavailable": quoted_attachment_unavailable,
+                    "quoted_attachment_post": None,
                 },
             },
             "like_count": 5,
             "taken_at": 1_735_689_600,
         }
+    }
+
+
+def _quoted_payload(  # noqa: PLR0913 -- passes the post builder's knobs straight through
+    code: str,
+    username: str,
+    text: str,
+    video_url: str = "",
+    quotes: dict[str, object] | str = "",
+    root_post_username: str = "",
+) -> dict[str, object]:
+    """Returns the whole-post payload Threads nests under `share_info.quoted_post`.
+
+    Built from `_thread_post_payload` on purpose: measured live, a quoted post is a full post
+    payload of the same shape as any other, so the fixture should not be free to disagree.
+    """
+    payload = _thread_post_payload(
+        code=code,
+        username=username,
+        text=text,
+        video_url=video_url,
+        quotes=quotes,
+        root_post_username=root_post_username,
+    )["post"]
+    # The builder's return is typed `dict[str, object]`, so its values read as `object`; the
+    # "post" entry is always the post dict.
+    return cast("dict[str, object]", payload)
+
+
+def _quoted_tombstone() -> dict[str, object]:
+    """Returns the placeholder Threads sends in place of a quoted post that is gone.
+
+    Measured across 15 of 96 live quote relations: every field null bar `id`, `pk` and a
+    `text_post_app_info` carrying only `is_post_unavailable`. No username and no shortcode, so
+    there is not even a permalink to rebuild.
+    """
+    return {
+        "id": "0_0",
+        "pk": "0",
+        "code": None,
+        "user": None,
+        "caption": None,
+        "image_versions2": None,
+        "carousel_media": None,
+        "video_versions": None,
+        "taken_at": None,
+        "like_count": None,
+        "text_post_app_info": {"is_post_unavailable": True},
     }
 
 
@@ -588,6 +654,154 @@ def test_a_quote_post_reply_is_kept_despite_a_null_reply_to_author(
     ]
 
 
+def _quote_target_html(
+    quoted: dict[str, object] | str, quoted_attachment_unavailable: bool = False
+) -> str:
+    """Builds a page whose TARGET is a quote post, which is what both consumers actually read."""
+    return _sjs_html([
+        _thread_post_payload(
+            code="TARGET",
+            username="target_author",
+            text="One line of commentary",
+            quotes=quoted,
+            quoted_attachment_unavailable=quoted_attachment_unavailable,
+        )
+    ])
+
+
+def test_a_quote_post_carries_the_whole_quoted_post(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The quoted post IS the subject of a quote post, so all of it has to survive the parse."""
+    _stub_html(
+        monkeypatch,
+        _quote_target_html(
+            _quoted_payload(code="QUOTED", username="other_author", text="The original argument")
+        ),
+    )
+
+    target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
+
+    assert target is not None
+    assert target.text == "One line of commentary"
+    assert target.quoted_unavailable is False
+    quoted = target.quoted
+    assert quoted is not None
+    assert quoted.author_name == "other_author"
+    assert quoted.text == "The original argument"
+    assert quoted.image_urls == ["https://cdn.example/QUOTED.jpg"]
+    assert quoted.like_count == 5
+    assert quoted.reply_count == 1
+    # `canonical_url` is null on every quoted post Threads ships, so the permalink is rebuilt.
+    assert quoted.url == "https://www.threads.com/@other_author/post/QUOTED"
+
+
+def test_a_quoted_posts_video_stays_a_url_and_is_never_downloaded(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither consumer attaches a quoted clip, so `parse` must not write one to disk either."""
+    _stub_html(
+        monkeypatch,
+        _quote_target_html(
+            _quoted_payload(
+                code="QUOTED",
+                username="other_author",
+                text="A clip",
+                video_url="https://cdn.example/QUOTED.mp4",
+            )
+        ),
+    )
+
+    with downloader.parse(url=_REPLIES_TARGET_URL) as conversation:
+        quoted = conversation.chain[-1].quoted
+
+        assert quoted is not None
+        assert quoted.video_urls == ["https://cdn.example/QUOTED.mp4"]
+        assert quoted.video_paths == []
+
+
+def test_a_quoted_post_is_read_only_one_level_deep(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A quote of a quote arrives as a username-only stub live, so one level is all there is.
+
+    The parse stops rather than rendering that stub as a post with nothing in it. Because it stops
+    before looking, the inner post is not reported unavailable either — it was never asked for.
+    """
+    _stub_html(
+        monkeypatch,
+        _quote_target_html(
+            _quoted_payload(
+                code="QUOTED",
+                username="other_author",
+                text="The original argument",
+                quotes=_quoted_payload(
+                    code="DEEPER", username="third_author", text="Quoted by the quoted post"
+                ),
+            )
+        ),
+    )
+
+    quoted = downloader.parse_metadata(url=_REPLIES_TARGET_URL).chain[-1].quoted
+
+    assert quoted is not None
+    assert quoted.text == "The original argument"
+    assert quoted.quoted is None
+    assert quoted.quoted_unavailable is False
+
+
+def test_a_quoted_post_tombstone_is_reported_as_unavailable(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gone quoted post arrives as a placeholder, not as a null, so silence would be a lie."""
+    _stub_html(monkeypatch, _quote_target_html(_quoted_tombstone()))
+
+    target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
+
+    assert target is not None
+    assert target.quoted is None
+    assert target.quoted_unavailable is True
+
+
+def test_a_post_quoting_nothing_reports_no_quoted_post(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The unavailable flag must stay off for a post that simply quotes nothing at all."""
+    _stub_html(monkeypatch, _quote_target_html(""))
+
+    target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
+
+    assert target is not None
+    assert target.quoted is None
+    assert target.quoted_unavailable is False
+
+
+def test_the_quoted_attachment_flag_never_hides_a_readable_quoted_post(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`quoted_attachment_post_unavailable` is not the tell it looks like, so it decides nothing.
+
+    Measured live it was False on all 465 sampled nodes, including all 15 whose quoted post was
+    genuinely gone: it belongs to the mutually exclusive `quoted_attachment_post` family. Reading
+    it as "the quoted post is gone" would drop a perfectly readable post, so this pins that a True
+    flag beside a real payload changes nothing.
+    """
+    _stub_html(
+        monkeypatch,
+        _quote_target_html(
+            _quoted_payload(code="QUOTED", username="other_author", text="Still very much here"),
+            quoted_attachment_unavailable=True,
+        ),
+    )
+
+    target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
+
+    assert target is not None
+    assert target.quoted is not None
+    assert target.quoted.text == "Still very much here"
+    assert target.quoted_unavailable is False
+
+
 def test_a_quote_post_rooted_in_another_thread_is_still_dropped(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -978,6 +1192,20 @@ def test_post_tolerates_null_string_fields() -> None:
     assert post.text_post_app_info is not None
     assert post.text_post_app_info.link_preview_attachment is not None
     assert post.text_post_app_info.link_preview_attachment.image_url == ""
+
+
+def test_post_tolerates_a_null_unavailable_flag() -> None:
+    """A raise here would drop the whole thread node, which is why the flag is `bool | None`.
+
+    `_ThreadsModel` coerces a null only on `str` fields, so declaring `is_post_unavailable` as a
+    plain `bool` would turn Threads' habit of serialising an absent optional as an explicit null
+    into a silently discarded post.
+    """
+    post = Post.model_validate(
+        obj={"code": "NULLFLAG", "text_post_app_info": {"is_post_unavailable": None}}
+    )
+    assert post.is_unavailable is False
+    assert post.is_readable is True
 
 
 def test_download_media_does_not_rebuild_a_removed_scratch_dir(
