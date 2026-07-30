@@ -878,6 +878,20 @@ async def _wait_for_inflight() -> None:
         await task
 
 
+async def _wait_for_persisted_writes() -> None:
+    """Drains the pipeline's detached reply.db writes, for any assertion on a row.
+
+    A deferred turn stages its row, and a cleared one retires it, from a
+    fire-and-forget `_spawn_db` task rather than from the in-flight extraction
+    task, so `_wait_for_inflight` returning says nothing about the scope's
+    `memory_job` row. Reading the row before those land sees a transient
+    `pending` state the writer is about to retire on its own `cleared_since`
+    re-check, which is what made the clear tests flaky (#397).
+    """
+    while pipeline._db_tasks:
+        await asyncio.gather(*list(pipeline._db_tasks))
+
+
 async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
@@ -2596,8 +2610,7 @@ async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir
     done_task = asyncio.create_task(asyncio.sleep(0))
     await done_task
     pipeline._finish_memory_update(scope=USER_SCOPE, task=done_task)
-    while pipeline._db_tasks:
-        await asyncio.gather(*list(pipeline._db_tasks))
+    await _wait_for_persisted_writes()
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
     assert job.status == "done"
@@ -3258,10 +3271,17 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
     assert USER_SCOPE not in pipeline._pending_updates
     release.set()
     await _wait_for_inflight()
+    await _wait_for_persisted_writes()
     # Neither the in-flight turn nor the dropped replay may write anything back,
-    # and no row may survive for the restart sweep to resume.
+    # and no row may survive for the restart sweep to resume. Which of the two
+    # legal terminal states the row lands in is genuinely up to the interleaving
+    # of the clear's delete and the deferred turn's staging commit: gone when the
+    # staging landed first, retired to `done` when the delete was too early to
+    # see it. Either way the erased transcript is what must not survive.
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert await pipeline.safe_list_resumable() == []
+    staged = await memory_db.get_job(scope=USER_SCOPE)
+    assert staged is None or staged.transcript is None
 
 
 async def test_a_row_write_racing_the_clear_retires_itself(
