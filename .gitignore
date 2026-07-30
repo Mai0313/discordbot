@@ -215,7 +215,10 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-/data/
+/data/database
+/data/logs
+/data/maplestory
+/data/pokers
 /docs/
 /tmp/
 TODO.md
