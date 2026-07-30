@@ -879,14 +879,15 @@ async def _wait_for_inflight() -> None:
 
 
 async def _wait_for_persisted_writes() -> None:
-    """Drains the pipeline's detached reply.db writes, for any assertion on a row.
+    """Drains the pipeline's detached reply.db writes, for a DEFERRED turn's row.
 
-    A deferred turn stages its row, and a cleared one retires it, from a
-    fire-and-forget `_spawn_db` task rather than from the in-flight extraction
-    task, so `_wait_for_inflight` returning says nothing about the scope's
-    `memory_job` row. Reading the row before those land sees a transient
-    `pending` state the writer is about to retire on its own `cleared_since`
-    re-check, which is what made the clear tests flaky (#397).
+    An ordinary turn transitions its row from the in-flight extraction task
+    itself, so awaiting that task is enough. A deferred one stages its row, and
+    a cleared one retires it, from a fire-and-forget `_spawn_db` task instead, so
+    there `_wait_for_inflight` returning says nothing about the scope's
+    `memory_job` row: reading it too early sees a state the writer is about to
+    move on its own `cleared_since` check, which is what made the clear test
+    flaky (#397).
     """
     while pipeline._db_tasks:
         await asyncio.gather(*list(pipeline._db_tasks))
@@ -3273,15 +3274,34 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
     await _wait_for_inflight()
     await _wait_for_persisted_writes()
     # Neither the in-flight turn nor the dropped replay may write anything back,
-    # and no row may survive for the restart sweep to resume. Which of the two
-    # legal terminal states the row lands in is genuinely up to the interleaving
-    # of the clear's delete and the deferred turn's staging commit: gone when the
-    # staging landed first, retired to `done` when the delete was too early to
-    # see it. Either way the erased transcript is what must not survive.
+    # and the clear takes the row outright, so nothing is left to resume at all.
+    # The unwrapped `get_job` is what makes that second claim mean something:
+    # `safe_list_resumable` degrades a read failure to `[]`, so on its own it can
+    # pass without having looked.
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert await pipeline.safe_list_resumable() == []
-    staged = await memory_db.get_job(scope=USER_SCOPE)
-    assert staged is None or staged.transcript is None
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+
+
+async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_dir: Path) -> None:
+    """A staging write that starts after the clear must not write the row at all.
+
+    The clear stamps the scope before its first await, so a deferred turn's
+    detached staging task always finds the stamp already set. Staging anyway
+    would put the erased conversation back on disk just to retire it again, and
+    leave its removal resting on the best-effort `mark_done`.
+    """
+    mark_cleared(scope=USER_SCOPE)
+    await pipeline._stage_turn(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        transcript="清除前的對話",
+        identity=IDENTITY,
+        token=1,
+        captured_at=time.monotonic() - 1,
+    )
+
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
 
 
 async def test_a_row_write_racing_the_clear_retires_itself(

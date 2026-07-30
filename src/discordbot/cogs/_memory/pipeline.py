@@ -181,10 +181,19 @@ async def _stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's cap
     `clear_scope_memory` deletes the scope's row, but it cannot delete a row that
     has not been committed yet: an INSERT landing just after that DELETE would
     leave the restart sweep a turn carrying the erased conversation. The clear
-    stamps the scope before it deletes, so re-reading the stamp after the write
-    closes the window from the writer's side whichever order the two commits
-    landed in — which is why neither side needs a lock.
+    stamps the scope before it deletes, so reading the stamp on both sides of the
+    write closes the window from the writer's side whichever order the two
+    commits landed in — which is why neither side needs a lock.
+
+    Both checks earn their keep, on opposite orderings. The clear stamps before
+    its first await, so a deferred turn's detached staging task always finds the
+    stamp already set and the check below skips the write entirely; without it
+    the erased conversation is written back to disk purely to be retired again,
+    and its removal then rests on the best-effort `mark_done`. Only a clear that
+    lands while the write is already suspended reaches the re-check afterwards.
     """
+    if cleared_since(scope=scope, started_at=captured_at):
+        return
     await memory_db.upsert_pending(
         scope=scope,
         flavor=flavor_of(scope=scope),
