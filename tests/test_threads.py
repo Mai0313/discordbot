@@ -308,6 +308,45 @@ def test_threads_url_post_code_names_only_a_canonical_post(url: str, expected: s
     assert ThreadsURL(raw_url=url).post_code == expected
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # The `.net` spellings are the ones that used to be normalised TO, each costing a 301
+        # back to `.com` on every fetch (#394).
+        ("https://www.threads.net/@a/post/ABC123", "https://www.threads.com/@a/post/ABC123"),
+        ("https://threads.net/@a/post/ABC123", "https://www.threads.com/@a/post/ABC123"),
+        ("https://threads.com/@a/post/ABC123", "https://www.threads.com/@a/post/ABC123"),
+        # Already canonical: unchanged apart from the query, which the fetch never needs.
+        (
+            "https://www.threads.com/@a/post/ABC123?xmt=AQF0p6Ufiuvt",
+            "https://www.threads.com/@a/post/ABC123",
+        ),
+        # `http` is a redirect of its own, so the scheme collapses too.
+        ("http://www.threads.com/@a/post/ABC123", "https://www.threads.com/@a/post/ABC123"),
+        ("https://www.threads.net/share/DfX81RWN8", "https://www.threads.com/share/DfX81RWN8"),
+    ],
+)
+def test_threads_url_clean_url_aims_at_the_host_that_answers(raw: str, expected: str) -> None:
+    """Threads answers on `www.threads.com` and 301s every other spelling of the host to it.
+
+    Nothing else notices the difference — `requests` follows the redirect and the parse is
+    identical either way — so only pinning the direction keeps a fetch at one round trip.
+    """
+    assert ThreadsURL(raw_url=raw).clean_url == expected
+
+
+def test_threads_url_clean_url_leaves_a_foreign_host_alone() -> None:
+    """A redirect that lands off Threads is fetched where it landed, not re-pointed at Threads.
+
+    `extract_post_data` builds a `ThreadsURL` out of whatever URL the fetch ended on, so the
+    host is not guaranteed to be one this module owns.
+    """
+    assert (
+        ThreadsURL(raw_url="https://example.com/@a/post/ABC123?x=1").clean_url
+        == "https://example.com/@a/post/ABC123"
+    )
+
+
 def _thread_html_with_video(post_code: str) -> str:
     """Builds Threads SJS HTML whose single target post carries a video rendition."""
     return _sjs_html([
@@ -806,7 +845,7 @@ def test_a_share_link_reads_the_post_its_redirect_names(
     conversation = downloader.parse_metadata(url=_SHARE_URL)
 
     assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
-    assert fetched == ["https://www.threads.net/share/DfX81RWN8"]
+    assert fetched == ["https://www.threads.com/share/DfX81RWN8"]
 
 
 def test_a_share_links_retry_asks_for_the_resolved_post(
@@ -822,8 +861,8 @@ def test_a_share_links_retry_asks_for_the_resolved_post(
     conversation = downloader.parse_metadata(url=_SHARE_URL)
 
     assert fetched == [
-        "https://www.threads.net/share/DfX81RWN8",
-        "https://www.threads.net/@target_author/post/TARGET",
+        "https://www.threads.com/share/DfX81RWN8",
+        "https://www.threads.com/@target_author/post/TARGET",
     ]
     assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
 

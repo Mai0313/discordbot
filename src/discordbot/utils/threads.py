@@ -44,6 +44,17 @@ THREADS_URL_RE = re.compile(
 # it answers with; `ThreadsURL.post_code` and `ThreadsDownloader.extract_post_data` have the rest.
 _POST_PATH_RE = re.compile(r"^/@[^/]+/post/([^/]+)/?$")
 
+# Where a Threads fetch has to be aimed, and every spelling of the host that is aimed there.
+# Threads lives on `https://www.threads.com` and 301s everything else to it, so normalising the
+# other way costs a redirect on every single read. Measured logged out with this module's own
+# headers (#394): `www.threads.net`, `threads.net` and bare `threads.com` each answer 301 to the
+# canonical form, `http://` answers 301 to `https://`, and the canonical form answers 200 with
+# the same page payload the `.net` host redirected to. Only these hosts are rewritten, so a
+# redirect that ever lands somewhere else is fetched where it actually landed rather than
+# silently re-pointed at Threads.
+_THREADS_HOSTS = frozenset({"threads.com", "www.threads.com", "threads.net", "www.threads.net"})
+_CANONICAL_THREADS_ORIGIN = "https://www.threads.com"
+
 
 class _ThreadsModel(BaseModel):
     """Base model tolerating an explicit JSON null on plain string fields.
@@ -82,17 +93,19 @@ class ThreadsURL(BaseModel):
     @computed_field
     @cached_property
     def clean_url(self) -> str:
-        """The cleaned and normalised URL.
+        """The cleaned and normalised URL, aimed where Threads actually answers.
+
+        Every accepted spelling of the host collapses onto `https://www.threads.com`, which is
+        the one form the platform serves without a redirect; see `_CANONICAL_THREADS_ORIGIN` for
+        what was measured. A host this module does not own keeps its origin untouched.
 
         Returns:
-            URL with `threads.com` hosts normalised to `www.threads.net` and
-            query parameters removed.
+            The URL on the canonical origin, with query parameters removed.
         """
         parsed = urlparse(self.raw_url)
-        netloc = parsed.netloc
-        if netloc in ("www.threads.com", "threads.com"):
-            netloc = "www.threads.net"
-        return f"{parsed.scheme}://{netloc}{parsed.path}"
+        if parsed.netloc.lower() in _THREADS_HOSTS:
+            return f"{_CANONICAL_THREADS_ORIGIN}{parsed.path}"
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
     @computed_field
     @cached_property
@@ -761,7 +774,7 @@ THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS = 10.0
 
 
 class ThreadsDownloader(BaseModel):
-    """A downloader for extracting text and media from Threads.net posts.
+    """A downloader for extracting text and media from Threads posts.
 
     Attributes:
         output_folder: Directory where downloaded media files are written.
@@ -992,7 +1005,9 @@ class ThreadsDownloader(BaseModel):
         filepath = Path(self.output_folder) / filename
         filepath.parent.mkdir(parents=True, exist_ok=True)
         try:
-            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.threads.net/"}
+            # The CDN serves these signed URLs with any Referer or none (measured), so this
+            # only has to stop naming a host the fetch no longer visits.
+            headers = {"User-Agent": "Mozilla/5.0", "Referer": f"{_CANONICAL_THREADS_ORIGIN}/"}
             response = requests.get(url=url, headers=headers, stream=True, timeout=15)
             response.raise_for_status()
 
@@ -1069,7 +1084,7 @@ class ThreadsDownloader(BaseModel):
         username = post.author_name
         code = post.code
         if username and code:
-            return f"https://www.threads.com/@{username}/post/{code}"
+            return f"{_CANONICAL_THREADS_ORIGIN}/@{username}/post/{code}"
         return ""
 
     def _build_output(self, post: Post, url: str, download: bool) -> ThreadsOutput:
