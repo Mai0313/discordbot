@@ -21,6 +21,7 @@ from pydantic import (
     field_validator,
 )
 import requests
+from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
 # cog (which expands it into embeds) and gen_reply (which self-parses it into answer
@@ -289,10 +290,14 @@ class ShareInfo(_ThreadsModel):
     `quoted_post` is a WHOLE post payload, not a reference: measured live across 96 quote
     relations it carries `user`, `caption` / `text_fragments`, `image_versions2` /
     `carousel_media` / `video_versions`, `like_count`, `taken_at` and its own
-    `text_post_app_info`, and it arrives complete whenever the quoting post is the page target
-    — which is the only case either caller reads. So it is typed as `Post`, which makes
-    `Post -> TextPostAppInfo -> ShareInfo -> Post` a real cycle; hence the forward reference
-    plus the `model_rebuild()` below `Post`.
+    `text_post_app_info`, and it arrives at full depth whenever the quoting post is the page target
+    (it can still be the tombstone `Post.is_unavailable` describes) — which is the only case
+    either caller reads. So it is typed as `Post`, which makes
+    `Post -> TextPostAppInfo -> ShareInfo -> Post` a real cycle, hence the forward reference. No
+    `model_rebuild()` is needed for it: measured in a cold process, `Post` is already
+    `__pydantic_complete__` at import because pydantic resolves the reference as a self-reference,
+    and `ShareInfo`'s own standalone schema heals on first use. What the cycle DOES cost is blast
+    radius, which `_isolate_quoted_post` below contains.
 
     Two sibling fields are deliberately NOT modelled, each because a guess would be worse than
     the omission. `quoted_attachment_post` is a separate, mutually exclusive carrier (3 of 404
@@ -310,6 +315,34 @@ class ShareInfo(_ThreadsModel):
     quoted_post: "Post | None" = Field(
         default=None, description="The post this one quotes, absent when it quotes nothing"
     )
+
+    @field_validator("quoted_post", mode="wrap")
+    @classmethod
+    def _isolate_quoted_post(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
+    ) -> object | None:
+        """Drops an unparsable quoted post instead of failing the post that quotes it.
+
+        Typing this field as a whole `Post` pulls every model in this module into the validation
+        of the node that also holds the TARGET, and `_collect_threads` discards a thread node on
+        any `ValidationError` — so without this, one unmodelled shape anywhere inside a quoted
+        payload costs the linked post itself. Measured on the way in: a `quoted_post` carrying
+        `image_versions2: {"candidates": null}`, `text_fragments: {"fragments": null}`,
+        `carousel_media: [null]` or a non-numeric `like_count` each took the target down with it,
+        and it did not even have to be the TARGET's own quoted post — an ancestor's was enough.
+
+        This is the same isolation `_collect_threads` gives a reply branch, one level lower: the
+        quote is the most disposable thing in the payload, and losing only it degrades to exactly
+        the pre-quote-post behaviour.
+        """
+        try:
+            return handler(value)
+        except ValidationError:
+            logfire.warn(
+                "A quoted Threads post no longer matches the parser schema; dropping just it",
+                _exc_info=True,
+            )
+            return None
 
 
 class TextPostAppInfo(_ThreadsModel):
@@ -564,12 +597,6 @@ class Post(MediaContainer):
         if not urls and app_info and app_info.link_preview_attachment:
             urls.append(app_info.link_preview_attachment.image_url)
         return [u for u in dict.fromkeys(urls) if u]
-
-
-# `ShareInfo.quoted_post` is annotated `Post`, which does not exist yet where ShareInfo is
-# declared, so its schema stays unbuilt until here. Without this the first `Post.model_validate`
-# raises `PydanticUserError: ShareInfo is not fully defined`.
-ShareInfo.model_rebuild()
 
 
 class ThreadItem(_ThreadsModel):

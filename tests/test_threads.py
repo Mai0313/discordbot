@@ -776,30 +776,130 @@ def test_a_post_quoting_nothing_reports_no_quoted_post(
     assert target.quoted_unavailable is False
 
 
-def test_the_quoted_attachment_flag_never_hides_a_readable_quoted_post(
-    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("flag", [False, True])
+def test_the_quoted_attachment_flag_decides_nothing_either_way(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch, flag: bool
 ) -> None:
     """`quoted_attachment_post_unavailable` is not the tell it looks like, so it decides nothing.
 
-    Measured live it was False on all 465 sampled nodes, including all 15 whose quoted post was
-    genuinely gone: it belongs to the mutually exclusive `quoted_attachment_post` family. Reading
-    it as "the quoted post is gone" would drop a perfectly readable post, so this pins that a True
-    flag beside a real payload changes nothing.
+    Measured live it was False on all 465 sampled nodes, INCLUDING all 15 whose quoted post was
+    genuinely gone: it belongs to the mutually exclusive `quoted_attachment_post` family. Both
+    directions have to hold and both are reachable — a live quoted post must survive a True flag,
+    and a tombstone must still be caught while the flag says False, which is the shape that
+    actually occurs. Gating on the flag breaks the second half.
     """
-    _stub_html(
-        monkeypatch,
-        _quote_target_html(
-            _quoted_payload(code="QUOTED", username="other_author", text="Still very much here"),
-            quoted_attachment_unavailable=True,
-        ),
-    )
-
+    readable = _quoted_payload(code="QUOTED", username="other_author", text="Still very much here")
+    _stub_html(monkeypatch, _quote_target_html(readable, quoted_attachment_unavailable=flag))
     target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
-
     assert target is not None
     assert target.quoted is not None
     assert target.quoted.text == "Still very much here"
     assert target.quoted_unavailable is False
+
+    _stub_html(
+        monkeypatch, _quote_target_html(_quoted_tombstone(), quoted_attachment_unavailable=flag)
+    )
+    gone = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
+    assert gone is not None
+    assert gone.quoted is None
+    assert gone.quoted_unavailable is True
+
+
+@pytest.mark.parametrize(
+    ("label", "payload", "readable"),
+    [
+        (
+            # The platform's own statement wins over content, which a content-only test misses.
+            "flagged but populated",
+            {
+                "code": "Q",
+                "caption": {"text": "x"},
+                "text_post_app_info": {"is_post_unavailable": True},
+            },
+            False,
+        ),
+        (
+            # The tombstone is not the only empty shape; one arriving without the flag would
+            # otherwise render as a quoted post holding nothing at all.
+            "unflagged but empty",
+            {"text_post_app_info": {"is_post_unavailable": None}},
+            False,
+        ),
+        ("populated and unflagged", {"code": "Q", "caption": {"text": "x"}}, True),
+    ],
+)
+def test_is_readable_needs_both_the_flag_clear_and_some_content(
+    label: str, payload: dict[str, object], readable: bool
+) -> None:
+    """Each half of `is_readable` is load-bearing on its own, so each is pinned on its own.
+
+    The tombstone fixture trips both at once, so it cannot tell which half is doing the work.
+    """
+    del label
+
+    assert Post.model_validate(obj=payload).is_readable is readable
+
+
+@pytest.mark.parametrize(
+    ("label", "broken"),
+    [
+        ("null image candidates", {"image_versions2": {"candidates": None}}),
+        ("null text fragments", {"text_post_app_info": {"text_fragments": {"fragments": None}}}),
+        ("a null carousel item", {"carousel_media": [None]}),
+        ("a non-numeric like count", {"like_count": "1.2K"}),
+    ],
+)
+def test_an_unparsable_quoted_post_costs_only_itself(
+    downloader: ThreadsDownloader,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    broken: dict[str, object],
+) -> None:
+    """A shape the quoted payload alone gets wrong must not take the linked post down with it.
+
+    Typing `quoted_post` as a whole `Post` pulls every model here into the validation of the node
+    that also holds the target, and `_collect_threads` drops a node on any ValidationError — so
+    before `_isolate_quoted_post` each of these payloads lost the target entirely.
+    """
+    del label
+    quoted = _quoted_payload(code="QUOTED", username="other_author", text="quoted body")
+    _stub_html(monkeypatch, _quote_target_html({**quoted, **broken}))
+
+    target = downloader.parse_metadata(url=_REPLIES_TARGET_URL).target
+
+    assert target is not None
+    assert target.text == "One line of commentary"
+    # The quote is the disposable half: losing only it degrades to the pre-quote-post behaviour.
+    assert target.quoted is None
+
+
+def test_an_unparsable_quoted_post_on_an_ancestor_still_keeps_the_target(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The blast radius was not even limited to the target's own quote; an ancestor's sufficed."""
+    broken = {
+        **_quoted_payload(code="QUOTED", username="other_author", text="q"),
+        "image_versions2": {"candidates": None},
+    }
+    _stub_html(
+        monkeypatch,
+        _sjs_html([
+            _thread_post_payload(
+                code="ROOT", username="root_author", text="Root post", quotes=broken
+            ),
+            _thread_post_payload(
+                code="TARGET",
+                username="target_author",
+                text="Target post",
+                reply_to_username="root_author",
+            ),
+        ]),
+    )
+
+    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert [post.text for post in conversation.chain] == ["Root post", "Target post"]
+    assert conversation.chain[0].quoted is None
 
 
 def test_a_quote_post_rooted_in_another_thread_is_still_dropped(
