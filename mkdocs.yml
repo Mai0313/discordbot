@@ -52,10 +52,15 @@ nav:
                       - anthropic_file_api: Reference/discordbot/cogs/_gen_reply/attachment/anthropic_file_api.md
                       - base: Reference/discordbot/cogs/_gen_reply/attachment/base.md
                       - gemini_file_api: Reference/discordbot/cogs/_gen_reply/attachment/gemini_file_api.md
+                      - grok_file_api: Reference/discordbot/cogs/_gen_reply/attachment/grok_file_api.md
                       - inline: Reference/discordbot/cogs/_gen_reply/attachment/inline.md
                       - loaders: Reference/discordbot/cogs/_gen_reply/attachment/loaders.md
                       - openai_file_api: Reference/discordbot/cogs/_gen_reply/attachment/openai_file_api.md
                       - select: Reference/discordbot/cogs/_gen_reply/attachment/select.md
+                  - link_sources:
+                      - bilibili: Reference/discordbot/cogs/_gen_reply/link_sources/bilibili.md
+                      - douyin: Reference/discordbot/cogs/_gen_reply/link_sources/douyin.md
+                      - threads: Reference/discordbot/cogs/_gen_reply/link_sources/threads.md
                   - context: Reference/discordbot/cogs/_gen_reply/context.md
                   - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
                   - files_api: Reference/discordbot/cogs/_gen_reply/files_api.md
@@ -79,17 +84,17 @@ nav:
               - _memory:
                   - constants: Reference/discordbot/cogs/_memory/constants.md
                   - database: Reference/discordbot/cogs/_memory/database.md
+                  - deltas: Reference/discordbot/cogs/_memory/deltas.md
                   - extraction: Reference/discordbot/cogs/_memory/extraction.md
+                  - facts: Reference/discordbot/cogs/_memory/facts.md
+                  - git_history: Reference/discordbot/cogs/_memory/git_history.md
                   - pipeline: Reference/discordbot/cogs/_memory/pipeline.md
                   - prompts: Reference/discordbot/cogs/_memory/prompts.md
                   - server_prompts: Reference/discordbot/cogs/_memory/server_prompts.md
                   - store: Reference/discordbot/cogs/_memory/store.md
                   - views: Reference/discordbot/cogs/_memory/views.md
               - _parse_douyin:
-                  - builder: Reference/discordbot/cogs/_parse_douyin/builder.md
                   - fetch: Reference/discordbot/cogs/_parse_douyin/fetch.md
-              - _parse_threads:
-                  - builder: Reference/discordbot/cogs/_parse_threads/builder.md
               - _research:
                   - agent: Reference/discordbot/cogs/_research/agent.md
                   - database: Reference/discordbot/cogs/_research/database.md
@@ -128,6 +133,7 @@ nav:
               - fishing: Reference/discordbot/typings/fishing.md
               - games: Reference/discordbot/typings/games.md
               - llm: Reference/discordbot/typings/llm.md
+              - memory: Reference/discordbot/typings/memory.md
               - models: Reference/discordbot/typings/models.md
               - stock: Reference/discordbot/typings/stock.md
               - video: Reference/discordbot/typings/video.md
@@ -135,6 +141,7 @@ nav:
               - amount_parsing: Reference/discordbot/utils/amount_parsing.md
               - asyncio_locks: Reference/discordbot/utils/asyncio_locks.md
               - avatars: Reference/discordbot/utils/avatars.md
+              - bilibili: Reference/discordbot/utils/bilibili.md
               - currency: Reference/discordbot/utils/currency.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - douyin: Reference/discordbot/utils/douyin.md
@@ -162,6 +169,7 @@ nav:
       - batch_dev: Scripts/batch_dev.md
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
+      - migrate_memories: Scripts/migrate_memories.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
       - regen_memories: Scripts/regen_memories.md
