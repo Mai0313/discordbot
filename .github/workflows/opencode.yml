@@ -46,7 +46,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          model: opencode/gemini-3.1-pro
+          model: opencode/gemini-3.6-flash
           agent: build
+          share: false
           variant: high
           mentions: /opencode,/oc
