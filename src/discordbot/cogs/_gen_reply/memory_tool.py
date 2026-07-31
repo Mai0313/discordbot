@@ -4,13 +4,14 @@ Long-term memory is no longer injected into every reply. Instead the slow model
 decides whether and whose memory to read by calling `get_user_memory`. A per-request
 allowlist (authors and mentioned users of the conversation, minus the bot) is the
 permission boundary: the model is shown the callable users, and `resolve_user_memories`
-drops any requested id outside the allowlist before reading a file. A second, per-bullet
-boundary is the source filter (`filter_memory_for_context`): every main.md bullet
-carries a `[src:...]` tag naming where it was learned, and bullets locked to another
-guild or to the owner's DMs are stripped before injection, so a secret told in one
-server can never surface in another. The always-read tone note (`render_tone_block`)
-is the deliberate exception — persona-independent delivery preferences are
-cross-server safe by construction.
+drops any requested id outside the allowlist before reading a file. A second boundary
+decides how much of an allowed user's memory this conversation may see, and it is a
+path join rather than a filter: memory is stored one fact per file under the
+compartment that may read it, so `compartments_for_reading` names the directories and
+everything else is simply never opened. A secret told in one server cannot surface in
+another because it was never in a directory this reply reads. The always-read tone note
+(`render_tone_block`) is the deliberate exception — persona-independent delivery
+preferences are cross-server safe by construction, so they live outside the tree.
 """
 
 import re
@@ -23,7 +24,13 @@ from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-from discordbot.cogs._memory.store import user_scope, read_main_memory
+from discordbot.cogs._memory.store import (
+    GLOBAL_COMPARTMENT,
+    user_scope,
+    guild_compartment,
+    list_compartments,
+    read_memory_document,
+)
 from discordbot.cogs._gen_reply.input import sanitize_identity
 
 # Returned for an allowed id that has no stored memory file, so the model still
@@ -58,12 +65,12 @@ GET_USER_MEMORY_TOOL: FunctionToolParam = {
 
 
 class MemoryReadContext(BaseModel):
-    """Where a reply is happening, for source-scoping stored memory before injection.
+    """Where a reply is happening, for choosing which memory compartments to read.
 
-    Built once per reply by `memory_read_context` and threaded into every path
-    that reads a user's main.md (`resolve_user_memories`, the participant
-    fallback), so `filter_memory_for_context` can drop source-locked bullets
-    that do not belong in this conversation.
+    Built once per reply by `memory_read_context` and threaded into every path that
+    reads a user's stored memory (`resolve_user_memories`, the participant fallback),
+    so `compartments_for_reading` can name the directories this conversation is allowed
+    to open.
     """
 
     guild_id: int | None = Field(..., description="Current guild id; None outside guilds.")
@@ -71,7 +78,7 @@ class MemoryReadContext(BaseModel):
         ...,
         description=(
             "The human user in a 1:1 DM; None in guilds and group DMs, so a group DM "
-            "fail-closes to globally-shared bullets only."
+            "reads the cross-server compartment only."
         ),
     )
 
@@ -281,143 +288,39 @@ def parse_user_id_list(*, arguments: str) -> list[str]:
     return [str(item) for item in raw]
 
 
-# The trailing per-bullet source tag consolidation writes (`[src:*]`, `[src:<guild id>]`,
-# `[src:987...,dm]`, `[src:dm]`, `[src:legacy]`). Anchored to the end of the bullet so a
-# literal "[src:" inside user content cannot satisfy the visibility parse.
-_SRC_TAG_RE = re.compile(r"\[src:(?P<values>[0-9a-z*,]+)\]\s*$")
-# Any src-tag-shaped token, for stripping tags from surviving lines so the answer model
-# never sees provenance and therefore cannot echo it. Deliberately looser than the
-# visibility parse above: a malformed tag (kept only via the owner-DM short-circuit or
-# profile prose) is still noise the model could echo, so it is scrubbed too.
-_SRC_TAG_STRIP_RE = re.compile(r" ?\[src:[^\]\n]*\]")
+def compartments_for_reading(owner_id: int, context: MemoryReadContext) -> list[str]:
+    """Returns the compartments of `owner_id`'s memory this conversation may read.
 
-# The one untagged main.md section; its content is global-by-contract (the write-side
-# prompt and the migration keep everything private out of it), so the filter passes it
-# through — but only once the file itself is in the tagged format (see the profile gate).
-_PROFILE_HEADER = "## 使用者輪廓"
+    The whole cross-server boundary is these three lines. Reading in a guild joins the
+    shared compartment with that guild's own; reading a third party's memory in a DM, or
+    anyone's in a group DM, gets only the shared one; and the owner reads everything in
+    their own 1:1 DM, since their own information cannot leak to themselves.
 
-
-def filter_memory_for_context(  # noqa: C901 -- one cohesive line-walk; splitting the branches would obscure the fate-sharing rules
-    *, memory: str, owner_id: int, context: MemoryReadContext
-) -> str:
-    """Drops source-locked bullets that do not belong in the current conversation.
-
-    The deterministic enforcement half of cross-server memory privacy (the write side
-    tags every bullet with its source): a locked bullet survives only when its tag
-    names the current guild or is `[src:*]`. In the owner's own 1:1 DM everything
-    survives (their own information cannot leak to themselves). A bullet with no tag
-    or a malformed tag is legacy content of unknown source and is dropped (fail-closed
-    against LLM tag drift), and any indented line follows the fate of the column-0 line
-    above it — a nested sub-bullet must never outlive its filtered parent. The
-    `使用者輪廓` global-by-contract passthrough applies only when the file carries at
-    least one well-formed tag: a file with none predates the tagged format (e.g. its
-    migration failed), so its profile has no safety contract and fails closed with the
-    rest. Surviving lines are stripped of their tags so the model never sees — and can
-    never echo — where a fact was learned.
+    The old per-bullet filter had the same four cases, but had to be trusted to apply
+    them to text a model had tagged. Here an unreadable compartment is a directory that
+    was never opened, so there is nothing to get wrong and nothing to fail closed on.
     """
+    scope = user_scope(user_id=owner_id)
     if context.dm_partner_id == owner_id:
-        return _SRC_TAG_STRIP_RE.sub("", memory).strip()
-    lines = memory.splitlines()
-    profile_contract_holds = any(_SRC_TAG_RE.search(line) for line in lines)
-    kept: list[str] = []
-    in_profile = False
-    keep_continuation = False
-    for line in lines:
-        stripped = line.strip()
-        if stripped.startswith("## "):
-            in_profile = stripped == _PROFILE_HEADER
-            keep_continuation = False
-            kept.append(line)
-            continue
-        if not stripped:
-            kept.append(line)
-            continue
-        if line[0].isspace():
-            # Any indented line — prose continuation or nested sub-bullet — belongs to
-            # the column-0 line above it and shares its fate, so a sub-bullet can never
-            # outlive a filtered parent or be filtered away from a visible one.
-            if keep_continuation:
-                kept.append(line)
-            continue
-        if stripped.startswith(("* ", "- ")) and (not in_profile or _SRC_TAG_RE.search(stripped)):
-            # A tagged bullet is source-filtered even inside the profile (a tag there is
-            # format drift, and honoring it is strictly safer than the prose passthrough).
-            keep_continuation = _bullet_is_visible(bullet=stripped, context=context)
-            if keep_continuation:
-                kept.append(line)
-            continue
-        if stripped == "v1":
-            keep_continuation = False
-            kept.append(line)
-            continue
-        if in_profile:
-            # Profile prose (and untagged profile bullets — the migration deliberately
-            # leaves those untagged) is global-by-contract, but the contract only exists
-            # for files already in the tagged format.
-            keep_continuation = profile_contract_holds
-            if profile_contract_holds:
-                kept.append(line)
-            continue
-        # Column-0 prose outside the profile is untagged content of unknown source:
-        # fail-closed, like an untagged bullet — including anything indented under it.
-        keep_continuation = False
-    filtered = _SRC_TAG_STRIP_RE.sub("", _drop_empty_sections(lines=kept)).strip()
-    # A file whose every section was filtered away leaves only the bare `v1` header;
-    # that is "no visible memory", not content.
-    return "" if filtered == "v1" else filtered
-
-
-def _bullet_is_visible(bullet: str, context: MemoryReadContext) -> bool:
-    """Whether one tagged bullet may surface in the current conversation."""
-    if len(_SRC_TAG_STRIP_RE.findall(bullet)) != 1:
-        # Zero tags is legacy content of unknown source; MORE than one is tag drift
-        # (e.g. `祕密 [src:123] [src:*]`, where trusting the trailing tag would
-        # fail open on the widest one). Either way the line's true scope is
-        # ambiguous, so it fails closed.
-        return False
-    match = _SRC_TAG_RE.search(bullet)
-    if match is None:
-        # The one tag-shaped token is malformed: same unknown-source treatment.
-        # `dm` and `legacy` values never match below either — they surface only via
-        # the owner-DM short-circuit in `filter_memory_for_context`.
-        return False
-    values = match.group("values").split(",")
-    if "*" in values:
-        return True
-    return context.guild_id is not None and str(context.guild_id) in values
-
-
-def _drop_empty_sections(lines: list[str]) -> str:
-    """Removes `## ` headers whose section lost every content line to the filter."""
-    kept: list[str] = []
-    for line in lines:
-        is_header = line.strip().startswith("## ")
-        if is_header:
-            _rstrip_headerless_tail(kept=kept)
-        kept.append(line)
-    _rstrip_headerless_tail(kept=kept)
-    return "\n".join(kept)
-
-
-def _rstrip_headerless_tail(kept: list[str]) -> None:
-    """Pops a trailing header (plus blanks) that never received a content line."""
-    while kept and not kept[-1].strip():
-        kept.pop()
-    if kept and kept[-1].strip().startswith("## "):
-        kept.pop()
-        _rstrip_headerless_tail(kept=kept)
+        # `list_compartments` already leads with `global` when it exists, and the reader
+        # concatenates whatever it is handed, so prepending it again renders every
+        # cross-server fact twice and charges it twice against the size cap.
+        return list_compartments(scope=scope) or [GLOBAL_COMPARTMENT]
+    if context.guild_id is not None:
+        return [GLOBAL_COMPARTMENT, guild_compartment(guild_id=context.guild_id)]
+    return [GLOBAL_COMPARTMENT]
 
 
 def resolve_user_memories(
     *, user_id_list: list[str], allowed: dict[int, str], context: MemoryReadContext
 ) -> list[UserMemory]:
-    """Resolves requested ids to stored memory, enforcing the allowlist and source scope.
+    """Resolves requested ids to stored memory, enforcing the allowlist and the compartments.
 
     Ids outside `allowed` are dropped (the permission boundary), non-numeric ids
-    are skipped, and duplicates collapse to one entry. Each surviving read is
-    source-filtered for the current conversation; an allowed id with no stored
-    file — or whose memory is entirely locked to other sources — returns an
-    explicit no-memory signal rather than being dropped.
+    are skipped, and duplicates collapse to one entry. Each surviving read opens only
+    the compartments this conversation may see; an allowed id with no stored memory —
+    or none in the compartments open here — returns an explicit no-memory signal rather
+    than being dropped.
     """
     results: list[UserMemory] = []
     seen: set[int] = set()
@@ -430,9 +333,11 @@ def resolve_user_memories(
         if user_id in seen or user_id not in allowed:
             continue
         seen.add(user_id)
-        memory = read_main_memory(scope=user_scope(user_id=user_id))
-        if memory:
-            memory = filter_memory_for_context(memory=memory, owner_id=user_id, context=context)
+        memory = read_memory_document(
+            scope=user_scope(user_id=user_id),
+            compartments=compartments_for_reading(owner_id=user_id, context=context),
+            flavor="user",
+        )
         results.append(
             UserMemory(
                 username=allowed[user_id], user_id=str(user_id), memory=memory or NO_STORED_MEMORY

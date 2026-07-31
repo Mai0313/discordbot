@@ -126,6 +126,14 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - Preserve the reaction-based progress UX for AI replies and parsers. The bot should not send intermediate "thinking" messages.
 - Video delivery keeps progress text on the deferred original message, then edits that same message with the final file and source URL.
 
+## Long-Term Memory
+
+- Stored memory lives under `data/memories/<scope>/<compartment>/<id>.md`, one file per fact. The compartment directory *is* the privacy boundary: `global/` is readable anywhere, `g/<guild_id>/` only in that guild, `dm/` only in the owner's own direct messages. Reading is a path join, so never add a read-time content filter back on top of it.
+- The model authors a fact's summary, section, durability and body. Everything else in the file header — the id, the compartment, the owner, the dates, the evidence keys — is stamped by code and never shown to it. Keep it that way: the id is also the filename, so letting conversation content reach it would put path traversal one prompt injection away.
+- Consolidation emits deltas against one compartment at a time. Reject a whole batch only for a shape failure or a mass deletion; anything a deterministic check can decide must drop that single delta instead, or a scope's memory freezes permanently on a model output that never changes.
+- `data/memories` keeps its own git history, and the bot never creates it. To enable it on a deployment, run `git -c init.defaultBranch=main init` inside that directory once and commit a baseline. Note that `/memory clear` removes the files but not the commits that already hold them.
+- Migrating an existing store is `uv run python -m scripts.migrate_memories` (dry run) then `--apply`, with the bot stopped and the store committed and tagged first. Rebuild before deleting anything: the rebuild reads `raw.md` as well as `detail.md`.
+
 ## Economy And Games
 
 - `data/database/economy.db`, `data/database/games.db`, `data/database/stock.db`, and `data/database/messages.db` are separate SQLite databases. Keep `economy.db` user-scoped tables keyed by `user_id` and `name`; bot-wide money state such as jackpot pools and the casino ledger also lives in `economy.db` so settlement stays atomic.

@@ -51,11 +51,21 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     memories_dir = tmp_path / "memories"
     monkeypatch.setattr("discordbot.cogs._memory.store._MEMORY_DIR", memories_dir)
     monkeypatch.setattr("discordbot.cogs._memory.store._cleared_at", {})
+    # The render cache is keyed on a per-scope write counter, and both live for the
+    # process; without the reset a scope id reused across tests would serve the previous
+    # test's document from a tmp_path that no longer exists.
+    monkeypatch.setattr("discordbot.cogs._memory.store._write_generation", {})
+    monkeypatch.setattr("discordbot.cogs._memory.store._render_cache", {})
+    # No test may ever run git against the real store, so the committer stays off and
+    # its queue stays unbound; `memory_git.start()` is exercised on its own.
+    monkeypatch.setattr("discordbot.cogs._memory.git_history.memory_git.enabled", False)
+    monkeypatch.setattr("discordbot.cogs._memory.git_history.memory_git._queue", None)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_tasks", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._pending_updates", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_loop", None)
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_consolidation", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_regeneration", {})
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline._consecutive_rejections", {})
     monkeypatch.setattr("discordbot.cogs._memory.pipeline._db_tasks", set())
     # Point the memory_job engine at a throwaway reply.db so no test ever writes the
     # real file: every schedule_memory_update now persists, and those writes are

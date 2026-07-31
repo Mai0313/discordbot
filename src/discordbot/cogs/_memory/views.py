@@ -10,6 +10,7 @@ from nextcord.ui import View, Button
 from nextcord.ext import commands
 
 from discordbot.typings.colors import DISCORD_RED, NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
+from discordbot.cogs._memory.store import DM_COMPARTMENT, GLOBAL_COMPARTMENT
 from discordbot.cogs._memory.pipeline import clear_scope_memory
 
 MEMORY_VIEW_TIMEOUT_SECONDS = 180
@@ -17,6 +18,23 @@ MEMORY_VIEW_TIMEOUT_SECONDS = 180
 MEMORY_EMBED_COLOR = NEUTRAL_BLUE
 
 MEMORY_CLEAR_TITLE = "🧠 清除記憶"
+
+
+def compartment_label(compartment: str, bot: commands.Bot) -> str:
+    """Names a memory compartment for the owner's own `/memory show`.
+
+    The guild name is resolved when the bot still shares that server, and falls back to
+    the id when it does not — a user can have memory from a server the bot has since
+    left, and hiding that would misrepresent what is stored.
+    """
+    if compartment == GLOBAL_COMPARTMENT:
+        return "全部聊天都看得到"
+    if compartment == DM_COMPARTMENT:
+        return "只有我們的私訊看得到"
+    guild_id = compartment.removeprefix("g/")
+    guild = bot.get_guild(int(guild_id)) if guild_id.isdigit() else None
+    return f"只有 {guild.name} 看得到" if guild is not None else f"只有伺服器 {guild_id} 看得到"
+
 
 # Embed descriptions cap at 4,096 chars; pages stay below that with headroom
 # so the page indicator and footer never push the embed near Discord's

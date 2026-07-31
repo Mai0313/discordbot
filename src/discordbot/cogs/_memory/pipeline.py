@@ -17,43 +17,64 @@ from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.cogs._memory import database as memory_db
+from discordbot.typings.memory import MemoryOwner
+from discordbot.cogs._memory.facts import MemoryFlavor, parse_identity, sections_for_flavor
 from discordbot.cogs._memory.store import (
+    DM_COMPARTMENT,
+    GLOBAL_COMPARTMENT,
     clear_raw,
     read_tone,
     clear_tone,
+    read_facts,
     scope_lock,
     write_tone,
+    delete_fact,
     clear_memory,
     mark_cleared,
     append_detail,
     cleared_since,
     raw_file_bytes,
+    scope_owner_id,
     append_raw_entry,
     read_detail_tail,
-    read_main_memory,
     read_raw_entries,
     count_raw_entries,
     detail_file_bytes,
-    write_main_memory,
+    list_compartments,
+    read_memory_document,
+)
+from discordbot.cogs._memory.deltas import (
+    DeltaOutcome,
+    today_utc,
+    apply_deltas,
+    sweep_stale_facts,
+    partition_raw_entries,
+    render_existing_facts,
+    tone_evidence_from_raw,
 )
 from discordbot.utils.asyncio_locks import LoopLocalRegistry, LoopLocalSemaphore
 from discordbot.cogs._memory.constants import (
+    COMPACTION_TRIGGER_CHARS,
     MEMORY_GLOBAL_CONCURRENCY,
+    MEMORY_INJECTION_MAX_CHARS,
+    MEMORY_INJECTION_WARN_CHARS,
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
-    MAIN_COMPACTION_TARGET_CHARS,
-    MAIN_COMPACTION_TRIGGER_CHARS,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
+    MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
     MEMORY_REGENERATION_COOLDOWN_SECONDS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.cogs._memory.extraction import (
     MemoryExtractorAI,
+    ConsolidatedMemory,
+    ConsolidationRequest,
     parse_subject_source,
     transcript_from_messages,
     render_memory_observations,
     filter_duplicate_observations,
 )
+from discordbot.cogs._memory.git_history import memory_git
 
 # Outcome of a from-scratch main-file rebuild. Aliased so the background
 # scheduler's task dict shares the exact type (asyncio.Task is invariant in its
@@ -119,6 +140,18 @@ _inflight_loop: asyncio.AbstractEventLoop | None = None
 # not need a loop-change reset. Tests clear it through the conftest fixture.
 _last_consolidation: dict[str, float] = {}
 
+# Consecutive refused consolidation batches per scope. A refusal keeps the raw batch
+# for retry, which is right for a transient LLM failure and wrong for a mass-delete the
+# model reproduces verbatim: that retries every cooldown forever while the scope's memory
+# silently stops updating. Past the threshold the log escalates from warn to error, since
+# CONTRIBUTING puts "an unexpected failure that lost a deliverable" at error.
+# The exact header a tone note must lead with; the tier is injected on every reply,
+# so anything else is a rewrite that did not land and must not be written.
+_TONE_HEADER = "## 語氣偏好"
+
+_consecutive_rejections: dict[tuple[str, str], int] = {}
+_MAX_QUIET_REJECTIONS = 3
+
 # Per-scope regeneration attempt times, separate from the consolidation cooldown
 # so a manual `/memory regenerate` never starves the automatic background
 # consolidation or vice versa. Recorded at attempt time so failures cool down too.
@@ -126,7 +159,7 @@ _last_regeneration: dict[str, float] = {}
 
 # Per-scope in-flight regeneration tasks so a manual rebuild runs in the
 # background without blocking the command, and a second request while one is
-# still running cannot double-schedule the whole-file rewrite. Kept separate
+# still running cannot double-schedule the rebuild. Kept separate
 # from `_inflight_tasks` because regeneration is a distinct, user-triggered job.
 _regeneration_tasks: LoopLocalRegistry[str, asyncio.Task[_RegenerationResult]] = (
     LoopLocalRegistry()
@@ -256,6 +289,10 @@ async def clear_scope_memory(scope: str) -> bool:
     _pending_updates.pop(scope, None)
     removed_job = await memory_db.delete_job(scope=scope)
     removed_files = clear_memory(scope=scope)
+    # Commits the deletion so the working tree stops carrying it, which is all this can
+    # do: the commits before it still hold the content, and no reachable-object pruning
+    # changes that. Local history outliving a clear is a recorded decision on #408.
+    memory_git.enqueue(scope=scope, reason="clear")
     # A user-driven, irreversible erase of their own data: the one trace it
     # leaves anywhere, since nothing about it is visible in the files afterwards.
     logfire.info(
@@ -579,88 +616,338 @@ def _should_consolidate(scope: str) -> bool:
 async def _consolidate_locked(
     scope: str, started_at: float, extractor: MemoryExtractorAI, identity: str
 ) -> None:
-    """Consolidates accumulated raw entries into the main memory file (and tone note)."""
-    existing_main = read_main_memory(scope=scope)
-    compact = len(existing_main) > MAIN_COMPACTION_TRIGGER_CHARS
-    result = await extractor.consolidate(
-        existing_main=existing_main,
-        existing_tone=read_tone(scope=scope),
-        raw_entries=read_raw_entries(scope=scope),
-        recent_detail=read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
-        today=datetime.now(UTC).date().isoformat(),
-        compact=compact,
+    """Fans one raw batch out over the scope's compartments, applying each one's deltas.
+
+    Ordering is load-bearing. `global` runs first, so every later compartment can be
+    handed its facts as read-only reference and neither restates them nor silently
+    contradicts them — the one thing the old whole-file rewrite got for free by seeing
+    everything at once. Each call sees only the evidence routed to the compartment it
+    writes, which is what makes the boundary structural; the tone note, the one tier that
+    is genuinely cross-compartment, is written afterwards by its own call.
+
+    The whole fan-out sits inside the caller's scope lock and semaphore permit and is
+    bounded by one timeout, so the worst-case lock hold stays what it is today instead
+    of multiplying by the number of compartments. Compartments run sequentially for the
+    same reason: proxy load per scope stays exactly as it was.
+
+    The raw batch is retired only when every compartment applied. A retry re-runs the
+    ones that already landed, which is safe because a delta is an upsert keyed by an id
+    the model echoes back and, failing that, by the evidence keys the fact carries.
+    """
+    flavor = flavor_of(scope=scope)
+    owner = parse_identity(identity=identity, fallback_owner_id=scope_owner_id(scope=scope))
+    raw_entries = read_raw_entries(scope=scope)
+    buckets = partition_raw_entries(raw_text=raw_entries, flavor=flavor)
+    detail_tail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
+    # The detail window is up to MEMORY_DETAIL_CONTEXT_MAX_CHARS and used to be sliced
+    # rather than parsed; splitting it into observation blocks is a real stall on a
+    # heavy scope, and this runs on the same loop as the reply path. Pure function, no
+    # shared state, so a thread costs nothing — and the await is safe here because every
+    # write still sits immediately after its own `cleared_since` guard downstream.
+    detail_buckets = await asyncio.to_thread(
+        partition_raw_entries, raw_text=detail_tail, flavor=flavor
     )
-    if result is None:
-        # LLM path failed; keep the raw entries so the next update retries.
+    today = datetime.now(UTC).date().isoformat()
+    compartments = _compartments_to_run(scope=scope, buckets=buckets)
+    global_reference = ""
+    try:
+        async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
+            for compartment in compartments:
+                if compartment != GLOBAL_COMPARTMENT and not global_reference:
+                    # Read from disk rather than from this run: when the batch carried no
+                    # cross-server evidence there was no global call to take it from, and
+                    # a guild compartment still must not restate what is already shared.
+                    global_reference = render_existing_facts(
+                        facts=read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)
+                    )
+                if cleared_since(scope=scope, started_at=started_at):
+                    return
+                outcome = await _consolidate_compartment(
+                    scope=scope,
+                    compartment=compartment,
+                    flavor=flavor,
+                    owner=owner,
+                    started_at=started_at,
+                    extractor=extractor,
+                    request_parts=_CompartmentInput(
+                        raw_entries=buckets.get(compartment, ""),
+                        recent_detail=detail_buckets.get(compartment, ""),
+                        global_reference=global_reference,
+                        today=today,
+                    ),
+                )
+                if outcome is None or not outcome.applied:
+                    # Keep the whole batch so the next run retries it; a partially
+                    # applied fan-out is fine to replay, an unread bucket is not.
+                    return
+                if compartment == GLOBAL_COMPARTMENT:
+                    global_reference = render_existing_facts(
+                        facts=read_facts(scope=scope, compartment=compartment)
+                    )
+    except TimeoutError:
         logfire.warn(
-            "Memory consolidation LLM call failed; keeping raw batch",
+            "Memory consolidation fan-out timed out; keeping raw batch",
             scope=scope,
-            raw_entries=count_raw_entries(scope=scope),
+            compartments=len(compartments),
         )
         return
     if cleared_since(scope=scope, started_at=started_at):
         return
-    is_well_formed = result.memory_markdown.startswith("v1\n")
-    if result.memory_markdown and not is_well_formed:
-        # Any non-empty output that is not a well-formed `v1` rewrite is
-        # malformed (missing the exact header line, near-misses like `v10...` /
-        # `v1: ...`): keep the raw batch for retry regardless of `changed`,
-        # instead of discarding the accumulated signal.
-        logfire.warn(
-            "Memory consolidation rejected: malformed main rewrite; keeping raw batch",
-            scope=scope,
-            rewritten_chars=len(result.memory_markdown),
-            existing_chars=len(existing_main),
-            near_miss_header=result.memory_markdown.startswith("v1"),
-        )
-        return
-    if result.tone_markdown and not result.tone_markdown.startswith("## 語氣偏好"):
-        # A malformed tone note rejects the batch like a malformed main rewrite: the
-        # rewritten main may have moved tone bullets out on the promise they land in
-        # the note, so consuming the batch here would silently lose the preference
-        # from every injected tier. Keeping raw retries the whole consolidation.
-        logfire.warn(
-            "Memory consolidation rejected: malformed tone note; keeping raw batch",
-            scope=scope,
-            tone_chars=len(result.tone_markdown),
-            main_well_formed=is_well_formed,
-            main_chars=len(result.memory_markdown),
-        )
-        return
-    # The first rewrite that brings an untagged (pre-migration) file into the tagged
-    # format legitimately sheds a lot of text (tone bullets move to tone.md, private
-    # profile prose turns into tagged bullets), so it is judged by the deeper
-    # compaction floor; once tags exist the normal halving guard resumes.
-    first_tagged_rewrite = "[src:" not in existing_main and "[src:" in result.memory_markdown
-    if is_well_formed and _rewrite_shrank_too_much(
-        existing_main=existing_main,
-        rewritten=result.memory_markdown,
-        compact=compact or first_tagged_rewrite,
-    ):
-        # A drastic surprise shrink is almost always a lossy LLM failure, not
-        # a merge; refusing it keeps raw for retry and protects main.bak.md
-        # (one generation deep) from being overwritten by the bad rewrite.
-        logfire.warn(
-            "Memory consolidation shrank too much; keeping previous memory",
-            scope=scope,
-            existing_chars=len(existing_main),
-            rewritten_chars=len(result.memory_markdown),
-            compact=compact,
-        )
-        return
-    if is_well_formed:
-        # Accept any well-formed `v1` rewrite, even one the model flagged
-        # `changed=false`, so a single contradictory boolean cannot silently
-        # discard the whole raw batch.
-        write_main_memory(scope=scope, content=result.memory_markdown, identity=identity)
-    _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
-    # Reached only by a well-formed write or a genuine empty no-op: the batch is
-    # consumed either way, since an unchanged verdict on the same raw entries
-    # would just re-burn a consolidation call on every following extraction.
-    # The consumed batch's content is preserved in the cold-tier detail file;
-    # the failure paths above keep raw for retry and therefore must not retire it.
-    append_detail(scope=scope, text=read_raw_entries(scope=scope))
+    await _update_tone_note(
+        scope=scope,
+        flavor=flavor,
+        started_at=started_at,
+        extractor=extractor,
+        raw_entries=raw_entries,
+        today=today,
+    )
+    # Every compartment ran, so age the ones this batch did not touch too: a guild the
+    # user has stopped visiting otherwise keeps its `recent` facts forever and hands them
+    # back on their next visit, which is the aging the whole-file rewrite used to do for
+    # free. Synchronous and after the clear guard, like every other write here.
+    for compartment in list_compartments(scope=scope):
+        sweep_stale_facts(scope=scope, compartment=compartment, today=today_utc())
+    _report_injection_size(scope=scope, flavor=flavor)
+    # The consumed batch's content is preserved in the cold-tier detail file; every
+    # failure path above returns before this, so it can never retire an unread bucket.
+    append_detail(scope=scope, text=raw_entries)
     clear_raw(scope=scope)
+    # Best-effort and deliberately fire-and-forget: the worker takes this same scope
+    # lock, so it commits once the caller releases it and never sees a half-written batch.
+    memory_git.enqueue(scope=scope, reason="update")
+
+
+class _CompartmentInput(BaseModel):
+    """The per-compartment half of a consolidation request, before the store is read.
+
+    Split out so `_consolidate_locked` can build the parts that differ per compartment
+    without `_consolidate_compartment` growing a dozen positional arguments.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    raw_entries: str = Field(..., description="This compartment's share of the raw batch.")
+    recent_detail: str = Field(..., description="Cold evidence filtered to this compartment.")
+    global_reference: str = Field(..., description="Global facts already stored, or empty.")
+    today: str = Field(..., description="ISO date for dating and aging.")
+
+
+async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identity plus the shared stamp and the LLM handle
+    scope: str,
+    compartment: str,
+    flavor: MemoryFlavor,
+    owner: MemoryOwner,
+    started_at: float,
+    extractor: MemoryExtractorAI,
+    request_parts: _CompartmentInput,
+) -> DeltaOutcome | None:
+    """Runs and applies one compartment's consolidation; None means the LLM path failed.
+
+    This call only ever sees the evidence routed to the compartment it is writing, which
+    is what makes "a guild-locked observation cannot reach `global/`" structural rather
+    than a rule the prompt asks the model to follow. The tone note, which is genuinely
+    cross-compartment, is therefore NOT written here — see `_update_tone_note`.
+    """
+    existing = read_facts(scope=scope, compartment=compartment)
+    rendered = render_existing_facts(facts=existing)
+    is_global = compartment == GLOBAL_COMPARTMENT
+    result = await extractor.consolidate(
+        request=ConsolidationRequest(
+            compartment_note=_compartment_note(compartment=compartment, flavor=flavor),
+            allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
+            existing_facts=rendered,
+            existing_tone="",
+            raw_entries=request_parts.raw_entries,
+            recent_detail=request_parts.recent_detail,
+            tone_evidence="",
+            global_reference="" if is_global else request_parts.global_reference,
+            today=request_parts.today,
+            compact=len(rendered) > COMPACTION_TRIGGER_CHARS,
+            emit_tone=False,
+        )
+    )
+    if result is None:
+        logfire.warn(
+            "Memory consolidation LLM call failed; keeping raw batch",
+            scope=scope,
+            compartment=compartment,
+            raw_entries=count_raw_entries(scope=scope),
+        )
+        return None
+    if cleared_since(scope=scope, started_at=started_at):
+        # Checked immediately before the first write, with no await in between, so an
+        # in-flight clear can never be overtaken by this batch.
+        return None
+    outcome = apply_deltas(
+        scope=scope,
+        compartment=compartment,
+        flavor=flavor,
+        deltas=result.deltas,
+        owner=owner,
+        allow_mass_delete=False,
+    )
+    if not outcome.applied:
+        _record_rejection(
+            scope=scope, compartment=compartment, outcome=outcome, stored=len(existing)
+        )
+        return outcome
+    _consecutive_rejections.pop((scope, compartment), None)
+    swept = sweep_stale_facts(scope=scope, compartment=compartment, today=today_utc())
+    logfire.debug(
+        "Memory compartment consolidated",
+        scope=scope,
+        compartment=compartment,
+        created=outcome.created,
+        updated=outcome.updated,
+        deleted=outcome.deleted,
+        dropped=outcome.dropped,
+        swept=swept,
+    )
+    return outcome
+
+
+def _record_rejection(scope: str, compartment: str, outcome: DeltaOutcome, stored: int) -> None:
+    """Logs a refused batch, escalating once refusals stop looking transient.
+
+    A refusal is only a retry if the next run would decide differently. An LLM failure
+    would; a mass deletion the model re-derives from the same unchanged inputs would not,
+    and that scope then burns a consolidation call every cooldown while its memory quietly
+    stops moving. The count is what tells an operator which of the two they are looking at.
+    """
+    # Keyed on the compartment as well: a scope with several compartments would
+    # otherwise have one compartment's success reset another's stuck counter, and the
+    # escalation this exists for would never fire.
+    count = _consecutive_rejections.get((scope, compartment), 0) + 1
+    _consecutive_rejections[(scope, compartment)] = count
+    log = logfire.error if count >= _MAX_QUIET_REJECTIONS else logfire.warn
+    log(
+        "Memory consolidation batch refused; keeping raw batch",
+        scope=scope,
+        compartment=compartment,
+        reason=outcome.rejected,
+        existing_facts=stored,
+        consecutive=count,
+    )
+
+
+async def _update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the batch, its stamp, and the LLM handle
+    scope: str,
+    flavor: MemoryFlavor,
+    started_at: float,
+    extractor: MemoryExtractorAI,
+    raw_entries: str,
+    today: str,
+) -> None:
+    """Rewrites the per-user tone note from the WHOLE batch, in its own call.
+
+    Tone is the one tier that is cross-server safe by construction, so it is the one
+    thing that must not be partitioned: nearly half of all observations are
+    `source_only`, and a tone note fed only the `global` bucket would simply stop
+    updating for those conversations.
+
+    That is exactly why it gets its own call rather than riding on the `global`
+    compartment's. A compartment call sees only the evidence routed to the compartment
+    it writes, which is what makes "a guild-locked observation cannot reach `global/`"
+    structural; handing that same call the unpartitioned tone evidence would have
+    demoted the boundary back to a rule the prompt asks the model to follow. Here the
+    deltas are discarded by CODE — this call cannot write a fact anywhere, whatever it
+    returns — so the unpartitioned input is safe by the same structural argument.
+
+    Best-effort throughout: the note is a small always-read tier and the next
+    consolidation repairs a bad write, so a failure never touches the raw batch.
+    """
+    if flavor != "user":
+        return
+    tone_evidence = tone_evidence_from_raw(raw_text=raw_entries)
+    if not tone_evidence:
+        # No tone signal in this batch is the normal case, and an empty output must
+        # never delete the note; only the evidence-complete rebuild may do that.
+        return
+    result = await extractor.consolidate(
+        request=ConsolidationRequest(
+            compartment_note="the user's persona-independent tone note, read in every conversation",
+            allowed_sections=(),
+            existing_facts="",
+            existing_tone=read_tone(scope=scope),
+            raw_entries="",
+            recent_detail="",
+            tone_evidence=tone_evidence,
+            global_reference="",
+            today=today,
+            compact=False,
+            emit_tone=True,
+        )
+    )
+    if result is None or cleared_since(scope=scope, started_at=started_at):
+        return
+    _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
+
+
+def _compartments_to_run(scope: str, buckets: dict[str, str]) -> list[str]:
+    """Returns the compartments this run touches, `global` first.
+
+    Only compartments the batch actually routed evidence to: a call with an empty bucket
+    has nothing to consolidate. `global` leads because every later compartment is handed
+    its facts as read-only reference, so it must be up to date before they run.
+    """
+    ordered = [GLOBAL_COMPARTMENT] if buckets.get(GLOBAL_COMPARTMENT) else []
+    ordered.extend(
+        compartment for compartment in sorted(buckets) if compartment != GLOBAL_COMPARTMENT
+    )
+    return ordered
+
+
+def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:
+    """Describes, in plain English, who may read the compartment being written.
+
+    Handed to the consolidation prompt so the model's own sense of what belongs here
+    matches the directory it is writing into. It is guidance, not enforcement: the
+    partition above already decided what evidence this call can see.
+    """
+    if flavor == "server":
+        return "this server's own community memory; every member of this server can read it"
+    if compartment == GLOBAL_COMPARTMENT:
+        return "cross-server safe memory; readable in every server and DM this user takes part in"
+    if compartment == DM_COMPARTMENT:
+        return "private memory; readable only in this user's own direct messages with the bot"
+    return f"memory readable only inside Discord server {compartment.removeprefix('g/')}"
+
+
+def _report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
+    """Logs when a scope's injectable document approaches or passes the hard cap.
+
+    A post-write backstop, not a budget: the read path already stops rendering at the
+    cap, so this exists to tell the operator that the prompt-side sizing stopped
+    working. Nothing is deleted here, which is what keeps the cap from fighting the
+    next consolidation over facts it would immediately write back.
+    """
+    compartments = list_compartments(scope=scope)
+    if not compartments:
+        return
+    # The owner's own DM reads every compartment at once, so it is the only combination
+    # that can overflow while each individual reading context stays inside the cap.
+    widest = len(
+        read_memory_document(
+            scope=scope,
+            compartments=compartments,
+            flavor=flavor,
+            max_chars=MEMORY_INJECTION_MAX_CHARS * 4,
+        )
+    )
+    if widest > MEMORY_INJECTION_MAX_CHARS:
+        logfire.error(
+            "Memory exceeds the injectable size cap; older facts are being dropped on read",
+            scope=scope,
+            chars=widest,
+            cap=MEMORY_INJECTION_MAX_CHARS,
+        )
+    elif widest > MEMORY_INJECTION_WARN_CHARS:
+        logfire.warn(
+            "Memory is approaching the injectable size cap",
+            scope=scope,
+            chars=widest,
+            cap=MEMORY_INJECTION_MAX_CHARS,
+        )
 
 
 def _write_tone_result(scope: str, tone_markdown: str) -> None:
@@ -675,9 +962,14 @@ def _write_tone_result(scope: str, tone_markdown: str) -> None:
     """
     if flavor_of(scope=scope) != "user":
         return
-    if not tone_markdown.startswith("## 語氣偏好"):
+    if not _tone_is_well_formed(tone_markdown=tone_markdown):
         return
     write_tone(scope=scope, content=tone_markdown)
+
+
+def _tone_is_well_formed(tone_markdown: str) -> bool:
+    """Whether a tone note carries the exact header the injected tier is contracted to."""
+    return tone_markdown.startswith(_TONE_HEADER)
 
 
 def regeneration_has_evidence(scope: str) -> bool:
@@ -705,7 +997,7 @@ def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, ident
 
     Returns False when a rebuild is already in flight for this scope (so the
     caller can report "still rebuilding" instead of double-scheduling the
-    whole-file rewrite); True when a fresh background task was started.
+    rebuild); True when a fresh background task was started.
     """
     running = _regeneration_tasks.get(key=scope)
     if running is not None and not running.done():
@@ -745,15 +1037,17 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[_RegenerationResu
 async def regenerate_main_memory(
     scope: str, extractor: MemoryExtractorAI, identity: str
 ) -> _RegenerationResult:
-    """Rebuilds the main memory file from cold-tier evidence alone.
+    """Rebuilds every compartment from cold-tier evidence alone.
 
-    The existing main file is deliberately NOT fed to the model: the rebuild
-    distills the detail tail window plus any unconsumed raw entries from
-    scratch, e.g. to redo an unsatisfying consolidation with another model.
-    The compaction block is always applied so a window-sized evidence corpus
-    summarizes into the output-token budget instead of failing `incomplete`.
-    On any failure the current main file and the raw batch stay untouched;
-    `write_main_memory` keeps the previous generation in `main.bak.md`.
+    The existing facts are deliberately NOT fed to the model: the rebuild distills the
+    detail tail window plus any unconsumed raw entries from scratch, e.g. to redo an
+    unsatisfying consolidation with another model. Facts the rebuild did not re-emit are
+    then deleted, which is the one path allowed to lose most of a compartment at once —
+    it is also the path the offline migration runs, and refusing it would leave the old
+    tagged-era content behind forever.
+
+    On an LLM failure the compartment is left exactly as it was, and the raw batch is
+    retired only when every compartment rebuilt.
     """
     started_at = time.monotonic()
     async with scope_lock(scope=scope), _memory_semaphore():
@@ -762,6 +1056,8 @@ async def regenerate_main_memory(
             # cooldown check before the first one stamps the attempt; the
             # re-check under the lock keeps the per-scope limit on the rewrite.
             return "cooldown"
+        flavor = flavor_of(scope=scope)
+        owner = parse_identity(identity=identity, fallback_owner_id=scope_owner_id(scope=scope))
         raw_entries = read_raw_entries(scope=scope)
         recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
         # Detail entries are retired raw entries verbatim with the same
@@ -773,59 +1069,165 @@ async def regenerate_main_memory(
         # Recorded at attempt time, not success time, so repeated LLM failures
         # are rate-limited by the same cooldown.
         _last_regeneration[scope] = time.monotonic()
-        result = await extractor.consolidate(
-            existing_main="",
-            existing_tone="",
-            raw_entries=evidence,
-            recent_detail="",
-            today=datetime.now(UTC).date().isoformat(),
-            compact=True,
-        )
-        if result is None:
-            # The LLM path logs the cause but not the scope, and the command already
-            # told the user a rebuild was scheduled, so this is its only attribution.
-            logfire.warn("Memory regeneration LLM call failed; memory left untouched", scope=scope)
-            return "failed"
-        if not result.memory_markdown.startswith("v1\n"):
-            # A from-scratch rebuild has no prior size to compare, so the `v1`
-            # header check is the only guard; the user was already told a
-            # rebuild was scheduled, so this is their only trace of the failure.
+        buckets = partition_raw_entries(raw_text=evidence, flavor=flavor)
+        today = datetime.now(UTC).date().isoformat()
+        # Every compartment that has evidence, plus every one that still has files, so a
+        # compartment whose evidence is gone is emptied rather than left stale.
+        compartments = _compartments_to_rebuild(scope=scope, buckets=buckets)
+        try:
+            # Bounded as a whole like the incremental fan-out, so a rebuild of a scope
+            # with several compartments cannot hold the scope lock for the sum of every
+            # per-call timeout (`constants.py` states the nesting as the invariant).
+            async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
+                for compartment in compartments:
+                    result = await extractor.consolidate(
+                        request=ConsolidationRequest(
+                            compartment_note=_compartment_note(
+                                compartment=compartment, flavor=flavor
+                            ),
+                            allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
+                            existing_facts="",
+                            existing_tone="",
+                            raw_entries=buckets.get(compartment, ""),
+                            recent_detail="",
+                            tone_evidence="",
+                            global_reference="",
+                            today=today,
+                            compact=True,
+                            emit_tone=False,
+                        )
+                    )
+                    if result is None:
+                        # The LLM path logs the cause but not the scope, and the command
+                        # already told the user a rebuild was scheduled, so this is its
+                        # only attribution.
+                        logfire.warn(
+                            "Memory regeneration LLM call failed; memory left untouched",
+                            scope=scope,
+                            compartment=compartment,
+                        )
+                        return "failed"
+                    if cleared_since(scope=scope, started_at=started_at):
+                        return "failed"
+                    _replace_compartment(
+                        scope=scope,
+                        compartment=compartment,
+                        flavor=flavor,
+                        owner=owner,
+                        result=result,
+                    )
+                await _rebuild_tone_note(
+                    scope=scope,
+                    flavor=flavor,
+                    started_at=started_at,
+                    extractor=extractor,
+                    evidence=evidence,
+                    today=today,
+                )
+        except TimeoutError:
             logfire.warn(
-                "Memory regeneration produced a malformed rewrite",
-                scope=scope,
-                rewritten_chars=len(result.memory_markdown),
-                near_miss_header=result.memory_markdown.startswith("v1"),
+                "Memory regeneration timed out", scope=scope, compartments=len(compartments)
             )
             return "failed"
-        if cleared_since(scope=scope, started_at=started_at):
-            return "failed"
-        write_main_memory(scope=scope, content=result.memory_markdown, identity=identity)
-        if not result.tone_markdown:
-            # Unlike an incremental consolidation (whose empty tone output only means
-            # "no tone signal in this batch"), this rebuild saw the WHOLE evidence
-            # corpus: no tone signal anywhere means a surviving note is stale and
-            # would keep injecting a preference the evidence no longer supports.
-            clear_tone(scope=scope)
-        else:
-            _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
+        _report_injection_size(scope=scope, flavor=flavor)
         if raw_entries:
             # The rebuild consumed the raw batch; retire it to the cold tier
             # exactly like a consolidation so it cannot be re-ingested.
             append_detail(scope=scope, text=raw_entries)
             clear_raw(scope=scope)
+        memory_git.enqueue(scope=scope, reason="rebuild")
         return "regenerated"
 
 
-def _rewrite_shrank_too_much(existing_main: str, rewritten: str, compact: bool) -> bool:
-    """Whether a well-formed rewrite lost so much text it reads as a lossy failure."""
-    if compact:
-        # Compaction legitimately shrinks toward the target; collapsing below
-        # a tenth of the input reads as dropped content rather than
-        # summarization. The target-based floor keeps a main file that grew
-        # far past ten times the target compactable instead of stuck retrying.
-        floor = min(len(existing_main) // 10, MAIN_COMPACTION_TARGET_CHARS // 3)
-        return len(rewritten) < floor
-    # Consolidation merges and dedupes, so mild shrinkage is normal; losing
-    # over half of a non-trivial file is not. Small files are exempt because
-    # legitimate restructuring dominates at that scale.
-    return len(existing_main) > 2_000 and len(rewritten) < len(existing_main) // 2
+async def _rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the corpus, its stamp, and the LLM handle
+    scope: str,
+    flavor: MemoryFlavor,
+    started_at: float,
+    extractor: MemoryExtractorAI,
+    evidence: str,
+    today: str,
+) -> None:
+    """Rebuilds the tone note from the whole evidence corpus, in its own call.
+
+    Unlike an incremental consolidation — whose empty tone output only means "no tone
+    signal in this batch" — this pass saw everything, so no signal anywhere means a
+    surviving note is stale and would keep injecting a preference the evidence no longer
+    supports. This is the only path allowed to delete the note.
+    """
+    if flavor != "user":
+        return
+    tone_evidence = tone_evidence_from_raw(raw_text=evidence)
+    result = (
+        None
+        if not tone_evidence
+        else await extractor.consolidate(
+            request=ConsolidationRequest(
+                compartment_note=(
+                    "the user's persona-independent tone note, read in every conversation"
+                ),
+                allowed_sections=(),
+                existing_facts="",
+                existing_tone="",
+                raw_entries="",
+                recent_detail="",
+                tone_evidence=tone_evidence,
+                global_reference="",
+                today=today,
+                compact=False,
+                emit_tone=True,
+            )
+        )
+    )
+    if cleared_since(scope=scope, started_at=started_at):
+        return
+    if result is None or not result.tone_markdown:
+        clear_tone(scope=scope)
+        return
+    _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
+
+
+def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
+    """Returns every compartment a rebuild touches, `global` first.
+
+    Compartments that still hold files but have no surviving evidence are included so
+    the rebuild empties them; leaving them alone would keep pre-rebuild facts visible
+    alongside the new ones with no evidence behind them.
+    """
+    ordered = [GLOBAL_COMPARTMENT]
+    ordered.extend(
+        compartment
+        for compartment in sorted({*buckets, *list_compartments(scope=scope)})
+        if compartment != GLOBAL_COMPARTMENT
+    )
+    return ordered
+
+
+def _replace_compartment(
+    scope: str,
+    compartment: str,
+    flavor: MemoryFlavor,
+    owner: MemoryOwner,
+    result: ConsolidatedMemory,
+) -> None:
+    """Replaces a compartment's contents with a from-scratch rebuild's facts.
+
+    Applies the batch first and drops whatever it did not re-emit afterwards, so a fact
+    the rebuild kept is never momentarily absent. What survives is decided by the ids the
+    batch actually WROTE, not by what is left on disk: a rebuild says "this fact is gone"
+    by simply not mentioning it, so comparing against the post-apply state would only
+    re-delete what the batch already deleted and leave every stale fact standing.
+
+    The mass-delete guard is off here for the reason it was skipped by the old whole-file
+    rebuild: replacing the entire set is what this path is for.
+    """
+    before = {fact.fact_id for fact in read_facts(scope=scope, compartment=compartment)}
+    outcome = apply_deltas(
+        scope=scope,
+        compartment=compartment,
+        flavor=flavor,
+        deltas=result.deltas,
+        owner=owner,
+        allow_mass_delete=True,
+    )
+    for fact_id in sorted(before - set(outcome.written)):
+        delete_fact(scope=scope, compartment=compartment, fact_id=fact_id)
