@@ -34,13 +34,15 @@ from discordbot.typings.models import (
 from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
+from discordbot.cogs._memory.facts import render_owner_identity
 from discordbot.cogs._memory.store import (
+    GLOBAL_COMPARTMENT,
     read_tone,
+    read_owner,
     user_scope,
     iter_scopes,
     server_scope,
-    read_main_memory,
-    read_main_identity,
+    read_memory_document,
 )
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
@@ -87,6 +89,7 @@ from discordbot.cogs._memory.extraction import (
     subject_source_line,
     target_centered_memory_messages,
 )
+from discordbot.cogs._memory.git_history import memory_git
 from discordbot.cogs._gen_reply.files_api import upload_to_files_api
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
@@ -1586,7 +1589,11 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         if not memory_enabled or message.guild is None:
             return ""
-        return read_main_memory(scope=server_scope(server_id=message.guild.id))
+        return read_memory_document(
+            scope=server_scope(server_id=message.guild.id),
+            compartments=[GLOBAL_COMPARTMENT],
+            flavor="server",
+        )
 
     def _schedule_server_memory_update(
         self, *, message: Message, message_list: list[EasyInputMessageParam], full_reply: str
@@ -1998,6 +2005,10 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         if self._resume_started:
             return
+        # Bound to this loop, so it starts here rather than at import: an unstarted
+        # service drops every commit request instead of binding its queue to whichever
+        # loop happened to enqueue first.
+        memory_git.start()
         self._resume_started = True
         self._spawn(self._resume_memory())
 
@@ -2041,7 +2052,9 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             self._spawn(
                 consolidate_if_needed(
-                    scope=scope, extractor=extractor, identity=read_main_identity(scope=scope)
+                    scope=scope,
+                    extractor=extractor,
+                    identity=render_owner_identity(owner=read_owner(scope=scope)),
                 )
             )
             swept += 1

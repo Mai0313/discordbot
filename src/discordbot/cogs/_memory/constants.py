@@ -36,26 +36,51 @@ MEMORY_REGENERATION_COOLDOWN_SECONDS = 600.0
 # latency.
 MEMORY_GLOBAL_CONCURRENCY = 24
 
-# The main file has no hard size clamp. Past the trigger, consolidation runs a
-# deep-summarization (compaction) pass aiming at roughly the target size. The
-# bound exists because consolidation rewrites the whole file in one response, so
-# the ceiling is the answer model's own output-token limit (~64k tokens on
-# Gemini Pro), not the 1M-token input window. The memory calls no longer set a
-# lower explicit cap, so the trigger sits well inside that ceiling. Compaction
-# summarizes low-signal and stale content; it never drops durable memory
+# Past the trigger, consolidation is told to run a deep-summarization (compaction)
+# pass over the compartment it is rewriting, aiming at roughly the target size.
+# Compaction merges low-signal and stale facts; it never drops durable memory
 # outright, and fine-grained evidence survives in the detail file regardless.
-MAIN_COMPACTION_TRIGGER_CHARS = 30_000
-MAIN_COMPACTION_TARGET_CHARS = 15_000
+COMPACTION_TRIGGER_CHARS = 30_000
+COMPACTION_TARGET_CHARS = 15_000
 
-# Staleness window for mutable (dated `[~YYYY-MM]`) bullets in main.md's stable
-# sections, measured RELATIVE to the newest mutable activity in the file, not to
-# `today`. Consolidation drops a mutable bullet whose last-confirmed month is
-# more than this many days behind the freshest mutable bullet, so a busy channel
-# pushes stale traits out while a quiet stretch with no newer mutable signal ages
-# nothing and forgets nothing. Permanent identity facts and enforced standing
-# directives live in the undated `## 永久事實` section and are exempt. Read only
-# by the consolidation prompt (PHASE2_PROMPT / SERVER_PHASE2_PROMPT).
+# Staleness window for mutable (`durability="stable"`) facts, measured RELATIVE to
+# the newest mutable activity IN THE SAME COMPARTMENT, not to `today`. The sweep
+# drops a mutable fact whose `last_confirmed` is more than this many days behind
+# the freshest one, so a busy guild pushes its own stale traits out while a quiet
+# compartment with no newer mutable signal ages nothing and forgets nothing.
+# Per-compartment anchoring matters: anchoring on the whole scope would let one
+# active guild age out the memory of a guild the user simply visits less often.
+# Permanent facts and member-alias rows are exempt.
 STABLE_FRESHNESS_WINDOW_DAYS = 45
+
+# Lifetime of a `recent` fact, measured against `today`. Was a prompt rule dated by
+# the model; now a code sweep, because `last_confirmed` is code-stamped and a
+# deterministic date beats a rule the rewrite had to re-apply correctly every pass.
+RECENT_CONTEXT_TTL_DAYS = 30
+
+# Ceiling on one rendered memory document (the merged compartments injected for one
+# reply). Measured against the live store, today's documents run to a median of
+# ~800 bytes and a maximum of 25 KB, so this is a backstop that fires on nobody: it
+# exists so a runaway scope degrades to its newest facts plus an explicit notice
+# instead of silently bloating every request. The warn threshold is the operator's
+# signal that the prompt-side budget stopped working. Rendering stops at the cap;
+# nothing is deleted, so the cap can never fight the next consolidation over
+# content it would immediately write back.
+MEMORY_INJECTION_MAX_CHARS = 30_000
+MEMORY_INJECTION_WARN_CHARS = 24_000
+
+# Bound on the rendered-document cache. One live entry per (scope, reading context)
+# is the working set, so this is only here to stop a long-lived process holding keys
+# for scopes it will never serve again; the whole cache is dropped when it is hit.
+RENDER_CACHE_MAX_ENTRIES = 512
+
+# Net fact loss a single consolidation batch may cause before it is refused, as
+# `deletes - creates > max(this, existing // 2)`. Net rather than raw deletes
+# because merging four near-duplicates into one is consolidation's primary job and
+# the median scope holds only a handful of facts, so a raw-delete cap would reject
+# the common case. The regeneration path is exempt: rebuilding from evidence
+# legitimately replaces the whole set.
+MAX_NET_FACT_DELETIONS_FLOOR = 3
 
 # Store-level backstop for the per-user tone note (tone.md). The note is
 # injected on every reply for the message author, so it must stay small;
@@ -97,8 +122,12 @@ MEMORY_REPLY_MAX_CHARS = 8_000
 # a latency or cost guard (a slow background update is harmless). A genuinely
 # stuck call would otherwise hold the scope's lock and a global-concurrency
 # permit forever, so that user/server would never get another memory update.
-# The memory models run at high reasoning effort on a Pro tier and
-# consolidation rewrites the whole main file, so the bound stays well above a
-# legitimately slow rewrite (minutes) and only fires on a truly hung call.
+# The memory models run at high reasoning effort on a Pro tier, so the bound stays
+# well above a legitimately slow rewrite (minutes) and only fires on a truly hung
+# call. Consolidation now fans out over a scope's compartments, so the two bounds
+# nest: each compartment call gets the shorter one and the whole fan-out is wrapped
+# in the longer one, keeping the worst-case lock hold at what it is today rather
+# than multiplying it by the number of compartments.
 MEMORY_EXTRACT_TIMEOUT_SECONDS = 600.0
 MEMORY_CONSOLIDATE_TIMEOUT_SECONDS = 600.0
+MEMORY_COMPARTMENT_TIMEOUT_SECONDS = 300.0

@@ -1,13 +1,22 @@
 """LLM extraction and consolidation for per-user long-term memory."""
 
 import re
-from typing import TYPE_CHECKING, Literal, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.utils.llm import parse_responses_or_none
+from discordbot.typings.memory import (
+    MemorySection,
+    MemorySharing,
+    MemoryCategory,
+    MemoryConfidence,
+    MemoryDurability,
+    MemoryDeltaAction,
+    MemoryEvidenceKind,
+)
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs._memory.prompts import (
     PHASE1_PROMPT,
@@ -20,34 +29,13 @@ from discordbot.cogs._memory.constants import (
     MEMORY_REPLY_MAX_CHARS,
     MEMORY_TRANSCRIPT_MAX_CHARS,
     MEMORY_EXTRACT_TIMEOUT_SECONDS,
-    MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
+    MEMORY_COMPARTMENT_TIMEOUT_SECONDS,
 )
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 _OutputT = TypeVar("_OutputT", bound=BaseModel)
-
-type MemoryCategory = Literal[
-    "stable_preference", "stable_fact", "interaction_style", "recurring_pattern", "recent_context"
-]
-type MemoryEvidenceKind = Literal[
-    "explicit_preference",
-    "repeated_behavior",
-    "correction",
-    "stable_fact",
-    "recurring_pattern",
-    "ongoing_situation",
-    "tool_usage",
-    "casual_mention",
-    "hypothetical",
-    "bot_suggestion",
-    "other_user_context",
-    "unknown",
-]
-type MemoryConfidence = Literal["low", "medium", "high"]
-type MemoryDurability = Literal["volatile", "session", "recent", "stable", "permanent"]
-type MemorySharing = Literal["global", "source_only"]
 
 # Both phases run on model output that originated in user conversations, so
 # secrets are scrubbed before upload and again on the model output. Patterns
@@ -68,6 +56,19 @@ _SECRET_PATTERNS = (
 )
 
 _AUTHOR_PREFIX_RE = re.compile(r"^[^\n]*?\[id: (?P<user_id>\d+)\]:")
+# The trusted author prefix as it appears inside a rendered transcript block, indented
+# by `_indent_block`. Read to recover who else took part in the conversation, so the
+# sharing gate can recognise a third party named in plain prose rather than by id.
+_PARTICIPANT_PREFIX_RE = re.compile(
+    r"^[ \t]*(?P<display>.+?) \((?P<username>[^()\n]+)\) \[id: (?P<user_id>\d+)\]:",
+    flags=re.MULTILINE,
+)
+# Shortest roster name the gate will match on, split by script. A Latin name also has
+# to land on a word boundary, which a CJK name cannot (there are no spaces), so the CJK
+# floor carries that burden on its own.
+_MIN_LATIN_ROSTER_NAME = 3
+_MIN_OTHER_ROSTER_NAME = 2
+_LATIN_NAME_RE = re.compile(r"^[\w.\- ]+$", flags=re.ASCII)
 # Another participant referenced inside an observation's text (an id token or a raw
 # Discord mention). Such an observation is about a relationship or someone else's
 # business, so the sharing gate locks it to its source conversation. The id is captured
@@ -175,29 +176,94 @@ class RawMemoryDraft(BaseModel):
     )
 
 
-class ConsolidatedMemory(BaseModel):
-    """Structured phase-2 consolidation output."""
+class MemoryFactDelta(BaseModel):
+    """One change a consolidation asks for against a single compartment.
+
+    Deltas replaced the whole-file rewrite so a bad pass can lose one fact instead of a
+    file, and so a rejected batch can be retried without re-deciding everything. They
+    are keyed by `fact_id`, which code mints and the model only ever echoes back.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    # Kept for the prompt's no-op contract (the model emits changed=false with empty
-    # memory_markdown for a no-op); the runtime consolidation path intentionally ignores
-    # this bool and decides off memory_markdown's well-formedness, so do not branch on it.
-    changed: bool = Field(
-        ...,
-        description="Whether the consolidated memory file materially changed from the existing one",
+    action: MemoryDeltaAction = Field(
+        ..., description="Whether to add a fact, rewrite one, or drop one.", examples=["create"]
     )
-    memory_markdown: str = Field(
-        ...,
-        description="Full rewritten memory file starting with `v1`; empty when changed is false",
+    fact_id: str = Field(
+        default="",
+        description="Existing id for update/delete; empty for create (code mints it).",
+        examples=["9f2c41a7be03d5e8"],
+    )
+    section: MemorySection = Field(
+        ..., description="Which document section the fact belongs to.", examples=["preference"]
+    )
+    durability: MemoryDurability = Field(
+        ..., description="Permanent, stable, or time-bound.", examples=["stable"]
+    )
+    summary: str = Field(..., description="One-line Traditional Chinese gist of the fact.")
+    text: str = Field(..., description="The Traditional Chinese fact body, as it will be read.")
+    from_keys: tuple[str, ...] = Field(
+        default=(),
+        description="normalized_keys of the observations this fact rests on.",
+        examples=[("preference.reply_language.zh_tw",)],
+    )
+    subject_id: str = Field(
+        default="",
+        description="Member id a nickname row refers to; empty for any other section.",
+        examples=["987654321098765432"],
+    )
+
+
+class ConsolidatedMemory(BaseModel):
+    """Structured phase-2 consolidation output for one compartment."""
+
+    model_config = ConfigDict(frozen=True)
+
+    deltas: tuple[MemoryFactDelta, ...] = Field(
+        default=(), description="Changes to apply; empty is a valid no-op."
     )
     tone_markdown: str = Field(
-        ...,
+        default="",
         description=(
             "Full rewritten per-user tone note starting with `## 語氣偏好`; empty when the "
-            "corpus carries no tone signal (server-flavor consolidations always return empty)."
+            "corpus carries no tone signal. Only the global compartment emits one."
         ),
     )
+
+
+class ConsolidationRequest(BaseModel):
+    """Everything one compartment's consolidation call is given.
+
+    Bundled rather than passed as a dozen arguments because the fan-out builds these
+    per compartment and the differences between them (which raw bucket, whether tone is
+    wanted, which sections are legal) are exactly what the caller has to get right.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    compartment_note: str = Field(
+        ..., description="Plain-English description of who may read this compartment."
+    )
+    allowed_sections: tuple[MemorySection, ...] = Field(
+        ..., description="Sections a delta may name for this flavor."
+    )
+    existing_facts: str = Field(
+        ..., description="The compartment's current facts, rendered with their ids."
+    )
+    existing_tone: str = Field(..., description="Current tone note; ignored unless emit_tone.")
+    raw_entries: str = Field(..., description="This compartment's share of the raw batch.")
+    recent_detail: str = Field(..., description="Cold evidence filtered to this compartment.")
+    tone_evidence: str = Field(
+        default="",
+        description="Unpartitioned tone signal; global-only, and for the tone note alone.",
+    )
+    global_reference: str = Field(
+        default="",
+        description="Global facts already stored, so a guild compartment does not restate them.",
+    )
+    today: str = Field(..., description="ISO date used for dating and aging.")
+    compact: bool = Field(..., description="Whether the compartment is large enough to compact.")
+    emit_tone: bool = Field(..., description="Whether this call owns the tone note.")
 
 
 class MemoryExtractorAI(BaseModel):
@@ -248,6 +314,11 @@ class MemoryExtractorAI(BaseModel):
         user_text = f"{subject}\n\nConversation transcript:\n{transcript}"
         target_match = _SUBJECT_TARGET_USER_RE.search(subject)
         target_user_id = int(target_match.group("user_id")) if target_match else None
+        roster = (
+            participant_names_from_transcript(transcript=transcript, target_user_id=target_user_id)
+            if target_user_id is not None
+            else ()
+        )
         draft = await self._parse(
             model=self.extract_model,
             instructions=self.phase1_prompt,
@@ -258,7 +329,7 @@ class MemoryExtractorAI(BaseModel):
         )
         if draft is None:
             return None
-        draft = _validated_draft(draft=draft, target_user_id=target_user_id)
+        draft = _validated_draft(draft=draft, target_user_id=target_user_id, roster=roster)
         if not draft.has_signal:
             return draft
         evaluate_model = self.evaluate_model
@@ -278,41 +349,42 @@ class MemoryExtractorAI(BaseModel):
         )
         if evaluated is None:
             return None
-        return _validated_draft(draft=evaluated, target_user_id=target_user_id)
+        return _validated_draft(draft=evaluated, target_user_id=target_user_id, roster=roster)
 
-    async def consolidate(  # noqa: PLR0913 -- the phase-2 corpus (main/tone/raw/detail) plus dating and compaction flags
-        self,
-        existing_main: str,
-        existing_tone: str,
-        raw_entries: str,
-        recent_detail: str,
-        today: str,
-        compact: bool,
-    ) -> ConsolidatedMemory | None:
-        """Returns the phase-2 consolidation result, or None when the LLM path fails."""
-        user_text = (
-            f"today: {today}\n\n"
-            f"<existing_memory>\n{existing_main.strip() or '(empty)'}\n</existing_memory>\n\n"
-            f"<existing_tone>\n{existing_tone.strip() or '(empty)'}\n</existing_tone>\n\n"
-            f"<raw_entries>\n{raw_entries.strip()}\n</raw_entries>\n\n"
-            f"<recent_detail>\n{recent_detail.strip() or '(empty)'}\n</recent_detail>"
-        )
+    async def consolidate(self, request: ConsolidationRequest) -> ConsolidatedMemory | None:
+        """Returns one compartment's consolidation deltas, or None when the LLM path fails."""
+        sections = ", ".join(request.allowed_sections)
+        blocks = [
+            f"today: {request.today}",
+            f"compartment: {request.compartment_note}",
+            f"allowed sections: {sections}",
+            _tagged(tag="existing_facts", body=request.existing_facts),
+            _tagged(tag="raw_entries", body=request.raw_entries),
+            _tagged(tag="recent_detail", body=request.recent_detail),
+        ]
+        if request.global_reference:
+            blocks.append(_tagged(tag="global_reference", body=request.global_reference))
+        if request.emit_tone:
+            blocks.append(_tagged(tag="existing_tone", body=request.existing_tone))
+            blocks.append(_tagged(tag="tone_evidence", body=request.tone_evidence))
         instructions = (
-            self.consolidate_prompt + self.compaction_block if compact else self.consolidate_prompt
+            self.consolidate_prompt + self.compaction_block
+            if request.compact
+            else self.consolidate_prompt
         )
         result = await self._parse(
             model=self.consolidate_model,
             instructions=instructions,
-            user_text=user_text,
+            user_text="\n\n".join(blocks),
             text_format=ConsolidatedMemory,
-            timeout_seconds=MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
+            timeout_seconds=MEMORY_COMPARTMENT_TIMEOUT_SECONDS,
             end_user_label="memory_consolidate",
         )
         if result is None:
             return None
         return result.model_copy(
             update={
-                "memory_markdown": redact_secrets(text=result.memory_markdown).strip(),
+                "deltas": tuple(_redacted_delta(delta=delta) for delta in result.deltas),
                 "tone_markdown": redact_secrets(text=result.tone_markdown).strip(),
             }
         )
@@ -342,6 +414,68 @@ class MemoryExtractorAI(BaseModel):
             text_format=text_format,
             timeout_seconds=timeout_seconds,
         )
+
+
+def _tagged(tag: str, body: str) -> str:
+    """Wraps one consolidation input block, marking an absent one explicitly."""
+    return f"<{tag}>\n{body.strip() or '(empty)'}\n</{tag}>"
+
+
+def _redacted_delta(delta: MemoryFactDelta) -> MemoryFactDelta:
+    """Scrubs secret-shaped strings out of one delta's model-authored text."""
+    return delta.model_copy(
+        update={
+            "summary": redact_secrets(text=delta.summary).strip(),
+            "text": redact_secrets(text=delta.text).strip(),
+        }
+    )
+
+
+def participant_names_from_transcript(
+    transcript: str, target_user_id: int | None
+) -> tuple[str, ...]:
+    """Returns the display names and usernames of everyone in the transcript but the target.
+
+    The trusted author prefix is the only authorship signal in a rendered transcript,
+    so the roster is read from it rather than threaded down from the reply pipeline —
+    which also means a resumed job rebuilds the same roster from its stored transcript
+    with no extra column. The bot never carries an author prefix, so it is absent by
+    construction rather than by an exclusion rule.
+
+    A forged prefix inside someone's message body can only ADD a name, and an extra name
+    can only tighten an observation's sharing, so the untrusted position costs nothing.
+    """
+    names: set[str] = set()
+    for match in _PARTICIPANT_PREFIX_RE.finditer(transcript):
+        if target_user_id is not None and int(match.group("user_id")) == target_user_id:
+            continue
+        names.update((match.group("display").strip(), match.group("username").strip()))
+    return tuple(sorted(name for name in names if _is_matchable_name(name=name)))
+
+
+def _is_matchable_name(name: str) -> bool:
+    """Whether a roster name is distinctive enough to lock an observation on."""
+    floor = _MIN_LATIN_ROSTER_NAME if _LATIN_NAME_RE.match(name) else _MIN_OTHER_ROSTER_NAME
+    return len(name) >= floor
+
+
+def _mentions_roster_name(text: str, roster: tuple[str, ...]) -> bool:
+    """Whether the text names another participant in plain prose.
+
+    Latin names must land on a word boundary so `amy` does not fire on `dynamic`; a CJK
+    name has no boundaries to anchor to and is matched as a substring, which is the
+    deliberate asymmetry — a false positive keeps a harmless fact inside one guild,
+    while a false negative publishes a private one everywhere.
+    """
+    folded = text.casefold()
+    for name in roster:
+        candidate = name.casefold()
+        if _LATIN_NAME_RE.match(name):
+            if re.search(rf"(?<!\w){re.escape(candidate)}(?!\w)", folded):
+                return True
+        elif candidate in folded:
+            return True
+    return False
 
 
 def transcript_from_messages(message_list: list[EasyInputMessageParam], full_reply: str) -> str:
@@ -490,12 +624,16 @@ def redact_secrets(text: str) -> str:
     return text
 
 
-def _validated_draft(draft: RawMemoryDraft, target_user_id: int | None) -> RawMemoryDraft:
+def _validated_draft(
+    draft: RawMemoryDraft, target_user_id: int | None, roster: tuple[str, ...] = ()
+) -> RawMemoryDraft:
     """Applies deterministic high-precision gates to model observations."""
     observations: list[MemoryObservation] = []
     seen_keys: set[str] = set()
     for observation in draft.observations:
-        sanitized = _sanitize_observation(observation=observation, target_user_id=target_user_id)
+        sanitized = _sanitize_observation(
+            observation=observation, target_user_id=target_user_id, roster=roster
+        )
         if sanitized.normalized_key in seen_keys:
             continue
         if not _is_accepted_observation(observation=sanitized):
@@ -515,7 +653,7 @@ def _mentions_other_person(text: str, target_user_id: int | None) -> bool:
 
 
 def _sanitize_observation(
-    observation: MemoryObservation, target_user_id: int | None
+    observation: MemoryObservation, target_user_id: int | None, roster: tuple[str, ...] = ()
 ) -> MemoryObservation:
     """Normalizes text, keys, TTL, and sharing fields before validation."""
     category = observation.category
@@ -533,15 +671,24 @@ def _sanitize_observation(
         text=redact_secrets(text=observation.evidence_quote), max_chars=240
     )
     # Deterministic privacy backstop over the LLM's sharing call: ongoing situations
-    # are private by construction, and an observation naming ANOTHER participant is
+    # are private by construction, and an observation about ANOTHER participant is
     # about a relationship, not a portable fact (the target's own id — e.g. a quoted
     # author prefix — names nobody else and stays exempt). Scans the pre-trim text so
     # a token past the truncation point cannot dodge the gate. Code only ever tightens
     # sharing to source_only; it never loosens a source_only call back to global.
+    #
+    # The roster half is what the directory boundary made necessary: with no read-time
+    # filter left, `global` is permanent cross-server reach, so "他跟女友吵架" — which
+    # carries no id token at all — can no longer be left entirely to the model's own
+    # judgement. Matching the conversation's other participants literally is the
+    # deterministic half; the phase-1.5 evaluator covers whoever is named but absent.
+    scanned = f"{observation.summary_zh}\n{observation.evidence_quote}"
     sharing = observation.sharing
-    if category == "recent_context" or _mentions_other_person(
-        text=f"{observation.summary_zh}\n{observation.evidence_quote}",
-        target_user_id=target_user_id,
+    if (
+        category == "recent_context"
+        or observation.evidence_kind == "ongoing_situation"
+        or _mentions_other_person(text=scanned, target_user_id=target_user_id)
+        or _mentions_roster_name(text=scanned, roster=roster)
     ):
         sharing = "source_only"
     return MemoryObservation(

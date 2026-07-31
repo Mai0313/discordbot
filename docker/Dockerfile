@@ -23,7 +23,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update \
     && apt-get install -y --no-install-recommends \
         ffmpeg \
-        fonts-noto-cjk
+        fonts-noto-cjk \
+        # Long-term memory keeps its own git history under data/memories; without the
+        # binary the commit queue is a silent no-op in every deployment.
+        git
 
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \

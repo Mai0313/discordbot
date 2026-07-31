@@ -1,23 +1,28 @@
 """File-backed storage for long-term memory, keyed by an opaque scope.
 
-A scope is a relative path under ``data/memories/`` that doubles as the
-registry key. Per-user memory uses ``user_scope(user_id)`` (``<user_id>``);
-the bot's own per-server memory uses ``server_scope(server_id)``
-(``bot_memories/<server_id>``). Both share the exact same file layout: ``main.md``
-is the consolidated hot tier injected into reply prompts, ``raw.md``
-accumulates phase-1 raw extraction entries until consolidation rewrites the
-main file, ``main.bak.md`` keeps the previous main generation as a manual
-recovery point against a bad consolidation rewrite, and ``detail.md`` is the
-readable cold tier retaining consumed and evicted raw entries verbatim:
-consolidation reads its tail window as provenance and ``/memory show`` can
-page through it, but it is never injected into reply prompts. Per-user scopes
-also carry ``tone.md``: a short, persona-independent, cross-server-safe note of
-how that user wants the bot to sound, written by the same phase-2 consolidation
-that rewrites ``main.md`` and injected on every reply for the message author
-(no selection phase), kept short by its prompt rather than a compaction pass.
-The live files stay tens of KB at most and the detail file is appended in O(1),
-tail-window read, and trimmed back to a hard byte cap, so IO is synchronous;
-cross-task safety comes from the per-scope asyncio locks.
+A scope is a relative path under ``data/memories/`` that doubles as the registry key.
+Per-user memory uses ``user_scope(user_id)`` (``<user_id>``); the bot's own per-server
+memory uses ``server_scope(server_id)`` (``bot_memories/<server_id>``).
+
+Inside a scope the consolidated tier is **one file per fact**, filed under the
+compartment that decides who may read it — ``global/`` (safe anywhere),
+``g/<guild_id>/`` (that guild only) and ``dm/`` (the owner's own DMs). The path *is*
+the privacy boundary: reading for guild G is ``global/`` plus ``g/<G>/``, two joins and
+a containment check, with no read-time content filter to get wrong. A server scope has
+exactly one compartment (``global/``) because a server memory is per-guild by
+construction and its evidence carries no source to route by.
+
+The remaining tiers are per-scope and unchanged: ``raw.md`` accumulates phase-1 entries
+until consolidation consumes them, ``detail.md`` is the append-only cold evidence log
+(read as a tail window, trimmed to a hard byte cap), and ``tone.md`` is the short
+always-read note of how the user wants the bot to sound.
+
+IO is synchronous, which one fact per file would otherwise make untenable on the reply
+path: ``render_memory_document`` is cached under a per-scope generation counter that
+every write bumps, so a repeat read costs no syscalls at all. The counter is exact
+because every write in this process goes through here under ``scope_lock``; editing the
+tree from outside while the bot runs is not supported (nor is it today, for
+``_cleared_at``).
 """
 
 import os
@@ -29,11 +34,20 @@ from datetime import UTC, datetime
 import itertools
 import contextlib
 
+from discordbot.typings.memory import MemoryFact, MemoryOwner
+from discordbot.cogs._memory.facts import (
+    MemoryFlavor,
+    parse_fact_file,
+    render_fact_file,
+    render_memory_document,
+)
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.cogs._memory.constants import (
     RAW_FILE_MAX_BYTES,
     TONE_FILE_MAX_BYTES,
     DETAIL_FILE_MAX_BYTES,
+    RENDER_CACHE_MAX_ENTRIES,
+    MEMORY_INJECTION_MAX_CHARS,
     DETAIL_FILE_TRIM_TARGET_BYTES,
 )
 
@@ -44,23 +58,26 @@ _MEMORY_DIR = Path("./data/memories")
 # and it strands the whole server memory the moment the bot account changes.
 BOT_MEMORY_DIR_NAME = "bot_memories"
 
+# The three compartment shapes. `g/<id>` carries a separator on purpose so it joins
+# straight onto the scope directory; `_COMPARTMENT_RE` is what stops anything else
+# (`..`, an absolute path, a stray name) ever becoming a directory.
+GLOBAL_COMPARTMENT = "global"
+DM_COMPARTMENT = "dm"
+_COMPARTMENT_RE = re.compile(r"^(?:global|dm|g/\d{1,20})$")
+_GUILD_DIR_NAME = "g"
+
 # Raw entries start with a `## <ISO-8601 timestamp>` header line. Extraction
 # output is bullet-style prose, so the date prefix doubles as the split marker.
 _RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
-
-# The identity metadata line `write_main_memory` inserts after the `v1` header
-# (e.g. `v1\nAlice (alice) [id: 123]`). Read paths strip it so prompt
-# injection, consolidation input, and `/memory show` never see it and the LLM
-# can never echo it back; files without the line pass through unchanged.
-_IDENTITY_LINE_RE = re.compile(r"^v1\n[^\n]*\[id: \d+\][^\n]*\n")
-
-# Capturing variant used by `read_main_identity` to recover the stored line.
-_IDENTITY_CAPTURE_RE = re.compile(r"^v1\n([^\n]*\[id: \d+\][^\n]*)\n")
 
 # Per-scope file-write locks, rebuilt per event loop by the shared registry.
 _scope_locks: LoopLocalRegistry[str, asyncio.Lock] = LoopLocalRegistry()
 # Manual-clear timestamps; monotonic, so it is not loop-keyed and tests reset it.
 _cleared_at: dict[str, float] = {}
+# Per-scope write counter and the rendered-document cache keyed on it. Not loop-bound
+# (plain dicts, no asyncio primitive), but reset by the test fixture like `_cleared_at`.
+_write_generation: dict[str, int] = {}
+_render_cache: dict[tuple[str, tuple[str, ...], MemoryFlavor, int], tuple[int, str]] = {}
 
 
 def user_scope(user_id: int) -> str:
@@ -73,29 +90,98 @@ def server_scope(server_id: int) -> str:
     return f"{BOT_MEMORY_DIR_NAME}/{server_id}"
 
 
+def guild_compartment(guild_id: int) -> str:
+    """Returns the compartment holding facts readable only inside one guild."""
+    return f"{_GUILD_DIR_NAME}/{guild_id}"
+
+
+def scope_owner_id(scope: str) -> int:
+    """Returns the Discord id a scope belongs to (a user id, or a server id)."""
+    return int(scope.rsplit("/", maxsplit=1)[-1])
+
+
+def memory_root() -> Path:
+    """Returns the store root, read through this accessor so tests can relocate it."""
+    return _MEMORY_DIR
+
+
+def _scope_dir(scope: str) -> Path:
+    """Returns the memory directory for a scope."""
+    return _MEMORY_DIR / scope
+
+
+def compartment_dir(scope: str, compartment: str) -> Path:
+    """Returns the directory holding one compartment's fact files.
+
+    Raises:
+        ValueError: The compartment is not one of the three known shapes. Callers build
+            compartments from ints, so this only fires on a programming error — but it
+            is the single chokepoint between a compartment string and a filesystem
+            path, so it refuses rather than joining whatever it was handed.
+    """
+    if not _COMPARTMENT_RE.match(compartment):
+        raise ValueError(f"invalid memory compartment: {compartment!r}")
+    return _scope_dir(scope=scope) / compartment
+
+
+def list_compartments(scope: str) -> list[str]:
+    """Returns every compartment that exists on disk for a scope, in a stable order.
+
+    Ordered `global`, ascending guild id, then `dm` — deterministic rather than
+    `iterdir` order, so the assembled document (and therefore the prompt prefix) does
+    not reshuffle between reads of an unchanged scope.
+    """
+    scope_dir = _scope_dir(scope=scope)
+    found: list[str] = []
+    if (scope_dir / GLOBAL_COMPARTMENT).is_dir():
+        found.append(GLOBAL_COMPARTMENT)
+    guild_root = scope_dir / _GUILD_DIR_NAME
+    if guild_root.is_dir():
+        guild_ids = sorted(
+            int(child.name)
+            for child in guild_root.iterdir()
+            if child.is_dir() and child.name.isdigit()
+        )
+        found.extend(guild_compartment(guild_id=guild_id) for guild_id in guild_ids)
+    if (scope_dir / DM_COMPARTMENT).is_dir():
+        found.append(DM_COMPARTMENT)
+    return found
+
+
 def _scope_has_memory(scope: str) -> bool:
-    """Whether a scope already has live memory files on disk."""
-    return _main_path(scope=scope).exists() or _raw_path(scope=scope).exists()
+    """Whether a scope already has live memory on disk.
+
+    Checks the two single-file tiers first: they answer for most scopes without
+    touching the compartment tree, which costs one `iterdir` per compartment.
+    """
+    scope_dir = _scope_dir(scope=scope)
+    if (scope_dir / "raw.md").is_file() or (scope_dir / "tone.md").is_file():
+        return True
+    return any(
+        _fact_paths(directory=compartment_dir(scope=scope, compartment=compartment))
+        for compartment in list_compartments(scope=scope)
+    )
 
 
 def iter_scopes() -> list[str]:
     """Returns every scope with on-disk memory (user = flat, server = under the bot dir).
 
-    Walks `data/memories/`: a top-level dir holding `main.md` / `raw.md` is a user
-    scope (`<user_id>`), and the child dirs of `bot_memories/` holding those files
-    are the `bot_memories/<server_id>` server scopes. Used by the restart
-    consolidation sweep to find scopes whose raw backlog still needs digesting even
-    when no extraction job is pending for them.
+    Walks `data/memories/`: a top-level directory holding memory is a user scope
+    (`<user_id>`), and the child directories of `bot_memories/` holding memory are the
+    `bot_memories/<server_id>` server scopes. Used by the restart consolidation sweep
+    to find scopes whose raw backlog still needs digesting even when no extraction job
+    is pending for them.
 
-    `bot_memories` is the only directory descended into: nested memory anywhere else
-    is not a scope, so a stray directory (or a symlink to this one) can never hand
-    the sweep the same memory a second time under another name.
+    `bot_memories` is the only directory descended into, and dot directories are
+    skipped outright (the store is itself a git work tree), so a stray directory — or a
+    symlink to this one — can never hand the sweep the same memory twice under another
+    name.
     """
     scopes: list[str] = []
     if not _MEMORY_DIR.is_dir():
         return scopes
     for top in sorted(_MEMORY_DIR.iterdir()):
-        if not top.is_dir():
+        if not top.is_dir() or top.name.startswith("."):
             continue
         if top.name != BOT_MEMORY_DIR_NAME:
             if _scope_has_memory(scope=top.name):
@@ -108,24 +194,9 @@ def iter_scopes() -> list[str]:
     return scopes
 
 
-def _scope_dir(scope: str) -> Path:
-    """Returns the memory directory for a scope."""
-    return _MEMORY_DIR / scope
-
-
-def _main_path(scope: str) -> Path:
-    """Returns the consolidated main memory path for a scope."""
-    return _scope_dir(scope=scope) / "main.md"
-
-
 def _raw_path(scope: str) -> Path:
     """Returns the raw extraction accumulation path for a scope."""
     return _scope_dir(scope=scope) / "raw.md"
-
-
-def _bak_path(scope: str) -> Path:
-    """Returns the one-generation backup path written before each main rewrite."""
-    return _scope_dir(scope=scope) / "main.bak.md"
 
 
 def _detail_path(scope: str) -> Path:
@@ -146,6 +217,14 @@ def _read_text(path: Path) -> str:
         return ""
 
 
+def _fact_paths(directory: Path) -> list[Path]:
+    """Returns the fact files in one compartment directory, missing dir counting as none."""
+    try:
+        return sorted(path for path in directory.iterdir() if path.suffix == ".md")
+    except FileNotFoundError:
+        return []
+
+
 def scope_lock(scope: str) -> asyncio.Lock:
     """Returns the per-scope lock that serializes memory file writes."""
     return _scope_locks.setdefault(key=scope, default=asyncio.Lock())
@@ -162,51 +241,112 @@ def cleared_since(scope: str, started_at: float) -> bool:
     return cleared is not None and cleared >= started_at
 
 
-def read_main_memory(scope: str) -> str:
-    """Returns the consolidated memory, stripped of identity metadata."""
-    return _strip_identity(text=_read_text(path=_main_path(scope=scope))).strip()
+def _bump_generation(scope: str) -> None:
+    """Invalidates the scope's cached documents after a write."""
+    _write_generation[scope] = _write_generation.get(scope, 0) + 1
 
 
-def read_main_identity(scope: str) -> str:
-    """Returns the identity metadata line stored in the main file, or empty.
+def read_facts(scope: str, compartment: str) -> list[MemoryFact]:
+    """Returns one compartment's parseable facts; unreadable files are skipped.
 
-    Offline regeneration has no Discord context to rebuild the identity from,
-    so it preserves the line the last online write stamped into the file.
+    A file can vanish between the listing and the read (a concurrent delete, an offline
+    edit), and a malformed one is reported by `parse_fact_file`; either way the rest of
+    the compartment still reaches the reply.
     """
-    match = _IDENTITY_CAPTURE_RE.match(_read_text(path=_main_path(scope=scope)))
-    return match.group(1) if match else ""
+    facts: list[MemoryFact] = []
+    for path in _fact_paths(directory=compartment_dir(scope=scope, compartment=compartment)):
+        text = _read_text(path=path)
+        if not text:
+            continue
+        fact = parse_fact_file(text=text, compartment=compartment)
+        if fact is not None:
+            facts.append(fact)
+    return facts
 
 
-def write_main_memory(scope: str, content: str, identity: str) -> None:
-    """Atomically replaces the consolidated main memory file.
+def read_memory_document(
+    scope: str,
+    compartments: list[str],
+    flavor: MemoryFlavor,
+    max_chars: int = MEMORY_INJECTION_MAX_CHARS,
+) -> str:
+    """Returns the injectable document for one scope read through `compartments`.
 
-    There is no size clamp: growth is bounded by the consolidation compaction
-    pass, never by code-side truncation. The previous main generation is
-    copied to `main.bak.md` first as a manual recovery point, and `identity`
-    is inserted after the `v1` header as human-inspection metadata that every
-    read path strips back out.
+    This is the read path's single entry point and the direct replacement for the old
+    whole-file `read_main_memory`. Facts from every requested compartment are merged and
+    rendered as one document, competing for the size cap by recency inside each section
+    rather than by which compartment they came from, so a large shared tier cannot
+    silently starve a guild's own memory.
+
+    Cached on the scope's write generation: a repeat read of an unchanged scope returns
+    without touching the filesystem, which is what keeps eight per-reply lookups
+    affordable now that one fact is one file.
     """
-    _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
-    main_path = _main_path(scope=scope)
-    previous = _read_text(path=main_path)
-    if previous:
-        _bak_path(scope=scope).write_text(data=previous, encoding="utf-8")
-    rendered = content.strip()
-    if rendered.startswith("v1\n"):
-        body = rendered.removeprefix("v1\n")
-        rendered = f"v1\n{identity}\n{body}"
-    tmp_path = main_path.with_suffix(".md.tmp")
-    tmp_path.write_text(data=rendered + "\n", encoding="utf-8")
-    os.replace(src=tmp_path, dst=main_path)
+    key = (scope, tuple(compartments), flavor, max_chars)
+    cached = _render_cache.get(key)
+    generation = _write_generation.get(scope, 0)
+    if cached is not None and cached[0] == generation:
+        return cached[1]
+    facts = [
+        fact
+        for compartment in compartments
+        for fact in read_facts(scope=scope, compartment=compartment)
+    ]
+    document = render_memory_document(facts=facts, flavor=flavor, max_chars=max_chars)
+    if len(_render_cache) >= RENDER_CACHE_MAX_ENTRIES:
+        # Whole-cache reset rather than an LRU: entries are cheap to rebuild and the
+        # working set is one entry per (scope, reading context), so the bound is only
+        # here to stop a long-lived process accumulating stale keys forever.
+        _render_cache.clear()
+    _render_cache[key] = (generation, document)
+    return document
+
+
+def write_fact(scope: str, fact: MemoryFact) -> None:
+    """Atomically writes one fact file into its compartment."""
+    directory = compartment_dir(scope=scope, compartment=fact.compartment)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{fact.fact_id}.md"
+    tmp_path = path.with_suffix(".md.tmp")
+    tmp_path.write_text(data=render_fact_file(fact=fact), encoding="utf-8")
+    os.replace(src=tmp_path, dst=path)
+    _bump_generation(scope=scope)
+
+
+def delete_fact(scope: str, compartment: str, fact_id: str) -> bool:
+    """Deletes one fact file, returning whether it existed."""
+    path = compartment_dir(scope=scope, compartment=compartment) / f"{fact_id}.md"
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    _bump_generation(scope=scope)
+    return True
+
+
+def read_owner(scope: str) -> MemoryOwner:
+    """Recovers the stored owner identity from any one of the scope's facts.
+
+    Offline regeneration has no Discord context to rebuild the identity from, so it
+    preserves what the last online write stamped. A scope with no facts yet falls back
+    to the id in the scope key and an empty name, which the next online write replaces.
+    """
+    owner_id = scope_owner_id(scope=scope)
+    for compartment in list_compartments(scope=scope):
+        for fact in read_facts(scope=scope, compartment=compartment):
+            if fact.owner_name:
+                return MemoryOwner(owner_id=fact.owner_id, owner_name=fact.owner_name)
+    return MemoryOwner(owner_id=owner_id, owner_name="")
 
 
 def read_tone(scope: str) -> str:
     """Returns the per-user tone-preference note, or "" when there is none.
 
     Read on every reply for the message author and injected as a low-authority
-    context block, so it is a plain short markdown note with no `v1` header or
-    identity line to strip. Cross-server safe by construction: consolidation
-    writes only persona-independent delivery qualities here, never facts.
+    context block, so it is a plain short markdown note with no header to strip.
+    Cross-server safe by construction: consolidation writes only persona-independent
+    delivery qualities here, never facts, which is why it is the one tier that sits
+    outside the compartment tree.
     """
     return _read_text(path=_tone_path(scope=scope)).strip()
 
@@ -234,10 +374,10 @@ def write_tone(scope: str, content: str) -> None:
 def append_raw_entry(scope: str, entry_text: str) -> None:
     """Appends one timestamped raw entry, archiving the oldest entries on overflow.
 
-    Headers carry only the timestamp. Author identity must stay confined to the
-    main file (raw entries flow verbatim into the detail file); an observation
-    body may carry the code-stamped conversation source (`- source: guild <id>` /
-    `dm`) — that is provenance of where a conversation happened, not identity.
+    Headers carry only the timestamp. Author identity must stay confined to the fact
+    files (raw entries flow verbatim into the detail file); an observation body may
+    carry the code-stamped conversation source (`- source: guild <id>` / `dm`) — that is
+    provenance of where a conversation happened, not identity.
     """
     _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(UTC).isoformat(timespec="seconds")
@@ -264,11 +404,11 @@ def append_raw_entry(scope: str, entry_text: str) -> None:
 def append_detail(scope: str, text: str) -> None:
     """Appends consumed or evicted raw evidence to the cold-tier detail file.
 
-    The detail file preserves raw entry content verbatim; author identity
-    stays confined to the main file. Append-mode IO keeps the common write
-    O(1) in the file size; once the file outgrows `DETAIL_FILE_MAX_BYTES`
-    the oldest entries are trimmed away, which is safe because content past
-    the consolidation read window is unreachable by every consumer anyway.
+    The detail file preserves raw entry content verbatim; owner identity stays confined
+    to the fact files. Append-mode IO keeps the common write O(1) in the file size; once
+    the file outgrows `DETAIL_FILE_MAX_BYTES` the oldest entries are trimmed away, which
+    is safe because content past the consolidation read window is unreachable by every
+    consumer anyway.
     """
     block = text.strip()
     if not block:
@@ -381,42 +521,43 @@ def clear_tone(scope: str) -> None:
 def clear_memory(scope: str) -> bool:
     """Deletes the scope's memory files and flags in-flight updates to abort.
 
+    Walks the compartment tree as well as the three single-file tiers, removing only
+    `.md` files and the `.md.tmp` leftovers a crash between a tmp write and its
+    `os.replace` can strand — never a foreign file that shares the directory. Empty
+    directories are then removed bottom-up; a non-empty or missing one is left for
+    offline maintenance instead of failing the clear.
+
     Returns:
         True when at least one memory file existed and was removed.
     """
     mark_cleared(scope=scope)
+    scope_dir = _scope_dir(scope=scope)
     removed = False
-    main_path = _main_path(scope=scope)
-    for path in (
-        main_path,
-        _raw_path(scope=scope),
-        _bak_path(scope=scope),
-        _detail_path(scope=scope),
-        _tone_path(scope=scope),
-    ):
+    for name in ("raw.md", "detail.md", "tone.md"):
         try:
-            path.unlink()
+            (scope_dir / name).unlink()
             removed = True
         except FileNotFoundError:
             # Already gone (e.g. offline maintenance); deletion stays idempotent
             # without the exists()-then-unlink() race.
             continue
-    # A crash between a tmp write and os.replace (main rewrite, detail trim, or
-    # tone rewrite) can leave a tmp file behind; drop them so the directory
-    # removal below does not fail.
-    main_path.with_suffix(".md.tmp").unlink(missing_ok=True)
-    _detail_path(scope=scope).with_suffix(".md.tmp").unlink(missing_ok=True)
-    _tone_path(scope=scope).with_suffix(".md.tmp").unlink(missing_ok=True)
-    # A missing or unexpectedly non-empty directory is left for offline
-    # maintenance instead of failing the clear.
+        finally:
+            (scope_dir / f"{name}.tmp").unlink(missing_ok=True)
+    for compartment in list_compartments(scope=scope):
+        directory = compartment_dir(scope=scope, compartment=compartment)
+        for path in _fact_paths(directory=directory):
+            path.unlink(missing_ok=True)
+            removed = True
+        for leftover in directory.glob("*.md.tmp"):
+            leftover.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            directory.rmdir()
     with contextlib.suppress(OSError):
-        _scope_dir(scope=scope).rmdir()
+        (scope_dir / _GUILD_DIR_NAME).rmdir()
+    with contextlib.suppress(OSError):
+        scope_dir.rmdir()
+    _bump_generation(scope=scope)
     return removed
-
-
-def _strip_identity(text: str) -> str:
-    """Removes the store-managed identity metadata line after the `v1` header."""
-    return _IDENTITY_LINE_RE.sub("v1\n", text, count=1)
 
 
 def _split_raw_entries(text: str) -> list[str]:

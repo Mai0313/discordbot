@@ -21,14 +21,16 @@ from discordbot.cogs._memory.store import (
     read_tone,
     user_scope,
     server_scope,
-    read_main_memory,
     count_raw_entries,
+    list_compartments,
+    read_memory_document,
 )
 from discordbot.cogs._memory.views import (
     MEMORY_EMBED_COLOR,
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
     MemoryClearConfirmView,
+    compartment_label,
     paginate_on_lines,
     build_memory_embed,
     memory_footer_text,
@@ -36,6 +38,7 @@ from discordbot.cogs._memory.views import (
 )
 from discordbot.cogs._gen_reply.input import render_author_identity
 from discordbot.cogs._memory.pipeline import (
+    flavor_of,
     regeneration_on_cooldown,
     regeneration_has_evidence,
     schedule_memory_regeneration,
@@ -49,6 +52,11 @@ _MEMORY_TITLE = "🧠 我對你的記憶"
 _SERVER_MEMORY_TITLE = "🧠 我對這個伺服器的記憶"
 _REGEN_TITLE = "🔄 記憶重建"
 _REGEN_COOLDOWN_DESCRIPTION = "記憶重建剛執行過，請稍後再試。"
+
+# `/memory show` is the owner reading their own store, so it is not bound by what a
+# reply prompt can carry; the pager splits whatever comes back. Kept finite only so a
+# corrupted tree cannot build an unbounded string.
+_SHOW_MAX_CHARS = 200_000
 
 
 class MemoryCogs(commands.Cog):
@@ -185,23 +193,23 @@ class MemoryCogs(commands.Cog):
         pending_template: str,
         tone_text: str = "",
     ) -> None:
-        """Shows a scope's consolidated memory, or a friendly placeholder when empty.
+        """Shows a scope's stored memory, or a friendly placeholder when empty.
 
         `tone_text` is the per-user tone note (empty for the per-server view); when
         present it leads the display as its own section, and it counts as content so
         a user with only a tone note still sees it instead of the empty placeholder.
-        The caller's own main.md is shown unfiltered — `[src:...]` tags included — as
-        a deliberate transparency feature: the user sees where each fact came from.
+
+        The caller's own memory is shown compartment by compartment, each under a
+        heading naming who can see it. Provenance used to be a per-bullet tag the model
+        wrote and the reply path had to strip; now it is which directory a fact lives
+        in, so showing it costs nothing and tells the owner exactly where each thing
+        they told the bot can come back up.
         """
-        memory_text = read_main_memory(scope=scope)
         pending_count = count_raw_entries(scope=scope)
         sections: list[str] = []
         if tone_text:
             sections.append(tone_text)
-        if memory_text:
-            # Strip only the exact `v1` header line, never a `v1`-prefixed first
-            # token of a malformed/hand-edited file (e.g. `v10...`, `v1: ...`).
-            sections.append(memory_text.removeprefix("v1\n").strip())
+        sections.extend(self._memory_sections(scope=scope))
         if sections:
             await self._send_memory_pages(
                 interaction=interaction,
@@ -217,6 +225,31 @@ class MemoryCogs(commands.Cog):
         )
         embed = Embed(title=title, description=description, color=MEMORY_EMBED_COLOR)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    def _memory_sections(self, scope: str) -> list[str]:
+        """Renders one scope's compartments as labelled display sections.
+
+        A server scope has exactly one compartment and no boundary to explain, so it is
+        rendered bare; a user scope gets one heading per compartment. The cap is lifted
+        far above the injection ceiling here on purpose: this view is for the owner, so
+        it should show everything stored rather than what a reply would fit.
+        """
+        flavor = flavor_of(scope=scope)
+        compartments = list_compartments(scope=scope)
+        if flavor == "server":
+            document = read_memory_document(
+                scope=scope, compartments=compartments, flavor=flavor, max_chars=_SHOW_MAX_CHARS
+            )
+            return [document] if document else []
+        sections: list[str] = []
+        for compartment in compartments:
+            document = read_memory_document(
+                scope=scope, compartments=[compartment], flavor=flavor, max_chars=_SHOW_MAX_CHARS
+            )
+            if document:
+                label = compartment_label(compartment=compartment, bot=self.bot)
+                sections.append(f"# {label}\n{document}")
+        return sections
 
     async def _send_memory_pages(
         self, interaction: Interaction[commands.Bot], text: str, footer_text: str, title: str
