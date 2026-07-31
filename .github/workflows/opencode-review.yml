@@ -12,9 +12,9 @@ permissions: write-all
 env:
   OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
 
-concurrency:
-  group: opencode-review-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+# concurrency:
+#   group: opencode-review-${{ github.event.pull_request.number }}
+#   cancel-in-progress: true
 
 jobs:
   review:
@@ -28,19 +28,13 @@ jobs:
       contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
 
     steps:
-      # Full history, so the skill can resolve a merge base against the base branch.
+      # Full history, so a base-branch diff resolves.
       - name: Checkout
         if: env.OPENCODE_API_KEY != ''
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
-
-      # Lands in .agents/skills/, which opencode scans on its own.
-      - name: Install skills
-        if: env.OPENCODE_API_KEY != ''
-        run: |
-          npx -y skills add Mai0313/skills --agent opencode --skill code-review -y
 
       - name: Run opencode
         if: env.OPENCODE_API_KEY != ''
@@ -53,16 +47,10 @@ jobs:
           share: false
           variant: high
           prompt: |
-            Review this pull request with the `code-review` skill, against the
-            base branch `origin/${{ github.event.pull_request.base.ref }}`.
+            Use the review skill to do a code review of this pull request.
 
-            Shape the report for a GitHub comment: the verdict as a bold opening
-            line, then one block per finding in severity order, each starting
-            with a bold `P<n> — <title>` line, then its location as a markdown
-            link to `https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>`,
-            then the finding itself. Reformatting is the only liberty you may
-            take: never drop, merge, or soften one. A single line is enough when
-            there is nothing to report.
+            Follow whichever of CLAUDE.md, AGENTS.md, README.md and
+            .github/copilot-instructions.md this repository actually has, and
+            treat a breach of them as a finding.
 
-            Your reply is posted as a comment for you, so do not post one
-            yourself, and do not commit or push anything.
+            Do not modify, commit, or push anything.
