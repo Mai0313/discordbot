@@ -21,7 +21,7 @@ jobs:
     name: Review
     runs-on: ubuntu-latest
     # The action asserts the author has write access and posts an error comment
-    # when they do not, so keep non-collaborator PRs out. This also covers
+    # when they do not, so keep non-collaborator PRs out. This also excludes
     # dependabot, whose PRs come in as CONTRIBUTOR.
     if: |
       github.event.pull_request.draft == false &&
@@ -31,7 +31,7 @@ jobs:
       # Full history, so the skill can resolve a merge base against the base branch.
       - name: Checkout
         if: env.OPENCODE_API_KEY != ''
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false

@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Checkout
         if: env.OPENCODE_API_KEY != ''
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           persist-credentials: false
 
