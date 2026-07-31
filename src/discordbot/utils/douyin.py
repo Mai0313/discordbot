@@ -288,8 +288,10 @@ def _remember_link_id(url: str, aweme_id: str) -> None:
 # Three things hold it down, all cheap: the caches above (one fetch per post per window, none
 # at all for a re-pasted link), the per-URL lock below (simultaneous pastes of one link
 # collapse into a single fetch instead of racing past the cache), and this semaphore (a burst
-# of distinct links queues rather than arriving at Douyin all at once). Both are shared by the
-# expansion cog, `/download_video`, and `gen_reply`'s context builder.
+# of distinct links queues rather than arriving at Douyin all at once). The lock and the
+# semaphore are taken by the two paths a link arrives on unasked — the expansion cog and
+# `gen_reply`'s context builder — while `/download_video` takes neither: somebody typed that
+# command and is waiting on it. Only the caches below it are shared by all three.
 DOUYIN_FETCH_CONCURRENCY = 2
 
 douyin_fetch_semaphore = LoopLocalSemaphore(capacity_provider=lambda: DOUYIN_FETCH_CONCURRENCY)

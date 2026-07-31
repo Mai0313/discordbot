@@ -289,8 +289,8 @@ class LogMessageCog(commands.Cog):
         """Re-logs message edits so streaming bot replies converge to their final state.
 
         `on_message` only fires on the initial `reply()` call, which for the
-        streaming text path in `gen_reply.py` captures only the first ~30
-        chars. Every subsequent `reply.edit(...)` fires here; the UPSERT on
+        streaming text path in `cogs/gen_reply/streaming.py` captures only the
+        first ~30 chars. Every subsequent `reply.edit(...)` fires here; the UPSERT on
         `discord_message_id` collapses them into a single row whose content
         matches what is actually on Discord.
 

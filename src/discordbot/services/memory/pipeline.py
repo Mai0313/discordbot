@@ -189,9 +189,9 @@ def flavor_of(scope: str) -> memory_db.MemoryJobFlavor:
 async def _safe(coro: Awaitable[None]) -> None:
     """Awaits a best-effort reply.db write, swallowing any failure.
 
-    Persistence is an augmentation layer (the opposite of `research.py`, which
-    lets DB errors raise into its run loop): a reply.db failure must never break
-    the in-memory fire-and-forget memory pipeline.
+    Persistence is an augmentation layer (the opposite of `cogs/research/cog.py`,
+    which lets DB errors raise into its run loop): a reply.db failure must never
+    break the in-memory fire-and-forget memory pipeline.
     """
     try:
         await coro
