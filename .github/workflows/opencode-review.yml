@@ -40,7 +40,7 @@ jobs:
       - name: Install skills
         if: env.OPENCODE_API_KEY != ''
         run: |
-          npx -y skills add https://github.com/anthropics/knowledge-work-plugins --agent opencode --skill code-review -y
+          npx -y skills add Mai0313/skills --agent opencode --skill code-review -y
 
       - name: Run opencode
         if: env.OPENCODE_API_KEY != ''
