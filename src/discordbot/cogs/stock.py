@@ -17,9 +17,9 @@ from discordbot.cogs._stock.views import (
     require_stock_user,
     build_market_message_payload,
 )
-from discordbot.cogs._stock.database import list_market_quotes, ensure_due_stock_news
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import track_public_message
+from discordbot.services.stock.database import list_market_quotes, ensure_due_stock_news
 
 _stock_news_refresh_task: asyncio.Task[None] | None = None
 _stock_news_refresh_task_loop: asyncio.AbstractEventLoop | None = None

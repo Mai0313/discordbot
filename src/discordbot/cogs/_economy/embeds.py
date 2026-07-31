@@ -22,7 +22,7 @@ from discordbot.typings.economy import (
     LoanProposalAcceptResult,
 )
 from discordbot.utils.number_text import share_quantity_text
-from discordbot.cogs._stock.market import format_price
+from discordbot.services.stock.market import format_price
 from discordbot.services.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,

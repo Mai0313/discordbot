@@ -12,7 +12,7 @@ from nextcord.ext import commands
 from discordbot.typings.stock import STOCK_ACTION_TIMEOUT_SECONDS, StockAction, StockMarketQuote
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.cogs._stock.chart import build_price_chart
-from discordbot.cogs._stock.database import (
+from discordbot.services.stock.database import (
     get_stock_news,
     get_stock_detail,
     list_market_quotes,

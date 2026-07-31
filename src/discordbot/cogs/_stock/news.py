@@ -6,7 +6,7 @@ from pydantic import Field, BaseModel, ConfigDict
 from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.stock import StockGeneratedNews, StockNewsGenerationContext
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT
+from discordbot.services.stock.prompts import STOCK_NEWS_PROMPT
 
 STOCK_NEWS_AI_TIMEOUT_SECONDS = 4.0
 

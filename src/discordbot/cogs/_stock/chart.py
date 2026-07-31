@@ -6,7 +6,7 @@ from functools import lru_cache
 from PIL import Image, ImageDraw
 
 from discordbot.typings.stock import StockPriceTickView
-from discordbot.cogs._stock.market import format_price
+from discordbot.services.stock.market import format_price
 
 _WIDTH = 900
 _HEIGHT = 360

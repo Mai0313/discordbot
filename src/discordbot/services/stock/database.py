@@ -44,7 +44,10 @@ from discordbot.utils.currency import cash_ceil, cash_floor
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.typings.economy import WalletDeltaLeg
 from discordbot.utils.number_text import share_quantity_text
-from discordbot.cogs._stock.market import (
+from discordbot.utils.asyncio_locks import LoopLocalLock, KeyedLockManager, LoopLocalSemaphore
+from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
+from discordbot.utils.stored_integer import StoredInteger
+from discordbot.services.stock.market import (
     DAILY_PRICE_LIMIT_BPS,
     NEWS_SENTIMENT_DECAY_BPS,
     NEWS_SENTIMENT_LIMIT_BPS,
@@ -60,14 +63,11 @@ from discordbot.cogs._stock.market import (
     tick_boundaries_to_apply,
     calculate_next_price_cents,
 )
-from discordbot.cogs._stock.prompts import (
+from discordbot.services.stock.prompts import (
     STOCK_NEWS_BEARISH_FALLBACK_TEMPLATES,
     STOCK_NEWS_BULLISH_FALLBACK_TEMPLATES,
     STOCK_NEWS_NEUTRAL_FALLBACK_TEMPLATES,
 )
-from discordbot.utils.asyncio_locks import LoopLocalLock, KeyedLockManager, LoopLocalSemaphore
-from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
-from discordbot.utils.stored_integer import StoredInteger
 from discordbot.services.economy.database import get_balance, apply_ordered_wallet_deltas
 
 if TYPE_CHECKING:

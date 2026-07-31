@@ -17,7 +17,6 @@ from discordbot.typings.economy import (
     LoanLenderType,
 )
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
-from discordbot.cogs._stock.database import get_stock_portfolio
 from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.services.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
@@ -25,6 +24,7 @@ from discordbot.services.economy.boards import (
     build_loss_leaderboard_board_image,
     build_balance_leaderboard_board_image,
 )
+from discordbot.services.stock.database import get_stock_portfolio
 from discordbot.services.economy.database import (
     top_n,
     buy_vip,
