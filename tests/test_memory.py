@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 import asyncio
 from pathlib import Path
+from datetime import UTC, datetime
 import contextlib
 
 import pytest
@@ -17,12 +18,27 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.cogs.memory import MemoryCogs
 from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs._memory import pipeline
+from discordbot.typings.memory import (
+    MemoryFact,
+    MemorySection,
+    MemorySharing,
+    MemoryCategory,
+    MemoryConfidence,
+    MemoryDurability,
+    MemoryDeltaAction,
+    MemoryEvidenceKind,
+)
 from discordbot.typings.models import ModelSettings
+from discordbot.cogs._memory.facts import MemoryFlavor, node_type_for
 from discordbot.cogs._memory.store import (
+    DM_COMPARTMENT,
+    GLOBAL_COMPARTMENT,
     clear_raw,
     read_tone,
+    read_facts,
     scope_lock,
     user_scope,
+    write_fact,
     write_tone,
     iter_scopes,
     clear_memory,
@@ -33,11 +49,11 @@ from discordbot.cogs._memory.store import (
     raw_file_bytes,
     append_raw_entry,
     read_detail_tail,
-    read_main_memory,
     read_raw_entries,
     count_raw_entries,
-    write_main_memory,
-    read_main_identity,
+    guild_compartment,
+    list_compartments,
+    read_memory_document,
 )
 from discordbot.cogs._memory.views import (
     MEMORY_PAGE_MAX_CHARS,
@@ -54,20 +70,16 @@ from discordbot.cogs._memory.prompts import (
 )
 from discordbot.cogs._gen_reply.input import render_author_identity
 from discordbot.cogs._memory.constants import (
-    MAIN_COMPACTION_TARGET_CHARS,
-    STABLE_FRESHNESS_WINDOW_DAYS,
+    COMPACTION_TARGET_CHARS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.cogs._memory.extraction import (
-    MemorySharing,
-    MemoryCategory,
     RawMemoryDraft,
-    MemoryConfidence,
-    MemoryDurability,
+    MemoryFactDelta,
     MemoryExtractorAI,
     MemoryObservation,
     ConsolidatedMemory,
-    MemoryEvidenceKind,
+    ConsolidationRequest,
     redact_secrets,
     subject_source_line,
     parse_subject_source,
@@ -204,55 +216,128 @@ def _parsed(output: BaseModel | None) -> SimpleNamespace:
     return SimpleNamespace(output_parsed=output, status="completed", incomplete_details=None)
 
 
+_STAMPED_AT = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+
+
+def _stored_fact(  # noqa: PLR0913 -- test helper mirrors the stored fact's own fields
+    *,
+    fact_id: str = "0" * 16,
+    text: str = "喜歡簡短回覆",
+    summary: str = "回覆長度偏好",
+    section: str = "preference",
+    durability: str = "stable",
+    compartment: str = GLOBAL_COMPARTMENT,
+    keys: tuple[str, ...] = (),
+) -> MemoryFact:
+    """Builds one already-consolidated fact, with the code-stamped fields filled in."""
+    return MemoryFact(
+        fact_id=fact_id,
+        summary=summary,
+        section=cast("MemorySection", section),
+        durability=cast("MemoryDurability", durability),
+        text=text,
+        compartment=compartment,
+        owner_id=USER_ID,
+        owner_name="Alice (alice)",
+        node_type=node_type_for(section=cast("MemorySection", section)),
+        created=_STAMPED_AT,
+        last_confirmed=_STAMPED_AT,
+        keys=keys,
+    )
+
+
+def _delta(  # noqa: PLR0913 -- test helper mirrors the delta schema
+    *,
+    action: str = "create",
+    fact_id: str = "",
+    section: str = "preference",
+    durability: str = "stable",
+    summary: str = "回覆長度偏好",
+    text: str = "喜歡簡短回覆",
+    from_keys: tuple[str, ...] = (),
+    subject_id: str = "",
+) -> MemoryFactDelta:
+    """Builds one consolidation delta with the boilerplate filled in."""
+    return MemoryFactDelta(
+        action=cast("MemoryDeltaAction", action),
+        fact_id=fact_id,
+        section=cast("MemorySection", section),
+        durability=cast("MemoryDurability", durability),
+        summary=summary,
+        text=text,
+        from_keys=from_keys,
+        subject_id=subject_id,
+    )
+
+
+def _consolidated(
+    *,
+    text: str = "合併後",
+    summary: str = "整理後的事實",
+    section: str = "preference",
+    tone: str = "",
+) -> ConsolidatedMemory:
+    """Builds a one-delta consolidation result, the shape phase-2 now returns."""
+    return ConsolidatedMemory(
+        deltas=(_delta(summary=summary, text=text, section=section),), tone_markdown=tone
+    )
+
+
+def _no_change(*, tone: str = "") -> ConsolidatedMemory:
+    """Builds a consolidation result that asks for nothing; an empty batch is a valid no-op."""
+    return ConsolidatedMemory(deltas=(), tone_markdown=tone)
+
+
+def _memory_text(scope: str = USER_SCOPE, flavor: MemoryFlavor = "user") -> str:
+    """Renders every compartment a scope holds, the way the owner's own DM would read it."""
+    return read_memory_document(
+        scope=scope, compartments=list_compartments(scope=scope), flavor=flavor
+    )
+
+
+def _consolidation_request(
+    *, compact: bool = False, emit_tone: bool = True
+) -> ConsolidationRequest:
+    """Builds one compartment's consolidation request; every block but the two flags is fixed."""
+    return ConsolidationRequest(
+        compartment_note="cross-server safe memory",
+        allowed_sections=("preference", "fact"),
+        existing_facts="",
+        existing_tone="",
+        raw_entries="## 2026-01-01T00:00:00+00:00\nx",
+        recent_detail="",
+        tone_evidence="* 喜歡禮貌的語氣",
+        global_reference="",
+        today="2026-06-06",
+        compact=compact,
+        emit_tone=emit_tone,
+    )
+
+
 # ---------------------------------------------------------------------------
 # store
 # ---------------------------------------------------------------------------
 
 
-def test_read_main_memory_missing_file_returns_empty(memory_isolated_dir: Path) -> None:
-    assert read_main_memory(scope=USER_SCOPE) == ""
+def test_a_scope_with_no_facts_renders_an_empty_document(memory_isolated_dir: Path) -> None:
+    """The read path answers "" for an unknown scope rather than raising on a missing dir."""
+    assert _memory_text() == ""
 
 
-def test_write_main_memory_roundtrip_and_atomic(memory_isolated_dir: Path) -> None:
-    write_main_memory(
-        scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n測試內容\n", identity=IDENTITY
-    )
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n測試內容"
-    leftovers = list((memory_isolated_dir / str(USER_ID)).glob("*.tmp"))
+def test_a_written_fact_comes_back_through_the_document_read(memory_isolated_dir: Path) -> None:
+    """One fact per file: the write lands atomically and the render finds it again."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="測試內容"))
+    assert "測試內容" in _memory_text()
+    leftovers = list((memory_isolated_dir / str(USER_ID) / GLOBAL_COMPARTMENT).glob("*.tmp"))
     assert leftovers == []
 
 
-def test_write_main_memory_keeps_oversized_content_intact(memory_isolated_dir: Path) -> None:
-    # No code-side clamp: growth is bounded by the LLM compaction pass.
-    content = "v1\n\n## 使用者輪廓\n" + "長" * 50_000
-    write_main_memory(scope=USER_SCOPE, content=content, identity=IDENTITY)
-    assert len(read_main_memory(scope=USER_SCOPE)) == len(content)
-
-
-def test_write_main_memory_stamps_identity_on_disk(memory_isolated_dir: Path) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n內容", identity=IDENTITY)
-    on_disk = (memory_isolated_dir / str(USER_ID) / "main.md").read_text(encoding="utf-8")
-    assert on_disk.startswith(f"v1\n{IDENTITY}\n\n")
-    # Every read path strips the identity metadata line back out.
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n內容"
-
-
-def test_write_main_memory_backs_up_previous_generation(memory_isolated_dir: Path) -> None:
-    bak_path = memory_isolated_dir / str(USER_ID) / "main.bak.md"
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n第一版", identity=IDENTITY)
-    assert not bak_path.exists()
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n第二版", identity=IDENTITY)
-    assert "第一版" in bak_path.read_text(encoding="utf-8")
-    assert "第二版" in read_main_memory(scope=USER_SCOPE)
-
-
-def test_read_main_memory_keeps_identity_lookalike_body_lines(memory_isolated_dir: Path) -> None:
-    user_dir = memory_isolated_dir / str(USER_ID)
-    user_dir.mkdir(parents=True, exist_ok=True)
-    hand_edited = "v1\n\n## 穩定事實\n* 使用者提過 Alice (alice) [id: 1] 是朋友\n"
-    (user_dir / "main.md").write_text(data=hand_edited, encoding="utf-8")
-    # Without the store-written identity line, the strip must be a no-op.
-    assert "[id: 1] 是朋友" in read_main_memory(scope=USER_SCOPE)
+def test_the_store_never_clamps_a_fact_body(memory_isolated_dir: Path) -> None:
+    """Growth is bounded by the consolidation compaction pass, never by a silent truncation."""
+    body = "長" * 50_000
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text=body))
+    stored = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [len(fact.text) for fact in stored] == [len(body)]
 
 
 def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path) -> None:
@@ -317,31 +402,37 @@ def test_raw_file_bytes_missing_file_is_zero(memory_isolated_dir: Path) -> None:
 
 
 def test_clear_raw_removes_only_raw_file(memory_isolated_dir: Path) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\nmain", identity=IDENTITY)
+    """Retiring a consumed batch must not touch the facts that batch just produced."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact())
     append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
     clear_raw(scope=USER_SCOPE)
     assert count_raw_entries(scope=USER_SCOPE) == 0
-    assert read_main_memory(scope=USER_SCOPE) != ""
+    assert _memory_text() != ""
 
 
 def test_clear_user_memory_removes_files_and_directory(memory_isolated_dir: Path) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n第一版", identity=IDENTITY)
-    write_main_memory(scope=USER_SCOPE, content="v1\n\nmain", identity=IDENTITY)
+    """Every tier goes, the emptied scope directory with them, and a repeat clear is a no-op."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact())
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="1" * 16, compartment=DM_COMPARTMENT))
     append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00 | x\n舊證據")
     assert clear_memory(scope=USER_SCOPE) is True
-    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert _memory_text() == ""
     assert count_raw_entries(scope=USER_SCOPE) == 0
-    # main, raw, the backup generation, and the detail file are all gone, then
-    # the empty per-user directory itself is removed.
+    assert list_compartments(scope=USER_SCOPE) == []
     assert not (memory_isolated_dir / str(USER_ID)).exists()
     assert clear_memory(scope=USER_SCOPE) is False
 
 
 def test_clear_user_memory_tolerates_leftover_tmp(memory_isolated_dir: Path) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\nmain", identity=IDENTITY)
+    """A crash between a tmp write and its rename must not leave the scope unclearable."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact())
+    append_raw_entry(scope=USER_SCOPE, entry_text="raw entry")
     user_dir = memory_isolated_dir / str(USER_ID)
-    (user_dir / "main.md.tmp").write_text(data="partial", encoding="utf-8")
+    (user_dir / "raw.md.tmp").write_text(data="partial", encoding="utf-8")
+    (user_dir / GLOBAL_COMPARTMENT / "deadbeefdeadbeef.md.tmp").write_text(
+        data="partial", encoding="utf-8"
+    )
     assert clear_memory(scope=USER_SCOPE) is True
     assert not user_dir.exists()
 
@@ -548,69 +639,50 @@ async def test_extract_returns_none_on_empty_parse() -> None:
     assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
 
 
-async def test_consolidate_marks_empty_existing_memory() -> None:
+async def test_consolidate_marks_every_absent_input_block() -> None:
+    """An absent block is labelled `(empty)` so the model never reads a gap as content."""
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n新檔案", tone_markdown=""
-    )
-    result = await extractor.consolidate(
-        existing_main="",
-        existing_tone="",
-        raw_entries="## 2026-01-01T00:00:00\nx",
-        recent_detail="",
-        today="2026-06-06",
-        compact=False,
-    )
+    fake_client.responses.output_parsed = _consolidated(text="新事實")
+    result = await extractor.consolidate(request=_consolidation_request())
     assert result is not None
-    assert result.changed is True
-    assert result.memory_markdown.startswith("v1")
+    assert [delta.text for delta in result.deltas] == ["新事實"]
     user_text = fake_client.responses.parse_inputs[0][0]["content"]
     assert user_text.startswith("today: 2026-06-06")
-    assert "(empty)" in user_text
+    assert "<existing_facts>\n(empty)\n</existing_facts>" in user_text
     # The empty detail window still renders its labeled block for the prompt.
-    assert "<recent_detail>" in user_text
+    assert "<recent_detail>\n(empty)\n</recent_detail>" in user_text
     # The tone note rides the consolidation input in its own labeled block.
     assert "<existing_tone>\n(empty)\n</existing_tone>" in user_text
+    # The compartment and its section vocabulary are stated, since one call now writes
+    # exactly one compartment and a delta naming any other section is dropped.
+    assert "compartment: cross-server safe memory" in user_text
+    assert "allowed sections: preference, fact" in user_text
 
 
-async def test_consolidate_unchanged_result_passthrough() -> None:
+async def test_consolidate_empty_delta_batch_passes_through() -> None:
+    """Asking for no change is the normal outcome, not a failure the caller must retry."""
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=False, memory_markdown="", tone_markdown=""
-    )
-    result = await extractor.consolidate(
-        existing_main="v1\n\nold",
-        existing_tone="",
-        raw_entries="## t\nx",
-        recent_detail="",
-        today="2026-06-06",
-        compact=False,
-    )
+    fake_client.responses.output_parsed = _no_change()
+    result = await extractor.consolidate(request=_consolidation_request())
     assert result is not None
-    assert result.changed is False
+    assert result.deltas == ()
+
+
+async def test_consolidate_omits_the_tone_blocks_when_it_does_not_own_the_note() -> None:
+    """Only the global compartment's call emits tone, so the others never see the note."""
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _no_change()
+    await extractor.consolidate(request=_consolidation_request(emit_tone=False))
+    user_text = fake_client.responses.parse_inputs[0][0]["content"]
+    assert "<existing_tone>" not in user_text
+    assert "<tone_evidence>" not in user_text
 
 
 async def test_consolidate_compact_appends_compaction_block() -> None:
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=False, memory_markdown="", tone_markdown=""
-    )
-    await extractor.consolidate(
-        existing_main="v1\n\nold",
-        existing_tone="",
-        raw_entries="## t\nx",
-        recent_detail="",
-        today="2026-06-06",
-        compact=True,
-    )
-    await extractor.consolidate(
-        existing_main="v1\n\nold",
-        existing_tone="",
-        raw_entries="## t\nx",
-        recent_detail="",
-        today="2026-06-06",
-        compact=False,
-    )
+    fake_client.responses.output_parsed = _no_change()
+    await extractor.consolidate(request=_consolidation_request(compact=True))
+    await extractor.consolidate(request=_consolidation_request(compact=False))
     assert "COMPACTION" in fake_client.responses.parse_instructions[0]
     assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
 
@@ -625,17 +697,8 @@ async def test_extractor_uses_distinct_models_per_phase() -> None:
     )
     fake_client.responses.output_parsed = _draft("偏好明確")
     await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=False, memory_markdown="", tone_markdown=""
-    )
-    await extractor.consolidate(
-        existing_main="",
-        existing_tone="",
-        raw_entries="x",
-        recent_detail="",
-        today="2026-06-06",
-        compact=False,
-    )
+    fake_client.responses.output_parsed = _no_change()
+    await extractor.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_models == [
         "extract-model",
         "evaluate-model",
@@ -646,34 +709,58 @@ async def test_extractor_uses_distinct_models_per_phase() -> None:
 def test_prompts_cover_recent_context_and_compaction() -> None:
     assert "recent_context" in PHASE1_PROMPT
     assert "one-off mention" in PHASE1_EVALUATOR_PROMPT
-    assert "近期脈絡" in PHASE2_PROMPT
+    assert "`recent`" in PHASE2_PROMPT
     assert "today" in PHASE2_PROMPT
     assert "ttl_days" in PHASE2_PROMPT
-    assert str(MAIN_COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
+    assert str(COMPACTION_TARGET_CHARS) in PHASE2_COMPACTION_BLOCK
 
 
-def test_prompts_cover_permanent_tier_and_displacement_freshness() -> None:
+def test_phase2_prompt_states_the_delta_protocol() -> None:
+    """The model's only handle on a stored fact is the id it echoes back, so the prompt says so."""
+    for action in ('action="create"', 'action="update"', 'action="delete"'):
+        assert action in PHASE2_PROMPT
+    # `fact_id` is copied verbatim, never invented, and `from_keys` is what lets the next
+    # batch recognise the same fact when the model rewords its summary.
+    assert "`fact_id` MUST be copied verbatim" in PHASE2_PROMPT
+    assert "`from_keys`" in PHASE2_PROMPT
+
+
+def test_phase2_prompt_tells_the_model_dates_are_stamped_for_it() -> None:
+    """Aging is a deterministic code sweep now, so a model-written date would only fight it."""
+    assert "You do not date anything" in PHASE2_PROMPT
+    assert "Dates are recorded for you" in PHASE2_PROMPT
+    # The three durability tiers still come from the model, since only it knows which
+    # tier an observation belongs to.
+    for durability in ("`permanent`", "`stable`", "`recent`"):
+        assert durability in PHASE2_PROMPT
+
+
+def test_prompts_cover_the_permanent_tier() -> None:
     # Phase-1 must offer the permanent durability so identity facts are tagged
     # at extraction time; the evaluator may downgrade an over-eager permanent.
     assert "permanent" in PHASE1_PROMPT
     assert "permanent" in PHASE1_EVALUATOR_PROMPT
-    # Phase-2 carries the never-aged 永久事實 section plus the mutable `[~YYYY-MM]`
-    # tag, and the day-stamp form stays present so the two shapes never collide.
-    assert "永久事實" in PHASE2_PROMPT
-    assert "[~YYYY-MM]" in PHASE2_PROMPT
-    assert "[YYYY-MM-DD]" in PHASE2_PROMPT
-    # Displacement-driven aging: the window number is interpolated and the rule
-    # anchors on the freshest mutable activity (`latest`), not on `today`.
-    assert str(STABLE_FRESHNESS_WINDOW_DAYS) in PHASE2_PROMPT
-    assert "latest" in PHASE2_PROMPT
-    assert "DISPLACEMENT" in PHASE2_PROMPT
+    assert "permanent" in PHASE2_PROMPT
 
 
 def test_prompts_record_tone_persona_independently() -> None:
-    # Tone stays in main.md but must be recorded as persona-independent qualities so a
-    # PERSONA_CHOICES change does not leave a stale persona-bound tone preference.
+    # Tone lives in its own tier but must be recorded as persona-independent qualities so
+    # a PERSONA_CHOICES change does not leave a stale persona-bound tone preference.
     assert "persona-independent" in PHASE1_PROMPT
     assert "persona-independent" in PHASE2_PROMPT
+
+
+def test_phase2_prompt_keeps_tone_evidence_out_of_the_facts() -> None:
+    """Tone evidence is unpartitioned, so a fact grounded in it would escape its compartment."""
+    assert "<tone_evidence>" in PHASE2_PROMPT
+    assert "never emit a memory delta grounded in it" in PHASE2_PROMPT
+
+
+def test_evaluator_prompt_locks_third_parties_named_in_plain_prose() -> None:
+    """The deterministic gate only sees ids and roster names; the evaluator covers the rest."""
+    assert "even when nobody is tagged and no user id appears anywhere in the text" in (
+        PHASE1_EVALUATOR_PROMPT
+    )
 
 
 def test_redact_secrets_masks_token_shapes() -> None:
@@ -906,7 +993,7 @@ async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -
     )
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
-    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert _memory_text() == ""
 
 
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
@@ -1012,12 +1099,7 @@ async def test_pipeline_consolidates_at_threshold(
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
-    parsed_outputs = [
-        _draft("第二筆", normalized_key="preference.second"),
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後", tone_markdown=""
-        ),
-    ]
+    parsed_outputs = [_draft("第二筆", normalized_key="preference.second"), _consolidated()]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         return _parsed(output=parsed_outputs.pop(0))
@@ -1032,8 +1114,10 @@ async def test_pipeline_consolidates_at_threshold(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert read_main_memory(scope=USER_SCOPE).startswith("v1")
-    assert "合併後" in read_main_memory(scope=USER_SCOPE)
+    assert "合併後" in _memory_text()
+    # The fact is stamped with the scheduling identity, not written by the model.
+    stored = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [(fact.owner_id, fact.owner_name) for fact in stored] == [(USER_ID, "Alice (alice)")]
     assert count_raw_entries(scope=USER_SCOPE) == 0
     # The consumed raw batch lands in the detail file, without author identity.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
@@ -1067,22 +1151,20 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
     )
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
-    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert _memory_text() == ""
     # Failure paths keep raw for retry and must not retire it as consumed.
     assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
 
 
-async def test_pipeline_unchanged_consolidation_still_clears_raw(
+async def test_pipeline_empty_delta_batch_still_clears_raw(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A batch that implies no change is applied, so it is consumed rather than replayed."""
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n既有內容", identity=IDENTITY)
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
     extractor, fake_client = _extractor()
 
-    parsed_outputs: list[BaseModel] = [
-        _draft("已知資訊"),
-        ConsolidatedMemory(changed=False, memory_markdown="", tone_markdown=""),
-    ]
+    parsed_outputs: list[BaseModel] = [_draft("已知資訊"), _no_change()]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         return _parsed(output=parsed_outputs.pop(0))
@@ -1097,35 +1179,25 @@ async def test_pipeline_unchanged_consolidation_still_clears_raw(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "既有內容" in read_main_memory(scope=USER_SCOPE)
+    assert "既有內容" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
     # A genuine no-op still consumes the batch, so it lands in the detail file too.
     detail_text = (memory_isolated_dir / str(USER_ID) / "detail.md").read_text(encoding="utf-8")
     assert "已知資訊" in detail_text
 
 
-async def test_pipeline_compaction_triggers_past_main_size(
+async def test_pipeline_compaction_triggers_past_compartment_size(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Compaction is now decided per compartment, off the rendered size of its own facts."""
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.MAIN_COMPACTION_TRIGGER_CHARS", 100)
-    write_main_memory(
-        scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n" + "長" * 200, identity=IDENTITY
-    )
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.COMPACTION_TRIGGER_CHARS", 100)
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="長" * 200))
     extractor, fake_client = _extractor()
     seen_instructions: list[str] = []
     seen_inputs: list[str] = []
 
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        # Long enough to clear the compaction shrink guard for the tiny
-        # monkeypatched trigger used by this test.
-        ConsolidatedMemory(
-            changed=True,
-            memory_markdown="v1\n\n## 使用者輪廓\n壓縮後保留所有耐久偏好與事實的精簡版本",
-            tone_markdown="",
-        ),
-    ]
+    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated(text="壓縮後")]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         seen_instructions.append(str(kwargs["instructions"]))
@@ -1145,27 +1217,22 @@ async def test_pipeline_compaction_triggers_past_main_size(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "壓縮後" in read_main_memory(scope=USER_SCOPE)
-    # The oversized main file flips consolidation into compaction mode, and
-    # the consolidation input is dated for the 近期脈絡 aging rules.
+    assert "壓縮後" in _memory_text()
+    # The oversized compartment flips consolidation into compaction mode, and the
+    # consolidation input is dated so the model can reason about how old evidence is.
     assert "COMPACTION" in seen_instructions[1]
     assert re.search(r"today: \d{4}-\d{2}-\d{2}", seen_inputs[1]) is not None
 
 
-async def test_pipeline_small_main_skips_compaction(
+async def test_pipeline_small_compartment_skips_compaction(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n小檔案", identity=IDENTITY)
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="小檔案"))
     extractor, fake_client = _extractor()
     seen_instructions: list[str] = []
 
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後", tone_markdown=""
-        ),
-    ]
+    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         seen_instructions.append(str(kwargs["instructions"]))
@@ -1182,6 +1249,155 @@ async def test_pipeline_small_main_skips_compaction(
     )
     await _wait_for_inflight()
     assert "COMPACTION" not in seen_instructions[1]
+
+
+_GUILD_222 = guild_compartment(guild_id=222)
+# The `_compartment_note` a guild call carries, used to tell the fan-out's calls apart.
+_GUILD_222_NOTE = "Discord server 222"
+
+
+def _stage_raw_observation(  # noqa: PLR0913 -- one observation's routing fields plus its category
+    *,
+    summary: str,
+    key: str,
+    sharing: str,
+    source: str,
+    category: str = "stable_fact",
+    evidence_kind: str = "stable_fact",
+) -> None:
+    """Appends one already-stamped raw observation, exactly as phase-1 would have written it."""
+    append_raw_entry(
+        scope=USER_SCOPE,
+        entry_text=render_memory_observations(
+            observations=(
+                _observation(
+                    summary=summary,
+                    normalized_key=key,
+                    sharing=sharing,
+                    category=category,
+                    evidence_kind=evidence_kind,
+                ),
+            ),
+            source=source,
+        ),
+    )
+
+
+def _stage_mixed_raw_batch() -> None:
+    """Stages one raw batch whose two observations must end up in two different compartments."""
+    _stage_raw_observation(
+        summary="全域偏好", key="preference.global", sharing="global", source="guild 222"
+    )
+    _stage_raw_observation(
+        summary="本群祕密", key="fact.secret", sharing="source_only", source="guild 222"
+    )
+
+
+async def test_consolidation_fans_one_batch_out_over_its_compartments(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One batch, two directories: routing is per observation and neither call sees the other."""
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    _stage_mixed_raw_batch()
+    extractor, fake_client = _extractor()
+    seen_inputs: list[str] = []
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        first = cast("dict[str, object]", inputs[0])
+        user_text = str(first["content"])
+        seen_inputs.append(user_text)
+        written = "本群事實" if _GUILD_222_NOTE in user_text else "全域事實"
+        return _parsed(output=_consolidated(summary=written, text=written))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+
+    assert list_compartments(scope=USER_SCOPE) == [GLOBAL_COMPARTMENT, _GUILD_222]
+    global_texts = [
+        fact.text for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    ]
+    guild_texts = [fact.text for fact in read_facts(scope=USER_SCOPE, compartment=_GUILD_222)]
+    assert global_texts == ["全域事實"]
+    assert guild_texts == ["本群事實"]
+    # The global call is never shown the source_only evidence, so it cannot publish what
+    # the flag confined: the partition runs before the model, not after it.
+    assert "全域偏好" in seen_inputs[0]
+    assert "本群祕密" not in seen_inputs[0]
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+
+
+async def test_a_failed_compartment_keeps_the_whole_raw_batch(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retiring a batch one compartment never read would lose that bucket's evidence for good.
+
+    Replaying the compartment that did apply is safe (a delta is an upsert keyed on an id
+    the model echoes back, then on the evidence keys), so the whole batch is kept.
+    """
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    _stage_mixed_raw_batch()
+    extractor, fake_client = _extractor()
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        first = cast("dict[str, object]", inputs[0])
+        if _GUILD_222_NOTE in str(first["content"]):
+            raise RuntimeError("consolidation down")
+        return _parsed(output=_consolidated(summary="全域事實", text="全域事實"))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+
+    assert count_raw_entries(scope=USER_SCOPE) == 2
+    assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
+    assert [
+        fact.text for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    ] == ["全域事實"]
+    assert read_facts(scope=USER_SCOPE, compartment=_GUILD_222) == []
+
+
+async def test_a_source_only_batch_still_updates_the_tone_note(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The global call runs even with an empty bucket, because it alone owns the tone note.
+
+    Roughly half of all observations are `source_only`; gating the global call on a
+    non-empty bucket would simply stop tone updating for those conversations.
+    """
+    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    _stage_raw_observation(
+        summary="喜歡有禮貌的回覆",
+        key="preference.tone",
+        sharing="source_only",
+        source="guild 222",
+        category="stable_preference",
+        evidence_kind="explicit_preference",
+    )
+    extractor, fake_client = _extractor()
+    seen_inputs: list[str] = []
+
+    async def staged_parse(**kwargs: object) -> SimpleNamespace:
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        first = cast("dict[str, object]", inputs[0])
+        user_text = str(first["content"])
+        seen_inputs.append(user_text)
+        if _GUILD_222_NOTE in user_text:
+            return _parsed(output=_consolidated(summary="本群事實", text="本群事實"))
+        return _parsed(output=_no_change(tone="## 語氣偏好\n* 偏好禮貌"))
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+
+    assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
+    # Tone evidence is deliberately unpartitioned, so the global call sees the signal even
+    # though its own raw bucket is empty.
+    assert "<raw_entries>\n(empty)\n</raw_entries>" in seen_inputs[0]
+    assert "喜歡有禮貌的回覆" in seen_inputs[0]
+    assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
 
 
 async def test_pipeline_aborts_write_after_clear(
@@ -1259,28 +1475,58 @@ def _interaction(user_id: int = USER_ID) -> SimpleNamespace:
 
 
 def _memory_cog() -> MemoryCogs:
-    """Builds a MemoryCogs instance with a stub bot."""
-    return MemoryCogs(bot=as_bot(fake=SimpleNamespace()))
+    """Builds a MemoryCogs instance with a stub bot.
+
+    `get_guild` answers None so a guild compartment's heading falls back to its id, the
+    same way it would for a server the bot has since left.
+    """
+    return MemoryCogs(bot=as_bot(fake=SimpleNamespace(get_guild=lambda _guild_id: None)))
 
 
 async def test_memory_show_displays_stored_memory(memory_isolated_dir: Path) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
+    """The owner's view leads each compartment with who can see it, then its facts."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(section="profile", text="愛開玩笑"))
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     assert interaction.response.sent["ephemeral"] is True
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
-    assert "愛開玩笑" in (embed.description or "")
+    description = embed.description or ""
+    assert "愛開玩笑" in description
+    # Provenance is the directory now, so showing it is free and tells the owner exactly
+    # where each thing they told the bot can come back up.
+    assert description.startswith("# 全部聊天都看得到")
+    assert "## 使用者輪廓" in description
     # A memory that fits one embed keeps the original no-view behavior.
     assert "view" not in interaction.response.sent
 
 
-async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path) -> None:
-    long_lines = "\n".join(f"* 記憶條目 {index} " + "內" * 80 for index in range(80))
-    write_main_memory(
-        scope=USER_SCOPE, content=f"v1\n\n## 使用者輪廓\n{long_lines}", identity=IDENTITY
+async def test_memory_show_separates_a_guild_compartment_from_the_shared_one(
+    memory_isolated_dir: Path,
+) -> None:
+    """A fact locked to one server is shown under its own heading, never merged into global."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="全域事實"))
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(fact_id="1" * 16, compartment=_GUILD_222, text="本群事實"),
     )
+    cog = _memory_cog()
+    interaction = _interaction()
+    await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
+    embed = interaction.response.sent["embed"]
+    assert isinstance(embed, Embed)
+    description = embed.description or ""
+    assert description.index("# 全部聊天都看得到") < description.index("# 只有伺服器 222 看得到")
+    assert description.index("全域事實") < description.index("# 只有伺服器 222 看得到")
+
+
+async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path) -> None:
+    for index in range(80):
+        write_fact(
+            scope=USER_SCOPE,
+            fact=_stored_fact(fact_id=f"{index:016x}", text=f"記憶條目 {index} " + "內" * 80),
+        )
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
@@ -1292,7 +1538,7 @@ async def test_memory_show_paginates_oversized_memory(memory_isolated_dir: Path)
     embed = sent["embed"]
     assert isinstance(embed, Embed)
     assert len(embed.description or "") <= MEMORY_PAGE_MAX_CHARS
-    assert (embed.description or "").startswith("## 使用者輪廓")
+    assert (embed.description or "").startswith("# 全部聊天都看得到")
     assert embed.footer is not None
     assert f"第 1/{len(view.pages)} 頁" in (embed.footer.text or "")
 
@@ -1317,32 +1563,29 @@ DETAIL_EVIDENCE = "## 2026-06-01T00:00:00+00:00\n偏好訊號:\n- 喜歡條列�
 async def test_regenerate_main_memory_rebuilds_from_evidence_only(
     memory_isolated_dir: Path,
 ) -> None:
+    """The rebuild distils the cold-tier evidence alone; the stored facts never reach the model."""
     extractor, fake_client = _extractor()
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n重建後的記憶", tone_markdown=""
-    )
+    fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
     result = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
     assert result == "regenerated"
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n重建後的記憶"
-    # The previous main survives as the backup generation with its identity line.
-    bak_text = (memory_isolated_dir / str(USER_ID) / "main.bak.md").read_text(encoding="utf-8")
-    assert "舊的整理" in bak_text
-    main_text = (memory_isolated_dir / str(USER_ID) / "main.md").read_text(encoding="utf-8")
-    assert IDENTITY in main_text
+    # A rebuild REPLACES the compartment: it says a fact is gone by not re-emitting it,
+    # so the previous generation must not survive alongside the new one.
+    assert "重建後的記憶" in _memory_text()
+    assert "舊的整理" not in _memory_text()
     # The consumed raw batch retires into the cold tier like a consolidation.
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert "喜歡簡短回覆" in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
-    # Pure-evidence rebuild: empty existing memory, compaction always applied.
+    # Pure-evidence rebuild: no existing facts are shown, compaction always applied.
     assert "COMPACTION" in fake_client.responses.parse_instructions[-1]
     user_text = fake_client.responses.parse_inputs[-1][0]["content"]
-    assert "<existing_memory>\n(empty)\n</existing_memory>" in user_text
+    assert "<existing_facts>\n(empty)\n</existing_facts>" in user_text
     assert "舊的整理" not in user_text
     assert "喜歡條列式" in user_text
     assert "喜歡簡短回覆" in user_text
@@ -1352,8 +1595,8 @@ async def test_regenerate_main_memory_without_evidence_skips_llm(
     memory_isolated_dir: Path,
 ) -> None:
     extractor, fake_client = _extractor()
-    # An existing main alone is not evidence: the rebuild never reads it.
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    # Stored facts alone are not evidence: the rebuild never reads them back in.
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
 
     result = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
@@ -1361,14 +1604,14 @@ async def test_regenerate_main_memory_without_evidence_skips_llm(
 
     assert result == "no_evidence"
     assert fake_client.responses.parse_models == []
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n舊的整理"
+    assert "舊的整理" in _memory_text()
     # No LLM attempt happened, so the cooldown must stay untouched.
     assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is False
 
 
 def test_regeneration_has_evidence_tracks_raw_and_detail(memory_isolated_dir: Path) -> None:
-    # An existing main alone is not evidence; only raw or detail counts.
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    # Stored facts alone are not evidence; only raw or detail counts.
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
     assert pipeline.regeneration_has_evidence(scope=USER_SCOPE) is False
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     assert pipeline.regeneration_has_evidence(scope=USER_SCOPE) is True
@@ -1383,7 +1626,7 @@ async def test_regenerate_main_memory_failure_keeps_existing_state(
     memory_isolated_dir: Path,
 ) -> None:
     extractor, fake_client = _extractor()
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊的整理", identity=IDENTITY)
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.raises = TimeoutError()
@@ -1393,7 +1636,7 @@ async def test_regenerate_main_memory_failure_keeps_existing_state(
     )
 
     assert result == "failed"
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n舊的整理"
+    assert "舊的整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 1
     # Attempt-time cooldown: repeated failures are rate-limited too.
     assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is True
@@ -1426,23 +1669,6 @@ async def test_regenerate_main_memory_recheck_cooldown_under_lock(
     assert fake_client.responses.parse_models == []
 
 
-async def test_regenerate_main_memory_rejects_malformed_rewrite(memory_isolated_dir: Path) -> None:
-    extractor, fake_client = _extractor()
-    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
-    append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=True, memory_markdown="沒有 v1 開頭的壞輸出", tone_markdown=""
-    )
-
-    result = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
-    )
-
-    assert result == "failed"
-    assert read_main_memory(scope=USER_SCOPE) == ""
-    assert count_raw_entries(scope=USER_SCOPE) == 1
-
-
 async def test_regenerate_main_memory_aborts_write_after_clear(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1451,11 +1677,7 @@ async def test_regenerate_main_memory_aborts_write_after_clear(
 
     async def clearing_parse(**kwargs: object) -> SimpleNamespace:
         mark_cleared(scope=USER_SCOPE)
-        return _parsed(
-            output=ConsolidatedMemory(
-                changed=True, memory_markdown="v1\n\n## 使用者輪廓\n不該被寫入", tone_markdown=""
-            )
-        )
+        return _parsed(output=_consolidated(text="不該被寫入"))
 
     monkeypatch.setattr(fake_client.responses, "parse", clearing_parse)
     result = await pipeline.regenerate_main_memory(
@@ -1463,13 +1685,7 @@ async def test_regenerate_main_memory_aborts_write_after_clear(
     )
 
     assert result == "failed"
-    assert read_main_memory(scope=USER_SCOPE) == ""
-
-
-def test_read_main_identity_returns_stored_line(memory_isolated_dir: Path) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n內容", identity=IDENTITY)
-    assert read_main_identity(scope=USER_SCOPE) == IDENTITY
-    assert read_main_identity(scope=user_scope(user_id=987654321)) == ""
+    assert _memory_text() == ""
 
 
 class RegenResponseStub(ResponseStub):
@@ -1593,9 +1809,7 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
 async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_dir: Path) -> None:
     extractor, fake_client = _extractor()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n背景重建後的記憶", tone_markdown=""
-    )
+    fake_client.responses.output_parsed = _consolidated(text="背景重建後的記憶")
 
     scheduled = pipeline.schedule_memory_regeneration(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
@@ -1606,7 +1820,7 @@ async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_d
     task = pipeline._regeneration_tasks.get(key=USER_SCOPE)
     assert task is not None
     await task
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n背景重建後的記憶"
+    assert "背景重建後的記憶" in _memory_text()
 
 
 async def test_schedule_memory_regeneration_dedupes_in_flight(
@@ -1751,42 +1965,6 @@ def test_memory_commands_have_localizations() -> None:
         assert Locale.ja in command.description_localizations
 
 
-@pytest.mark.parametrize(
-    argnames="malformed_markdown",
-    argvalues=[
-        "沒有 v1 開頭的壞輸出",
-        "v10\n\n## 使用者輪廓\n版本號相似但錯誤",
-        "v1: 同行接續而不是獨立的 header 行",
-    ],
-)
-async def test_pipeline_keeps_raw_when_rewrite_is_malformed(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, malformed_markdown: str
-) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    extractor, fake_client = _extractor()
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        ConsolidatedMemory(changed=True, memory_markdown=malformed_markdown, tone_markdown=""),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        extractor=extractor,
-        identity=IDENTITY,
-    )
-    await _wait_for_inflight()
-    assert read_main_memory(scope=USER_SCOPE) == ""
-    assert count_raw_entries(scope=USER_SCOPE) == 1
-
-
 async def test_memory_show_reports_pending_observations_before_first_consolidation(
     memory_isolated_dir: Path,
 ) -> None:
@@ -1801,32 +1979,33 @@ async def test_memory_show_reports_pending_observations_before_first_consolidati
     assert "還沒有任何記憶" not in (embed.description or "")
 
 
-async def test_memory_show_strips_version_header_and_counts_pending(
+async def test_memory_show_counts_pending_observations_in_the_footer(
     memory_isolated_dir: Path,
 ) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n愛開玩笑", identity=IDENTITY)
+    """Once memory exists the pending count moves to the footer, not over the content."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(section="profile", text="愛開玩笑"))
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 新觀察")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
-    assert (embed.description or "").startswith("## 使用者輪廓")
+    assert "愛開玩笑" in (embed.description or "")
     assert embed.footer is not None
     assert "1 筆" in (embed.footer.text or "")
 
 
-async def test_memory_show_does_not_corrupt_malformed_version_token(
-    memory_isolated_dir: Path,
-) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v10 是一段被手動編輯的內容", identity=IDENTITY)
+async def test_memory_show_leads_with_the_tone_note(memory_isolated_dir: Path) -> None:
+    """The tone note is a scope-wide tier, so it leads the view instead of sitting in one
+    compartment; a user who only has a tone note still sees it rather than the placeholder.
+    """
+    write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 偏好禮貌")
     cog = _memory_cog()
     interaction = _interaction()
     await MemoryCogs.memory_show.callback(cog, as_interaction(fake=interaction))
     embed = interaction.response.sent["embed"]
     assert isinstance(embed, Embed)
-    # Only an exact `v1\n` header is stripped; `v10...` must survive intact.
-    assert (embed.description or "").startswith("v10 是一段")
+    assert (embed.description or "").startswith("## 語氣偏好")
 
 
 def test_transcript_caps_reply_so_current_message_survives_truncation(
@@ -1940,68 +2119,6 @@ async def test_pipeline_drops_pending_replay_after_clear(
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
-async def test_pipeline_writes_well_formed_rewrite_flagged_unchanged(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    extractor, fake_client = _extractor()
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        # Contradictory: a full v1 rewrite but changed=false. The batch must
-        # still be written, not silently discarded.
-        ConsolidatedMemory(
-            changed=False, memory_markdown="v1\n\n## 使用者輪廓\n合併結果", tone_markdown=""
-        ),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        extractor=extractor,
-        identity=IDENTITY,
-    )
-    await _wait_for_inflight()
-    assert "合併結果" in read_main_memory(scope=USER_SCOPE)
-    assert count_raw_entries(scope=USER_SCOPE) == 0
-
-
-async def test_pipeline_keeps_raw_when_unchanged_output_is_malformed(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    extractor, fake_client = _extractor()
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        # Inconsistent: changed=false but non-empty AND malformed (no v1 header).
-        # The raw batch must be kept for retry, not discarded.
-        ConsolidatedMemory(changed=False, memory_markdown="壞掉的非空輸出", tone_markdown=""),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        extractor=extractor,
-        identity=IDENTITY,
-    )
-    await _wait_for_inflight()
-    assert read_main_memory(scope=USER_SCOPE) == ""
-    assert count_raw_entries(scope=USER_SCOPE) == 1
-
-
 # ---------------------------------------------------------------------------
 # two-tier detail store
 # ---------------------------------------------------------------------------
@@ -2047,161 +2164,9 @@ async def test_memory_calls_omit_max_output_tokens() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _no_signal()
     await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=False, memory_markdown="", tone_markdown=""
-    )
-    await extractor.consolidate(
-        existing_main="",
-        existing_tone="",
-        raw_entries="x",
-        recent_detail="",
-        today="2026-06-06",
-        compact=False,
-    )
+    fake_client.responses.output_parsed = _no_change()
+    await extractor.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_extra_kwargs == [{}, {}]
-
-
-async def test_pipeline_rejects_drastically_shrunken_rewrite(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    existing = "v1\n\n## 使用者輪廓\n" + "穩" * 5_000
-    write_main_memory(scope=USER_SCOPE, content=existing, identity=IDENTITY)
-    extractor, fake_client = _extractor()
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        # Well-formed v1 output that silently lost almost the whole file.
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n幾乎全沒了", tone_markdown=""
-        ),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        extractor=extractor,
-        identity=IDENTITY,
-    )
-    await _wait_for_inflight()
-    # The lossy rewrite is refused: previous memory survives, raw is kept for
-    # retry, and nothing is retired into the detail file.
-    assert "穩穩穩" in read_main_memory(scope=USER_SCOPE)
-    assert count_raw_entries(scope=USER_SCOPE) == 1
-    assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
-
-
-async def test_pipeline_first_tagged_rewrite_allows_deep_shrink(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The untagged→tagged transition rewrite may legitimately shed over half the file.
-
-    Moving tone bullets into tone.md and privatizing the profile shrinks an unmigrated
-    file past the halving guard; that one-time transition is judged by the deeper
-    compaction floor instead, so a failed-migration scope cannot freeze.
-    """
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    existing = "v1\n\n## 使用者輪廓\n" + "穩" * 5_000
-    write_main_memory(scope=USER_SCOPE, content=existing, identity=IDENTITY)
-    extractor, fake_client = _extractor()
-
-    rewritten = "v1\n\n## 穩定事實\n* " + "新" * 1_500 + " [src:legacy]"
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        ConsolidatedMemory(changed=True, memory_markdown=rewritten, tone_markdown=""),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        extractor=extractor,
-        identity=IDENTITY,
-    )
-    await _wait_for_inflight()
-    assert "新新新" in read_main_memory(scope=USER_SCOPE)
-    assert count_raw_entries(scope=USER_SCOPE) == 0
-
-
-async def test_pipeline_compaction_accepts_legitimate_shrink(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.MAIN_COMPACTION_TRIGGER_CHARS", 1_000)
-    write_main_memory(
-        scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n" + "長" * 4_000, identity=IDENTITY
-    )
-    extractor, fake_client = _extractor()
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        # Roughly half-size: a legitimate compaction result.
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n" + "縮" * 2_000, tone_markdown=""
-        ),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        extractor=extractor,
-        identity=IDENTITY,
-    )
-    await _wait_for_inflight()
-    assert "縮縮縮" in read_main_memory(scope=USER_SCOPE)
-    assert count_raw_entries(scope=USER_SCOPE) == 0
-
-
-async def test_pipeline_compaction_rejects_collapsed_rewrite(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.MAIN_COMPACTION_TRIGGER_CHARS", 1_000)
-    write_main_memory(
-        scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n" + "長" * 4_000, identity=IDENTITY
-    )
-    extractor, fake_client = _extractor()
-
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        # Far below a tenth of the input: a collapse, not a summarization.
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n全部蒸發", tone_markdown=""
-        ),
-    ]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    pipeline.schedule_memory_update(
-        scope=USER_SCOPE,
-        subject=f"target_user_id: {USER_ID}",
-        message_list=_user_message(),
-        full_reply="回覆",
-        extractor=extractor,
-        identity=IDENTITY,
-    )
-    await _wait_for_inflight()
-    assert "長長長" in read_main_memory(scope=USER_SCOPE)
-    assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -2228,7 +2193,7 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
     # Threshold is met but the cooldown has not elapsed: only the phase-1
     # extract call ran and raw stays queued.
     assert count_raw_entries(scope=USER_SCOPE) == 1
-    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert _memory_text() == ""
     assert fake_client.responses.parse_models == [TEST_MEMORY_MODEL.name]
 
 
@@ -2241,12 +2206,7 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
     )
     extractor, fake_client = _extractor()
 
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後", tone_markdown=""
-        ),
-    ]
+    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         return _parsed(output=parsed_outputs.pop(0))
@@ -2261,7 +2221,7 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "合併後" in read_main_memory(scope=USER_SCOPE)
+    assert "合併後" in _memory_text()
     # The attempt refreshed the per-user cooldown timestamp.
     assert pipeline._last_consolidation[USER_SCOPE] > time.monotonic() - 5
 
@@ -2276,9 +2236,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
 
     parsed_outputs: list[BaseModel] = [
         _draft("超過位元組門檻的長訊號"),
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n爆量合併", tone_markdown=""
-        ),
+        _consolidated(text="爆量合併"),
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
@@ -2295,7 +2253,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
     )
     await _wait_for_inflight()
     # The raw byte burst escape hatch consolidates despite the active cooldown.
-    assert "爆量合併" in read_main_memory(scope=USER_SCOPE)
+    assert "爆量合併" in _memory_text()
 
 
 async def test_pipeline_passes_recent_detail_to_consolidation(
@@ -2306,12 +2264,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
     extractor, fake_client = _extractor()
     seen_inputs: list[str] = []
 
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後", tone_markdown=""
-        ),
-    ]
+    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         inputs = kwargs["input"]
@@ -2374,26 +2327,6 @@ async def test_memory_semaphore_caps_concurrent_updates(
     assert max_in_flight == 1
 
 
-def test_rewrite_shrink_guard_lets_huge_main_compact_to_target() -> None:
-    # A main file that grew far past ten times the target must still be able
-    # to compact down to the documented target size.
-    existing = "長" * 160_000
-    target_sized = "v1\n\n## 使用者輪廓\n" + "縮" * MAIN_COMPACTION_TARGET_CHARS
-    assert (
-        pipeline._rewrite_shrank_too_much(
-            existing_main=existing, rewritten=target_sized, compact=True
-        )
-        is False
-    )
-    # A genuine collapse still trips the guard.
-    assert (
-        pipeline._rewrite_shrank_too_much(
-            existing_main=existing, rewritten="v1\n\n塌縮", compact=True
-        )
-        is True
-    )
-
-
 def test_append_detail_trims_oldest_past_cap(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2424,12 +2357,7 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
     mark_cleared(scope=USER_SCOPE)
     extractor, fake_client = _extractor()
 
-    parsed_outputs: list[BaseModel] = [
-        _draft("清除後的新訊號"),
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n全新整理", tone_markdown=""
-        ),
-    ]
+    parsed_outputs: list[BaseModel] = [_draft("清除後的新訊號"), _consolidated(text="全新整理")]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         return _parsed(output=parsed_outputs.pop(0))
@@ -2444,7 +2372,7 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "全新整理" in read_main_memory(scope=USER_SCOPE)
+    assert "全新整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
@@ -2654,11 +2582,9 @@ async def test_consolidate_if_needed_digests_over_threshold_scope(
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n掃描整理", tone_markdown=""
-    )
+    fake_client.responses.output_parsed = _consolidated(text="掃描整理")
     await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
-    assert "掃描整理" in read_main_memory(scope=USER_SCOPE)
+    assert "掃描整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
@@ -2670,7 +2596,7 @@ async def test_consolidate_if_needed_skips_under_threshold(
     extractor, _fake_client = _extractor()
     await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
     # Below threshold: no consolidation, raw untouched.
-    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert _memory_text() == ""
     assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
@@ -2842,6 +2768,70 @@ async def test_extract_sharing_gates_tighten_but_never_loosen() -> None:
     }
 
 
+_ROSTER_TRANSCRIPT = (
+    "[message 1 | user]\n"
+    f"  Alice (alice) [id: {USER_ID}]: 哈囉\n"
+    "\n"
+    "[message 2 | user]\n"
+    "  小美 (amy) [id: 42]: 我也在\n"
+)
+
+
+async def test_a_named_participant_locks_an_observation_with_no_id_token() -> None:
+    """With no read-time filter left, `global` is permanent cross-server reach.
+
+    A fact naming someone else is about a relationship, and plain prose like 「跟小美吵架」
+    carries no id token at all, so the gate also matches the conversation's own roster.
+    """
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="使用者常跟小美一起打遊戲",
+                normalized_key="pattern.duo",
+                category="recurring_pattern",
+                evidence_kind="recurring_pattern",
+                sharing="global",
+            ),
+            _observation(
+                summary="使用者偏好繁體中文回覆",
+                normalized_key="preference.language",
+                sharing="global",
+            ),
+        ),
+    )
+    draft = await extractor.extract(
+        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT
+    )
+    assert draft is not None
+    assert {
+        observation.normalized_key: observation.sharing for observation in draft.observations
+    } == {"pattern.duo": "source_only", "preference.language": "global"}
+
+
+async def test_a_latin_roster_name_only_matches_on_a_word_boundary() -> None:
+    """A three-letter username inside an unrelated word would lock most of a scope's memory.
+
+    A CJK name has no boundary to anchor to and stays a substring match; a Latin one does,
+    so `amy` must not fire on `amylase`.
+    """
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="使用者在研究 amylase 這個酵素", normalized_key="interest.enzyme"
+            ),
+        ),
+    )
+    draft = await extractor.extract(
+        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT
+    )
+    assert draft is not None
+    assert [observation.sharing for observation in draft.observations] == ["global"]
+
+
 def test_filter_duplicate_observations_is_source_aware() -> None:
     existing = (
         "### stable_preference\n"
@@ -2929,12 +2919,16 @@ def test_prompts_cover_sharing_classification() -> None:
     assert "NEVER loosen" in PHASE1_EVALUATOR_PROMPT
 
 
-def test_phase2_prompt_covers_source_tags_and_tone_note() -> None:
-    assert "SOURCE TAGS" in PHASE2_PROMPT
-    assert "[src:*]" in PHASE2_PROMPT
-    assert "[src:legacy]" in PHASE2_PROMPT
-    # The untagged profile section is injected everywhere, so it must stay global-safe.
-    assert "`## 使用者輪廓` carries no tags" in PHASE2_PROMPT
+def test_phase2_prompt_binds_the_model_to_one_compartment() -> None:
+    """Provenance is the directory now, so the prompt must say the model writes one of them.
+
+    The per-bullet `[src:...]` tag it used to author is gone: code routes the evidence
+    before the call, and the model is told what it may not carry back across that line.
+    """
+    assert "WHAT A COMPARTMENT IS" in PHASE2_PROMPT
+    assert "<global_reference>" in PHASE2_PROMPT
+    # The text must never name where a fact was learned; the directory already records it.
+    assert "the text must never mention a server, a channel" in PHASE2_PROMPT
     assert "TONE NOTE OUTPUT" in PHASE2_PROMPT
     assert "## 語氣偏好" in PHASE2_PROMPT
 
@@ -2985,11 +2979,7 @@ async def test_pipeline_consolidation_writes_tone_note(
 
     parsed_outputs: list[BaseModel] = [
         _draft("訊號"),
-        ConsolidatedMemory(
-            changed=True,
-            memory_markdown="v1\n\n## 使用者輪廓\n合併後",
-            tone_markdown="## 語氣偏好\n* 偏好禮貌",
-        ),
+        _consolidated(tone="## 語氣偏好\n* 偏好禮貌"),
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
@@ -3009,7 +2999,7 @@ async def test_pipeline_consolidation_writes_tone_note(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "合併後" in read_main_memory(scope=USER_SCOPE)
+    assert "合併後" in _memory_text()
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
     # The current note rode the consolidation input in its labeled block.
     assert "<existing_tone>\n## 語氣偏好\n* 舊語氣\n</existing_tone>" in seen_inputs[1]
@@ -3019,16 +3009,14 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n既有內容", identity=IDENTITY)
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
     extractor, fake_client = _extractor()
 
     parsed_outputs: list[BaseModel] = [
         _draft("已知資訊"),
-        # A genuine main no-op can still carry fresh tone signal; both paths
-        # consume the raw batch, so the tone must land now or be lost.
-        ConsolidatedMemory(
-            changed=False, memory_markdown="", tone_markdown="## 語氣偏好\n* 偏好簡短"
-        ),
+        # A batch that changes no fact can still carry fresh tone signal, and it consumes
+        # the raw entries either way, so the tone must land now or be lost.
+        _no_change(tone="## 語氣偏好\n* 偏好簡短"),
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
@@ -3044,29 +3032,31 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    assert "既有內容" in read_main_memory(scope=USER_SCOPE)
+    assert "既有內容" in _memory_text()
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好簡短"
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
 @pytest.mark.parametrize(
-    argnames=("bad_tone", "main_committed"),
-    argvalues=[("", True), ("語氣:很兇但沒有標頭", False)],
-    ids=["empty-tone-commits", "malformed-tone-rejects-batch"],
+    argnames="bad_tone",
+    argvalues=["", "語氣:很兇但沒有標頭"],
+    ids=["empty-tone", "malformed-tone"],
 )
 async def test_pipeline_bad_tone_output_keeps_existing_note(
-    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, bad_tone: str, main_committed: bool
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, bad_tone: str
 ) -> None:
+    """An unusable tone note is dropped on its own; the facts it rode with still commit.
+
+    This changed with the delta rewrite: a malformed note used to reject the whole batch,
+    because a whole-file main rewrite could have moved tone bullets out on the promise
+    they landed in the note. A delta batch is per fact, so it no longer holds the facts
+    hostage to the tone tier, which is best-effort and repaired by the next pass.
+    """
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 原有偏好")
     extractor, fake_client = _extractor()
 
-    parsed_outputs: list[BaseModel] = [
-        _draft("訊號"),
-        ConsolidatedMemory(
-            changed=True, memory_markdown="v1\n\n## 使用者輪廓\n合併後", tone_markdown=bad_tone
-        ),
-    ]
+    parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated(tone=bad_tone)]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         return _parsed(output=parsed_outputs.pop(0))
@@ -3081,17 +3071,9 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
         identity=IDENTITY,
     )
     await _wait_for_inflight()
-    if main_committed:
-        # An empty tone note is a legitimate no-tone-signal case: main commits, batch consumed.
-        assert "合併後" in read_main_memory(scope=USER_SCOPE)
-        assert count_raw_entries(scope=USER_SCOPE) == 0
-    else:
-        # A malformed tone note rejects the whole batch (the rewritten main may have
-        # moved tone bullets out on the promise they land in the note): main untouched,
-        # raw kept for retry.
-        assert "合併後" not in read_main_memory(scope=USER_SCOPE)
-        assert count_raw_entries(scope=USER_SCOPE) == 1
-    # Neither case ever deletes the existing note.
+    assert "合併後" in _memory_text()
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    # Neither shape ever deletes the existing note.
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 原有偏好"
 
 
@@ -3103,16 +3085,16 @@ async def test_consolidate_if_needed_server_scope_never_writes_tone(
     append_raw_entry(scope=scope, entry_text="- 第一筆")
     append_raw_entry(scope=scope, entry_text="- 第二筆")
     extractor, fake_client = _extractor()
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=True,
-        memory_markdown="v1\n\n## 伺服器輪廓\n整理",
-        tone_markdown="## 語氣偏好\n* 不該存在",
+    fake_client.responses.output_parsed = _consolidated(
+        section="culture", text="整理", tone="## 語氣偏好\n* 不該存在"
     )
     await pipeline.consolidate_if_needed(scope=scope, extractor=extractor, identity="srv")
-    assert "整理" in read_main_memory(scope=scope)
+    assert "整理" in _memory_text(scope=scope, flavor="server")
+    # A server scope has exactly one compartment, so its evidence never fans out.
+    assert list_compartments(scope=scope) == [GLOBAL_COMPARTMENT]
     # The tone note is a per-user tier; a server consolidation never writes one.
     assert read_tone(scope=scope) == ""
-    assert not (memory_isolated_dir / "999" / "555" / "tone.md").exists()
+    assert not (memory_isolated_dir / scope / "tone.md").exists()
 
 
 async def test_regenerate_main_memory_writes_tone_and_ignores_existing_tone(
@@ -3121,10 +3103,8 @@ async def test_regenerate_main_memory_writes_tone_and_ignores_existing_tone(
     extractor, fake_client = _extractor()
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=True,
-        memory_markdown="v1\n\n## 使用者輪廓\n重建後的記憶",
-        tone_markdown="## 語氣偏好\n* 新語氣",
+    fake_client.responses.output_parsed = _consolidated(
+        text="重建後的記憶", tone="## 語氣偏好\n* 新語氣"
     )
 
     result = await pipeline.regenerate_main_memory(
@@ -3151,9 +3131,7 @@ async def test_regenerate_main_memory_clears_stale_tone_on_empty_output(
     extractor, fake_client = _extractor()
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
-    fake_client.responses.output_parsed = ConsolidatedMemory(
-        changed=True, memory_markdown="v1\n\n## 使用者輪廓\n重建後的記憶", tone_markdown=""
-    )
+    fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
     result = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
@@ -3174,10 +3152,12 @@ def _confirm_button(view: MemoryClearConfirmView) -> "Button[Any]":
 
 
 def _populate_every_tier() -> None:
-    """Writes one entry into every personal memory tier, backup generation included."""
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊記憶", identity=IDENTITY)
-    # The second write is what leaves a `main.bak.md` generation behind.
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n新記憶", identity=IDENTITY)
+    """Writes one entry into every personal memory tier, in more than one compartment."""
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="新記憶"))
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(fact_id="1" * 16, compartment=_GUILD_222, text="本群記憶"),
+    )
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短")
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 輕鬆")
@@ -3207,7 +3187,8 @@ async def test_clear_scope_memory_removes_every_tier(memory_isolated_dir: Path) 
 
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
 
-    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert _memory_text() == ""
+    assert list_compartments(scope=USER_SCOPE) == []
     assert read_tone(scope=USER_SCOPE) == ""
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert read_detail_tail(scope=USER_SCOPE, max_chars=10_000) == ""
@@ -3384,7 +3365,7 @@ async def test_memory_update_scheduled_before_a_clear_never_starts(
 
 
 async def test_memory_clear_command_only_opens_the_confirmation(memory_isolated_dir: Path) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊記憶", identity=IDENTITY)
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊記憶"))
     cog = _memory_cog()
     interaction = _interaction()
 
@@ -3400,7 +3381,7 @@ async def test_memory_clear_command_only_opens_the_confirmation(memory_isolated_
     # Bound, or an abandoned one-click wipe prompt would never go inert.
     assert view._origin is interaction
     # The command itself must never delete: that is the confirm button's job.
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n舊記憶"
+    assert "舊記憶" in _memory_text()
 
 
 async def test_memory_clear_confirm_button_erases_memory(memory_isolated_dir: Path) -> None:
@@ -3418,7 +3399,7 @@ async def test_memory_clear_confirm_button_erases_memory(memory_isolated_dir: Pa
 
     await _confirm_button(view=view).callback(as_interaction(fake=interaction))
 
-    assert read_main_memory(scope=USER_SCOPE) == ""
+    assert _memory_text() == ""
     assert await memory_db.get_job(scope=USER_SCOPE) is None
     # Acked before the work so a slow clear cannot miss Discord's response window.
     assert interaction.response.deferred is True
@@ -3444,13 +3425,13 @@ async def test_memory_clear_confirm_button_reports_an_empty_scope(
 
 
 async def test_memory_clear_cancel_button_keeps_memory(memory_isolated_dir: Path) -> None:
-    write_main_memory(scope=USER_SCOPE, content="v1\n\n## 使用者輪廓\n舊記憶", identity=IDENTITY)
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊記憶"))
     view = MemoryClearConfirmView(scope=USER_SCOPE)
     interaction = FakeInteraction()
 
     await cast("Button[Any]", view.cancel_clear).callback(as_interaction(fake=interaction))
 
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n舊記憶"
+    assert "舊記憶" in _memory_text()
     # A cancel must not even stamp the scope, or it would abort in-flight turns.
     assert cleared_since(scope=USER_SCOPE, started_at=0.0) is False
     edited = interaction.response.edited[-1]
@@ -3495,7 +3476,8 @@ async def test_memory_clear_failure_keeps_memory_and_says_so(
 
     await _confirm_button(view=view).callback(as_interaction(fake=interaction))
 
-    assert read_main_memory(scope=USER_SCOPE) == "v1\n\n## 使用者輪廓\n新記憶"
+    assert "新記憶" in _memory_text()
+    assert "本群記憶" in _memory_text()
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 輕鬆"
     assert count_raw_entries(scope=USER_SCOPE) == 1
     embed = interaction.edits[-1]["embed"]

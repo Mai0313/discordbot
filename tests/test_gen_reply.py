@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from io import BytesIO
-import re
 import json
 from types import SimpleNamespace
 import base64
@@ -32,6 +31,7 @@ from discordbot.cogs.gen_reply import (
     _link_url_for_source,
     _build_runtime_instructions,
 )
+from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
 from discordbot.typings.models import (
     EffortGrade,
     ModelSettings,
@@ -39,7 +39,17 @@ from discordbot.typings.models import (
     RuntimeModelCatalog,
 )
 from discordbot.utils.reactions import ReactionStatusChain
-from discordbot.cogs._memory.store import user_scope, write_tone, server_scope, write_main_memory
+from discordbot.cogs._memory.facts import utc_now, mint_fact_id, node_type_for
+from discordbot.cogs._memory.store import (
+    DM_COMPARTMENT,
+    GLOBAL_COMPARTMENT,
+    user_scope,
+    write_fact,
+    write_tone,
+    server_scope,
+    scope_owner_id,
+    guild_compartment,
+)
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
 from discordbot.cogs._gen_reply.context import ReplyContext
@@ -77,7 +87,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     memory_lookup_labels,
     resolve_user_memories,
     build_memory_allowlist,
-    filter_memory_for_context,
+    compartments_for_reading,
     widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
 )
@@ -777,6 +787,43 @@ def _recorded_video(cog: ReplyGeneratorCogs) -> FakeGeminiVideoClient:
 def _config_stub(**flags: object) -> LLMConfig:
     """Views a namespace carrying just the flags a test toggles as the cog's LLMConfig."""
     return cast("LLMConfig", SimpleNamespace(**flags))
+
+
+def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test varies
+    *,
+    scope: str,
+    text: str,
+    compartment: str = GLOBAL_COMPARTMENT,
+    section: MemorySection = "preference",
+    durability: MemoryDurability = "stable",
+    subject_id: int | None = None,
+) -> None:
+    """Seeds one stored fact, stamping everything consolidation owns.
+
+    Memory is one fact per file, so a test states the body it wants injected and the
+    compartment it must be readable from; the id, the dates, the node type and the owner
+    follow from those exactly as the pipeline derives them.
+    """
+    owner_id = scope_owner_id(scope=scope)
+    now = utc_now()
+    write_fact(
+        scope=scope,
+        fact=MemoryFact(
+            fact_id=mint_fact_id(compartment=compartment, summary=text),
+            summary=text,
+            section=section,
+            durability=durability,
+            text=text,
+            compartment=compartment,
+            owner_id=owner_id,
+            owner_name=f"U{owner_id} (u{owner_id})",
+            subject_id=subject_id,
+            node_type=node_type_for(section=section),
+            created=now,
+            last_confirmed=now,
+            keys=(),
+        ),
+    )
 
 
 def _att(
@@ -5477,11 +5524,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 穩定偏好\n* 喜歡簡短回覆 [src:*]",
-        identity="U1 (u1) [id: 1]",
-    )
+    _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
     monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
 
@@ -5529,16 +5572,8 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
     """The answer injects server memory, user memory, then the tone note before the current message."""
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 穩定偏好\n* 喜歡簡短回覆 [src:*]",
-        identity="U1 (u1) [id: 1]",
-    )
-    write_main_memory(
-        scope=server_scope(server_id=1),
-        content="v1\n\n## 伺服器輪廓\n社群風格",
-        identity="Test Guild [id: 1]",
-    )
+    _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
+    _seed_fact(scope=server_scope(server_id=1), text="社群風格", section="profile")
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆,句子精簡")
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
@@ -5660,11 +5695,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
 ) -> None:
     """The selection phase offers get_user_memory + callable users; the answer phase keeps built-ins."""
     cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 穩定偏好\n* 喜歡簡短回覆 [src:*]",
-        identity="Tester (tester) [id: 1]",
-    )
+    _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
 
     class FakeResponder:
         """Stands in for the answer-phase streamer without real streaming."""
@@ -5839,11 +5870,7 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
 ) -> None:
     """Verifies memory_enabled=False (summary route) skips user memory but still records server."""
     cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 穩定偏好\n* 不該被注入 [src:*]",
-        identity="Tester (tester) [id: 1]",
-    )
+    _seed_fact(scope=user_scope(user_id=1), text="不該被注入")
 
     class FakeResponder:
         """Stands in for the answer-phase streamer without real streaming."""
@@ -5977,11 +6004,7 @@ def test_parse_user_id_list_handles_valid_and_malformed() -> None:
 def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -> None:
     """Ids outside the allowlist drop, mention wrappers and dupes collapse, gaps signal clearly."""
     del memory_isolated_dir
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 穩定偏好\n* 甲的記憶 [src:*]",
-        identity="A (a) [id: 1]",
-    )
+    _seed_fact(scope=user_scope(user_id=1), text="甲的記憶")
     allowed = {1: "A (a)", 2: "B (b)"}
 
     memories = resolve_user_memories(
@@ -5997,201 +6020,80 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     assert by_id["2"].memory == "(no stored memory for this user)"
 
 
-# One memory exercising every tag shape the filter distinguishes: global, single-guild
-# (with an indented continuation), comma multi-source, dm, legacy, untagged, malformed.
-_FILTER_FIXTURE_MEMORY = """v1
-
-## 使用者輪廓
-全域輪廓段落
-
-## 永久事實
-* 全域事實 [src:*]
-* 本群事實 [src:111]
-    縮排續行
-* 多源事實 [src:111,222]
-* 私訊事實 [src:dm]
-* 舊資料 [src:legacy]
-* 無標記事實
-* 壞標記事實 [src:!!]
-
-## 近期脈絡
-* [2026-07-01] 他群近況 [src:333]"""
+# One fact per compartment, so a document says by its body alone which directories the
+# read opened.
+_COMPARTMENT_FACTS = {
+    GLOBAL_COMPARTMENT: "全域事實",
+    guild_compartment(guild_id=111): "本群事實",
+    guild_compartment(guild_id=222): "他群事實",
+    DM_COMPARTMENT: "私訊事實",
+}
 
 
 @pytest.mark.parametrize(
-    ("context", "present", "absent"),
+    ("context", "compartments", "present", "absent"),
     [
         (
             MemoryReadContext(guild_id=111, dm_partner_id=None),
-            ["全域輪廓段落", "全域事實", "本群事實", "縮排續行", "多源事實"],
-            ["私訊事實", "舊資料", "無標記事實", "壞標記事實", "他群近況", "## 近期脈絡"],
+            {"global", "g/111"},
+            ["全域事實", "本群事實"],
+            ["他群事實", "私訊事實"],
         ),
         (
             MemoryReadContext(guild_id=222, dm_partner_id=None),
-            ["全域輪廓段落", "全域事實", "多源事實"],
-            ["本群事實", "縮排續行", "私訊事實", "舊資料", "無標記事實", "壞標記事實", "他群近況"],
-        ),
-        (
-            MemoryReadContext(guild_id=333, dm_partner_id=None),
-            ["全域輪廓段落", "全域事實", "他群近況", "## 近期脈絡"],
-            ["本群事實", "縮排續行", "多源事實", "私訊事實", "舊資料", "無標記事實", "壞標記事實"],
+            {"global", "g/222"},
+            ["全域事實", "他群事實"],
+            ["本群事實", "私訊事實"],
         ),
         (
             MemoryReadContext(guild_id=None, dm_partner_id=1),
-            [
-                "全域輪廓段落",
-                "全域事實",
-                "本群事實",
-                "縮排續行",
-                "多源事實",
-                "私訊事實",
-                "舊資料",
-                "無標記事實",
-                "壞標記事實",
-                "他群近況",
-            ],
+            {"global", "g/111", "g/222", "dm"},
+            ["全域事實", "本群事實", "他群事實", "私訊事實"],
             [],
         ),
         (
             MemoryReadContext(guild_id=None, dm_partner_id=555),
-            ["全域輪廓段落", "全域事實"],
-            [
-                "本群事實",
-                "縮排續行",
-                "多源事實",
-                "私訊事實",
-                "舊資料",
-                "無標記事實",
-                "壞標記事實",
-                "他群近況",
-                "## 近期脈絡",
-            ],
+            {"global"},
+            ["全域事實"],
+            ["本群事實", "他群事實", "私訊事實"],
         ),
         (
             MemoryReadContext(guild_id=None, dm_partner_id=None),
-            ["全域輪廓段落", "全域事實"],
-            [
-                "本群事實",
-                "縮排續行",
-                "多源事實",
-                "私訊事實",
-                "舊資料",
-                "無標記事實",
-                "壞標記事實",
-                "他群近況",
-                "## 近期脈絡",
-            ],
+            {"global"},
+            ["全域事實"],
+            ["本群事實", "他群事實", "私訊事實"],
         ),
     ],
-    ids=[
-        "same-guild",
-        "comma-second-guild",
-        "other-guild",
-        "owner-own-dm",
-        "other-owner-in-dm",
-        "group-dm",
-    ],
+    ids=["same-guild", "other-guild", "owner-own-dm", "other-owner-in-dm", "group-dm"],
 )
-def test_filter_memory_for_context_matrix(
-    context: MemoryReadContext, present: list[str], absent: list[str]
+def test_memory_read_opens_only_the_permitted_compartments(
+    memory_isolated_dir: object,
+    context: MemoryReadContext,
+    compartments: set[str],
+    present: list[str],
+    absent: list[str],
 ) -> None:
-    """Per-bullet source scoping: only `[src:*]` and current-guild bullets survive outside the owner's DM.
+    """Where a reply happens decides which of an owner's compartments it may open.
 
-    The owner's own 1:1 DM keeps everything (including untagged/legacy/dm content);
-    every other context fail-closes untagged and malformed tags, an indented
-    continuation follows its bullet, the 使用者輪廓 paragraph passes through, and a
-    header whose section lost all content is dropped.
+    The cross-server boundary is a path join rather than a filter: a guild reads the
+    shared compartment plus its own, a group DM and a third party's lookup inside a 1:1
+    DM read the shared one alone, and the owner's own DM opens everything, since their
+    own information cannot leak to themselves. Asserted end to end through
+    `resolve_user_memories`, the one call every reply path reads user memory through, so
+    a compartment that is not listed is one whose facts never reach the model.
     """
-    filtered = filter_memory_for_context(
-        memory=_FILTER_FIXTURE_MEMORY, owner_id=1, context=context
-    )
+    del memory_isolated_dir
+    for compartment, text in _COMPARTMENT_FACTS.items():
+        _seed_fact(scope=user_scope(user_id=1), text=text, compartment=compartment)
 
+    assert set(compartments_for_reading(owner_id=1, context=context)) == compartments
+
+    memories = resolve_user_memories(user_id_list=["1"], allowed={1: "A (a)"}, context=context)
+    document = memories[0].memory
     for fragment in present:
-        assert fragment in filtered
+        assert fragment in document
     for fragment in absent:
-        assert fragment not in filtered
-    # Provenance never reaches the model: every well-formed tag is stripped from surviving
-    # lines. The owner short-circuit keeps the malformed `[src:!!]` literally (it is the
-    # owner's own content); everywhere else that line is dropped, so no `[src:` remains.
-    assert re.search(r"\[src:[0-9a-z*,]+\]", filtered) is None
-    if context.dm_partner_id != 1:
-        assert "[src:" not in filtered
-
-
-def test_filter_memory_fully_locked_returns_empty() -> None:
-    """A memory whose every section is filtered away collapses to "", not a bare v1 header."""
-    memory = "v1\n\n## 永久事實\n* 他群祕密 [src:222]"
-    filtered = filter_memory_for_context(
-        memory=memory, owner_id=1, context=MemoryReadContext(guild_id=111, dm_partner_id=None)
-    )
-    assert filtered == ""
-
-
-def test_filter_memory_multiple_tags_fail_closed() -> None:
-    """A bullet carrying more than one src tag is ambiguous tag drift and never surfaces.
-
-    Trusting the trailing tag would fail open on the widest one (`[src:*]` appended
-    after the real lock), so the exactly-one-tag rule drops it in every context.
-    """
-    memory = "v1\n\n## 永久事實\n* 祕密 [src:222] [src:*]\n* 正常全域 [src:*]"
-    for context in (
-        MemoryReadContext(guild_id=111, dm_partner_id=None),
-        MemoryReadContext(guild_id=222, dm_partner_id=None),
-        MemoryReadContext(guild_id=None, dm_partner_id=None),
-    ):
-        filtered = filter_memory_for_context(memory=memory, owner_id=1, context=context)
-        assert "祕密" not in filtered
-        assert "正常全域" in filtered
-
-
-def test_filter_memory_indented_lines_share_their_parents_fate() -> None:
-    """Any indented line — prose or nested sub-bullet — lives and dies with its parent."""
-    memory = (
-        "v1\n\n"
-        "## 永久事實\n"
-        "* 本群事實 [src:111]\n"
-        "  - 未標記的子彈點\n"
-        "* 他群祕密 [src:222]\n"
-        "  - 全域標記也救不了孤兒 [src:*]\n"
-        "秘密的散文行\n"
-        "  秘密散文的縮排延續行"
-    )
-    filtered = filter_memory_for_context(
-        memory=memory, owner_id=1, context=MemoryReadContext(guild_id=111, dm_partner_id=None)
-    )
-    # A visible parent keeps its untagged sub-bullet; a filtered parent takes its
-    # sub-bullet down even when that sub-bullet is tagged global; dropped column-0
-    # prose takes its continuation down too.
-    assert "未標記的子彈點" in filtered
-    assert "孤兒" not in filtered
-    assert "秘密" not in filtered
-
-
-def test_filter_memory_profile_gate_requires_tagged_file() -> None:
-    """Profile content passes only when the file itself is in the tagged format.
-
-    A file with no well-formed tag anywhere predates the format (e.g. its migration
-    failed), so its profile has no global-safety contract and fails closed; in a
-    tagged file the profile keeps prose AND untagged bullets (the migration leaves
-    profile bullets untagged on purpose), while a tagged profile bullet is honored
-    as a source filter.
-    """
-    context = MemoryReadContext(guild_id=999, dm_partner_id=None)
-    untagged_file = "v1\n\n## 使用者輪廓\n未遷移的私密輪廓\n\n## 永久事實\n* 舊條目"
-    assert filter_memory_for_context(memory=untagged_file, owner_id=1, context=context) == ""
-    tagged_file = (
-        "v1\n\n"
-        "## 使用者輪廓\n"
-        "輪廓散文\n"
-        "* 輪廓內未標記彈點\n"
-        "* 輪廓內他群彈點 [src:222]\n\n"
-        "## 永久事實\n"
-        "* 全域事實 [src:*]"
-    )
-    filtered = filter_memory_for_context(memory=tagged_file, owner_id=1, context=context)
-    assert "輪廓散文" in filtered
-    assert "輪廓內未標記彈點" in filtered
-    assert "輪廓內他群彈點" not in filtered
+        assert fragment not in document
 
 
 def test_memory_read_context_by_channel_kind() -> None:
@@ -6219,12 +6121,14 @@ def test_memory_read_context_by_channel_kind() -> None:
 def test_resolve_user_memories_fully_locked_reads_as_no_memory(
     memory_isolated_dir: object,
 ) -> None:
-    """A memory locked entirely to another guild resolves to the no-memory signal, uncredited."""
+    """A memory stored only in another guild resolves to the no-memory signal, uncredited."""
     del memory_isolated_dir
-    write_main_memory(
+    _seed_fact(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 永久事實\n* 他群祕密 [src:424242]",
-        identity="A (a) [id: 1]",
+        text="他群祕密",
+        compartment=guild_compartment(guild_id=424242),
+        section="permanent",
+        durability="permanent",
     )
 
     memories = resolve_user_memories(
@@ -6307,17 +6211,15 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     for uid, body in seeded.items():
-        write_main_memory(
-            scope=user_scope(user_id=uid),
-            content=f"v1\n\n## 穩定偏好\n* {body} [src:*]",
-            identity=f"U{uid} (u{uid}) [id: {uid}]",
-        )
+        _seed_fact(scope=user_scope(user_id=uid), text=body)
     if server_nick is not None:
         nick_id, nick_name, nick_alias = server_nick
-        write_main_memory(
+        _seed_fact(
             scope=server_scope(server_id=1),
-            content=f"v1\n\n## 成員稱呼\n* {nick_name}(社群暱稱:{nick_alias})[id: {nick_id}]",
-            identity="Test Guild [id: 1]",
+            text=f"{nick_name}(社群暱稱:{nick_alias})",
+            section="member_alias",
+            durability="permanent",
+            subject_id=nick_id,
         )
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
     if reference_author_id is not None:
@@ -6444,13 +6346,8 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
-    labels = {1: "Tester (tester)", 2: "Alice (alice)", 3: "Bob (bob)"}
     for uid in seeded_ids:
-        write_main_memory(
-            scope=user_scope(user_id=uid),
-            content=f"v1\n\n## 穩定偏好\n* 記憶{uid} [src:*]",
-            identity=f"{labels[uid]} [id: {uid}]",
-        )
+        _seed_fact(scope=user_scope(user_id=uid), text=f"記憶{uid}")
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
@@ -6495,11 +6392,7 @@ async def test_handle_message_reply_falls_back_to_author_memory_when_selection_f
     """A failing memory-selection request still replies and falls back to the author's own memory."""
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 穩定偏好\n* 甲 [src:*]",
-        identity="Tester (tester) [id: 1]",
-    )
+    _seed_fact(scope=user_scope(user_id=1), text="甲")
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
 
@@ -6571,11 +6464,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
-    write_main_memory(
-        scope=server_scope(server_id=1),
-        content="v1\n\n## 伺服器輪廓\n社群風格",
-        identity="Test Guild [id: 1]",
-    )
+    _seed_fact(scope=server_scope(server_id=1), text="社群風格", section="profile")
     scheduled: list[dict[str, object]] = []
 
     def fake_schedule(**kwargs: object) -> None:
@@ -6626,7 +6515,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
 def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
     """Only ids under the `## 成員稱呼` section are returned, labelled by the table row."""
     memory = (
-        "v1\n\n## 伺服器輪廓\n社群\n\n"
+        "## 伺服器輪廓\n社群\n\n"
         "## 成員稱呼\n"
         "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
         "* Bob(社群暱稱:阿伯)[id: 456]\n\n"
@@ -6643,9 +6532,7 @@ def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
 def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
     """A participant keeps their label and gains aliases; absent members are added."""
     memory = (
-        "v1\n\n## 成員稱呼\n"
-        "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
-        "* Bob(社群暱稱:阿伯)[id: 456]\n"
+        "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
     allowed = {123: "Mai (mai9999)"}
     widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=True)
@@ -6664,9 +6551,7 @@ def test_widen_allowlist_with_aliases_skips_absent_when_not_public() -> None:
     naming a public nickname, even though the nickname table itself is public content.
     """
     memory = (
-        "v1\n\n## 成員稱呼\n"
-        "* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n"
-        "* Bob(社群暱稱:阿伯)[id: 456]\n"
+        "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
     allowed = {123: "Mai (mai9999)"}
     widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=False)
@@ -7123,11 +7008,7 @@ async def test_memory_selection_timeout_falls_back_to_author_memory(
     """A selection slower than the grace falls back to the message author's own memory."""
     del memory_isolated_dir
     cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 穩定偏好\n* 甲 [src:*]",
-        identity="Tester (tester) [id: 1]",
-    )
+    _seed_fact(scope=user_scope(user_id=1), text="甲")
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
 
     context = await _prepare_context_with_hanging_selection(
@@ -7161,16 +7042,8 @@ async def test_memory_selection_timeout_falls_back_to_author_and_reference_memor
     """A reply makes the fallback read both the author and the referenced message's author."""
     del memory_isolated_dir
     cog = _cog()
-    write_main_memory(
-        scope=user_scope(user_id=1),
-        content="v1\n\n## 穩定偏好\n* 甲 [src:*]",
-        identity="Author (author) [id: 1]",
-    )
-    write_main_memory(
-        scope=user_scope(user_id=2),
-        content="v1\n\n## 穩定偏好\n* 乙 [src:*]",
-        identity="Parent (parent) [id: 2]",
-    )
+    _seed_fact(scope=user_scope(user_id=1), text="甲")
+    _seed_fact(scope=user_scope(user_id=2), text="乙")
     # _walk_reference_chain only follows a resolved message that passes isinstance(_, Message).
     monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
@@ -7192,18 +7065,20 @@ async def test_memory_selection_timeout_falls_back_to_author_and_reference_memor
 async def test_memory_selection_timeout_fallback_skips_locked_author_memory(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The fallback injects nothing when the author's memory is locked to another guild.
+    """The fallback injects nothing when the author's memory lives in another guild.
 
-    The participant fallback applies the same per-bullet source scoping as a deliberate
-    lookup, so a selection failure can never leak what the selection path would have
-    filtered.
+    The participant fallback opens exactly the compartments a deliberate lookup does, so
+    a selection failure can never reach a directory the selection path would not have
+    opened.
     """
     del memory_isolated_dir
     cog = _cog()
-    write_main_memory(
+    _seed_fact(
         scope=user_scope(user_id=1),
-        content="v1\n\n## 永久事實\n* 他群祕密 [src:424242]",
-        identity="Tester (tester) [id: 1]",
+        text="他群祕密",
+        compartment=guild_compartment(guild_id=424242),
+        section="permanent",
+        durability="permanent",
     )
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
 
@@ -7281,7 +7156,10 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
         lambda: [user_job_scope, server_job_scope, sweep_scope],
     )
     monkeypatch.setattr("discordbot.cogs.gen_reply.needs_consolidation", lambda scope: True)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.read_main_identity", lambda scope: "")
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.read_owner",
+        lambda scope: MemoryOwner(owner_id=scope_owner_id(scope=scope), owner_name=""),
+    )
 
     await cog._resume_memory()
     # Wait for spawned sweep tasks to finish.
