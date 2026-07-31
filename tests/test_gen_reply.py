@@ -39,6 +39,7 @@ from discordbot.typings.models import (
     RuntimeModelCatalog,
 )
 from discordbot.utils.reactions import ReactionStatusChain
+from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs._memory.facts import utc_now, mint_fact_id, node_type_for
 from discordbot.cogs._memory.store import (
     DM_COMPARTMENT,
@@ -50,8 +51,9 @@ from discordbot.cogs._memory.store import (
     scope_owner_id,
     guild_compartment,
 )
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, MessageInputBuilder
+from discordbot.cogs._gen_reply.input import MessageInputBuilder
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.markers import (
     MAX_INLINE_IMAGES,
@@ -65,7 +67,6 @@ from discordbot.cogs._gen_reply.streaming import (
     REASONING_PREVIEW_MAX_LINES,
     ResponseStreamer,
 )
-from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
     VOICE_TIMEOUT_SECONDS,
     MusicClip,

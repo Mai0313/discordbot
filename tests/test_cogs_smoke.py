@@ -21,10 +21,11 @@ from discordbot.cogs import (
     parse_douyin,
     parse_threads,
 )
+from discordbot.utils import interaction_responses as interactions
 from discordbot.cogs.games import GamesCogs
 from discordbot.cogs.video import VideoCogs
 from discordbot.cogs.economy import EconomyCogs
-from discordbot.cogs._economy import views, interactions
+from discordbot.cogs._economy import views
 from discordbot.cogs.template import TemplateCogs
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding

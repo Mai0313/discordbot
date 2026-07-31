@@ -26,7 +26,7 @@ from discordbot.cogs._economy.database import (
     reject_loan_proposal,
     reject_expired_loan_proposal,
 )
-from discordbot.cogs._economy.interactions import edit_response_embed, send_ephemeral_response
+from discordbot.utils.interaction_responses import edit_response_embed, send_ephemeral_response
 
 
 class LoanDecisionViewBase(View):

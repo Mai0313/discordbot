@@ -8,7 +8,7 @@ import nextcord
 from nextcord import Message
 from nextcord.abc import Messageable
 
-from discordbot.cogs._economy import interactions
+from discordbot.utils import interaction_responses as interactions
 from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
     PendingPublicMessage,

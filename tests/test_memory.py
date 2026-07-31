@@ -68,7 +68,7 @@ from discordbot.cogs._memory.prompts import (
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
-from discordbot.cogs._gen_reply.input import render_author_identity
+from discordbot.utils.llm_transcript import render_author_identity
 from discordbot.cogs._memory.constants import (
     COMPACTION_TARGET_CHARS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,

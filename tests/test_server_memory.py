@@ -26,7 +26,7 @@ from discordbot.cogs._memory.store import (
     read_memory_document,
 )
 from discordbot.cogs._memory.deltas import apply_deltas, sweep_stale_facts
-from discordbot.cogs._gen_reply.input import render_server_identity
+from discordbot.utils.llm_transcript import render_server_identity
 from discordbot.cogs._memory.constants import STABLE_FRESHNESS_WINDOW_DAYS
 from discordbot.cogs._memory.extraction import MemoryFactDelta
 from discordbot.cogs._gen_reply.memory_tool import (

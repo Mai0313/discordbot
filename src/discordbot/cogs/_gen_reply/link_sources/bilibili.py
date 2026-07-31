@@ -17,7 +17,7 @@ a working link. One neutral notice covers every metadata failure; the determinis
 case gets its own wording because "try again later" would be false for it.
 
 Concurrency is a plain semaphore with no per-URL lock and no payload cache, unlike
-`_parse_douyin/fetch.py`: Bilibili has no Douyin-grade WAF economics, yt-dlp keeps no reusable
+`utils/douyin.py`: Bilibili has no Douyin-grade WAF economics, yt-dlp keeps no reusable
 payload a second waiter could adopt (a lock would serialize duplicates without saving any
 work), and this module has a single caller since there is no Bilibili auto-expand cog. The
 semaphore only bounds concurrent multi-hundred-MB downloads on the host.

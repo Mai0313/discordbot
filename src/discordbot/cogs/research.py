@@ -45,6 +45,7 @@ from discordbot.typings.colors import DISCORD_RED
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
+from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs._research.agent import (
@@ -61,7 +62,6 @@ from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs._research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
 from discordbot.cogs._research.delivery import split_report, deliver_report
 from discordbot.cogs._research.streaming import ResearchProgressStreamer
-from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 
 if TYPE_CHECKING:
     from typing import Any

@@ -1,4 +1,4 @@
-"""Shared send/edit helpers for economy interaction responses."""
+"""Shared send/edit helpers for interaction responses that clean themselves up."""
 
 from typing import Protocol, cast
 

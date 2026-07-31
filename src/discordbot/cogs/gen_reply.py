@@ -34,6 +34,7 @@ from discordbot.typings.models import (
 from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
+from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs._memory.facts import render_owner_identity
 from discordbot.cogs._memory.store import (
     GLOBAL_COMPARTMENT,
@@ -45,19 +46,19 @@ from discordbot.cogs._memory.store import (
     read_memory_document,
 )
 from discordbot.utils.discord_embeds import embed_spacer_payload
+from discordbot.utils.llm_transcript import (
+    USAGE_FOOTER_RE,
+    sanitize_identity,
+    render_author_identity,
+    render_server_identity,
+)
 from discordbot.utils.media_delivery import (
     MediaItem,
     MediaDeliveryPlanner,
     upload_limit_for,
     build_media_delivery_planner,
 )
-from discordbot.cogs._gen_reply.input import (
-    USAGE_FOOTER_RE,
-    MessageInputBuilder,
-    sanitize_identity,
-    render_author_identity,
-    render_server_identity,
-)
+from discordbot.cogs._gen_reply.input import MessageInputBuilder
 from discordbot.cogs._memory.pipeline import (
     flavor_of,
     needs_consolidation,
@@ -92,7 +93,6 @@ from discordbot.cogs._memory.extraction import (
 from discordbot.cogs._memory.git_history import memory_git
 from discordbot.cogs._gen_reply.files_api import upload_to_files_api
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
-from discordbot.cogs._gen_reply.exceptions import extract_friendly_error
 from discordbot.cogs._gen_reply.generation import (
     MAX_VIDEO_REFERENCE_IMAGES,
     ImageGenerator,

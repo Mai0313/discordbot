@@ -49,13 +49,13 @@ from discordbot.cogs._economy.database import (
     create_personal_loan_request,
     create_central_bank_loan_request,
 )
-from discordbot.cogs._economy.interactions import (
+from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
+from discordbot.utils.interaction_responses import (
     send_private_followup,
     send_expiring_followup,
     send_ephemeral_response,
     send_loan_request_followup,
 )
-from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 
 
 def _parse_positive_amount(raw_amount: str | None) -> int | None:

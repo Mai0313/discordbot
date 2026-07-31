@@ -33,9 +33,10 @@ from discordbot.utils.douyin import (
     DouyinBlockedError,
     DouyinTooLargeError,
     DouyinUnavailableError,
+    douyin_url_locks,
+    douyin_fetch_semaphore,
 )
 from discordbot.typings.video import VideoQuality
-from discordbot.cogs._parse_douyin.fetch import douyin_url_locks, douyin_fetch_semaphore
 from discordbot.cogs._gen_reply.files_api import (
     FILES_API_MAX_BYTES,
     LINK_MEDIA_TIMEOUT_SECONDS,

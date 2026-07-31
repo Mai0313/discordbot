@@ -1,3 +1,5 @@
+"""Unwraps a LiteLLM-wrapped provider error into the message a user should see."""
+
 import re
 import ast
 import json

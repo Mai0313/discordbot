@@ -31,7 +31,7 @@ from discordbot.cogs._memory.store import (
     list_compartments,
     read_memory_document,
 )
-from discordbot.cogs._gen_reply.input import sanitize_identity
+from discordbot.utils.llm_transcript import sanitize_identity
 
 # Returned for an allowed id that has no stored memory file, so the model still
 # sees an explicit signal. Also lets the usage footer tell "looked up" apart from

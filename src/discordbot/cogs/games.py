@@ -34,7 +34,6 @@ from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.history_text import build_blackjack_history_embed
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
 from discordbot.utils.owned_message_views import send_ephemeral_notice
-from discordbot.cogs._economy.interactions import send_expiring_followup
 from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 from discordbot.cogs._fishing.presentation import build_panel_embed
 from discordbot.cogs._games.blackjack_views import (
@@ -42,6 +41,7 @@ from discordbot.cogs._games.blackjack_views import (
     BlackjackLobbyView,
     build_blackjack_lobby_embed,
 )
+from discordbot.utils.interaction_responses import send_expiring_followup
 from discordbot.cogs._games.dragon_gate_views import (
     DragonGateLobbyView,
     build_dragon_gate_lobby_embed,

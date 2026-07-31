@@ -24,7 +24,7 @@ from discordbot.cogs._memory.prompts import (
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
-from discordbot.cogs._gen_reply.input import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
 from discordbot.cogs._memory.constants import (
     MEMORY_REPLY_MAX_CHARS,
     MEMORY_TRANSCRIPT_MAX_CHARS,

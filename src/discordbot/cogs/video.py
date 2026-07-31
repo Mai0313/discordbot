@@ -10,7 +10,13 @@ from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.urls import extract_first_url
-from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownload, DouyinDownloader, is_douyin_url
+from discordbot.utils.douyin import (
+    DOUYIN_URL_RE,
+    DouyinDownload,
+    DouyinDownloader,
+    is_douyin_url,
+    douyin_failure_message,
+)
 from discordbot.typings.video import VideoQuality
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.utils.media_delivery import (
@@ -21,7 +27,6 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
-from discordbot.cogs._parse_douyin.fetch import douyin_failure_message
 
 # The labels Discord shows for the `quality` option, keyed to the presets themselves so a
 # relabelling cannot drift onto a value the downloaders do not answer.

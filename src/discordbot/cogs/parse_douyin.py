@@ -18,7 +18,7 @@ pipeline skips those), and one the router sends to IMAGE / VIDEO (those routes d
 link context). Both are rare enough to accept rather than couple the cogs together.
 
 Douyin's WAF bans a share path for tens of minutes once it is hit hard, and this listener
-sees every message in every channel, so the request-volume bounds in `_parse_douyin/fetch.py`
+sees every message in every channel, so the request-volume bounds in `utils/douyin.py`
 are load-bearing rather than defensive. A blocked request must never be reported as a missing
 post: telling someone their working link is dead is the worst failure this feature can produce.
 """
@@ -38,7 +38,10 @@ from discordbot.utils.douyin import (
     DouyinDownloader,
     DouyinBlockedError,
     DouyinUnavailableError,
+    douyin_url_locks,
     is_douyin_post_url,
+    douyin_failure_message,
+    douyin_fetch_semaphore,
 )
 from discordbot.typings.douyin import DouyinConfig
 from discordbot.utils.mentions import is_addressed_to_bot
@@ -51,11 +54,6 @@ from discordbot.utils.media_delivery import (
     MediaPlan,
     upload_limit_for,
     build_media_delivery_planner,
-)
-from discordbot.cogs._parse_douyin.fetch import (
-    douyin_url_locks,
-    douyin_failure_message,
-    douyin_fetch_semaphore,
 )
 
 # Douyin's own palette, so the expansion reads as a Douyin card at a glance.

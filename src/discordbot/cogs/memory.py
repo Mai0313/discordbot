@@ -36,7 +36,7 @@ from discordbot.cogs._memory.views import (
     memory_footer_text,
     build_clear_confirm_embed,
 )
-from discordbot.cogs._gen_reply.input import render_author_identity
+from discordbot.utils.llm_transcript import render_author_identity
 from discordbot.cogs._memory.pipeline import (
     flavor_of,
     regeneration_on_cooldown,
