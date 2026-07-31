@@ -41,9 +41,10 @@ make gen-docs
 ## Project Layout
 
 - `src/discordbot/cli.py`: bot entry point, intent setup, cog loading, global message reward, and application-command sync.
-- `src/discordbot/cogs/`: nextcord cogs. Sibling `_<cog>/` packages hold cog-private helpers and are not auto-loaded.
+- `src/discordbot/cogs/`: nextcord cogs, one directory each. `cogs/<name>/cog.py` is the module the loader imports; everything beside it in that directory is that cog's own code.
+- `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the stock market, the memory store). Discord-free, and never imports from `cogs/`.
 - `src/discordbot/typings/`: shared Pydantic models, settings, enums, and pure domain types.
-- `src/discordbot/utils/`: downloader, image, Threads, and LiteLLM pricing helpers.
+- `src/discordbot/utils/`: generic helpers with no domain state — downloader, image, Threads, LiteLLM pricing.
 - `tests/`: pytest suite.
 - `scripts/`: local maintenance and development tools.
 - `data/`: runtime data; SQLite databases live in `data/database/`, alongside logs, cached prices, and other runtime files. Do not commit generated runtime data.
@@ -65,7 +66,7 @@ docs: simplify user README
 
 - Add or update tests for behavior changes.
 - Update user-facing docs when commands, configuration, or visible behavior changes.
-- For slash-command behavior, update `HELP_CONTENT` in `src/discordbot/cogs/_help/content.py` in the same change and keep `tests/test_help.py` passing. The guard covers group subcommands, so each `/<group> <subcommand>` needs its own line in every locale.
+- For slash-command behavior, update `HELP_CONTENT` in `src/discordbot/cogs/help/content.py` in the same change and keep `tests/test_help.py` passing. The guard covers group subcommands, so each `/<group> <subcommand>` needs its own line in every locale.
 - Run local checks before opening the PR:
 
 ```bash
@@ -80,6 +81,7 @@ uvx pre-commit run -a
 - Keep cog `setup(bot)` functions synchronous:
 
 ```python
+# src/discordbot/cogs/<name>/cog.py
 def setup(bot: commands.Bot) -> None:
     bot.add_cog(MyCog(bot), override=True)
 ```
@@ -87,7 +89,7 @@ def setup(bot: commands.Bot) -> None:
 `async def setup` is not safe here because nextcord schedules it without awaiting it, which can leave cogs unregistered before the first slash-command sync.
 
 - Slash commands need `name_localizations` and `description_localizations` for `en-US`, `zh-TW`, and `ja` where applicable.
-- Do not import peer cogs directly. Use the bot instance, shared typings, or helper modules under the cog's private `_<cog>/` package.
+- A cog directory holds one cog's code. Do not import anything from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`. `tests/test_package_layering.py` enforces this.
 - Use Pydantic for structured data models. Prefer `BaseModel`, frozen models, enums, and typed result objects over dictionaries or `dataclass`.
 - Environment-backed settings should use `pydantic_settings.BaseSettings` with explicit `validation_alias=AliasChoices("ENV_NAME")`.
 - Keep `Field(description=..., examples=...)` populated for configurable values. These descriptions document the environment contract.
@@ -112,7 +114,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 
 - Every log statement inside an `except` attaches the exception (`_exc_info=True`, or `_exc_info=exc` when the handler binds it), plus `error_type=type(exc).__name__` when the handler is broad.
 - Every log carries the structured fields that identify its subject (`message_id`, `url`, `scope`, `thread_id`, `filename`), so a recurrence is greppable without reading the traceback.
-- A broad `except Exception` or `contextlib.suppress(Exception)` is allowed only as a deliberate best-effort boundary. When it is, a comment says why it stays broad, and the handler still logs. `cogs/_memory/pipeline.py::_safe` is the reference shape.
+- A broad `except Exception` or `contextlib.suppress(Exception)` is allowed only as a deliberate best-effort boundary. When it is, a comment says why it stays broad, and the handler still logs. `services/memory/pipeline.py::_safe` is the reference shape.
 - Silent swallowing is reserved for inert cleanup where a log would be pure noise, such as removing a reaction or deleting an already-deleted message.
 - A coarse `except` spanning several distinct steps gets split so the message names the step that actually failed. Do not split when narrowing would let an exception escape into a listener or fire-and-forget task that cannot handle it; keep it broad and say so.
 - `LOG_LEVEL` sets the console and log-file floor, defaulting to `debug` so `./data/logs` holds the full trace.

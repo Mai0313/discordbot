@@ -16,115 +16,121 @@ nav:
   - Reference:
       - discordbot:
           - cogs:
-              - _auto_unmute:
-                  - prompts: Reference/discordbot/cogs/_auto_unmute/prompts.md
-              - _economy:
-                  - boards: Reference/discordbot/cogs/_economy/boards.md
-                  - database: Reference/discordbot/cogs/_economy/database.md
-                  - embeds: Reference/discordbot/cogs/_economy/embeds.md
-                  - interactions: Reference/discordbot/cogs/_economy/interactions.md
-                  - presentation: Reference/discordbot/cogs/_economy/presentation.md
-                  - views: Reference/discordbot/cogs/_economy/views.md
-              - _fishing:
-                  - catch: Reference/discordbot/cogs/_fishing/catch.md
-                  - database: Reference/discordbot/cogs/_fishing/database.md
-                  - defaults: Reference/discordbot/cogs/_fishing/defaults.md
-                  - presentation: Reference/discordbot/cogs/_fishing/presentation.md
-                  - shop: Reference/discordbot/cogs/_fishing/shop.md
-                  - views: Reference/discordbot/cogs/_fishing/views.md
-              - _games:
-                  - blackjack: Reference/discordbot/cogs/_games/blackjack.md
-                  - blackjack_ev: Reference/discordbot/cogs/_games/blackjack_ev.md
-                  - blackjack_views: Reference/discordbot/cogs/_games/blackjack_views.md
-                  - bot_player: Reference/discordbot/cogs/_games/bot_player.md
-                  - database: Reference/discordbot/cogs/_games/database.md
-                  - dragon_gate: Reference/discordbot/cogs/_games/dragon_gate.md
-                  - dragon_gate_views: Reference/discordbot/cogs/_games/dragon_gate_views.md
-                  - history_text: Reference/discordbot/cogs/_games/history_text.md
-                  - interactions: Reference/discordbot/cogs/_games/interactions.md
-                  - lobby: Reference/discordbot/cogs/_games/lobby.md
-                  - presentation: Reference/discordbot/cogs/_games/presentation.md
-                  - settlement: Reference/discordbot/cogs/_games/settlement.md
-                  - shoe: Reference/discordbot/cogs/_games/shoe.md
-                  - wagers: Reference/discordbot/cogs/_games/wagers.md
-              - _gen_reply:
+              - auto_unmute:
+                  - cog: Reference/discordbot/cogs/auto_unmute/cog.md
+                  - prompts: Reference/discordbot/cogs/auto_unmute/prompts.md
+              - economy:
+                  - cog: Reference/discordbot/cogs/economy/cog.md
+                  - embeds: Reference/discordbot/cogs/economy/embeds.md
+                  - views: Reference/discordbot/cogs/economy/views.md
+              - games:
+                  - fishing:
+                      - catch: Reference/discordbot/cogs/games/fishing/catch.md
+                      - database: Reference/discordbot/cogs/games/fishing/database.md
+                      - defaults: Reference/discordbot/cogs/games/fishing/defaults.md
+                      - presentation: Reference/discordbot/cogs/games/fishing/presentation.md
+                      - shop: Reference/discordbot/cogs/games/fishing/shop.md
+                      - views: Reference/discordbot/cogs/games/fishing/views.md
+                  - blackjack: Reference/discordbot/cogs/games/blackjack.md
+                  - blackjack_ev: Reference/discordbot/cogs/games/blackjack_ev.md
+                  - blackjack_views: Reference/discordbot/cogs/games/blackjack_views.md
+                  - bot_player: Reference/discordbot/cogs/games/bot_player.md
+                  - cog: Reference/discordbot/cogs/games/cog.md
+                  - database: Reference/discordbot/cogs/games/database.md
+                  - dragon_gate: Reference/discordbot/cogs/games/dragon_gate.md
+                  - dragon_gate_views: Reference/discordbot/cogs/games/dragon_gate_views.md
+                  - history_text: Reference/discordbot/cogs/games/history_text.md
+                  - interactions: Reference/discordbot/cogs/games/interactions.md
+                  - lobby: Reference/discordbot/cogs/games/lobby.md
+                  - presentation: Reference/discordbot/cogs/games/presentation.md
+                  - settlement: Reference/discordbot/cogs/games/settlement.md
+                  - shoe: Reference/discordbot/cogs/games/shoe.md
+                  - wagers: Reference/discordbot/cogs/games/wagers.md
+              - gen_reply:
                   - attachment:
-                      - anthropic_file_api: Reference/discordbot/cogs/_gen_reply/attachment/anthropic_file_api.md
-                      - base: Reference/discordbot/cogs/_gen_reply/attachment/base.md
-                      - gemini_file_api: Reference/discordbot/cogs/_gen_reply/attachment/gemini_file_api.md
-                      - grok_file_api: Reference/discordbot/cogs/_gen_reply/attachment/grok_file_api.md
-                      - inline: Reference/discordbot/cogs/_gen_reply/attachment/inline.md
-                      - loaders: Reference/discordbot/cogs/_gen_reply/attachment/loaders.md
-                      - openai_file_api: Reference/discordbot/cogs/_gen_reply/attachment/openai_file_api.md
-                      - select: Reference/discordbot/cogs/_gen_reply/attachment/select.md
+                      - anthropic_file_api: Reference/discordbot/cogs/gen_reply/attachment/anthropic_file_api.md
+                      - base: Reference/discordbot/cogs/gen_reply/attachment/base.md
+                      - gemini_file_api: Reference/discordbot/cogs/gen_reply/attachment/gemini_file_api.md
+                      - grok_file_api: Reference/discordbot/cogs/gen_reply/attachment/grok_file_api.md
+                      - inline: Reference/discordbot/cogs/gen_reply/attachment/inline.md
+                      - loaders: Reference/discordbot/cogs/gen_reply/attachment/loaders.md
+                      - openai_file_api: Reference/discordbot/cogs/gen_reply/attachment/openai_file_api.md
+                      - select: Reference/discordbot/cogs/gen_reply/attachment/select.md
                   - link_sources:
-                      - bilibili: Reference/discordbot/cogs/_gen_reply/link_sources/bilibili.md
-                      - douyin: Reference/discordbot/cogs/_gen_reply/link_sources/douyin.md
-                      - threads: Reference/discordbot/cogs/_gen_reply/link_sources/threads.md
-                  - context: Reference/discordbot/cogs/_gen_reply/context.md
-                  - exceptions: Reference/discordbot/cogs/_gen_reply/exceptions.md
-                  - files_api: Reference/discordbot/cogs/_gen_reply/files_api.md
-                  - generation: Reference/discordbot/cogs/_gen_reply/generation.md
-                  - input: Reference/discordbot/cogs/_gen_reply/input.md
-                  - interactions: Reference/discordbot/cogs/_gen_reply/interactions.md
-                  - markers: Reference/discordbot/cogs/_gen_reply/markers.md
-                  - memory_tool: Reference/discordbot/cogs/_gen_reply/memory_tool.md
-                  - prompts: Reference/discordbot/cogs/_gen_reply/prompts.md
-                  - streaming: Reference/discordbot/cogs/_gen_reply/streaming.md
-              - _help:
-                  - content: Reference/discordbot/cogs/_help/content.md
-                  - presentation: Reference/discordbot/cogs/_help/presentation.md
-                  - views: Reference/discordbot/cogs/_help/views.md
-              - _maplestory:
-                  - constants: Reference/discordbot/cogs/_maplestory/constants.md
-                  - embeds: Reference/discordbot/cogs/_maplestory/embeds.md
-                  - models: Reference/discordbot/cogs/_maplestory/models.md
-                  - service: Reference/discordbot/cogs/_maplestory/service.md
-                  - views: Reference/discordbot/cogs/_maplestory/views.md
-              - _memory:
-                  - constants: Reference/discordbot/cogs/_memory/constants.md
-                  - database: Reference/discordbot/cogs/_memory/database.md
-                  - deltas: Reference/discordbot/cogs/_memory/deltas.md
-                  - extraction: Reference/discordbot/cogs/_memory/extraction.md
-                  - facts: Reference/discordbot/cogs/_memory/facts.md
-                  - git_history: Reference/discordbot/cogs/_memory/git_history.md
-                  - pipeline: Reference/discordbot/cogs/_memory/pipeline.md
-                  - prompts: Reference/discordbot/cogs/_memory/prompts.md
-                  - server_prompts: Reference/discordbot/cogs/_memory/server_prompts.md
-                  - store: Reference/discordbot/cogs/_memory/store.md
-                  - views: Reference/discordbot/cogs/_memory/views.md
-              - _parse_douyin:
-                  - fetch: Reference/discordbot/cogs/_parse_douyin/fetch.md
-              - _research:
-                  - agent: Reference/discordbot/cogs/_research/agent.md
-                  - database: Reference/discordbot/cogs/_research/database.md
-                  - delivery: Reference/discordbot/cogs/_research/delivery.md
-                  - prompts: Reference/discordbot/cogs/_research/prompts.md
-                  - streaming: Reference/discordbot/cogs/_research/streaming.md
-                  - views: Reference/discordbot/cogs/_research/views.md
-              - _stock:
-                  - chart: Reference/discordbot/cogs/_stock/chart.md
-                  - database: Reference/discordbot/cogs/_stock/database.md
-                  - market: Reference/discordbot/cogs/_stock/market.md
-                  - news: Reference/discordbot/cogs/_stock/news.md
-                  - presentation: Reference/discordbot/cogs/_stock/presentation.md
-                  - prompts: Reference/discordbot/cogs/_stock/prompts.md
-                  - views: Reference/discordbot/cogs/_stock/views.md
-              - auto_unmute: Reference/discordbot/cogs/auto_unmute.md
-              - economy: Reference/discordbot/cogs/economy.md
-              - games: Reference/discordbot/cogs/games.md
-              - gen_reply: Reference/discordbot/cogs/gen_reply.md
-              - help: Reference/discordbot/cogs/help.md
-              - log_msg: Reference/discordbot/cogs/log_msg.md
-              - maplestory: Reference/discordbot/cogs/maplestory.md
-              - media_cleanup: Reference/discordbot/cogs/media_cleanup.md
-              - memory: Reference/discordbot/cogs/memory.md
-              - parse_douyin: Reference/discordbot/cogs/parse_douyin.md
-              - parse_threads: Reference/discordbot/cogs/parse_threads.md
-              - research: Reference/discordbot/cogs/research.md
-              - stock: Reference/discordbot/cogs/stock.md
-              - template: Reference/discordbot/cogs/template.md
-              - video: Reference/discordbot/cogs/video.md
+                      - bilibili: Reference/discordbot/cogs/gen_reply/link_sources/bilibili.md
+                      - douyin: Reference/discordbot/cogs/gen_reply/link_sources/douyin.md
+                      - threads: Reference/discordbot/cogs/gen_reply/link_sources/threads.md
+                  - cog: Reference/discordbot/cogs/gen_reply/cog.md
+                  - context: Reference/discordbot/cogs/gen_reply/context.md
+                  - files_api: Reference/discordbot/cogs/gen_reply/files_api.md
+                  - generation: Reference/discordbot/cogs/gen_reply/generation.md
+                  - input: Reference/discordbot/cogs/gen_reply/input.md
+                  - interactions: Reference/discordbot/cogs/gen_reply/interactions.md
+                  - markers: Reference/discordbot/cogs/gen_reply/markers.md
+                  - memory_tool: Reference/discordbot/cogs/gen_reply/memory_tool.md
+                  - prompts: Reference/discordbot/cogs/gen_reply/prompts.md
+                  - streaming: Reference/discordbot/cogs/gen_reply/streaming.md
+              - help:
+                  - cog: Reference/discordbot/cogs/help/cog.md
+                  - content: Reference/discordbot/cogs/help/content.md
+                  - presentation: Reference/discordbot/cogs/help/presentation.md
+                  - views: Reference/discordbot/cogs/help/views.md
+              - log_msg:
+                  - cog: Reference/discordbot/cogs/log_msg/cog.md
+              - maplestory:
+                  - cog: Reference/discordbot/cogs/maplestory/cog.md
+                  - constants: Reference/discordbot/cogs/maplestory/constants.md
+                  - embeds: Reference/discordbot/cogs/maplestory/embeds.md
+                  - models: Reference/discordbot/cogs/maplestory/models.md
+                  - service: Reference/discordbot/cogs/maplestory/service.md
+                  - views: Reference/discordbot/cogs/maplestory/views.md
+              - media_cleanup:
+                  - cog: Reference/discordbot/cogs/media_cleanup/cog.md
+              - memory:
+                  - cog: Reference/discordbot/cogs/memory/cog.md
+                  - views: Reference/discordbot/cogs/memory/views.md
+              - parse_douyin:
+                  - cog: Reference/discordbot/cogs/parse_douyin/cog.md
+              - parse_threads:
+                  - cog: Reference/discordbot/cogs/parse_threads/cog.md
+              - research:
+                  - agent: Reference/discordbot/cogs/research/agent.md
+                  - cog: Reference/discordbot/cogs/research/cog.md
+                  - database: Reference/discordbot/cogs/research/database.md
+                  - delivery: Reference/discordbot/cogs/research/delivery.md
+                  - prompts: Reference/discordbot/cogs/research/prompts.md
+                  - streaming: Reference/discordbot/cogs/research/streaming.md
+                  - views: Reference/discordbot/cogs/research/views.md
+              - stock:
+                  - chart: Reference/discordbot/cogs/stock/chart.md
+                  - cog: Reference/discordbot/cogs/stock/cog.md
+                  - news: Reference/discordbot/cogs/stock/news.md
+                  - presentation: Reference/discordbot/cogs/stock/presentation.md
+                  - views: Reference/discordbot/cogs/stock/views.md
+              - template:
+                  - cog: Reference/discordbot/cogs/template/cog.md
+              - video:
+                  - cog: Reference/discordbot/cogs/video/cog.md
+          - services:
+              - economy:
+                  - boards: Reference/discordbot/services/economy/boards.md
+                  - database: Reference/discordbot/services/economy/database.md
+                  - presentation: Reference/discordbot/services/economy/presentation.md
+              - memory:
+                  - constants: Reference/discordbot/services/memory/constants.md
+                  - database: Reference/discordbot/services/memory/database.md
+                  - deltas: Reference/discordbot/services/memory/deltas.md
+                  - extraction: Reference/discordbot/services/memory/extraction.md
+                  - facts: Reference/discordbot/services/memory/facts.md
+                  - git_history: Reference/discordbot/services/memory/git_history.md
+                  - pipeline: Reference/discordbot/services/memory/pipeline.md
+                  - prompts: Reference/discordbot/services/memory/prompts.md
+                  - server_prompts: Reference/discordbot/services/memory/server_prompts.md
+                  - store: Reference/discordbot/services/memory/store.md
+              - stock:
+                  - database: Reference/discordbot/services/stock/database.md
+                  - market: Reference/discordbot/services/stock/market.md
+                  - prompts: Reference/discordbot/services/stock/prompts.md
           - typings:
               - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md
@@ -147,7 +153,10 @@ nav:
               - douyin: Reference/discordbot/utils/douyin.md
               - downloader: Reference/discordbot/utils/downloader.md
               - images: Reference/discordbot/utils/images.md
+              - interaction_responses: Reference/discordbot/utils/interaction_responses.md
               - llm: Reference/discordbot/utils/llm.md
+              - llm_errors: Reference/discordbot/utils/llm_errors.md
+              - llm_transcript: Reference/discordbot/utils/llm_transcript.md
               - media_delivery: Reference/discordbot/utils/media_delivery.md
               - mentions: Reference/discordbot/utils/mentions.md
               - message_cleanup: Reference/discordbot/utils/message_cleanup.md
