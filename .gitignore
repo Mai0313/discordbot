@@ -223,3 +223,7 @@ TODO.md
 
 # Host-local compose override (machine-specific bind mounts, e.g. media hosting)
 /docker-compose.override.yaml
+
+# Agent skills, pulled on demand by `npx skills add`
+/.agents/skills/
+/skills-lock.json

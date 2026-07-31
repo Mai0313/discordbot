@@ -1,0 +1,59 @@
+name: opencode Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: write-all
+
+# `secrets` is unavailable in any `if`, so bridge the key through env and gate
+# each step, letting a repo without it finish green. The composite action merges
+# this same env, so its own step needs no OPENCODE_API_KEY.
+env:
+  OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+
+concurrency:
+  group: opencode-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review
+    runs-on: ubuntu-latest
+    # The action asserts the author has write access and posts an error comment
+    # when they do not, so keep non-collaborator PRs out. This also covers
+    # dependabot, whose PRs come in as CONTRIBUTOR.
+    if: |
+      github.event.pull_request.draft == false &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+
+    steps:
+      # Full history, so the skill can resolve a merge base against the base branch.
+      - name: Checkout
+        if: env.OPENCODE_API_KEY != ''
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Lands in .agents/skills/, which opencode scans on its own.
+      - name: Install skills
+        if: env.OPENCODE_API_KEY != ''
+        run: |
+          npx -y skills add Mai0313/skills --agent opencode -y
+
+      - name: Run opencode
+        if: env.OPENCODE_API_KEY != ''
+        uses: anomalyco/opencode/github@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          model: opencode/gemini-3.1-pro
+          agent: build
+          variant: high
+          prompt: |
+            Review this pull request with the `code-review` skill, against the
+            base branch `origin/${{ github.event.pull_request.base.ref }}`.
+
+            Your reply is posted as a comment for you, so do not post one
+            yourself, and do not commit or push anything.
