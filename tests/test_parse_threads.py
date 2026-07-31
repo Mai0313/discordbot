@@ -788,13 +788,16 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
         url=_URL, answer_model_is_gemini=True, gemini_client=make_stub_gemini_client()
     )
 
-    assert written == ["threads_video_0.mp4", "threads_quoted_video_0.mp4"]
+    # Order-independent on purpose: `_ingest_media` gathers the two posts concurrently so a slow
+    # target cannot eat the quoted post's window, which leaves the order the two clips reach the
+    # thread pool up to the pool. What has to hold is the pairing, not the sequence.
+    assert sorted(written) == ["threads_quoted_video_0.mp4", "threads_video_0.mp4"]
     # Each part carries ITS OWN clip: one shared filename uploads one post's bytes as the other's,
     # which is wrong content under a confident attribution.
-    assert uploaded == [
-        ("threads_video_0.mp4", b"https://cdn.test/target.mp4"),
-        ("threads_quoted_video_0.mp4", b"https://cdn.test/quoted.mp4"),
-    ]
+    assert dict(uploaded) == {
+        "threads_video_0.mp4": b"https://cdn.test/target.mp4",
+        "threads_quoted_video_0.mp4": b"https://cdn.test/quoted.mp4",
+    }
 
 
 async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
