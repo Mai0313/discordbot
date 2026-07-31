@@ -68,7 +68,7 @@ from discordbot.cogs._stock.prompts import (
 from discordbot.utils.asyncio_locks import LoopLocalLock, KeyedLockManager, LoopLocalSemaphore
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger
-from discordbot.cogs._economy.database import get_balance, apply_ordered_wallet_deltas
+from discordbot.services.economy.database import get_balance, apply_ordered_wallet_deltas
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager

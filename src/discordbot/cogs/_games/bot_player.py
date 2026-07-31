@@ -14,7 +14,7 @@ from pydantic import Field, BaseModel, ConfigDict
 from discordbot.typings.games import Card, BotAction, ActionEvAnalysis
 from discordbot.cogs._games.blackjack import is_soft_total, _card_blackjack_value
 from discordbot.cogs._games.blackjack_ev import compute_action_evs
-from discordbot.cogs._economy.presentation import CURRENCY_NAME
+from discordbot.services.economy.presentation import CURRENCY_NAME
 
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
 # play, measured by offline simulation (neutral-count edge ~ +0.13, sigma^2 ~ 1.34).

@@ -17,8 +17,8 @@ from collections.abc import Sequence
 from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 
-from discordbot.cogs._economy.database import top_n, get_account, adjust_balance
-from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
+from discordbot.services.economy.database import top_n, get_account, adjust_balance
+from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
 
 console = Console()
 

@@ -111,10 +111,10 @@ from discordbot.typings.economy import (
 )
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
-from discordbot.cogs._economy.boards import invalidate_economy_board_cache
 from discordbot.utils.stored_integer import StoredInteger
 from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
+from discordbot.services.economy.boards import invalidate_economy_board_cache
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import CursorResult

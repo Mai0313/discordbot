@@ -1,7 +1,7 @@
 """Tests for shared readable number presentation helpers."""
 
 from discordbot.utils.number_text import compact_amount, compact_number, share_quantity_text
-from discordbot.cogs._economy.presentation import amount_code, currency_text
+from discordbot.services.economy.presentation import amount_code, currency_text
 
 
 def test_compact_amount_preserves_small_amounts() -> None:

@@ -17,15 +17,15 @@ from discordbot.typings.economy import (
     LoanLenderType,
 )
 from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
-from discordbot.cogs._economy.boards import (
+from discordbot.cogs._stock.database import get_stock_portfolio
+from discordbot.utils.amount_parsing import parse_decimal_amount
+from discordbot.services.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
     build_loss_leaderboard_board_image,
     build_balance_leaderboard_board_image,
 )
-from discordbot.cogs._stock.database import get_stock_portfolio
-from discordbot.utils.amount_parsing import parse_decimal_amount
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     top_n,
     buy_vip,
     checkin,
@@ -49,13 +49,13 @@ from discordbot.cogs._economy.database import (
     create_personal_loan_request,
     create_central_bank_loan_request,
 )
-from discordbot.cogs._economy.presentation import CURRENCY_NAME, currency_text
 from discordbot.utils.interaction_responses import (
     send_private_followup,
     send_expiring_followup,
     send_ephemeral_response,
     send_loan_request_followup,
 )
+from discordbot.services.economy.presentation import CURRENCY_NAME, currency_text
 
 
 def _parse_positive_amount(raw_amount: str | None) -> int | None:

@@ -29,7 +29,6 @@ from discordbot.cogs._fishing.views import (
     show_stats,
     show_leaderboard,
 )
-from discordbot.cogs._economy.database import adjust_balance
 from discordbot.cogs._fishing.database import purchase_gear
 from discordbot.cogs._fishing.defaults import (
     default_gear_upserts,
@@ -37,6 +36,7 @@ from discordbot.cogs._fishing.defaults import (
     default_grade_upserts,
     default_species_upserts,
 )
+from discordbot.services.economy.database import adjust_balance
 from discordbot.cogs._fishing.presentation import (
     build_shop_embed,
     build_error_embed,

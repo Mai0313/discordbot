@@ -19,7 +19,7 @@ from discordbot.typings.fishing import (
     FishingPanelData,
     FishGradeConfigView,
 )
-from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency, currency_text
+from discordbot.services.economy.presentation import CURRENCY_NAME, bold_currency, currency_text
 
 FISHING_COLOR = 0x1ABC9C
 FISHING_ERROR_COLOR = 0xE74C3C

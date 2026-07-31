@@ -6,7 +6,7 @@ from PIL import Image
 import pytest
 
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
-from discordbot.cogs._economy.boards import (
+from discordbot.services.economy.boards import (
     _RankingBoardSpec,
     _ranking_amount_text,
     _render_ranking_board_image,
@@ -90,7 +90,9 @@ def test_balance_leaderboard_board_image_cache(monkeypatch: pytest.MonkeyPatch) 
         del spec
         raise AssertionError("render should be cached")
 
-    monkeypatch.setattr("discordbot.cogs._economy.boards._render_ranking_board_image", fail_render)
+    monkeypatch.setattr(
+        "discordbot.services.economy.boards._render_ranking_board_image", fail_render
+    )
     assert build_balance_leaderboard_board_image(rows=rows) == first
 
 
@@ -109,7 +111,7 @@ def test_economy_board_cache_invalidation(monkeypatch: pytest.MonkeyPatch) -> No
         return _render_ranking_board_image(spec=spec)
 
     monkeypatch.setattr(
-        "discordbot.cogs._economy.boards._render_ranking_board_image", count_render
+        "discordbot.services.economy.boards._render_ranking_board_image", count_render
     )
     build_balance_leaderboard_board_image(rows=rows)
     assert calls == 1

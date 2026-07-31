@@ -8,7 +8,7 @@ import pytest
 import nextcord
 from openai.types.responses import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.cogs._economy.database import adjust_balance
+from discordbot.services.economy.database import adjust_balance
 from discordbot.cogs._gen_reply.memory_tool import (
     UserMemory,
     render_server_memory_block,

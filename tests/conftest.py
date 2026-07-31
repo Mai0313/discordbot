@@ -11,9 +11,9 @@ import pytest
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.cogs._economy.database import Base
 from discordbot.cogs._fishing.database import Base as FishingBase
 from discordbot.cogs._research.database import Base as ResearchBase
+from discordbot.services.economy.database import Base
 
 
 @pytest.fixture
@@ -25,7 +25,7 @@ async def economy_isolated_db(
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{economy_db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
+    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
     yield
     await engine.dispose()
 

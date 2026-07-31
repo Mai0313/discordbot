@@ -48,7 +48,7 @@ from discordbot.cogs._stock.market import (
     effective_volatility_width_bps,
 )
 from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT, STOCK_NEWS_FALLBACK_TEMPLATES
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     UserWallet,
     open_session,
     adjust_balance,

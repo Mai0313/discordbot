@@ -10,7 +10,6 @@ from sqlalchemy import select
 
 from discordbot.cogs._fishing import database as fdb
 from discordbot.typings.fishing import MAX_BAIT_PER_PURCHASE, GearType, CastStatus, GearUpsert
-from discordbot.cogs._economy.database import get_balance, adjust_balance
 from discordbot.cogs._fishing.database import (
     CatchLog,
     settle_cast,
@@ -27,6 +26,7 @@ from discordbot.cogs._fishing.defaults import (
     default_grade_upserts,
     default_species_upserts,
 )
+from discordbot.services.economy.database import get_balance, adjust_balance
 
 pytestmark = pytest.mark.usefixtures("fishing_isolated_db")
 

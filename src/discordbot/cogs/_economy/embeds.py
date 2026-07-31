@@ -23,16 +23,16 @@ from discordbot.typings.economy import (
 )
 from discordbot.utils.number_text import share_quantity_text
 from discordbot.cogs._stock.market import format_price
-from discordbot.cogs._economy.boards import (
+from discordbot.services.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
 )
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     checkin_reward,
     apply_vip_blackjack_bonus,
     monthly_rate_bps_to_percent,
 )
-from discordbot.cogs._economy.presentation import (
+from discordbot.services.economy.presentation import (
     CURRENCY_NAME,
     amount_code,
     bold_currency,

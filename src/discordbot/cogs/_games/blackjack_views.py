@@ -71,7 +71,7 @@ from discordbot.cogs._games.presentation import (
     blackjack_outcome_presentation,
 )
 from discordbot.utils.owned_message_views import send_ephemeral_notice
-from discordbot.cogs._economy.presentation import amount_code, currency_text
+from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random

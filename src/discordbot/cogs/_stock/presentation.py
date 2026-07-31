@@ -23,7 +23,7 @@ from discordbot.utils.currency import cash_floor
 from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right
 from discordbot.utils.number_text import compact_amount, share_quantity_text
 from discordbot.cogs._stock.market import format_price, effective_volatility_width_bps
-from discordbot.cogs._economy.presentation import CURRENCY_NAME, amount_code, currency_text
+from discordbot.services.economy.presentation import CURRENCY_NAME, amount_code, currency_text
 
 MARKET_COLOR = 0x2ECC71
 DETAIL_COLOR = 0x3498DB

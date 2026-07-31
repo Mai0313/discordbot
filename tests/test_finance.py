@@ -11,7 +11,7 @@ from discordbot.typings.economy import (
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     LoanProposalStatus,
 )
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     LoanContract,
     LoanProposal,
     get_balance,

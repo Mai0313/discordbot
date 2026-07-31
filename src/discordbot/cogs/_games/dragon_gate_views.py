@@ -20,11 +20,6 @@ from discordbot.utils.number_text import compact_amount
 from discordbot.cogs._games.wagers import parse_wager_amount
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
-from discordbot.cogs._economy.database import (
-    get_balance,
-    get_jackpot_snapshot,
-    apply_jackpot_settlement,
-)
 from discordbot.cogs._games.dragon_gate import (
     ANTE,
     GAME_ID,
@@ -55,8 +50,13 @@ from discordbot.cogs._games.presentation import (
     metadata_line,
     lobby_participant_line,
 )
+from discordbot.services.economy.database import (
+    get_balance,
+    get_jackpot_snapshot,
+    apply_jackpot_settlement,
+)
 from discordbot.utils.owned_message_views import send_ephemeral_notice
-from discordbot.cogs._economy.presentation import amount_code, currency_text
+from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random

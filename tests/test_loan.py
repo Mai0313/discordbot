@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     transfer,
     get_account,
     get_balance,

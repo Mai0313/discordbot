@@ -62,7 +62,7 @@ from discordbot.cogs._fishing.catch import roll_catch
 from discordbot.utils.asyncio_locks import LoopLocalLock, KeyedLockManager
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 from discordbot.utils.stored_integer import StoredInteger, stored_int_to_text
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     get_balance,
     credit_with_repayment,
     apply_ordered_wallet_deltas,

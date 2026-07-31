@@ -56,7 +56,7 @@ from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLo
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs._games.blackjack import Card
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     VIP_PURCHASE_COST,
     CreditResult,
     CheckinResult,

@@ -20,7 +20,7 @@ from discordbot.cogs._games.blackjack import (
     is_five_card_win,
     is_five_card_twenty_one,
 )
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     get_vip,
     apply_round_settlement,
     apply_vip_blackjack_bonus,

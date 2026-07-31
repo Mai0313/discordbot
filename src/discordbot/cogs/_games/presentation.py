@@ -4,7 +4,7 @@ from typing import Final, Literal
 
 from discordbot.typings.games import SettleOutcome
 from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW
-from discordbot.cogs._economy.presentation import amount_code
+from discordbot.services.economy.presentation import amount_code
 
 WIN_COLOR = DISCORD_GREEN
 LOSE_COLOR = DISCORD_RED

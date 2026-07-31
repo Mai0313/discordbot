@@ -27,14 +27,13 @@ from discordbot.utils.message_cleanup import (
     delete_tracked_public_messages,
     schedule_public_message_delete,
 )
-from discordbot.cogs._economy.database import get_account, get_balance
 from discordbot.cogs._fishing.database import get_fishing_panel, get_grade_config_map
 from discordbot.cogs._games.bot_player import kelly_bet, count_adjusted_edge
 from discordbot.cogs._games.dragon_gate import ANTE
 from discordbot.cogs._games.history_text import build_blackjack_history_embed
 from discordbot.cogs._games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
+from discordbot.services.economy.database import get_account, get_balance
 from discordbot.utils.owned_message_views import send_ephemeral_notice
-from discordbot.cogs._economy.presentation import CURRENCY_NAME, bold_currency
 from discordbot.cogs._fishing.presentation import build_panel_embed
 from discordbot.cogs._games.blackjack_views import (
     MAX_BLACKJACK_PLAYERS,
@@ -47,6 +46,7 @@ from discordbot.cogs._games.dragon_gate_views import (
     build_dragon_gate_lobby_embed,
     fetch_dragon_gate_jackpot_snapshot,
 )
+from discordbot.services.economy.presentation import CURRENCY_NAME, bold_currency
 
 
 class GamesCogs(commands.Cog):

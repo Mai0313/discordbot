@@ -12,7 +12,7 @@ from pydantic import Field, BaseModel, ConfigDict
 from discordbot.utils.pil_text import Font, fit_text, load_font, draw_text_right, draw_text_center
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
 from discordbot.utils.number_text import compact_amount
-from discordbot.cogs._economy.presentation import CURRENCY_NAME
+from discordbot.services.economy.presentation import CURRENCY_NAME
 
 BALANCE_LEADERBOARD_BOARD_FILENAME = "economy_leaderboard.png"
 LOSS_LEADERBOARD_BOARD_FILENAME = "economy_loss_leaderboard.png"

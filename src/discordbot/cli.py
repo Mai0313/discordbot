@@ -20,7 +20,7 @@ from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.model_pricing import load_model_info
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.cogs._economy.database import credit_with_repayment
+from discordbot.services.economy.database import credit_with_repayment
 
 
 class DiscordBot(commands.Bot):

@@ -3,7 +3,7 @@
 from nextcord import Locale
 from pydantic import Field, BaseModel, field_validator
 
-from discordbot.cogs._economy.presentation import CURRENCY_NAME
+from discordbot.services.economy.presentation import CURRENCY_NAME
 
 OVERVIEW_VALUE = "overview"
 CATEGORY_ORDER = ("ai", "games", "economy", "stocks", "tools")

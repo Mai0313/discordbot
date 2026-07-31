@@ -19,7 +19,7 @@ from discordbot.cogs._economy.embeds import (
 )
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     get_central_banker,
     accept_loan_proposal,
     cancel_loan_proposal,
