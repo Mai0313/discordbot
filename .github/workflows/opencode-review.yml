@@ -36,11 +36,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Lands in .agents/skills/, which opencode scans on its own.
-      - name: Install skills
-        if: env.OPENCODE_API_KEY != ''
-        run: |
-          npx -y skills add Mai0313/skills --agent opencode --skill code-review -y
+      # Lands in .agents/skills/, which opencode scans on its own. Left off: a
+      # review skill narrowed what got looked at without improving the findings.
+      # - name: Install skills
+      #   if: env.OPENCODE_API_KEY != ''
+      #   run: |
+      #     npx -y skills add Mai0313/skills --agent opencode --skill code-review -y
 
       - name: Run opencode
         if: env.OPENCODE_API_KEY != ''
