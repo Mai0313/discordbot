@@ -1,4 +1,4 @@
-"""Pre-built reply context shared by routing, memory selection, and the answer."""
+"""Pre-built reply context shared by routing, optional memory selection, and the answer."""
 
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
@@ -28,7 +28,7 @@ class ReplyContext(BaseModel):
         default=None, description="Rendered server-memory context block, if any."
     )
     memory_block: SkipValidation[EasyInputMessageParam | None] = Field(
-        default=None, description="Rendered selected-user-memory context block, if any."
+        default=None, description="Rendered deterministic and optional user-memory block."
     )
     tone_block: SkipValidation[EasyInputMessageParam | None] = Field(
         default=None, description="Rendered tone-preference block for the message author, if any."

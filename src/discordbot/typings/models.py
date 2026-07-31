@@ -240,13 +240,13 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def tool_model(self) -> ModelSettings:
-        """The model settings for the phase-1 get_user_memory selection decision.
+        """The model settings for optional oblique-reference memory selection.
 
         Callers: `_select_user_memories`.
 
         Returns:
-            Fast minimal-thinking settings for the "whose long-term memory to read"
-            tool-call decision on the reply critical path: flash (not flash-lite)
+            Fast minimal-thinking settings for matching an obliquely referenced absent
+            member to the public nickname table: flash (not flash-lite)
             because matching spoken community nicknames to user ids needs more
             language skill than the lite tier reliably delivers, while staying far
             below answer-model latency.

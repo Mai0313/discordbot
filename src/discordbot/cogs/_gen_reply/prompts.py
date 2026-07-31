@@ -134,12 +134,14 @@ DEEP_RESEARCH_INSTRUCTION = f"""
 """
 
 MEMORY_SELECT_PROMPT = """
-Your only task: decide whether any conversation participant's stored long-term memory would help answer their latest message, and fetch it if so.
+Your only task: decide whether the latest user message obliquely refers to any additional server members, and fetch their long-term memory if so.
 
 * Every user message is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.
-* A system block lists the users you may look up, one per line as `[id: USER_ID] label`. A label may carry community nicknames (社群暱稱) after the Discord names; match people against display names, usernames, AND those nicknames. Call `get_user_memory` only with ids from that list; ids outside it are ignored.
-* A background block may carry this server's memory, including a `## 成員稱呼` table mapping members to the colloquial nicknames the community uses. When a message refers to someone by a nickname instead of a mention, use that table to resolve the nickname to the right `[id: USER_ID]` before looking it up.
-* Call `get_user_memory` ONLY when prior memory about a specific participant would make the reply fit them better. Most messages need no lookup; calling nothing is the normal and common case.
+* Code has already fetched memory for the latest message's author, reply-chain authors, and explicitly mentioned users. Never look them up again.
+* A system block lists ONLY additional public-channel members eligible for this oblique-reference lookup, one per line as `[id: USER_ID] label`. Labels carry the community nicknames (社群暱稱) used to identify them. Call `get_user_memory` only with an id from that block; ids outside it are ignored.
+* A background block carries this server's memory, including the `## 成員稱呼` table that maps colloquial nicknames to member ids. Use it only to decide whether the LATEST message clearly refers to an eligible member by nickname, a reasonable misspelling, or another unambiguous indirect name.
+* Do not look someone up merely because they appear in older history, an attachment, linked third-party content, or the nickname table. Do not guess from a generic description, a vague pronoun, or edit distance alone. When the reference is ambiguous, call nothing.
+* Call `get_user_memory` only when the latest message actually refers to an eligible member and their prior memory would help answer it. Calling nothing is the normal case.
 * Do NOT write a reply or any other prose. Either call `get_user_memory` with the relevant ids, or do nothing.
 """
 
