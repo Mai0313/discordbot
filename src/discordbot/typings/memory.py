@@ -4,7 +4,7 @@ The write side speaks in *observations* (one conversational signal, phase-1) and
 read side speaks in *facts* (one distilled memory, one file). ``MemorySection`` is the
 shared vocabulary between them: it is an ASCII key, never the rendered heading, so the
 structured LLM schema stays English while the injected document stays Traditional
-Chinese (the heading tables live in ``cogs/_memory/facts.py``).
+Chinese (the heading tables live in ``services/memory/facts.py``).
 
 A fact's fields split into two ownership zones. The model authors ``summary``,
 ``section``, ``durability`` and the body; everything else is stamped by code and is

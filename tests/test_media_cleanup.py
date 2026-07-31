@@ -9,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from discordbot.cogs import media_cleanup
-from discordbot.cogs.media_cleanup import MediaCleanupCogs
+from discordbot.cogs.media_cleanup import cog as media_cleanup
 from discordbot.utils.media_delivery import MediaHostingService
+from discordbot.cogs.media_cleanup.cog import MediaCleanupCogs
 
 from tests.helpers.casting import as_bot, make_media_hosting_config
 

@@ -20,7 +20,7 @@ from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.model_pricing import load_model_info
 from discordbot.utils.discord_embeds import embed_spacer_payload
-from discordbot.cogs._economy.database import credit_with_repayment
+from discordbot.services.economy.database import credit_with_repayment
 
 
 class DiscordBot(commands.Bot):
@@ -71,13 +71,27 @@ class DiscordBot(commands.Bot):
         self._message_reward_pruned_at = now
 
     def _load_cogs_sync(self) -> None:
-        """Loads all cogs found in the cogs directory."""
+        """Loads every cog directory under `cogs/`.
+
+        A cog is a directory holding `cog.py`, which is the module nextcord reads
+        `setup` off; everything else in the directory is that cog's own helpers.
+        The scan is one level deep on purpose: a nested helper subpackage such as
+        `gen_reply/link_sources/` carries an `__init__.py` too, and handing one to
+        `load_extensions` raises `NoEntryPointError` and aborts boot under
+        `stop_at_error=True`. A directory that is not a cog raises here rather than
+        being skipped, so a half-finished move cannot silently stop loading a cog.
+        """
         cog_dir = Path(__file__).parent / "cogs"
-        cog_files = [
-            f"discordbot.cogs.{f.stem}"
-            for f in cog_dir.glob("*.py")
-            if not f.stem.startswith("__")
-        ]
+        cog_files: list[str] = []
+        for entry in sorted(cog_dir.iterdir()):
+            if not entry.is_dir() or entry.name.startswith("_"):
+                continue
+            if not (entry / "__init__.py").is_file() or not (entry / "cog.py").is_file():
+                raise RuntimeError(
+                    f"{entry} is under cogs/ but is not a cog: a cog directory must hold "
+                    "both __init__.py and cog.py."
+                )
+            cog_files.append(f"discordbot.cogs.{entry.name}.cog")
         self.load_extensions(cog_files, stop_at_error=True)
         logfire.info("Cogs Loaded", cogs=cog_files)
 

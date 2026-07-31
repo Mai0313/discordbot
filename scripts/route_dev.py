@@ -8,7 +8,7 @@ from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import EffortGrade, ModelSettings, RouteClassification
-from discordbot.cogs._gen_reply.prompts import ROUTE_PROMPT, EFFORT_PROMPT
+from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT, EFFORT_PROMPT
 
 console = Console()
 config = LLMConfig()

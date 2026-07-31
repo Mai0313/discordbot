@@ -18,7 +18,7 @@ from discordbot.typings.memory import (
     MemoryDurability,
     MemoryDeltaAction,
 )
-from discordbot.cogs._memory.facts import (
+from discordbot.services.memory.facts import (
     FACT_ID_RE,
     mint_fact_id,
     node_type_for,
@@ -28,7 +28,7 @@ from discordbot.cogs._memory.facts import (
     sections_for_flavor,
     render_owner_identity,
 )
-from discordbot.cogs._memory.store import (
+from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
     read_facts,
@@ -45,19 +45,19 @@ from discordbot.cogs._memory.store import (
     list_compartments,
     read_memory_document,
 )
-from discordbot.cogs._memory.deltas import (
+from discordbot.services.memory.deltas import (
     apply_deltas,
     sweep_stale_facts,
     partition_raw_entries,
     render_existing_facts,
     tone_evidence_from_raw,
 )
-from discordbot.cogs._memory.extraction import MemoryFactDelta
-from discordbot.cogs._gen_reply.memory_tool import (
+from discordbot.cogs.gen_reply.memory_tool import (
     MemoryReadContext,
     compartments_for_reading,
     allowlist_ids_from_server_memory,
 )
+from discordbot.services.memory.extraction import MemoryFactDelta
 
 _OWNER = MemoryOwner(owner_id=111, owner_name="Alice (alice)")
 _NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)

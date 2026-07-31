@@ -10,13 +10,13 @@ from agents.extensions.models.litellm_model import LitellmModel
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT
+from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 
 console = Console()
 config = LLMConfig()
 
 # LitellmModel expects LiteLLM provider-prefixed names instead of the model
-# aliases used by the OpenAI-compatible request path in cogs/gen_reply.py.
+# aliases used by the OpenAI-compatible request path in cogs/gen_reply/cog.py.
 AGENT_MODEL = ModelSettings(name="gemini/gemini-flash-latest", effort="minimal")
 
 

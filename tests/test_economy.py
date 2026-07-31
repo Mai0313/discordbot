@@ -19,8 +19,9 @@ from discordbot.typings.games import (
 )
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.typings.economy import TRANSFER_TAX_BPS
-from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
-from discordbot.cogs._economy.database import (
+from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackHandState
+from discordbot.cogs.games.settlement import settle_wager, settle_blackjack_player
+from discordbot.services.economy.database import (
     VIP_PURCHASE_COST,
     CHECKIN_STREAK_CYCLE,
     BASE_CHECKIN_REWARD_AMOUNT,
@@ -66,8 +67,7 @@ from discordbot.cogs._economy.database import (
     _apply_daily_casino_delta_in_session,
     invalidate_economy_leaderboard_cache,
 )
-from discordbot.cogs._games.settlement import settle_wager, settle_blackjack_player
-from discordbot.cogs._games.blackjack_views import BlackjackView, build_final_embeds
+from discordbot.cogs.games.blackjack_views import BlackjackView, build_final_embeds
 
 from tests.helpers.casting import as_message, as_interaction
 from tests.helpers.economy_invariants import (
@@ -101,7 +101,7 @@ def _no_blackjack_history(monkeypatch: pytest.MonkeyPatch) -> None:
         """Drops the round instead of persisting it."""
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.blackjack_views.record_blackjack_history",
+        "discordbot.cogs.games.blackjack_views.record_blackjack_history",
         fake_record_blackjack_history,
     )
 
@@ -473,8 +473,8 @@ async def test_ensure_schema_bootstraps_current_databases(
     """A clean startup creates only the current economy tables."""
     db_path = tmp_path / "current-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
+    monkeypatch.setattr("discordbot.services.economy.database._schema_ready_for", None)
 
     await _ensure_schema()
 
@@ -528,8 +528,8 @@ async def test_ensure_schema_serializes_concurrent_first_use(
     """Concurrent first-use schema bootstrap does not race SQLite CREATE TABLE."""
     db_path = tmp_path / "concurrent-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
+    monkeypatch.setattr("discordbot.services.economy.database._schema_ready_for", None)
 
     await asyncio.gather(*(_ensure_schema() for _ in range(20)))
 
@@ -837,7 +837,7 @@ async def test_blackjack_view_finalizes_once_when_called_concurrently(
         cleanup_messages.append(message)
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.blackjack_views.schedule_public_message_delete",
+        "discordbot.cogs.games.blackjack_views.schedule_public_message_delete",
         fake_schedule_public_message_delete,
     )
     await _add_balance(user_id=1, name="alice", amount=100)
@@ -883,7 +883,7 @@ async def test_blackjack_view_timeout_auto_stands_and_settles(
         cleanup_messages.append(message)
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.blackjack_views.schedule_public_message_delete",
+        "discordbot.cogs.games.blackjack_views.schedule_public_message_delete",
         fake_schedule_public_message_delete,
     )
     await _add_balance(user_id=1, name="alice", amount=100)
@@ -930,10 +930,10 @@ async def test_blackjack_view_dealer_plays_h17_rule(monkeypatch: pytest.MonkeyPa
         return Card(rank="5", suit="♣")
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.blackjack_views.schedule_public_message_delete",
+        "discordbot.cogs.games.blackjack_views.schedule_public_message_delete",
         fake_schedule_public_message_delete,
     )
-    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", draw_fixed_card)
+    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", draw_fixed_card)
     await _add_balance(user_id=1, name="alice", amount=100)
 
     participant = _participant()
@@ -1007,10 +1007,10 @@ async def test_blackjack_view_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatc
         return Card(rank="K", suit="♠")
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.blackjack_views.schedule_public_message_delete",
+        "discordbot.cogs.games.blackjack_views.schedule_public_message_delete",
         fake_schedule_public_message_delete,
     )
-    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", draw_fixed_card)
+    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", draw_fixed_card)
     await _add_balance(user_id=1, name="alice", amount=100)
 
     participant = _participant()
@@ -1074,11 +1074,11 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         )
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.blackjack_views.schedule_public_message_delete",
+        "discordbot.cogs.games.blackjack_views.schedule_public_message_delete",
         fake_schedule_public_message_delete,
     )
     monkeypatch.setattr(
-        "discordbot.cogs._games.blackjack_views.settle_blackjack_player",
+        "discordbot.cogs.games.blackjack_views.settle_blackjack_player",
         delayed_settle_blackjack_player,
     )
 
@@ -1176,7 +1176,7 @@ async def test_blackjack_view_rejects_stale_hit_without_drawing_for_next_player(
         """Fails the test if stale Hit reaches card draw."""
         raise AssertionError("stale hit should not draw")
 
-    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", fail_draw)
+    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", fail_draw)
     round_state = BlackjackRound.from_participants(
         rng=SystemRandom(),
         participants=[
@@ -1219,7 +1219,7 @@ async def test_blackjack_view_hit_draws_for_active_split_hand(
         """Returns a deterministic card for the active split hand."""
         return Card(rank="5", suit="♣")
 
-    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", draw_five)
+    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", draw_five)
     participant = _participant(user_id=1, account_name="alice", display_name="Alice")
     round_state = BlackjackRound.from_participants(
         rng=SystemRandom(), participants=[participant], auto_play_dealer=False
@@ -2339,7 +2339,7 @@ async def test_apply_jackpot_settlement_batch_rolls_back_on_failure(
         return await original_apply(**kwargs)
 
     monkeypatch.setattr(
-        "discordbot.cogs._economy.database._apply_jackpot_delta_in_session",
+        "discordbot.services.economy.database._apply_jackpot_delta_in_session",
         flaky_apply_jackpot_delta_in_session,
     )
 
@@ -2405,15 +2405,15 @@ async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
     """_ensure_schema seeds the dragon_gate pool exactly once across calls."""
     db_path = tmp_path / "seed-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
-    monkeypatch.setattr("discordbot.cogs._economy.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
+    monkeypatch.setattr("discordbot.services.economy.database._schema_ready_for", None)
 
     await _ensure_schema()
     first_balance = await get_jackpot_pool(game_id="dragon_gate")
     assert first_balance == 1_000
 
     # Calling again is idempotent: the seed must not pile on top of itself.
-    monkeypatch.setattr("discordbot.cogs._economy.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.services.economy.database._schema_ready_for", None)
     await _ensure_schema()
     assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
 

@@ -4,7 +4,11 @@ import pytest
 from scripts import modify_balance as modify_balance_script
 
 from discordbot.typings.economy import AccountSnapshot
-from discordbot.cogs._economy.database import BalanceAdjustmentResult, get_account, adjust_balance
+from discordbot.services.economy.database import (
+    BalanceAdjustmentResult,
+    get_account,
+    adjust_balance,
+)
 
 pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 

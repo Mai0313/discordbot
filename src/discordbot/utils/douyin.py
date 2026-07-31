@@ -27,6 +27,7 @@ import requests
 from requests.exceptions import RequestException
 
 from discordbot.typings.video import VideoQuality
+from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
 
 # Single source of truth for detecting a Douyin URL, kept module level so the planned
 # auto-expand cog can share it the way `THREADS_URL_RE` is shared by parse_threads and
@@ -239,7 +240,7 @@ class DouyinDownload(BaseModel):
 # fetch. The TTL is deliberately far shorter than the CDN signature lifetime baked into the
 # image URLs (`x-expires`): serving a cached payload past that point would hand out URLs that
 # 403 on download, which is worse than re-fetching. Bounded like the other long-lived caches in
-# this project (see `_gen_reply/attachment/base.py`) so a long-running bot cannot accumulate one
+# this project (see `cogs/gen_reply/attachment/base.py`) so a long-running bot cannot accumulate one
 # full payload per link it has ever seen.
 _PAYLOAD_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _PAYLOAD_CACHE_TTL_SECONDS = 300.0
@@ -277,6 +278,46 @@ def _remember_link_id(url: str, aweme_id: str) -> None:
         _LINK_ID_CACHE.move_to_end(url)
         if len(_LINK_ID_CACHE) > _LINK_ID_CACHE_MAX_ENTRIES:
             _LINK_ID_CACHE.popitem(last=False)
+
+
+# Concurrent Douyin fetches across every caller. Deliberately small: the cost of queueing a
+# second link for a few seconds is nothing next to a WAF ban that outlasts it by minutes.
+# Request volume, not correctness, is the binding constraint on this whole module: Douyin's
+# WAF bans a share path for tens of minutes once it is hit hard, and auto-expansion turns
+# every pasted link into a request rather than only the ones somebody ran a command for.
+# Three things hold it down, all cheap: the caches above (one fetch per post per window, none
+# at all for a re-pasted link), the per-URL lock below (simultaneous pastes of one link
+# collapse into a single fetch instead of racing past the cache), and this semaphore (a burst
+# of distinct links queues rather than arriving at Douyin all at once). The lock and the
+# semaphore are taken by the two paths a link arrives on unasked — the expansion cog and
+# `gen_reply`'s context builder — while `/download_video` takes neither: somebody typed that
+# command and is waiting on it. Only the caches below it are shared by all three.
+DOUYIN_FETCH_CONCURRENCY = 2
+
+douyin_fetch_semaphore = LoopLocalSemaphore(capacity_provider=lambda: DOUYIN_FETCH_CONCURRENCY)
+
+# Serializes work per pasted URL. The payload cache alone is not enough: two expansions of the
+# same link that start together both miss it and both fetch.
+douyin_url_locks: KeyedLockManager[str] = KeyedLockManager()
+
+
+def douyin_failure_message(error: Exception) -> str:
+    """Maps a Douyin failure to the message a user should see.
+
+    A bot wall, a missing post, an oversize file and a stall are kept apart on purpose.
+    Reporting any of them as a deleted post is the single worst outcome this feature can
+    produce: it sends someone off to re-check a link that is perfectly fine. Only
+    `DouyinUnavailableError` — Douyin explicitly filtering the post out — earns that wording.
+    """
+    if isinstance(error, DouyinUnavailableError):
+        return "-# 這則貼文已被刪除或設為私人"
+    if isinstance(error, DouyinBlockedError):
+        return "-# 抖音暫時擋住了請求，請稍後再試"
+    if isinstance(error, DouyinTooLargeError):
+        return "-# 這支影片太大,沒有自動下載;需要的話可以用 `/download_video`"
+    if isinstance(error, TimeoutError):
+        return "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"
+    return "-# 檔案無法下載"
 
 
 class DouyinDownloader(BaseModel):

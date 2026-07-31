@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 from nextcord import Message
 
-from discordbot.cogs import parse_douyin
 from discordbot.utils.douyin import (
     DouyinPost,
     DouyinError,
@@ -18,8 +17,9 @@ from discordbot.utils.douyin import (
     DouyinTooLargeError,
     DouyinUnavailableError,
 )
-from discordbot.cogs.parse_douyin import DouyinCogs
+from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
+from discordbot.cogs.parse_douyin.cog import DouyinCogs
 
 from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
 from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage

@@ -7,8 +7,6 @@ from datetime import UTC, datetime
 import pytest
 from nextcord import Embed
 
-from discordbot.cogs._fishing import views as fishing_views
-from discordbot.cogs._fishing import database as fdb
 from discordbot.typings.fishing import (
     GearView,
     CatchRoll,
@@ -20,8 +18,10 @@ from discordbot.typings.fishing import (
     AnglerStateView,
     FishingPanelData,
 )
-from discordbot.cogs._fishing.shop import partition_gear
-from discordbot.cogs._fishing.views import (
+from discordbot.cogs.games.fishing import views as fishing_views
+from discordbot.cogs.games.fishing import database as fdb
+from discordbot.cogs.games.fishing.shop import partition_gear
+from discordbot.cogs.games.fishing.views import (
     FishingPanelView,
     show_shop,
     begin_cast,
@@ -29,15 +29,15 @@ from discordbot.cogs._fishing.views import (
     show_stats,
     show_leaderboard,
 )
-from discordbot.cogs._economy.database import adjust_balance
-from discordbot.cogs._fishing.database import purchase_gear
-from discordbot.cogs._fishing.defaults import (
+from discordbot.services.economy.database import adjust_balance
+from discordbot.cogs.games.fishing.database import purchase_gear
+from discordbot.cogs.games.fishing.defaults import (
     default_gear_upserts,
     build_default_catalog,
     default_grade_upserts,
     default_species_upserts,
 )
-from discordbot.cogs._fishing.presentation import (
+from discordbot.cogs.games.fishing.presentation import (
     build_shop_embed,
     build_error_embed,
     build_panel_embed,

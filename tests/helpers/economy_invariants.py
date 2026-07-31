@@ -7,7 +7,7 @@ exact check (a settlement delta that must equal a computed value) on top.
 """
 
 from discordbot.typings.economy import AccountSnapshot, CasinoDailyStats, CasinoLedgerSnapshot
-from discordbot.cogs._economy.database import (
+from discordbot.services.economy.database import (
     get_account,
     get_casino_ledger,
     get_casino_daily_stats,

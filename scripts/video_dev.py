@@ -2,7 +2,7 @@
 
 Calls `client.interactions.create` directly (no `VideoGenerator` import) so this stays a clean,
 self-contained reference for the omni call shape. Mirrors `VideoGenerator.render` in
-`cogs/_gen_reply/generation.py`: three input modes (source-video edit / image references / plain
+`cogs/gen_reply/generation.py`: three input modes (source-video edit / image references / plain
 text), fixed 16:9, `delivery="uri"`, single `files.download` (the interaction only reports
 `completed` once the file is ready).
 """

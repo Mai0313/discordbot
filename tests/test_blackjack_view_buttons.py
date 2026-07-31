@@ -17,17 +17,17 @@ import pytest
 from nextcord import Embed, Interaction
 from nextcord.ui import Button
 
-from discordbot.cogs._games import blackjack_views
+from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import (
     GameParticipant,
     BlackjackPlayerResult,
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
 )
-from discordbot.cogs._games.shoe import BlackjackShoeStore
+from discordbot.cogs.games.shoe import BlackjackShoeStore
+from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
-from discordbot.cogs._games.blackjack import Card, BlackjackRound, BlackjackHandState
-from discordbot.cogs._games.blackjack_views import BlackjackView, build_in_progress_embeds
+from discordbot.cogs.games.blackjack_views import BlackjackView, build_in_progress_embeds
 
 from tests.helpers.casting import as_message
 
@@ -360,7 +360,7 @@ async def test_interaction_check_sends_ephemeral_notice_when_settled(
         notices.append(content)
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.blackjack_views.send_ephemeral_notice", _fake_notice
+        "discordbot.cogs.games.blackjack_views.send_ephemeral_notice", _fake_notice
     )
 
     interaction = MagicMock()
@@ -387,7 +387,7 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17(
     def _draw_six(rng: Random) -> Card:
         return Card(rank="6", suit="♠")
 
-    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", _draw_six)
+    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", _draw_six)
     await view._play_dealer_locked()
 
     assert round_state.dealer_played is True
@@ -446,7 +446,7 @@ async def test_play_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatch) -> None
     def _draw_three(rng: Random) -> Card:
         return Card(rank="3", suit="♠")
 
-    monkeypatch.setattr("discordbot.cogs._games.blackjack.draw_card", _draw_three)
+    monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", _draw_three)
     await view._play_dealer_locked()
 
     assert [str(card) for card in round_state.dealer] == ["A♣", "6♦", "3♠"]

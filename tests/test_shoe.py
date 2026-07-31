@@ -5,7 +5,7 @@
 from random import Random
 
 from discordbot.typings.games import Card
-from discordbot.cogs._games.shoe import RESHUFFLE_THRESHOLD_CARDS, BlackjackShoeStore
+from discordbot.cogs.games.shoe import RESHUFFLE_THRESHOLD_CARDS, BlackjackShoeStore
 
 
 def _card(rank: str) -> Card:

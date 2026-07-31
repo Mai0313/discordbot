@@ -15,9 +15,6 @@ from pydantic import BaseModel, ValidationError
 from nextcord.ui import Button
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.cogs.memory import MemoryCogs
-from discordbot.cogs._memory import database as memory_db
-from discordbot.cogs._memory import pipeline
 from discordbot.typings.memory import (
     MemoryFact,
     MemorySection,
@@ -29,8 +26,19 @@ from discordbot.typings.memory import (
     MemoryEvidenceKind,
 )
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._memory.facts import MemoryFlavor, node_type_for
-from discordbot.cogs._memory.store import (
+from discordbot.cogs.memory.cog import MemoryCogs
+from discordbot.services.memory import database as memory_db
+from discordbot.services.memory import pipeline
+from discordbot.cogs.memory.views import (
+    MEMORY_PAGE_MAX_CHARS,
+    MemoryPagesView,
+    MemoryClearConfirmView,
+    paginate_on_lines,
+    memory_footer_text,
+)
+from discordbot.utils.llm_transcript import render_author_identity
+from discordbot.services.memory.facts import MemoryFlavor, node_type_for
+from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
     clear_raw,
@@ -55,25 +63,17 @@ from discordbot.cogs._memory.store import (
     list_compartments,
     read_memory_document,
 )
-from discordbot.cogs._memory.views import (
-    MEMORY_PAGE_MAX_CHARS,
-    MemoryPagesView,
-    MemoryClearConfirmView,
-    paginate_on_lines,
-    memory_footer_text,
-)
-from discordbot.cogs._memory.prompts import (
+from discordbot.services.memory.prompts import (
     PHASE1_PROMPT,
     PHASE2_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
-from discordbot.cogs._gen_reply.input import render_author_identity
-from discordbot.cogs._memory.constants import (
+from discordbot.services.memory.constants import (
     COMPACTION_TARGET_CHARS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
-from discordbot.cogs._memory.extraction import (
+from discordbot.services.memory.extraction import (
     RawMemoryDraft,
     MemoryFactDelta,
     MemoryExtractorAI,
@@ -372,7 +372,7 @@ def test_render_author_identity_is_single_line_and_sanitized() -> None:
 def test_append_raw_entry_evicts_oldest_on_overflow(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 280)
+    monkeypatch.setattr("discordbot.services.memory.store.RAW_FILE_MAX_BYTES", 280)
     append_raw_entry(scope=USER_SCOPE, entry_text="first entry " + "a" * 100)
     append_raw_entry(scope=USER_SCOPE, entry_text="second entry " + "b" * 100)
     raw_text = read_raw_entries(scope=USER_SCOPE)
@@ -388,7 +388,7 @@ def test_append_raw_entry_evicts_oldest_on_overflow(
 def test_append_raw_entry_truncates_single_oversized_entry(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.store.RAW_FILE_MAX_BYTES", 80)
+    monkeypatch.setattr("discordbot.services.memory.store.RAW_FILE_MAX_BYTES", 80)
     append_raw_entry(scope=USER_SCOPE, entry_text="oversized " + "c" * 200)
     assert count_raw_entries(scope=USER_SCOPE) == 1
     # The lone entry cannot be evicted, so it is truncated to honor the cap.
@@ -607,7 +607,9 @@ async def test_extract_evaluator_can_drop_candidates(monkeypatch: pytest.MonkeyP
 
 
 async def test_extract_returns_none_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.extraction.MEMORY_EXTRACT_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        "discordbot.services.memory.extraction.MEMORY_EXTRACT_TIMEOUT_SECONDS", 0.01
+    )
     extractor, fake_client = _extractor()
 
     async def hang(**kwargs: object) -> SimpleNamespace:
@@ -883,7 +885,7 @@ def test_transcript_indents_bodies_so_markers_cannot_be_forged() -> None:
 
 
 def test_transcript_from_messages_truncates_middle(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.extraction.MEMORY_TRANSCRIPT_MAX_CHARS", 200)
+    monkeypatch.setattr("discordbot.services.memory.extraction.MEMORY_TRANSCRIPT_MAX_CHARS", 200)
     message_list = [
         EasyInputMessageParam(role="user", content=f"user message {index} " + "x" * 50)
         for index in range(20)
@@ -1021,7 +1023,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
 ) -> None:
     # Keep this test about in-flight de-dupe only: the eager default threshold
     # would otherwise trigger consolidation on the replayed second entry.
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
     extractor, fake_client = _extractor()
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1089,7 +1091,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
 async def test_pipeline_consolidates_at_threshold(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("第一筆", normalized_key="preference.first")
     pipeline.schedule_memory_update(
@@ -1133,7 +1135,7 @@ async def test_pipeline_consolidates_at_threshold(
 async def test_pipeline_keeps_raw_when_consolidation_fails(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     extractor, fake_client = _extractor()
 
     parse_results: list[SimpleNamespace | None] = [_parsed(output=_draft("訊號")), None]
@@ -1164,7 +1166,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A batch that implies no change is applied, so it is consumed rather than replayed."""
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
     extractor, fake_client = _extractor()
 
@@ -1194,8 +1196,8 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Compaction is now decided per compartment, off the rendered size of its own facts."""
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.COMPACTION_TRIGGER_CHARS", 100)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.COMPACTION_TRIGGER_CHARS", 100)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="長" * 200))
     extractor, fake_client = _extractor()
     seen_instructions: list[str] = []
@@ -1231,7 +1233,7 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
 async def test_pipeline_small_compartment_skips_compaction(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="小檔案"))
     extractor, fake_client = _extractor()
     seen_instructions: list[str] = []
@@ -1301,7 +1303,7 @@ async def test_consolidation_fans_one_batch_out_over_its_compartments(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One batch, two directories: routing is per observation and neither call sees the other."""
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     _stage_mixed_raw_batch()
     extractor, fake_client = _extractor()
     seen_inputs: list[str] = []
@@ -1340,7 +1342,7 @@ async def test_a_failed_compartment_keeps_the_whole_raw_batch(
     Replaying the compartment that did apply is safe (a delta is an upsert keyed on an id
     the model echoes back, then on the evidence keys), so the whole batch is kept.
     """
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     _stage_mixed_raw_batch()
     extractor, fake_client = _extractor()
 
@@ -1374,7 +1376,7 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
     is separate from every compartment call precisely so the unpartitioned evidence it
     needs can never reach one that writes facts.
     """
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     _stage_raw_observation(
         summary="喜歡有禮貌的回覆",
         key="preference.tone",
@@ -1752,7 +1754,7 @@ async def test_memory_regenerate_command_schedules_in_background(
         calls["identity"] = identity
         return scheduled
 
-    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     # Evidence must exist or the command short-circuits before scheduling.
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     interaction = _regen_interaction()
@@ -1781,7 +1783,7 @@ async def test_memory_regenerate_command_reports_no_evidence(
         scheduled = True
         return True
 
-    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     # No raw or detail evidence exists for this scope.
     interaction = _regen_interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
@@ -1808,7 +1810,7 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
         scheduled = True
         return True
 
-    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     interaction = _regen_interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 
@@ -2029,8 +2031,10 @@ def test_transcript_caps_reply_so_current_message_survives_truncation(
 ) -> None:
     # Pin the (now much larger) limits so the head/tail-vs-reply-cap interplay
     # stays deterministically exercised.
-    monkeypatch.setattr("discordbot.cogs._memory.extraction.MEMORY_TRANSCRIPT_MAX_CHARS", 12_000)
-    monkeypatch.setattr("discordbot.cogs._memory.extraction.MEMORY_REPLY_MAX_CHARS", 2_000)
+    monkeypatch.setattr(
+        "discordbot.services.memory.extraction.MEMORY_TRANSCRIPT_MAX_CHARS", 12_000
+    )
+    monkeypatch.setattr("discordbot.services.memory.extraction.MEMORY_REPLY_MAX_CHARS", 2_000)
     message_list = [
         EasyInputMessageParam(
             role="user", content=f"路人 (mob{index}) [id: {index}]: 閒聊 " + "x" * 80
@@ -2193,7 +2197,7 @@ async def test_memory_calls_omit_max_output_tokens() -> None:
 async def test_pipeline_cooldown_defers_entry_count_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("訊號")
@@ -2216,7 +2220,7 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
 async def test_pipeline_cooldown_elapsed_allows_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     pipeline._last_consolidation[USER_SCOPE] = (
         time.monotonic() - MEMORY_CONSOLIDATION_COOLDOWN_SECONDS - 1
     )
@@ -2245,8 +2249,8 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
 async def test_pipeline_byte_trigger_bypasses_cooldown(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 99)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_MAX_BYTES", 10)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 99)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_MAX_BYTES", 10)
     pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
     extractor, fake_client = _extractor()
 
@@ -2275,7 +2279,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
 async def test_pipeline_passes_recent_detail_to_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00+00:00\n舊的詳細證據")
     extractor, fake_client = _extractor()
     seen_inputs: list[str] = []
@@ -2313,7 +2317,7 @@ async def test_memory_semaphore_is_stable_within_a_loop(memory_isolated_dir: Pat
 async def test_memory_semaphore_caps_concurrent_updates(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.MEMORY_GLOBAL_CONCURRENCY", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.MEMORY_GLOBAL_CONCURRENCY", 1)
     extractor, fake_client = _extractor()
     in_flight = 0
     max_in_flight = 0
@@ -2346,8 +2350,8 @@ async def test_memory_semaphore_caps_concurrent_updates(
 def test_append_detail_trims_oldest_past_cap(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.store.DETAIL_FILE_MAX_BYTES", 300)
-    monkeypatch.setattr("discordbot.cogs._memory.store.DETAIL_FILE_TRIM_TARGET_BYTES", 200)
+    monkeypatch.setattr("discordbot.services.memory.store.DETAIL_FILE_MAX_BYTES", 300)
+    monkeypatch.setattr("discordbot.services.memory.store.DETAIL_FILE_TRIM_TARGET_BYTES", 200)
     for index in range(6):
         append_detail(
             scope=USER_SCOPE,
@@ -2366,7 +2370,7 @@ def test_append_detail_trims_oldest_past_cap(
 async def test_pipeline_clear_resets_consolidation_cooldown(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
     # The clear lands after the recorded attempt, so the cooldown belonged to
     # the wiped memory and must not delay the fresh state's first consolidation.
@@ -2594,7 +2598,7 @@ async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path)
 async def test_consolidate_if_needed_digests_over_threshold_scope(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
     extractor, fake_client = _extractor()
@@ -2607,7 +2611,7 @@ async def test_consolidate_if_needed_digests_over_threshold_scope(
 async def test_consolidate_if_needed_skips_under_threshold(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 5)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 5)
     append_raw_entry(scope=USER_SCOPE, entry_text="- 只有一筆")
     extractor, _fake_client = _extractor()
     await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
@@ -2644,7 +2648,7 @@ def test_flavor_of_distinguishes_user_and_server() -> None:
 def test_needs_consolidation_reflects_threshold(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     assert pipeline.needs_consolidation(scope=USER_SCOPE) is False
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
@@ -2971,7 +2975,7 @@ def test_write_tone_roundtrip_without_header_or_identity(memory_isolated_dir: Pa
 def test_write_tone_truncates_past_byte_cap(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.store.TONE_FILE_MAX_BYTES", 32)
+    monkeypatch.setattr("discordbot.services.memory.store.TONE_FILE_MAX_BYTES", 32)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n" + "長" * 100)
     stored = read_tone(scope=USER_SCOPE)
     assert stored.startswith("## 語氣偏好")
@@ -2988,7 +2992,7 @@ def test_clear_memory_removes_tone_note(memory_isolated_dir: Path) -> None:
 async def test_pipeline_consolidation_writes_tone_note(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     extractor, fake_client = _extractor()
     seen_inputs: list[str] = []
@@ -3029,7 +3033,7 @@ async def test_pipeline_consolidation_writes_tone_note(
 async def test_pipeline_no_op_consolidation_still_writes_tone(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
     extractor, fake_client = _extractor()
 
@@ -3075,7 +3079,7 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
     they landed in the note. A delta batch is per fact, so it no longer holds the facts
     hostage to the tone tier, which is best-effort and repaired by the next pass.
     """
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 原有偏好")
     extractor, fake_client = _extractor()
 
@@ -3103,7 +3107,7 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
 async def test_consolidate_if_needed_server_scope_never_writes_tone(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     scope = server_scope(server_id=555)
     append_raw_entry(scope=scope, entry_text="- 第一筆")
     append_raw_entry(scope=scope, entry_text="- 第二筆")
@@ -3542,7 +3546,7 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
     def exploding_clear(*, scope: str) -> bool:
         raise PermissionError("tone.md is read-only")
 
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline.clear_memory", exploding_clear)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.clear_memory", exploding_clear)
     view = MemoryClearConfirmView(scope=USER_SCOPE)
     interaction = FakeInteraction()
 

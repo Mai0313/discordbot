@@ -7,18 +7,18 @@ from pathlib import Path
 
 from nextcord import AllowedMentions
 
-from discordbot.cogs import research as research_cog
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs._research import agent
-from discordbot.cogs._research import database as rdb
+from discordbot.cogs.research import cog as research_cog
+from discordbot.cogs.research import agent
+from discordbot.cogs.research import database as rdb
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.cogs._gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
-from discordbot.cogs._research.delivery import (
+from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
+from discordbot.cogs.research.delivery import (
     split_report,
     deliver_report,
     split_report_by_sections,
 )
-from discordbot.cogs._research.streaming import ResearchProgressStreamer
+from discordbot.cogs.research.streaming import ResearchProgressStreamer
 
 from tests.helpers.casting import (
     as_client,
@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from nextcord import Thread
     from google.genai.interactions import InteractionSSEEvent
 
-    from discordbot.cogs._research.database import ResearchPhase
+    from discordbot.cogs.research.database import ResearchPhase
 
 
 def _disabled_delivery() -> MediaDeliveryPlanner:

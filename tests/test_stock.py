@@ -11,7 +11,6 @@ import pytest
 from sqlalchemy import text, delete, select, update, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from discordbot.cogs._stock import database as stock_db
 from discordbot.typings.stock import (
     STOCK_TICK_SECONDS,
     STOCK_BPS_DENOMINATOR,
@@ -27,10 +26,11 @@ from discordbot.typings.stock import (
     StockSettlementResult,
     StockNewsGenerationContext,
 )
+from discordbot.services.stock import database as stock_db
 from discordbot.utils.currency import cash_ceil, cash_floor
 from discordbot.typings.economy import WalletDeltaLeg, OrderedWalletDeltaResult
-from discordbot.cogs._stock.chart import build_price_chart
-from discordbot.cogs._stock.market import (
+from discordbot.cogs.stock.chart import build_price_chart
+from discordbot.services.stock.market import (
     TAIWAN_TIMEZONE,
     PRESSURE_LIMIT_BPS,
     DAILY_PRICE_LIMIT_BPS,
@@ -47,8 +47,8 @@ from discordbot.cogs._stock.market import (
     calculate_next_price_cents,
     effective_volatility_width_bps,
 )
-from discordbot.cogs._stock.prompts import STOCK_NEWS_PROMPT, STOCK_NEWS_FALLBACK_TEMPLATES
-from discordbot.cogs._economy.database import (
+from discordbot.services.stock.prompts import STOCK_NEWS_PROMPT, STOCK_NEWS_FALLBACK_TEMPLATES
+from discordbot.services.economy.database import (
     UserWallet,
     open_session,
     adjust_balance,

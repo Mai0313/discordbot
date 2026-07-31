@@ -8,10 +8,10 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import select
 
-from discordbot.cogs._fishing import database as fdb
 from discordbot.typings.fishing import MAX_BAIT_PER_PURCHASE, GearType, CastStatus, GearUpsert
-from discordbot.cogs._economy.database import get_balance, adjust_balance
-from discordbot.cogs._fishing.database import (
+from discordbot.cogs.games.fishing import database as fdb
+from discordbot.services.economy.database import get_balance, adjust_balance
+from discordbot.cogs.games.fishing.database import (
     CatchLog,
     settle_cast,
     purchase_gear,
@@ -22,7 +22,7 @@ from discordbot.cogs._fishing.database import (
     fetch_recent_catches,
     open_fishing_session,
 )
-from discordbot.cogs._fishing.defaults import (
+from discordbot.cogs.games.fishing.defaults import (
     default_gear_upserts,
     default_grade_upserts,
     default_species_upserts,

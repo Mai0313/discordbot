@@ -9,11 +9,11 @@ from typing import TYPE_CHECKING, Any, Unpack, TypedDict, cast
 import pytest
 from nextcord import File, Embed, Locale, Attachment, SelectOption
 
-from discordbot.cogs import maplestory
-from discordbot.cogs.maplestory import MapleStoryCogs
+from discordbot.cogs.maplestory import cog as maplestory
+from discordbot.cogs.maplestory.cog import MapleStoryCogs
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
-from discordbot.cogs._maplestory.views import _RESOLVERS, MapleDropSearchView
-from discordbot.cogs._maplestory.embeds import (
+from discordbot.cogs.maplestory.views import _RESOLVERS, MapleDropSearchView
+from discordbot.cogs.maplestory.embeds import (
     _truncate,
     create_map_embed,
     create_npc_embed,
@@ -24,7 +24,7 @@ from discordbot.cogs._maplestory.embeds import (
     create_equipment_embed,
     create_item_source_embed,
 )
-from discordbot.cogs._maplestory.models import (
+from discordbot.cogs.maplestory.models import (
     NPC,
     Quest,
     MapNPC,
@@ -53,7 +53,7 @@ from discordbot.cogs._maplestory.models import (
     AcquisitionMonster,
     EquipmentRestriction,
 )
-from discordbot.cogs._maplestory.service import MapleStoryService, _load_json, _load_translations
+from discordbot.cogs.maplestory.service import MapleStoryService, _load_json, _load_translations
 
 from tests.helpers.casting import as_bot, as_interaction
 
@@ -739,7 +739,7 @@ def test_maplestory_setup_registers_cog(monkeypatch: pytest.MonkeyPatch) -> None
     """Verifies setup registers the MapleStory cog synchronously."""
     added: list[tuple[MapleStoryCogs, bool | None]] = []
     monkeypatch.setattr(
-        "discordbot.cogs.maplestory.MapleStoryService.from_directory",
+        "discordbot.cogs.maplestory.cog.MapleStoryService.from_directory",
         lambda data_dir: MapleStoryService(),
     )
 
