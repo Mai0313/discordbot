@@ -15,6 +15,18 @@ _PACKAGE = Path(__file__).resolve().parents[1] / "src" / "discordbot"
 _COGS = _PACKAGE / "cogs"
 
 
+def _relative_import_base(module: Path) -> str:
+    """The package a `from . ...` inside this file resolves against.
+
+    For `pkg/__init__.py` that is `pkg` itself, not `pkg`'s parent: a package's `__init__`
+    has `__package__ == "pkg"`, so `from .x import y` there means `pkg.x`. Reading it one
+    level too high makes every relative import in an `__init__.py` look like it points at a
+    sibling package — which both hides a real `from ..peer.mod import X` and invents a
+    violation out of an ordinary `from .own_mod import X`.
+    """
+    return ".".join(module.relative_to(_PACKAGE.parent).with_suffix("").parts[:-1])
+
+
 def _imported_modules(module: Path) -> set[str]:
     """Returns every `discordbot.*` module name a file imports, relative imports resolved.
 
@@ -22,10 +34,7 @@ def _imported_modules(module: Path) -> set[str]:
     dependency graph, and the one cog-to-cog import this repo ever had was a
     `TYPE_CHECKING` one that never executes and so no test could otherwise see.
     """
-    package = ".".join(module.relative_to(_PACKAGE.parent).with_suffix("").parts)
-    if module.name == "__init__.py":
-        package = package.rsplit(".", maxsplit=1)[0]
-    parent = package.rsplit(".", maxsplit=1)[0]
+    parent = _relative_import_base(module)
 
     found: set[str] = set()
     for node in ast.walk(ast.parse(source=module.read_text(encoding="utf-8"))):
@@ -113,6 +122,20 @@ def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:
 
     type_checking = _imported_modules(_COGS / "research" / "views.py")
     assert "discordbot.cogs.research.cog" in type_checking
+
+
+def test_a_package_init_resolves_relative_imports_against_its_own_package() -> None:
+    """`pkg/__init__.py` is inside `pkg`, not beside it.
+
+    No `__init__.py` in the tree uses a relative import today, so nothing else would notice
+    this being off by one — and off by one is exactly the direction that hides a peer-cog
+    import written as `from ..peer.mod import X`.
+    """
+    assert _relative_import_base(_COGS / "economy" / "cog.py") == "discordbot.cogs.economy"
+    assert _relative_import_base(_COGS / "economy" / "__init__.py") == "discordbot.cogs.economy"
+    assert _relative_import_base(_COGS / "games" / "fishing" / "__init__.py") == (
+        "discordbot.cogs.games.fishing"
+    )
 
 
 def test_every_cog_directory_is_shaped_like_a_cog() -> None:
