@@ -56,5 +56,13 @@ jobs:
             Review this pull request with the `code-review` skill, against the
             base branch `origin/${{ github.event.pull_request.base.ref }}`.
 
+            Shape the report for a GitHub comment: the verdict as a bold opening
+            line, then one block per finding in severity order, each starting
+            with a bold `P<n> — <title>` line, then its location as a markdown
+            link to `https://github.com/${{ github.repository }}/blob/${{ github.event.pull_request.head.sha }}/<path>#L<line>`,
+            then the finding itself. Reformatting is the only liberty you may
+            take: never drop, merge, or soften one. A single line is enough when
+            there is nothing to report.
+
             Your reply is posted as a comment for you, so do not post one
             yourself, and do not commit or push anything.
