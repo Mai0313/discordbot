@@ -186,13 +186,16 @@ LINK_CONTEXT_GRACE_SECONDS = 180.0
 GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS = 60.0
 
 
-def _message_link_texts(message: Message) -> list[str]:
+def _message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]:
     """The text spans a message actually renders to the model, for URL detection.
 
     Mirrors `get_cleaned_content` / `snapshot_text`: content takes precedence and an embed is
     rendered (and thus scanned) only when its content is empty. So a URL scanner never fires on a
     link the answer model was not shown, e.g. a captioned forwarded link card whose URL lives only
     in the embed. A forward puts its payload in `message.snapshots`, scanned via `snapshot_text`.
+
+    `strip_usage_footer` removes the bot-authored footer from every span when a caller scans a
+    reply-reference chain. The triggering message keeps its complete author-controlled text.
     """
     content = (message.content or "").strip()
     texts = [content]
@@ -200,6 +203,8 @@ def _message_link_texts(message: Message) -> list[str]:
         texts.append(MessageInputBuilder.extract_embed_text(embeds=list(message.embeds)))
     for snapshot in message.snapshots:
         texts.append(MessageInputBuilder.snapshot_text(snapshot=snapshot))
+    if strip_usage_footer:
+        return [USAGE_FOOTER_RE.sub("", text).strip() for text in texts]
     return texts
 
 
@@ -246,7 +251,8 @@ def _link_url_for_source(source: LinkContextSource, message: Message) -> str | N
     drops the source rather than sending the scan hunting for a second URL.
     """
     match = _first_url_match(
-        pattern=source.url_pattern, texts=_message_link_texts(message=message)
+        pattern=source.url_pattern,
+        texts=_message_link_texts(message=message, strip_usage_footer=False),
     )
     if match is None and source.search_reference_chain:
         for ref in _walk_reference_chain(message=message):
@@ -312,9 +318,12 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
     return f"{request_time_context}\n\n{request_location_context}\n\n{system_prompt}"
 
 
-def _youtube_url_in_message(message: Message) -> str | None:
+def _youtube_url_in_message(message: Message, strip_usage_footer: bool) -> str | None:
     """Returns the first YouTube URL in a message's text, embeds, or forwarded snapshots, if any."""
-    match = _first_url_match(pattern=YOUTUBE_URL_RE, texts=_message_link_texts(message=message))
+    match = _first_url_match(
+        pattern=YOUTUBE_URL_RE,
+        texts=_message_link_texts(message=message, strip_usage_footer=strip_usage_footer),
+    )
     return match.group(0) if match else None
 
 
@@ -329,11 +338,11 @@ def _find_youtube_url(message: Message) -> str | None:
     sensitive. This one keeps scanning embeds out there — a YouTube link card is the link
     itself, not a rendering of some other post the way a Threads expansion is.
     """
-    found = _youtube_url_in_message(message=message)
+    found = _youtube_url_in_message(message=message, strip_usage_footer=False)
     if found is not None:
         return found
     for ref in _walk_reference_chain(message=message):
-        found = _youtube_url_in_message(message=ref)
+        found = _youtube_url_in_message(message=ref, strip_usage_footer=True)
         if found is not None:
             return found
     return None
@@ -1312,7 +1321,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 route = RouteClassification(decision="QA")
             elif parsed.decision == "SUMMARY" and (
                 _first_url_match(
-                    pattern=_MESSAGE_URL_RE, texts=_message_link_texts(message=message)
+                    pattern=_MESSAGE_URL_RE,
+                    texts=_message_link_texts(message=message, strip_usage_footer=False),
                 )
                 is not None
             ):

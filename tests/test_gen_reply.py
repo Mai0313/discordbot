@@ -2477,6 +2477,55 @@ def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPat
     assert _find_youtube_url(message=as_message(fake=message)) == url
 
 
+def test_find_youtube_url_ignores_url_inside_replied_to_usage_footer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A memory label in the bot's footer cannot choose the next watched video."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# <:tag:1517563887573143595> {url} 的記憶"
+    answer = FakeMessage(content=f"這是我的回答{footer}")
+    answer.id = 555
+    message = FakeMessage(content="<@999> 再說清楚一點")
+    message.reference = FakeReference(resolved=answer)
+
+    assert _find_youtube_url(message=as_message(fake=message)) is None
+    answer.content = f"這是我的回答 {url}{footer}"
+    assert _find_youtube_url(message=as_message(fake=message)) == url
+
+
+def test_find_youtube_url_keeps_footer_shaped_text_in_the_current_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The triggering author's complete text still selects its own YouTube link."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(
+        content=(
+            "<@999> 再說清楚一點"
+            "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
+            f"\n-# <:tag:1517563887573143595> {url} 的記憶"
+        )
+    )
+
+    assert _find_youtube_url(message=as_message(fake=message)) == url
+
+
+def test_find_youtube_url_reads_embed_card_in_replied_to_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Footer stripping keeps the wider reference-chain scan used for YouTube cards."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    referenced = FakeMessage(content="")
+    referenced.id = 555
+    referenced.embeds = [Embed(url=url)]
+    message = FakeMessage(content="<@999> 總結這影片")
+    message.reference = FakeReference(resolved=referenced)
+
+    assert _find_youtube_url(message=as_message(fake=message)) == url
+
+
 def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """No YouTube link in the message or its reference chain returns None."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
