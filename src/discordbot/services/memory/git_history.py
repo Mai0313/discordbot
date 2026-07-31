@@ -30,8 +30,8 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.memory import MemoryConfig
-from discordbot.cogs._memory.store import scope_lock, memory_root
 from discordbot.utils.asyncio_locks import LoopLocalLock
+from discordbot.services.memory.store import scope_lock, memory_root
 
 # Consecutive failures before the service stops trying. A repository that is missing,
 # locked by an operator, or out of disk fails every time, and a background task that

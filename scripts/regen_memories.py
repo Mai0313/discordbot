@@ -17,8 +17,8 @@ from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._memory.facts import render_owner_identity
-from discordbot.cogs._memory.store import (
+from discordbot.services.memory.facts import render_owner_identity
+from discordbot.services.memory.store import (
     read_owner,
     user_scope,
     read_detail_tail,
@@ -27,9 +27,9 @@ from discordbot.cogs._memory.store import (
     list_compartments,
     read_memory_document,
 )
-from discordbot.cogs._memory.pipeline import regenerate_main_memory
-from discordbot.cogs._memory.constants import MEMORY_DETAIL_CONTEXT_MAX_CHARS
-from discordbot.cogs._memory.extraction import MemoryExtractorAI, observation_keys_from_text
+from discordbot.services.memory.pipeline import regenerate_main_memory
+from discordbot.services.memory.constants import MEMORY_DETAIL_CONTEXT_MAX_CHARS
+from discordbot.services.memory.extraction import MemoryExtractorAI, observation_keys_from_text
 
 if TYPE_CHECKING:
     from openai.types.shared.reasoning_effort import ReasoningEffort

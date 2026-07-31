@@ -18,14 +18,14 @@ from discordbot.typings.memory import (
     MemoryEvidenceKind,
 )
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._memory.prompts import (
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
+from discordbot.services.memory.prompts import (
     PHASE1_PROMPT,
     PHASE2_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
-from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
-from discordbot.cogs._memory.constants import (
+from discordbot.services.memory.constants import (
     MEMORY_REPLY_MAX_CHARS,
     MEMORY_TRANSCRIPT_MAX_CHARS,
     MEMORY_EXTRACT_TIMEOUT_SECONDS,

@@ -35,14 +35,14 @@ import itertools
 import contextlib
 
 from discordbot.typings.memory import MemoryFact, MemoryOwner
-from discordbot.cogs._memory.facts import (
+from discordbot.utils.asyncio_locks import LoopLocalRegistry
+from discordbot.services.memory.facts import (
     MemoryFlavor,
     parse_fact_file,
     render_fact_file,
     render_memory_document,
 )
-from discordbot.utils.asyncio_locks import LoopLocalRegistry
-from discordbot.cogs._memory.constants import (
+from discordbot.services.memory.constants import (
     RAW_FILE_MAX_BYTES,
     TONE_FILE_MAX_BYTES,
     DETAIL_FILE_MAX_BYTES,

@@ -49,24 +49,24 @@ async def research_isolated_db(
 def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Per-test memory dir + isolated memory_job DB with reset process-local state."""
     memories_dir = tmp_path / "memories"
-    monkeypatch.setattr("discordbot.cogs._memory.store._MEMORY_DIR", memories_dir)
-    monkeypatch.setattr("discordbot.cogs._memory.store._cleared_at", {})
+    monkeypatch.setattr("discordbot.services.memory.store._MEMORY_DIR", memories_dir)
+    monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
     # The render cache is keyed on a per-scope write counter, and both live for the
     # process; without the reset a scope id reused across tests would serve the previous
     # test's document from a tmp_path that no longer exists.
-    monkeypatch.setattr("discordbot.cogs._memory.store._write_generation", {})
-    monkeypatch.setattr("discordbot.cogs._memory.store._render_cache", {})
+    monkeypatch.setattr("discordbot.services.memory.store._write_generation", {})
+    monkeypatch.setattr("discordbot.services.memory.store._render_cache", {})
     # No test may ever run git against the real store, so the committer stays off and
     # its queue stays unbound; `memory_git.start()` is exercised on its own.
-    monkeypatch.setattr("discordbot.cogs._memory.git_history.memory_git.enabled", False)
-    monkeypatch.setattr("discordbot.cogs._memory.git_history.memory_git._queue", None)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_tasks", {})
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._pending_updates", {})
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._inflight_loop", None)
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_consolidation", {})
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._last_regeneration", {})
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._consecutive_rejections", {})
-    monkeypatch.setattr("discordbot.cogs._memory.pipeline._db_tasks", set())
+    monkeypatch.setattr("discordbot.services.memory.git_history.memory_git.enabled", False)
+    monkeypatch.setattr("discordbot.services.memory.git_history.memory_git._queue", None)
+    monkeypatch.setattr("discordbot.services.memory.pipeline._inflight_tasks", {})
+    monkeypatch.setattr("discordbot.services.memory.pipeline._pending_updates", {})
+    monkeypatch.setattr("discordbot.services.memory.pipeline._inflight_loop", None)
+    monkeypatch.setattr("discordbot.services.memory.pipeline._last_consolidation", {})
+    monkeypatch.setattr("discordbot.services.memory.pipeline._last_regeneration", {})
+    monkeypatch.setattr("discordbot.services.memory.pipeline._consecutive_rejections", {})
+    monkeypatch.setattr("discordbot.services.memory.pipeline._db_tasks", set())
     # Point the memory_job engine at a throwaway reply.db so no test ever writes the
     # real file: every schedule_memory_update now persists, and those writes are
     # swallowed best-effort, so a missing swap would pass green while polluting the
@@ -75,8 +75,8 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     memory_db_engine = create_async_engine(
         url=f"sqlite+aiosqlite:///{tmp_path / 'memory_reply.db'}", poolclass=NullPool
     )
-    monkeypatch.setattr("discordbot.cogs._memory.database._engine", memory_db_engine)
-    monkeypatch.setattr("discordbot.cogs._memory.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.services.memory.database._engine", memory_db_engine)
+    monkeypatch.setattr("discordbot.services.memory.database._schema_ready_for", None)
     # _scope_locks, _regeneration_tasks, and the memory semaphore are loop-local
     # helpers that rebuild on the per-test event loop, so they need no manual reset.
     return memories_dir

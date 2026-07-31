@@ -7,7 +7,7 @@ the poll loop on each `interaction_id`. It is also the per-user concurrency
 guard (one active research per owner).
 
 The engine is a module-level `AsyncEngine` singleton, exactly like
-`cogs/_economy/database.py`: a per-instance `cached_property` engine would leak
+`services/economy/database.py`: a per-instance `cached_property` engine would leak
 the connection pool / dialect cache for every interaction. `reply.db` is the
 shared file for reply-side persistence (research today, room for more later);
 it has no money columns, so no `StoredInteger`. Each call opens an `AsyncSession`

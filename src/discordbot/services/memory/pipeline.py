@@ -16,10 +16,11 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.cogs._memory import database as memory_db
 from discordbot.typings.memory import MemoryOwner
-from discordbot.cogs._memory.facts import MemoryFlavor, parse_identity, sections_for_flavor
-from discordbot.cogs._memory.store import (
+from discordbot.services.memory import database as memory_db
+from discordbot.utils.asyncio_locks import LoopLocalRegistry, LoopLocalSemaphore
+from discordbot.services.memory.facts import MemoryFlavor, parse_identity, sections_for_flavor
+from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
     clear_raw,
@@ -43,7 +44,7 @@ from discordbot.cogs._memory.store import (
     list_compartments,
     read_memory_document,
 )
-from discordbot.cogs._memory.deltas import (
+from discordbot.services.memory.deltas import (
     DeltaOutcome,
     today_utc,
     apply_deltas,
@@ -52,8 +53,7 @@ from discordbot.cogs._memory.deltas import (
     render_existing_facts,
     tone_evidence_from_raw,
 )
-from discordbot.utils.asyncio_locks import LoopLocalRegistry, LoopLocalSemaphore
-from discordbot.cogs._memory.constants import (
+from discordbot.services.memory.constants import (
     COMPACTION_TRIGGER_CHARS,
     MEMORY_GLOBAL_CONCURRENCY,
     MEMORY_INJECTION_MAX_CHARS,
@@ -65,7 +65,7 @@ from discordbot.cogs._memory.constants import (
     MEMORY_REGENERATION_COOLDOWN_SECONDS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
-from discordbot.cogs._memory.extraction import (
+from discordbot.services.memory.extraction import (
     MemoryExtractorAI,
     ConsolidatedMemory,
     ConsolidationRequest,
@@ -74,7 +74,7 @@ from discordbot.cogs._memory.extraction import (
     render_memory_observations,
     filter_duplicate_observations,
 )
-from discordbot.cogs._memory.git_history import memory_git
+from discordbot.services.memory.git_history import memory_git
 
 # Outcome of a from-scratch main-file rebuild. Aliased so the background
 # scheduler's task dict shares the exact type (asyncio.Task is invariant in its

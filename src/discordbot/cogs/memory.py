@@ -17,14 +17,6 @@ from nextcord.ext import commands
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.models import RuntimeModelCatalog
-from discordbot.cogs._memory.store import (
-    read_tone,
-    user_scope,
-    server_scope,
-    count_raw_entries,
-    list_compartments,
-    read_memory_document,
-)
 from discordbot.cogs._memory.views import (
     MEMORY_EMBED_COLOR,
     MEMORY_PAGE_MAX_CHARS,
@@ -37,13 +29,21 @@ from discordbot.cogs._memory.views import (
     build_clear_confirm_embed,
 )
 from discordbot.utils.llm_transcript import render_author_identity
-from discordbot.cogs._memory.pipeline import (
+from discordbot.services.memory.store import (
+    read_tone,
+    user_scope,
+    server_scope,
+    count_raw_entries,
+    list_compartments,
+    read_memory_document,
+)
+from discordbot.services.memory.pipeline import (
     flavor_of,
     regeneration_on_cooldown,
     regeneration_has_evidence,
     schedule_memory_regeneration,
 )
-from discordbot.cogs._memory.extraction import MemoryExtractorAI
+from discordbot.services.memory.extraction import MemoryExtractorAI
 
 _SUCCESS_EMBED_COLOR = DISCORD_GREEN
 _WARN_EMBED_COLOR = DISCORD_YELLOW

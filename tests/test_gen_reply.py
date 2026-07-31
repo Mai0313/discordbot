@@ -21,7 +21,6 @@ from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs._memory import database as memory_db
 from discordbot.cogs.gen_reply import (
     LINK_CONTEXT_SOURCES,
     ReplyGeneratorCogs,
@@ -38,10 +37,14 @@ from discordbot.typings.models import (
     RouteClassification,
     RuntimeModelCatalog,
 )
+from discordbot.services.memory import database as memory_db
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.llm_errors import extract_friendly_error
-from discordbot.cogs._memory.facts import utc_now, mint_fact_id, node_type_for
-from discordbot.cogs._memory.store import (
+from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
+from discordbot.cogs._gen_reply.input import MessageInputBuilder
+from discordbot.services.memory.facts import utc_now, mint_fact_id, node_type_for
+from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
     user_scope,
@@ -51,9 +54,6 @@ from discordbot.cogs._memory.store import (
     scope_owner_id,
     guild_compartment,
 )
-from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.cogs._gen_reply.input import MessageInputBuilder
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.markers import (
     MAX_INLINE_IMAGES,
@@ -92,7 +92,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
 )
-from discordbot.cogs._memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
+from discordbot.services.memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
 from discordbot.cogs._gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler

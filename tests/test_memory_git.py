@@ -13,8 +13,8 @@ from collections.abc import Callable
 
 import pytest
 
-from discordbot.cogs._memory.store import user_scope
-from discordbot.cogs._memory.git_history import MemoryGitService
+from discordbot.services.memory.store import user_scope
+from discordbot.services.memory.git_history import MemoryGitService
 
 
 def _git(repository: Path, *args: str) -> str:

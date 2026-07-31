@@ -28,7 +28,7 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection
-from discordbot.cogs._memory.facts import (
+from discordbot.services.memory.facts import (
     FACT_ID_RE,
     MemoryFlavor,
     utc_now,
@@ -36,7 +36,7 @@ from discordbot.cogs._memory.facts import (
     node_type_for,
     sections_for_flavor,
 )
-from discordbot.cogs._memory.store import (
+from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
     read_facts,
@@ -44,12 +44,12 @@ from discordbot.cogs._memory.store import (
     delete_fact,
     guild_compartment,
 )
-from discordbot.cogs._memory.constants import (
+from discordbot.services.memory.constants import (
     RECENT_CONTEXT_TTL_DAYS,
     MAX_NET_FACT_DELETIONS_FLOOR,
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
-from discordbot.cogs._memory.extraction import MemoryFactDelta
+from discordbot.services.memory.extraction import MemoryFactDelta
 
 # One raw entry's `## <ISO timestamp>` header, and one observation block inside it.
 _ENTRY_HEADER_RE = re.compile(r"^## (?P<timestamp>\d{4}-\d{2}-\d{2}T\S+)\s*$")

@@ -24,14 +24,14 @@ from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-from discordbot.cogs._memory.store import (
+from discordbot.utils.llm_transcript import sanitize_identity
+from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     user_scope,
     guild_compartment,
     list_compartments,
     read_memory_document,
 )
-from discordbot.utils.llm_transcript import sanitize_identity
 
 # Returned for an allowed id that has no stored memory file, so the model still
 # sees an explicit signal. Also lets the usage footer tell "looked up" apart from

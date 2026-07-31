@@ -1,6 +1,6 @@
 """Prompts for per-user memory extraction, consolidation, and prompt injection."""
 
-from discordbot.cogs._memory.constants import COMPACTION_TARGET_CHARS
+from discordbot.services.memory.constants import COMPACTION_TARGET_CHARS
 
 PHASE1_PROMPT = """
 You are the memory-writing agent for a Discord chat bot.

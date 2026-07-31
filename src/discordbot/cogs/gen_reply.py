@@ -35,16 +35,6 @@ from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.utils.llm_errors import extract_friendly_error
-from discordbot.cogs._memory.facts import render_owner_identity
-from discordbot.cogs._memory.store import (
-    GLOBAL_COMPARTMENT,
-    read_tone,
-    read_owner,
-    user_scope,
-    iter_scopes,
-    server_scope,
-    read_memory_document,
-)
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.llm_transcript import (
     USAGE_FOOTER_RE,
@@ -59,13 +49,15 @@ from discordbot.utils.media_delivery import (
     build_media_delivery_planner,
 )
 from discordbot.cogs._gen_reply.input import MessageInputBuilder
-from discordbot.cogs._memory.pipeline import (
-    flavor_of,
-    needs_consolidation,
-    safe_list_resumable,
-    resume_memory_update,
-    consolidate_if_needed,
-    schedule_memory_update,
+from discordbot.services.memory.facts import render_owner_identity
+from discordbot.services.memory.store import (
+    GLOBAL_COMPARTMENT,
+    read_tone,
+    read_owner,
+    user_scope,
+    iter_scopes,
+    server_scope,
+    read_memory_document,
 )
 from discordbot.cogs._gen_reply.context import ReplyContext
 from discordbot.cogs._gen_reply.prompts import (
@@ -85,12 +77,14 @@ from discordbot.cogs._gen_reply.prompts import (
     REQUEST_TIME_CONTEXT_PROMPT,
     REQUEST_LOCATION_CONTEXT_PROMPT,
 )
-from discordbot.cogs._memory.extraction import (
-    MemoryExtractorAI,
-    subject_source_line,
-    target_centered_memory_messages,
+from discordbot.services.memory.pipeline import (
+    flavor_of,
+    needs_consolidation,
+    safe_list_resumable,
+    resume_memory_update,
+    consolidate_if_needed,
+    schedule_memory_update,
 )
-from discordbot.cogs._memory.git_history import memory_git
 from discordbot.cogs._gen_reply.files_api import upload_to_files_api
 from discordbot.cogs._gen_reply.streaming import ResponseStreamer
 from discordbot.cogs._gen_reply.generation import (
@@ -100,6 +94,11 @@ from discordbot.cogs._gen_reply.generation import (
     VideoGenerator,
     VoiceGenerator,
     PromptGenerator,
+)
+from discordbot.services.memory.extraction import (
+    MemoryExtractorAI,
+    subject_source_line,
+    target_centered_memory_messages,
 )
 from discordbot.cogs._gen_reply.memory_tool import (
     NO_STORED_MEMORY,
@@ -119,16 +118,17 @@ from discordbot.cogs._gen_reply.memory_tool import (
     widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
 )
-from discordbot.cogs._memory.server_prompts import (
-    SERVER_PHASE1_PROMPT,
-    SERVER_PHASE2_PROMPT,
-    SERVER_PHASE1_EVALUATOR_PROMPT,
-)
+from discordbot.services.memory.git_history import memory_git
 from discordbot.cogs._gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
 )
 from discordbot.cogs._gen_reply.link_sources import LinkContextSource
+from discordbot.services.memory.server_prompts import (
+    SERVER_PHASE1_PROMPT,
+    SERVER_PHASE2_PROMPT,
+    SERVER_PHASE1_EVALUATOR_PROMPT,
+)
 from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
 from discordbot.cogs._gen_reply.link_sources.douyin import (
     build_douyin_context_messages,

@@ -34,8 +34,8 @@ from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
-from discordbot.cogs._memory.facts import render_owner_identity
-from discordbot.cogs._memory.store import (
+from discordbot.services.memory.facts import render_owner_identity
+from discordbot.services.memory.store import (
     BOT_MEMORY_DIR_NAME,
     read_facts,
     read_owner,
@@ -44,13 +44,13 @@ from discordbot.cogs._memory.store import (
     read_raw_entries,
     list_compartments,
 )
-from discordbot.cogs._memory.deltas import partition_raw_entries
-from discordbot.cogs._memory.pipeline import flavor_of, regenerate_main_memory
-from discordbot.cogs._memory.constants import (
+from discordbot.services.memory.deltas import partition_raw_entries
+from discordbot.services.memory.pipeline import flavor_of, regenerate_main_memory
+from discordbot.services.memory.constants import (
     MEMORY_GLOBAL_CONCURRENCY,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
 )
-from discordbot.cogs._memory.extraction import MemoryExtractorAI
+from discordbot.services.memory.extraction import MemoryExtractorAI
 
 console = Console()
 

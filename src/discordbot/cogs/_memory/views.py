@@ -10,8 +10,8 @@ from nextcord.ui import View, Button
 from nextcord.ext import commands
 
 from discordbot.typings.colors import DISCORD_RED, NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
-from discordbot.cogs._memory.store import DM_COMPARTMENT, GLOBAL_COMPARTMENT
-from discordbot.cogs._memory.pipeline import clear_scope_memory
+from discordbot.services.memory.store import DM_COMPARTMENT, GLOBAL_COMPARTMENT
+from discordbot.services.memory.pipeline import clear_scope_memory
 
 MEMORY_VIEW_TIMEOUT_SECONDS = 180
 

@@ -14,8 +14,9 @@ from discordbot.typings.memory import (
     MemoryDurability,
     MemoryDeltaAction,
 )
-from discordbot.cogs._memory.facts import node_type_for, sections_for_flavor
-from discordbot.cogs._memory.store import (
+from discordbot.utils.llm_transcript import render_server_identity
+from discordbot.services.memory.facts import node_type_for, sections_for_flavor
+from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     BOT_MEMORY_DIR_NAME,
     read_facts,
@@ -25,15 +26,14 @@ from discordbot.cogs._memory.store import (
     list_compartments,
     read_memory_document,
 )
-from discordbot.cogs._memory.deltas import apply_deltas, sweep_stale_facts
-from discordbot.utils.llm_transcript import render_server_identity
-from discordbot.cogs._memory.constants import STABLE_FRESHNESS_WINDOW_DAYS
-from discordbot.cogs._memory.extraction import MemoryFactDelta
+from discordbot.services.memory.deltas import apply_deltas, sweep_stale_facts
+from discordbot.services.memory.constants import STABLE_FRESHNESS_WINDOW_DAYS
+from discordbot.services.memory.extraction import MemoryFactDelta
 from discordbot.cogs._gen_reply.memory_tool import (
     render_server_memory_block,
     allowlist_ids_from_server_memory,
 )
-from discordbot.cogs._memory.server_prompts import (
+from discordbot.services.memory.server_prompts import (
     SERVER_PHASE1_PROMPT,
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
