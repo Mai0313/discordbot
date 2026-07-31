@@ -88,6 +88,10 @@ jobs:
           $bin = "${{ github.event.repository.name }}.exe"
           $zip = "${{ github.event.repository.name }}-v$version-${{ matrix.friendly_id }}.zip"
           Compress-Archive -Path "$dest\$bin" -DestinationPath "$dest\$zip" -Force
+          # Anything left in $dest gets uploaded and lands on the release, so
+          # the staged binary would ship as a second copy of what the .zip
+          # already holds.
+          Remove-Item "$dest\$bin" -Force
 
       - name: Create .tar.gz (all platforms)
         if: ${{ !startsWith(matrix.runner, 'windows') }}
