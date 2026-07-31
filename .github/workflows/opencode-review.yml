@@ -36,6 +36,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Lands in .agents/skills/, which opencode scans on its own.
+      - name: Install skills
+        if: env.OPENCODE_API_KEY != ''
+        run: |
+          npx -y skills add https://github.com/anthropics/knowledge-work-plugins --agent opencode --skill code-review -y
+
       - name: Run opencode
         if: env.OPENCODE_API_KEY != ''
         uses: anomalyco/opencode/github@latest
