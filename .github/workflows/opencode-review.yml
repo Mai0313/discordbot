@@ -57,6 +57,7 @@ jobs:
 
             Follow whichever of CLAUDE.md, AGENTS.md, README.md and
             .github/copilot-instructions.md this repository actually has, and
-            treat a breach of them as a finding.
+            treat a breach of them as a finding. Where a comment already records
+            why something is the way it is, that is a decision, not a finding.
 
             Do not modify, commit, or push anything.
