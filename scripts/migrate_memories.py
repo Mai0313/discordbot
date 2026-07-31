@@ -36,9 +36,9 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.cogs._memory.facts import render_owner_identity
 from discordbot.cogs._memory.store import (
+    BOT_MEMORY_DIR_NAME,
     read_facts,
     read_owner,
-    iter_scopes,
     memory_root,
     read_detail_tail,
     read_raw_entries,
@@ -54,9 +54,39 @@ from discordbot.cogs._memory.extraction import MemoryExtractorAI
 
 console = Console()
 
-# The legacy files the rebuild replaces. Deleted only after a scope rebuilds, and
-# `detail.md` is never in this list — it is the evidence everything is rebuilt from.
-_LEGACY_FILES = ("main.md", "main.bak.md", "tone.md")
+# The legacy files the rebuild replaces. Deleted only after a scope rebuilds.
+# `detail.md` is not here because it is the evidence everything is rebuilt from, and
+# `tone.md` is not here because the rebuild WRITES it — the note is a surviving tier,
+# not a legacy one, and unlinking it afterwards would throw away what just landed.
+_LEGACY_FILES = ("main.md", "main.bak.md")
+
+
+def _scopes_to_migrate() -> list[str]:
+    """Returns every scope with anything on disk, not just the ones the sweep runs.
+
+    Deliberately NOT `iter_scopes`: that answers "does this scope have live memory the
+    consolidation sweep should look at", and a scope whose only file is the `main.md`
+    this migration is retiring has none by that definition. Enumerating the tree here
+    instead is what gets those scopes a report row saying they rebuild empty, rather
+    than leaving them silently untouched with a file nothing reads any more.
+    """
+    root = memory_root()
+    if not root.is_dir():
+        return []
+    scopes: list[str] = []
+    for top in sorted(root.iterdir()):
+        if not top.is_dir() or top.name.startswith("."):
+            continue
+        if top.name != BOT_MEMORY_DIR_NAME:
+            if any(top.iterdir()):
+                scopes.append(top.name)
+            continue
+        scopes.extend(
+            f"{BOT_MEMORY_DIR_NAME}/{nested.name}"
+            for nested in sorted(top.iterdir())
+            if nested.is_dir() and any(nested.iterdir())
+        )
+    return scopes
 
 
 def _preview(scope: str) -> dict[str, int]:
@@ -127,7 +157,7 @@ def _preview_written(scope: str) -> dict[str, int]:
 
 async def _migrate_all(model: ModelSettings, apply: bool) -> None:
     """Migrates every scope on disk, bounded by its own semaphore."""
-    scopes = iter_scopes()
+    scopes = _scopes_to_migrate()
     console.print(f"{len(scopes)} scope(s) found; apply={apply}")
     config = LLMConfig()
     extractor = MemoryExtractorAI(

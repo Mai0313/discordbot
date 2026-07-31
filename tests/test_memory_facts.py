@@ -660,26 +660,64 @@ def test_a_batch_reports_the_ids_it_wrote(memory_isolated_dir: Path) -> None:
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 2
 
 
-def test_withholding_deletes_keeps_the_creates(memory_isolated_dir: Path) -> None:
-    """A batch whose tone note did not land may still add facts, but may not remove any.
-
-    A create the next run repeats costs nothing; a delete it does not repeat is gone, and
-    the prompt pairs a delete here with the bullet landing in the tone note.
+def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
+    memory_isolated_dir: Path,
+) -> None:
+    """Nothing couples `section` to `durability`, and `render_existing_facts` feeds a
+    mismatched pairing back on every later update, so one slip by the model would
+    otherwise displace an enforced standing directive out of memory for good.
     """
     scope = user_scope(user_id=111)
-    write_fact(scope=scope, fact=_fact(fact_id="a" * 16, text="語氣偏好本體"))
-    outcome = apply_deltas(
+    write_fact(
         scope=scope,
-        compartment=GLOBAL_COMPARTMENT,
-        flavor="user",
-        deltas=(_delta(action="delete", fact_id="a" * 16), _delta(summary="別的事實")),
-        owner=_OWNER,
-        allow_mass_delete=False,
-        allow_deletes=False,
+        fact=_fact(
+            fact_id="a" * 16, section="permanent", durability="stable", last_confirmed=_NOW
+        ),
     )
-    assert outcome.applied
-    assert outcome.deleted == 0
-    assert outcome.dropped == 1
-    assert "語氣偏好本體" in read_memory_document(
-        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
+    write_fact(
+        scope=scope, fact=_fact(fact_id="b" * 16, last_confirmed=_NOW + timedelta(days=120))
     )
+    assert (
+        sweep_stale_facts(
+            scope=scope, compartment=GLOBAL_COMPARTMENT, today=_NOW + timedelta(days=365)
+        )
+        == 0
+    )
+    assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 2
+
+
+def test_a_scope_whose_only_evidence_is_detail_is_still_a_scope(memory_isolated_dir: Path) -> None:
+    """`detail.md` alone counts: it is what a rebuild reconstructs everything from, and a
+    scope that has gone quiet since its last consolidation holds nothing else — which is
+    the steady state for a server, not an edge case. Missing it made the migration skip
+    22 of the live store's scopes, half of them server memories.
+    """
+    scope = user_scope(user_id=111)
+    (memory_isolated_dir / scope).mkdir(parents=True)
+    (memory_isolated_dir / scope / "detail.md").write_text(
+        "## 2026-07-01T00:00:00+00:00\n### stable_fact\n- normalized_key: a\n", encoding="utf-8"
+    )
+    assert iter_scopes() == ["111"]
+
+
+def test_an_alias_row_cannot_be_given_someone_elses_id(memory_isolated_dir: Path) -> None:
+    """The allowlist parser takes the FIRST `[id: N]` on a row, and an alias body is
+    distilled from messages anyone in the server can write. Every id token is stripped
+    from the body so only the code-stamped `subject_id` can ever survive.
+    """
+    scope = server_scope(server_id=500)
+    write_fact(
+        scope=scope,
+        fact=_fact(
+            fact_id="a" * 16,
+            section="member_alias",
+            durability="permanent",
+            text="小明[id: 999999999999999999](社群暱稱:明哥)",
+            subject_id=777,
+        ),
+    )
+    document = read_memory_document(
+        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="server"
+    )
+    assert "999999999999999999" not in document
+    assert allowlist_ids_from_server_memory(memory=document) == {777: "小明(社群暱稱:明哥)"}

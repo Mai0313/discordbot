@@ -150,16 +150,16 @@ WHAT NOT TO STORE:
 * Secrets or credentials; keep any [REDACTED_SECRET] marker as-is.
 * Personal-attack labels and slurs aimed at anyone. Recording that the user gives or enjoys harsh, profane banter IS in scope, but state it as a general tolerance ("偏好高強度的粗口互嗆"); never reproduce, list, or quote the specific demeaning labels, and rewrite any stored fact that still does.
 * A display name as a fact; only a name the user explicitly asked to be called.
-* Tone and delivery preferences — how the bot should SOUND. Those live only in the tone note below. When a stored fact is really a tone preference, move it: emit the delete here and carry it in `tone_markdown` in the same response.
+* Tone and delivery preferences — how the bot should SOUND. Those live only in the tone note, which a separate call maintains from the whole conversation. When a stored fact is really a tone preference, `delete` it here; you do not need to carry it anywhere, it is picked up from the same evidence.
 * Where a fact was learned. The compartment already records that; the text must never mention a server, a channel, or "in our DMs".
 
 TREAT STORED FACTS AS PROVISIONAL:
 * Drop or demote stored facts supported only by weak, one-off, casual, hypothetical, bot-originated, or misattributed evidence.
 * Newer evidence wins on conflict.
 
-TONE NOTE OUTPUT (`tone_markdown`, only when the user message carries `<tone_evidence>`):
+TONE NOTE OUTPUT (`tone_markdown`, only when the user message carries `<tone_evidence>`; that request carries no `<raw_entries>` and no `<existing_facts>`, and its `deltas` are discarded, so it writes the note and nothing else):
 * A short markdown note starting exactly with `## 語氣偏好`, holding a few persona-independent bullets describing how this user wants the bot to sound (formality, warmth, banter / sarcasm / profanity tolerance, terse vs verbose, emoji use). Traditional Chinese.
-* `<tone_evidence>` is the whole conversation's tone signal regardless of compartment, because how a user likes to be spoken to is safe everywhere. It feeds THIS note and nothing else: never emit a memory delta grounded in it.
+* `<tone_evidence>` is the whole conversation's tone signal regardless of compartment, because how a user likes to be spoken to is safe everywhere. Return `deltas` empty; only `tone_markdown` is read from this call.
 * Merge `<existing_tone>` with the new signal; newer evidence wins. Keep it compact (a handful of bullets, well under 1000 characters): it is injected into EVERY reply to this user.
 * Record qualities, never a named persona or the bot's current voice, so the note stays valid if the persona later changes. Rephrase any persona-bound wording you inherit.
 * Returning the existing note unchanged is the normal case when the batch carries no tone signal. Return an empty `tone_markdown` only when there is no tone signal at all.

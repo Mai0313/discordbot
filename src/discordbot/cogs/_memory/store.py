@@ -151,11 +151,14 @@ def list_compartments(scope: str) -> list[str]:
 def _scope_has_memory(scope: str) -> bool:
     """Whether a scope already has live memory on disk.
 
-    Checks the two single-file tiers first: they answer for most scopes without
-    touching the compartment tree, which costs one `iterdir` per compartment.
+    Checks the single-file tiers first: they answer for most scopes without touching the
+    compartment tree, which costs one `iterdir` per compartment. `detail.md` counts even
+    though it is never injected — it is the evidence a rebuild reconstructs everything
+    from (`regeneration_has_evidence` reads it), and a scope that has gone quiet since
+    its last consolidation holds nothing else, which is the steady state for a server.
     """
     scope_dir = _scope_dir(scope=scope)
-    if (scope_dir / "raw.md").is_file() or (scope_dir / "tone.md").is_file():
+    if any((scope_dir / name).is_file() for name in ("raw.md", "tone.md", "detail.md")):
         return True
     return any(
         _fact_paths(directory=compartment_dir(scope=scope, compartment=compartment))

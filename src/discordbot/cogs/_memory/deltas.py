@@ -158,17 +158,12 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     deltas: tuple[MemoryFactDelta, ...],
     owner: MemoryOwner,
     allow_mass_delete: bool,
-    allow_deletes: bool = True,
 ) -> DeltaOutcome:
     """Validates and applies one compartment's delta batch.
 
     Deletes run before writes so a fact narrowed from one compartment to another can
     only ever be temporarily missing (it re-forms from evidence) instead of temporarily
     present in both — the one ordering that cannot widen a fact's reach.
-
-    `allow_deletes=False` applies the batch's creates and updates while dropping its
-    deletions. The caller uses it when it cannot trust that what a delete promised to
-    move somewhere else actually landed there — a create is recoverable, a delete is not.
     """
     existing = {fact.fact_id: fact for fact in read_facts(scope=scope, compartment=compartment)}
     allowed = sections_for_flavor(flavor=flavor)
@@ -185,10 +180,7 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
             continue
         target_id, is_delete = resolved
         if is_delete:
-            if allow_deletes:
-                to_delete.add(target_id)
-            else:
-                dropped += 1
+            to_delete.add(target_id)
             continue
         to_delete.discard(target_id)
         previous = existing.get(target_id)
@@ -297,14 +289,22 @@ def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
       the freshest stable fact in the SAME compartment, so a quiet compartment ages
       nothing and forgets nothing while a busy one self-trims.
 
-    `permanent` facts and member-alias rows never age.
+    `permanent` facts, anything filed in the `permanent` section, and member-alias
+    rows never age.
     """
     facts = read_facts(scope=scope, compartment=compartment)
     stable = [fact.last_confirmed for fact in facts if fact.durability == "stable"]
     latest_stable = max(stable) if stable else None
     removed = 0
     for fact in facts:
-        if fact.durability == "permanent" or fact.node_type == "member_alias":
+        if (
+            fact.durability == "permanent"
+            or fact.section == "permanent"
+            or fact.node_type == "member_alias"
+        ):
+            # The section counts as well as the durability: nothing couples the two, and
+            # `render_existing_facts` feeds a mismatched pairing back on every later
+            # update, so one slip would otherwise age out an enforced standing directive.
             continue
         if fact.section == "recent":
             expired = today - fact.last_confirmed > timedelta(days=RECENT_CONTEXT_TTL_DAYS)

@@ -750,10 +750,14 @@ def test_prompts_record_tone_persona_independently() -> None:
     assert "persona-independent" in PHASE2_PROMPT
 
 
-def test_phase2_prompt_keeps_tone_evidence_out_of_the_facts() -> None:
-    """Tone evidence is unpartitioned, so a fact grounded in it would escape its compartment."""
+def test_phase2_prompt_tells_the_tone_call_its_deltas_are_discarded() -> None:
+    """Tone evidence is unpartitioned, so the call that sees it must not be able to store
+    a fact. Code enforces that by giving it no facts and no raw bucket and throwing its
+    deltas away; the prompt only has to stop the model wasting output on them.
+    """
     assert "<tone_evidence>" in PHASE2_PROMPT
-    assert "never emit a memory delta grounded in it" in PHASE2_PROMPT
+    assert "its `deltas` are discarded" in PHASE2_PROMPT
+    assert "Return `deltas` empty; only `tone_markdown` is read from this call." in PHASE2_PROMPT
 
 
 def test_evaluator_prompt_locks_third_parties_named_in_plain_prose() -> None:
@@ -1362,10 +1366,13 @@ async def test_a_failed_compartment_keeps_the_whole_raw_batch(
 async def test_a_source_only_batch_still_updates_the_tone_note(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The global call runs even with an empty bucket, because it alone owns the tone note.
+    """Tone is written by its own call fed the WHOLE batch, so a `source_only`-only
+    conversation still updates it.
 
-    Roughly half of all observations are `source_only`; gating the global call on a
-    non-empty bucket would simply stop tone updating for those conversations.
+    Roughly half of all observations are `source_only`; a tone note fed only the global
+    bucket would simply stop updating for those conversations. The call that writes it
+    is separate from every compartment call precisely so the unpartitioned evidence it
+    needs can never reach one that writes facts.
     """
     monkeypatch.setattr("discordbot.cogs._memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     _stage_raw_observation(
@@ -1385,19 +1392,28 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
         first = cast("dict[str, object]", inputs[0])
         user_text = str(first["content"])
         seen_inputs.append(user_text)
-        if _GUILD_222_NOTE in user_text:
-            return _parsed(output=_consolidated(summary="本群事實", text="本群事實"))
-        return _parsed(output=_no_change(tone="## 語氣偏好\n* 偏好禮貌"))
+        if "<tone_evidence>" in user_text:
+            return _parsed(output=_no_change(tone="## 語氣偏好\n* 偏好禮貌"))
+        return _parsed(output=_consolidated(summary="本群事實", text="本群事實"))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
 
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
-    # Tone evidence is deliberately unpartitioned, so the global call sees the signal even
-    # though its own raw bucket is empty.
-    assert "<raw_entries>\n(empty)\n</raw_entries>" in seen_inputs[0]
-    assert "喜歡有禮貌的回覆" in seen_inputs[0]
-    assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
+    tone_calls = [text for text in seen_inputs if "<tone_evidence>" in text]
+    fact_calls = [text for text in seen_inputs if "<tone_evidence>" not in text]
+    # Exactly one call saw the unpartitioned evidence, and it was handed no facts to
+    # write and no raw bucket, so it structurally cannot store one anywhere.
+    assert len(tone_calls) == 1
+    assert "喜歡有禮貌的回覆" in tone_calls[0]
+    assert "<raw_entries>\n(empty)\n</raw_entries>" in tone_calls[0]
+    assert "<existing_facts>\n(empty)\n</existing_facts>" in tone_calls[0]
+    # No compartment call was shown the `source_only` summary outside its own bucket.
+    assert fact_calls
+    for text in fact_calls:
+        assert "<tone_evidence>" not in text
+        if _GUILD_222_NOTE not in text:
+            assert "喜歡有禮貌的回覆" not in text
 
 
 async def test_pipeline_aborts_write_after_clear(
@@ -2979,7 +2995,10 @@ async def test_pipeline_consolidation_writes_tone_note(
 
     parsed_outputs: list[BaseModel] = [
         _draft("訊號"),
-        _consolidated(tone="## 語氣偏好\n* 偏好禮貌"),
+        # Three calls now: extraction, the compartment's facts, then the tone note on its
+        # own. Only the last is asked for `tone_markdown`.
+        _consolidated(),
+        _no_change(tone="## 語氣偏好\n* 偏好禮貌"),
     ]
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
@@ -3001,8 +3020,10 @@ async def test_pipeline_consolidation_writes_tone_note(
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
-    # The current note rode the consolidation input in its labeled block.
-    assert "<existing_tone>\n## 語氣偏好\n* 舊語氣\n</existing_tone>" in seen_inputs[1]
+    # The current note rode the TONE call, not the compartment's; the compartment call
+    # is never shown it, because it has no business rewriting the note.
+    assert "<existing_tone>\n## 語氣偏好\n* 舊語氣\n</existing_tone>" in seen_inputs[2]
+    assert "<existing_tone>" not in seen_inputs[1]
 
 
 async def test_pipeline_no_op_consolidation_still_writes_tone(
@@ -3015,7 +3036,9 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
     parsed_outputs: list[BaseModel] = [
         _draft("已知資訊"),
         # A batch that changes no fact can still carry fresh tone signal, and it consumes
-        # the raw entries either way, so the tone must land now or be lost.
+        # the raw entries either way, so the tone must land now or be lost. The tone call
+        # runs after the compartment's regardless of whether that one changed anything.
+        _no_change(),
         _no_change(tone="## 語氣偏好\n* 偏好簡短"),
     ]
 
@@ -3102,7 +3125,16 @@ async def test_regenerate_main_memory_writes_tone_and_ignores_existing_tone(
 ) -> None:
     extractor, fake_client = _extractor()
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
-    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    # Structured evidence, because the rebuild's tone note is distilled from the batch's
+    # tone-bearing observations; free-form prose carries no category to select on.
+    _stage_raw_observation(
+        summary="喜歡有禮貌的回覆",
+        key="preference.tone",
+        sharing="global",
+        source="dm",
+        category="interaction_style",
+        evidence_kind="repeated_behavior",
+    )
     fake_client.responses.output_parsed = _consolidated(
         text="重建後的記憶", tone="## 語氣偏好\n* 新語氣"
     )
@@ -3113,7 +3145,8 @@ async def test_regenerate_main_memory_writes_tone_and_ignores_existing_tone(
 
     assert result == "regenerated"
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 新語氣"
-    # A pure-evidence rebuild feeds no existing tone to the model.
+    # A pure-evidence rebuild feeds no existing tone to the model; the note is rebuilt
+    # from the evidence alone, exactly like the facts.
     user_text = fake_client.responses.parse_inputs[-1][0]["content"]
     assert "<existing_tone>\n(empty)\n</existing_tone>" in user_text
     assert "舊語氣" not in user_text

@@ -1,9 +1,8 @@
 """Tunable thresholds shared by the per-user memory store, extraction, and pipeline."""
 
-# Raw entries accumulated before consolidation rewrites the main memory file.
-# Kept low so main.md is re-summarized from the full document often and stays
-# fresh; still above 1 (together with the consolidation cooldown) so a heavy
-# chatter does not trigger a whole-file rewrite on every single message.
+# Raw entries accumulated before a consolidation runs. Kept low so stored facts stay
+# fresh; still above 1 (together with the consolidation cooldown) so a heavy chatter
+# does not fan a consolidation out over every compartment on every single message.
 RAW_CONSOLIDATION_THRESHOLD = 2
 
 # Second consolidation trigger: verbose raw extractions consolidate early even
@@ -15,21 +14,20 @@ RAW_CONSOLIDATION_MAX_BYTES = 16_384
 RAW_FILE_MAX_BYTES = 65_536
 
 # Minimum gap between entry-count-triggered consolidations per user. Not a cost
-# guard: it batches the lossy whole-file rewrite so main.md (the only tier
-# injected into replies) does not drift from rewriting on every other message,
-# and, recorded at attempt time, it also rate-limits a failing consolidation's
-# retries. No data is lost while it waits (raw keeps accumulating, detail.md
+# guard: it batches the fan-out so the injected facts do not churn on every other
+# message, and, recorded at attempt time, it also rate-limits a failing
+# consolidation's retries. No data is lost while it waits (raw keeps accumulating, detail.md
 # keeps verbatim evidence, and the raw byte trigger above bypasses it for a
 # burst), so it stays short enough that new facts reach replies promptly.
 MEMORY_CONSOLIDATION_COOLDOWN_SECONDS = 300.0
 
-# Minimum gap between user-requested main-file regenerations. Recorded at
+# Minimum gap between user-requested rebuilds. Recorded at
 # attempt time like the consolidation cooldown, and tracked separately so a
 # manual regeneration never delays the automatic consolidation or vice versa.
 MEMORY_REGENERATION_COOLDOWN_SECONDS = 600.0
 
 # Process-wide cap on concurrent background memory updates. The constraint is
-# not cost but proxy contention: unbounded fan-out of whole-file rewrites
+# not cost but proxy contention: unbounded background consolidation
 # against the shared LiteLLM proxy would compete with the latency-critical
 # reply path for throughput and rate limits. Kept generous because the proxy
 # can absorb it; lower it only if background memory work starts adding reply
@@ -90,10 +88,10 @@ TONE_FILE_MAX_BYTES = 4_096
 
 # Tail window of the detail file fed to consolidation as low-trust provenance.
 # Effectively the whole evidence log for any realistic user: this bot injects
-# memory exactly once per reply with no on-demand retrieval (unlike codex), so
-# main.md must be distilled from the full evidence base in the background. The
+# memory exactly once per reply with no on-demand retrieval (unlike codex), so the
+# stored facts must be distilled from the full evidence base in the background. The
 # bound only keeps a pathological log inside the consolidation input window
-# (~500k zh-TW chars stays well under the 1M-token window with the main file
+# (~500k zh-TW chars stays well under the 1M-token window with the stored facts
 # and raw batch on top).
 MEMORY_DETAIL_CONTEXT_MAX_CHARS = 500_000
 

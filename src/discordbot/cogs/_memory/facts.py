@@ -34,6 +34,11 @@ _HEADER_LINE_RE = re.compile(r"^(?P<key>[a-z_]+):[ ]?(?P<value>.*)$")
 # A fact id is minted by code and is the filename stem, so it must never be able to
 # carry a path separator, a dot, or anything else the filesystem reads structurally.
 FACT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+# An `[id: N]` token anywhere in a fact body. Alias rows get theirs appended from the
+# code-stamped `subject_id`, and the allowlist parser takes the FIRST match on a line,
+# so a body that carries its own would silently win — and that body is distilled from
+# messages anyone in the server can write.
+_ID_TOKEN_RE = re.compile(r"\[id:\s*\d+\]")
 
 # Rendered headings per flavor, in document order. The tuples double as the per-flavor
 # section allowlist: a delta naming a section absent here is dropped.
@@ -232,8 +237,9 @@ def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
 
     The profile is a paragraph rather than a bullet (it always has been), a recent-context
     line carries the code-stamped date the model used to write itself, and an alias row
-    gets its `[id: N]` appended from `subject_id` — so the id can never be hallucinated
-    onto the wrong member, and the table stays parseable by the allowlist reader.
+    has every id token stripped from its body before the real `subject_id` is appended —
+    so the id can never be hallucinated (or injected by a member) onto the wrong person,
+    and the table stays parseable by the allowlist reader.
     """
     body = " ".join(fact.text.split()) if section == "profile" else fact.text.strip()
     if section == "profile":
@@ -241,7 +247,9 @@ def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
     if section == "recent":
         return f"* [{fact.last_confirmed.date().isoformat()}] {body}"
     if section == "member_alias" and fact.subject_id is not None:
-        return f"* {body}[id: {fact.subject_id}]"
+        # Stripped, not escaped: the row's whole meaning is the name-to-id mapping, and
+        # the only id that may appear in it is the one code stamped.
+        return f"* {_ID_TOKEN_RE.sub('', body).strip()}[id: {fact.subject_id}]"
     return f"* {body}"
 
 

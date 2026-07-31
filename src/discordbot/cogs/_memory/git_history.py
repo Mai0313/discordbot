@@ -38,6 +38,12 @@ from discordbot.utils.asyncio_locks import LoopLocalLock
 # retries forever just fills the log.
 _MAX_CONSECUTIVE_FAILURES = 5
 
+# Committer identity for the store's own history. Passed per invocation rather than
+# written into the repository so the bot never edits an operator's config, and so a
+# repository created by hand needs no setup beyond `git init`.
+_COMMITTER_NAME = "discordbot"
+_COMMITTER_EMAIL = "discordbot@localhost"
+
 
 class _GitRequest(BaseModel):
     """One queued commit of a single scope's directory."""
@@ -160,6 +166,15 @@ class MemoryGitService(BaseModel):
             # with a different uid, which git otherwise refuses as dubious ownership.
             "-c",
             f"safe.directory={root.resolve()}",
+            # The container runs as an unprivileged user with no gitconfig, and a
+            # container hostname carries no domain, so git rejects its own auto-detected
+            # `app@<id>.(none)` ident and every commit exits 128. An operator's host-side
+            # `git init` cannot supply this: it writes no identity, and a global config
+            # on the host is not visible inside the image.
+            "-c",
+            f"user.name={_COMMITTER_NAME}",
+            "-c",
+            f"user.email={_COMMITTER_EMAIL}",
             *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

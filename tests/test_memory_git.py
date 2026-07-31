@@ -138,3 +138,25 @@ async def test_repeated_failures_disable_the_service(memory_repository: Path) ->
     await _wait_for(check=lambda: not service.enabled)
     await service.stop()
     assert not service.enabled
+
+
+async def test_commits_carry_their_own_committer_identity(memory_repository: Path) -> None:
+    """The container runs as a user with no gitconfig, and a container hostname has no
+    domain, so git refuses its own auto-detected ident and every commit exits 128. The
+    identity has to ride on the invocation; an operator's host-side `git init` cannot
+    supply it.
+    """
+    scope = user_scope(user_id=111)
+    (memory_repository / scope / "global").mkdir(parents=True)
+    (memory_repository / scope / "global" / "a.md").write_text("fact", encoding="utf-8")
+    # Strip every fallback the fixture set up, leaving the repository exactly as a fresh
+    # `git init` inside the image would: no user.name, no user.email.
+    _git(memory_repository, "config", "--unset", "user.email")
+    _git(memory_repository, "config", "--unset", "user.name")
+    service = MemoryGitService()
+    service.start()
+    service.enqueue(scope=scope, reason="update")
+    await _wait_for(check=lambda: "update 111" in _git(memory_repository, "log", "--format=%s"))
+    await service.stop()
+    assert service.enabled
+    assert "discordbot" in _git(memory_repository, "log", "-1", "--format=%an")
