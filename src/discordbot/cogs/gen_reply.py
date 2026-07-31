@@ -117,6 +117,7 @@ from discordbot.cogs._gen_reply.memory_tool import (
     render_callable_users_block,
     render_memory_context_block,
     widen_allowlist_with_aliases,
+    allowlist_ids_from_server_memory,
 )
 from discordbot.cogs._memory.server_prompts import (
     SERVER_PHASE1_PROMPT,
@@ -150,13 +151,18 @@ if TYPE_CHECKING:
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
 
-# Memory selection overlaps the route call for free: the QA path joins the speculative
-# prep task only after the route returns, so selection runs unbounded while the route is
-# still in flight. Once the route completes, a still-running selection gets only this grace
-# before the reply answers without memory, so a slow selection can never stall the pipeline
-# yet a selection that finishes within the (route-dominant) window is never thrown away.
+# Optional third-party memory selection overlaps the route call for free: the QA path joins
+# the speculative prep task only after the route returns, so selection runs unbounded while
+# the route is still in flight. Once the route completes, a still-running selection gets only
+# this grace before the reply answers with its deterministic participant memories, so a slow
+# selector can never cost the author, reply-chain authors, or explicitly mentioned users.
 # Tune against the `gen_reply memory selection done` latency log.
-MEMORY_SELECT_GRACE_SECONDS = 5.0
+MEMORY_SELECT_GRACE_SECONDS = 2.0
+
+# Preserve the existing eight-user context target for optional model-selected additions.
+# Deterministic participants are never displaced: if they fill or exceed the target, the
+# selector is skipped; otherwise it can use only the remaining slots.
+MEMORY_CONTEXT_TARGET_USERS = 8
 
 # Effort grading runs in parallel with the route under the same `route_done` gate as
 # memory selection: it runs unbounded while the route is in flight and gets only this
@@ -805,8 +811,8 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _fetch_history(self, message: Message, limit: int) -> list[Message]:
         """Fetches up to `limit` channel-history messages once (a single Discord API call).
 
-        Returned raw so both the text-only and the uploaded render derive from one fetch, and
-        the memory allowlist reads the same messages, without a second history round-trip.
+        Returned raw so both the optional selector's text-only render and the answer's
+        uploaded render derive from one fetch, without a second history round-trip.
         """
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
@@ -819,7 +825,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """Renders fetched history in one mode: text-only markers, or full uploaded parts.
 
         Both modes derive from the same `_fetch_history` result (one Discord call). The
-        text-only twin (no upload) feeds routing + memory selection so neither waits on the
+        text-only twin (no upload) feeds optional memory selection without waiting on the
         Files API; the full render uploads attachment parts for the answer. History is the only
         render that opts into the dead-source skip: an expired CDN attachment here re-fails every
         turn (current / reference do not; see GeminiFileUploader._resolve_file_upload).
@@ -1476,17 +1482,16 @@ class ReplyGeneratorCogs(commands.Cog):
         read_context: MemoryReadContext,
         server_memory_block: EasyInputMessageParam | None = None,
     ) -> MemorySelection:
-        """Phase 1 of a reply: lets the model choose whose long-term memory to read.
+        """Lets the model choose optional third-party memories for an oblique reference.
 
-        Runs an isolated request offering only the get_user_memory tool (the read path is split
-        into a selection phase and an answer phase on purpose, not a hard limit), then resolves
-        the chosen ids server-side against the allowlist. The current guild's server memory rides in front as
-        background context so a spoken nickname can be mapped to its user id. Returns the
-        memories plus this request's token usage so the reply footer and chat reward account
-        for the selection call too.
+        Runs an isolated request offering only the get_user_memory tool, then resolves the
+        chosen ids server-side against an allowlist containing only absent members from a
+        public server nickname table. The server memory rides in front as background context
+        so a spoken or misspelled nickname can be mapped to its id. Returns the memories plus
+        this request's token usage so the reply footer and chat reward account for the call.
         """
         tool_model = self.runtime_models.tool_model
-        # The callable-users block stays last so the model reads it right before deciding;
+        # The optional-candidates block stays last so the model reads it right before deciding;
         # the server-memory block (if any) leads as earlier background context. The caller
         # passes an already text-only transcript (attachment markers, no file ids), so this
         # request neither re-reads the uploaded payloads nor waits on their upload.
@@ -1521,62 +1526,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 if memory.user_id not in seen:
                     seen.add(memory.user_id)
                     memories.append(memory)
-        # Bound how many memories ride into the answer request so a pathological multi-user
-        # lookup (e.g. a message mentioning many people) can't bloat or overrun it. Each
-        # main.md can be tens of KB before compaction; keep the first few in selection order.
-        max_memories = 8
-        if len(memories) > max_memories:
-            logfire.warn(
-                "Capping selected memories to the per-reply limit",
-                requested=len(memories),
-                kept=max_memories,
-                message_id=message.id,
-            )
-            memories = memories[:max_memories]
         input_tokens = responses.usage.input_tokens if responses.usage else 0
         output_tokens = responses.usage.output_tokens if responses.usage else 0
         return MemorySelection(
             memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
-        )
-
-    def _participant_memory_fallback(
-        self, *, message: Message, allowed: dict[int, str], read_context: MemoryReadContext
-    ) -> tuple[EasyInputMessageParam | None, list[str]]:
-        """Builds the fallback memory block from the author plus any reply-reference authors.
-
-        A selection timeout or error never returned a decision, so instead of dropping
-        memory the reply falls back to the long-term memory of the most relevant
-        participants: the message author (always allowlisted as a conversation author)
-        and, when the message is a reply, whoever it replies to up the reference chain.
-        Replying to someone is a strong signal their memory is relevant, so a failed
-        selection should still surface it. Ids are deduped, kept in author-first order,
-        and gated through `allowed` (the permission boundary, with the bot already
-        removed, so a reply to the bot's own message reads no memory for it). Only
-        participants with stored memory contribute, so a fallback never injects an empty
-        block; returns (None, []) when none of them have memory. A completed selection
-        that deliberately picked nobody is different and is still honored (that path does
-        not call this).
-        """
-        candidate_ids = [
-            message.author.id,
-            *(ref.author.id for ref in _walk_reference_chain(message=message)),
-        ]
-        # Delegates to the selection path's resolver so the allowlist gate, the
-        # per-bullet source filter, and dedupe live in exactly one place; only
-        # candidates whose memory survives filtering contribute.
-        memories = [
-            memory
-            for memory in resolve_user_memories(
-                user_id_list=[str(user_id) for user_id in candidate_ids],
-                allowed=allowed,
-                context=read_context,
-            )
-            if memory.memory != NO_STORED_MEMORY
-        ]
-        if not memories:
-            return None, []
-        return render_memory_context_block(memories=memories), memory_lookup_labels(
-            memories=memories
         )
 
     def _read_server_memory(self, *, message: Message, memory_enabled: bool) -> str:
@@ -1594,6 +1547,47 @@ class ReplyGeneratorCogs(commands.Cog):
             compartments=[GLOBAL_COMPARTMENT],
             flavor="server",
         )
+
+    def _resolve_reply_memory_candidates(
+        self, *, message: Message, server_memory: str, read_context: MemoryReadContext
+    ) -> tuple[list[UserMemory], dict[int, str], int]:
+        """Resolves deterministic memories and derives disjoint optional alias candidates."""
+        bot_user = self.bot.user
+        if bot_user is None:
+            return [], {}, 0
+
+        reference_chain = _walk_reference_chain(message=message)
+        deterministic_allowed = build_memory_allowlist(
+            users=[message.author, *(ref.author for ref in reference_chain), *message.mentions],
+            bot_user_id=bot_user.id,
+        )
+        optional_allowed: dict[int, str] = {}
+        # Existing participant labels keep their community aliases even in a private
+        # channel because that grants no new access. Only a public channel may offer absent
+        # nickname-table members to the selector.
+        if server_memory and message.guild is not None:
+            widen_allowlist_with_aliases(
+                allowed=deterministic_allowed, memory=server_memory, include_absent=False
+            )
+            if _source_channel_is_public(message=message):
+                optional_allowed = {
+                    user_id: label
+                    for user_id, label in allowlist_ids_from_server_memory(
+                        memory=server_memory
+                    ).items()
+                    if user_id not in deterministic_allowed and user_id != bot_user.id
+                }
+
+        memories = [
+            memory
+            for memory in resolve_user_memories(
+                user_id_list=[str(user_id) for user_id in deterministic_allowed],
+                allowed=deterministic_allowed,
+                context=read_context,
+            )
+            if memory.memory != NO_STORED_MEMORY
+        ]
+        return memories, optional_allowed, len(deterministic_allowed)
 
     def _schedule_server_memory_update(
         self, *, message: Message, message_list: list[EasyInputMessageParam], full_reply: str
@@ -1620,6 +1614,36 @@ class ReplyGeneratorCogs(commands.Cog):
             ),
         )
 
+    async def _await_optional_memory_selection(
+        self, *, task: asyncio.Task[MemorySelection], message: Message, route_done: asyncio.Event
+    ) -> tuple[MemorySelection, float] | None:
+        """Awaits the optional selector without letting its failure affect direct memories."""
+        started = time.monotonic()
+        try:
+            with logfire.span("gen_reply memory selection"):
+                selection = await _await_gated(
+                    task=task,
+                    label="memory selection",
+                    route_done=route_done,
+                    grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
+                )
+        except TimeoutError as exc:
+            logfire.warn(
+                "Optional memory selection exceeded the post-route grace; retaining deterministic memories",
+                grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
+                message_id=message.id,
+                _exc_info=exc,
+            )
+            return None
+        except Exception:
+            logfire.warn(
+                "Optional memory selection failed; retaining deterministic memories",
+                message_id=message.id,
+                _exc_info=True,
+            )
+            return None
+        return selection, time.monotonic() - started
+
     async def _prepare_reply_context(  # noqa: PLR0913, PLR0915 -- speculative prep needs the turn payload plus the route-done signal, and builds history/memory/tone/selection in sequence
         self,
         message: Message,
@@ -1640,15 +1664,10 @@ class ReplyGeneratorCogs(commands.Cog):
         text_reference, text_current = text_parts
         build_started = time.monotonic()
 
-        # Fetch channel history once (one Discord call), then render its cheap text-only twin up
-        # front so memory selection can start on text-only renders alone. The upload-bearing full
-        # render is awaited later, concurrently with the in-flight selection, so selection
-        # overlaps the Files-API upload window (which the answer must wait on regardless) instead
-        # of running serially after it.
+        # Fetch channel history once. Its text-only twin is rendered below only if a narrowed
+        # selector request is actually needed; the upload-bearing full render is always awaited
+        # later because the answer consumes it.
         raw_history = await self._fetch_history(message=message, limit=history_limit)
-        history_text_only = (
-            await self._render_history(raw_history, text_only=True) if memory_enabled else []
-        )
 
         # The bot's own per-server memory is read once here and shared by both phases: it
         # primes selection (a `## 成員稱呼` nickname table maps spoken aliases to ids) and
@@ -1658,8 +1677,7 @@ class ReplyGeneratorCogs(commands.Cog):
             render_server_memory_block(memory=server_memory) if server_memory else None
         )
 
-        # Where this reply is happening, for per-bullet source scoping of every user
-        # memory read (selection resolution and the participant fallback alike).
+        # Where this reply is happening, for compartment scoping of every user-memory read.
         read_context = memory_read_context(message=message)
 
         # The message author's tone-preference note is read directly for that one author
@@ -1669,51 +1687,44 @@ class ReplyGeneratorCogs(commands.Cog):
         author_tone = read_tone(scope=user_scope(user_id=message.author.id))
         tone_block = render_tone_block(tone=author_tone) if author_tone else None
 
-        # Memory retrieval is two-phase: phase 1 lets the model pick whose long-term memory to
-        # read via get_user_memory (no built-in tools), and phase 2 streams the answer with the
-        # built-in tools always available and any selected memory injected as context. The
-        # allowlist (conversation authors + mentioned users, minus the bot) is the permission
-        # boundary.
-        # The split is deliberate, not a hard limit: the two tool kinds CAN ride one request (see
-        # CLAUDE.md's Responses API Gotchas for the per-surface gate), it just costs an extra_body
-        # flag whose absence silently zeroes the grounding. Splitting
-        # also keeps selection on a cheaper/faster model off the answer's critical path and stays
-        # provider-neutral (OpenAI / Claude mix tools fine), so it stays correct if the answer
-        # model changes.
+        # Code always resolves the current author, reply-chain authors, and current-message
+        # mentions. A separate model call is reserved for the one non-mechanical question: does
+        # the latest message obliquely refer to an absent member in a public nickname table? Both
+        # paths stay behind resolve_user_memories, the shared permission and compartment boundary.
         memory_labels: list[str] = []
         selection_input_tokens = 0
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
-        allowed: dict[int, str] = {}
+        memories: list[UserMemory] = []
+        optional_allowed: dict[int, str] = {}
+        deterministic_candidate_count = 0
+        deterministic_memory_count = 0
+        remaining_slots = 0
         selection_task: asyncio.Task[MemorySelection] | None = None
-        if memory_enabled and self.bot.user:
-            # The allowlist needs raw Message objects (authors + mentions): the current
-            # message, its reference chain, and the raw side of the shared history fetch.
-            allowed = build_memory_allowlist(
-                messages=[message, *_walk_reference_chain(message=message), *raw_history],
-                bot_user_id=self.bot.user.id,
-            )
-            # Enrich participant labels with their community aliases in every guild channel,
-            # but only widen the boundary with absent members' ids in public channels: the
-            # nickname table is public, yet an absent member's personal memory is not, so
-            # widening in a private channel would leak it. DMs have no guild and keep the
-            # conversation-only boundary.
-            if server_memory and message.guild is not None:
-                widen_allowlist_with_aliases(
-                    allowed=allowed,
-                    memory=server_memory,
-                    include_absent=_source_channel_is_public(message=message),
+        if memory_enabled:
+            memories, optional_allowed, deterministic_candidate_count = (
+                self._resolve_reply_memory_candidates(
+                    message=message, server_memory=server_memory, read_context=read_context
                 )
+            )
+            deterministic_memory_count = len(memories)
+            if memories:
+                memory_block = render_memory_context_block(memories=memories)
+                memory_labels = memory_lookup_labels(memories=memories)
+
+            remaining_slots = max(0, MEMORY_CONTEXT_TARGET_USERS - len(memories))
             logfire.debug(
-                "gen_reply memory allowlist built",
-                allowlist_size=len(allowed),
-                widened=bool(server_memory and message.guild is not None),
+                "gen_reply memory candidates built",
+                deterministic_candidates=deterministic_candidate_count,
+                deterministic_memories=len(memories),
+                optional_candidates=len(optional_allowed),
+                optional_slots=remaining_slots,
                 message_id=message.id,
             )
-            if allowed:
-                # Start selection now (the text-only renders are ready) so it overlaps the upload
-                # wait below instead of running serially after it. It runs on the text-only
-                # transcript (markers, no file ids), so it never re-reads or blocks on the uploads.
+            if optional_allowed and remaining_slots:
+                # Render the text-only history only for a real optional lookup. This request
+                # carries markers instead of file ids, so it never re-reads uploaded payloads.
+                history_text_only = await self._render_history(raw_history, text_only=True)
                 selection_message_list: list[EasyInputMessageParam] = [
                     *history_text_only,
                     *text_reference,
@@ -1723,7 +1734,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     coro=self._select_user_memories(
                         message=message,
                         message_list=selection_message_list,
-                        allowed=allowed,
+                        allowed=optional_allowed,
                         read_context=read_context,
                         server_memory_block=server_memory_block,
                     )
@@ -1752,47 +1763,33 @@ class ReplyGeneratorCogs(commands.Cog):
                 # never turn an answerable message into the generic error path. Resolved under the
                 # route_done gate: it usually already finished during the upload wait above, so
                 # this returns immediately; a slow one gets only the post-route grace.
-                selection_started = time.monotonic()
-                try:
-                    with logfire.span("gen_reply memory selection"):
-                        selection = await _await_gated(
-                            task=selection_task,
-                            label="memory selection",
-                            route_done=route_done,
-                            grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
-                        )
-                except TimeoutError as exc:
-                    logfire.warn(
-                        "Memory selection exceeded the post-route grace; falling back to participant memory",
-                        grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
-                        message_id=message.id,
-                        _exc_info=exc,
-                    )
-                    memory_block, memory_labels = self._participant_memory_fallback(
-                        message=message, allowed=allowed, read_context=read_context
-                    )
-                except Exception:
-                    logfire.warn(
-                        "Memory selection failed; falling back to participant memory",
-                        message_id=message.id,
-                        _exc_info=True,
-                    )
-                    memory_block, memory_labels = self._participant_memory_fallback(
-                        message=message, allowed=allowed, read_context=read_context
-                    )
-                else:
+                selection_result = await self._await_optional_memory_selection(
+                    task=selection_task, message=message, route_done=route_done
+                )
+                if selection_result is not None:
+                    selection, selection_elapsed = selection_result
                     selection_input_tokens = selection.input_tokens
                     selection_output_tokens = selection.output_tokens
-                    if selection.memories:
-                        memory_block = render_memory_context_block(memories=selection.memories)
-                        memory_labels = memory_lookup_labels(memories=selection.memories)
+                    selected_memories = selection.memories[:remaining_slots]
+                    if len(selection.memories) > len(selected_memories):
+                        logfire.warn(
+                            "Capping optional memories to the remaining per-reply budget",
+                            requested=len(selection.memories),
+                            kept=len(selected_memories),
+                            message_id=message.id,
+                        )
+                    if selected_memories:
+                        memories.extend(selected_memories)
+                        memory_block = render_memory_context_block(memories=memories)
+                        memory_labels = memory_lookup_labels(memories=memories)
                     logfire.info(
                         "gen_reply memory selection done",
-                        elapsed_seconds=time.monotonic() - selection_started,
-                        selected=len(selection.memories),
-                        selected_ids=[memory.user_id for memory in selection.memories],
-                        labels=memory_lookup_labels(memories=selection.memories),
-                        allowlist_size=len(allowed),
+                        elapsed_seconds=selection_elapsed,
+                        selected=len(selected_memories),
+                        selected_ids=[memory.user_id for memory in selected_memories],
+                        labels=memory_lookup_labels(memories=selected_memories),
+                        candidate_count=len(optional_allowed),
+                        deterministic_count=deterministic_memory_count,
                         message_id=message.id,
                     )
         finally:
@@ -2178,7 +2175,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 reactions.advance(emoji="<:flowchart:1517561877973045349>")
                 # The reference + current attachment uploads (and their activation polls)
                 # run in the background and only the answer awaits them. The route and the
-                # memory selection use the text-only renders, so neither waits on the Files
+                # optional memory selection use the text-only renders, so neither waits on the Files
                 # API. The QA context builds speculatively in parallel with the route call
                 # since QA is the dominant route — non-QA routes discard it.
                 parts_task = asyncio.create_task(
@@ -2209,7 +2206,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 text_reference, text_current = await self._get_reference_and_current(
                     message=message, text_only=True
                 )
-                # Signals memory selection that the route has returned: selection runs
+                # Signals optional memory selection that the route has returned: selection runs
                 # unbounded while this is clear and gets only a short grace once it is set.
                 route_done = asyncio.Event()
                 prep_task = asyncio.create_task(

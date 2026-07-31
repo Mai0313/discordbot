@@ -1,17 +1,17 @@
-"""The `get_user_memory` function tool: lets the reply model look up long-term memory on demand.
+"""The `get_user_memory` function tool for oblique third-party memory lookups.
 
-Long-term memory is no longer injected into every reply. Instead the slow model
-decides whether and whose memory to read by calling `get_user_memory`. A per-request
-allowlist (authors and mentioned users of the conversation, minus the bot) is the
-permission boundary: the model is shown the callable users, and `resolve_user_memories`
-drops any requested id outside the allowlist before reading a file. A second boundary
-decides how much of an allowed user's memory this conversation may see, and it is a
-path join rather than a filter: memory is stored one fact per file under the
-compartment that may read it, so `compartments_for_reading` names the directories and
-everything else is simply never opened. A secret told in one server cannot surface in
-another because it was never in a directory this reply reads. The always-read tone note
-(`render_tone_block`) is the deliberate exception — persona-independent delivery
-preferences are cross-server safe by construction, so they live outside the tree.
+Code directly resolves the current author, reply-chain authors, and users explicitly
+mentioned in the current message. The selector only decides whether the latest message
+obliquely refers to an additional member from a public server nickname table. Every path
+still passes a per-request allowlist to `resolve_user_memories`, which drops any requested
+id outside it before reading a file. A second boundary decides how much of an allowed
+user's memory this conversation may see, and it is a path join rather than a filter:
+memory is stored one fact per file under the compartment that may read it, so
+`compartments_for_reading` names the directories and everything else is simply never
+opened. A secret told in one server cannot surface in another because it was never in a
+directory this reply reads. The always-read tone note (`render_tone_block`) is the
+deliberate exception — persona-independent delivery preferences are cross-server safe by
+construction, so they live outside the tree.
 """
 
 import re
@@ -68,7 +68,7 @@ class MemoryReadContext(BaseModel):
     """Where a reply is happening, for choosing which memory compartments to read.
 
     Built once per reply by `memory_read_context` and threaded into every path that
-    reads a user's stored memory (`resolve_user_memories`, the participant fallback),
+    reads a user's stored memory (deterministic participants and optional selection),
     so `compartments_for_reading` can name the directories this conversation is allowed
     to open.
     """
@@ -109,16 +109,16 @@ class UserMemory(BaseModel):
 
 
 class MemorySelection(BaseModel):
-    """Outcome of the memory-selection phase: chosen memories plus that request's token usage.
+    """Optional third-party memories chosen by the selector plus its token usage.
 
     Attributes:
-        memories: The user memories the model chose to read, allowlist-enforced and deduped.
+        memories: Additional user memories the model chose, allowlist-enforced and deduped.
         input_tokens: Input tokens the selection request consumed, for reply accounting.
         output_tokens: Output tokens the selection request consumed, for reply accounting.
     """
 
     memories: list[UserMemory] = Field(
-        ..., description="Allowlist-enforced memories the model chose."
+        ..., description="Allowlist-enforced additional memories the model chose."
     )
     input_tokens: int = Field(..., description="Input tokens the selection request consumed.")
     output_tokens: int = Field(..., description="Output tokens the selection request consumed.")
@@ -138,20 +138,17 @@ def _user_label(user: Member | User) -> str:
     return escape_mentions(f"{safe_display} ({safe_username})")
 
 
-def build_memory_allowlist(*, messages: list[Message], bot_user_id: int) -> dict[int, str]:
-    """Builds the id->label map of users whose memory the model may look up.
+def build_memory_allowlist(*, users: list[Member | User], bot_user_id: int) -> dict[int, str]:
+    """Builds an insertion-ordered id-to-label memory allowlist from trusted users.
 
-    Walks the conversation's raw messages collecting each message author plus every
-    mentioned user, excluding the bot itself. The returned dict is insertion-ordered
-    and deduplicated (first label wins), so it doubles as the rendered ordering.
+    The caller chooses the exact participant roles that are eligible. This helper only
+    deduplicates them, excludes the bot, and renders sanitized labels.
     """
     allowed: dict[int, str] = {}
-    for message in messages:
-        participants = [message.author, *message.mentions]
-        for user in participants:
-            if user.id == bot_user_id or user.id in allowed:
-                continue
-            allowed[user.id] = _user_label(user=user)
+    for user in users:
+        if user.id == bot_user_id or user.id in allowed:
+            continue
+        allowed[user.id] = _user_label(user=user)
     return allowed
 
 
@@ -211,20 +208,20 @@ def widen_allowlist_with_aliases(
 
 
 def render_callable_users_block(*, allowed: dict[int, str]) -> EasyInputMessageParam:
-    """Renders the callable-users context as a role=system separator block."""
+    """Renders optional oblique-reference candidates as a system separator block."""
     lines = "\n".join(f"[id: {user_id}] {label}" for user_id, label in allowed.items())
-    text = f"==== Users whose long-term memory you may look up via get_user_memory ====\n{lines}"
+    text = f"==== Additional members eligible for oblique-reference memory lookup ====\n{lines}"
     return EasyInputMessageParam(
         role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
     )
 
 
 def render_memory_context_block(*, memories: list[UserMemory]) -> EasyInputMessageParam:
-    """Renders selected user memories as a low-authority assistant context note.
+    """Renders resolved user memories as a low-authority assistant context note.
 
-    The model picks these via get_user_memory in the selection phase; they are injected here
-    as background context because the user-memory read path is split into a selection phase
-    and an answer phase on purpose (latency / cost / provider-neutral). Rendered as
+    Code decides the direct participants while the selector may add an obliquely referenced
+    third party. They are injected here as background context because the optional tool call
+    stays separate from the answer phase (latency / cost / provider-neutral). Rendered as
     `role=assistant` (the bot's own note, the lowest authority tier) so a stored operating
     preference cannot outrank the developer prompt or the user's current message.
     """

@@ -173,10 +173,10 @@ def extract_tone_block(request: ResponseInputParam | str) -> str | None:
 
 
 def extract_callable_user_ids(request: ResponseInputParam | str) -> set[int]:
-    """Returns the ids the selection phase offered in its callable-users block.
+    """Returns the ids offered for optional oblique-reference selection.
 
-    This is the per-request allowlist boundary: a private channel that does not
-    widen via the nickname table yields only the conversation participants here.
+    This is the narrowed per-request allowlist boundary: it contains only absent
+    public nickname-table members, never deterministic participants.
     """
     for role, text in iter_text_blocks(request=request):
         if role == "system" and text.split("\n", 1)[0] == _CALLABLE_HEADER:
