@@ -15,7 +15,6 @@ from pydantic import BaseModel, ValidationError
 from nextcord.ui import Button
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.cogs.memory import MemoryCogs
 from discordbot.typings.memory import (
     MemoryFact,
     MemorySection,
@@ -27,9 +26,10 @@ from discordbot.typings.memory import (
     MemoryEvidenceKind,
 )
 from discordbot.typings.models import ModelSettings
+from discordbot.cogs.memory.cog import MemoryCogs
 from discordbot.services.memory import database as memory_db
 from discordbot.services.memory import pipeline
-from discordbot.cogs._memory.views import (
+from discordbot.cogs.memory.views import (
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
     MemoryClearConfirmView,
@@ -1754,7 +1754,7 @@ async def test_memory_regenerate_command_schedules_in_background(
         calls["identity"] = identity
         return scheduled
 
-    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     # Evidence must exist or the command short-circuits before scheduling.
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     interaction = _regen_interaction()
@@ -1783,7 +1783,7 @@ async def test_memory_regenerate_command_reports_no_evidence(
         scheduled = True
         return True
 
-    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     # No raw or detail evidence exists for this scope.
     interaction = _regen_interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
@@ -1810,7 +1810,7 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
         scheduled = True
         return True
 
-    monkeypatch.setattr("discordbot.cogs.memory.schedule_memory_regeneration", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.memory.cog.schedule_memory_regeneration", fake_schedule)
     interaction = _regen_interaction()
     await MemoryCogs.memory_regenerate.callback(cog, as_interaction(fake=interaction))
 

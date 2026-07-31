@@ -1,7 +1,7 @@
 """Deterministic tests for the hole-card-aware Blackjack EV engine."""
 
 from discordbot.typings.games import Card, DealerOutcome, ActionEvAnalysis
-from discordbot.cogs._games.blackjack_ev import (
+from discordbot.cogs.games.blackjack_ev import (
     _add_value,
     compute_action_evs,
     compute_true_count,

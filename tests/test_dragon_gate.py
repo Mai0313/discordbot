@@ -11,21 +11,21 @@ import pytest
 from nextcord import Embed
 from nextcord.ui import Button, StringSelect
 
-from discordbot.cogs.games import GamesCogs
-from discordbot.cogs._games import interactions as game_interactions
+from discordbot.cogs.games import interactions as game_interactions
 from discordbot.typings.games import (
     Card,
     GameParticipant,
     DragonGatePlayerResult,
     RefreshParticipantsResult,
 )
+from discordbot.cogs.games.cog import GamesCogs
 from discordbot.typings.economy import (
     JackpotSettlementResult,
     JackpotSettlementRequest,
     JackpotSettlementBatchResult,
 )
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
-from discordbot.cogs._games.dragon_gate import (
+from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
     DragonGateRound,
@@ -33,8 +33,8 @@ from discordbot.cogs._games.dragon_gate import (
     card_value,
     has_open_gate,
 )
-from discordbot.cogs._games.interactions import edit_message_with_retry
-from discordbot.cogs._games.dragon_gate_views import (
+from discordbot.cogs.games.interactions import edit_message_with_retry
+from discordbot.cogs.games.dragon_gate_views import (
     DragonGateView,
     DragonGateBetModal,
     DragonGateLobbyView,
@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 
     from _typeshed import SupportsLenAndGetItem
 
-    from discordbot.cogs._games.lobby import PrepareParticipant
+    from discordbot.cogs.games.lobby import PrepareParticipant
 
 T = TypeVar("T")
 
@@ -278,23 +278,23 @@ def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> G
 def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) -> None:
     """Patches jackpot database calls to use an in-memory state model."""
     monkeypatch.setattr(
-        "discordbot.cogs._games.dragon_gate_views.apply_jackpot_settlement", state.settle
+        "discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", state.settle
     )
     monkeypatch.setattr(
-        "discordbot.cogs._games.lobby.apply_jackpot_settlement_batch", state.settle_batch
+        "discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", state.settle_batch
     )
 
     async def fake_get_balance(user_id: int) -> int:
         """Returns the simulated wallet balance, seeded until a settlement sets it."""
         return state.balances.get(user_id, state.initial_balance)
 
-    monkeypatch.setattr("discordbot.cogs._games.dragon_gate_views.get_balance", fake_get_balance)
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
     monkeypatch.setattr(
-        "discordbot.cogs._games.dragon_gate_views.schedule_public_message_delete",
+        "discordbot.cogs.games.dragon_gate_views.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
     monkeypatch.setattr(
-        "discordbot.cogs._games.lobby.schedule_public_message_delete",
+        "discordbot.cogs.games.lobby.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
 
@@ -726,10 +726,10 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
         )
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.lobby.apply_jackpot_settlement_batch", rejected_ante_batch
+        "discordbot.cogs.games.lobby.apply_jackpot_settlement_batch", rejected_ante_batch
     )
     monkeypatch.setattr(
-        "discordbot.cogs._games.lobby.schedule_public_message_delete",
+        "discordbot.cogs.games.lobby.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
 
@@ -938,7 +938,7 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
         )
 
     monkeypatch.setattr(
-        "discordbot.cogs._games.dragon_gate_views.apply_jackpot_settlement", capped_settlement
+        "discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", capped_settlement
     )
 
     async def fake_get_balance(user_id: int) -> int:
@@ -946,9 +946,9 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
         del user_id
         return 500_000
 
-    monkeypatch.setattr("discordbot.cogs._games.dragon_gate_views.get_balance", fake_get_balance)
+    monkeypatch.setattr("discordbot.cogs.games.dragon_gate_views.get_balance", fake_get_balance)
     monkeypatch.setattr(
-        "discordbot.cogs._games.dragon_gate_views.schedule_public_message_delete",
+        "discordbot.cogs.games.dragon_gate_views.schedule_public_message_delete",
         lambda message, delay=180, user_name=None: None,
     )
 

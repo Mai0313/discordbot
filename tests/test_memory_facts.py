@@ -52,12 +52,12 @@ from discordbot.services.memory.deltas import (
     render_existing_facts,
     tone_evidence_from_raw,
 )
-from discordbot.services.memory.extraction import MemoryFactDelta
-from discordbot.cogs._gen_reply.memory_tool import (
+from discordbot.cogs.gen_reply.memory_tool import (
     MemoryReadContext,
     compartments_for_reading,
     allowlist_ids_from_server_memory,
 )
+from discordbot.services.memory.extraction import MemoryFactDelta
 
 _OWNER = MemoryOwner(owner_id=111, owner_name="Alice (alice)")
 _NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)

@@ -9,7 +9,7 @@ import pytest
 
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.economy import MAX_SINGLE_BET
-from discordbot.cogs._games.blackjack import (
+from discordbot.cogs.games.blackjack import (
     Card,
     BlackjackRound,
     BlackjackHandState,
@@ -29,9 +29,9 @@ from discordbot.cogs._games.blackjack import (
     dealer_visible_value,
     is_five_card_twenty_one,
 )
-from discordbot.cogs._games.settlement import blackjack_player_early_finish_note
-from discordbot.cogs._games.presentation import settlement_metadata
-from discordbot.cogs._games.blackjack_views import build_in_progress_embeds
+from discordbot.cogs.games.settlement import blackjack_player_early_finish_note
+from discordbot.cogs.games.presentation import settlement_metadata
+from discordbot.cogs.games.blackjack_views import build_in_progress_embeds
 
 
 def test_hand_value_no_aces() -> None:
@@ -630,9 +630,7 @@ def test_single_player_round_hit_finishes_on_fifth_card_twenty_one() -> None:
     round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
     round_state.shoe = []
 
-    with patch(
-        "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")
-    ):
+    with patch("discordbot.cogs.games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")):
         round_state.hit(user_id=1)
 
     assert round_state.players[0].hands[0].finished is True
@@ -652,9 +650,7 @@ def test_hit_auto_stands_on_fifth_card_non_bust() -> None:
     )
     round_state.shoe = []
 
-    with patch(
-        "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="6", suit="♠")
-    ):
+    with patch("discordbot.cogs.games.blackjack.draw_card", return_value=Card(rank="6", suit="♠")):
         round_state.hit(user_id=1)
 
     alice = round_state.players[0].hands[0]
@@ -677,9 +673,7 @@ def test_hit_auto_stands_on_fifth_card_twenty_one() -> None:
     )
     round_state.shoe = []
 
-    with patch(
-        "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")
-    ):
+    with patch("discordbot.cogs.games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")):
         round_state.hit(user_id=1)
 
     alice = round_state.players[0].hands[0]
@@ -720,9 +714,7 @@ def test_split_hand_can_auto_stand_on_fifth_card_twenty_one() -> None:
     round_state.dealer = [Card(rank="5", suit="♣"), Card(rank="6", suit="♦")]
     round_state.shoe = []
 
-    with patch(
-        "discordbot.cogs._games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")
-    ):
+    with patch("discordbot.cogs.games.blackjack.draw_card", return_value=Card(rank="7", suit="♠")):
         round_state.hit(user_id=1)
 
     assert is_five_card_twenty_one(cards=player.hands[1].cards) is True

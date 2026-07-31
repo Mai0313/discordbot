@@ -1,7 +1,7 @@
 """Deterministic bot-player Blackjack decision tests."""
 
 from discordbot.typings.games import Card
-from discordbot.cogs._games.bot_player import (
+from discordbot.cogs.games.bot_player import (
     BOT_TABLE_EDGE,
     kelly_bet,
     fallback_action,

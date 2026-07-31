@@ -21,15 +21,6 @@ from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.cogs.gen_reply import (
-    LINK_CONTEXT_SOURCES,
-    ReplyGeneratorCogs,
-    _discard_task,
-    _find_youtube_url,
-    _can_launch_research,
-    _link_url_for_source,
-    _build_runtime_instructions,
-)
 from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
 from discordbot.typings.models import (
     EffortGrade,
@@ -40,9 +31,18 @@ from discordbot.typings.models import (
 from discordbot.services.memory import database as memory_db
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.llm_errors import extract_friendly_error
+from discordbot.cogs.gen_reply.cog import (
+    LINK_CONTEXT_SOURCES,
+    ReplyGeneratorCogs,
+    _discard_task,
+    _find_youtube_url,
+    _can_launch_research,
+    _link_url_for_source,
+    _build_runtime_instructions,
+)
+from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.cogs._gen_reply.input import MessageInputBuilder
 from discordbot.services.memory.facts import utc_now, mint_fact_id, node_type_for
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
@@ -54,20 +54,20 @@ from discordbot.services.memory.store import (
     scope_owner_id,
     guild_compartment,
 )
-from discordbot.cogs._gen_reply.context import ReplyContext
-from discordbot.cogs._gen_reply.markers import (
+from discordbot.cogs.gen_reply.context import ReplyContext
+from discordbot.cogs.gen_reply.markers import (
     MAX_INLINE_IMAGES,
     extract_inline_markers,
     scrub_markers_for_preview,
 )
-from discordbot.cogs._gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
-from discordbot.cogs._gen_reply.streaming import (
+from discordbot.cogs.gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
+from discordbot.cogs.gen_reply.streaming import (
     DISCORD_MESSAGE_LIMIT,
     REASONING_PREVIEW_MAX_CHARS,
     REASONING_PREVIEW_MAX_LINES,
     ResponseStreamer,
 )
-from discordbot.cogs._gen_reply.generation import (
+from discordbot.cogs.gen_reply.generation import (
     VOICE_TIMEOUT_SECONDS,
     MusicClip,
     VoiceClip,
@@ -80,7 +80,7 @@ from discordbot.cogs._gen_reply.generation import (
     music_filename,
     speechify_discord_markup,
 )
-from discordbot.cogs._gen_reply.memory_tool import (
+from discordbot.cogs.gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     MemoryReadContext,
     parse_user_id_list,
@@ -92,16 +92,16 @@ from discordbot.cogs._gen_reply.memory_tool import (
     widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
 )
+from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.services.memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
-from discordbot.cogs._gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
-from discordbot.cogs._gen_reply.attachment.inline import InlineRenderer
-from discordbot.cogs._gen_reply.attachment.select import build_attachment_handler
-from discordbot.cogs._gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
-from discordbot.cogs._gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
-from discordbot.cogs._gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
-from discordbot.cogs._gen_reply.attachment.grok_file_api import GrokFileUploader
-from discordbot.cogs._gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
-from discordbot.cogs._gen_reply.attachment.openai_file_api import OpenAIFileUploader
+from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
+from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
+from discordbot.cogs.gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
+from discordbot.cogs.gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
+from discordbot.cogs.gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
+from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
+from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
+from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
 
 from tests.helpers.casting import as_bot, as_message, step_dicts, make_media_hosting_config
 from tests.helpers.llm_input import (
@@ -134,7 +134,7 @@ if TYPE_CHECKING:
     from openai.types.responses import ResponseStreamEvent
     from openai.types.responses.response_input_param import ResponseInputParam
 
-    from discordbot.cogs._gen_reply.link_sources import LinkContextSource
+    from discordbot.cogs.gen_reply.link_sources import LinkContextSource
 
 
 class FakeGuild:
@@ -2228,8 +2228,8 @@ async def test_voice_config_gate_controls_synthesizer(
             del responses
             return "回覆"
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(
@@ -2281,8 +2281,8 @@ async def test_image_config_gate_controls_generator(
             del responses
             return "回覆"
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(
@@ -2372,7 +2372,7 @@ async def test_youtube_qa_uses_interactions_backend(
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
@@ -2411,7 +2411,7 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
@@ -2448,7 +2448,7 @@ async def test_youtube_qa_falls_back_to_responses(
         )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     yt_url = None if scenario == "no_url" else url
@@ -2467,7 +2467,7 @@ async def test_youtube_qa_falls_back_to_responses(
 
 def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     """A YouTube link in the replied-to message is found even when the reply omits it."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
     referenced = FakeMessage(content=f"look at this {url}")
     referenced.id = 555
@@ -2479,7 +2479,7 @@ def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPat
 
 def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """No YouTube link in the message or its reference chain returns None."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     message = FakeMessage(content="<@999> hi")
     message.reference = FakeReference(resolved=FakeMessage(content="just chatting"))
 
@@ -2488,7 +2488,7 @@ def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_find_youtube_url_in_forwarded_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     """A forwarded message's YouTube link (in message.snapshots) is found, not just message.content."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content="")  # pure forward: empty top-level content
     message.snapshots = [FakeSnapshot(content=f"summarize this {url}")]
@@ -2498,7 +2498,7 @@ def test_find_youtube_url_in_forwarded_snapshot(monkeypatch: pytest.MonkeyPatch)
 
 def test_find_youtube_url_in_forwarded_embed_title(monkeypatch: pytest.MonkeyPatch) -> None:
     """A forwarded URL only in an embed title is found, matching what routing sees."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content="")
     message.snapshots = [FakeSnapshot(embeds=[Embed(title=f"watch {url}")])]
@@ -2508,7 +2508,7 @@ def test_find_youtube_url_in_forwarded_embed_title(monkeypatch: pytest.MonkeyPat
 
 def test_find_youtube_url_in_forwarded_embed_url(monkeypatch: pytest.MonkeyPatch) -> None:
     """A forwarded link card whose URL is only in embed.url is detected and was rendered too."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content="")
     message.snapshots = [FakeSnapshot(embeds=[Embed(url=url)])]  # bare link card, no caption
@@ -2518,7 +2518,7 @@ def test_find_youtube_url_in_forwarded_embed_url(monkeypatch: pytest.MonkeyPatch
 
 def test_find_youtube_url_skips_captioned_forward_embed(monkeypatch: pytest.MonkeyPatch) -> None:
     """A captioned forward renders only its caption, so an embed-only URL is not scanned either."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content="")
     # Snapshot has its own caption, so the embed (where the URL lives) is not rendered to the model.
@@ -2539,7 +2539,7 @@ def test_link_url_for_source_searches_the_replied_to_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Threads reads a link the user only replied to, like YouTube already does."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     referenced = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}")
     referenced.id = 555
     message = FakeMessage(content="<@999> 這篇底下在吵什麼")
@@ -2557,7 +2557,7 @@ def test_link_url_for_source_finds_the_threads_share_form(monkeypatch: pytest.Mo
     It resolves to the same post as the canonical form, and it is what the mobile app offers,
     so a pattern that missed it would leave the answer turn with no post context at all.
     """
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     share_url = "https://www.threads.com/share/DfX81RWN8"
     message = FakeMessage(content=f"<@999> 這篇在說什麼 {share_url}")
 
@@ -2569,7 +2569,7 @@ def test_link_url_for_source_finds_the_threads_share_form(monkeypatch: pytest.Mo
 
 def test_link_url_for_source_prefers_the_current_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """With a Threads link on both, the one the user typed wins over the replied-to one."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     referenced = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}")
     referenced.id = 555
     own_url = "https://www.threads.com/@b/post/XYZ789"
@@ -2597,7 +2597,7 @@ def test_link_url_for_source_leaves_the_clip_sources_on_the_current_message(
     """Douyin and Bilibili never widen to the reply chain: their value is the clip, and both
     are rate-limit sensitive, so a passing mention one hop away is not worth a fetch.
     """
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     referenced = FakeMessage(content=f"看看這個 {url}")
     referenced.id = 555
     message = FakeMessage(content="<@999> 這在講什麼")
@@ -2618,7 +2618,7 @@ def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message(
     post, so a first-match scan of that message would fetch the thread's top post rather than
     the one the human linked. One hop out only what the author actually typed counts.
     """
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     root_url = "https://www.threads.com/@a/post/ROOT111"
     expansion = FakeMessage(content="")  # an expansion posts embeds with no content of its own
     expansion.id = 555
@@ -2645,7 +2645,7 @@ def test_link_url_for_source_ignores_a_url_inside_the_replied_to_usage_footer(
     The footer credits looked-up memory owners by display name, and a name is user-chosen and
     long enough to hold a whole Threads permalink, so the span has to go before the scan.
     """
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     footer = (
         "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
         f"\n-# <:tag:1517563887573143595> {_THREADS_POST_URL} 的記憶"
@@ -2668,7 +2668,7 @@ def test_link_url_for_source_reads_a_forwarded_link_in_the_replied_to_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A forward counts for what its author wrote, on the same terms as a typed link."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     forward = FakeMessage(content="")  # a pure forward puts its payload in snapshots
     forward.id = 555
     forward.snapshots = [FakeSnapshot(content=f"看看這篇 {_THREADS_POST_URL}")]
@@ -2842,7 +2842,7 @@ async def test_dead_source_skipped_within_ttl_then_retried(
         raise RuntimeError("CDN url expired")
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.loaders.get_image_data", _raise_get_image_data
+        "discordbot.cogs.gen_reply.attachment.loaders.get_image_data", _raise_get_image_data
     )
     uploader = _fake_uploader()
     url = "https://example.test/dead.png"
@@ -2870,7 +2870,7 @@ async def test_non_history_render_does_not_dead_cache_transient_failure(
         raise RuntimeError("transient blip")
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.loaders.get_image_data", _raise_get_image_data
+        "discordbot.cogs.gen_reply.attachment.loaders.get_image_data", _raise_get_image_data
     )
     uploader = _fake_uploader()
     url = "https://example.test/fresh.png"
@@ -3014,7 +3014,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert image_part["file_id"] == "https://files.test/pixel.png"
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
     message = FakeMessage()
     message.attachments = [
@@ -3032,7 +3032,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     img_embed.set_image(url="https://example.test/image.png")
     message.embeds = [img_embed]
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.loaders.get_image_data",
+        "discordbot.cogs.gen_reply.attachment.loaders.get_image_data",
         lambda image_file: base64.b64decode(_png_b64()),
     )
     parts = await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
@@ -3048,7 +3048,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         del delay
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
     )
 
     def _uploader(files: FakeGeminiFiles) -> GeminiFileUploader:
@@ -3078,7 +3078,7 @@ async def test_upload_file_polls_active_and_drops_unready_files(
         return clock["now"]
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
     )
     stuck = _uploader(FakeGeminiFiles(processing_rounds=99))
     pending = await stuck._upload_file(filename="slow.mp4", data=b"x", content_type="video/mp4")
@@ -3105,7 +3105,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         del delay
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.asyncio.sleep", _no_sleep
     )
 
     # Auto-advancing clock: each call jumps well past the 15s activation bound, so the first
@@ -3118,7 +3118,7 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
         return clock["now"]
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.time.monotonic", _fake_monotonic
     )
 
     files = FakeGeminiFiles(processing_rounds=99)
@@ -3191,7 +3191,7 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
 
     url = "https://example.test/image.png"
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.loaders.get_image_data", lambda image_file: b"jpeg"
+        "discordbot.cogs.gen_reply.attachment.loaders.get_image_data", lambda image_file: b"jpeg"
     )
     url_image_rendered = await renderer.render_image(source=url, cache_key=url)
     assert url_image_rendered is not None
@@ -3349,7 +3349,7 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
         logged.append(message)
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.grok_file_api.logfire.error", record_error
+        "discordbot.cogs.gen_reply.attachment.grok_file_api.logfire.error", record_error
     )
     renderer = GrokFileUploader()
     assert (
@@ -3428,7 +3428,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     """Verifies message processing for history, references, and current prompts."""
     cog = _cog()
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_supported_modalities",
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
         lambda model_name: {"text", "image"},
     )
     bot_msg = FakeMessage(content="bot answer", author=FakeAuthor(bot=True, user_id=999))
@@ -3471,7 +3471,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     grandparent.id = 989
     parent.reference = FakeReference(resolved=grandparent)
     current.reference = FakeReference(resolved=parent)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     reference = await cog._get_reference_message(message=as_message(fake=current))
     assert len(reference) == 4
     assert reference[0]["role"] == "system"
@@ -3502,7 +3502,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     await cog._handle_video_reply(
         message=as_message(fake=message),
         user_prompt="video",
@@ -3565,7 +3565,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             streamed.append(self.message)
             return "done"
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
     # memory_enabled=False keeps this routing test off the real memory path,
     # which is not isolated here.
     await _reply_via_pipeline(
@@ -3581,7 +3581,7 @@ async def test_uploaded_image_without_extension_marks_as_image(
     """An image attachment whose filename lacks an extension still marks as an image."""
     cog = _cog()
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
     message = FakeMessage(content="<@999> see", author=FakeAuthor(user_id=1))
     message.attachments = [
@@ -3608,7 +3608,7 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
     """The marker render and the upload render keep the same supported-attachment slots."""
     cog = _cog()
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
     message = FakeMessage(content="<@999> mix", author=FakeAuthor(user_id=1))
     message.attachments = [
@@ -3647,7 +3647,7 @@ async def test_text_only_render_degrades_when_modality_lookup_fails(
         del model_name
         raise RuntimeError("model info unreachable")
 
-    monkeypatch.setattr("discordbot.cogs._gen_reply.input.get_supported_modalities", boom)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.input.get_supported_modalities", boom)
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(filename="pic.png", content_type="image/png", payload=b"x")
@@ -3750,7 +3750,7 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     """An attached image routes the IMAGE handler through images.edit with raw bytes."""
     cog = _cog()
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
     )
     message = FakeMessage(content="改這張圖", author=FakeAuthor(user_id=1))
     message.attachments = [
@@ -3863,7 +3863,7 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
             del responses
             raise RuntimeError("stream boom")
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", BoomResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", BoomResponder)
 
     await cog._handle_image_reply(
         message=as_message(fake=message),
@@ -3930,7 +3930,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
             del responses
             raise RuntimeError("stream boom")
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _BoomStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _BoomStreamer)
 
     await cog._handle_image_reply(
         message=as_message(fake=message),
@@ -3988,7 +3988,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
         """Skips the video generation polling delay."""
         del delay
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", _fast_sleep)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", _fast_sleep)
 
     async def _no_upload(data: bytes) -> None:
         """Simulates the post-delivery Files-API upload failing."""
@@ -4023,7 +4023,7 @@ async def test_handle_video_reply_refines_prompt_before_render(
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await cog._handle_video_reply(
@@ -4064,7 +4064,7 @@ async def test_handle_video_reply_refine_disabled_sends_raw_prompt(
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await cog._handle_video_reply(
@@ -4093,10 +4093,9 @@ async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyP
         del builder, message
         return [(b"clip", "video/mp4")]
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.MessageInputBuilder.get_video_sources",
-        fake_video_sources,
+        "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", fake_video_sources
     )
     message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
 
@@ -4134,7 +4133,7 @@ async def test_download_output_video_retries_until_ready(monkeypatch: pytest.Mon
         """Skips the retry backoff."""
         del delay
 
-    monkeypatch.setattr("discordbot.cogs._gen_reply.generation.asyncio.sleep", fast_sleep)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.generation.asyncio.sleep", fast_sleep)
     client = SimpleNamespace(aio=SimpleNamespace(files=SimpleNamespace(download=flaky_download)))
     generator = VideoGenerator(
         client=client, video_model=ModelSettings(name="gemini-omni-flash-preview")
@@ -4153,7 +4152,7 @@ async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.Mo
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="把這些做成影片", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(
@@ -4189,7 +4188,7 @@ async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio(
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="讓這張動起來", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(
@@ -4714,9 +4713,11 @@ async def test_on_message_injects_douyin_context_before_current(
         seen.append((url, allow_media_ingest))
         return _douyin_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_douyin_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     url = "https://v.douyin.com/abc123"
@@ -4758,9 +4759,11 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
         clients.append(gemini_client)
         return _douyin_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_douyin_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -4790,9 +4793,11 @@ async def test_on_message_skips_a_non_post_douyin_link(
         calls.append(url)
         return _douyin_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_douyin_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -4824,9 +4829,11 @@ async def test_on_message_douyin_media_ingest_kill_switch(
         seen.append(allow_media_ingest)
         return _douyin_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_douyin_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -4869,7 +4876,9 @@ async def test_on_message_cancels_douyin_context_on_image_route(
         """Accepts the dispatched image request."""
         del message, user_prompt
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_douyin_context_messages", hanging_builder)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", hanging_builder
+    )
     monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
@@ -4889,7 +4898,7 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
     cog.config = _link_config()
-    monkeypatch.setattr("discordbot.cogs.gen_reply.LINK_CONTEXT_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.01)
 
     async def slow_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
@@ -4899,9 +4908,11 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
         await asyncio.sleep(5)
         return _douyin_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_douyin_context_messages", slow_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", slow_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -4931,9 +4942,11 @@ async def test_on_message_injects_threads_context_before_current(
         seen_urls.append(url)
         return _threads_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_threads_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     url = "https://www.threads.com/@a/post/ABC123"
@@ -4975,11 +4988,13 @@ async def test_on_message_injects_threads_context_from_the_replied_to_message(
         seen_urls.append(url)
         return _threads_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_threads_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
 
     parent = FakeMessage(content=f"看看這篇 {_THREADS_POST_URL}", author=FakeAuthor(user_id=4))
     parent.id = 988
@@ -5030,11 +5045,11 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
         called.append(url)
         return block()
 
-    monkeypatch.setattr(f"discordbot.cogs.gen_reply.{builder}", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(f"discordbot.cogs.gen_reply.cog.{builder}", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
 
     parent = FakeMessage(content=f"看看這個 {url}", author=FakeAuthor(user_id=4))
     parent.id = 988
@@ -5078,7 +5093,7 @@ async def test_on_message_cancels_threads_context_on_image_route(
         del message, user_prompt
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.build_threads_context_messages", hanging_builder
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", hanging_builder
     )
     monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
@@ -5106,9 +5121,11 @@ async def test_on_message_skips_threads_context_without_url(
         called.append(url)
         return _threads_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_threads_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(content="<@999> just a plain question", author=FakeAuthor(user_id=1))
@@ -5127,7 +5144,7 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
     cog.config = _link_config()
-    monkeypatch.setattr("discordbot.cogs.gen_reply.LINK_CONTEXT_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.01)
 
     async def slow_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object
@@ -5137,9 +5154,11 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
         await asyncio.sleep(5)
         return _threads_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_threads_context_messages", slow_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", slow_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -5172,9 +5191,11 @@ async def test_on_message_injects_bilibili_context_before_current(
         seen.append((url, allow_media_ingest))
         return _bilibili_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     url = "https://www.bilibili.com/video/BV1jpK86hEc8"
@@ -5211,9 +5232,11 @@ async def test_on_message_skips_a_non_video_bilibili_link(
         calls.append(url)
         return _bilibili_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -5245,9 +5268,11 @@ async def test_on_message_bilibili_media_ingest_kill_switch(
         seen.append(allow_media_ingest)
         return _bilibili_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -5292,7 +5317,7 @@ async def test_on_message_cancels_bilibili_context_on_image_route(
         del message, user_prompt
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.build_bilibili_context_messages", hanging_builder
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", hanging_builder
     )
     monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
@@ -5329,9 +5354,11 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
         seen.append((gemini_client, allow_media_ingest))
         return _bilibili_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", fake_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -5389,7 +5416,7 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
         return ReplyContext()
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.build_bilibili_context_messages", hanging_builder
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", hanging_builder
     )
     monkeypatch.setattr(cog, "_route_classify", raising_route)
     monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
@@ -5411,7 +5438,7 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
     cog.config = _link_config()
-    monkeypatch.setattr("discordbot.cogs.gen_reply.LINK_CONTEXT_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.01)
 
     async def slow_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
@@ -5421,9 +5448,11 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
         await asyncio.sleep(5)
         return _bilibili_block()
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.build_bilibili_context_messages", slow_builder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", slow_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -5472,16 +5501,16 @@ async def test_on_message_orders_link_blocks_in_registry_order(
         return _bilibili_block()
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.build_threads_context_messages", fake_threads_builder
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", fake_threads_builder
     )
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.build_douyin_context_messages", fake_douyin_builder
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", fake_douyin_builder
     )
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.build_bilibili_context_messages", fake_bilibili_builder
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", fake_bilibili_builder
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", _ThreadsStreamer)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
     message = FakeMessage(
@@ -5526,8 +5555,10 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parent_author = FakeAuthor(user_id=4)
@@ -5582,7 +5613,9 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
     )
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆,句子精簡")
     write_tone(scope=user_scope(user_id=42), content="第三人語氣不該出現")
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     _recorded(cog).responses.select_queue = [
@@ -5630,7 +5663,9 @@ async def test_summary_route_still_injects_tone_block(
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆")
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     _recorded(cog).responses.stream_queue = [
@@ -5752,8 +5787,8 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
         """Records the scheduled memory update arguments."""
         scheduled.append(kwargs)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", fake_schedule)
 
     # The selection model declines the optional alias lookup. The author's memory is
     # deterministic and must still be injected.
@@ -5858,8 +5893,8 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         """Records that a memory update was scheduled."""
         scheduled.append(kwargs["scope"])
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _reply_via_pipeline(cog=cog, message=message)
@@ -5923,8 +5958,8 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
         """Records that a memory update was scheduled."""
         scheduled.append(kwargs["scope"])
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
@@ -5944,7 +5979,7 @@ async def test_process_single_message_neutralizes_spoofed_identity(
     """Verifies id-prefix lookalikes in display names cannot forge authorship."""
     cog = _cog()
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.input.get_supported_modalities", lambda model_name: {"text"}
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"text"}
     )
     author = FakeAuthor(user_id=555)
     author.display_name = "Mallory (mallory) [id: 1]:"
@@ -6297,9 +6332,11 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
             durability="permanent",
             subject_id=nick_id,
         )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
     if reference_author_id is not None:
-        monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+        monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
 
     message = FakeMessage(
         content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=channel_public
@@ -6359,8 +6396,10 @@ async def test_deterministic_memories_are_author_reply_mentions_ordered_and_dedu
     cog = _cog()
     for user_id in (1, 2, 3, 999):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parent = FakeMessage(content="原訊息", author=FakeAuthor(user_id=2))
@@ -6389,7 +6428,9 @@ async def test_history_only_users_are_not_memory_candidates(
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=2), text="歷史使用者記憶")
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
 
     history_message = FakeMessage(content="之前說過", author=FakeAuthor(user_id=2))
 
@@ -6425,7 +6466,9 @@ async def test_private_thread_skips_optional_memory_selection(
         durability="permanent",
         subject_id=42,
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     cast("Any", message.channel).is_private = lambda: True
@@ -6454,7 +6497,9 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             durability="permanent",
             subject_id=user_id,
         )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     message.mentions = [FakeAuthor(user_id=user_id) for user_id in range(2, 8)]
@@ -6560,7 +6605,9 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
             durability="permanent",
             subject_id=nick_id,
         )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     mention_authors: list[FakeAuthor] = []
@@ -6614,7 +6661,9 @@ async def test_handle_message_reply_retains_author_memory_when_optional_selectio
         subject_id=42,
     )
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
 
     async def boom(**kwargs: object) -> object:
         """Simulates a selection-request failure."""
@@ -6692,7 +6741,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
         """Records each scheduled memory update."""
         scheduled.append(kwargs)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.schedule_memory_update", fake_schedule)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", fake_schedule)
 
     message = FakeMessage(
         content="<@999> hi", author=FakeAuthor(user_id=1), channel_public=channel_public
@@ -6984,7 +7033,7 @@ async def test_resolve_effort_defaults_high_on_grace_timeout(
 ) -> None:
     """A grade still running past the post-route grace resolves to high effort."""
     cog = _cog()
-    monkeypatch.setattr("discordbot.cogs.gen_reply.EFFORT_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.EFFORT_GRACE_SECONDS", 0.01)
     route_done = asyncio.Event()
     route_done.set()
 
@@ -7172,7 +7221,7 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
         return {"type": "input_image", "image_url": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
 
     monkeypatch.setattr(
-        "discordbot.cogs._gen_reply.attachment.gemini_file_api.GeminiFileUploader.render_image",
+        "discordbot.cogs.gen_reply.attachment.gemini_file_api.GeminiFileUploader.render_image",
         fake_render_image,
     )
 
@@ -7195,7 +7244,7 @@ async def _prepare_context_with_hanging_selection(
     cog: ReplyGeneratorCogs, message: FakeMessage, monkeypatch: pytest.MonkeyPatch
 ) -> ReplyContext:
     """Builds reply context where an optional alias selection exceeds its grace."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.MEMORY_SELECT_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.MEMORY_SELECT_GRACE_SECONDS", 0.01)
     _seed_fact(
         scope=server_scope(server_id=1),
         text="Boss(社群暱稱:李董)",
@@ -7272,7 +7321,7 @@ async def test_memory_selection_timeout_retains_author_and_reference_memory(
     _seed_fact(scope=user_scope(user_id=1), text="甲")
     _seed_fact(scope=user_scope(user_id=2), text="乙")
     # _walk_reference_chain only follows a resolved message that passes isinstance(_, Message).
-    monkeypatch.setattr("discordbot.cogs.gen_reply.Message", FakeMessage)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parent = FakeMessage(content="原訊息", author=FakeAuthor(user_id=2))
     parent.id = 988
@@ -7374,16 +7423,16 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     async def fake_consolidate(scope: str, extractor: object, identity: str) -> None:
         swept.append(scope)
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.safe_list_resumable", fake_list)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.resume_memory_update", fake_resume)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.consolidate_if_needed", fake_consolidate)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.safe_list_resumable", fake_list)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.resume_memory_update", fake_resume)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.consolidate_if_needed", fake_consolidate)
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.iter_scopes",
+        "discordbot.cogs.gen_reply.cog.iter_scopes",
         lambda: [user_job_scope, server_job_scope, sweep_scope],
     )
-    monkeypatch.setattr("discordbot.cogs.gen_reply.needs_consolidation", lambda scope: True)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.needs_consolidation", lambda scope: True)
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.read_owner",
+        "discordbot.cogs.gen_reply.cog.read_owner",
         lambda scope: MemoryOwner(owner_id=scope_owner_id(scope=scope), owner_name=""),
     )
 

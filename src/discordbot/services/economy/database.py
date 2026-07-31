@@ -3,7 +3,7 @@
 The engine is a module-level `AsyncEngine` singleton. Putting
 `create_async_engine()` on a per-instance `cached_property` would leak the
 connection pool, dialect cache, and inspector cache for every Discord
-interaction (the same lesson `cogs/log_msg.py` captures for the sync engine
+interaction (the same lesson `cogs/log_msg/cog.py` captures for the sync engine
 it still uses for pandas `to_sql`).
 
 Every balance-mutating write path is atomic at the SQLite transaction level.

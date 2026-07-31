@@ -13,10 +13,9 @@ import pytest
 from nextcord import File, Embed, Locale
 from nextcord.ui import StringSelect
 
-from discordbot.cogs import stock
 from discordbot.utils import owned_message_views
-from discordbot.cogs.stock import StockCogs
-from discordbot.cogs._stock import views as stock_views
+from discordbot.cogs.stock import cog as stock
+from discordbot.cogs.stock import views as stock_views
 from discordbot.typings.stock import (
     StockAction,
     StockNewsView,
@@ -31,8 +30,9 @@ from discordbot.typings.stock import (
     StockSettlementResult,
     StockParticipantPositionView,
 )
-from discordbot.cogs._stock.chart import build_price_chart, _render_price_chart
-from discordbot.cogs._stock.views import (
+from discordbot.cogs.stock.cog import StockCogs
+from discordbot.cogs.stock.chart import build_price_chart, _render_price_chart
+from discordbot.cogs.stock.views import (
     StockActionView,
     StockDetailView,
     StockMarketView,
@@ -40,7 +40,7 @@ from discordbot.cogs._stock.views import (
     StockPostTradeView,
     StockQuantityModal,
 )
-from discordbot.cogs._stock.presentation import (
+from discordbot.cogs.stock.presentation import (
     build_market_embed,
     market_board_filename,
     build_settlement_embed,
@@ -52,7 +52,7 @@ from discordbot.cogs._stock.presentation import (
 from tests.helpers.casting import as_bot, as_message, as_interaction, make_not_found
 
 if TYPE_CHECKING:
-    from discordbot.cogs._stock.news import StockNewsAI
+    from discordbot.cogs.stock.news import StockNewsAI
 
 BCAT_SYMBOL = "BCAT"
 BCAT_NAME = "破貓科技股份有限公司"

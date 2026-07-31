@@ -5,7 +5,7 @@ is a lint rather than a comment: the LiteLLM proxy rewrites any http-bearing `fi
 `file_url` into base64 `inline_data`, charging the media against the request body and
 swallowing a failed fetch (`except Exception: pass`), while the native Interactions answer
 path has no proxy at all and only resolves Files API uris and YouTube links. Uploading via
-`_gen_reply/files_api.py` is the one shape both accept.
+`gen_reply/files_api.py` is the one shape both accept.
 
 Data URIs are exempt: the bytes are already in hand, so nothing is fetched.
 """

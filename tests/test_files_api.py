@@ -8,7 +8,7 @@ from pathlib import Path
 from google import genai
 from google.genai.types import FileState
 
-from discordbot.cogs._gen_reply.files_api import (
+from discordbot.cogs.gen_reply.files_api import (
     LINK_MEDIA_UPLOAD_CONCURRENCY,
     upload_to_files_api,
     upload_as_input_file,

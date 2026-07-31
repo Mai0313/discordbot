@@ -7,7 +7,7 @@ from collections.abc import Iterator
 import pytest
 from sqlalchemy import Engine, text, create_engine
 
-from discordbot.cogs import log_msg
+from discordbot.cogs.log_msg import cog as log_msg
 
 
 @pytest.fixture

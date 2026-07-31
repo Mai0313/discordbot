@@ -8,9 +8,9 @@ from pathlib import Path
 from nextcord import Embed, Locale
 from nextcord.ui import View
 
-from discordbot.cogs.help import HelpCogs
-from discordbot.cogs._help.views import HelpView
-from discordbot.cogs._help.content import HELP_CONTENT, CATEGORY_ORDER, OVERVIEW_VALUE
+from discordbot.cogs.help.cog import HelpCogs
+from discordbot.cogs.help.views import HelpView
+from discordbot.cogs.help.content import HELP_CONTENT, CATEGORY_ORDER, OVERVIEW_VALUE
 
 from tests.helpers.casting import as_bot, as_interaction
 
@@ -58,7 +58,7 @@ def _declared_name(decorator: ast.Call, callback: str) -> str:
     return name
 
 
-def _module_command_paths(module: Path) -> set[str]:
+def _module_command_paths(module: Path, label: str) -> set[str]:
     """Returns the command paths one cog module declares that a user can run."""
     parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
     # Callback name -> (parent callback, or "" for a root command; own command name).
@@ -73,7 +73,7 @@ def _module_command_paths(module: Path) -> set[str]:
             if parent is None:
                 continue
             name = _declared_name(decorator=decorator, callback=node.name)
-            assert node.name not in declarations, f"{module.name}: two callbacks named {node.name}"
+            assert node.name not in declarations, f"{label}: two callbacks named {node.name}"
             declarations[node.name] = (parent, name)
     paths: dict[str, str] = {}
     pending = dict(declarations)
@@ -85,7 +85,7 @@ def _module_command_paths(module: Path) -> set[str]:
         }
         # A parent that never resolves means an unsupported declaration form; say so loudly
         # instead of dropping the commands under it, which is the gap this scan closed.
-        assert resolved, f"{module.name}: unresolved subcommand groups {sorted(pending)}"
+        assert resolved, f"{label}: unresolved subcommand groups {sorted(pending)}"
         paths.update(resolved)
         pending = {name: value for name, value in pending.items() if name not in resolved}
     groups = {parent for parent, _ in declarations.values() if parent}
@@ -100,8 +100,14 @@ def _slash_command_paths() -> set[str]:
     """
     paths: set[str] = set()
     cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
-    for module in cogs_dir.glob(pattern="*.py"):
-        paths |= _module_command_paths(module=module)
+    # Recursive on purpose: a cog owns a directory now, so a non-recursive glob would
+    # match only `cogs/__init__.py` and silently report that nothing is runnable. The
+    # walk also refuses to assume commands only ever live in `cog.py`, so a declaration
+    # that moves into a helper module still has to be documented.
+    for module in cogs_dir.rglob(pattern="*.py"):
+        paths |= _module_command_paths(
+            module=module, label=module.relative_to(cogs_dir).as_posix()
+        )
     return paths
 
 

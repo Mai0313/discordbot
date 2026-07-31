@@ -17,8 +17,8 @@ from discordbot.typings.fishing import (
     FishSpeciesView,
     FishGradeConfigView,
 )
-from discordbot.cogs._fishing.catch import roll_catch, compose_grade_weights
-from discordbot.cogs._fishing.defaults import build_default_catalog
+from discordbot.cogs.games.fishing.catch import roll_catch, compose_grade_weights
+from discordbot.cogs.games.fishing.defaults import build_default_catalog
 
 
 @pytest.fixture

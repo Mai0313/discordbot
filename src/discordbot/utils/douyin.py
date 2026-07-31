@@ -240,7 +240,7 @@ class DouyinDownload(BaseModel):
 # fetch. The TTL is deliberately far shorter than the CDN signature lifetime baked into the
 # image URLs (`x-expires`): serving a cached payload past that point would hand out URLs that
 # 403 on download, which is worse than re-fetching. Bounded like the other long-lived caches in
-# this project (see `_gen_reply/attachment/base.py`) so a long-running bot cannot accumulate one
+# this project (see `cogs/gen_reply/attachment/base.py`) so a long-running bot cannot accumulate one
 # full payload per link it has ever seen.
 _PAYLOAD_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
 _PAYLOAD_CACHE_TTL_SECONDS = 300.0

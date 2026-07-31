@@ -6,7 +6,6 @@ from datetime import UTC, datetime, timedelta
 
 from nextcord import Embed
 
-from discordbot.cogs.memory import MemoryCogs
 from discordbot.typings.memory import (
     MemoryFact,
     MemoryOwner,
@@ -14,6 +13,7 @@ from discordbot.typings.memory import (
     MemoryDurability,
     MemoryDeltaAction,
 )
+from discordbot.cogs.memory.cog import MemoryCogs
 from discordbot.utils.llm_transcript import render_server_identity
 from discordbot.services.memory.facts import node_type_for, sections_for_flavor
 from discordbot.services.memory.store import (
@@ -28,11 +28,11 @@ from discordbot.services.memory.store import (
 )
 from discordbot.services.memory.deltas import apply_deltas, sweep_stale_facts
 from discordbot.services.memory.constants import STABLE_FRESHNESS_WINDOW_DAYS
-from discordbot.services.memory.extraction import MemoryFactDelta
-from discordbot.cogs._gen_reply.memory_tool import (
+from discordbot.cogs.gen_reply.memory_tool import (
     render_server_memory_block,
     allowlist_ids_from_server_memory,
 )
+from discordbot.services.memory.extraction import MemoryFactDelta
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE1_PROMPT,
     SERVER_PHASE2_PROMPT,

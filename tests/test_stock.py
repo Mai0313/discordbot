@@ -29,7 +29,7 @@ from discordbot.typings.stock import (
 from discordbot.services.stock import database as stock_db
 from discordbot.utils.currency import cash_ceil, cash_floor
 from discordbot.typings.economy import WalletDeltaLeg, OrderedWalletDeltaResult
-from discordbot.cogs._stock.chart import build_price_chart
+from discordbot.cogs.stock.chart import build_price_chart
 from discordbot.services.stock.market import (
     TAIWAN_TIMEZONE,
     PRESSURE_LIMIT_BPS,

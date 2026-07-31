@@ -11,9 +11,9 @@ import pytest
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.cogs._fishing.database import Base as FishingBase
-from discordbot.cogs._research.database import Base as ResearchBase
+from discordbot.cogs.research.database import Base as ResearchBase
 from discordbot.services.economy.database import Base
+from discordbot.cogs.games.fishing.database import Base as FishingBase
 
 
 @pytest.fixture
@@ -39,8 +39,8 @@ async def research_isolated_db(
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{research_db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(ResearchBase.metadata.create_all)
-    monkeypatch.setattr("discordbot.cogs._research.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs._research.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.cogs.research.database._engine", engine)
+    monkeypatch.setattr("discordbot.cogs.research.database._schema_ready_for", None)
     yield
     await engine.dispose()
 
@@ -91,7 +91,7 @@ async def fishing_isolated_db(
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{fishing_db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(FishingBase.metadata.create_all)
-    monkeypatch.setattr("discordbot.cogs._fishing.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs._fishing.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.cogs.games.fishing.database._engine", engine)
+    monkeypatch.setattr("discordbot.cogs.games.fishing.database._schema_ready_for", None)
     yield
     await engine.dispose()

@@ -11,7 +11,7 @@ from openai.types.responses import (
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._gen_reply.prompts import REPLY_PROMPT
+from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_param import ResponseInputParam
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in cogs/gen_reply.py. slow_model has a time-of-day
+# Mirror the @property value in cogs/gen_reply/cog.py. slow_model has a time-of-day
 # dispatch in production (peak hours swap to gemini-flash-latest); for
 # dev we pin to the off-peak default. Swap manually when testing peak behaviour.
 SLOW_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
@@ -28,7 +28,7 @@ SLOW_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
 def gen_reply(user_prompt: str) -> None:
     """Streams a dev reply through the LiteLLM Responses API.
 
-    Mirrors `_handle_message_reply` in `cogs/gen_reply.py` by sending
+    Mirrors `_handle_message_reply` in `cogs/gen_reply/cog.py` by sending
     `REPLY_PROMPT`, the configured slow model, reasoning settings, and model
     tools through `client.responses.create`. Prints reasoning deltas dimmed,
     output text deltas as they stream, and elapsed time to the console.

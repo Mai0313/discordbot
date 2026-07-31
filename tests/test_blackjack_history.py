@@ -20,13 +20,13 @@ from discordbot.typings.games import (
     BlackjackInsuranceSettlement,
 )
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
-from discordbot.cogs._games.database import (
+from discordbot.cogs.games.database import (
     Base,
     record_blackjack_history,
     fetch_recent_blackjack_rounds,
 )
-from discordbot.cogs._games.blackjack import hand_value
-from discordbot.cogs._games.history_text import _summarize, build_blackjack_history_embed
+from discordbot.cogs.games.blackjack import hand_value
+from discordbot.cogs.games.history_text import _summarize, build_blackjack_history_embed
 
 _DEALER_CARDS = [Card(rank="9", suit="♦"), Card(rank="7", suit="♣")]
 _DEALER_TOTAL = 16
@@ -41,8 +41,8 @@ async def games_isolated_db(
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    monkeypatch.setattr("discordbot.cogs._games.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs._games.database._schema_ready_for", None)
+    monkeypatch.setattr("discordbot.cogs.games.database._engine", engine)
+    monkeypatch.setattr("discordbot.cogs.games.database._schema_ready_for", None)
     yield
     await engine.dispose()
 

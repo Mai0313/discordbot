@@ -10,7 +10,7 @@ tuning. A user-requested memory clear is the one caller that deletes a row
 outright (`delete_job`), since the staged transcript is exactly the content the
 clear erases and a surviving row would resume it after the next restart.
 
-Engine, PRAGMA hooks, and the schema bootstrap follow `cogs/_research/database.py`
+Engine, PRAGMA hooks, and the schema bootstrap follow `cogs/research/database.py`
 exactly: a module-level `AsyncEngine` singleton on the shared `reply.db` (a
 per-instance `cached_property` engine would leak the pool / dialect cache), with
 this module owning its own `Base` and the `memory_job` table, distinct from

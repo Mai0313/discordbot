@@ -22,7 +22,7 @@ def _as_response(fake: SimpleNamespace) -> Response:
     """Views a fake output-bearing double as the Response `output_text_or_empty` expects.
 
     Production discriminates output/content items on `.type` string, not isinstance
-    (see `_gen_reply/streaming.py::_consume`), so a SimpleNamespace stand-in is valid at runtime.
+    (see `gen_reply/streaming.py::_consume`), so a SimpleNamespace stand-in is valid at runtime.
     """
     return cast("Response", fake)
 

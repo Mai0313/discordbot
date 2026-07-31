@@ -8,10 +8,10 @@ import threading
 import pytest
 
 from discordbot.utils import downloader as downloader_module
-from discordbot.cogs.video import QUALITY_CHOICES, VideoCogs
 from discordbot.utils.urls import extract_first_url
 from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownloader
 from discordbot.typings.video import VideoQuality
+from discordbot.cogs.video.cog import QUALITY_CHOICES, VideoCogs
 from discordbot.utils.downloader import VideoDownloader, DownloadStoppedError
 
 from tests.helpers.casting import as_bot

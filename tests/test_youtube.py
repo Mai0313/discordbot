@@ -7,10 +7,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from discordbot.utils.youtube import YOUTUBE_URL_RE
-from discordbot.cogs._gen_reply.interactions import (
-    to_interactions_input,
-    adapt_interactions_stream,
-)
+from discordbot.cogs.gen_reply.interactions import to_interactions_input, adapt_interactions_stream
 
 from tests.helpers.casting import step_dicts, as_interaction_event_stream
 

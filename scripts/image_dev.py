@@ -10,12 +10,12 @@ from rich.console import Console
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
-from discordbot.cogs._gen_reply.prompts import IMAGE_REPLY_PROMPT
+from discordbot.cogs.gen_reply.prompts import IMAGE_REPLY_PROMPT
 
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property values in cogs/gen_reply.py. Update here when the bot's
+# Mirror the @property values in cogs/gen_reply/cog.py. Update here when the bot's
 # image_model / media_reply_model swap, otherwise this script tests stale models.
 IMAGE_MODEL = ModelSettings(name="gemini-3.1-flash-image")
 MEDIA_REPLY_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")

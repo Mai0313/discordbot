@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import TracebackType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
+from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
 import nextcord
@@ -12,24 +13,17 @@ from nextcord.ext import commands
 from logfire._internal.constants import LEVEL_NUMBERS
 
 from discordbot import cli
-from discordbot.cogs import (
-    games,
-    video,
-    economy,
-    template,
-    auto_unmute,
-    parse_douyin,
-    parse_threads,
-)
 from discordbot.utils import interaction_responses as interactions
-from discordbot.cogs.games import GamesCogs
-from discordbot.cogs.video import VideoCogs
-from discordbot.cogs.economy import EconomyCogs
-from discordbot.cogs._economy import views
-from discordbot.cogs.template import TemplateCogs
+from discordbot.cogs.games import cog as games
+from discordbot.cogs.video import cog as video
+from discordbot.cogs.economy import cog as economy
+from discordbot.cogs.economy import views
+from discordbot.cogs.template import cog as template
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
+from discordbot.cogs.games.cog import GamesCogs
+from discordbot.cogs.video.cog import VideoCogs
 from discordbot.typings.config import LoggingConfig
 from discordbot.typings.economy import (
     PortfolioView,
@@ -48,14 +42,19 @@ from discordbot.typings.economy import (
     LossLeaderboardEntry,
     LoanProposalAcceptResult,
 )
-from discordbot.cogs.auto_unmute import AutoUnmuteCogs
-from discordbot.cogs.parse_douyin import DouyinCogs
-from discordbot.cogs._games.wagers import parse_wager_amount
-from discordbot.cogs.parse_threads import ThreadsCogs
-from discordbot.cogs._economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
+from discordbot.cogs.auto_unmute import cog as auto_unmute
+from discordbot.cogs.economy.cog import EconomyCogs
+from discordbot.cogs.games.wagers import parse_wager_amount
+from discordbot.cogs.parse_douyin import cog as parse_douyin
+from discordbot.cogs.template.cog import TemplateCogs
+from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
+from discordbot.cogs.parse_threads import cog as parse_threads
+from discordbot.cogs.auto_unmute.cog import AutoUnmuteCogs
+from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.cogs._games.blackjack import Card
+from discordbot.cogs.parse_douyin.cog import DouyinCogs
+from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.services.economy.database import (
     VIP_PURCHASE_COST,
     CreditResult,
@@ -64,8 +63,8 @@ from discordbot.services.economy.database import (
     VipPurchaseResult,
     BalanceAdjustmentResult,
 )
-from discordbot.cogs._games.blackjack_views import BlackjackLobbyView
-from discordbot.cogs._games.dragon_gate_views import DragonGateLobbyView
+from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
+from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
 from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
 from tests.helpers.casting import (
@@ -84,7 +83,6 @@ from tests.helpers.discord_mocks import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from collections.abc import Callable, Awaitable, AsyncIterator
 
     import pytest
@@ -2313,7 +2311,7 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
-    """Verifies synchronous cog loading discovers the expected cog modules."""
+    """Verifies synchronous cog loading discovers exactly the cog directories."""
     loaded: list[tuple[list[str], bool]] = []
 
     def record_load_extensions(modules: list[str], stop_at_error: bool) -> None:
@@ -2323,7 +2321,16 @@ def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
     bot = SimpleNamespace(load_extensions=record_load_extensions)
     cli.DiscordBot._load_cogs_sync(as_discord_bot(fake=bot))
     assert loaded[0][1] is True
-    assert "discordbot.cogs.template" in loaded[0][0]
+    # An exact set, not a membership check: a discovery rule that grew a nested helper
+    # package or lost a cog would still contain any single name you happened to test for.
+    cogs_dir = Path(cli.__file__).resolve().parent / "cogs"
+    expected = {
+        f"discordbot.cogs.{entry.name}.cog"
+        for entry in cogs_dir.iterdir()
+        if entry.is_dir() and (entry / "cog.py").is_file()
+    }
+    assert set(loaded[0][0]) == expected
+    assert "discordbot.cogs.template.cog" in expected
 
 
 async def test_cli_message_and_command_error_branches(monkeypatch: pytest.MonkeyPatch) -> None:
