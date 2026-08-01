@@ -452,14 +452,28 @@ async def _await_gated[GatedT](
 
 
 async def _await_deadline_bound_task[DeadlineT](
-    *, task: asyncio.Task[DeadlineT], label: str
+    *, task: asyncio.Task[DeadlineT], deadline: float
 ) -> DeadlineT:
-    """Awaits a self-deadline-bound task and only cancels it if its caller is cancelled."""
+    """Awaits a self-deadline-bound task while preserving its cancellation cleanup ownership."""
     try:
-        return await task
-    finally:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        event_loop = asyncio.get_running_loop()
         if not task.done():
-            await _discard_task(task=task, label=label)
+            if event_loop.time() < deadline:
+                task.cancel()
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    if task.done():
+                        break
+                except Exception:
+                    break
+        if task.done():
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                task.result()
+        raise
 
 
 async def _run_until_deadline[DeadlineT](
@@ -1449,6 +1463,7 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         source: str,
         link_task: "asyncio.Task[list[EasyInputMessageParam]]",
+        deadline: float,
         on_timeout: "Callable[[], list[EasyInputMessageParam]]",
     ) -> list[EasyInputMessageParam]:
         """Resolves an intent-selected linked-post build before the shared route deadline.
@@ -1461,7 +1476,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         started = time.monotonic()
         try:
-            blocks = await _await_deadline_bound_task(task=link_task, label=source)
+            blocks = await _await_deadline_bound_task(task=link_task, deadline=deadline)
         except TimeoutError as exc:
             logfire.warn(
                 "Linked-post context exceeded the post-route grace; injecting timeout notice",
@@ -2360,6 +2375,7 @@ class ReplyGeneratorCogs(commands.Cog):
                                     message=message,
                                     source=link_source.name,
                                     link_task=link_task,
+                                    deadline=link_context_deadline,
                                     on_timeout=link_source.on_timeout,
                                 )
                             )

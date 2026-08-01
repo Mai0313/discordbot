@@ -36,8 +36,10 @@ from discordbot.cogs.gen_reply.cog import (
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
+    _run_until_deadline,
     _can_launch_research,
     _link_url_for_source,
+    _await_deadline_bound_task,
     _build_runtime_instructions,
 )
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -5197,6 +5199,121 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
 
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert "did not respond in time" in str(answer)
+
+
+async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup(  # noqa: PLR0915 -- controls the complete cancellation timeline
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outer cancellation waits for a deadline-owned builder cleanup before propagating."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.04)
+    prepare = cog._prepare_reply_context
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    second_cancellation = asyncio.Event()
+    cancellation_count = 0
+
+    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: Message,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Lets the builder reach cleanup before the resolver starts waiting on it."""
+        await route_done.wait()
+        await asyncio.sleep(0.1)
+        return await prepare(
+            message=message,
+            history_limit=history_limit,
+            memory_enabled=memory_enabled,
+            parts_task=parts_task,
+            text_parts=text_parts,
+            route_done=route_done,
+        )
+
+    async def cleanup_bound_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Requires one cleanup release after the deadline cancellation."""
+        nonlocal cancellation_count
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancellation_count += 1
+            cleanup_started.set()
+            try:
+                await cleanup_release.wait()
+            except asyncio.CancelledError:
+                cancellation_count += 1
+                second_cancellation.set()
+                raise
+            raise
+        return _douyin_block()
+
+    monkeypatch.setattr(cog, "_prepare_reply_context", delayed_prepare)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", cleanup_bound_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    )
+    message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
+    await asyncio.wait_for(fut=cleanup_started.wait(), timeout=1)
+    await asyncio.sleep(0.12)
+    message_task.cancel()
+    try:
+        await asyncio.sleep(0.02)
+        assert cancellation_count == 1
+        assert not second_cancellation.is_set()
+        assert not message_task.done()
+    finally:
+        cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await message_task
+    assert cancellation_count == 1
+
+
+async def test_deadline_bound_task_outer_cancel_before_deadline_cancels_builder() -> None:
+    """An outer cancellation before the deadline owns and drains the still-running builder."""
+    builder_started = asyncio.Event()
+    builder_cancelled = asyncio.Event()
+
+    async def pending_builder() -> None:
+        """Runs until the resolver cancellation owns it."""
+        builder_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            builder_cancelled.set()
+            raise
+
+    event_loop = asyncio.get_running_loop()
+    deadline = event_loop.time() + 5
+    builder_task = asyncio.create_task(
+        coro=_run_until_deadline(awaitable=pending_builder(), deadline=deadline)
+    )
+    resolver_task = asyncio.create_task(
+        coro=_await_deadline_bound_task(task=builder_task, deadline=deadline)
+    )
+    await asyncio.wait_for(fut=builder_started.wait(), timeout=1)
+    resolver_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await resolver_task
+    assert builder_cancelled.is_set()
+    assert builder_task.done()
 
 
 async def test_on_message_selected_link_contexts_share_one_post_route_grace(
