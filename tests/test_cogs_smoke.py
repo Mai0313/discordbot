@@ -6,7 +6,6 @@ from types import TracebackType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
-from collections import Counter
 
 import nextcord
 from nextcord import Embed, Guild, Member
@@ -1110,8 +1109,10 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
     central_view.message = as_message(fake=central_message)
     await central_view.on_timeout()
 
-    assert Counter(rejected) == Counter((42, 43))
-    assert Counter(map(id, scheduled)) == Counter((id(credit_message), id(central_message)))
+    # order-contract: each `on_timeout` is awaited to completion before the next view exists.
+    assert rejected == [42, 43]
+    # order-contract: same sequential awaits, so cleanup is scheduled in construction order.
+    assert scheduled == [credit_message, central_message]
     assert credit_message.edits[0]["view"] is None
     assert central_message.edits[0]["view"] is None
     credit_timeout_title = credit_message.edits[0]["embed"].title

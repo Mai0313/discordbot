@@ -13,7 +13,8 @@ import ast
 from typing import TYPE_CHECKING
 from pathlib import Path
 import tokenize
-from dataclasses import dataclass
+
+from pydantic import Field, BaseModel, ConfigDict
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -42,13 +43,26 @@ _ORDER_PRESERVING_TRANSFORMS = frozenset({
 })
 
 
-@dataclass(frozen=True)
-class OrderAssertion:
-    """One exact recorder-order assertion without a documented contract."""
+class OrderAssertion(BaseModel):
+    """One exact recorder-order assertion without a documented contract.
 
-    test_name: str
-    lineno: int
-    recorders: tuple[str, ...]
+    Attributes:
+        test_name: Name of the test function holding the assertion.
+        lineno: 1-indexed line the assertion starts on.
+        recorders: Recorder names the assertion compares in order.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    test_name: str = Field(
+        ...,
+        description="Name of the test function holding the assertion.",
+        examples=["test_bad_order"],
+    )
+    lineno: int = Field(..., description="1-indexed line the assertion starts on.", examples=[13])
+    recorders: tuple[str, ...] = Field(
+        ..., description="Recorder names the assertion compares in order.", examples=[("calls",)]
+    )
 
 
 def _called_name(node: ast.expr) -> str:
