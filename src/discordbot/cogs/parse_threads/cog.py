@@ -19,13 +19,14 @@ that message and mentions the bot. That is a separate ask for the comments, whic
 has no embed budget to show. It cannot be triggered by replying to the expansion itself.
 """
 
+from typing import TYPE_CHECKING
 import asyncio
 from pathlib import Path
 import tempfile
-from dataclasses import dataclass
 
 import logfire
 from nextcord import Color, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
+from pydantic import Field, BaseModel, ConfigDict
 from nextcord.ext import commands
 
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
@@ -38,6 +39,9 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
+
+if TYPE_CHECKING:
+    from nextcord.types.embed import Embed as EmbedData
 
 # Stripe for the post a quote post quotes. Deliberately off the greyscale chain gradient
 # (`_gradient_color`, which spans 0x40-0xC0 and reserves pure black for "no stripe"): a quoted
@@ -56,12 +60,17 @@ _EMBED_TOTAL_LENGTH_LIMIT = 6000
 _MESSAGE_CONTENT_LIMIT = 2000
 
 
-@dataclass(slots=True)
-class _EmbedPlan:
+class _EmbedPlan(BaseModel):
     """Rendered embeds plus posts that need a permalink fallback."""
 
-    embeds: list[Embed]
-    omitted_posts: list[ThreadsOutput]
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    embeds: list[Embed] = Field(
+        ..., description="Embeds selected within Discord's message limits.", examples=[[]]
+    )
+    omitted_posts: list[ThreadsOutput] = Field(
+        ..., description="Posts represented by permalink fallbacks.", examples=[[]]
+    )
 
 
 def _utf16_length(value: str) -> int:
@@ -71,30 +80,18 @@ def _utf16_length(value: str) -> int:
 
 def _embed_text_length(embed: Embed) -> int:
     """Counts every text-bearing embed field against Discord's message-wide limit."""
-    payload: dict[str, object] = dict(embed.to_dict())
-    text_parts: list[str] = []
-    for key in ("title", "description"):
-        value = payload.get(key)
-        if isinstance(value, str):
-            text_parts.append(value)
+    payload: EmbedData = embed.to_dict()
+    text_parts = [
+        value for value in (payload.get("title"), payload.get("description")) if value is not None
+    ]
+    if footer := payload.get("footer"):
+        text_parts.append(footer["text"])
+    if (author := payload.get("author")) and (name := author.get("name")):
+        text_parts.append(name)
+    for field in payload.get("fields", []):
+        text_parts.extend((field["name"], field["value"]))
 
-    for container_key, text_key in (("footer", "text"), ("author", "name")):
-        container = payload.get(container_key)
-        if isinstance(container, dict):
-            value = container.get(text_key)
-            if isinstance(value, str):
-                text_parts.append(value)
-
-    fields = payload.get("fields")
-    if isinstance(fields, list):
-        for field in fields:
-            if not isinstance(field, dict):
-                continue
-            text_parts.extend(
-                value for key in ("name", "value") if isinstance((value := field.get(key)), str)
-            )
-
-    return sum(_utf16_length(value) for value in text_parts)
+    return sum(_utf16_length(value=value) for value in text_parts)
 
 
 def _omitted_post_notice_pages(posts: list[ThreadsOutput]) -> list[str]:
@@ -115,14 +112,14 @@ def _omitted_post_notice_pages(posts: list[ThreadsOutput]) -> list[str]:
     current = header
     for line in lines:
         candidate = f"{current}\n{line}"
-        if _utf16_length(candidate) <= _MESSAGE_CONTENT_LIMIT:
+        if _utf16_length(value=candidate) <= _MESSAGE_CONTENT_LIMIT:
             current = candidate
             continue
         if current == header:
             raise ValueError("A Threads permalink fallback exceeds Discord's message limit")
         pages.append(current)
         current = f"{header}\n{line}"
-        if _utf16_length(current) > _MESSAGE_CONTENT_LIMIT:
+        if _utf16_length(value=current) > _MESSAGE_CONTENT_LIMIT:
             raise ValueError("A Threads permalink fallback exceeds Discord's message limit")
     pages.append(current)
     return pages
@@ -291,7 +288,7 @@ class ThreadsCogs(commands.Cog):
                 is_target=index == chain_depth - 1,
                 is_quoted=is_quoted,
             )[0]
-            length = _embed_text_length(main_embed)
+            length = _embed_text_length(embed=main_embed)
             if index != chain_depth - 1 and length > text_budget:
                 continue
             selected.add(index)
@@ -574,7 +571,7 @@ class ThreadsCogs(commands.Cog):
                 # refusal. (Image count is not guarded: _build_embeds caps the message at 10
                 # embeds and shows as many images as fit.)
                 longest_text = max(
-                    (_utf16_length(embed.description or "") for embed in embeds), default=0
+                    (_utf16_length(value=embed.description or "") for embed in embeds), default=0
                 )
                 if longest_text > _EMBED_DESCRIPTION_LIMIT:
                     logfire.info(

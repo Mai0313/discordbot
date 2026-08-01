@@ -440,12 +440,20 @@ async def test_threads_cog_trims_long_chain_to_the_message_wide_embed_limit() ->
     plan = cog._build_embed_plan(results=_long_threads_chain())
     embeds = plan.embeds
 
-    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     authors = [cast("str", embed.author.name) for embed in embeds if embed.author]
     assert authors[-1].startswith("user-9-")
     assert any(author.startswith("user-8-") for author in authors)
     assert not any(author.startswith("user-0-") for author in authors)
     assert plan.omitted_posts[0].author_name.startswith("user-0-")
+
+
+def test_threads_embed_plan_is_a_frozen_model() -> None:
+    """The completed allocation remains an immutable model value."""
+    plan = parse_threads._EmbedPlan(embeds=[], omitted_posts=[])
+
+    assert plan.model_config["frozen"] is True
+    assert plan.model_copy(update={"embeds": []}).embeds == []
 
 
 async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None:
@@ -462,7 +470,7 @@ async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None
 
     embeds = cog._build_embeds(results=[root, parent, target])
 
-    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     descriptions = [embed.description or "" for embed in embeds]
     assert descriptions[0].startswith("parent-")
     assert descriptions[1].startswith("target-")
@@ -485,7 +493,7 @@ async def test_threads_cog_drops_an_over_budget_post_with_its_gallery() -> None:
     plan = cog._build_embed_plan(results=[parent, target])
     embeds = plan.embeds
 
-    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert [embed.author.name for embed in embeds if embed.author] == ["parent", "target"]
     assert all(not embed.image for embed in embeds)
     assert all("被引用的貼文" not in (embed.description or "") for embed in embeds)
@@ -499,9 +507,9 @@ async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
 
     embeds = cog._build_embeds(results=chain)
 
-    assert parse_threads._utf16_length("😀") == 2
+    assert parse_threads._utf16_length(value="😀") == 2
     assert len(embeds) < len(chain)
-    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert [embed.author.name for embed in embeds if embed.author] == [
         "user-5",
         "user-6",
@@ -527,11 +535,11 @@ async def test_threads_cog_delivers_a_trimmed_chain_instead_of_failing() -> None
 
     assert len(message.replies) == 2
     embeds = message.replies[0]["embeds"]
-    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     notice = cast("str", message.replies[1]["content"])
     assert "未展開" in notice
     omitted_urls = [
-        post.url for post in cog._build_embed_plan(_long_threads_chain()).omitted_posts
+        post.url for post in cog._build_embed_plan(results=_long_threads_chain()).omitted_posts
     ]
     assert all(f"<{url}>" in notice for url in omitted_urls)
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
@@ -544,7 +552,7 @@ def test_threads_cog_paginates_all_omitted_post_links() -> None:
     pages = parse_threads._omitted_post_notice_pages(posts=posts)
 
     assert len(pages) > 1
-    assert all(parse_threads._utf16_length(page) <= 2000 for page in pages)
+    assert all(parse_threads._utf16_length(value=page) <= 2000 for page in pages)
     combined = "\n".join(pages)
     assert all(f"<{post.url}>" in combined for post in posts)
 
