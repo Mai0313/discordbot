@@ -322,6 +322,7 @@ class RouteClassification(BaseModel):
     Attributes:
         decision: The reply mode selected for the incoming Discord message.
         watch_video: Whether the QA answer should ingest a linked YouTube video.
+        link_context_sources: Linked-post sources whose content the QA answer should ingest.
     """
 
     decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"] = Field(
@@ -333,6 +334,14 @@ class RouteClassification(BaseModel):
             "Set true only when the message links a YouTube video AND the user wants its "
             "content analyzed, summarized, or asked about; false when the link is incidental. "
             "Consumed only on the QA route to decide whether to watch the video."
+        ),
+    )
+    link_context_sources: list[Literal["threads", "douyin", "bilibili"]] = Field(
+        default_factory=list,
+        description=(
+            "Registered linked-post sources whose actual content the user wants analyzed, "
+            "summarized, or discussed. Empty when every matching link is incidental. Consumed "
+            "only on the QA route to decide which source builders may start."
         ),
     )
 
