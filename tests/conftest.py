@@ -77,8 +77,8 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     )
     monkeypatch.setattr("discordbot.services.memory.database._engine", memory_db_engine)
     monkeypatch.setattr("discordbot.services.memory.database._schema_ready_for", None)
-    # _scope_locks, _regeneration_tasks, and the memory semaphore are loop-local
-    # helpers that rebuild on the per-test event loop, so they need no manual reset.
+    # _scope_locks, _staging_locks, _regeneration_tasks, and the memory semaphore
+    # are loop-local helpers that rebuild per test, so they need no manual reset.
     return memories_dir
 
 
