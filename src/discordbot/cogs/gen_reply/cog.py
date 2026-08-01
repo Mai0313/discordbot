@@ -454,15 +454,23 @@ async def _await_gated[GatedT](
 async def _await_until_deadline[DeadlineT](
     *, task: asyncio.Task[DeadlineT], label: str, deadline: float
 ) -> DeadlineT:
-    """Awaits a task only until one fixed monotonic deadline, then drains it."""
+    """Awaits a deadline-bound task only until its fixed event-loop deadline, then drains it."""
     try:
         if task.done():
             return task.result()
-        remaining_seconds = max(0.0, deadline - time.monotonic())
+        remaining_seconds = max(0.0, deadline - asyncio.get_running_loop().time())
         return await asyncio.wait_for(fut=task, timeout=remaining_seconds)
     finally:
         if not task.done():
             await _discard_task(task=task, label=label)
+
+
+async def _run_until_deadline[DeadlineT](
+    *, awaitable: "Awaitable[DeadlineT]", deadline: float
+) -> DeadlineT:
+    """Runs a newly selected builder only until its fixed event-loop deadline."""
+    remaining_seconds = max(0.0, deadline - asyncio.get_running_loop().time())
+    return await asyncio.wait_for(fut=awaitable, timeout=remaining_seconds)
 
 
 async def _build_threads_link_context(
@@ -2226,7 +2234,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     current_message=text_current,
                 )
                 if route.decision == "QA" and route.link_context_sources:
-                    link_context_deadline = time.monotonic() + LINK_CONTEXT_GRACE_SECONDS
+                    link_context_deadline = (
+                        asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
+                    )
                 route_done.set()
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if route.decision == "QA" and route.link_context_sources:
@@ -2235,6 +2245,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     # selected builder only now, after intent is known, so an incidental link
                     # never begins a metadata fetch, media download, or Files API upload.
                     selected_sources = set(route.link_context_sources)
+                    if link_context_deadline is None:
+                        raise RuntimeError("Selected link sources have no route deadline")
                     for link_source in LINK_CONTEXT_SOURCES:
                         if link_source.name not in selected_sources:
                             continue
@@ -2242,15 +2254,18 @@ class ReplyGeneratorCogs(commands.Cog):
                         if link_url is None:
                             continue
                         link_tasks[link_source.name] = asyncio.create_task(
-                            coro=link_source.build(
-                                url=link_url,
-                                answer_model_is_gemini=(
-                                    "gemini" in self.runtime_models.slow_model.name
+                            coro=_run_until_deadline(
+                                awaitable=link_source.build(
+                                    url=link_url,
+                                    answer_model_is_gemini=(
+                                        "gemini" in self.runtime_models.slow_model.name
+                                    ),
+                                    gemini_client=self.gemini_client_if_configured,
+                                    allow_media_ingest=link_source.media_ingest_allowed(
+                                        config=self.config
+                                    ),
                                 ),
-                                gemini_client=self.gemini_client_if_configured,
-                                allow_media_ingest=link_source.media_ingest_allowed(
-                                    config=self.config
-                                ),
+                                deadline=link_context_deadline,
                             )
                         )
                 if route.decision in ("IMAGE", "VIDEO"):

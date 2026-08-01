@@ -5000,7 +5000,7 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
 async def test_on_message_link_context_grace_starts_when_route_finishes(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reply preparation consumes the selected builder's shared post-route grace."""
+    """A builder that finishes after the deadline cannot win while preparation is still running."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
         decision="QA", link_context_sources=["douyin"]
@@ -5008,6 +5008,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
     prepare = cog._prepare_reply_context
+    cancelled: list[bool] = []
 
     async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
         message: Message,
@@ -5017,9 +5018,9 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
     ) -> ReplyContext:
-        """Keeps answer preparation busy after routing has already selected the link."""
+        """Keeps preparation running until after the builder has missed its deadline."""
         await route_done.wait()
-        await asyncio.sleep(0.04)
+        await asyncio.sleep(0.18)
         return await prepare(
             message=message,
             history_limit=history_limit,
@@ -5032,9 +5033,13 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     async def delayed_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Finishes within a fresh grace, but after the grace shared with preparation."""
+        """Finishes after the shared grace but before the delayed resolver observes it."""
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        await asyncio.sleep(0.14)
+        try:
+            await asyncio.sleep(0.14)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
         return _douyin_block()
 
     monkeypatch.setattr(cog, "_prepare_reply_context", delayed_prepare)
@@ -5052,6 +5057,64 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
 
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert "did not respond in time" in str(answer)
+    assert cancelled == [True]
+
+
+async def test_on_message_keeps_link_context_finished_before_deadline(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A builder completed before the deadline remains usable after delayed preparation."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
+    prepare = cog._prepare_reply_context
+
+    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: Message,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Delays resolution beyond the builder deadline without delaying the builder itself."""
+        await route_done.wait()
+        await asyncio.sleep(0.18)
+        return await prepare(
+            message=message,
+            history_limit=history_limit,
+            memory_enabled=memory_enabled,
+            parts_task=parts_task,
+            text_parts=text_parts,
+            route_done=route_done,
+        )
+
+    async def immediate_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Completes before preparation consumes the post-route grace."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        return _douyin_block()
+
+    monkeypatch.setattr(cog, "_prepare_reply_context", delayed_prepare)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", immediate_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    )
+    await cog.on_message(message=as_message(fake=message))
+
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert has_douyin_context_block(request=answer)
+    assert "did not respond in time" not in str(answer)
 
 
 async def test_on_message_selected_link_contexts_share_one_post_route_grace(
