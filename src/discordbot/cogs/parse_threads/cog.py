@@ -22,6 +22,7 @@ has no embed budget to show. It cannot be triggered by replying to the expansion
 import asyncio
 from pathlib import Path
 import tempfile
+from dataclasses import dataclass
 
 import logfire
 from nextcord import Color, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
@@ -48,6 +49,126 @@ _QUOTED_POST_COLOR = Color.blurple()
 # tombstone Threads sends carries neither a username nor a shortcode, so there is not even a
 # permalink to offer. Never worded as a deletion — the payload says "unavailable", nothing more.
 _QUOTED_UNAVAILABLE_HINT = "\n\n🔗 *引用的貼文目前無法瀏覽(可能已刪除或改為私人)*"
+
+_MAX_EMBEDS_PER_MESSAGE = 10
+_EMBED_DESCRIPTION_LIMIT = 4096
+_EMBED_TOTAL_LENGTH_LIMIT = 6000
+_MESSAGE_CONTENT_LIMIT = 2000
+
+
+@dataclass(slots=True)
+class _EmbedPlan:
+    """Rendered embeds plus posts that need a permalink fallback."""
+
+    embeds: list[Embed]
+    omitted_posts: list[ThreadsOutput]
+
+
+def _utf16_length(value: str) -> int:
+    """Counts UTF-16 code units, the conservative interpretation of Discord characters."""
+    return sum(2 if ord(character) > 0xFFFF else 1 for character in value)
+
+
+def _embed_text_length(embed: Embed) -> int:
+    """Counts every text-bearing embed field against Discord's message-wide limit."""
+    payload: dict[str, object] = dict(embed.to_dict())
+    text_parts: list[str] = []
+    for key in ("title", "description"):
+        value = payload.get(key)
+        if isinstance(value, str):
+            text_parts.append(value)
+
+    for container_key, text_key in (("footer", "text"), ("author", "name")):
+        container = payload.get(container_key)
+        if isinstance(container, dict):
+            value = container.get(text_key)
+            if isinstance(value, str):
+                text_parts.append(value)
+
+    fields = payload.get("fields")
+    if isinstance(fields, list):
+        for field in fields:
+            if not isinstance(field, dict):
+                continue
+            text_parts.extend(
+                value for key in ("name", "value") if isinstance((value := field.get(key)), str)
+            )
+
+    return sum(_utf16_length(value) for value in text_parts)
+
+
+def _omitted_post_notice_pages(posts: list[ThreadsOutput]) -> list[str]:
+    """Paginates permalink fallbacks for posts that could not fit in the embeds."""
+    if not posts:
+        return []
+
+    header = f"-# 因 Discord embed 限制, 有 {len(posts)} 篇貼文未展開. 可從以下原始連結查看:"
+    lines = [
+        (
+            f"- @{post.author_name}: <{post.url}>"
+            if post.url
+            else f"- @{post.author_name}: 原始連結無法取得"
+        )
+        for post in posts
+    ]
+    pages: list[str] = []
+    current = header
+    for line in lines:
+        candidate = f"{current}\n{line}"
+        if _utf16_length(candidate) <= _MESSAGE_CONTENT_LIMIT:
+            current = candidate
+            continue
+        if current == header:
+            raise ValueError("A Threads permalink fallback exceeds Discord's message limit")
+        pages.append(current)
+        current = f"{header}\n{line}"
+        if _utf16_length(current) > _MESSAGE_CONTENT_LIMIT:
+            raise ValueError("A Threads permalink fallback exceeds Discord's message limit")
+    pages.append(current)
+    return pages
+
+
+def _allocate_embed_slots(
+    *, posts: list[ThreadsOutput], priority: list[int], reserved: list[int]
+) -> list[int]:
+    """Allocates Discord's ten embed slots in relevance order."""
+    slots = [0] * len(posts)
+    budget = _MAX_EMBEDS_PER_MESSAGE
+    for index in reserved:
+        slots[index] = 1
+        budget -= 1
+
+    for index in priority:
+        take = min(max(len(posts[index].image_urls) - slots[index], 0), budget)
+        slots[index] += take
+        budget -= take
+
+    for index in priority:
+        if budget <= 0:
+            break
+        if slots[index] == 0:
+            slots[index] = 1
+            budget -= 1
+    return slots
+
+
+def _collect_omitted_posts(
+    *, trimmed_posts: list[ThreadsOutput], candidate_posts: list[ThreadsOutput], slots: list[int]
+) -> list[ThreadsOutput]:
+    """Returns unrendered posts once each, excluding an equivalent shown permalink."""
+    shown_urls = {
+        post.url for index, post in enumerate(candidate_posts) if slots[index] and post.url
+    }
+    omitted_posts: list[ThreadsOutput] = []
+    seen_urls = set(shown_urls)
+    unshown_posts = (post for index, post in enumerate(candidate_posts) if not slots[index])
+    for post in [*trimmed_posts, *unshown_posts]:
+        if post.url and post.url in seen_urls:
+            continue
+        omitted_posts.append(post)
+        if post.url:
+            seen_urls.add(post.url)
+    return omitted_posts
 
 
 class ThreadsCogs(commands.Cog):
@@ -146,8 +267,39 @@ class ThreadsCogs(commands.Cog):
             main_embed.description = (main_embed.description or "") + _QUOTED_UNAVAILABLE_HINT
         return embeds
 
-    def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
-        """Builds a list of embeds for a Threads reply chain, plus the post it quotes.
+    def _select_posts_within_text_limit(
+        self,
+        *,
+        posts: list[ThreadsOutput],
+        priority: list[int],
+        chain_depth: int,
+        quoted_index: int,
+    ) -> set[int]:
+        """Selects complete posts by relevance until the message-wide text budget is full."""
+        selected: set[int] = set()
+        text_budget = _EMBED_TOTAL_LENGTH_LIMIT
+        for index in priority:
+            is_quoted = index == quoted_index
+            main_embed = self._build_post_embeds(
+                output=posts[index],
+                color=(
+                    _QUOTED_POST_COLOR
+                    if is_quoted
+                    else self._gradient_color(index=index, total=chain_depth)
+                ),
+                image_count=0,
+                is_target=index == chain_depth - 1,
+                is_quoted=is_quoted,
+            )[0]
+            length = _embed_text_length(main_embed)
+            if index != chain_depth - 1 and length > text_budget:
+                continue
+            selected.add(index)
+            text_budget -= length
+        return selected
+
+    def _build_embed_plan(self, results: list[ThreadsOutput]) -> _EmbedPlan:
+        """Builds embeds and permalink fallbacks for a Threads reply chain.
 
         Args:
             results: Ordered chain `[root, ..., direct_parent, target]`.
@@ -157,11 +309,12 @@ class ThreadsCogs(commands.Cog):
         # first, then one for the post it quotes; images then claim what is left in the same
         # order, target, quoted, direct parent, on up the chain. An ancestor that loses the
         # image race still earns a text-only context embed, but only from slots no image needed.
-        max_embeds = 10
         # A chain deeper than the embed cap can't show every post; keep the target and its
-        # nearest ancestors, which are the most relevant context.
-        if len(results) > max_embeds:
-            results = results[-max_embeds:]
+        # nearest ancestors, which are the most relevant context, and link the rest below.
+        trimmed_results: list[ThreadsOutput] = []
+        if len(results) > _MAX_EMBEDS_PER_MESSAGE:
+            trimmed_results = results[:-_MAX_EMBEDS_PER_MESSAGE]
+            results = results[-_MAX_EMBEDS_PER_MESSAGE:]
         chain_depth = len(results)
         # The post the target quotes is not a chain member: it is what the target is talking
         # about, by someone who never joined this thread. So it is allocated alongside the chain
@@ -175,31 +328,24 @@ class ThreadsCogs(commands.Cog):
         priority = [chain_depth - 1, quoted_index, *reversed(range(chain_depth - 1))]
         priority = [index for index in priority if index >= 0]
 
-        # One embed per slot, each carrying at most one image.
-        slots = [0] * len(posts)
-        budget = max_embeds
+        # Discord applies the 6000-character budget to every text-bearing field across the
+        # message. Select complete posts in the same relevance order used for embed slots so a
+        # distant ancestor can never displace the target, its quoted post or a nearer ancestor.
+        # Counting UTF-16 units is conservative for emoji while Discord's documentation leaves
+        # the precise meaning of "characters" unspecified.
+        selected = self._select_posts_within_text_limit(
+            posts=posts, priority=priority, chain_depth=chain_depth, quoted_index=quoted_index
+        )
+        priority = [index for index in priority if index in selected]
+
         # The target's embed and the quoted post's are both reserved ahead of every image,
         # including their own. Without it a quote post — a line of commentary over someone
         # else's ten-image carousel, which is the shape that motivated showing the quoted post
         # at all — spends the whole budget on that carousel and drops the commentary that owns
         # the message. The same reservation covers a text-only target under an image-heavy
         # ancestor, which the image-first pass could already starve.
-        for index in (chain_depth - 1, quoted_index):
-            if index >= 0:
-                slots[index] = 1
-                budget -= 1
-
-        for index in priority:
-            take = min(max(len(posts[index].image_urls) - slots[index], 0), budget)
-            slots[index] += take
-            budget -= take
-
-        for index in priority:
-            if budget <= 0:
-                break
-            if slots[index] == 0:
-                slots[index] = 1
-                budget -= 1
+        reserved = [index for index in (chain_depth - 1, quoted_index) if index in selected]
+        slots = _allocate_embed_slots(posts=posts, priority=priority, reserved=reserved)
 
         embeds: list[Embed] = []
         for index, output in enumerate(posts):
@@ -219,7 +365,15 @@ class ThreadsCogs(commands.Cog):
                     is_quoted=is_quoted,
                 )
             )
-        return embeds
+
+        omitted_posts = _collect_omitted_posts(
+            trimmed_posts=trimmed_results, candidate_posts=posts, slots=slots
+        )
+        return _EmbedPlan(embeds=embeds, omitted_posts=omitted_posts)
+
+    def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
+        """Builds embeds for callers that do not need permalink fallback metadata."""
+        return self._build_embed_plan(results=results).embeds
 
     async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
         """Swaps the progress reaction for the failure cross."""
@@ -236,15 +390,16 @@ class ThreadsCogs(commands.Cog):
         message: Message,
         url: str,
         results: list[ThreadsOutput],
-        embeds: list[Embed],
+        embed_plan: _EmbedPlan,
         current_emoji: str,
     ) -> None:
         """Plans the target's media, posts the expansion and marks the source done.
 
-        The embeds arrive already built rather than being rebuilt here, so the description-length
-        guard in `on_message` measured the very list that gets sent.
+        The embed plan arrives already built rather than being rebuilt here, so the
+        description-length guard in `on_message` measured the very list that gets sent.
         """
         target = results[-1]
+        embeds = embed_plan.embeds
         # Broad on purpose: the delivery step must never escape into the listener, and its
         # failures split three ways — the source message went away, the bot lacks a permission,
         # or something unexpected lost the expansion.
@@ -296,6 +451,7 @@ class ThreadsCogs(commands.Cog):
                     _exc_info=error,
                 )
 
+            notices = _omitted_post_notice_pages(posts=embed_plan.omitted_posts)
             await message.reply(
                 content="\n".join(plan.hosted_urls) if plan.hosted_urls else None,
                 embeds=embeds,
@@ -305,6 +461,10 @@ class ThreadsCogs(commands.Cog):
                     embeds=embeds, is_edit=False, target=message, extra_files=files
                 ),
             )
+            for notice in notices:
+                await message.reply(
+                    content=notice, mention_author=False, allowed_mentions=AllowedMentions.none()
+                )
             await update_reaction(
                 message=message,
                 bot_user=self.bot.user,
@@ -404,7 +564,8 @@ class ThreadsCogs(commands.Cog):
                     # Logged because it is common — measured at 15 of 96 live quote relations —
                     # and otherwise invisible in `data/logs`.
                     logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
-                embeds = self._build_embeds(results=results)
+                embed_plan = self._build_embed_plan(results=results)
+                embeds = embed_plan.embeds
                 # Measured on the RENDERED descriptions rather than on `target.text`: the quoted
                 # post's marker prefix, an ancestor's video hint and the unavailable hint are all
                 # appended by `_build_post_embeds` AFTER any check on the raw body, so a text
@@ -412,8 +573,10 @@ class ThreadsCogs(commands.Cog):
                 # and a ❌. A body past the limit cannot be rescued by hosting, so it stays the ⚠️
                 # refusal. (Image count is not guarded: _build_embeds caps the message at 10
                 # embeds and shows as many images as fit.)
-                longest_text = max((len(embed.description or "") for embed in embeds), default=0)
-                if longest_text > 4096:
+                longest_text = max(
+                    (_utf16_length(embed.description or "") for embed in embeds), default=0
+                )
+                if longest_text > _EMBED_DESCRIPTION_LIMIT:
                     logfire.info(
                         "Threads post exceeds the embed description limit; skipping expansion",
                         url=url,
@@ -428,7 +591,7 @@ class ThreadsCogs(commands.Cog):
                     message=message,
                     url=url,
                     results=results,
-                    embeds=embeds,
+                    embed_plan=embed_plan,
                     current_emoji=current_emoji,
                 )
             finally:

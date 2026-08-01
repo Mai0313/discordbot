@@ -248,6 +248,25 @@ def _thread_output(  # noqa: PLR0913 -- one knob per ThreadsOutput field the emb
     )
 
 
+def _long_threads_chain() -> list[ThreadsOutput]:
+    """Builds the measured worst-case chain that crosses the message-wide embed limit."""
+    chain: list[ThreadsOutput] = []
+    for index in range(10):
+        prefix = f"post-{index}-"
+        post = _thread_output(
+            text=prefix + "x" * (500 - len(prefix)),
+            author_name=(f"user-{index}-" + "a" * 30)[:30],
+            video_urls=([] if index == 9 else [f"https://example.test/video-{index}.mp4"]),
+        )
+        post.like_count = 9_999_999
+        post.reply_count = 9_999_999
+        post.repost_count = 9_999_999
+        post.quote_count = 9_999_999
+        post.reshare_count = 9_999_999
+        chain.append(post)
+    return chain
+
+
 async def test_template_on_message_and_ping() -> None:
     """Verifies template debug reaction and ping command response."""
     cog = TemplateCogs(bot=as_bot(fake=SimpleNamespace(latency=0.123)))
@@ -412,6 +431,122 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     )
     await cog.on_message(message=as_message(fake=error_message))
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
+
+
+async def test_threads_cog_trims_long_chain_to_the_message_wide_embed_limit() -> None:
+    """Far ancestors are removed before a total over 6000 can make Discord reject the reply."""
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+
+    plan = cog._build_embed_plan(results=_long_threads_chain())
+    embeds = plan.embeds
+
+    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    authors = [cast("str", embed.author.name) for embed in embeds if embed.author]
+    assert authors[-1].startswith("user-9-")
+    assert any(author.startswith("user-8-") for author in authors)
+    assert not any(author.startswith("user-0-") for author in authors)
+    assert plan.omitted_posts[0].author_name.startswith("user-0-")
+
+
+async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None:
+    """The quoted post remains second in priority while a farther ancestor is dropped."""
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    root = _thread_output(text="root-" + "r" * 1095, author_name="root")
+    parent = _thread_output(text="parent-" + "p" * 1093, author_name="parent")
+    target = _thread_output(text="target-" + "t" * 2193, author_name="target")
+    target.quoted = _thread_output(
+        text="quoted-" + "q" * 2193,
+        author_name="quoted",
+        image_urls=["https://example.test/quoted-1.png", "https://example.test/quoted-2.png"],
+    )
+
+    embeds = cog._build_embeds(results=[root, parent, target])
+
+    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    descriptions = [embed.description or "" for embed in embeds]
+    assert descriptions[0].startswith("parent-")
+    assert descriptions[1].startswith("target-")
+    assert descriptions[2].startswith("🔗 **被引用的貼文**")
+    assert all(not description.startswith("root-") for description in descriptions)
+    assert sum(1 for embed in embeds if embed.image) == 2
+
+
+async def test_threads_cog_drops_an_over_budget_post_with_its_gallery() -> None:
+    """A quote that cannot fit does not leave its image-only embeds detached from their text."""
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    parent = _thread_output(text="nearby context", author_name="parent")
+    target = _thread_output(text="t" * 3500, author_name="target")
+    target.quoted = _thread_output(
+        text="q" * 3000,
+        author_name="quoted",
+        image_urls=[f"https://example.test/quoted-{index}.png" for index in range(4)],
+    )
+
+    plan = cog._build_embed_plan(results=[parent, target])
+    embeds = plan.embeds
+
+    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    assert [embed.author.name for embed in embeds if embed.author] == ["parent", "target"]
+    assert all(not embed.image for embed in embeds)
+    assert all("被引用的貼文" not in (embed.description or "") for embed in embeds)
+    assert [post.author_name for post in plan.omitted_posts] == ["quoted"]
+
+
+async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
+    """Emoji-heavy posts stay safe even if Discord interprets characters as UTF-16 units."""
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    chain = [_thread_output(text="😀" * 500, author_name=f"user-{index}") for index in range(10)]
+
+    embeds = cog._build_embeds(results=chain)
+
+    assert parse_threads._utf16_length("😀") == 2
+    assert len(embeds) < len(chain)
+    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    assert [embed.author.name for embed in embeds if embed.author] == [
+        "user-5",
+        "user-6",
+        "user-7",
+        "user-8",
+        "user-9",
+    ]
+
+
+async def test_threads_cog_delivers_a_trimmed_chain_instead_of_failing() -> None:
+    """An overflow is delivered with permalink fallbacks and a success reaction."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
+    cog.downloader = cast(
+        "ThreadsDownloader", ThreadsDownloaderStub(results=_long_threads_chain())
+    )
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert len(message.replies) == 2
+    embeds = message.replies[0]["embeds"]
+    assert sum(parse_threads._embed_text_length(embed) for embed in embeds) <= 6000
+    notice = cast("str", message.replies[1]["content"])
+    assert "未展開" in notice
+    omitted_urls = [
+        post.url for post in cog._build_embed_plan(_long_threads_chain()).omitted_posts
+    ]
+    assert all(f"<{url}>" in notice for url in omitted_urls)
+    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+
+
+def test_threads_cog_paginates_all_omitted_post_links() -> None:
+    """Every omitted permalink remains available when the notice needs multiple messages."""
+    posts = [_thread_output(author_name=f"user-{index}-" + "a" * 30) for index in range(100)]
+
+    pages = parse_threads._omitted_post_notice_pages(posts=posts)
+
+    assert len(pages) > 1
+    assert all(parse_threads._utf16_length(page) <= 2000 for page in pages)
+    combined = "\n".join(pages)
+    assert all(f"<{post.url}>" in combined for post in posts)
 
 
 async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
