@@ -197,9 +197,13 @@ def _message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]
     `strip_usage_footer` removes the bot-authored footer from every span when a caller scans a
     reply-reference chain. The triggering message keeps its complete author-controlled text.
     """
-    content = (message.content or "").strip()
+    content = message.content or ""
+    content_present = bool(content.strip())
+    if strip_usage_footer:
+        content = USAGE_FOOTER_RE.sub("", content)
+    content = content.strip()
     texts = [content]
-    if not content:
+    if not content_present:
         texts.append(MessageInputBuilder.extract_embed_text(embeds=list(message.embeds)))
     for snapshot in message.snapshots:
         texts.append(MessageInputBuilder.snapshot_text(snapshot=snapshot))

@@ -2490,6 +2490,9 @@ def test_find_youtube_url_ignores_url_inside_replied_to_usage_footer(
     message.reference = FakeReference(resolved=answer)
 
     assert _find_youtube_url(message=as_message(fake=message)) is None
+    answer.content = footer
+    answer.embeds = [Embed(url=url)]
+    assert _find_youtube_url(message=as_message(fake=message)) is None
     answer.content = f"這是我的回答 {url}{footer}"
     assert _find_youtube_url(message=as_message(fake=message)) == url
 
@@ -2850,6 +2853,18 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     assert "real answer" in rendered
     assert "⬆" not in rendered
 
+    footer_only_forward = FakeMessage(author=FakeAuthor(user_id=1))
+    footer_only_forward.snapshots = [
+        FakeSnapshot(
+            content="\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
+            embeds=[Embed(url="https://youtu.be/jNQXAC9IVRw")],
+        )
+    ]
+    assert (
+        await builder.get_cleaned_content(message=as_message(fake=footer_only_forward))
+        == "[forwarded message]"
+    )
+
     # A captioned forward renders the caption only; an embed-only URL is not shown (nor scanned).
     captioned = FakeMessage(author=FakeAuthor(user_id=1))
     captioned.snapshots = [
@@ -3023,6 +3038,9 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         == "answer"
     )
     assert USAGE_FOOTER_RE.search(string=bot_message.content)
+    bot_message.content = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3"
+    bot_message.embeds = [Embed(url="https://youtu.be/jNQXAC9IVRw")]
+    assert await cog.input_builder.get_cleaned_content(message=as_message(fake=bot_message)) == ""
 
     embed_message = FakeMessage()
     embed_message.embeds = [embed]
