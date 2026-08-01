@@ -3301,6 +3301,89 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
     assert await memory_db.get_job(scope=USER_SCOPE) is None
 
 
+async def test_clear_scope_memory_drops_a_turn_enqueued_during_the_clear(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Completion is the boundary: during-clear drops, after-return survives."""
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _draft("保留這筆")
+    real_delete_job = memory_db.delete_job
+    real_upsert = memory_db.upsert_pending
+    real_stage_turn = pipeline._stage_turn
+    stage_attempted = asyncio.Event()
+    staged_transcripts: list[str] = []
+
+    async def record_upsert(  # noqa: PLR0913 -- mirrors the patched signature
+        *, scope: str, flavor: str, subject: str, transcript: str, identity: str, token: int
+    ) -> None:
+        staged_transcripts.append(transcript)
+        await real_upsert(
+            scope=scope,
+            flavor=memory_db.cast_flavor(value=flavor),
+            subject=subject,
+            transcript=transcript,
+            identity=identity,
+            token=token,
+        )
+
+    async def record_stage_turn(  # noqa: PLR0913 -- mirrors the patched signature
+        *, scope: str, subject: str, transcript: str, identity: str, token: int, captured_at: float
+    ) -> None:
+        stage_attempted.set()
+        await real_stage_turn(
+            scope=scope,
+            subject=subject,
+            transcript=transcript,
+            identity=identity,
+            token=token,
+            captured_at=captured_at,
+        )
+
+    async def delete_then_enqueue(*, scope: str) -> bool:
+        removed = await real_delete_job(scope=scope)
+        pipeline.schedule_memory_update(
+            scope=scope,
+            subject=f"target_user_id: {USER_ID}",
+            message_list=_user_message(),
+            full_reply="清除尚未回傳",
+            extractor=extractor,
+            identity=IDENTITY,
+        )
+        # The clear still holds the staging lock, so this turn must wait at
+        # `_stage_turn` rather than INSERT after the DELETE.
+        await stage_attempted.wait()
+        assert staged_transcripts == []
+        return removed
+
+    monkeypatch.setattr(pipeline, "_stage_turn", record_stage_turn)
+    monkeypatch.setattr(memory_db, "upsert_pending", record_upsert)
+    monkeypatch.setattr(memory_db, "delete_job", delete_then_enqueue)
+
+    await pipeline.clear_scope_memory(scope=USER_SCOPE)
+    await _wait_for_inflight()
+
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    assert staged_transcripts == []
+
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="清除已經回傳",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    assert len(staged_transcripts) == 1
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+    assert job.transcript is None
+
+
 async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_dir: Path) -> None:
     """A staging write that starts after the clear must not write the row at all.
 
@@ -3322,14 +3405,14 @@ async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_
     assert await memory_db.get_job(scope=USER_SCOPE) is None
 
 
-async def test_a_row_write_racing_the_clear_retires_itself(
+async def test_clear_waits_for_a_row_write_then_deletes_it(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A row that commits just after the clear's delete must retire itself.
+    """An INSERT already in progress must finish before the clear's DELETE.
 
-    The clear cannot delete a row that has not been written yet, so the writer
-    re-reads the clear stamp after committing. Without that the row survives with
-    the erased conversation and the restart sweep resumes it.
+    Otherwise the clear can return before the INSERT commits, leaving a crash
+    window where the restart sweep can resume its transcript before the writer's
+    best-effort `mark_done` retires it.
     """
     captured_at = time.monotonic()
     write_started = asyncio.Event()
@@ -3362,16 +3445,17 @@ async def test_a_row_write_racing_the_clear_retires_itself(
         )
     )
     await write_started.wait()
-    await pipeline.clear_scope_memory(scope=USER_SCOPE)
+    clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
+    await asyncio.sleep(0)
+    assert clearing.done() is False
+
     release.set()
     await staging
+    assert await clearing is True
 
-    # The row landed after the delete, so nothing but the writer could retire it.
+    # The writer retired its row first, then the serialized clear deleted it.
     assert await pipeline.safe_list_resumable() == []
-    job = await memory_db.get_job(scope=USER_SCOPE)
-    assert job is not None
-    assert job.status == "done"
-    assert job.transcript is None
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
 
 
 async def test_memory_update_scheduled_before_a_clear_never_starts(
@@ -3543,10 +3627,14 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
         token=1,
     )
 
+    captured_during_file_clear: float | None = None
+
     def exploding_clear(*, scope: str) -> bool:
+        nonlocal captured_during_file_clear
+        captured_during_file_clear = time.monotonic()
         raise PermissionError("tone.md is read-only")
 
-    monkeypatch.setattr("discordbot.services.memory.pipeline.clear_memory", exploding_clear)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.delete_memory_files", exploding_clear)
     view = MemoryClearConfirmView(scope=USER_SCOPE)
     interaction = FakeInteraction()
 
@@ -3557,6 +3645,8 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
     assert "沒有完成" in (embed.description or "")
     # The row went before the files, so a retry is what finishes the job.
     assert await memory_db.get_job(scope=USER_SCOPE) is None
+    assert captured_during_file_clear is not None
+    assert cleared_since(scope=USER_SCOPE, started_at=captured_during_file_clear) is True
 
 
 async def test_memory_clear_view_timeout_disables_buttons() -> None:
