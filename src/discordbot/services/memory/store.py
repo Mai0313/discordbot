@@ -522,7 +522,21 @@ def clear_tone(scope: str) -> None:
 
 
 def clear_memory(scope: str) -> bool:
-    """Deletes the scope's memory files and flags in-flight updates to abort.
+    """Deletes the scope's memory files and flags older in-flight updates to abort.
+
+    This is the one-shot store-level operation. The full pipeline clear uses
+    `delete_memory_files` directly because it owns a wider boundary around its
+    awaited reply.db deletion.
+
+    Returns:
+        True when at least one memory file existed and was removed.
+    """
+    mark_cleared(scope=scope)
+    return delete_memory_files(scope=scope)
+
+
+def delete_memory_files(scope: str) -> bool:
+    """Deletes the scope's memory files without moving its clear boundary.
 
     Walks the compartment tree as well as the three single-file tiers, removing only
     `.md` files and the `.md.tmp` leftovers a crash between a tmp write and its
@@ -533,7 +547,6 @@ def clear_memory(scope: str) -> bool:
     Returns:
         True when at least one memory file existed and was removed.
     """
-    mark_cleared(scope=scope)
     scope_dir = _scope_dir(scope=scope)
     removed = False
     for name in ("raw.md", "detail.md", "tone.md"):

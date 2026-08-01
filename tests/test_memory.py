@@ -3458,6 +3458,61 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
     assert job.transcript is None
 
 
+async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A during-clear turn cannot resume, while a turn after return belongs to the next lifetime."""
+    clear_job_finished = asyncio.Event()
+    release_clear = asyncio.Event()
+    real_clear_job = memory_db.clear_job
+
+    async def blocked_clear_job(*, scope: str, flavor: str, token: int) -> bool:
+        removed = await real_clear_job(
+            scope=scope, flavor=memory_db.cast_flavor(value=flavor), token=token
+        )
+        clear_job_finished.set()
+        await release_clear.wait()
+        return removed
+
+    monkeypatch.setattr(memory_db, "clear_job", blocked_clear_job)
+    clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
+    await clear_job_finished.wait()
+    during_clear = asyncio.create_task(
+        pipeline._stage_turn(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}",
+            transcript="清除尚未回傳",
+            identity=IDENTITY,
+            token=memory_db.new_token(),
+            captured_at=time.monotonic(),
+        )
+    )
+    await asyncio.sleep(0)
+    assert during_clear.done() is False
+
+    release_clear.set()
+    assert await clearing is False
+    await during_clear
+    assert await memory_db.list_resumable() == []
+
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _no_signal()
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="清除已經回傳",
+        extractor=extractor,
+        identity=IDENTITY,
+    )
+    await _wait_for_inflight()
+
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+    assert job.transcript is None
+
+
 async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_dir: Path) -> None:
     """A staging write that starts after the clear must not write the row at all.
 
@@ -3510,11 +3565,7 @@ async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
             token=token,
         )
 
-    async def exploding_mark_done(*, scope: str, token: int) -> None:
-        raise RuntimeError("mark_done unavailable")
-
     monkeypatch.setattr(memory_db, "upsert_pending", slow_upsert)
-    monkeypatch.setattr(memory_db, "mark_done", exploding_mark_done)
     staging = asyncio.create_task(
         pipeline._stage_turn(
             scope=USER_SCOPE,
@@ -3526,9 +3577,12 @@ async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
         )
     )
     await write_started.wait()
-    await pipeline.clear_scope_memory(scope=USER_SCOPE)
+    clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
+    await asyncio.sleep(0)
+    assert clearing.done() is False
     release.set()
     await staging
+    assert await clearing is True
 
     # The delayed stale write cannot overwrite a durable clear tombstone.
     job = await memory_db.get_job(scope=USER_SCOPE)
@@ -3576,10 +3630,13 @@ async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
     )
     await write_committed.wait()
 
-    await pipeline.clear_scope_memory(scope=USER_SCOPE)
+    clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
+    await asyncio.sleep(0)
+    assert clearing.done() is False
     staging.cancel()
     with pytest.raises(asyncio.CancelledError):
         await staging
+    assert await clearing is True
 
     # A new process has no monotonic clear stamp, so only reply.db can protect it.
     monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
@@ -3598,7 +3655,7 @@ async def test_clear_file_failure_leaves_tombstone(
     def exploding_clear(*, scope: str) -> bool:
         raise PermissionError("tone.md is read-only")
 
-    monkeypatch.setattr(pipeline, "clear_memory", exploding_clear)
+    monkeypatch.setattr(pipeline, "delete_memory_files", exploding_clear)
     with pytest.raises(PermissionError, match=r"tone\.md is read-only"):
         await pipeline.clear_scope_memory(scope=USER_SCOPE)
 
@@ -3787,7 +3844,7 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
     def exploding_clear(*, scope: str) -> bool:
         raise PermissionError("tone.md is read-only")
 
-    monkeypatch.setattr("discordbot.services.memory.pipeline.clear_memory", exploding_clear)
+    monkeypatch.setattr("discordbot.services.memory.pipeline.delete_memory_files", exploding_clear)
     view = MemoryClearConfirmView(scope=USER_SCOPE)
     interaction = FakeInteraction()
 
