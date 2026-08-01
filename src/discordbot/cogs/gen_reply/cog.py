@@ -451,15 +451,12 @@ async def _await_gated[GatedT](
             await _discard_task(task=task, label=label)
 
 
-async def _await_until_deadline[DeadlineT](
-    *, task: asyncio.Task[DeadlineT], label: str, deadline: float
+async def _await_deadline_bound_task[DeadlineT](
+    *, task: asyncio.Task[DeadlineT], label: str
 ) -> DeadlineT:
-    """Awaits a deadline-bound task only until its fixed event-loop deadline, then drains it."""
+    """Awaits a self-deadline-bound task and only cancels it if its caller is cancelled."""
     try:
-        if task.done():
-            return task.result()
-        remaining_seconds = max(0.0, deadline - asyncio.get_running_loop().time())
-        return await asyncio.wait_for(fut=task, timeout=remaining_seconds)
+        return await task
     finally:
         if not task.done():
             await _discard_task(task=task, label=label)
@@ -469,8 +466,12 @@ async def _run_until_deadline[DeadlineT](
     *, awaitable: "Awaitable[DeadlineT]", deadline: float
 ) -> DeadlineT:
     """Runs a newly selected builder only until its fixed event-loop deadline."""
-    remaining_seconds = max(0.0, deadline - asyncio.get_running_loop().time())
-    return await asyncio.wait_for(fut=awaitable, timeout=remaining_seconds)
+    event_loop = asyncio.get_running_loop()
+    remaining_seconds = max(0.0, deadline - event_loop.time())
+    result = await asyncio.wait_for(fut=awaitable, timeout=remaining_seconds)
+    if event_loop.time() >= deadline:
+        raise TimeoutError
+    return result
 
 
 async def _build_threads_link_context(
@@ -1448,20 +1449,19 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         source: str,
         link_task: "asyncio.Task[list[EasyInputMessageParam]]",
-        deadline: float,
         on_timeout: "Callable[[], list[EasyInputMessageParam]]",
     ) -> list[EasyInputMessageParam]:
         """Resolves an intent-selected linked-post build before the shared route deadline.
 
-        The deadline is fixed when routing finishes, before selected builders start, so answer
-        preparation and every source share one total grace. On expiry it injects a short "could
-        not read it in time" notice instead of nothing; on any other unexpected error it returns
-        [] (cancellation propagates). The builders themselves never raise (they degrade to their
-        own notices).
+        Each selected builder owns the deadline fixed when routing finishes. This resolver only
+        retrieves that task, so the builder's cancellation cleanup cannot be interrupted by a
+        second timeout. On expiry it injects a short "could not read it in time" notice instead
+        of nothing; on any other unexpected error it returns [] (cancellation propagates). The
+        builders themselves never raise (they degrade to their own notices).
         """
         started = time.monotonic()
         try:
-            blocks = await _await_until_deadline(task=link_task, label=source, deadline=deadline)
+            blocks = await _await_deadline_bound_task(task=link_task, label=source)
         except TimeoutError as exc:
             logfire.warn(
                 "Linked-post context exceeded the post-route grace; injecting timeout notice",
@@ -2360,7 +2360,6 @@ class ReplyGeneratorCogs(commands.Cog):
                                     message=message,
                                     source=link_source.name,
                                     link_task=link_task,
-                                    deadline=link_context_deadline,
                                     on_timeout=link_source.on_timeout,
                                 )
                             )
