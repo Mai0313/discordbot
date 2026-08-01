@@ -16,7 +16,7 @@ import httpx
 from openai import APITimeoutError
 import pytest
 import nextcord
-from nextcord import File, Embed
+from nextcord import File, Embed, Message
 from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
@@ -4995,6 +4995,113 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert has_douyin_context_block(request=answer)
     assert "did not respond in time" in str(answer)
+
+
+async def test_on_message_link_context_grace_starts_when_route_finishes(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reply preparation consumes the selected builder's shared post-route grace."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
+    prepare = cog._prepare_reply_context
+
+    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: Message,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Keeps answer preparation busy after routing has already selected the link."""
+        await route_done.wait()
+        await asyncio.sleep(0.04)
+        return await prepare(
+            message=message,
+            history_limit=history_limit,
+            memory_enabled=memory_enabled,
+            parts_task=parts_task,
+            text_parts=text_parts,
+            route_done=route_done,
+        )
+
+    async def delayed_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Finishes within a fresh grace, but after the grace shared with preparation."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        await asyncio.sleep(0.14)
+        return _douyin_block()
+
+    monkeypatch.setattr(cog, "_prepare_reply_context", delayed_prepare)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", delayed_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    )
+    await cog.on_message(message=as_message(fake=message))
+
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert "did not respond in time" in str(answer)
+
+
+async def test_on_message_selected_link_contexts_share_one_post_route_grace(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sequential resolution cannot grant every selected builder a fresh timeout."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["threads", "douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
+
+    async def delayed_threads_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
+    ) -> list[dict[str, object]]:
+        """Uses most of the shared budget before the first registry entry resolves."""
+        del url, answer_model_is_gemini, gemini_client
+        await asyncio.sleep(0.14)
+        return _threads_block()
+
+    async def delayed_douyin_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Would finish under a second fresh timeout, but not the same shared deadline."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        await asyncio.sleep(0.22)
+        return _douyin_block()
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", delayed_threads_builder
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", delayed_douyin_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content=(
+            "<@999> 這兩個在講什麼 https://www.threads.com/@a/post/ABC123 "
+            "https://v.douyin.com/abc123"
+        ),
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=as_message(fake=message))
+
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert str(answer).count("did not respond in time") == 2
 
 
 async def test_on_message_injects_threads_context_before_current(

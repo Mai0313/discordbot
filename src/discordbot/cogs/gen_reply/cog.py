@@ -451,6 +451,20 @@ async def _await_gated[GatedT](
             await _discard_task(task=task, label=label)
 
 
+async def _await_until_deadline[DeadlineT](
+    *, task: asyncio.Task[DeadlineT], label: str, deadline: float
+) -> DeadlineT:
+    """Awaits a task only until one fixed monotonic deadline, then drains it."""
+    try:
+        if task.done():
+            return task.result()
+        remaining_seconds = max(0.0, deadline - time.monotonic())
+        return await asyncio.wait_for(fut=task, timeout=remaining_seconds)
+    finally:
+        if not task.done():
+            await _discard_task(task=task, label=label)
+
+
 async def _build_threads_link_context(
     *,
     url: str,
@@ -1426,25 +1440,20 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         source: str,
         link_task: "asyncio.Task[list[EasyInputMessageParam]]",
-        route_done: asyncio.Event,
+        deadline: float,
         on_timeout: "Callable[[], list[EasyInputMessageParam]]",
     ) -> list[EasyInputMessageParam]:
-        """Resolves an intent-selected linked-post build within its post-routing grace.
+        """Resolves an intent-selected linked-post build before the shared route deadline.
 
-        On the post-route grace timeout it injects a short "could not read it in time" notice
-        instead of nothing, so a slow build keeps deterministic context rather than re-exposing
-        the "I cannot open this link" fallback; on any other unexpected error it returns []
-        (cancellation propagates). The builders themselves never raise (they degrade to their
+        The deadline is fixed when routing finishes, before selected builders start, so answer
+        preparation and every source share one total grace. On expiry it injects a short "could
+        not read it in time" notice instead of nothing; on any other unexpected error it returns
+        [] (cancellation propagates). The builders themselves never raise (they degrade to their
         own notices).
         """
         started = time.monotonic()
         try:
-            blocks = await _await_gated(
-                task=link_task,
-                label=source,
-                route_done=route_done,
-                grace_seconds=LINK_CONTEXT_GRACE_SECONDS,
-            )
+            blocks = await _await_until_deadline(task=link_task, label=source, deadline=deadline)
         except TimeoutError as exc:
             logfire.warn(
                 "Linked-post context exceeded the post-route grace; injecting timeout notice",
@@ -2172,6 +2181,7 @@ class ReplyGeneratorCogs(commands.Cog):
         ) = None
         effort_task: asyncio.Task[EffortGrade] | None = None
         link_tasks: dict[str, asyncio.Task[list[EasyInputMessageParam]]] = {}
+        link_context_deadline: float | None = None
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
                 pipeline_started = time.monotonic()
@@ -2215,6 +2225,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     reference_messages=text_reference,
                     current_message=text_current,
                 )
+                if route.decision == "QA" and route.link_context_sources:
+                    link_context_deadline = time.monotonic() + LINK_CONTEXT_GRACE_SECONDS
                 route_done.set()
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if route.decision == "QA" and route.link_context_sources:
@@ -2321,6 +2333,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     # each under the same grace and fold the post blocks into the answer context
                     # in registry order so the splice stays deterministic.
                     if link_tasks:
+                        if link_context_deadline is None:
+                            raise RuntimeError("Selected link tasks have no route deadline")
                         link_blocks: list[EasyInputMessageParam] = []
                         for link_source in LINK_CONTEXT_SOURCES:
                             link_task = link_tasks.pop(link_source.name, None)
@@ -2331,7 +2345,7 @@ class ReplyGeneratorCogs(commands.Cog):
                                     message=message,
                                     source=link_source.name,
                                     link_task=link_task,
-                                    route_done=route_done,
+                                    deadline=link_context_deadline,
                                     on_timeout=link_source.on_timeout,
                                 )
                             )
