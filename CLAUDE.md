@@ -17,7 +17,7 @@ Config comes from `.env` (see `.env.example`): `DISCORD_BOT_TOKEN` + `OPENAI_BAS
 
 When debugging, check `./data/logs` for the full runtime logs.
 
-Tests share their isolation in `tests/conftest.py` (`economy_isolated_db` / `research_isolated_db` / `fishing_isolated_db` / `memory_isolated_dir`, each swapping the module-level engine or dir onto a `tmp_path`) and their scaffolding in `tests/helpers/` (`discord_mocks.py` fakes an Interaction / Message / followup; `llm_input.py` pulls a named block back out of a recorded Responses request). Reach for those before writing a new fake.
+Tests share their isolation in `tests/conftest.py` (`economy_isolated_db` / `research_isolated_db` / `fishing_isolated_db` / `memory_isolated_dir`, each swapping the module-level engine or dir onto a `tmp_path`) and their scaffolding in `tests/helpers/` (`discord_mocks.py` fakes an Interaction / Message / followup; `llm_input.py` pulls a named block back out of a recorded Responses request). Reach for those before writing a new fake. Unit tests must inject fake LLM clients and extractors and pass without runtime API credentials; the Tests workflow intentionally provides none.
 
 ## Runtime Shape
 

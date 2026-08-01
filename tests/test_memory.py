@@ -1747,10 +1747,13 @@ async def test_memory_regenerate_command_schedules_in_background(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, scheduled: bool, expected_text: str
 ) -> None:
     cog = _memory_cog()
+    extractor_sentinel = object()
+    cog.__dict__["memory_extractor"] = extractor_sentinel
     calls: dict[str, object] = {}
 
     def fake_schedule(scope: str, extractor: object, identity: str) -> bool:
         calls["scope"] = scope
+        calls["extractor"] = extractor
         calls["identity"] = identity
         return scheduled
 
@@ -1769,6 +1772,7 @@ async def test_memory_regenerate_command_schedules_in_background(
     assert isinstance(embed, Embed)
     assert expected_text in (embed.description or "")
     assert calls["scope"] == USER_SCOPE
+    assert calls["extractor"] is extractor_sentinel
     assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
 
 
