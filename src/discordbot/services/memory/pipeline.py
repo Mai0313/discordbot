@@ -235,6 +235,34 @@ async def _stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's cap
         )
 
 
+async def _clear_scope_critical(scope: str) -> tuple[bool, bool]:
+    """Completes the non-interruptible durable portion of one memory clear."""
+    async with _staging_locks.hold(key=scope):
+        removed_job = await memory_db.clear_job(
+            scope=scope, flavor=flavor_of(scope=scope), token=memory_db.new_token()
+        )
+        try:
+            removed_files = delete_memory_files(scope=scope)
+        finally:
+            # A caller may cancel while this task is running, but the next memory
+            # lifetime still begins only after the tombstone and file pass finish.
+            mark_cleared(scope=scope)
+    return removed_files, removed_job
+
+
+async def _await_clear_critical(
+    task: asyncio.Task[tuple[bool, bool]],
+) -> tuple[tuple[bool, bool], bool]:
+    """Drains the clear task and reports whether its caller requested cancellation."""
+    caller_cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            caller_cancelled = True
+    return task.result(), caller_cancelled
+
+
 async def clear_scope_memory(scope: str) -> bool:
     """Erases everything the pipeline holds for a scope, on the user's request.
 
@@ -285,19 +313,12 @@ async def clear_scope_memory(scope: str) -> bool:
     # task to finish and discard it; `_finish_memory_update` then finds no
     # pending turn and replays nothing.
     _pending_updates.pop(scope, None)
-    async with _staging_locks.hold(key=scope):
-        removed_job = await memory_db.clear_job(
-            scope=scope, flavor=flavor_of(scope=scope), token=memory_db.new_token()
-        )
-        try:
-            removed_files = delete_memory_files(scope=scope)
-        finally:
-            # The first stamp protects the erase itself. This one deliberately
-            # sets the user-visible boundary at completion. Waiting staging
-            # writers cannot proceed until this stamp is visible, so none can
-            # commit a during-clear transcript after the tombstone. Keep it on the
-            # partial-file-failure path for the same privacy boundary.
-            mark_cleared(scope=scope)
+    critical_task = asyncio.create_task(_clear_scope_critical(scope=scope))
+    (removed_files, removed_job), caller_cancelled = await _await_clear_critical(
+        task=critical_task
+    )
+    if caller_cancelled:
+        raise asyncio.CancelledError
     # Commits the deletion so the working tree stops carrying it, which is all this can
     # do: the commits before it still hold the content, and no reachable-object pruning
     # changes that. Local history outliving a clear is a recorded decision on #408.

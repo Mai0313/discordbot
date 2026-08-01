@@ -3513,6 +3513,108 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
     assert job.transcript is None
 
 
+async def test_cancelled_clear_waiting_for_staging_lock_finishes_the_tombstone(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Caller cancellation cannot leave a pre-clear transcript resumable after restart."""
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="secret subject",
+        transcript="secret transcript",
+        identity="secret identity",
+        token=1,
+    )
+    lock_held = asyncio.Event()
+    release_lock = asyncio.Event()
+
+    async def hold_staging_lock() -> None:
+        async with pipeline._staging_locks.hold(key=USER_SCOPE):
+            lock_held.set()
+            await release_lock.wait()
+
+    holder = asyncio.create_task(hold_staging_lock())
+    await lock_held.wait()
+    clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
+    await asyncio.sleep(0)
+    assert cleared_since(scope=USER_SCOPE, started_at=0.0) is True
+
+    clearing.cancel()
+    release_lock.set()
+    await holder
+    with pytest.raises(asyncio.CancelledError):
+        await clearing
+
+    monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
+    assert await memory_db.list_resumable() == []
+
+
+async def test_cancelled_clear_waits_for_an_inflight_tombstone_write(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancellation during `clear_job` still drains its durable privacy boundary."""
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="secret subject",
+        transcript="secret transcript",
+        identity="secret identity",
+        token=1,
+    )
+    clear_job_started = asyncio.Event()
+    release_clear_job = asyncio.Event()
+    real_clear_job = memory_db.clear_job
+
+    async def blocked_clear_job(*, scope: str, flavor: str, token: int) -> bool:
+        clear_job_started.set()
+        await release_clear_job.wait()
+        return await real_clear_job(
+            scope=scope, flavor=memory_db.cast_flavor(value=flavor), token=token
+        )
+
+    monkeypatch.setattr(memory_db, "clear_job", blocked_clear_job)
+    clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
+    await clear_job_started.wait()
+    clearing.cancel()
+    release_clear_job.set()
+    with pytest.raises(asyncio.CancelledError):
+        await clearing
+
+    monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
+    assert await memory_db.list_resumable() == []
+
+
+async def test_cancelled_clear_propagates_a_critical_tombstone_failure(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed critical write is observed rather than hidden behind cancellation."""
+    clear_job_started = asyncio.Event()
+    release_clear_job = asyncio.Event()
+
+    async def failing_clear_job(*, scope: str, flavor: str, token: int) -> bool:
+        del scope, flavor, token
+        clear_job_started.set()
+        await release_clear_job.wait()
+        raise RuntimeError("reply.db unavailable")
+
+    monkeypatch.setattr(memory_db, "clear_job", failing_clear_job)
+    clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
+    await clear_job_started.wait()
+    clearing.cancel()
+    release_clear_job.set()
+
+    with pytest.raises(RuntimeError, match="reply\\.db unavailable"):
+        await clearing
+
+
 async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_dir: Path) -> None:
     """A staging write that starts after the clear must not write the row at all.
 
