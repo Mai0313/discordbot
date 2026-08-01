@@ -3144,7 +3144,9 @@ async def test_pipeline_consolidation_writes_tone_note(
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
     # The current note rode the TONE call, not the compartment's; the compartment call
     # is never shown it, because it has no business rewriting the note.
+    # order-contract: the tone call runs after the scope's one fact-compartment call.
     assert "<existing_tone>\n## 語氣偏好\n* 舊語氣\n</existing_tone>" in seen_inputs[2]
+    # order-contract: the preceding fact-compartment call must not receive the tone document.
     assert "<existing_tone>" not in seen_inputs[1]
 
 

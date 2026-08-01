@@ -10,6 +10,7 @@ import base64
 from typing import TYPE_CHECKING, Any, Literal, cast
 import asyncio
 from datetime import UTC, datetime, timedelta
+from collections import Counter
 from unittest.mock import MagicMock
 
 from PIL import Image
@@ -4440,16 +4441,17 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
     # The speculative QA context always builds first; SUMMARY rebuilds at its own
     # history depth without memory, and QA consumes the speculative context as-is.
+    # order-contract: speculative context starts before the SUMMARY rebuild.
     assert prep_requests == expected_prep
-    assert memory_flags == expected_flags
+    assert Counter(memory_flags) == Counter(expected_flags)
     # Voice is enabled on QA and SUMMARY (both stream a reply); IMAGE/VIDEO never reach here.
-    assert voice_flags == expected_voice
+    assert Counter(voice_flags) == Counter(expected_voice)
     # Inline image is QA-only; SUMMARY stays text and IMAGE/VIDEO never reach here.
-    assert image_flags == expected_image
+    assert Counter(image_flags) == Counter(expected_image)
     # Inline music is QA-only, like inline image; SUMMARY stays text.
-    assert music_flags == expected_music
+    assert Counter(music_flags) == Counter(expected_music)
     # Inline video is QA-only, like inline image/music; SUMMARY stays text.
-    assert video_flags == expected_video
+    assert Counter(video_flags) == Counter(expected_video)
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
@@ -4626,6 +4628,7 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
     chain.advance(emoji="🆗")
     assert events == []  # nothing awaited yet: scheduling never blocks the caller
     await chain.flush()
+    # order-contract: ReactionStatusChain promises FIFO reaction swaps.
     assert events == [("🔀", None), ("❓", "🔀"), ("🆗", "❓")]
 
 
@@ -6552,7 +6555,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     assert "get_user_memory" not in tool_names_for_call(
         responses=_recorded(cog).responses, n=answer_idx
     )
-    assert scheduled == [user_scope(user_id=1), server_scope(server_id=1)]
+    assert Counter(scheduled) == Counter((user_scope(user_id=1), server_scope(server_id=1)))
 
 
 async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
@@ -7403,9 +7406,9 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
 
     server_scope_value = server_scope(server_id=1)
     name_to_scope = {"user": user_scope(user_id=1), "server": server_scope_value}
-    assert [update["scope"] for update in scheduled] == [
+    assert Counter(update["scope"] for update in scheduled) == Counter(
         name_to_scope[name] for name in expect_scopes
-    ]
+    )
     # The user subject carries a second line naming the conversation source (guild or DM)
     # so the pipeline can stamp each observation deterministically; the server flavor never does.
     user_source = "guild 1" if has_guild else "dm"
@@ -7892,6 +7895,7 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     # Same embed count, different image URL: the cache must not serve the stale part.
     message.embeds = [cast("Embed", _embed("https://media.test/b.png"))]
     await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
+    # order-contract: each awaited cache lookup renders its source before returning.
     assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
 
 

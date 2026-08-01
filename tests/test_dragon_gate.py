@@ -558,7 +558,9 @@ async def test_edit_message_with_retry_rebuilds_payload_between_attempts(
     assert result is message
     assert sleep_delays == [0.5]
     assert len(payloads) == 2
+    # order-contract: the retry helper awaits the failed edit before building the retry payload.
     assert message.edits[0]["files"][0] is payloads[0]
+    # order-contract: the successful retry carries the second payload built after that failure.
     assert message.edits[1]["files"][0] is payloads[1]
 
 

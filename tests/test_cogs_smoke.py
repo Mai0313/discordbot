@@ -1252,7 +1252,9 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
     central_view.message = as_message(fake=central_message)
     await central_view.on_timeout()
 
+    # order-contract: each `on_timeout` is awaited to completion before the next view exists.
     assert rejected == [42, 43]
+    # order-contract: same sequential awaits, so cleanup is scheduled in construction order.
     assert scheduled == [credit_message, central_message]
     assert credit_message.edits[0]["view"] is None
     assert central_message.edits[0]["view"] is None
@@ -1336,6 +1338,7 @@ async def test_economy_admin_tax_accepts_string_amounts(monkeypatch: pytest.Monk
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="9,007,199,254,740,993"
     )
 
+    # order-contract: each awaited command completes its balance adjustment before returning.
     assert captured_deltas == [9_007_199_254_740_993, -9_007_199_254_740_993]
 
 
@@ -1365,6 +1368,7 @@ async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPat
     await EconomyCogs.admin_refund_tax.callback(cog, interaction, member=bot_member, amount="100")
     await EconomyCogs.admin_collect_tax.callback(cog, interaction, member=bot_member, amount="50")
 
+    # order-contract: each awaited command completes its balance adjustment before returning.
     assert captured_targets == [(999, "discordbot", 100), (999, "discordbot", -50)]
     assert interaction.followup.sent[0].get("ephemeral") is not True
     assert interaction.followup.sent[1].get("ephemeral") is not True
