@@ -524,9 +524,10 @@ def clear_tone(scope: str) -> None:
 def clear_memory(scope: str) -> bool:
     """Deletes the scope's memory files and flags older in-flight updates to abort.
 
-    This is the one-shot store-level operation. The full pipeline clear uses
-    `delete_memory_files` directly because it owns a wider boundary around its
-    awaited reply.db deletion.
+    A test-only convenience over `mark_cleared` + `delete_memory_files`; nothing under
+    `src/` calls it. The pipeline clear drives those two itself because it owns a wider
+    boundary around its awaited reply.db tombstone, so do not route a production clear
+    back through here.
 
     Returns:
         True when at least one memory file existed and was removed.
