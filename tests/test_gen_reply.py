@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import time
 from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -5305,7 +5306,7 @@ async def test_deadline_bound_task_outer_cancel_before_deadline_cancels_builder(
         coro=_run_until_deadline(awaitable=pending_builder(), deadline=deadline)
     )
     resolver_task = asyncio.create_task(
-        coro=_await_deadline_bound_task(task=builder_task, deadline=deadline)
+        coro=_await_deadline_bound_task(task=builder_task, deadline=deadline, label="test")
     )
     await asyncio.wait_for(fut=builder_started.wait(), timeout=1)
     resolver_task.cancel()
@@ -5314,6 +5315,18 @@ async def test_deadline_bound_task_outer_cancel_before_deadline_cancels_builder(
         await resolver_task
     assert builder_cancelled.is_set()
     assert builder_task.done()
+
+
+async def test_run_until_deadline_keeps_result_completed_before_delayed_resume() -> None:
+    """A completed builder wins even if a briefly blocked loop resumes its waiter after deadline."""
+    event_loop = asyncio.get_running_loop()
+    result_future = event_loop.create_future()
+    result_future.add_done_callback(lambda _: time.sleep(0.05))
+    event_loop.call_soon(result_future.set_result, "ready")
+
+    result = await _run_until_deadline(awaitable=result_future, deadline=event_loop.time() + 0.02)
+
+    assert result == "ready"
 
 
 async def test_on_message_selected_link_contexts_share_one_post_route_grace(
@@ -5883,6 +5896,84 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
     await cog.on_message(message=as_message(fake=message))
 
     assert cancelled == [True]
+
+
+async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prep failure drains a deadline-owned builder cleanup without cancelling it twice."""
+    cog = _cog()
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.04)
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    second_cancellation = asyncio.Event()
+    cancellation_count = 0
+
+    async def cleanup_bound_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Waits in cleanup after the deadline sends its first cancellation."""
+        nonlocal cancellation_count
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancellation_count += 1
+            cleanup_started.set()
+            try:
+                await cleanup_release.wait()
+            except asyncio.CancelledError:
+                cancellation_count += 1
+                second_cancellation.set()
+                raise
+            raise
+        return []
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Selects Bilibili so the deadline-owned builder starts."""
+        del message, reference_messages, current_message
+        return RouteClassification(decision="QA", link_context_sources=["bilibili"])
+
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Fails while the selected builder still owns its deadline cancellation cleanup."""
+        del message, history_limit, memory_enabled, parts_task, text_parts
+        await route_done.wait()
+        await cleanup_started.wait()
+        raise RuntimeError("prep exploded")
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", cleanup_bound_builder
+    )
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
+    try:
+        await asyncio.wait_for(fut=cleanup_started.wait(), timeout=1)
+        await asyncio.sleep(0.02)
+        assert cancellation_count == 1
+        assert not second_cancellation.is_set()
+        assert not message_task.done()
+    finally:
+        cleanup_release.set()
+        await message_task
+
+    assert cancellation_count == 1
 
 
 async def test_on_message_bilibili_grace_timeout_injects_notice(

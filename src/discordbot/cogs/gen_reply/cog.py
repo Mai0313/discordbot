@@ -452,40 +452,56 @@ async def _await_gated[GatedT](
 
 
 async def _await_deadline_bound_task[DeadlineT](
-    *, task: asyncio.Task[DeadlineT], deadline: float
+    *, task: asyncio.Task[DeadlineT], deadline: float, label: str
 ) -> DeadlineT:
     """Awaits a self-deadline-bound task while preserving its cancellation cleanup ownership."""
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        event_loop = asyncio.get_running_loop()
-        if not task.done():
-            if event_loop.time() < deadline:
-                task.cancel()
-            while not task.done():
-                try:
-                    await asyncio.shield(task)
-                except asyncio.CancelledError:
-                    if task.done():
-                        break
-                except Exception:
-                    break
-        if task.done():
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                task.result()
+        await _drain_deadline_bound_task(task=task, deadline=deadline, label=label)
         raise
+
+
+async def _drain_deadline_bound_task[DeadlineT](
+    *, task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int | None = None
+) -> None:
+    """Cancels before a task's deadline or preserves its in-progress deadline cleanup."""
+    if not task.done() and asyncio.get_running_loop().time() < deadline:
+        task.cancel()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                break
+        except Exception:
+            break
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logfire.warn(
+            "Speculative reply context build failed off-route",
+            task_label=label,
+            error_type=type(exc).__name__,
+            message_id=message_id,
+            _exc_info=exc,
+        )
 
 
 async def _run_until_deadline[DeadlineT](
     *, awaitable: "Awaitable[DeadlineT]", deadline: float
 ) -> DeadlineT:
-    """Runs a newly selected builder only until its fixed event-loop deadline."""
+    """Runs a cancellation-propagating builder until its fixed event-loop deadline.
+
+    Registered builders all propagate `CancelledError`, so `wait_for` alone owns the boundary.
+    A clock check after this await would reject a pre-deadline result when a busy event loop only
+    resumes this wrapper after the deadline.
+    """
     event_loop = asyncio.get_running_loop()
     remaining_seconds = max(0.0, deadline - event_loop.time())
-    result = await asyncio.wait_for(fut=awaitable, timeout=remaining_seconds)
-    if event_loop.time() >= deadline:
-        raise TimeoutError
-    return result
+    return await asyncio.wait_for(fut=awaitable, timeout=remaining_seconds)
 
 
 async def _build_threads_link_context(
@@ -593,11 +609,20 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
 
 
 async def _discard_link_tasks(
-    *, link_tasks: dict[str, "asyncio.Task[list[EasyInputMessageParam]]"], message_id: int
+    *,
+    link_tasks: dict[str, "asyncio.Task[list[EasyInputMessageParam]]"],
+    deadline: float | None,
+    message_id: int,
 ) -> None:
-    """Discards every in-flight link-context build from the finally backstop."""
+    """Drains link builds without stealing cancellation from their shared deadline."""
+    if link_tasks and deadline is None:
+        raise RuntimeError("Selected link tasks have no route deadline")
+    if deadline is None:
+        return
     for name, task in link_tasks.items():
-        await _discard_task(task=task, label=name, message_id=message_id)
+        await _drain_deadline_bound_task(
+            task=task, deadline=deadline, label=name, message_id=message_id
+        )
     link_tasks.clear()
 
 
@@ -1476,7 +1501,9 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         started = time.monotonic()
         try:
-            blocks = await _await_deadline_bound_task(task=link_task, deadline=deadline)
+            blocks = await _await_deadline_bound_task(
+                task=link_task, deadline=deadline, label=source
+            )
         except TimeoutError as exc:
             logfire.warn(
                 "Linked-post context exceeded the post-route grace; injecting timeout notice",
@@ -2406,7 +2433,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 await _discard_task(task=effort_task, label="effort", message_id=message.id)
             if parts_task is not None:
                 await _discard_task(task=parts_task, label="parts", message_id=message.id)
-            await _discard_link_tasks(link_tasks=link_tasks, message_id=message.id)
+            await _discard_link_tasks(
+                link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
+            )
 
 
 def _can_launch_research(*, message: Message) -> bool:
