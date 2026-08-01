@@ -165,6 +165,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "Threads parser\n"
                     "Paste a Threads link and I'll pull the posts, replies, and media, "
                     "including the post it quotes when it is a quote post. "
+                    "If Discord's embed limits leave any posts unexpanded, I will link them. "
                     "Tag me with the link instead, or tag me in a reply to a message carrying "
                     "one, and I'll read the post along with the comments under it and answer "
                     "about it.\n\n"
@@ -173,7 +174,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "Tag me with the link instead and I'll watch it and answer about it.\n\n"
                     "Bilibili\n"
                     "Tag me with a Bilibili video link and I'll watch the video and answer "
-                    "about it."
+                    "about it. A Threads, Douyin, or Bilibili link that is only incidental "
+                    "to your request is not fetched."
                 ),
             ),
         },
@@ -270,6 +272,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "`/maplestory stats` — 顯示資料庫統計\n\n"
                     "Threads 解析\n"
                     "貼上 Threads 連結,我會自動擷取貼文、回覆和媒體,引用別人或自己先前的貼文時也會一起帶出被引用的貼文;"
+                    "若有貼文因 Discord embed 限制而無法展開,我會附上原始連結;"
                     "改成 tag 我並附上連結,或是回覆別人貼連結的訊息時 tag 我,"
                     "我就會連底下的留言一起讀過再回答你。\n\n"
                     "抖音解析\n"
@@ -277,6 +280,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "改成 tag 我並附上連結,我就會看過影片再回答你。\n\n"
                     "Bilibili\n"
                     "tag 我並附上 B 站影片連結,我會看過影片再回答你。"
+                    "如果 Threads 或抖音或 B 站連結只是順帶出現在問題裡,我不會另外抓取它。"
                 ),
             ),
         },
@@ -376,6 +380,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "Threads パーサー\n"
                     "Threads のリンクを貼ると、投稿・返信・メディアを取得します。"
                     "引用投稿の場合は引用元の投稿も一緒に表示します。"
+                    "Discord の embed 制限で展開できない投稿には元のリンクを表示します。"
                     "メンション付きでリンクを送るか、リンクを含むメッセージへの返信で"
                     "メンションすると、投稿とその下のコメントまで読んでその内容に答えます。\n\n"
                     "抖音パーサー\n"
@@ -383,6 +388,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "メンション付きで送ると、動画を見てその内容に答えます。\n\n"
                     "ビリビリ\n"
                     "メンション付きで Bilibili の動画リンクを送ると、動画を見てその内容に答えます。"
+                    "Threads や抖音や Bilibili のリンクが質問と無関係なら取得しません。"
                 ),
             ),
         },

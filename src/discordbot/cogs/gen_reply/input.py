@@ -149,8 +149,9 @@ class MessageInputBuilder(BaseModel):
         the model would otherwise learn to mimic. The pattern is bot-footer-shaped, so it is a
         no-op on forwarded user text.
         """
+        content_present = bool(snapshot.content.strip())
         text = USAGE_FOOTER_RE.sub("", snapshot.content).strip()
-        if not text and snapshot.embeds:
+        if not content_present and snapshot.embeds:
             text = MessageInputBuilder.extract_embed_text(embeds=list(snapshot.embeds))
         return text
 
@@ -187,10 +188,12 @@ class MessageInputBuilder(BaseModel):
 
     async def get_cleaned_content(self, message: Message) -> str:
         """Returns the textual content of a message without the author prefix."""
-        content = message.content.strip()
+        content = message.content
+        content_present = bool(content.strip())
         if content and self.bot.user and message.author.id == self.bot.user.id:
             content = USAGE_FOOTER_RE.sub("", content)
-        if not content and message.embeds:
+        content = content.strip()
+        if not content_present and message.embeds:
             content = self.extract_embed_text(embeds=list(message.embeds))
         if not content and message.is_system():
             content = message.system_content

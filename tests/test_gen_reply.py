@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import json
+import time
 from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -16,7 +17,7 @@ import httpx
 from openai import APITimeoutError
 import pytest
 import nextcord
-from nextcord import File, Embed
+from nextcord import File, Embed, Message
 from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
@@ -36,8 +37,10 @@ from discordbot.cogs.gen_reply.cog import (
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
+    _run_until_deadline,
     _can_launch_research,
     _link_url_for_source,
+    _await_deadline_bound_task,
     _build_runtime_instructions,
 )
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -127,7 +130,7 @@ FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from collections.abc import AsyncIterator
+    from collections.abc import Callable, AsyncIterator
 
     from aiohttp import ClientResponse
     from nextcord import Attachment
@@ -2477,6 +2480,58 @@ def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPat
     assert _find_youtube_url(message=as_message(fake=message)) == url
 
 
+def test_find_youtube_url_ignores_url_inside_replied_to_usage_footer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A memory label in the bot's footer cannot choose the next watched video."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    footer = f"\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000\n-# <:tag:1517563887573143595> {url} 的記憶"
+    answer = FakeMessage(content=f"這是我的回答{footer}")
+    answer.id = 555
+    message = FakeMessage(content="<@999> 再說清楚一點")
+    message.reference = FakeReference(resolved=answer)
+
+    assert _find_youtube_url(message=as_message(fake=message)) is None
+    answer.content = footer
+    answer.embeds = [Embed(url=url)]
+    assert _find_youtube_url(message=as_message(fake=message)) is None
+    answer.content = f"這是我的回答 {url}{footer}"
+    assert _find_youtube_url(message=as_message(fake=message)) == url
+
+
+def test_find_youtube_url_keeps_footer_shaped_text_in_the_current_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The triggering author's complete text still selects its own YouTube link."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    message = FakeMessage(
+        content=(
+            "<@999> 再說清楚一點"
+            "\n\n-# model · ⬆ 1 ⬇ 2 · $0.00000000"
+            f"\n-# <:tag:1517563887573143595> {url} 的記憶"
+        )
+    )
+
+    assert _find_youtube_url(message=as_message(fake=message)) == url
+
+
+def test_find_youtube_url_reads_embed_card_in_replied_to_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Footer stripping keeps the wider reference-chain scan used for YouTube cards."""
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
+    url = "https://youtu.be/jNQXAC9IVRw"
+    referenced = FakeMessage(content="")
+    referenced.id = 555
+    referenced.embeds = [Embed(url=url)]
+    message = FakeMessage(content="<@999> 總結這影片")
+    message.reference = FakeReference(resolved=referenced)
+
+    assert _find_youtube_url(message=as_message(fake=message)) == url
+
+
 def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> None:
     """No YouTube link in the message or its reference chain returns None."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
@@ -2801,6 +2856,18 @@ async def test_cleaned_content_includes_forwarded_snapshot_text() -> None:
     assert "real answer" in rendered
     assert "⬆" not in rendered
 
+    footer_only_forward = FakeMessage(author=FakeAuthor(user_id=1))
+    footer_only_forward.snapshots = [
+        FakeSnapshot(
+            content="\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3",
+            embeds=[Embed(url="https://youtu.be/jNQXAC9IVRw")],
+        )
+    ]
+    assert (
+        await builder.get_cleaned_content(message=as_message(fake=footer_only_forward))
+        == "[forwarded message]"
+    )
+
     # A captioned forward renders the caption only; an embed-only URL is not shown (nor scanned).
     captioned = FakeMessage(author=FakeAuthor(user_id=1))
     captioned.snapshots = [
@@ -2974,6 +3041,9 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         == "answer"
     )
     assert USAGE_FOOTER_RE.search(string=bot_message.content)
+    bot_message.content = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3"
+    bot_message.embeds = [Embed(url="https://youtu.be/jNQXAC9IVRw")]
+    assert await cog.input_builder.get_cleaned_content(message=as_message(fake=bot_message)) == ""
 
     embed_message = FakeMessage()
     embed_message.embeds = [embed]
@@ -4696,12 +4766,77 @@ def _link_config() -> LLMConfig:
     )
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            "threads",
+            "build_threads_context_messages",
+            "https://www.threads.com/@a/post/ABC123",
+            has_threads_context_block,
+        ),
+        (
+            "douyin",
+            "build_douyin_context_messages",
+            "https://v.douyin.com/abc123",
+            has_douyin_context_block,
+        ),
+        (
+            "bilibili",
+            "build_bilibili_context_messages",
+            "https://www.bilibili.com/video/BV1jpK86hEc8",
+            has_bilibili_context_block,
+        ),
+    ],
+)
+async def test_on_message_does_not_start_incidental_link_context(
+    memory_isolated_dir: object,
+    monkeypatch: pytest.MonkeyPatch,
+    case: tuple[str, str, str, Callable[..., bool]],
+) -> None:
+    """An incidental registered link starts no source work and injects no source claim."""
+    source, builder, url, has_context_block = case
+    cog = _cog()
+    route = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = route
+    cog.config = _link_config()
+    called: list[str] = []
+
+    async def fake_builder(
+        *,
+        url: str,
+        answer_model_is_gemini: bool,
+        gemini_client: object,
+        allow_media_ingest: bool | None = None,
+    ) -> list[dict[str, object]]:
+        """Records any call so the test proves the network-capable builder never starts."""
+        del answer_model_is_gemini, gemini_client, allow_media_ingest
+        called.append(url)
+        return []
+
+    monkeypatch.setattr(f"discordbot.cogs.gen_reply.cog.{builder}", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(content=f"<@999> unrelated question {url}", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=as_message(fake=message))
+
+    assert source not in route.link_context_sources
+    assert called == []
+    assert not has_context_block(
+        request=request_input(responses=_recorded(cog).responses, phase="answer")
+    )
+
+
 async def test_on_message_injects_douyin_context_before_current(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A QA message with a Douyin URL injects the read post just before the current message."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
     cog.config = _link_config()
     seen: list[tuple[str, bool]] = []
 
@@ -4746,7 +4881,9 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     would fail the whole reply before the builder's own text-only degradation could run.
     """
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
     cog.config = _link_config()
     cog.config.gemini_api_key = ""
     clients: list[object] = []
@@ -4781,7 +4918,9 @@ async def test_on_message_skips_a_non_post_douyin_link(
 ) -> None:
     """A profile or live-room link is not a post, so reading it would only waste a request."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
     cog.config = _link_config()
     calls: list[str] = []
 
@@ -4816,7 +4955,9 @@ async def test_on_message_douyin_media_ingest_kill_switch(
 ) -> None:
     """With the switch off the builder still runs, but is told not to fetch the media."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
     cog.config = _link_config()
     cog.config.douyin_video_enabled = False
     seen: list[bool] = []
@@ -4844,40 +4985,39 @@ async def test_on_message_douyin_media_ingest_kill_switch(
     assert seen == [False]
 
 
-async def test_on_message_cancels_douyin_context_on_image_route(
+async def test_on_message_does_not_start_douyin_context_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-QA route cancels the in-flight Douyin build instead of orphaning its download."""
+    """A non-QA route never starts Douyin work even if the router selects that source."""
     cog = _cog()
     cog.config = _link_config()
-    cancelled: list[bool] = []
+    called: list[str] = []
 
-    async def hanging_builder(
+    async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Blocks until cancelled, recording the cancellation."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        try:
-            await asyncio.sleep(30)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
+        """Records any call so the test proves routing gates the builder first."""
+        del answer_model_is_gemini, gemini_client, allow_media_ingest
+        called.append(url)
         return []
 
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Routes every message to IMAGE after yielding so the build starts."""
+        """Selects Douyin while routing the request to the image handler."""
         del reference_messages, current_message
         await asyncio.sleep(0)
-        return RouteClassification(decision="IMAGE")
+        return RouteClassification(decision="IMAGE", link_context_sources=["douyin"])
 
-    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+    async def fake_image_handler(
+        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+    ) -> None:
         """Accepts the dispatched image request."""
         del message, user_prompt
+        await context_task
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", hanging_builder
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", fake_builder
     )
     monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
@@ -4888,7 +5028,7 @@ async def test_on_message_cancels_douyin_context_on_image_route(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    assert cancelled == [True]
+    assert called == []
 
 
 async def test_on_message_douyin_grace_timeout_injects_notice(
@@ -4896,7 +5036,9 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
 ) -> None:
     """A build slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.01)
 
@@ -4925,12 +5067,393 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
     assert "did not respond in time" in str(answer)
 
 
+async def test_on_message_link_context_grace_starts_when_route_finishes(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A builder that finishes after the deadline cannot win while preparation is still running."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
+    prepare = cog._prepare_reply_context
+    cancelled: list[bool] = []
+
+    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: Message,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Keeps preparation running until after the builder has missed its deadline."""
+        await route_done.wait()
+        await asyncio.sleep(0.18)
+        return await prepare(
+            message=message,
+            history_limit=history_limit,
+            memory_enabled=memory_enabled,
+            parts_task=parts_task,
+            text_parts=text_parts,
+            route_done=route_done,
+        )
+
+    async def delayed_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Finishes after the shared grace but before the delayed resolver observes it."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(0.14)
+        except asyncio.CancelledError:
+            cancelled.append(True)
+            raise
+        return _douyin_block()
+
+    monkeypatch.setattr(cog, "_prepare_reply_context", delayed_prepare)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", delayed_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    )
+    await cog.on_message(message=as_message(fake=message))
+
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert "did not respond in time" in str(answer)
+    assert cancelled == [True]
+
+
+async def test_on_message_keeps_link_context_finished_before_deadline(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A builder completed before the deadline remains usable after delayed preparation."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
+    prepare = cog._prepare_reply_context
+
+    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: Message,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Delays resolution beyond the builder deadline without delaying the builder itself."""
+        await route_done.wait()
+        await asyncio.sleep(0.18)
+        return await prepare(
+            message=message,
+            history_limit=history_limit,
+            memory_enabled=memory_enabled,
+            parts_task=parts_task,
+            text_parts=text_parts,
+            route_done=route_done,
+        )
+
+    async def immediate_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Completes before preparation consumes the post-route grace."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        return _douyin_block()
+
+    monkeypatch.setattr(cog, "_prepare_reply_context", delayed_prepare)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", immediate_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    )
+    await cog.on_message(message=as_message(fake=message))
+
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert has_douyin_context_block(request=answer)
+    assert "did not respond in time" not in str(answer)
+
+
+async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Resolver lets a deadline-cancelled builder finish cleanup before injecting its notice."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.04)
+    prepare = cog._prepare_reply_context
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    second_cancellation = asyncio.Event()
+    cancellation_count = 0
+
+    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: Message,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Lets the builder hit its deadline before the resolver starts awaiting it."""
+        await route_done.wait()
+        await asyncio.sleep(0.1)
+        return await prepare(
+            message=message,
+            history_limit=history_limit,
+            memory_enabled=memory_enabled,
+            parts_task=parts_task,
+            text_parts=text_parts,
+            route_done=route_done,
+        )
+
+    async def cleanup_bound_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Waits for an explicit cleanup release after its first cancellation."""
+        nonlocal cancellation_count
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancellation_count += 1
+            cleanup_started.set()
+            try:
+                await cleanup_release.wait()
+            except asyncio.CancelledError:
+                cancellation_count += 1
+                second_cancellation.set()
+                raise
+            raise
+        return _douyin_block()
+
+    monkeypatch.setattr(cog, "_prepare_reply_context", delayed_prepare)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", cleanup_bound_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    )
+    message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
+    try:
+        await asyncio.wait_for(fut=cleanup_started.wait(), timeout=1)
+        await asyncio.sleep(0.12)
+        assert cancellation_count == 1
+        assert not second_cancellation.is_set()
+        assert not message_task.done()
+    finally:
+        cleanup_release.set()
+        await message_task
+
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert "did not respond in time" in str(answer)
+
+
+async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup(  # noqa: PLR0915 -- controls the complete cancellation timeline
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Outer cancellation waits for a deadline-owned builder cleanup before propagating."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.04)
+    prepare = cog._prepare_reply_context
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    second_cancellation = asyncio.Event()
+    cancellation_count = 0
+
+    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: Message,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
+        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Lets the builder reach cleanup before the resolver starts waiting on it."""
+        await route_done.wait()
+        await asyncio.sleep(0.1)
+        return await prepare(
+            message=message,
+            history_limit=history_limit,
+            memory_enabled=memory_enabled,
+            parts_task=parts_task,
+            text_parts=text_parts,
+            route_done=route_done,
+        )
+
+    async def cleanup_bound_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Requires one cleanup release after the deadline cancellation."""
+        nonlocal cancellation_count
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancellation_count += 1
+            cleanup_started.set()
+            try:
+                await cleanup_release.wait()
+            except asyncio.CancelledError:
+                cancellation_count += 1
+                second_cancellation.set()
+                raise
+            raise
+        return _douyin_block()
+
+    monkeypatch.setattr(cog, "_prepare_reply_context", delayed_prepare)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", cleanup_bound_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://v.douyin.com/abc123", author=FakeAuthor(user_id=1)
+    )
+    message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
+    await asyncio.wait_for(fut=cleanup_started.wait(), timeout=1)
+    await asyncio.sleep(0.12)
+    message_task.cancel()
+    try:
+        await asyncio.sleep(0.02)
+        assert cancellation_count == 1
+        assert not second_cancellation.is_set()
+        assert not message_task.done()
+    finally:
+        cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await message_task
+    assert cancellation_count == 1
+
+
+async def test_deadline_bound_task_outer_cancel_before_deadline_cancels_builder() -> None:
+    """An outer cancellation before the deadline owns and drains the still-running builder."""
+    builder_started = asyncio.Event()
+    builder_cancelled = asyncio.Event()
+
+    async def pending_builder() -> None:
+        """Runs until the resolver cancellation owns it."""
+        builder_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            builder_cancelled.set()
+            raise
+
+    event_loop = asyncio.get_running_loop()
+    deadline = event_loop.time() + 5
+    builder_task = asyncio.create_task(
+        coro=_run_until_deadline(awaitable=pending_builder(), deadline=deadline)
+    )
+    resolver_task = asyncio.create_task(
+        coro=_await_deadline_bound_task(task=builder_task, deadline=deadline, label="test")
+    )
+    await asyncio.wait_for(fut=builder_started.wait(), timeout=1)
+    resolver_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await resolver_task
+    assert builder_cancelled.is_set()
+    assert builder_task.done()
+
+
+async def test_run_until_deadline_keeps_result_completed_before_delayed_resume() -> None:
+    """A completed builder wins even if a briefly blocked loop resumes its waiter after deadline."""
+    event_loop = asyncio.get_running_loop()
+    result_future = event_loop.create_future()
+    result_future.add_done_callback(lambda _: time.sleep(0.05))
+    event_loop.call_soon(result_future.set_result, "ready")
+
+    result = await _run_until_deadline(awaitable=result_future, deadline=event_loop.time() + 0.02)
+
+    assert result == "ready"
+
+
+async def test_on_message_selected_link_contexts_share_one_post_route_grace(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sequential resolution cannot grant every selected builder a fresh timeout."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["threads", "douyin"]
+    )
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
+
+    async def delayed_threads_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
+    ) -> list[dict[str, object]]:
+        """Uses most of the shared budget before the first registry entry resolves."""
+        del url, answer_model_is_gemini, gemini_client
+        await asyncio.sleep(0.14)
+        return _threads_block()
+
+    async def delayed_douyin_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Would finish under a second fresh timeout, but not the same shared deadline."""
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        await asyncio.sleep(0.22)
+        return _douyin_block()
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", delayed_threads_builder
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_douyin_context_messages", delayed_douyin_builder
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content=(
+            "<@999> 這兩個在講什麼 https://www.threads.com/@a/post/ABC123 "
+            "https://v.douyin.com/abc123"
+        ),
+        author=FakeAuthor(user_id=1),
+    )
+    await cog.on_message(message=as_message(fake=message))
+
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert str(answer).count("did not respond in time") == 2
+
+
 async def test_on_message_injects_threads_context_before_current(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A QA message with a Threads URL injects the parsed post just before the current message."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["threads"]
+    )
     cog.config = _link_config()
     seen_urls: list[str] = []
 
@@ -4976,7 +5499,9 @@ async def test_on_message_injects_threads_context_from_the_replied_to_message(
     about the discussion has nothing else to answer from.
     """
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["threads"]
+    )
     cog.config = _link_config()
     seen_urls: list[str] = []
 
@@ -5033,7 +5558,9 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     """Only Threads widened to the reply chain; the clip sources stay on the current message."""
     builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["douyin", "bilibili"]
+    )
     cog.config = _link_config()
     called: list[str] = []
 
@@ -5061,39 +5588,38 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     assert not has_block(request=request_input(responses=_recorded(cog).responses, phase="answer"))
 
 
-async def test_on_message_cancels_threads_context_on_image_route(
+async def test_on_message_does_not_start_threads_context_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-QA route cancels the in-flight Threads parse instead of orphaning it."""
+    """A non-QA route never starts Threads work even if the router selects that source."""
     cog = _cog()
-    cancelled: list[bool] = []
+    called: list[str] = []
 
-    async def hanging_builder(
+    async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object
     ) -> list[dict[str, object]]:
-        """Blocks until cancelled, recording the cancellation."""
-        del url, answer_model_is_gemini, gemini_client
-        try:
-            await asyncio.sleep(30)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
+        """Records any call so the test proves routing gates the builder first."""
+        del answer_model_is_gemini, gemini_client
+        called.append(url)
         return []
 
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Routes every message to IMAGE after yielding so the parse starts."""
+        """Selects Threads while routing the request to the image handler."""
         del reference_messages, current_message
         await asyncio.sleep(0)
-        return RouteClassification(decision="IMAGE")
+        return RouteClassification(decision="IMAGE", link_context_sources=["threads"])
 
-    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+    async def fake_image_handler(
+        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+    ) -> None:
         """Accepts the dispatched image request."""
         del message, user_prompt
+        await context_task
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", hanging_builder
+        "discordbot.cogs.gen_reply.cog.build_threads_context_messages", fake_builder
     )
     monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
@@ -5103,7 +5629,7 @@ async def test_on_message_cancels_threads_context_on_image_route(
         content="<@999> draw https://www.threads.com/@a/post/ABC123", author=FakeAuthor(user_id=1)
     )
     await cog.on_message(message=as_message(fake=message))
-    assert cancelled == [True]
+    assert called == []
 
 
 async def test_on_message_skips_threads_context_without_url(
@@ -5111,7 +5637,9 @@ async def test_on_message_skips_threads_context_without_url(
 ) -> None:
     """A message with no Threads URL never starts the parse and injects no block."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["threads"]
+    )
     cog.config = _link_config()
     called: list[str] = []
 
@@ -5142,7 +5670,9 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
 ) -> None:
     """A parse slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["threads"]
+    )
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.01)
 
@@ -5179,7 +5709,9 @@ async def test_on_message_injects_bilibili_context_before_current(
 ) -> None:
     """A QA message with a Bilibili URL injects the read video just before the current message."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["bilibili"]
+    )
     cog.config = _link_config()
     seen: list[tuple[str, bool]] = []
 
@@ -5220,7 +5752,9 @@ async def test_on_message_skips_a_non_video_bilibili_link(
 ) -> None:
     """A live-room or space link is not a watchable video, so the build never starts."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["bilibili"]
+    )
     cog.config = _link_config()
     calls: list[str] = []
 
@@ -5255,7 +5789,9 @@ async def test_on_message_bilibili_media_ingest_kill_switch(
 ) -> None:
     """With the switch off the builder still runs, but is told not to fetch the media."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["bilibili"]
+    )
     cog.config = _link_config()
     cog.config.bilibili_video_enabled = False
     seen: list[bool] = []
@@ -5284,40 +5820,39 @@ async def test_on_message_bilibili_media_ingest_kill_switch(
     assert seen == [False]
 
 
-async def test_on_message_cancels_bilibili_context_on_image_route(
+async def test_on_message_does_not_start_bilibili_context_on_image_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A non-QA route cancels the in-flight Bilibili build instead of orphaning its download."""
+    """A non-QA route never starts Bilibili work even if the router selects that source."""
     cog = _cog()
     cog.config = _link_config()
-    cancelled: list[bool] = []
+    called: list[str] = []
 
-    async def hanging_builder(
+    async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Blocks until cancelled, recording the cancellation."""
-        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
-        try:
-            await asyncio.sleep(30)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
+        """Records any call so the test proves routing gates the builder first."""
+        del answer_model_is_gemini, gemini_client, allow_media_ingest
+        called.append(url)
         return []
 
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Routes every message to IMAGE after yielding so the build starts."""
+        """Selects Bilibili while routing the request to the image handler."""
         del reference_messages, current_message
         await asyncio.sleep(0)
-        return RouteClassification(decision="IMAGE")
+        return RouteClassification(decision="IMAGE", link_context_sources=["bilibili"])
 
-    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+    async def fake_image_handler(
+        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+    ) -> None:
         """Accepts the dispatched image request."""
         del message, user_prompt
+        await context_task
 
     monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", hanging_builder
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", fake_builder
     )
     monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_handle_image_reply", fake_image_handler)
@@ -5329,7 +5864,7 @@ async def test_on_message_cancels_bilibili_context_on_image_route(
     )
     await cog.on_message(message=as_message(fake=message))
 
-    assert cancelled == [True]
+    assert called == []
 
 
 async def test_on_message_bilibili_keyless_disables_media_ingest(
@@ -5341,7 +5876,9 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
     while holding no client to upload with.
     """
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["bilibili"]
+    )
     cog.config = _link_config()
     cog.config.gemini_api_key = ""
     seen: list[tuple[object, bool]] = []
@@ -5373,12 +5910,7 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
 async def test_on_message_finally_backstop_cancels_link_tasks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pipeline failure before the QA resolve still cancels the in-flight link build.
-
-    The link tasks start before the route call, so a raising route reaches the finally with
-    the dict populated; the backstop there is the only thing cancelling a multi-hundred-MB
-    download on that path.
-    """
+    """A failure after QA routing still cancels its selected in-flight link build."""
     cog = _cog()
     cog.config = _link_config()
     cancelled: list[bool] = []
@@ -5395,13 +5927,13 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
             raise
         return []
 
-    async def raising_route(
+    async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Fails the pipeline after yielding so the build has started."""
+        """Selects Bilibili on QA so its builder starts after routing."""
         del reference_messages, current_message
         await asyncio.sleep(0)
-        raise RuntimeError("route exploded")
+        return RouteClassification(decision="QA", link_context_sources=["bilibili"])
 
     async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
         message: FakeMessage,
@@ -5409,16 +5941,18 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
         memory_enabled: bool,
         parts_task: object,
         text_parts: object,
-        route_done: object,
+        route_done: asyncio.Event,
     ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
-        return ReplyContext()
+        """Fails after routing and yields once so the selected builder is in flight."""
+        del message, history_limit, memory_enabled, parts_task, text_parts
+        await route_done.wait()
+        await asyncio.sleep(0)
+        raise RuntimeError("prep exploded")
 
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", hanging_builder
     )
-    monkeypatch.setattr(cog, "_route_classify", raising_route)
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
     monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
 
@@ -5431,12 +5965,92 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
     assert cancelled == [True]
 
 
+async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prep failure drains a deadline-owned builder cleanup without cancelling it twice."""
+    cog = _cog()
+    cog.config = _link_config()
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.04)
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+    second_cancellation = asyncio.Event()
+    cancellation_count = 0
+
+    async def cleanup_bound_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Waits in cleanup after the deadline sends its first cancellation."""
+        nonlocal cancellation_count
+        del url, answer_model_is_gemini, gemini_client, allow_media_ingest
+        try:
+            await asyncio.sleep(5)
+        except asyncio.CancelledError:
+            cancellation_count += 1
+            cleanup_started.set()
+            try:
+                await cleanup_release.wait()
+            except asyncio.CancelledError:
+                cancellation_count += 1
+                second_cancellation.set()
+                raise
+            raise
+        return []
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Selects Bilibili so the deadline-owned builder starts."""
+        del message, reference_messages, current_message
+        return RouteClassification(decision="QA", link_context_sources=["bilibili"])
+
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
+        route_done: asyncio.Event,
+    ) -> ReplyContext:
+        """Fails while the selected builder still owns its deadline cancellation cleanup."""
+        del message, history_limit, memory_enabled, parts_task, text_parts
+        await route_done.wait()
+        await cleanup_started.wait()
+        raise RuntimeError("prep exploded")
+
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.build_bilibili_context_messages", cleanup_bound_builder
+    )
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(
+        content="<@999> 這在講什麼 https://www.bilibili.com/video/BV1jpK86hEc8",
+        author=FakeAuthor(user_id=1),
+    )
+    message_task = asyncio.create_task(coro=cog.on_message(message=as_message(fake=message)))
+    try:
+        await asyncio.wait_for(fut=cleanup_started.wait(), timeout=1)
+        await asyncio.sleep(0.02)
+        assert cancellation_count == 1
+        assert not second_cancellation.is_set()
+        assert not message_task.done()
+    finally:
+        cleanup_release.set()
+        await message_task
+
+    assert cancellation_count == 1
+
+
 async def test_on_message_bilibili_grace_timeout_injects_notice(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A build slower than the post-route grace injects a timeout notice; the answer streams."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=["bilibili"]
+    )
     cog.config = _link_config()
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.01)
 
@@ -5466,17 +6080,42 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
     assert "did not respond in time" in str(answer)
 
 
-async def test_on_message_orders_link_blocks_in_registry_order(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("selected_sources", "expected_separators"),
+    [
+        (
+            ["threads", "douyin", "bilibili"],
+            [
+                THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
+                DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0],
+                BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0],
+            ],
+        ),
+        (
+            ["bilibili", "threads"],
+            [
+                THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
+                BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0],
+            ],
+        ),
+    ],
+)
+async def test_on_message_orders_selected_link_blocks_in_registry_order(
+    memory_isolated_dir: object,
+    monkeypatch: pytest.MonkeyPatch,
+    selected_sources: list[Literal["threads", "douyin", "bilibili"]],
+    expected_separators: list[str],
 ) -> None:
-    """One message carrying several readable links injects the blocks in registry order.
+    """Selected sources are injected in registry order, not URL or router-return order.
 
     The URLs are pasted in reverse registry order on purpose: the splice must follow
     `LINK_CONTEXT_SOURCES` order (threads, douyin, bilibili), not text order, so the answer
     input stays deterministic however the user arranged the links.
     """
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=selected_sources
+    )
     cog.config = _link_config()
 
     async def fake_threads_builder(
@@ -5524,13 +6163,18 @@ async def test_on_message_orders_link_blocks_in_registry_order(
 
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
-    threads_index = headers.index(THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0])
-    douyin_index = headers.index(DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0])
-    bilibili_index = headers.index(BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0])
     current_index = next(
         index for index, head in enumerate(headers) if head.startswith("==== Current Message")
     )
-    assert threads_index < douyin_index < bilibili_index < current_index
+    selected_indices = [headers.index(separator) for separator in expected_separators]
+    assert selected_indices == sorted(selected_indices)
+    assert all(index < current_index for index in selected_indices)
+    all_separators = {
+        THREADS_CONTEXT_SEPARATOR.split("\n", 1)[0],
+        DOUYIN_CONTEXT_SEPARATOR.split("\n", 1)[0],
+        BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0],
+    }
+    assert all(separator not in headers for separator in all_separators - set(expected_separators))
 
 
 def test_reply_context_message_list_orders_hist_ref_current() -> None:
@@ -6962,21 +7606,32 @@ async def test_streamer_footer_shows_route_effort(economy_isolated_db: None) -> 
 async def test_route_classify_carries_decision_and_defaults_qa() -> None:
     """The route classifies the reply mode; unparsed output falls back to QA."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="IMAGE")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="IMAGE", link_context_sources=["threads", "bilibili"]
+    )
     message = FakeMessage(content="draw a cat", author=FakeAuthor(user_id=1))
-    assert (await _route(cog=cog, message=message)).decision == "IMAGE"
+    routed = await _route(cog=cog, message=message)
+    assert routed.decision == "IMAGE"
+    assert routed.link_context_sources == ["threads", "bilibili"]
 
     _recorded(cog).responses.output_parsed = None
-    assert (await _route(cog=cog, message=message)).decision == "QA"
+    fallback = await _route(cog=cog, message=message)
+    assert fallback.decision == "QA"
+    assert fallback.link_context_sources == []
 
 
 async def test_route_url_summary_downgrades_to_qa() -> None:
-    """A SUMMARY classification on a message carrying a URL is steered back to QA."""
+    """A URL SUMMARY becomes QA without losing either content-ingestion decision."""
     cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(decision="SUMMARY")
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="SUMMARY", watch_video=True, link_context_sources=["threads"]
+    )
     message = FakeMessage(content="整理 https://example.test/a", author=FakeAuthor(user_id=1))
 
-    assert (await _route(cog=cog, message=message)).decision == "QA"
+    routed = await _route(cog=cog, message=message)
+    assert routed.decision == "QA"
+    assert routed.watch_video is True
+    assert routed.link_context_sources == ["threads"]
 
 
 async def test_grade_effort_carries_grade_and_defaults_high() -> None:
