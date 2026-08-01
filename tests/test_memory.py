@@ -2475,6 +2475,120 @@ async def test_db_list_resumable_excludes_done(memory_isolated_dir: Path) -> Non
     assert scopes == {"111"}
 
 
+async def test_db_logical_tokens_follow_capture_order(memory_isolated_dir: Path) -> None:
+    older = memory_db.new_token()
+    newer = memory_db.new_token()
+    await memory_db.upsert_pending(
+        scope="111", flavor="user", subject="s", transcript="older", identity="", token=older
+    )
+    await memory_db.upsert_pending(
+        scope="222", flavor="user", subject="s", transcript="newer", identity="", token=newer
+    )
+
+    older_job = await memory_db.get_job(scope="111")
+    newer_job = await memory_db.get_job(scope="222")
+    assert older_job is not None
+    assert newer_job is not None
+    assert 0 < older_job.token < newer_job.token
+
+
+async def test_db_new_process_reserves_a_newer_token_block(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    await memory_db.upsert_pending(
+        scope="111",
+        flavor="user",
+        subject="s",
+        transcript="first process",
+        identity="",
+        token=memory_db.new_token(),
+    )
+    first_job = await memory_db.get_job(scope="111")
+    assert first_job is not None
+
+    # A process restart loses its local mapping and sequence, then reserves past
+    # the durable high watermark rather than reusing the old range.
+    monkeypatch.setattr(memory_db, "_token_block_bases", {})
+    monkeypatch.setattr(memory_db, "_token_sequence", iter(range(1, 10)))
+    await memory_db.upsert_pending(
+        scope="222",
+        flavor="user",
+        subject="s",
+        transcript="second process",
+        identity="",
+        token=memory_db.new_token(),
+    )
+    second_job = await memory_db.get_job(scope="222")
+    assert second_job is not None
+    assert second_job.token > first_job.token
+
+
+async def test_db_clear_job_scrubs_payload_and_is_not_resumable(memory_isolated_dir: Path) -> None:
+    """A durable clear marker must retain no extractable conversation content."""
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="target_user_id: 123456789",
+        transcript="要清除的逐字稿",
+        identity=IDENTITY,
+        token=7,
+    )
+    await memory_db.mark_failed(scope=USER_SCOPE, token=7, error="provider leaked this error")
+
+    assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=8) is True
+
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.token == 8
+    assert job.transcript is None
+    assert job.subject == ""
+    assert job.identity == ""
+    assert job.last_error is None
+    assert USER_SCOPE not in {job.scope for job in await memory_db.list_resumable()}
+
+
+async def test_db_clear_job_rejects_stale_upsert_but_allows_a_newer_turn(
+    memory_isolated_dir: Path,
+) -> None:
+    await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=20)
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="stale subject",
+        transcript="stale transcript",
+        identity="stale identity",
+        token=19,
+    )
+
+    tombstone = await memory_db.get_job(scope=USER_SCOPE)
+    assert tombstone is not None
+    assert tombstone.status == "cleared"
+    assert tombstone.token == 20
+    assert tombstone.transcript is None
+    assert tombstone.subject == ""
+    assert tombstone.identity == ""
+
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="new subject",
+        transcript="new transcript",
+        identity="new identity",
+        token=21,
+    )
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "pending"
+    assert job.token == 21
+    assert job.transcript == "new transcript"
+    assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=20) is False
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "pending"
+    assert job.token == 21
+
+
 async def test_pipeline_success_marks_done_and_clears_transcript(
     memory_isolated_dir: Path,
 ) -> None:
@@ -3200,14 +3314,19 @@ def _populate_every_tier() -> None:
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 輕鬆")
 
 
-async def test_db_delete_job_removes_the_row_and_is_idempotent(memory_isolated_dir: Path) -> None:
+async def test_db_clear_job_keeps_an_empty_tombstone_and_is_idempotent(
+    memory_isolated_dir: Path,
+) -> None:
     await memory_db.upsert_pending(
         scope=USER_SCOPE, flavor="user", subject="s", transcript="逐字稿", identity="", token=1
     )
-    assert await memory_db.delete_job(scope=USER_SCOPE) is True
-    assert await memory_db.get_job(scope=USER_SCOPE) is None
-    # Idempotent: a repeated clear reports that there was nothing left to remove.
-    assert await memory_db.delete_job(scope=USER_SCOPE) is False
+    assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=2) is True
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
+    # The durable marker remains, but a second clear reports no user data removed.
+    assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=3) is False
 
 
 async def test_clear_scope_memory_removes_every_tier(memory_isolated_dir: Path) -> None:
@@ -3230,12 +3349,21 @@ async def test_clear_scope_memory_removes_every_tier(memory_isolated_dir: Path) 
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert read_detail_tail(scope=USER_SCOPE, max_chars=10_000) == ""
     assert not (memory_isolated_dir / str(USER_ID)).exists()
-    # Nothing the restart sweep could resume, and no transcript left in reply.db.
-    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    # Nothing the restart sweep could resume, and reply.db retains no transcript.
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
     assert await memory_db.list_resumable() == []
 
 
 async def test_clear_scope_memory_reports_nothing_to_clear(memory_isolated_dir: Path) -> None:
+    assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is False
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
+    # The permanent marker itself is not user memory, so a repeated clear stays empty.
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is False
 
 
@@ -3252,7 +3380,33 @@ async def test_clear_scope_memory_removes_a_staged_turn_without_files(
         token=1,
     )
     assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
-    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
+
+
+async def test_clear_token_advances_past_legacy_wall_clock_tokens(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    legacy_token = 4_000_000_000_000_000_000
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="s",
+        transcript="clear this after the clock moves backwards",
+        identity="",
+        token=legacy_token,
+    )
+    monkeypatch.setattr(time, "time_ns", lambda: 1)
+
+    assert await pipeline.clear_scope_memory(scope=USER_SCOPE) is True
+
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.token > legacy_token
+    assert job.transcript is None
 
 
 async def test_clear_scope_memory_drops_the_deferred_replay(
@@ -3292,13 +3446,16 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
     await _wait_for_inflight()
     await _wait_for_persisted_writes()
     # Neither the in-flight turn nor the dropped replay may write anything back,
-    # and the clear takes the row outright, so nothing is left to resume at all.
+    # and the clear leaves only a scrubbed marker that restart cannot resume.
     # The unwrapped `get_job` is what makes that second claim mean something:
     # `safe_list_resumable` degrades a read failure to `[]`, so on its own it can
     # pass without having looked.
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert await pipeline.safe_list_resumable() == []
-    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
 
 
 async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_dir: Path) -> None:
@@ -3309,7 +3466,7 @@ async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_
     would put the erased conversation back on disk just to retire it again, and
     leave its removal resting on the best-effort `mark_done`.
     """
-    mark_cleared(scope=USER_SCOPE)
+    await pipeline.clear_scope_memory(scope=USER_SCOPE)
     await pipeline._stage_turn(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
@@ -3319,17 +3476,20 @@ async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_
         captured_at=time.monotonic() - 1,
     )
 
-    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
 
 
-async def test_a_row_write_racing_the_clear_retires_itself(
+async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A row that commits just after the clear's delete must retire itself.
+    """A stale write after clear must not depend on best-effort `mark_done`.
 
-    The clear cannot delete a row that has not been written yet, so the writer
-    re-reads the clear stamp after committing. Without that the row survives with
-    the erased conversation and the restart sweep resumes it.
+    This forces the clear's reply.db commit ahead of the delayed stale upsert.
+    If staging tried to repair that race with `mark_done`, an outage there would
+    leave the erased transcript resumable. The clear token itself must reject it.
     """
     captured_at = time.monotonic()
     write_started = asyncio.Event()
@@ -3350,7 +3510,11 @@ async def test_a_row_write_racing_the_clear_retires_itself(
             token=token,
         )
 
+    async def exploding_mark_done(*, scope: str, token: int) -> None:
+        raise RuntimeError("mark_done unavailable")
+
     monkeypatch.setattr(memory_db, "upsert_pending", slow_upsert)
+    monkeypatch.setattr(memory_db, "mark_done", exploding_mark_done)
     staging = asyncio.create_task(
         pipeline._stage_turn(
             scope=USER_SCOPE,
@@ -3366,12 +3530,83 @@ async def test_a_row_write_racing_the_clear_retires_itself(
     release.set()
     await staging
 
-    # The row landed after the delete, so nothing but the writer could retire it.
-    assert await pipeline.safe_list_resumable() == []
+    # The delayed stale write cannot overwrite a durable clear tombstone.
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
-    assert job.status == "done"
+    assert job.status == "cleared"
     assert job.transcript is None
+    assert job.subject == ""
+    assert job.identity == ""
+    assert USER_SCOPE not in {row.scope for row in await memory_db.list_resumable()}
+
+
+async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The clear commit survives process exit after a stale staging commit."""
+    captured_at = time.monotonic()
+    write_committed = asyncio.Event()
+    never_release = asyncio.Event()
+    real_upsert = memory_db.upsert_pending
+
+    async def committed_upsert(  # noqa: PLR0913 -- mirrors the patched signature
+        *, scope: str, flavor: str, subject: str, transcript: str, identity: str, token: int
+    ) -> None:
+        await real_upsert(
+            scope=scope,
+            flavor=memory_db.cast_flavor(value=flavor),
+            subject=subject,
+            transcript=transcript,
+            identity=identity,
+            token=token,
+        )
+        write_committed.set()
+        await never_release.wait()
+
+    monkeypatch.setattr(memory_db, "upsert_pending", committed_upsert)
+    staging = asyncio.create_task(
+        pipeline._stage_turn(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}",
+            transcript="清除前的對話",
+            identity=IDENTITY,
+            token=1,
+            captured_at=captured_at,
+        )
+    )
+    await write_committed.wait()
+
+    await pipeline.clear_scope_memory(scope=USER_SCOPE)
+    staging.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await staging
+
+    # A new process has no monotonic clear stamp, so only reply.db can protect it.
+    monkeypatch.setattr("discordbot.services.memory.store._cleared_at", {})
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
+    assert await memory_db.list_resumable() == []
+
+
+async def test_clear_file_failure_leaves_tombstone(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _populate_every_tier()
+
+    def exploding_clear(*, scope: str) -> bool:
+        raise PermissionError("tone.md is read-only")
+
+    monkeypatch.setattr(pipeline, "clear_memory", exploding_clear)
+    with pytest.raises(PermissionError, match=r"tone\.md is read-only"):
+        await pipeline.clear_scope_memory(scope=USER_SCOPE)
+
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
+    assert "新記憶" in _memory_text()
 
 
 async def test_memory_update_scheduled_before_a_clear_never_starts(
@@ -3397,8 +3632,11 @@ async def test_memory_update_scheduled_before_a_clear_never_starts(
     await _wait_for_inflight()
 
     assert count_raw_entries(scope=USER_SCOPE) == 0
-    # The aborted turn stages no row either, so the restart sweep has nothing.
-    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    # The aborted turn cannot replace the clear marker, and restart has nothing.
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
 
 
 async def test_memory_clear_command_only_opens_the_confirmation(memory_isolated_dir: Path) -> None:
@@ -3437,7 +3675,10 @@ async def test_memory_clear_confirm_button_erases_memory(memory_isolated_dir: Pa
     await _confirm_button(view=view).callback(as_interaction(fake=interaction))
 
     assert _memory_text() == ""
-    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
     # Acked before the work so a slow clear cannot miss Discord's response window.
     assert interaction.response.deferred is True
     payload = interaction.edits[-1]
@@ -3504,10 +3745,10 @@ async def test_memory_clear_failure_keeps_memory_and_says_so(
     """A reply.db failure must not half-clear: the row deletion runs before any unlink."""
     _populate_every_tier()
 
-    async def exploding_delete(*, scope: str) -> bool:
+    async def exploding_clear_job(*, scope: str, flavor: str, token: int) -> bool:
         raise RuntimeError("reply.db unavailable")
 
-    monkeypatch.setattr(memory_db, "delete_job", exploding_delete)
+    monkeypatch.setattr(memory_db, "clear_job", exploding_clear_job)
     view = MemoryClearConfirmView(scope=USER_SCOPE)
     interaction = FakeInteraction()
 
@@ -3555,8 +3796,11 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
     embed = interaction.edits[-1]["embed"]
     assert isinstance(embed, Embed)
     assert "沒有完成" in (embed.description or "")
-    # The row went before the files, so a retry is what finishes the job.
-    assert await memory_db.get_job(scope=USER_SCOPE) is None
+    # The durable marker goes before the files, so recovery can finish later.
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "cleared"
+    assert job.transcript is None
 
 
 async def test_memory_clear_view_timeout_disables_buttons() -> None:
