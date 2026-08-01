@@ -6,9 +6,9 @@ yet flushed to `raw.md`. Success is *recorded* (`status='done'`, `transcript`
 cleared) rather than the row deleted, so the table doubles as an inspectable
 per-scope processing state; an LLM failure parks the row at `status='failed'`
 with its transcript kept, so the restart sweep retries it without any timeout
-tuning. A user-requested memory clear is the one caller that deletes a row
-outright (`delete_job`), since the staged transcript is exactly the content the
-clear erases and a surviving row would resume it after the next restart.
+tuning. A user-requested memory clear replaces the row with a transcript-free
+`cleared` tombstone. Its ordering token prevents a staging write captured before
+the clear from recreating the erased transcript after the tombstone commits.
 
 Engine, PRAGMA hooks, and the schema bootstrap follow `cogs/research/database.py`
 exactly: a module-level `AsyncEngine` singleton on the shared `reply.db` (a
@@ -18,20 +18,23 @@ research's `research` table in the same file. No money columns, so no
 `StoredInteger`. Like research it avoids `from __future__ import annotations`:
 SQLAlchemy resolves the `Mapped[datetime]` columns at class-definition time.
 
-The version / ordering token is `time.time_ns()` (an INTEGER), not a `DateTime`:
-`database_now()` is Asia/Taipei wall-clock with microsecond collisions and
-round-trips tz-naive under aiosqlite, so it cannot back a per-turn newest-wins
-guard; an integer nanosecond clock is per-scope-unique in practice (two turns for
-one scope are a whole reply cycle apart) and stays comparable across restarts.
-The newest-wins upsert and the terminal updates are guarded on this token, so a
-stale turn's write no-ops once a newer turn has overwritten the scope's row.
+The version / ordering token is a logical INTEGER, not a wall clock. Each process
+reserves one range from `memory_token_clock`, above both the prior watermark and
+every legacy token already in `memory_job`, then assigns turns and clears in
+capture order inside that range. This keeps newest-wins comparable across
+restarts without letting an NTP clock correction make a clear older than the
+transcript it must erase. The upsert and terminal updates are guarded on this
+token, so a stale turn's write no-ops once a newer turn has overwritten the
+scope's row.
 """
 
 from typing import Any, Literal, cast
 from datetime import datetime
+from itertools import count
+from threading import Lock
 
 from pydantic import Field, BaseModel
-from sqlalchemy import Text, String, Integer, DateTime, CursorResult, event, delete, select, update
+from sqlalchemy import Text, String, Integer, DateTime, func, text, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -43,11 +46,21 @@ from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite
 # Memory flavor stored per row so the restart sweep rebuilds the matching extractor.
 MemoryJobFlavor = Literal["user", "server"]
 # Lifecycle of a persisted extraction turn, stored in the `status` column.
-MemoryJobStatus = Literal["pending", "done", "failed"]
+MemoryJobStatus = Literal["pending", "done", "failed", "cleared"]
 # `last_error` is a bounded blurb, not a full traceback.
 _MAX_ERROR_CHARS = 500
+# One process would need a trillion captured memory events to exhaust its range.
+_TOKEN_BLOCK_SIZE = 1_000_000_000_000
+_SQLITE_MAX_INTEGER = (1 << 63) - 1
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
+
+# Negative values are process-local placeholders. The first database operation
+# maps them into a range reserved durably from SQLite; the same placeholder then
+# resolves to the same positive token for every later terminal update.
+_token_sequence = count(start=1)
+_token_block_bases: dict[AsyncEngine, int] = {}
+_token_state_lock = Lock()
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
@@ -69,7 +82,7 @@ def _configure_sqlite_on_checkout(
 
 
 class Base(DeclarativeBase):
-    """Base class for the memory_job ORM model (its own metadata, not research's)."""
+    """Base class for the memory ORM models (their own metadata, not research's)."""
 
     pass
 
@@ -84,7 +97,7 @@ class MemoryJobRow(Base):
         transcript: The rendered phase-1 input; set to NULL once the turn is ``done``.
         identity: Single-line identity stamped into main.md, persisted so resume needs no Discord context.
         status: Lifecycle status (see ``MemoryJobStatus``).
-        token: ``time.time_ns()`` version / ordering token; guards newest-wins and the terminal update.
+        token: Logical version / ordering token; guards newest-wins and the terminal update.
         last_error: Bounded failure blurb when ``status='failed'``.
         created_at: First-write timestamp.
         updated_at: Latest-write timestamp.
@@ -106,6 +119,15 @@ class MemoryJobRow(Base):
     )
 
 
+class MemoryTokenClockRow(Base):
+    """Singleton high watermark for process-level logical token reservations."""
+
+    __tablename__ = "memory_token_clock"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    high_watermark: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class MemoryJob(BaseModel):
     """A memory_job row read back from `reply.db`."""
 
@@ -117,7 +139,7 @@ class MemoryJob(BaseModel):
     )
     identity: str = Field(..., description="Single-line identity stamped into main.md.")
     status: MemoryJobStatus = Field(..., description="Lifecycle status of the turn.")
-    token: int = Field(..., description="time.time_ns() version / ordering token.")
+    token: int = Field(..., description="Logical version / ordering token.")
     last_error: str | None = Field(..., description="Bounded failure blurb when failed.")
 
 
@@ -160,7 +182,7 @@ def cast_flavor(value: str) -> MemoryJobFlavor:
 
 def cast_status(value: str) -> MemoryJobStatus:
     """Narrows a stored status string, defaulting odd values to pending."""
-    if value in ("pending", "done", "failed"):
+    if value in ("pending", "done", "failed", "cleared"):
         return cast("MemoryJobStatus", value)
     return "pending"
 
@@ -179,6 +201,59 @@ def _row_to_model(row: MemoryJobRow) -> MemoryJob:
     )
 
 
+def new_token() -> int:
+    """Returns a process-local token placeholder in strict capture order."""
+    with _token_state_lock:
+        sequence = next(_token_sequence)
+    if sequence > _TOKEN_BLOCK_SIZE:
+        raise RuntimeError("memory token block exhausted")
+    return -sequence
+
+
+async def _reserve_token_block(*, engine: AsyncEngine) -> int:
+    """Atomically reserves a token range and returns its exclusive lower bound."""
+    async with AsyncSession(bind=engine, expire_on_commit=False) as session:
+        await session.execute(statement=text("BEGIN IMMEDIATE"))
+        clock_high = await session.scalar(
+            statement=select(MemoryTokenClockRow.high_watermark).where(MemoryTokenClockRow.id == 1)
+        )
+        job_high = await session.scalar(
+            statement=select(func.max(MemoryJobRow.token)).where(MemoryJobRow.token > 0)
+        )
+        block_base = max(clock_high or 0, job_high or 0)
+        if block_base > _SQLITE_MAX_INTEGER - _TOKEN_BLOCK_SIZE:
+            raise RuntimeError("memory token space exhausted")
+        high_watermark = block_base + _TOKEN_BLOCK_SIZE
+        stmt = insert(MemoryTokenClockRow).values(id=1, high_watermark=high_watermark)
+        await session.execute(
+            statement=stmt.on_conflict_do_update(
+                index_elements=["id"], set_={"high_watermark": high_watermark}
+            )
+        )
+        await session.commit()
+        return block_base
+
+
+async def _resolve_token(*, token: int) -> int:
+    """Maps a local placeholder to this process's durable token range."""
+    if token >= 0:
+        return token
+    sequence = -token
+    if sequence > _TOKEN_BLOCK_SIZE:
+        raise RuntimeError("memory token placeholder is outside the reserved block")
+    engine = _engine
+    with _token_state_lock:
+        block_base = _token_block_bases.get(engine)
+    if block_base is None:
+        reserved_base = await _reserve_token_block(engine=engine)
+        # Two event loops can race to reserve ranges for the same engine. Both
+        # reservations are durable and disjoint; the first cached range wins and
+        # the other is simply an unused gap.
+        with _token_state_lock:
+            block_base = _token_block_bases.setdefault(engine, reserved_base)
+    return block_base + sequence
+
+
 async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call inputs
     *,
     scope: str,
@@ -195,6 +270,7 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
     turn's row (the guard that keeps two interleaved turns consistent).
     """
     await _ensure_schema()
+    token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
         stmt = insert(MemoryJobRow).values(
@@ -231,6 +307,7 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
 async def mark_done(*, scope: str, token: int) -> None:
     """Marks a turn done and drops its now-consumed transcript (token-guarded)."""
     await _ensure_schema()
+    token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
         await session.execute(
@@ -244,6 +321,7 @@ async def mark_done(*, scope: str, token: int) -> None:
 async def mark_failed(*, scope: str, token: int, error: str) -> None:
     """Parks a turn at failed, keeping its transcript for a restart retry (token-guarded)."""
     await _ensure_schema()
+    token = await _resolve_token(token=token)
     now = _database_now()
     async with open_session() as session:
         await session.execute(
@@ -254,36 +332,67 @@ async def mark_failed(*, scope: str, token: int, error: str) -> None:
         await session.commit()
 
 
-async def delete_job(*, scope: str) -> bool:
-    """Drops a scope's row entirely, for a user-requested memory clear.
+async def clear_job(*, scope: str, flavor: MemoryJobFlavor, token: int) -> bool:
+    """Scrubs a scope's row and leaves a token-guarded clear tombstone.
 
-    Deletion rather than a `mark_done` transition, for two reasons: the row's
-    `transcript` holds the very conversation the user asked to erase, and the
-    terminal transitions are token-guarded while a clear holds no token. Removing
-    the row is also what keeps the clear whole, since `list_resumable` would
-    otherwise hand the restart sweep a turn that rebuilds the wiped memory.
+    The tombstone closes both possible commit orderings with a staging write. A
+    pending row that committed first is overwritten here; a stale upsert that
+    commits later loses the existing newest-token guard. `BEGIN IMMEDIATE` makes
+    the existence check and tombstone upsert one serialized write transaction, so
+    the caller can still distinguish an empty scope without reopening that race.
 
     Returns:
-        True when a row existed and was removed.
+        True when a non-cleared row existed and was scrubbed.
     """
     await _ensure_schema()
+    token = await _resolve_token(token=token)
+    now = _database_now()
     async with open_session() as session:
-        result = cast(
-            "CursorResult[Any]",
-            await session.execute(
-                statement=delete(MemoryJobRow).where(MemoryJobRow.scope == scope)
-            ),
+        await session.execute(statement=text("BEGIN IMMEDIATE"))
+        result = await session.execute(
+            statement=select(MemoryJobRow.status, MemoryJobRow.token).where(
+                MemoryJobRow.scope == scope
+            )
+        )
+        previous = result.one_or_none()
+        stmt = insert(MemoryJobRow).values(
+            scope=scope,
+            flavor=flavor,
+            subject="",
+            transcript=None,
+            identity="",
+            status="cleared",
+            token=token,
+            last_error=None,
+            created_at=now,
+            updated_at=now,
+        )
+        await session.execute(
+            statement=stmt.on_conflict_do_update(
+                index_elements=["scope"],
+                set_={
+                    "flavor": flavor,
+                    "subject": "",
+                    "transcript": None,
+                    "identity": "",
+                    "status": "cleared",
+                    "token": token,
+                    "last_error": None,
+                    "updated_at": now,
+                },
+                where=MemoryJobRow.token <= token,
+            )
         )
         await session.commit()
-        return bool(result.rowcount and result.rowcount > 0)
+        return previous is not None and previous.token <= token and previous.status != "cleared"
 
 
 async def list_resumable() -> list[MemoryJob]:
-    """Returns every non-`done` row, for the restart resume sweep."""
+    """Returns pending and failed rows for the restart resume sweep."""
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
-            statement=select(MemoryJobRow).where(MemoryJobRow.status != "done")
+            statement=select(MemoryJobRow).where(MemoryJobRow.status.in_(("pending", "failed")))
         )
         return [_row_to_model(row=row) for row in result.scalars().all()]
 

@@ -94,8 +94,8 @@ class _PendingMemoryUpdate(BaseModel):
             file as human-inspection metadata.
         captured_at: `time.monotonic()` when the turn was captured, so a clear
             that lands before the replay can abort it via `cleared_since`.
-        token: `time.time_ns()` version token persisted with the deferred turn's
-            DB row, reused on replay so the terminal write guards on the same id.
+        token: Process-local logical token persisted with the deferred turn's DB
+            row, reused on replay so the terminal write guards on the same id.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -124,7 +124,7 @@ class _PendingMemoryUpdate(BaseModel):
         ),
     )
     token: int = Field(
-        ..., description="time.time_ns() version token reused on replay for the DB row guard."
+        ..., description="Logical version token reused on replay for the DB row guard."
     )
 
 
@@ -181,9 +181,9 @@ def _memory_semaphore() -> asyncio.Semaphore:
 _db_tasks: set[asyncio.Task[None]] = set()
 
 # A clear and the short reply.db staging transaction must not pass each other:
-# otherwise an INSERT can commit after the clear's only DELETE. This is separate
+# otherwise an INSERT can commit after the clear's tombstone write. This is separate
 # from the minutes-long file-write lock and is held only around reply.db staging
-# or the clear's delete plus synchronous file removal.
+# or the clear's tombstone plus synchronous file removal.
 _staging_locks = KeyedLockManager[str]()
 
 
@@ -215,20 +215,12 @@ def _spawn_db(coro: Awaitable[None]) -> None:
 async def _stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's capture time
     *, scope: str, subject: str, transcript: str, identity: str, token: int, captured_at: float
 ) -> None:
-    """Stages one turn's reply.db row, retiring it again if a clear raced the write.
+    """Stages one turn only in the memory lifetime that captured it.
 
-    `clear_scope_memory` deletes the scope's row, but it cannot delete a row that
-    has not been committed yet: an INSERT landing just after that DELETE would
-    leave the restart sweep a turn carrying the erased conversation. The clear
-    stamps the scope before it deletes. A per-scope staging lock then orders the
-    INSERT and DELETE, while the checks inside that lock decide which lifetime
-    the turn belongs to.
-
-    Both checks still earn their keep. A turn already staging when the opening
-    stamp lands retires its row before the clear acquires the lock and deletes it.
-    A turn waiting behind the clear sees the closing stamp and writes nothing.
-    The latter is what makes a successful clear return with no later staging
-    transaction still able to commit the during-clear transcript.
+    The short per-scope lock serializes staging with the clear's tombstone write.
+    A row committed before a clear is scrubbed by that newer logical token. A row
+    waiting while a clear is in progress sees its closing stamp before it can
+    write, so it cannot leave a during-clear transcript for restart to resume.
     """
     async with _staging_locks.hold(key=scope):
         if cleared_since(scope=scope, started_at=captured_at):
@@ -241,10 +233,34 @@ async def _stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's cap
             identity=identity,
             token=token,
         )
-        if cleared_since(scope=scope, started_at=captured_at):
-            # Token-guarded, so it can only retire THIS turn's row, never a newer
-            # turn's; `done` also drops the transcript, which is the point here.
-            await memory_db.mark_done(scope=scope, token=token)
+
+
+async def _clear_scope_critical(scope: str) -> tuple[bool, bool]:
+    """Completes the non-interruptible durable portion of one memory clear."""
+    async with _staging_locks.hold(key=scope):
+        removed_job = await memory_db.clear_job(
+            scope=scope, flavor=flavor_of(scope=scope), token=memory_db.new_token()
+        )
+        try:
+            removed_files = delete_memory_files(scope=scope)
+        finally:
+            # A caller may cancel while this task is running, but the next memory
+            # lifetime still begins only after the tombstone and file pass finish.
+            mark_cleared(scope=scope)
+    return removed_files, removed_job
+
+
+async def _await_clear_critical(
+    task: asyncio.Task[tuple[bool, bool]],
+) -> tuple[tuple[bool, bool], bool]:
+    """Drains the clear task and reports whether its caller requested cancellation."""
+    caller_cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            caller_cancelled = True
+    return task.result(), caller_cancelled
 
 
 async def clear_scope_memory(scope: str) -> bool:
@@ -255,7 +271,8 @@ async def clear_scope_memory(scope: str) -> bool:
     still holding a pre-clear transcript in this process, the persisted phase-1
     row (whose transcript is that same conversation, and which the restart sweep
     would otherwise resume), and any in-flight update, which aborts itself once
-    `mark_cleared` has stamped the scope.
+    `mark_cleared` has stamped the scope. The DB tier remains as a scrubbed
+    `cleared` tombstone so a stale staging commit cannot recreate the transcript.
 
     Completion is the deliberate user-visible boundary. The opening stamp
     protects the erase; a closing stamp after file removal also rejects turns
@@ -266,12 +283,12 @@ async def clear_scope_memory(scope: str) -> bool:
     user-facing command behind a minutes-long consolidation. Every FILE write
     sits immediately after a `cleared_since` guard with no `await` in between,
     so an in-flight task cannot interleave one past the stamp. The much shorter
-    per-scope staging lock covers the reply.db transaction instead: an earlier
-    INSERT finishes before the DELETE, and a turn captured during the DELETE
-    cannot start staging until the closing stamp makes it abort.
+    per-scope staging lock serializes reply.db staging with the tombstone write:
+    an earlier INSERT is scrubbed by the newer tombstone, and a turn captured
+    during the clear waits for the closing stamp then writes nothing.
 
     Raises:
-        Exception: From the `memory_job` delete, the one memory DB call that is
+        Exception: From the `memory_job` tombstone write, the one memory DB call that is
             not best-effort: swallowing it would leave a resumable row that
             resurrects the memory on the next restart. It runs before the file
             deletion, so that failure alone leaves every tier in place.
@@ -289,25 +306,19 @@ async def clear_scope_memory(scope: str) -> bool:
         True when anything was actually removed.
     """
     # Stamped before anything else so a row write already in flight sees the
-    # clear on its own re-check (`_stage_turn`) and retires the row this delete
-    # is about to miss. Ordering the stamp first is what makes the delete below
-    # safe without draining or taking the minutes-long scope lock.
+    # clear on its own re-check. Ordering the stamp first is what makes the
+    # tombstone below safe without draining or taking the minutes-long scope lock.
     mark_cleared(scope=scope)
     # Drops the retained transcript now rather than waiting for the in-flight
     # task to finish and discard it; `_finish_memory_update` then finds no
     # pending turn and replays nothing.
     _pending_updates.pop(scope, None)
-    async with _staging_locks.hold(key=scope):
-        removed_job = await memory_db.delete_job(scope=scope)
-        try:
-            removed_files = delete_memory_files(scope=scope)
-        finally:
-            # The first stamp protects the erase itself. This one deliberately
-            # sets the user-visible boundary at completion. Waiting staging
-            # writers cannot proceed until this stamp is visible, so none can
-            # commit a during-clear transcript after the DELETE. Keep it on the
-            # partial-file-failure path for the same privacy boundary.
-            mark_cleared(scope=scope)
+    critical_task = asyncio.create_task(_clear_scope_critical(scope=scope))
+    (removed_files, removed_job), caller_cancelled = await _await_clear_critical(
+        task=critical_task
+    )
+    if caller_cancelled:
+        raise asyncio.CancelledError
     # Commits the deletion so the working tree stops carrying it, which is all this can
     # do: the commits before it still hold the content, and no reachable-object pruning
     # changes that. Local history outliving a clear is a recorded decision on #408.
@@ -344,7 +355,7 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
         transcript=transcript,
         extractor=extractor,
         identity=identity,
-        token=time.time_ns(),
+        token=memory_db.new_token(),
     )
 
 
@@ -452,10 +463,8 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
     if pending is None:
         return
     if cleared_since(scope=scope, started_at=pending.captured_at):
-        # The memory was cleared after this turn was captured; replaying it
-        # would write the pre-clear conversation back into storage. Mark the
-        # persisted deferred row done too (mirrors the in-flight clear branch in
-        # `_run_memory_update`) so a restart does not resume the cleared turn.
+        # The durable clear tombstone owns the privacy guarantee. This remains a
+        # best-effort cleanup for store-level clears that only stamped the process.
         _spawn_db(coro=memory_db.mark_done(scope=scope, token=pending.token))
         return
     _enqueue_memory_update(
@@ -505,17 +514,16 @@ async def _run_memory_update(  # noqa: PLR0913, PLR0911 -- schedule_memory_updat
         )
     )
     if cleared_since(scope=scope, started_at=captured_at):
-        # The clear landed while the row was being written; `_stage_turn` already
-        # retired it, so drop the turn rather than pay for an extraction whose
-        # result the guard below would discard anyway.
+        # The clear landed while the row was being written. Its durable tombstone
+        # owns the DB ordering, so drop the in-memory turn before extraction.
         return
     async with scope_lock(scope=scope), _memory_semaphore():
         draft = await extractor.extract(subject=subject, transcript=transcript)
         if cleared_since(scope=scope, started_at=captured_at):
             # Cleared while this update was in flight; dropping the result beats
-            # resurrecting deleted memory. Checked before the draft is inspected
-            # so every terminal path below retires the row instead of parking it
-            # `failed` with a transcript the restart sweep would resume.
+            # resurrecting deleted memory. The tombstone already owns the durable
+            # ordering; this terminal write is only best-effort cleanup for a
+            # process-local store clear.
             await _safe(coro=memory_db.mark_done(scope=scope, token=token))
             return
         if draft is None:
