@@ -174,7 +174,8 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "Tag me with the link instead and I'll watch it and answer about it.\n\n"
                     "Bilibili\n"
                     "Tag me with a Bilibili video link and I'll watch the video and answer "
-                    "about it."
+                    "about it. A Threads, Douyin, or Bilibili link that is only incidental "
+                    "to your request is not fetched."
                 ),
             ),
         },
@@ -279,6 +280,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "改成 tag 我並附上連結,我就會看過影片再回答你。\n\n"
                     "Bilibili\n"
                     "tag 我並附上 B 站影片連結,我會看過影片再回答你。"
+                    "如果 Threads 或抖音或 B 站連結只是順帶出現在問題裡,我不會另外抓取它。"
                 ),
             ),
         },
@@ -386,6 +388,7 @@ HELP_CONTENT: dict[Locale | str, HelpGuide] = {
                     "メンション付きで送ると、動画を見てその内容に答えます。\n\n"
                     "ビリビリ\n"
                     "メンション付きで Bilibili の動画リンクを送ると、動画を見てその内容に答えます。"
+                    "Threads や抖音や Bilibili のリンクが質問と無関係なら取得しません。"
                 ),
             ),
         },

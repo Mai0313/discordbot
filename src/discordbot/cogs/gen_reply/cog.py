@@ -171,13 +171,13 @@ MEMORY_CONTEXT_TARGET_USERS = 8
 # route. Tune against the `gen_reply effort done` latency log.
 EFFORT_GRACE_SECONDS = 5.0
 
-# A linked-post context build rides the same route_done gate: it runs unbounded while the
-# route is in flight and gets only this grace once the route returns. Far wider than
-# memory/effort because it fetches the post's media and uploads it to the Files API, and
-# because answering blind about a link the user explicitly pointed at is the failure this
-# feature exists to prevent. The builder bounds its own media step just under this and
-# degrades to text, so the grace is a backstop rather than the usual exit. The build overlaps
-# the route window for free. Tune against the `gen_reply link context done` latency log.
+# An intent-selected linked-post context build gets this grace once the QA path resolves it.
+# Far wider than memory/effort because it fetches the post's media and uploads it to the Files
+# API, and because answering blind about a link the user explicitly pointed at is the failure
+# this feature exists to prevent. The builder bounds its own media step just under this and
+# degrades to text, so the grace is a backstop rather than the usual exit. It starts only after
+# routing so an incidental link never begins network work, then overlaps any remaining context
+# preparation and effort grading. Tune against the `gen_reply link context done` latency log.
 LINK_CONTEXT_GRACE_SECONDS = 180.0
 
 # Bound on the ACTIVE poll for a generated clip uploaded so the persona reply can watch it.
@@ -443,13 +443,11 @@ async def _discard_task[TaskResultT](
 async def _await_gated[GatedT](
     *, task: asyncio.Task[GatedT], label: str, route_done: asyncio.Event, grace_seconds: float
 ) -> GatedT:
-    """Awaits a speculative side task, bounded by the route call instead of a fixed timeout.
+    """Awaits a side task with a grace period beginning when routing finishes.
 
-    The task overlaps the route for free: while the route is still in flight it may run
-    unbounded; once the route completes (`route_done` set) a still-running task gets only
-    `grace_seconds` more before this raises TimeoutError. The task is always cancelled on
-    exit so it never orphans (e.g. when the speculative prep task is discarded on a non-QA
-    route). Shared by memory selection and effort grading, which both ride this gate.
+    A task started before routing completes overlaps it without consuming the grace. A task
+    started after routing receives the grace immediately. The task is always cancelled on exit
+    so it never orphans.
     """
     route_wait = asyncio.create_task(coro=route_done.wait())
     try:
@@ -464,6 +462,59 @@ async def _await_gated[GatedT](
             await route_wait
         if not task.done():
             await _discard_task(task=task, label=label)
+
+
+async def _await_deadline_bound_task[DeadlineT](
+    *, task: asyncio.Task[DeadlineT], deadline: float, label: str
+) -> DeadlineT:
+    """Awaits a self-deadline-bound task while preserving its cancellation cleanup ownership."""
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await _drain_deadline_bound_task(task=task, deadline=deadline, label=label)
+        raise
+
+
+async def _drain_deadline_bound_task[DeadlineT](
+    *, task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int | None = None
+) -> None:
+    """Cancels before a task's deadline or preserves its in-progress deadline cleanup."""
+    if not task.done() and asyncio.get_running_loop().time() < deadline:
+        task.cancel()
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                break
+        except Exception:
+            break
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception as exc:
+        logfire.warn(
+            "Speculative reply context build failed off-route",
+            task_label=label,
+            error_type=type(exc).__name__,
+            message_id=message_id,
+            _exc_info=exc,
+        )
+
+
+async def _run_until_deadline[DeadlineT](
+    *, awaitable: "Awaitable[DeadlineT]", deadline: float
+) -> DeadlineT:
+    """Runs a cancellation-propagating builder until its fixed event-loop deadline.
+
+    Registered builders all propagate `CancelledError`, so `wait_for` alone owns the boundary.
+    A clock check after this await would reject a pre-deadline result when a busy event loop only
+    resumes this wrapper after the deadline.
+    """
+    event_loop = asyncio.get_running_loop()
+    remaining_seconds = max(0.0, deadline - event_loop.time())
+    return await asyncio.wait_for(fut=awaitable, timeout=remaining_seconds)
 
 
 async def _build_threads_link_context(
@@ -571,11 +622,20 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
 
 
 async def _discard_link_tasks(
-    *, link_tasks: dict[str, "asyncio.Task[list[EasyInputMessageParam]]"], message_id: int
+    *,
+    link_tasks: dict[str, "asyncio.Task[list[EasyInputMessageParam]]"],
+    deadline: float | None,
+    message_id: int,
 ) -> None:
-    """Discards every in-flight link-context build (non-QA routes and the finally backstop)."""
+    """Drains link builds without stealing cancellation from their shared deadline."""
+    if link_tasks and deadline is None:
+        raise RuntimeError("Selected link tasks have no route deadline")
+    if deadline is None:
+        return
     for name, task in link_tasks.items():
-        await _discard_task(task=task, label=name, message_id=message_id)
+        await _drain_deadline_bound_task(
+            task=task, deadline=deadline, label=name, message_id=message_id
+        )
     link_tasks.clear()
 
 
@@ -1331,9 +1391,13 @@ class ReplyGeneratorCogs(commands.Cog):
                 is not None
             ):
                 # A summary request carrying a URL is really a QA recap of that link, not a
-                # recap of channel history, so steer it back to QA. Preserve watch_video so a
-                # "summarize this YouTube link" still reaches the video-watching path.
-                route = RouteClassification(decision="QA", watch_video=parsed.watch_video)
+                # recap of channel history, so steer it back to QA. Preserve both content-read
+                # decisions so the corrected route still ingests what the user asked about.
+                route = RouteClassification(
+                    decision="QA",
+                    watch_video=parsed.watch_video,
+                    link_context_sources=parsed.link_context_sources,
+                )
             else:
                 route = parsed
         except ValidationError as exc:
@@ -1352,6 +1416,7 @@ class ReplyGeneratorCogs(commands.Cog):
             "gen_reply route done",
             elapsed_seconds=time.monotonic() - started,
             decision=route.decision,
+            link_context_sources=route.link_context_sources,
             message_id=message.id,
         )
         return route
@@ -1437,24 +1502,21 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         source: str,
         link_task: "asyncio.Task[list[EasyInputMessageParam]]",
-        route_done: asyncio.Event,
+        deadline: float,
         on_timeout: "Callable[[], list[EasyInputMessageParam]]",
     ) -> list[EasyInputMessageParam]:
-        """Resolves a parallel linked-post build, bounded by the route like effort.
+        """Resolves an intent-selected linked-post build before the shared route deadline.
 
-        On the post-route grace timeout it injects a short "could not read it in time" notice
-        instead of nothing, so a slow build keeps deterministic context rather than re-exposing
-        the "I cannot open this link" fallback; on any other unexpected error it returns []
-        (cancellation propagates). The builders themselves never raise (they degrade to their
-        own notices).
+        Each selected builder owns the deadline fixed when routing finishes. This resolver only
+        retrieves that task, so the builder's cancellation cleanup cannot be interrupted by a
+        second timeout. On expiry it injects a short "could not read it in time" notice instead
+        of nothing; on any other unexpected error it returns [] (cancellation propagates). The
+        builders themselves never raise (they degrade to their own notices).
         """
         started = time.monotonic()
         try:
-            blocks = await _await_gated(
-                task=link_task,
-                label=source,
-                route_done=route_done,
-                grace_seconds=LINK_CONTEXT_GRACE_SECONDS,
+            blocks = await _await_deadline_bound_task(
+                task=link_task, deadline=deadline, label=source
             )
         except TimeoutError as exc:
             logfire.warn(
@@ -2183,6 +2245,7 @@ class ReplyGeneratorCogs(commands.Cog):
         ) = None
         effort_task: asyncio.Task[EffortGrade] | None = None
         link_tasks: dict[str, asyncio.Task[list[EasyInputMessageParam]]] = {}
+        link_context_deadline: float | None = None
         try:
             with logfire.span("gen_reply pipeline") as pipeline_span:
                 pipeline_started = time.monotonic()
@@ -2195,28 +2258,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 parts_task = asyncio.create_task(
                     coro=self._get_reference_and_current(message=message)
                 )
-                # A link a registered source can read (Threads, Douyin) is self-parsed into
-                # answer-context blocks: metadata text always, the media downloaded and
-                # uploaded to the Files API when the source allows it. Where the link may sit
-                # is the source's own call (`_link_url_for_source`): Threads also reads one the
-                # user only replied to. Started here so the fetch (the slow half) overlaps the
-                # whole route/prep window for free; only the QA route consumes the blocks,
-                # other routes cancel the tasks. Resolution is route_done-gated like effort,
-                # never a fixed wait.
-                for link_source in LINK_CONTEXT_SOURCES:
-                    link_url = _link_url_for_source(source=link_source, message=message)
-                    if link_url is None:
-                        continue
-                    link_tasks[link_source.name] = asyncio.create_task(
-                        coro=link_source.build(
-                            url=link_url,
-                            answer_model_is_gemini="gemini" in self.runtime_models.slow_model.name,
-                            gemini_client=self.gemini_client_if_configured,
-                            allow_media_ingest=link_source.media_ingest_allowed(
-                                config=self.config
-                            ),
-                        )
-                    )
                 text_reference, text_current = await self._get_reference_and_current(
                     message=message, text_only=True
                 )
@@ -2248,15 +2289,47 @@ class ReplyGeneratorCogs(commands.Cog):
                     reference_messages=text_reference,
                     current_message=text_current,
                 )
+                if route.decision == "QA" and route.link_context_sources:
+                    link_context_deadline = (
+                        asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
+                    )
                 route_done.set()
                 pipeline_span.set_attribute(key="route", value=route.decision)
+                if route.decision == "QA" and route.link_context_sources:
+                    # The router selects only source names; URL ownership stays local and the
+                    # registry still applies every URL filter and reply-chain rule. Start each
+                    # selected builder only now, after intent is known, so an incidental link
+                    # never begins a metadata fetch, media download, or Files API upload.
+                    selected_sources = set(route.link_context_sources)
+                    if link_context_deadline is None:
+                        raise RuntimeError("Selected link sources have no route deadline")
+                    for link_source in LINK_CONTEXT_SOURCES:
+                        if link_source.name not in selected_sources:
+                            continue
+                        link_url = _link_url_for_source(source=link_source, message=message)
+                        if link_url is None:
+                            continue
+                        link_tasks[link_source.name] = asyncio.create_task(
+                            coro=_run_until_deadline(
+                                awaitable=link_source.build(
+                                    url=link_url,
+                                    answer_model_is_gemini=(
+                                        "gemini" in self.runtime_models.slow_model.name
+                                    ),
+                                    gemini_client=self.gemini_client_if_configured,
+                                    allow_media_ingest=link_source.media_ingest_allowed(
+                                        config=self.config
+                                    ),
+                                ),
+                                deadline=link_context_deadline,
+                            )
+                        )
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only
-                    # in the status emoji and which media handler runs. Effort and link context
-                    # are answer-only, so both are discarded here.
+                    # in the status emoji and which media handler runs. Effort is answer-only,
+                    # while intent-gated link builders never start for these routes.
                     await _discard_task(task=effort_task, label="effort", message_id=message.id)
                     effort_task = None
-                    await _discard_link_tasks(link_tasks=link_tasks, message_id=message.id)
                     reactions.advance(
                         emoji="<:image:1517559727880667226>"
                         if route.decision == "IMAGE"
@@ -2284,11 +2357,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 elif route.decision == "SUMMARY":
                     await _discard_task(task=prep_task, label="prep", message_id=message.id)
                     prep_task = None
-                    # A digest recaps channel history, not one linked post, so the linked-post
-                    # blocks are not injected here. A URL-bearing SUMMARY is already rerouted
-                    # to QA in `_route_classify`, so these are normally absent; discard
-                    # defensively.
-                    await _discard_link_tasks(link_tasks=link_tasks, message_id=message.id)
+                    # A digest recaps channel history, not one linked post, so intent-gated link
+                    # builders never start here. A URL-bearing SUMMARY is already rerouted to QA.
                     reactions.advance(emoji="<:stacks:1517562531365912607>")
                     # so it neither biases the digest nor floods extraction, but the
                     # per-server memory is still recorded since the digest is rich
@@ -2330,10 +2400,12 @@ class ReplyGeneratorCogs(commands.Cog):
                         message=message, effort_task=effort_task, route_done=route_done
                     )
                     effort_task = None
-                    # The parses ran in parallel since before the route; resolve each under
-                    # the same route_done gate and fold the post blocks into the answer
-                    # context, in registry order so the splice stays deterministic.
+                    # The selected builds overlapped the remaining reply preparation. Resolve
+                    # each under the same grace and fold the post blocks into the answer context
+                    # in registry order so the splice stays deterministic.
                     if link_tasks:
+                        if link_context_deadline is None:
+                            raise RuntimeError("Selected link tasks have no route deadline")
                         link_blocks: list[EasyInputMessageParam] = []
                         for link_source in LINK_CONTEXT_SOURCES:
                             link_task = link_tasks.pop(link_source.name, None)
@@ -2344,7 +2416,7 @@ class ReplyGeneratorCogs(commands.Cog):
                                     message=message,
                                     source=link_source.name,
                                     link_task=link_task,
-                                    route_done=route_done,
+                                    deadline=link_context_deadline,
                                     on_timeout=link_source.on_timeout,
                                 )
                             )
@@ -2375,7 +2447,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 await _discard_task(task=effort_task, label="effort", message_id=message.id)
             if parts_task is not None:
                 await _discard_task(task=parts_task, label="parts", message_id=message.id)
-            await _discard_link_tasks(link_tasks=link_tasks, message_id=message.id)
+            await _discard_link_tasks(
+                link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
+            )
 
 
 def _can_launch_research(*, message: Message) -> bool:

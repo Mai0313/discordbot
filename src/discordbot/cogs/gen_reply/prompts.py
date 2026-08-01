@@ -177,6 +177,11 @@ Also fill in the `watch_video` field:
 - Set it true only when a YouTube link is present AND the user wants the bot to actually look at that video — for example summarizing it, reacting to it, answering a question about its content, or commenting on what happens in it. The link may be in the latest message OR in the message it is replying to (e.g. replying "summarize this" to a message that contains a YouTube link).
 - Set it false when there is no YouTube link, or when the link is incidental: the user is just sharing it, the message is about something else, or the question can be answered from the link's title or surrounding text without watching the footage.
 - This field is independent of `decision`; it is only acted on when `decision` is QA. When in doubt, leave it false.
+
+Also fill in the `link_context_sources` field for registered linked-post sources (`threads`, `douyin`, and `bilibili`):
+- Include a source only when a matching link is present AND the user wants the bot to read that post or video — for example summarizing, explaining, analyzing, comparing, reacting to, or answering a question about its actual content. A Threads link may be in the latest message OR in the message it is replying to; Douyin and Bilibili links must be in the latest message.
+- Leave a source out when its link is incidental: the user is just sharing it, citing it as background, asking about something else, or can be answered from the surrounding text without reading the linked content. Judge each source separately when several kinds of link are present.
+- This field is independent of `decision`; it is only acted on when `decision` is QA. Include each source at most once, and when in doubt leave it out.
 """
 
 EFFORT_PROMPT = """
