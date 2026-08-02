@@ -85,6 +85,23 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     return memories_dir
 
 
+@pytest.fixture(autouse=True)
+def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Points every usage recorder built during a test at a throwaway directory.
+
+    Autouse because `UsageRecorder`'s default config reads the environment, so any cog a
+    test constructs would otherwise append to the live `data/usage` file — the one store
+    in this repo that nothing ever prunes. The kill-switch is pinned on for the same
+    reason the directory is: `.env` is loaded at import, so a deployment that set
+    `USAGE_LOG_ENABLED=false` would otherwise turn the recording assertions red on that
+    checkout alone.
+    """
+    usage_dir = tmp_path / "usage"
+    monkeypatch.setenv(name="USAGE_LOG_DIR", value=str(usage_dir))
+    monkeypatch.setenv(name="USAGE_LOG_ENABLED", value="true")
+    return usage_dir
+
+
 @pytest.fixture
 async def fishing_isolated_db(
     economy_isolated_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

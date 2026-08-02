@@ -118,6 +118,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - Silent swallowing is reserved for inert cleanup where a log would be pure noise, such as removing a reaction or deleting an already-deleted message.
 - A coarse `except` spanning several distinct steps gets split so the message names the step that actually failed. Do not split when narrowing would let an exception escape into a listener or fire-and-forget task that cannot handle it; keep it broad and say so.
 - `LOG_LEVEL` sets the console and log-file floor, defaulting to `debug` so `./data/logs` holds the full trace.
+- Feature usage is not logged, it is recorded: one JSON line per slash invocation and per AI reply in `./data/usage/<YYYY-MM>.jsonl`, so an occasional stocktake can find the features nobody uses. Those records are outside `./data/logs` on purpose — that file is debug-level, hand-cleaned and gated on `LOG_LEVEL`, so a history kept inside it dies with it. They hold numeric ids only, never names or content, and nothing prunes them. `USAGE_LOG_ENABLED=false` turns recording off.
 
 ## LLM And Media Paths
 

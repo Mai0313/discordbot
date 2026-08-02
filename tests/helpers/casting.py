@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from aiohttp import ClientResponse
     from nextcord import Guild
     from google.genai.interactions import InteractionSSEEvent
+    from nextcord.types.interactions import ApplicationCommandInteractionData
 
     from discordbot import cli
     from discordbot.utils.avatars import AvatarUser
@@ -36,6 +37,16 @@ def as_message(fake: object) -> Message:
 def as_interaction(fake: object) -> Interaction[Any]:
     """Views an interaction double as the nextcord Interaction a production signature expects."""
     return cast("Interaction[Any]", fake)
+
+
+def as_command_interaction_data(fake: object) -> "ApplicationCommandInteractionData":
+    """Views a raw interaction payload as the typed application-command data.
+
+    The payload production reads is a closed TypedDict carrying keys the command-path walk
+    never touches (`id`, `resolved`, ...), so a hand-written fixture spelling out only the
+    name and option tree is the readable form.
+    """
+    return cast("ApplicationCommandInteractionData", fake)
 
 
 def as_bot(fake: object) -> commands.Bot:
