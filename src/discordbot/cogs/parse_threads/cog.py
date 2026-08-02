@@ -665,9 +665,24 @@ class ThreadsCogs(commands.Cog):
                     current_emoji=current_emoji,
                 )
             finally:
-                await asyncio.to_thread(parse_cm.__exit__, None, None, None)
-        # Broad on purpose: the listener's last line of defence, covering the residual step (the
-        # temp-file cleanup) so nothing escapes into the dispatcher.
+                # Guarded here rather than by the outer handler, which would relabel a delivered
+                # expansion ❌ over scratch files the user cannot see; swallowing it also stops a
+                # failing cleanup from replacing whatever the body raised. Broad on purpose: it
+                # is the last step and nothing downstream can act on its failure. Still an error
+                # because these files are deleted nowhere else, so a failure leaks the temp dir
+                # and names an environment someone must look at (read-only or full filesystem).
+                try:
+                    await asyncio.to_thread(parse_cm.__exit__, None, None, None)
+                except Exception as error:
+                    logfire.error(
+                        "Could not clean up the Threads scratch files",
+                        url=url,
+                        message_id=message.id,
+                        error_type=type(error).__name__,
+                        _exc_info=error,
+                    )
+        # Broad on purpose: the listener's last line of defence, covering the steps between the
+        # parse and the delivery so nothing escapes into the dispatcher.
         except Exception as error:
             logfire.error(
                 "Threads expansion failed outside the parse and delivery steps",
