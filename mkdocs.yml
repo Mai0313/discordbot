@@ -105,6 +105,8 @@ nav:
                   - views: Reference/discordbot/cogs/stock/views.md
               - template:
                   - cog: Reference/discordbot/cogs/template/cog.md
+              - usage:
+                  - cog: Reference/discordbot/cogs/usage/cog.md
               - video:
                   - cog: Reference/discordbot/cogs/video/cog.md
           - services:
@@ -166,6 +168,7 @@ nav:
               - threads: Reference/discordbot/utils/threads.md
               - timezone: Reference/discordbot/utils/timezone.md
               - urls: Reference/discordbot/utils/urls.md
+              - usage_log: Reference/discordbot/utils/usage_log.md
               - youtube: Reference/discordbot/utils/youtube.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
