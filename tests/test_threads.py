@@ -1162,6 +1162,32 @@ def test_a_share_link_reads_the_post_its_redirect_names(
     assert fetched == ["https://www.threads.com/share/DfX81RWN8"]
 
 
+@pytest.mark.parametrize(
+    "url",
+    [_SHARE_URL, f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt", _REPLIES_TARGET_URL],
+    ids=["share-form", "canonical-with-share-token", "already-clean"],
+)
+def test_the_target_url_never_carries_what_names_the_sharer(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    """A share code and an `?xmt=` token are both minted per share, and this URL is published.
+
+    It goes into the expansion's embeds and into the reply prompt, so echoing the pasted form
+    would tell the channel who sent the link rather than only which post it names.
+    """
+    _stub_share_redirect(
+        monkeypatch,
+        final_url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
+        pages=[_thread_html_with_replies()],
+    )
+
+    conversation = downloader.parse_metadata(url=url)
+
+    target = conversation.target
+    assert target is not None
+    assert target.url == _REPLIES_TARGET_URL
+
+
 def test_a_share_links_retry_asks_for_the_resolved_post(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:

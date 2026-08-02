@@ -1154,8 +1154,10 @@ class ThreadsDownloader(BaseModel):
                 if not post_code:
                     logfire.info(
                         "A Threads share link did not lead to a post; treating it as unreadable",
-                        url=url,
-                        final_url=fetched.final_url,
+                        url=threads_url.clean_url,
+                        # Query stripped: where it landed is the whole signal, and the `?xmt=`
+                        # token a share redirect answers with names whoever shared the post.
+                        final_url=resolved.clean_url,
                     )
                     return ThreadsPage()
                 fetch_url = resolved.clean_url
@@ -1270,11 +1272,16 @@ class ThreadsDownloader(BaseModel):
         if not page.chain:
             return ThreadsConversation()
         target_index = len(page.chain) - 1
+        # Every post gets a reconstructed canonical URL, the target included, and the caller's own
+        # URL survives only as its fallback with the query stripped. What lands here is posted in
+        # the expansion's embeds and quoted into the reply prompt, and a pasted link carries the
+        # sharer with it: a `share/<code>` link and the `?xmt=` token its redirect answers with are
+        # both minted per share, so echoing either names whoever sent it to the channel.
+        caller_url = ThreadsURL(raw_url=url).clean_url
         chain = [
             self._build_output(
                 post=post,
-                # The caller's own URL for the target; a reconstructed one for the ancestors.
-                url=url if index == target_index else self._post_url(post=post),
+                url=self._post_url(post=post) or (caller_url if index == target_index else ""),
                 download=download and index == target_index,
             )
             for index, post in enumerate(page.chain)
