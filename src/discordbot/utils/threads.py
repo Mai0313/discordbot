@@ -1330,7 +1330,7 @@ if __name__ == "__main__":
     console = Console()
 
     downloader = ThreadsDownloader(output_folder="./tmp")
-    url = "https://www.threads.com/@chengweilai2/post/DZZImVsCWU-?xmt=AQG0MLHN7M4RJOdbdF1HzSG5Qm-9a1b2aOB5HN4ksjCrhQ"
+    url = "https://www.threads.com/share/DwqmnLALg/"
     with downloader.parse(url=url) as parsed:
         console.print(parsed.chain)
         console.print(parsed.reply_branches)
