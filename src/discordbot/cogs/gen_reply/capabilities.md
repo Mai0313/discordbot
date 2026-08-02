@@ -72,10 +72,13 @@ Central bank:
 - `/central_bank call` — central bankers only: forced collection
 - `/central_bank status` — how much the central bank can still lend
 
-Server admins:
+Balance maintenance:
 
-- `/admin refund_tax` — add to someone's balance
-- `/admin collect_tax` — take from someone's balance
+- `/admin refund_tax` — economy admins only: add to someone's balance
+- `/admin collect_tax` — economy admins only: take from someone's balance
+
+Economy admin and central banker are flags on an account, set by whoever runs me. Neither is a
+Discord role: being a server admin grants neither, and no command hands one out.
 
 ## Simulated stock market
 
