@@ -118,6 +118,7 @@ from discordbot.services.memory.extraction import (
     subject_source_line,
     target_centered_memory_messages,
 )
+from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
@@ -1900,6 +1901,7 @@ class ReplyGeneratorCogs(commands.Cog):
         allow_music: bool = False,
         allow_video: bool = False,
         allow_research: bool = False,
+        describe_capabilities: bool = False,
         yt_url: str | None = None,
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates.
@@ -1910,7 +1912,9 @@ class ReplyGeneratorCogs(commands.Cog):
         spoken clip, `allow_image` an inline generated image, `allow_music` an inline generated
         music clip, and `allow_video` an inline generated video clip when the answer model marks
         the reply for it (image / music / video are QA only; voice also rides SUMMARY, which
-        otherwise stays text). `yt_url`, set only when the router asked
+        otherwise stays text). `describe_capabilities` injects the feature reference that replaced
+        `/help`, QA only since SUMMARY is recapping a channel rather than fielding a question about
+        the bot. `yt_url`, set only when the router asked
         to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
         (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
@@ -1950,8 +1954,13 @@ class ReplyGeneratorCogs(commands.Cog):
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
         # low-authority background; the reference message then sits just above the current
         # message so the reply pair (reference -> current) stays adjacent and reads as the
-        # primary context rather than getting buried up near history.
-        answer_input: ResponseInputParam = [*context.hist_messages]
+        # primary context rather than getting buried up near history. The feature reference
+        # leads: it is the one block that is byte-identical on every reply, so the front is
+        # where it costs the least against a prefix cache.
+        answer_input: ResponseInputParam = (
+            [render_capabilities_block()] if describe_capabilities else []
+        )
+        answer_input.extend(context.hist_messages)
         answer_input.extend(
             block
             for block in (context.server_memory_block, context.memory_block, context.tone_block)
@@ -2437,6 +2446,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         allow_music=True,
                         allow_video=True,
                         allow_research=_can_launch_research(message=message),
+                        describe_capabilities=True,
                         yt_url=yt_url,
                     )
                 reactions.advance(emoji="<:greencheck:1517565102424068226>")

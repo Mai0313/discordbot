@@ -840,6 +840,6 @@ async def test_stock_public_view_timeout_deletes_bound_message(
     assert deleted == [message]
 
 
-def test_stock_readme_and_help_metadata_are_covered() -> None:
-    """Stock command metadata stays discoverable by help/readme tests."""
+def test_stock_readme_and_capability_metadata_are_covered() -> None:
+    """Stock command metadata stays discoverable by the capability-doc and readme tests."""
     assert StockCogs.stock.description == "Open the simulated stock market."

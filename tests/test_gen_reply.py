@@ -96,6 +96,7 @@ from discordbot.cogs.gen_reply.memory_tool import (
     widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
 )
+from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
 from discordbot.services.memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
@@ -869,6 +870,7 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
     history_limit: int = 2,
     memory_enabled: bool = True,
     effort: Literal["low", "medium", "high"] = "high",
+    describe_capabilities: bool = False,
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     msg = as_message(fake=message)
@@ -890,6 +892,7 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
         context=context,
         memory_enabled=memory_enabled,
         effort=effort,
+        describe_capabilities=describe_capabilities,
     )
 
 
@@ -4311,10 +4314,11 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
         "expected_image",
         "expected_music",
         "expected_video",
+        "expected_capabilities",
     ),
     argvalues=[
-        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], [], [], []),
-        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], [], [], []),
+        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], [], [], [], []),
+        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], [], [], [], []),
         (
             "SUMMARY",
             "_handle_message_reply",
@@ -4324,8 +4328,19 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
             [False],
             [False],
             [False],
+            [False],
         ),
-        ("QA", "_handle_message_reply", [(30, True)], [True], [True], [True], [True], [True]),
+        (
+            "QA",
+            "_handle_message_reply",
+            [(30, True)],
+            [True],
+            [True],
+            [True],
+            [True],
+            [True],
+            [True],
+        ),
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
@@ -4338,6 +4353,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     expected_image: list[bool],
     expected_music: list[bool],
     expected_video: list[bool],
+    expected_capabilities: list[bool],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
@@ -4401,6 +4417,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     image_flags: list[bool] = []
     music_flags: list[bool] = []
     video_flags: list[bool] = []
+    capability_flags: list[bool] = []
     effort_flags: list[str] = []
     contexts: list[ReplyContext] = []
 
@@ -4415,6 +4432,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         allow_music: bool = False,
         allow_video: bool = False,
         allow_research: bool = False,
+        describe_capabilities: bool = False,
         yt_url: str | None = None,
     ) -> None:
         """Records slow message handler dispatch."""
@@ -4425,6 +4443,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         image_flags.append(allow_image)
         music_flags.append(allow_music)
         video_flags.append(allow_video)
+        capability_flags.append(describe_capabilities)
         effort_flags.append(effort)
         contexts.append(context)
 
@@ -4452,6 +4471,9 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     assert Counter(music_flags) == Counter(expected_music)
     # Inline video is QA-only, like inline image/music; SUMMARY stays text.
     assert Counter(video_flags) == Counter(expected_video)
+    # The feature reference that replaced /help is QA-only: SUMMARY is recapping a channel,
+    # not fielding a question about what the bot can do.
+    assert Counter(capability_flags) == Counter(expected_capabilities)
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
@@ -6188,6 +6210,45 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
         current_message=[{"role": "user", "content": "now"}],
     )
     assert [part["content"] for part in context.message_list] == ["hist", "ref", "now"]
+
+
+@pytest.mark.parametrize(argnames="describe_capabilities", argvalues=[True, False])
+async def test_handle_message_reply_leads_with_the_capability_reference(
+    economy_isolated_db: None,
+    memory_isolated_dir: object,
+    monkeypatch: pytest.MonkeyPatch,
+    describe_capabilities: bool,
+) -> None:
+    """The feature reference leads the answer input, and only when the route asked for it.
+
+    It is the one block that is byte-identical on every reply, so it rides in front of history
+    where it costs the least against a prefix cache. SUMMARY leaves the flag off and must get
+    none of it.
+    """
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
+
+    message = FakeMessage(content="<@999> 你會做什麼", author=FakeAuthor(user_id=1))
+    _recorded(cog).responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
+
+    await _reply_via_pipeline(
+        cog=cog, message=message, describe_capabilities=describe_capabilities
+    )
+
+    header = str(render_capabilities_block()["content"]).split("\n", 1)[0]
+    blocks = list(
+        iter_text_blocks(request=request_input(responses=_recorded(cog).responses, phase="answer"))
+    )
+    carried = [index for index, (_role, text) in enumerate(blocks) if text.startswith(header)]
+    assert carried == ([0] if describe_capabilities else [])
+    if describe_capabilities:
+        assert blocks[0][0] == "assistant"
+        assert "/memory clear" in blocks[0][1]
 
 
 async def test_handle_message_reply_orders_reference_after_memory_before_current(

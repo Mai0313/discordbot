@@ -33,7 +33,7 @@
 - **模拟股市**：`/stock` 开启一则公开 market message，内含 DB-managed virtual companies；选股、受 float supply、borrow cap 与单人 49% long holding cap 限制的交易、仓位摘要、近期交易记录、liquidity-based slippage、定期刷新新闻与 7 日图表都在同一则公开 message 内 edit 切换，只有发起 `/stock` 的 user 可以操作 controls。
 - **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身会以玩家身份入桌并由独立的确定性策略 (fractional-Kelly 下注与 EV 决策) 决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。单人 `/games fishing` 则是买钓具抛竿、回收欢乐豆的 sink 玩法，鱼分 N 到 UR 稀有度并有最大单笔渔获排行榜。
 - **MapleStory Artale 数据库**：`/maplestory` 子命令可查询怪物、装备、卷轴、NPC、任务、地图、掉落来源与数据库统计。
-- **本地化指令**：slash command metadata 与 `/help` 支持英文、繁体中文、日文。AI 回复会跟随用户语言。
+- **本地化指令**：slash command metadata 支持英文、繁体中文、日文。AI 回复会跟随用户语言。没有 help 指令：直接问 bot 会做什么，它会读一份英文的功能说明并用你提问的语言回答。
 
 ## 指令
 
@@ -63,7 +63,6 @@
 | `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | 查询 NPC、任务与地图。                                                                 |
 | `/maplestory item`, `/maplestory stats`                          | 查询物品掉落来源与数据库统计。                                                         |
 | `/memory show\|regenerate\|clear`                                | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。 |
-| `/help`                                                          | 显示 Discord 内的使用指南。                                                            |
 | `/ping`                                                          | 检查 bot latency。                                                                     |
 
 ## 自托管

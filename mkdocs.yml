@@ -60,6 +60,7 @@ nav:
                       - bilibili: Reference/discordbot/cogs/gen_reply/link_sources/bilibili.md
                       - douyin: Reference/discordbot/cogs/gen_reply/link_sources/douyin.md
                       - threads: Reference/discordbot/cogs/gen_reply/link_sources/threads.md
+                  - capabilities: Reference/discordbot/cogs/gen_reply/capabilities.md
                   - cog: Reference/discordbot/cogs/gen_reply/cog.md
                   - context: Reference/discordbot/cogs/gen_reply/context.md
                   - files_api: Reference/discordbot/cogs/gen_reply/files_api.md
@@ -70,11 +71,6 @@ nav:
                   - memory_tool: Reference/discordbot/cogs/gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/gen_reply/prompts.md
                   - streaming: Reference/discordbot/cogs/gen_reply/streaming.md
-              - help:
-                  - cog: Reference/discordbot/cogs/help/cog.md
-                  - content: Reference/discordbot/cogs/help/content.md
-                  - presentation: Reference/discordbot/cogs/help/presentation.md
-                  - views: Reference/discordbot/cogs/help/views.md
               - log_msg:
                   - cog: Reference/discordbot/cogs/log_msg/cog.md
               - maplestory:

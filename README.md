@@ -33,7 +33,7 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 - **Simulated stock market**: `/stock` opens one public market message with DB-managed virtual companies; selecting a stock, trading with float-supply, borrow, and per-user 49% long holding caps, position summaries, recent trades, liquidity-based slippage, periodically refreshed news, and the 7D chart all update that same public message. Only the opener can operate its controls.
 - **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (deterministic H17), the bot itself joins each round as a player driven by its own deterministic strategy (fractional-Kelly betting and EV-based play), and `/casino` / `/pocat` surface the casino ledger and the bot's wallet. Solo `/games fishing` adds a gear-and-cast money sink with an N to UR rarity ladder and a biggest-catch leaderboard.
 - **MapleStory Artale database**: `/maplestory` subcommands search monsters, equipment, scrolls, NPCs, quests, maps, item drops, and database stats.
-- **Localized commands**: slash command metadata and `/help` are localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language.
+- **Localized commands**: slash command metadata is localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language. There is no help command: ask the bot what it can do and it answers from a single English capability reference, translated into whatever language you asked in.
 
 ## Commands
 
@@ -63,7 +63,6 @@ A self-hosted Discord bot for AI chat, image and video generation, Threads link 
 | `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | Search NPCs, quests, and maps.                                                                                                                   |
 | `/maplestory item`, `/maplestory stats`                          | Search item drop sources and database stats.                                                                                                     |
 | `/memory show\|regenerate\|clear`                                | Privately shows, rebuilds, or erases what the bot remembers about you; regenerate runs in the background, and clear asks for confirmation first. |
-| `/help`                                                          | Shows the in-Discord guide.                                                                                                                      |
 | `/ping`                                                          | Checks bot latency.                                                                                                                              |
 
 ## Self-Hosting
