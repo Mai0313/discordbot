@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from functools import cached_property
 import contextlib
 from urllib.parse import urlparse
-from collections.abc import Iterator
+from collections.abc import Generator
 
 import logfire
 from pydantic import (
@@ -1289,7 +1289,7 @@ class ThreadsDownloader(BaseModel):
         return ThreadsConversation(chain=chain, reply_branches=reply_branches)
 
     @contextlib.contextmanager
-    def parse(self, url: str) -> Iterator[ThreadsConversation]:
+    def parse(self, url: str) -> Generator[ThreadsConversation]:
         """Parses a Threads post URL and yields the conversation, target media included.
 
         The target post (the chain's last element) has its videos downloaded into
