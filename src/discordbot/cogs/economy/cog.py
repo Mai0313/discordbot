@@ -98,11 +98,11 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="admin",
-        description=f"Run admin-only {CURRENCY_NAME} maintenance operations.",
+        description=f"Economy admins only: run {CURRENCY_NAME} maintenance operations.",
         name_localizations={Locale.zh_TW: "管理員", Locale.ja: "管理者"},
         description_localizations={
-            Locale.zh_TW: f"執行管理員限定的{CURRENCY_NAME}維護操作",
-            Locale.ja: f"管理者専用の{CURRENCY_NAME}メンテナンス操作を実行します。",
+            Locale.zh_TW: f"economy admin 限定：執行{CURRENCY_NAME}維護操作",
+            Locale.ja: f"economy admin 専用：{CURRENCY_NAME}メンテナンス操作を実行します。",
         },
         nsfw=False,
     )
@@ -111,11 +111,11 @@ class EconomyCogs(commands.Cog):
 
     @admin.subcommand(
         name="refund_tax",
-        description=f"Admin-only: credit {CURRENCY_NAME} to a member or bot.",
+        description=f"Economy admins only: credit {CURRENCY_NAME} to a member or bot.",
         name_localizations={Locale.zh_TW: "退稅", Locale.ja: "税還付"},
         description_localizations={
-            Locale.zh_TW: f"管理員限定：無條件增加某位成員或 bot 的{CURRENCY_NAME}",
-            Locale.ja: f"管理者専用：メンバーまたは bot に{CURRENCY_NAME}を付与します。",
+            Locale.zh_TW: f"economy admin 限定：無條件增加某位成員或 bot 的{CURRENCY_NAME}",
+            Locale.ja: f"economy admin 専用：メンバーまたは bot に{CURRENCY_NAME}を付与します。",
         },
     )
     async def admin_refund_tax(
@@ -160,11 +160,11 @@ class EconomyCogs(commands.Cog):
 
     @admin.subcommand(
         name="collect_tax",
-        description=f"Admin-only: debit {CURRENCY_NAME} from a member or bot.",
+        description=f"Economy admins only: debit {CURRENCY_NAME} from a member or bot.",
         name_localizations={Locale.zh_TW: "收稅", Locale.ja: "徴税"},
         description_localizations={
-            Locale.zh_TW: f"管理員限定：無條件扣除某位成員或 bot 的{CURRENCY_NAME}",
-            Locale.ja: f"管理者専用：メンバーまたは bot から{CURRENCY_NAME}を徴収します。",
+            Locale.zh_TW: f"economy admin 限定：無條件扣除某位成員或 bot 的{CURRENCY_NAME}",
+            Locale.ja: f"economy admin 専用：メンバーまたは bot から{CURRENCY_NAME}を徴収します。",
         },
     )
     async def admin_collect_tax(

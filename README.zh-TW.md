@@ -53,7 +53,7 @@
 | `/central_bank status\|borrow\|call\|repay`                      | 處理央行借款申請、180 秒批准/拒絕/取消按鈕、還款、催收與可放貸額度。                   |
 | `/stock`                                                         | 公開股票市場訊息，明細、交易、新聞、紀錄都在同一則 message edit。                      |
 | `/give <member> <amount>`                                        | 轉帳虛擬歡樂豆給其他成員或 bot。                                                       |
-| `/admin refund_tax\|collect_tax`                                 | admin-only 手動調整成員或 bot 餘額。                                                   |
+| `/admin refund_tax\|collect_tax`                                 | 手動調整成員或 bot 餘額；限定 `economy admin` 帳號 flag，不是 Discord 身分組。         |
 | `/games blackjack <bet>`                                         | 開一個多人 Blackjack lobby；`bet` 可輸入含逗號的數字，`0` 就是 all in。                |
 | `/games dragon_gate`                                             | 開一個由共享 jackpot pool 支撐的多人射龍門桌。                                         |
 | `/games fishing`                                                 | 打開個人釣魚面板，買釣竿與魚餌拋竿，是回收歡樂豆的 sink 玩法。                         |

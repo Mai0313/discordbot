@@ -7,6 +7,7 @@ from pathlib import Path
 # The whole module, not the five tag constants by name: reading its namespace is what lets a
 # sixth marker be noticed instead of quietly falling outside a fixed import list.
 from discordbot.cogs.gen_reply import markers
+from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
 _CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
@@ -24,6 +25,25 @@ _ACCOUNT_FLAG_GATES: dict[str, tuple[str, tuple[str, ...]] | None] = {
     "is_central_banker": ("central bankers only", ("/central_bank call",)),
     "hide_from_leaderboard": None,
 }
+# The three ways a slash command description can name an admin across the locales declared
+# here, and the term that says which admin is meant. `economy admin` is what the refusal embed
+# shows, so a member reads one name for the flag wherever they meet it.
+_ADMIN_WORDS = ("admin", "管理員", "管理者")
+_ECONOMY_ADMIN_TERM = "economy admin"
+# The gates `_ACCOUNT_FLAG_GATES` says it cannot see, because they sit on a decision button
+# rather than on the command. Each of these posts a view whose approve button refuses everyone
+# but the named decider and whose `on_timeout` rejects the request, so a line describing only
+# what the command sends describes half of it. The timeout is checked against
+# `LOAN_PROPOSAL_TIMEOUT_SECONDS` rather than pinned here, since retuning it is what would
+# leave the document quoting a number nothing enforces.
+_BUTTON_GATED_REQUESTS: dict[str, str] = {
+    "/credit borrow": "lender",
+    "/central_bank borrow": "central banker",
+}
+# What `/admin collect_tax`'s line owes for `allow_negative=False`, which is the whole
+# difference between what the command is called and what it does to a member holding less
+# than the amount asked for.
+_COLLECT_TAX_CLAMP_WORDING = "never below zero"
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -59,11 +79,15 @@ def _declared_name(decorator: ast.Call, callback: str) -> str:
     return name
 
 
-def _module_command_paths(module: Path, label: str) -> set[str]:
-    """Returns the command paths one cog module declares that a user can run."""
+def _module_command_declarations(module: Path, label: str) -> dict[str, tuple[ast.Call, bool]]:
+    """Returns the command paths one cog module declares, each with its decorator and a group flag.
+
+    Group nodes are kept, unlike in `_module_command_paths`: a group cannot be run and so owes
+    the document no line, but Discord still renders its description in the picker.
+    """
     parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
-    # Callback name -> (parent callback, or "" for a root command; own command name).
-    declarations: dict[str, tuple[str, str]] = {}
+    # Callback name -> (parent callback, or "" for a root command; own command name; decorator).
+    declarations: dict[str, tuple[str, str, ast.Call]] = {}
     for node in ast.walk(node=parsed):
         if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             continue
@@ -75,13 +99,13 @@ def _module_command_paths(module: Path, label: str) -> set[str]:
                 continue
             name = _declared_name(decorator=decorator, callback=node.name)
             assert node.name not in declarations, f"{label}: two callbacks named {node.name}"
-            declarations[node.name] = (parent, name)
+            declarations[node.name] = (parent, name, decorator)
     paths: dict[str, str] = {}
     pending = dict(declarations)
     while pending:
         resolved = {
             callback: f"{paths[parent]} {name}" if parent else name
-            for callback, (parent, name) in pending.items()
+            for callback, (parent, name, _) in pending.items()
             if not parent or parent in paths
         }
         # A parent that never resolves means an unsupported declaration form; say so loudly
@@ -89,8 +113,16 @@ def _module_command_paths(module: Path, label: str) -> set[str]:
         assert resolved, f"{label}: unresolved subcommand groups {sorted(pending)}"
         paths.update(resolved)
         pending = {name: value for name, value in pending.items() if name not in resolved}
-    groups = {parent for parent, _ in declarations.values() if parent}
-    return {path for callback, path in paths.items() if callback not in groups}
+    groups = {parent for parent, _, _ in declarations.values() if parent}
+    return {
+        path: (declarations[callback][2], callback in groups) for callback, path in paths.items()
+    }
+
+
+def _module_command_paths(module: Path, label: str) -> set[str]:
+    """Returns the command paths one cog module declares that a user can run."""
+    declarations = _module_command_declarations(module=module, label=label)
+    return {path for path, (_, is_group) in declarations.items() if not is_group}
 
 
 def _slash_command_paths() -> set[str]:
@@ -199,6 +231,98 @@ def _account_flag_columns() -> set[str]:
 def _command_line(body: str, command: str) -> str | None:
     """Returns the line naming this command, or `None` when the document has no such line."""
     return next((line for line in body.splitlines() if f"`{command}`" in line), None)
+
+
+def _admin_adjustment_allows_negative() -> bool:
+    """Returns what the `/admin` adjustment path hands `adjust_balance` as `allow_negative`.
+
+    Read by AST for the reason `_account_flag_columns` is: that service owns the process-wide
+    economy engine, and a test asking what one call site passes has no business building one.
+    A form this cannot read is an assertion failure rather than a default, since defaulting to
+    the answer the document wants is how a guard outlives the behavior it guards.
+    """
+    module = (
+        Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs" / "economy" / "cog.py"
+    )
+    parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
+    calls = [
+        node
+        for function in ast.walk(node=parsed)
+        if isinstance(function, ast.AsyncFunctionDef) and function.name == "_run_admin_adjustment"
+        for node in ast.walk(node=function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        if node.func.id == "adjust_balance"
+    ]
+    assert len(calls) == 1, (
+        f"expected one adjust_balance call in the admin path, found {len(calls)}"
+    )
+    passed = next(
+        (keyword.value for keyword in calls[0].keywords if keyword.arg == "allow_negative"), None
+    )
+    allowed = passed.value if isinstance(passed, ast.Constant) else None
+    assert isinstance(allowed, bool), (
+        "the /admin adjustment must pass allow_negative as a literal bool"
+    )
+    return allowed
+
+
+def _literal_description(node: ast.expr, label: str) -> str:
+    """Returns the source text of one description, refusing anything but literal text."""
+    assert isinstance(node, ast.Constant | ast.JoinedStr), (
+        f"{label}: a description must be a literal string"
+    )
+    return ast.unparse(ast_obj=node)
+
+
+def _description_texts(decorator: ast.Call, label: str) -> list[str]:
+    """Returns the description strings one declaration hands Discord, localizations included.
+
+    Unparsed rather than evaluated: every description here is an f-string over `CURRENCY_NAME`,
+    and reading the source text keeps the interpolation out of the way of what is checked.
+
+    Which is also why a form that is not literal text is an assertion rather than a skip. A
+    description handed a name unparses to that name, so the caller would read `points_desc` and
+    find nothing wrong with it — a guard that stopped looking is worse than none.
+    """
+    texts: list[str] = []
+    for keyword in decorator.keywords:
+        if keyword.arg == "description":
+            texts.append(_literal_description(node=keyword.value, label=label))
+        elif keyword.arg == "description_localizations":
+            assert isinstance(keyword.value, ast.Dict), (
+                f"{label}: description localizations must be a literal dict"
+            )
+            texts.extend(
+                _literal_description(node=value, label=label) for value in keyword.value.values
+            )
+    return texts
+
+
+def _picker_descriptions() -> dict[str, list[str]]:
+    """Returns every description the cogs hand Discord, keyed by command path.
+
+    Localizations sit beside the English one because a member reads whichever matches their
+    client language, so a claim is only fixed once all of them carry it.
+    """
+    cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
+    descriptions: dict[str, list[str]] = {}
+    for module in cogs_dir.rglob(pattern="*.py"):
+        label = module.relative_to(cogs_dir).as_posix()
+        for path, (decorator, _) in _module_command_declarations(
+            module=module, label=label
+        ).items():
+            descriptions[f"/{path}"] = _description_texts(
+                decorator=decorator, label=f"{label} {path}"
+            )
+    return descriptions
+
+
+def _names_an_unqualified_admin(text: str) -> bool:
+    """Reports whether a description names an admin without saying which one it means."""
+    lowered = text.lower()
+    if _ECONOMY_ADMIN_TERM in lowered:
+        return False
+    return any(word in lowered for word in _ADMIN_WORDS)
 
 
 def _modules_declaring_a_picker_gate() -> list[str]:
@@ -361,6 +485,60 @@ def test_capabilities_doc_states_every_gate_on_the_gated_command_line() -> None:
     assert not unstated, f"these command lines state no gate: {sorted(unstated)}"
 
 
+def test_capabilities_doc_states_who_answers_a_loan_request_and_when_it_expires() -> None:
+    """A request that needs someone to click approve is not a command that simply works.
+
+    `/central_bank borrow` and `/credit borrow` both post a decision view: the approve button
+    refuses anyone who is not the named decider, and `on_timeout` auto-rejects the request
+    after `LOAN_PROPOSAL_TIMEOUT_SECONDS`. Neither of those gates is on the command, so the
+    guard above states outright that it cannot see them — and a line saying only "request a
+    loan from the central bank" is what the answer model repeats to a member who then watches
+    their request expire unread.
+
+    The number is read off the constant rather than pinned as text, so retuning the timeout
+    fails here until the document says the new one — matched between digit boundaries for the
+    reason `_mentions_command` carries one, since a bare substring would read the documented
+    180 as proof that a constant lowered to 18 was already written down. The wording pinned per
+    command is the decider, not the whole clause: how the line reads is the writer's, but which
+    of the two borrow paths it describes cannot be left to a reader who quotes one line back.
+    """
+    seconds = re.compile(pattern=rf"(?<!\d){LOAN_PROPOSAL_TIMEOUT_SECONDS}(?!\d)")
+    missing: list[str] = []
+    for command, decider in _BUTTON_GATED_REQUESTS.items():
+        line = _command_line(body=CAPABILITIES_DOC, command=command)
+        lowered = line.lower() if line is not None else ""
+        if decider not in lowered:
+            missing.append(f"{command} ({decider})")
+        if seconds.search(string=lowered) is None:
+            missing.append(f"{command} ({LOAN_PROPOSAL_TIMEOUT_SECONDS} seconds)")
+    assert not missing, (
+        f"these lines describe a request as though nobody has to answer it: {sorted(missing)}"
+    )
+
+
+def test_capabilities_doc_states_the_clamp_collect_tax_actually_applies() -> None:
+    """The line is not false; it is incomplete in the way that sets up a surprise.
+
+    `_run_admin_adjustment` passes `allow_negative=False`, so collecting 500 from a member
+    holding 100 collects 100, and collecting from someone who has never held a wallet row
+    reports success having moved nothing. The command already knows this — it hands
+    `is_collect_clamped` to its own result embed — which leaves the document as the one
+    surface that did not say it.
+
+    Both halves are asserted because either one alone rots: the wording without the argument
+    survives an `allow_negative=True` that makes it false, and the argument without the wording
+    is a behavior nothing describes.
+    """
+    assert not _admin_adjustment_allows_negative(), (
+        "the /admin adjustment no longer clamps: capabilities.md still says it stops at zero"
+    )
+    line = _command_line(body=CAPABILITIES_DOC, command="/admin collect_tax")
+    assert line is not None, "capabilities.md names no /admin collect_tax line"
+    assert _COLLECT_TAX_CLAMP_WORDING in line.lower(), (
+        f"/admin collect_tax is clamped and its line does not say so: {line}"
+    )
+
+
 def test_no_command_hides_behind_a_discord_permission() -> None:
     """The premise behind "neither is a Discord role": Discord filters nothing away here.
 
@@ -378,6 +556,47 @@ def test_no_command_hides_behind_a_discord_permission() -> None:
     assert not declared, (
         f"a command now hides behind a Discord permission: revisit capabilities.md {declared}"
     )
+
+
+def test_no_command_description_names_an_admin_without_saying_which() -> None:
+    """The picker's description is the first one a member reads, and it named the wrong gate.
+
+    #438 corrected the capability document while the two `/admin` commands went on telling
+    Discord they were `管理員限定` / `管理者専用` — the server's own 管理員, to a reader with no
+    reason to know the bot keeps a flag of its own. Nothing declares
+    `default_member_permissions` (the guard above), so the picker offers both to everyone, and
+    a server admin who reads that has every reason to run one and be refused. Half of #438's
+    fix was undone in the case that mattered most: the bot answering one thing while the
+    picker in front of the asker said the opposite.
+
+    Stated as "say which admin" rather than as a blocklist of the wordings that were wrong. A
+    description naming an admin at all owes the reader the term its own refusal embed shows
+    them (`只有 economy admin 可以執行這個操作`); a blocklist would pass the next synonym, and
+    every locale has several.
+    """
+    ambiguous = [
+        f"{command}: {text}"
+        for command, texts in _picker_descriptions().items()
+        for text in texts
+        if _names_an_unqualified_admin(text=text)
+    ]
+    assert not ambiguous, (
+        "these descriptions name an admin without saying which one, so a server admin reads "
+        f"them as their own: {sorted(ambiguous)}"
+    )
+
+
+def test_admin_description_check_reads_every_locale_it_has_to() -> None:
+    """The wordings that shipped, pinned so the guard above cannot pass them again.
+
+    A guard that only ever sees correct input proves nothing about the input it was written
+    for, and these three are the exact strings #441 found live.
+    """
+    assert _names_an_unqualified_admin(text="Admin-only: debit points from a member or bot.")
+    assert _names_an_unqualified_admin(text="管理員限定：無條件扣除某位成員或 bot 的點數")
+    assert _names_an_unqualified_admin(text="管理者専用：メンバーから点数を徴収します。")
+    assert not _names_an_unqualified_admin(text="economy admin 限定：無條件扣除某位成員的點數")
+    assert not _names_an_unqualified_admin(text="Central banker forced collection.")
 
 
 def test_capabilities_block_is_a_low_authority_assistant_note() -> None:
