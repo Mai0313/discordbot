@@ -81,11 +81,6 @@ class _RankingRow(BaseModel):
 _board_image_cache: dict[_RankingBoardSpec, tuple[float, bytes]] = {}
 
 
-def invalidate_economy_board_cache() -> None:
-    """Clears process-local rendered economy board images."""
-    _board_image_cache.clear()
-
-
 def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> bytes:
     """Renders the public balance leaderboard as a PNG board."""
     return _build_ranking_board_image(
@@ -117,14 +112,31 @@ def build_loss_leaderboard_board_image(rows: Sequence[LossLeaderboardEntry]) -> 
 def _build_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
     """Returns a cached rendered ranking board image."""
     now = monotonic()
+    _drop_expired_boards(now=now)
     cached = _board_image_cache.get(spec)
     if cached is not None:
-        cached_at, image = cached
-        if now - cached_at <= _BOARD_IMAGE_CACHE_TTL_SECONDS:
-            return image
+        _, image = cached
+        return image
     image = _render_ranking_board_image(spec=spec)
     _board_image_cache[spec] = (now, image)
     return image
+
+
+def _drop_expired_boards(now: float) -> None:
+    """Evicts board images past the TTL.
+
+    The cache key carries the rows it rendered, so an entry can never go stale in
+    content: a balance change mints a new key and strands the old one instead of
+    poisoning it. Expiry is therefore the size bound rather than a freshness rule,
+    and nothing on the write side has to clear this.
+    """
+    expired = [
+        spec
+        for spec, (cached_at, _) in _board_image_cache.items()
+        if now - cached_at > _BOARD_IMAGE_CACHE_TTL_SECONDS
+    ]
+    for spec in expired:
+        del _board_image_cache[spec]
 
 
 def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:

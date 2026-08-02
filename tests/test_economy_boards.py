@@ -1,19 +1,35 @@
 """Tests for economy ranking board images."""
 
 from io import BytesIO
+from time import monotonic
+from collections.abc import Iterator
 
 from PIL import Image
 import pytest
 
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
 from discordbot.services.economy.boards import (
+    _BOARD_IMAGE_CACHE_TTL_SECONDS,
     _RankingBoardSpec,
+    _board_image_cache,
     _ranking_amount_text,
     _render_ranking_board_image,
-    invalidate_economy_board_cache,
     build_loss_leaderboard_board_image,
     build_balance_leaderboard_board_image,
 )
+
+
+@pytest.fixture(autouse=True)
+def _empty_board_cache() -> Iterator[None]:
+    """Starts every test from an empty process-local board cache.
+
+    Nothing clears it in production any more, so a leftover entry from a previous
+    test would otherwise be indistinguishable from one this test's own eviction
+    was supposed to remove.
+    """
+    _board_image_cache.clear()
+    yield
+    _board_image_cache.clear()
 
 
 def test_balance_leaderboard_board_handles_large_balances_and_long_names() -> None:
@@ -83,7 +99,6 @@ def test_balance_leaderboard_amount_text_has_no_prefix() -> None:
 def test_balance_leaderboard_board_image_cache(monkeypatch: pytest.MonkeyPatch) -> None:
     """Repeated identical board renders reuse the process-local PNG bytes."""
     rows = (LeaderboardEntry(user_id=1, name="alice", balance=100),)
-    invalidate_economy_board_cache()
     first = build_balance_leaderboard_board_image(rows=rows)
 
     def fail_render(spec: _RankingBoardSpec) -> bytes:
@@ -96,12 +111,11 @@ def test_balance_leaderboard_board_image_cache(monkeypatch: pytest.MonkeyPatch) 
     assert build_balance_leaderboard_board_image(rows=rows) == first
 
 
-def test_economy_board_cache_invalidation(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Explicit invalidation forces the next matching board to render again."""
+def test_an_expired_board_renders_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A board past the TTL is re-rendered rather than served from the cache."""
     rows = (LeaderboardEntry(user_id=1, name="alice", balance=100),)
-    invalidate_economy_board_cache()
     build_balance_leaderboard_board_image(rows=rows)
-    invalidate_economy_board_cache()
+    _age_cached_boards_past_the_ttl()
 
     calls = 0
 
@@ -115,3 +129,28 @@ def test_economy_board_cache_invalidation(monkeypatch: pytest.MonkeyPatch) -> No
     )
     build_balance_leaderboard_board_image(rows=rows)
     assert calls == 1
+
+
+def test_a_superseded_board_is_evicted_without_a_write_path() -> None:
+    """Nothing outside this module reaps the cache, so expiry has to be the size bound.
+
+    A balance change never poisons a cached board: the rows are part of the key, so
+    it mints a new entry and abandons the old one. Growth is the only failure mode
+    left, and it is what the ledger's invalidation call used to hold back.
+    """
+    build_balance_leaderboard_board_image(
+        rows=(LeaderboardEntry(user_id=1, name="alice", balance=100),)
+    )
+    _age_cached_boards_past_the_ttl()
+    build_balance_leaderboard_board_image(
+        rows=(LeaderboardEntry(user_id=1, name="alice", balance=250),)
+    )
+
+    assert len(_board_image_cache) == 1
+
+
+def _age_cached_boards_past_the_ttl() -> None:
+    """Backdates every cached board so the next lookup treats it as expired."""
+    aged = monotonic() - _BOARD_IMAGE_CACHE_TTL_SECONDS - 1
+    for spec, (_, image) in list(_board_image_cache.items()):
+        _board_image_cache[spec] = (aged, image)

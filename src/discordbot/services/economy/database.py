@@ -114,7 +114,6 @@ from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite
 from discordbot.utils.stored_integer import StoredInteger
 from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
-from discordbot.services.economy.boards import invalidate_economy_board_cache
 
 if TYPE_CHECKING:
     from sqlalchemy.engine import CursorResult
@@ -440,10 +439,15 @@ _top_losers_cache: dict[_TopLosersCacheKey, tuple[float, tuple[LossLeaderboardEn
 
 
 def invalidate_economy_leaderboard_cache() -> None:
-    """Clears process-local leaderboard row and board-image caches."""
+    """Clears process-local leaderboard row caches.
+
+    These are keyed on the query, so a write leaves them holding the wrong answer
+    until they are cleared. The rendered board images are keyed on the rows
+    themselves and expire on their own, which is why nothing here reaches into a
+    renderer.
+    """
     _top_n_cache.clear()
     _top_losers_cache.clear()
-    invalidate_economy_board_cache()
 
 
 def _cached_top_n_rows(cache_key: _TopNCacheKey) -> list[LeaderboardEntry] | None:
