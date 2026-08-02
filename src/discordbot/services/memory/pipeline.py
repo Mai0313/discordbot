@@ -291,10 +291,16 @@ async def clear_scope_memory(scope: str) -> bool:
         Exception: From the `memory_job` tombstone write, the one memory DB call that is
             not best-effort: swallowing it would leave a resumable row that
             resurrects the memory on the next restart. It runs before the file
-            deletion, so that failure alone leaves every tier in place.
+            deletion, so that failure alone leaves every tier in place — including
+            the case where a row newer than this clear makes the tombstone
+            unwritable, which `clear_job` refuses rather than erasing behind it.
         OSError: From the file deletion, which walks the tiers one at a time and
             can therefore stop part way. A clear is idempotent, so the caller
             recovers by retrying rather than by claiming either outcome.
+        asyncio.CancelledError: Re-raised for a caller that cancelled, after the
+            durable work has drained AND after the erase has been recorded. What
+            was erased does not shrink because the caller went away, so neither
+            does the record of it.
 
     Note that neither failure rolls back the stamp or the dropped replay: a
     failed clear still aborts the turns that were in flight for this scope. That
@@ -317,20 +323,30 @@ async def clear_scope_memory(scope: str) -> bool:
     (removed_files, removed_job), caller_cancelled = await _await_clear_critical(
         task=critical_task
     )
-    if caller_cancelled:
-        raise asyncio.CancelledError
+    # Both traces are taken before cancellation propagates. The shielded task has already
+    # finished by now, so a cancelled clear erased exactly as much as an uncancelled one;
+    # re-raising first left an irreversible user-driven erase with nothing on record that it
+    # happened. Neither call awaits, so nothing can interleave before the re-raise below.
+    #
     # Commits the deletion so the working tree stops carrying it, which is all this can
     # do: the commits before it still hold the content, and no reachable-object pruning
     # changes that. Local history outliving a clear is a recorded decision on #408.
     memory_git.enqueue(scope=scope, reason="clear")
-    # A user-driven, irreversible erase of their own data: the one trace it
-    # leaves anywhere, since nothing about it is visible in the files afterwards.
+    # A user-driven, irreversible erase of their own data, and the only trace of it outside
+    # reply.db's own `cleared` row, since nothing about it is visible in the files afterwards.
+    # `caller_cancelled` earns its place because that path is silent at the Discord end: the
+    # button deferred before the clear began and nextcord's dispatcher catches only `Exception`,
+    # so a cancelled clear leaves the confirmation prompt simply never edited — no error, no
+    # confirmation, and nothing anywhere but this line saying the wipe happened.
     logfire.info(
         "Cleared personal memory on request",
         scope=scope,
         removed_files=removed_files,
         removed_job=removed_job,
+        caller_cancelled=caller_cancelled,
     )
+    if caller_cancelled:
+        raise asyncio.CancelledError
     return removed_files or removed_job
 
 

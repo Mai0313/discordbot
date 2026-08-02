@@ -59,6 +59,14 @@ _EMBED_DESCRIPTION_LIMIT = 4096
 _EMBED_TOTAL_LENGTH_LIMIT = 6000
 _MESSAGE_CONTENT_LIMIT = 2000
 
+# The chain this cog walks has no depth cap of its own (`MAX_THREADS_POSTS` is gen_reply's), so
+# the permalink fallback needs one, or a deep enough thread paginates into arbitrarily many
+# follow-up replies under a single link. Three pages carry roughly sixty permalinks at the
+# measured line length, past any chain seen live; whatever is left is stated as a count.
+_MAX_OMITTED_NOTICE_PAGES = 3
+_OMITTED_NOTICE_HEADER = "-# 因 Discord embed 限制, 有 {count} 篇貼文未展開. 可從以下原始連結查看:"
+_OMITTED_NOTICE_REMAINDER = "-# 其中 {count} 篇的連結因訊息長度限制未列出."
+
 
 class _EmbedPlan(BaseModel):
     """Rendered embeds plus posts that need a permalink fallback."""
@@ -94,33 +102,57 @@ def _embed_text_length(embed: Embed) -> int:
     return sum(_utf16_length(value=value) for value in text_parts)
 
 
+def _omitted_post_line(post: ThreadsOutput) -> str:
+    """Renders one omitted post as a permalink line."""
+    if post.url:
+        return f"- @{post.author_name}: <{post.url}>"
+    return f"- @{post.author_name}: 原始連結無法取得"
+
+
+def _closed_with_remainder(page: str, *, unlisted: int) -> str:
+    """Closes the last page with the count of permalinks it could not carry.
+
+    Trailing lines are handed back to that count until the closing line fits, so the notice
+    reports what it dropped instead of growing another reply to hold it.
+    """
+    lines = page.split("\n")
+    while True:
+        closed = "\n".join([*lines, _OMITTED_NOTICE_REMAINDER.format(count=unlisted)])
+        if len(lines) == 1 or _utf16_length(value=closed) <= _MESSAGE_CONTENT_LIMIT:
+            return closed
+        lines.pop()
+        unlisted += 1
+
+
 def _omitted_post_notice_pages(posts: list[ThreadsOutput]) -> list[str]:
-    """Paginates permalink fallbacks for posts that could not fit in the embeds."""
+    """Paginates permalink fallbacks for posts that could not fit in the embeds.
+
+    Never raises and never exceeds `_MAX_OMITTED_NOTICE_PAGES`: a line no page could hold, and
+    every line past the cap, is handed to the closing count instead. The notice exists so an
+    over-budget chain degrades rather than dropping posts silently, so it must not be able to
+    cost the expansion it reports on. The header states the true total either way.
+    """
     if not posts:
         return []
 
-    header = f"-# 因 Discord embed 限制, 有 {len(posts)} 篇貼文未展開. 可從以下原始連結查看:"
-    lines = [
-        (
-            f"- @{post.author_name}: <{post.url}>"
-            if post.url
-            else f"- @{post.author_name}: 原始連結無法取得"
-        )
-        for post in posts
-    ]
+    header = _OMITTED_NOTICE_HEADER.format(count=len(posts))
     pages: list[str] = []
     current = header
-    for line in lines:
-        candidate = f"{current}\n{line}"
-        if _utf16_length(value=candidate) <= _MESSAGE_CONTENT_LIMIT:
-            current = candidate
+    listed = 0
+    for post in posts:
+        line = _omitted_post_line(post=post)
+        if _utf16_length(value=f"{header}\n{line}") > _MESSAGE_CONTENT_LIMIT:
             continue
-        if current == header:
-            raise ValueError("A Threads permalink fallback exceeds Discord's message limit")
-        pages.append(current)
-        current = f"{header}\n{line}"
-        if _utf16_length(value=current) > _MESSAGE_CONTENT_LIMIT:
-            raise ValueError("A Threads permalink fallback exceeds Discord's message limit")
+        candidate = f"{current}\n{line}"
+        if _utf16_length(value=candidate) > _MESSAGE_CONTENT_LIMIT:
+            if len(pages) + 1 >= _MAX_OMITTED_NOTICE_PAGES:
+                break
+            pages.append(current)
+            candidate = f"{header}\n{line}"
+        current = candidate
+        listed += 1
+    if listed < len(posts):
+        current = _closed_with_remainder(page=current, unlisted=len(posts) - listed)
     pages.append(current)
     return pages
 
@@ -394,6 +426,10 @@ class ThreadsCogs(commands.Cog):
 
         The embed plan arrives already built rather than being rebuilt here, so the
         description-length guard in `on_message` measured the very list that gets sent.
+
+        Only the expansion itself can fail this step. The permalink fallbacks are built and sent
+        afterwards, past the ✅ and behind their own guard, because they exist to describe what
+        the expansion left out and must never be able to take the expansion down with them.
         """
         target = results[-1]
         embeds = embed_plan.embeds
@@ -448,7 +484,6 @@ class ThreadsCogs(commands.Cog):
                     _exc_info=error,
                 )
 
-            notices = _omitted_post_notice_pages(posts=embed_plan.omitted_posts)
             await message.reply(
                 content="\n".join(plan.hosted_urls) if plan.hosted_urls else None,
                 embeds=embeds,
@@ -457,16 +492,6 @@ class ThreadsCogs(commands.Cog):
                 **embed_spacer_payload(
                     embeds=embeds, is_edit=False, target=message, extra_files=files
                 ),
-            )
-            for notice in notices:
-                await message.reply(
-                    content=notice, mention_author=False, allowed_mentions=AllowedMentions.none()
-                )
-            await update_reaction(
-                message=message,
-                bot_user=self.bot.user,
-                emoji="<:greencheck:1517565102424068226>",
-                previous=current_emoji,
             )
         except Exception as error:
             # A reply to a deleted source comes back as HTTP 50035, not only as NotFound.
@@ -499,6 +524,54 @@ class ThreadsCogs(commands.Cog):
                     _exc_info=error,
                 )
             await self._mark_failed(message=message, current_emoji=current_emoji)
+            return
+
+        # The expansion is on screen, so it is marked done before the permalink fallbacks are
+        # posted. Those only report what the embeds could not carry, and nothing that happens
+        # to them may reduce what the user already has or relabel it as a failure.
+        await update_reaction(
+            message=message,
+            bot_user=self.bot.user,
+            emoji="<:greencheck:1517565102424068226>",
+            previous=current_emoji,
+        )
+        await self._post_omitted_notices(message=message, url=url, posts=embed_plan.omitted_posts)
+
+    async def _post_omitted_notices(
+        self, *, message: Message, url: str, posts: list[ThreadsOutput]
+    ) -> None:
+        """Builds and posts the permalink fallbacks as follow-up replies, best effort.
+
+        The two steps are guarded separately so the log names the one that failed: building is
+        pure and should not be able to fail at all, while a send meets a channel that may have
+        changed under it. Both are broad on purpose — the expansion is already delivered and
+        marked done, so a failure here costs only the permalink list and must never travel back
+        to the delivery's failure path.
+        """
+        try:
+            notices = _omitted_post_notice_pages(posts=posts)
+        except Exception as error:
+            logfire.warn(
+                "Could not build the Threads permalink fallbacks",
+                url=url,
+                message_id=message.id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+            return
+        try:
+            for notice in notices:
+                await message.reply(
+                    content=notice, mention_author=False, allowed_mentions=AllowedMentions.none()
+                )
+        except Exception as error:
+            logfire.warn(
+                "Could not post the Threads permalink fallbacks",
+                url=url,
+                message_id=message.id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:

@@ -545,16 +545,103 @@ async def test_threads_cog_delivers_a_trimmed_chain_instead_of_failing() -> None
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
 
 
-def test_threads_cog_paginates_all_omitted_post_links() -> None:
-    """Every omitted permalink remains available when the notice needs multiple messages."""
+def test_threads_cog_paginates_omitted_post_links() -> None:
+    """Every omitted permalink survives once the notice needs a second message."""
+    posts = [_thread_output(author_name=f"user-{index}-" + "a" * 30) for index in range(30)]
+
+    pages = parse_threads._omitted_post_notice_pages(posts=posts)
+
+    assert 1 < len(pages) <= parse_threads._MAX_OMITTED_NOTICE_PAGES
+    assert all(parse_threads._utf16_length(value=page) <= 2000 for page in pages)
+    combined = "\n".join(pages)
+    assert all(f"<{post.url}>" in combined for post in posts)
+    assert "未列出" not in combined
+
+
+def test_threads_cog_caps_the_notice_and_counts_what_it_drops() -> None:
+    """A chain past the page cap states its remainder instead of emitting more replies."""
     posts = [_thread_output(author_name=f"user-{index}-" + "a" * 30) for index in range(100)]
 
     pages = parse_threads._omitted_post_notice_pages(posts=posts)
 
-    assert len(pages) > 1
+    assert len(pages) == parse_threads._MAX_OMITTED_NOTICE_PAGES
     assert all(parse_threads._utf16_length(value=page) <= 2000 for page in pages)
     combined = "\n".join(pages)
-    assert all(f"<{post.url}>" in combined for post in posts)
+    # The header keeps naming every omitted post, and the closing line accounts for the
+    # permalinks that did not fit, so the two together still add up to the real total.
+    assert f"有 {len(posts)} 篇貼文未展開" in combined
+    listed = sum(f"<{post.url}>" in combined for post in posts)
+    assert f"其中 {len(posts) - listed} 篇的連結因訊息長度限制未列出." in pages[-1]
+
+
+def test_threads_cog_counts_a_permalink_no_page_could_hold() -> None:
+    """An unrenderable line is dropped into the count rather than refusing the notice."""
+    posts = [_thread_output(author_name="a" * 3000), _thread_output(author_name="bob")]
+
+    pages = parse_threads._omitted_post_notice_pages(posts=posts)
+
+    assert len(pages) == 1
+    assert parse_threads._utf16_length(value=pages[0]) <= 2000
+    assert "<https://www.threads.net/@bob/post/abc>" in pages[0]
+    assert "其中 1 篇的連結因訊息長度限制未列出." in pages[0]
+
+
+async def test_threads_cog_keeps_the_expansion_when_a_notice_reply_fails() -> None:
+    """A follow-up failure must not relabel an expansion that is already on screen."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
+    cog.downloader = cast(
+        "ThreadsDownloader", ThreadsDownloaderStub(results=_long_threads_chain())
+    )
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    expansion_reply = message.reply
+    reactions_when_the_notice_ran: list[str] = []
+
+    async def reply_then_fail(**kwargs: object) -> None:
+        if message.replies:
+            reactions_when_the_notice_ran.extend(message.reactions)
+            raise RuntimeError("the source message went away")
+        await expansion_reply(**cast("Any", kwargs))
+
+    message.reply = reply_then_fail  # ty: ignore[invalid-assignment]
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert len(message.replies) == 1
+    assert message.replies[0]["embeds"]
+    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+    # The ✅ is already painted by the time a notice is attempted, so a follow-up that hangs
+    # rather than failing cannot leave the expansion looking unfinished either.
+    assert reactions_when_the_notice_ran[-1] == "<:greencheck:1517565102424068226>"
+
+
+async def test_threads_cog_delivers_when_the_notice_cannot_be_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A notice-building failure costs the permalinks, never the rendered expansion."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
+    cog.downloader = cast(
+        "ThreadsDownloader", ThreadsDownloaderStub(results=_long_threads_chain())
+    )
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+
+    def exploding_pages(*, posts: list[ThreadsOutput]) -> list[str]:
+        del posts
+        raise ValueError("a permalink fallback exceeds Discord's message limit")
+
+    monkeypatch.setattr(parse_threads, "_omitted_post_notice_pages", exploding_pages)
+    await cog.on_message(message=as_message(fake=message))
+
+    assert len(message.replies) == 1
+    assert message.replies[0]["embeds"]
+    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
 
 
 async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:

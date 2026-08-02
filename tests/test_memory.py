@@ -2586,11 +2586,16 @@ async def test_db_clear_job_rejects_stale_upsert_but_allows_a_newer_turn(
     assert job.status == "pending"
     assert job.token == 21
     assert job.transcript == "new transcript"
-    assert await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=20) is False
+    # A clear older than the row cannot write its tombstone, and reporting that as an
+    # ordinary empty scope let the caller delete the files with this transcript still
+    # resumable. It refuses instead, leaving the row exactly as it found it.
+    with pytest.raises(RuntimeError, match="newer than the clear"):
+        await memory_db.clear_job(scope=USER_SCOPE, flavor="user", token=20)
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
     assert job.status == "pending"
     assert job.token == 21
+    assert job.transcript == "new transcript"
 
 
 async def test_pipeline_success_marks_done_and_clears_transcript(
@@ -3596,6 +3601,89 @@ async def test_cancelled_clear_waits_for_an_inflight_tombstone_write(
     assert job.status == "cleared"
     assert job.transcript is None
     assert await memory_db.list_resumable() == []
+
+
+async def test_cancelled_clear_still_records_that_it_erased(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled clear erased as much as any other, so both its traces still land."""
+    _populate_every_tier()
+    commits: list[tuple[str, str]] = []
+    audit: list[dict[str, object]] = []
+
+    def record_commit(scope: str, reason: str) -> None:
+        commits.append((scope, reason))
+
+    def record_audit(message: str, **fields: object) -> None:
+        audit.append({"message": message, **fields})
+
+    monkeypatch.setattr(pipeline, "memory_git", SimpleNamespace(enqueue=record_commit))
+    monkeypatch.setattr(pipeline.logfire, "info", record_audit)
+    clear_job_started = asyncio.Event()
+    release_clear_job = asyncio.Event()
+    real_clear_job = memory_db.clear_job
+
+    async def blocked_clear_job(*, scope: str, flavor: str, token: int) -> bool:
+        clear_job_started.set()
+        await release_clear_job.wait()
+        return await real_clear_job(
+            scope=scope, flavor=memory_db.cast_flavor(value=flavor), token=token
+        )
+
+    monkeypatch.setattr(memory_db, "clear_job", blocked_clear_job)
+    clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
+    await clear_job_started.wait()
+    clearing.cancel()
+    release_clear_job.set()
+    with pytest.raises(asyncio.CancelledError):
+        await clearing
+
+    assert not (memory_isolated_dir / str(USER_ID)).exists()
+    assert commits == [(USER_SCOPE, "clear")]
+    recorded = [
+        entry for entry in audit if entry["message"] == "Cleared personal memory on request"
+    ]
+    assert len(recorded) == 1
+    assert recorded[0]["removed_files"] is True
+    assert recorded[0]["caller_cancelled"] is True
+
+
+async def test_clear_keeps_the_files_when_the_tombstone_cannot_be_written(
+    memory_isolated_dir: Path,
+) -> None:
+    """A row newer than the clear stops the erase instead of outliving it.
+
+    Reproduces the second writer the single-process token block rules out: the clear's
+    range is already reserved when a higher token lands, so its own token comes out
+    below the stored row and the guarded tombstone upsert would silently no-op.
+    """
+    _populate_every_tier()
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="s",
+        transcript="這段逐字稿不可以比檔案活得久",
+        identity=IDENTITY,
+        token=memory_db.new_token(),
+    )
+    await memory_db.upsert_pending(
+        scope=USER_SCOPE,
+        flavor="user",
+        subject="s",
+        transcript="這段逐字稿不可以比檔案活得久",
+        identity=IDENTITY,
+        token=9_999_999,
+    )
+
+    with pytest.raises(RuntimeError, match="newer than the clear"):
+        await pipeline.clear_scope_memory(scope=USER_SCOPE)
+
+    assert _memory_text() != ""
+    assert read_tone(scope=USER_SCOPE) != ""
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "pending"
+    assert job.transcript == "這段逐字稿不可以比檔案活得久"
 
 
 async def test_cancelled_clear_propagates_a_critical_tombstone_failure(

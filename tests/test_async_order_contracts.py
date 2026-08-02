@@ -4,15 +4,29 @@ An async test double that appends calls to a list observes whichever coroutine o
 it first. Comparing that recorder directly with an ordered sequence silently turns scheduler
 timing into a contract. Tests should compare a stable invariant instead, or document the real
 production ordering contract beside the assertion.
+
+Whether an assertion depends on that order is decided by trying to change it: two recorded
+positions are exchanged across the whole test, and an assertion that comes out unchanged never
+observed the ordering to begin with. Counting how many positions a test reads cannot answer that
+question -- a set of two reads, a symmetric comparison between them and one predicate repeated
+per position all read two positions and none of them can tell the two apart -- and the escape
+hatch is a written rationale, so a wrong flag is paid for with a comment that is not true.
+
+Which positions get exchanged is the one assumption: a stated `len(recorder) == n` gives the
+whole range, and otherwise only the positions the test indexes. A recorder holding more records
+than the test reads is therefore a known false negative, deliberately, in the same class as the
+two gaps recorded in #425.
 """
 
 from __future__ import annotations
 
 from io import StringIO
 import ast
+from copy import deepcopy
 from typing import TYPE_CHECKING
 from pathlib import Path
 import tokenize
+from itertools import combinations
 
 from pydantic import Field, BaseModel, ConfigDict
 
@@ -41,6 +55,13 @@ _ORDER_PRESERVING_TRANSFORMS = frozenset({
     "reversed",
     "tuple",
 })
+# `dict` is the one order-independent call whose argument order is still observable in its own
+# result: duplicate keys resolve last-wins, so reordering the items of `dict([...])` can build a
+# different mapping. Every other member discards the order of a literal container handed to it.
+_ORDER_ERASING_CALLS = _ORDER_INDEPENDENT_CALLS - {"dict"}
+# Comparisons that hold or fail identically with their operands exchanged. `<` and friends are
+# absent because swapping two records is exactly what they are there to detect.
+_COMMUTATIVE_COMPARISONS = (ast.Eq, ast.NotEq, ast.Is, ast.IsNot)
 
 
 class OrderAssertion(BaseModel):
@@ -628,15 +649,243 @@ def _async_tests(nodes: list[ast.stmt]) -> Iterator[ast.AsyncFunctionDef]:
             yield from _async_tests(node.body)
 
 
-def _ordered_assertion_recorders(
-    assertion: ast.Assert,
-    *,
-    recorders: set[str],
-    indexed: set[tuple[str, int]],
-    multi_index_recorders: set[str],
-) -> set[str]:
-    """Returns recorder names whose positions one assertion distinguishes."""
-    ordered = {recorder for recorder, _index in indexed if recorder in multi_index_recorders}
+def _sorted_by_dump(nodes: list[ast.expr]) -> list[ast.expr]:
+    """Orders the operands of a commutative construct so equal meanings dump equally."""
+    return sorted(nodes, key=ast.dump)
+
+
+def _keyed_sort(node: ast.Call) -> bool:
+    """Whether a `sorted` call carries a key, which leaves its input order observable.
+
+    Python's sort is stable, so equal keys hand the output back in input order:
+    `sorted([calls[0], calls[1]], key=len)` really does depend on which record arrived first.
+    Every other member of `_ORDER_ERASING_CALLS` reduces to something a tie cannot leak through.
+    """
+    return _called_name(node.func) == "sorted" and any(
+        keyword.arg in (None, "key") for keyword in node.keywords
+    )
+
+
+def _resolved_position(index: int, *, length: int | None) -> int:
+    """Maps one recorder index into a single namespace, using a length the test states.
+
+    `calls[-1]` and `calls[1]` are the same slot of a two-record list and different slots of a
+    three-record one, so they are only comparable once the test says how many records there are.
+    Without that, the two families are kept apart rather than guessed at.
+    """
+    if index < 0 and length is not None and -index <= length:
+        return length + index
+    return index
+
+
+def _boolean_context_nodes(node: ast.expr) -> set[int]:
+    """Returns the ids of sub-expressions used for nothing but their truth value.
+
+    `and` / `or` evaluate to one of their operands rather than to a bool, so reordering them is
+    invisible only where the result is a condition. `(calls[0] or calls[1]) == "b"` reads one of
+    the two records straight back out, and exchanging them changes the answer.
+    """
+    marked: set[int] = set()
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        marked.add(id(current))
+        if isinstance(current, ast.BoolOp):
+            pending.extend(current.values)
+        elif isinstance(current, ast.UnaryOp) and isinstance(current.op, ast.Not):
+            pending.append(current.operand)
+    return marked
+
+
+class _PositionCanonicalizer(ast.NodeTransformer):
+    """Rewrites one assertion with two recorded positions exchanged.
+
+    Two rewrites that dump equally are an assertion that cannot tell the two positions apart, so
+    the constructs whose operand order is not observable are normalized on the way out while
+    everything else keeps its shape and therefore keeps distinguishing positions.
+    """
+
+    def __init__(
+        self, *, recorder: str, swap: dict[int, int], length: int | None, boolean_context: set[int]
+    ) -> None:
+        self.recorder = recorder
+        self.swap = swap
+        self.length = length
+        self.boolean_context = boolean_context
+
+    def visit_BoolOp(self, node: ast.BoolOp) -> ast.expr:
+        """Normalizes `and` / `or` operands only where the result is read as a condition."""
+        in_boolean_context = id(node) in self.boolean_context
+        self.generic_visit(node)
+        if in_boolean_context:
+            node.values = _sorted_by_dump(node.values)
+        return node
+
+    def visit_Call(self, node: ast.Call) -> ast.expr:
+        """Normalizes a literal container handed to a call that discards its order."""
+        self.generic_visit(node)
+        if _called_name(node.func) in _ORDER_ERASING_CALLS and not _keyed_sort(node):
+            for argument in node.args:
+                if isinstance(argument, (ast.List, ast.Set, ast.Tuple)):
+                    argument.elts = _sorted_by_dump(argument.elts)
+        return node
+
+    def visit_Compare(self, node: ast.Compare) -> ast.expr:
+        """Normalizes a symmetric comparison, including an all-`==` chain."""
+        self.generic_visit(node)
+        symmetric = all(isinstance(operator, ast.Eq) for operator in node.ops) or (
+            len(node.ops) == 1 and isinstance(node.ops[0], _COMMUTATIVE_COMPARISONS)
+        )
+        if not symmetric:
+            return node
+        operands = _sorted_by_dump([node.left, *node.comparators])
+        node.left = operands[0]
+        node.comparators = operands[1:]
+        return node
+
+    def visit_Set(self, node: ast.Set) -> ast.expr:
+        """Normalizes a set literal, which cannot expose the order of its elements."""
+        self.generic_visit(node)
+        node.elts = _sorted_by_dump(node.elts)
+        return node
+
+    def visit_Subscript(self, node: ast.Subscript) -> ast.expr:
+        """Replaces one constant recorder position with its swapped placeholder."""
+        self.generic_visit(node)
+        if not (isinstance(node.value, ast.Name) and node.value.id == self.recorder):
+            return node
+        try:
+            index = ast.literal_eval(node.slice)
+        except (ValueError, TypeError):
+            return node
+        if not isinstance(index, int):
+            return node
+        # `int()` because `calls[True]` literal-evals to a bool, which prints as `True` while
+        # hashing as 1, so the swapped and unswapped rewrites would label the same slot twice.
+        position = _resolved_position(int(index), length=self.length)
+        return ast.Name(id=f"__recorded_{self.swap.get(position, position)}__", ctx=ast.Load())
+
+
+def _swapped_assertion(
+    assertion: ast.Assert, *, recorder: str, swap: dict[int, int], length: int | None
+) -> str:
+    """Returns a canonical dump of one assertion under an exchange of two positions."""
+    rewritten = deepcopy(assertion.test)
+    canonicalizer = _PositionCanonicalizer(
+        recorder=recorder,
+        swap=swap,
+        length=length,
+        boolean_context=_boolean_context_nodes(rewritten),
+    )
+    return ast.dump(canonicalizer.visit(rewritten))
+
+
+def _pinned_recorder_lengths(
+    assertions: list[ast.Assert], *, recorders: set[str]
+) -> dict[str, int]:
+    """Returns the recorder lengths a test states outright, as `len(recorder) == <int>`."""
+    lengths: dict[str, int] = {}
+    for assertion in assertions:
+        for node in ast.walk(assertion.test):
+            if not (
+                isinstance(node, ast.Compare)
+                and len(node.ops) == 1
+                and isinstance(node.ops[0], ast.Eq)
+            ):
+                continue
+            operands = [node.left, node.comparators[0]]
+            for call, expected in (operands, operands[::-1]):
+                if not (
+                    isinstance(call, ast.Call)
+                    and _called_name(call.func) == "len"
+                    and len(call.args) == 1
+                    and isinstance(call.args[0], ast.Name)
+                    and call.args[0].id in recorders
+                ):
+                    continue
+                try:
+                    length = ast.literal_eval(expected)
+                except (ValueError, TypeError):
+                    continue
+                if isinstance(length, int) and not isinstance(length, bool) and length >= 0:
+                    lengths[call.args[0].id] = length
+    return lengths
+
+
+def _position_sensitive_recorders(
+    assertions: list[ast.Assert], *, recorders: set[str]
+) -> list[set[str]]:
+    """Returns, per assertion, the recorders whose recorded positions the test tells apart.
+
+    Every exchange of two positions is applied to the whole test at once: one that leaves the
+    assertions unchanged as a set proves they never observed that ordering, and transpositions
+    generate every permutation, so surviving all of them is surviving any reordering of the
+    positions in play. When an exchange does change the test, only the assertions whose own
+    rewrite changed are reported, so a position-blind check is not blamed for a neighbour that
+    pins a position; the untouched ones contribute the same string to both sides either way,
+    which is also why only assertions reading one of the two exchanged positions are rewritten.
+
+    Which positions are in play is the scan's one assumption. A test that pins the recorder's
+    length gets that whole range, so `len(calls) == 3` beside `calls[0] != calls[1]` is caught by
+    exchanging the two positions the assertion never named. Without a stated length only the
+    positions the test indexes are exchanged, so a recorder holding more records than the test
+    reads is a known false negative -- the same trade the two gaps recorded in #425 accept, and
+    the reason a negative index stays in its own family until a length makes it comparable.
+    """
+    sensitive: list[set[str]] = [set() for _ in assertions]
+    reads = [_indexed_recorders(assertion.test, recorders=recorders) for assertion in assertions]
+    lengths = _pinned_recorder_lengths(assertions, recorders=recorders)
+    for recorder in recorders:
+        length = lengths.get(recorder)
+        read_positions = [
+            {
+                _resolved_position(int(index), length=length)
+                for name, index in uses
+                if name == recorder
+            }
+            for uses in reads
+        ]
+        positions = {position for uses in read_positions for position in uses}
+        if length is not None:
+            positions.update(range(length))
+        identity = {
+            offset: _swapped_assertion(
+                assertions[offset], recorder=recorder, swap={}, length=length
+            )
+            for offset, uses in enumerate(read_positions)
+            if uses
+        }
+        # A negative index counts from the other end, so it names a comparable slot only once a
+        # length has resolved it; until then the two families are permuted independently.
+        families = [
+            sorted(position for position in positions if position >= 0),
+            sorted(position for position in positions if position < 0),
+        ]
+        for family in families:
+            for first, second in combinations(family, 2):
+                affected = [
+                    offset for offset in identity if read_positions[offset] & {first, second}
+                ]
+                if not affected:
+                    continue
+                swap = {first: second, second: first}
+                swapped = [
+                    _swapped_assertion(
+                        assertions[offset], recorder=recorder, swap=swap, length=length
+                    )
+                    for offset in affected
+                ]
+                if sorted(identity[offset] for offset in affected) == sorted(swapped):
+                    continue
+                for slot, offset in enumerate(affected):
+                    if swapped[slot] != identity[offset]:
+                        sensitive[offset].add(recorder)
+    return sensitive
+
+
+def _sequence_assertion_recorders(assertion: ast.Assert, *, recorders: set[str]) -> set[str]:
+    """Returns recorder names whose whole recorded sequence one assertion compares."""
+    ordered: set[str] = set()
     comparison = assertion.test
     if _normalizer_encodes_positions(comparison, recorders=recorders):
         ordered.update(_ordered_recorders(comparison, recorders=recorders))
@@ -668,24 +917,9 @@ def _find_undocumented_order_assertions(source: str) -> list[OrderAssertion]:
         if not recorders:
             continue
         assertions = _test_assertions(test)
-        indexed = {
-            assertion: _indexed_recorders(assertion.test, recorders=recorders)
-            for assertion in assertions
-        }
-        indexes_by_recorder: dict[str, set[int]] = {recorder: set() for recorder in recorders}
-        for uses in indexed.values():
-            for recorder, index in uses:
-                indexes_by_recorder[recorder].add(index)
-        multi_index_recorders = {
-            recorder for recorder, indexes in indexes_by_recorder.items() if len(indexes) >= 2
-        }
-        for assertion in assertions:
-            ordered = _ordered_assertion_recorders(
-                assertion,
-                recorders=recorders,
-                indexed=indexed[assertion],
-                multi_index_recorders=multi_index_recorders,
-            )
+        positional = _position_sensitive_recorders(assertions, recorders=recorders)
+        for assertion, sensitive in zip(assertions, positional, strict=True):
+            ordered = _sequence_assertion_recorders(assertion, recorders=recorders) | sensitive
             if not ordered or _contract_reason(
                 comments,
                 lineno=assertion.lineno,
@@ -1149,6 +1383,220 @@ async def test_split_order():
         OrderAssertion(test_name="test_split_order", lineno=9, recorders=("calls",)),
         OrderAssertion(test_name="test_split_order", lineno=10, recorders=("calls",)),
     ]
+
+
+def test_two_positions_collected_without_their_order_are_accepted() -> None:
+    """A set of two reads, and a sort of them, ask nothing about which arrived first."""
+    source = """
+async def test_positions_without_order():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert {calls[0], calls[1]} == {"first", "second"}
+    assert sorted([calls[0], calls[1]]) == ["first", "second"]
+"""
+
+    assert _find_undocumented_order_assertions(source) == []
+
+
+def test_a_symmetric_comparison_between_two_positions_is_accepted() -> None:
+    """`!=` between two records holds or fails identically whichever way round they arrived."""
+    source = """
+async def test_records_differ():
+    calls: list[dict[str, str]] = []
+
+    async def record(value: dict[str, str]) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert calls[0]["k"] != calls[1]["k"]
+"""
+
+    assert _find_undocumented_order_assertions(source) == []
+
+
+def test_one_predicate_repeated_per_position_is_accepted() -> None:
+    """Asking every recorded position the same question cannot depend on their order."""
+    source = """
+async def test_membership_per_position():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert calls[0] in {"first", "second"}
+    assert calls[1] in {"first", "second"}
+"""
+
+    assert _find_undocumented_order_assertions(source) == []
+
+
+def test_an_ordering_comparison_between_two_positions_is_rejected() -> None:
+    """`<` is the comparison between two records that exchanging them can change."""
+    source = """
+async def test_ascending_records():
+    calls: list[int] = []
+
+    async def record(value: int) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert calls[0] < calls[1]
+"""
+
+    assert _find_undocumented_order_assertions(source) == [
+        OrderAssertion(test_name="test_ascending_records", lineno=9, recorders=("calls",))
+    ]
+
+
+def test_only_the_assertion_that_pins_a_position_is_rejected() -> None:
+    """A neighbour that demands an order does not cost a symmetric check its silence."""
+    source = """
+async def test_mixed_position_checks():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert calls[0] != calls[1]
+    assert calls[0] == "first"
+"""
+
+    assert _find_undocumented_order_assertions(source) == [
+        OrderAssertion(test_name="test_mixed_position_checks", lineno=10, recorders=("calls",))
+    ]
+
+
+def test_a_keyed_sort_of_two_positions_is_rejected() -> None:
+    """Python's sort is stable, so equal keys hand the two records back in arrival order."""
+    source = """
+async def test_sorted_by_key():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert sorted([calls[0], calls[1]], key=len) == ["ab", "cd"]
+"""
+
+    assert _find_undocumented_order_assertions(source) == [
+        OrderAssertion(test_name="test_sorted_by_key", lineno=9, recorders=("calls",))
+    ]
+
+
+def test_a_boolean_operand_read_back_out_is_rejected() -> None:
+    """`or` evaluates to one of the two records, so which arrived first is observable."""
+    source = """
+async def test_boolean_value():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert (calls[0] or calls[1]) == "second"
+"""
+
+    assert _find_undocumented_order_assertions(source) == [
+        OrderAssertion(test_name="test_boolean_value", lineno=9, recorders=("calls",))
+    ]
+
+
+def test_a_stated_length_exchanges_the_positions_the_test_never_named() -> None:
+    """Two records differing says nothing about order; among three records it does."""
+    source = """
+async def test_three_records():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert len(calls) == 3
+    assert calls[0] != calls[1]
+"""
+
+    assert _find_undocumented_order_assertions(source) == [
+        OrderAssertion(test_name="test_three_records", lineno=10, recorders=("calls",))
+    ]
+
+
+def test_an_unresolved_negative_index_does_not_flag_its_neighbours() -> None:
+    """`calls[-1]` may be `calls[1]`, so exchanging the two is not a reordering to test."""
+    source = """
+async def test_negative_index():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert {calls[0], calls[1]} == {"first", "second"}
+    assert calls[-1] in {"first", "second"}
+"""
+
+    assert _find_undocumented_order_assertions(source) == []
+
+
+def test_negative_positions_are_compared_with_each_other() -> None:
+    """Two indexes from the same end are still two slots the test tells apart."""
+    source = """
+async def test_negative_positions():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert calls[-2] == "first"
+    assert calls[-1] == "second"
+"""
+
+    assert _find_undocumented_order_assertions(source) == [
+        OrderAssertion(test_name="test_negative_positions", lineno=9, recorders=("calls",)),
+        OrderAssertion(test_name="test_negative_positions", lineno=10, recorders=("calls",)),
+    ]
+
+
+def test_a_stated_length_resolves_a_negative_index_onto_the_same_slot() -> None:
+    """With the length stated, `calls[-1]` is `calls[1]` and the pair stays symmetric."""
+    source = """
+async def test_resolved_negative_index():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert len(calls) == 2
+    assert calls[0] != calls[1]
+    assert calls[-1] != calls[0]
+"""
+
+    assert _find_undocumented_order_assertions(source) == []
+
+
+def test_a_boolean_index_names_the_same_slot_as_its_integer() -> None:
+    """`calls[True]` is `calls[1]`, so it must not read as a position of its own."""
+    source = """
+async def test_boolean_index():
+    calls: list[str] = []
+
+    async def record(value: str) -> None:
+        calls.append(value)
+
+    await run_concurrently(record)
+    assert calls[True] != calls[0]
+    assert calls[1] != calls[0]
+"""
+
+    assert _find_undocumented_order_assertions(source) == []
 
 
 def test_async_test_double_recorders_do_not_assume_undocumented_order() -> None:
