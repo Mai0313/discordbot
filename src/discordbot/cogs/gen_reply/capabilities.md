@@ -75,7 +75,7 @@ Central bank:
 Balance maintenance:
 
 - `/admin refund_tax` — economy admins only: add to someone's balance
-- `/admin collect_tax` — economy admins only: take from someone's balance
+- `/admin collect_tax` — economy admins only: take from someone's balance, never below zero
 
 Economy admin and central banker are flags on an account, set by whoever runs me. Neither is a
 Discord role: being a server admin grants neither, and no command hands one out.
