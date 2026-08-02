@@ -6,6 +6,12 @@ from pathlib import Path
 
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
+_CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
+# A slash that follows a word character, `:`, `/`, `.` or `-` belongs to a URL, a file path,
+# `and/or` or `24/7`; anything else in front of one (a space, a `*`, a bracket) means the text
+# names a command where `_documented_commands` cannot read it.
+_BARE_COMMAND_RE = re.compile(pattern=r"(?<![\w:/.\-])(/[a-z][\w-]*)")
+
 
 def _declared_parent(decorator: ast.Call) -> str | None:
     """Returns a subcommand's parent callback, `""` for a root command, `None` if unrelated."""
@@ -93,6 +99,45 @@ def _slash_command_paths() -> set[str]:
     return paths
 
 
+def _group_paths(paths: set[str]) -> set[str]:
+    """Returns the group nodes the runnable paths hang off.
+
+    A subcommand path exists only under a real group, so every proper prefix of one names a
+    group without a second scan.
+    """
+    groups: set[str] = set()
+    for path in paths:
+        words = path.split(sep=" ")
+        groups.update(" ".join(words[:depth]) for depth in range(1, len(words)))
+    return groups
+
+
+def _documented_commands(body: str) -> list[str]:
+    """Returns the command paths the capability doc names, in document order.
+
+    Every command line writes its command as a code span, so the span content is the whole
+    mention: no prose word can bleed into it, and a stale one can be quoted back verbatim.
+    """
+    return [
+        span.removeprefix("/")
+        for span in _CODE_SPAN_RE.findall(string=body)
+        if span.startswith("/")
+    ]
+
+
+def _unreadable_command_mentions(body: str) -> list[str]:
+    """Returns the `/command` mentions `_documented_commands` cannot read.
+
+    A command is read only when it is a span of its own, so a span that is something else
+    keeps its text here and is scanned as prose: `` `type /wallet here` `` is as invisible to
+    the reader as a de-backticked line, and has to be reported the same way.
+    """
+    prose = _CODE_SPAN_RE.sub(
+        repl=lambda span: " " if span.group(1).startswith("/") else span.group(1), string=body
+    )
+    return _BARE_COMMAND_RE.findall(string=prose)
+
+
 def _mentions_command(body: str, command: str) -> bool:
     """Reports whether the capability doc names exactly this command.
 
@@ -118,6 +163,31 @@ def test_capabilities_mention_matching_rejects_a_prefix_only_hit() -> None:
     assert not _mentions_command(body=body, command="games blackjack")
 
 
+def test_capabilities_command_extraction_reads_only_a_span_of_its_own() -> None:
+    """A command is read whole out of its own span; anywhere else it is reported unreadable."""
+    body = "- `/games blackjack` — a table\n- `not a command`, and see /balance too\n"
+    assert _documented_commands(body=body) == ["games blackjack"]
+    assert _unreadable_command_mentions(body=body) == ["/balance"]
+    # A command buried in a span that is not itself a command hides from both directions.
+    assert not _documented_commands(body="- `type /wallet here`")
+    assert _unreadable_command_mentions(body="- `type /wallet here`") == ["/wallet"]
+
+
+def test_capabilities_unreadable_mention_scan_leaves_ordinary_text_alone() -> None:
+    """The scan must not turn a URL, a path or ordinary prose into a phantom command."""
+    body = "https://example.com/docs holds data/memories, open 24/7, and/or `/ping`"
+    assert not _unreadable_command_mentions(body=body)
+    assert _unreadable_command_mentions(body="**/help** is gone") == ["/help"]
+
+
+def test_capabilities_group_paths_cover_a_group_but_not_a_renamed_leaf() -> None:
+    """A group is typable, so it is accepted; a leaf under it still has to exist."""
+    assert _group_paths(paths={"memory server show", "memory show", "ping"}) == {
+        "memory",
+        "memory server",
+    }
+
+
 def test_capabilities_doc_mentions_every_slash_command() -> None:
     """Every slash command must be discoverable from the injected capability reference.
 
@@ -131,6 +201,36 @@ def test_capabilities_doc_mentions_every_slash_command() -> None:
         if not _mentions_command(body=CAPABILITIES_DOC, command=command)
     )
     assert not missing, f"the capability reference is missing slash commands: {missing}"
+
+
+def test_capabilities_doc_names_no_command_that_cannot_be_run() -> None:
+    """The mirror of the guard above: a line the command moved out from under must fail.
+
+    A rename satisfies the forward guard under the new name and says nothing about the old
+    line left behind, and this document is injected into every QA reply as the answer model's
+    own feature reference, so a stale line becomes the bot telling someone to run something
+    Discord will not offer.
+
+    A group node is accepted even though it cannot be run on its own: it is typable and
+    Discord offers its leaves, so naming one is truthful. Only the exact leaf path answers
+    for a leaf, so a renamed subcommand under a live group is still caught.
+    """
+    runnable = _slash_command_paths()
+    typable = runnable | _group_paths(paths=runnable)
+    stale = sorted({
+        f"/{command}"
+        for command in _documented_commands(body=CAPABILITIES_DOC)
+        if command not in typable
+    })
+    assert not stale, f"the capability reference names commands that cannot be run: {stale}"
+
+
+def test_capabilities_doc_writes_every_command_as_a_span_of_its_own() -> None:
+    """Keeps the guard above total: no way of writing a command may hide a stale one."""
+    unreadable = _unreadable_command_mentions(body=CAPABILITIES_DOC)
+    assert not unreadable, (
+        f"the capability reference must write each command as a span of its own: {unreadable}"
+    )
 
 
 def test_capabilities_block_is_a_low_authority_assistant_note() -> None:
