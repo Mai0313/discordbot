@@ -9,6 +9,9 @@ includes every file under `src/discordbot`) and is read once at import.
 used to guard the help content asserts every runnable slash command still appears here, and
 every command named here still resolves to a runnable one. The second guard reads a mention
 off a code span of its own, so write a command that way or it is rejected as unreadable.
+Neither reaches an inline marker, which is asked for in plain language and so has nothing to
+match on; `markers.py`'s tag set is pinned there instead, and changing it fails until this
+document says what the bot can now do, or stops claiming what it no longer can.
 """
 
 from pathlib import Path

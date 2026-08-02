@@ -1,9 +1,12 @@
-"""Tests for keeping the injected capability reference aligned with slash commands."""
+"""Tests for keeping the injected capability reference aligned with what the bot can do."""
 
 import re
 import ast
 from pathlib import Path
 
+# The whole module, not the five tag constants by name: reading its namespace is what lets a
+# sixth marker be noticed instead of quietly falling outside a fixed import list.
+from discordbot.cogs.gen_reply import markers
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
 _CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
@@ -231,6 +234,30 @@ def test_capabilities_doc_writes_every_command_as_a_span_of_its_own() -> None:
     assert not unreadable, (
         f"the capability reference must write each command as a span of its own: {unreadable}"
     )
+
+
+def test_capabilities_doc_accounts_for_every_inline_marker() -> None:
+    """An inline marker is a capability with no command, and only this document names it.
+
+    The guards above reach a slash command because the document spells one out verbatim. A
+    marker has no such handle: the answer model reaches it in plain language, so the document
+    describes it in plain language too and there is nothing to match on. Pinning the set is
+    what forces the question instead, in both directions the command guards cover between
+    them — a new marker cannot ship undescribed, and a dropped one cannot leave the document
+    promising something the bot no longer does.
+    """
+    declared = {
+        getattr(markers, name)
+        for name in dir(markers)
+        if name.endswith("_OPEN") and not name.startswith("_")
+    }
+    assert declared == {
+        "<generate-voice>",
+        "<generate-image>",
+        "<generate-music>",
+        "<generate-video>",
+        "<deep-research>",
+    }, "the inline markers changed: say so in capabilities.md, then pin the new set here"
 
 
 def test_capabilities_block_is_a_low_authority_assistant_note() -> None:
