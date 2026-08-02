@@ -14,6 +14,16 @@ _CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
 # `and/or` or `24/7`; anything else in front of one (a space, a `*`, a bracket) means the text
 # names a command where `_documented_commands` cannot read it.
 _BARE_COMMAND_RE = re.compile(pattern=r"(?<![\w:/.\-])(/[a-z][\w-]*)")
+_PICKER_GATE_KEYWORD = "default_member_permissions"
+# Every boolean column on `UserAccount`, mapped to the wording it owes and the command lines
+# that owe it, or `None` when the flag gates no command. `is_admin`'s wording carries the term
+# its own refusal embed shows the user, so a refused member reads one name for the flag.
+_ACCOUNT_FLAG_GATES: dict[str, tuple[str, tuple[str, ...]] | None] = {
+    "is_vip": None,
+    "is_admin": ("economy admins only", ("/admin refund_tax", "/admin collect_tax")),
+    "is_central_banker": ("central bankers only", ("/central_bank call",)),
+    "hide_from_leaderboard": None,
+}
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -150,6 +160,63 @@ def _mentions_command(body: str, command: str) -> bool:
     return re.search(pattern=rf"/{re.escape(pattern=command)}(?![\w-])", string=body) is not None
 
 
+def _account_flag_columns() -> set[str]:
+    """Returns the boolean flag columns `UserAccount` declares.
+
+    Read by AST rather than imported: that module owns the process-wide economy engine, and a
+    test asking which columns exist has no business building one. A column counts on any
+    `Mapped[...]` naming `bool`, never on that annotation spelled one exact way — the optional
+    form is house style two columns above `is_admin`, and a pin a new flag can be added past
+    is worse than none.
+    """
+    module = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "discordbot"
+        / "services"
+        / "economy"
+        / "database.py"
+    )
+    parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
+    accounts = [
+        node
+        for node in ast.walk(node=parsed)
+        if isinstance(node, ast.ClassDef) and node.name == "UserAccount"
+    ]
+    # Loud rather than the bare StopIteration a `next()` would raise: a renamed or moved model
+    # has to say what it broke, the same way the command scan refuses to shrink in silence.
+    assert len(accounts) == 1, f"expected one UserAccount model, found {len(accounts)}"
+    columns: set[str] = set()
+    for node in accounts[0].body:
+        if not isinstance(node, ast.AnnAssign) or not isinstance(node.target, ast.Name):
+            continue
+        annotation = ast.unparse(ast_obj=node.annotation)
+        if annotation.startswith("Mapped[") and "bool" in annotation:
+            columns.add(node.target.id)
+    return columns
+
+
+def _command_line(body: str, command: str) -> str | None:
+    """Returns the line naming this command, or `None` when the document has no such line."""
+    return next((line for line in body.splitlines() if f"`{command}`" in line), None)
+
+
+def _modules_declaring_a_picker_gate() -> list[str]:
+    """Returns the cog modules handing Discord a permission to filter its command picker."""
+    cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
+    declaring: list[str] = []
+    for module in cogs_dir.rglob(pattern="*.py"):
+        parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
+        if any(
+            keyword.arg == _PICKER_GATE_KEYWORD
+            for node in ast.walk(node=parsed)
+            if isinstance(node, ast.Call)
+            for keyword in node.keywords
+        ):
+            declaring.append(module.relative_to(cogs_dir).as_posix())
+    return sorted(declaring)
+
+
 def test_slash_command_scan_resolves_subcommands() -> None:
     """The scan must reach group subcommands, since a silent shrink is what it guards against."""
     paths = _slash_command_paths()
@@ -258,6 +325,59 @@ def test_capabilities_doc_accounts_for_every_inline_marker() -> None:
         "<generate-video>",
         "<deep-research>",
     }, "the inline markers changed: say so in capabilities.md, then pin the new set here"
+
+
+def test_capabilities_doc_states_every_gate_on_the_gated_command_line() -> None:
+    """A permission claim carries no command, so neither command guard can see it.
+
+    That is how a `Server admins:` heading sat over two commands gated on an account flag
+    Discord knows nothing about, telling a server admin they could move other people's
+    balances and whoever actually held the flag that they could not. This document is the
+    answer model's only description of the bot, so a wrong gate is the bot saying it.
+
+    Same shape as the marker guard, for the same reason: with nothing to match on, the set is
+    read out of the code and pinned instead. What the marker guard does not have to decide is
+    WHERE the document says it — and here that is the whole defect. The gate has to sit on the
+    command's own line, because the heading it used to sit under is one the model drops the
+    moment it quotes a single line back, which is how a wrong gate outlives a reader who
+    checked the line and not the heading above it.
+
+    The pin covers `UserAccount`, which is where both of today's gates live; a flag added to
+    another model, and a gate on a button rather than a command, are outside it.
+    """
+    assert _account_flag_columns() == set(_ACCOUNT_FLAG_GATES), (
+        "UserAccount's flag columns changed: if a new one gates a command, say so on that "
+        "command's own line in capabilities.md, then pin the new set here"
+    )
+    unstated: list[str] = []
+    for gate in _ACCOUNT_FLAG_GATES.values():
+        if gate is None:
+            continue
+        wording, commands = gate
+        for command in commands:
+            line = _command_line(body=CAPABILITIES_DOC, command=command)
+            if line is None or wording not in line.lower():
+                unstated.append(f"{command} ({wording})")
+    assert not unstated, f"these command lines state no gate: {sorted(unstated)}"
+
+
+def test_no_command_hides_behind_a_discord_permission() -> None:
+    """The premise behind "neither is a Discord role": Discord filters nothing away here.
+
+    No command declares `default_member_permissions`, so Discord offers every one of them to
+    every member and each gate refuses inside its own callback instead. The day one is
+    declared, the picker starts hiding commands from the very people a flag may have been
+    granted to, and that sentence needs rewriting — which a guard that only reads the document
+    would never say.
+
+    Scoped to the declaration deliberately. Whether an in-callback permission read gates a
+    command or merely asks what the bot itself may do is not decidable by scanning, and
+    `permissions_for` already appears twice for the latter.
+    """
+    declared = _modules_declaring_a_picker_gate()
+    assert not declared, (
+        f"a command now hides behind a Discord permission: revisit capabilities.md {declared}"
+    )
 
 
 def test_capabilities_block_is_a_low_authority_assistant_note() -> None:
