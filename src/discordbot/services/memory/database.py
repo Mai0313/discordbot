@@ -8,7 +8,9 @@ per-scope processing state; an LLM failure parks the row at `status='failed'`
 with its transcript kept, so the restart sweep retries it without any timeout
 tuning. A user-requested memory clear replaces the row with a transcript-free
 `cleared` tombstone. Its ordering token prevents a staging write captured before
-the clear from recreating the erased transcript after the tombstone commits.
+the clear from recreating the erased transcript after the tombstone commits, and
+a row already newer than the clear makes `clear_job` refuse rather than report an
+empty scope, so the caller never erases the files behind a tombstone that no-opped.
 
 Engine, PRAGMA hooks, and the schema bootstrap follow `cogs/research/database.py`
 exactly: a module-level `AsyncEngine` singleton on the shared `reply.db` (a
@@ -343,6 +345,20 @@ async def clear_job(*, scope: str, flavor: MemoryJobFlavor, token: int) -> bool:
 
     Returns:
         True when a non-cleared row existed and was scrubbed.
+
+    Raises:
+        RuntimeError: When the scope already carries a row newer than this clear, so
+            the guarded upsert below would no-op. Reporting that as an ordinary
+            "nothing to scrub" let the caller delete the files anyway and leave the
+            pre-clear transcript in `reply.db` for the restart sweep to resume — the
+            exact failure the tombstone exists to close, reached through the other
+            door. Raising rolls this transaction back before the caller's file pass,
+            so every tier stays in place. A retry is harmless but keeps refusing:
+            `_resolve_token` reserves ONE block per process, so the clear's token
+            only rises above the stray row after a restart picks a base above it.
+            That same reservation is why this cannot fire while one process owns the
+            block; the guard is what keeps a second writer against the same
+            `reply.db` loud instead of silent.
     """
     await _ensure_schema()
     token = await _resolve_token(token=token)
@@ -355,6 +371,11 @@ async def clear_job(*, scope: str, flavor: MemoryJobFlavor, token: int) -> bool:
             )
         )
         previous = result.one_or_none()
+        if previous is not None and previous.token > token:
+            raise RuntimeError(
+                f"memory_job token {previous.token} is newer than the clear's {token}; "
+                "refusing to erase behind an unwritable tombstone"
+            )
         stmt = insert(MemoryJobRow).values(
             scope=scope,
             flavor=flavor,
@@ -384,7 +405,7 @@ async def clear_job(*, scope: str, flavor: MemoryJobFlavor, token: int) -> bool:
             )
         )
         await session.commit()
-        return previous is not None and previous.token <= token and previous.status != "cleared"
+        return previous is not None and previous.status != "cleared"
 
 
 async def list_resumable() -> list[MemoryJob]:

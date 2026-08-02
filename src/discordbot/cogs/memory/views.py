@@ -192,9 +192,10 @@ class MemoryClearConfirmView(View):
         try:
             removed = await clear_scope_memory(scope=self.scope)
         except Exception as exc:
-            # Broad on purpose: this is the button-callback boundary, so anything
-            # escaping here surfaces as Discord's bare "This interaction failed",
-            # which never tells the user what happened to their memory. A failed
+            # Broad on purpose: this is the button-callback boundary. The interaction
+            # was deferred above, so anything escaping here leaves the prompt silently
+            # unedited rather than showing Discord's "This interaction failed" — either
+            # way the user learns nothing about what happened to their memory. A failed
             # delete of the reply.db row leaves every file in place; a filesystem
             # error can leave the scope half cleared, so the embed points at a
             # retry rather than claiming either outcome.
