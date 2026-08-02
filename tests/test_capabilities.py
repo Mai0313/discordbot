@@ -7,6 +7,7 @@ from pathlib import Path
 # The whole module, not the five tag constants by name: reading its namespace is what lets a
 # sixth marker be noticed instead of quietly falling outside a fixed import list.
 from discordbot.cogs.gen_reply import markers
+from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
 _CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
@@ -29,6 +30,16 @@ _ACCOUNT_FLAG_GATES: dict[str, tuple[str, tuple[str, ...]] | None] = {
 # shows, so a member reads one name for the flag wherever they meet it.
 _ADMIN_WORDS = ("admin", "管理員", "管理者")
 _ECONOMY_ADMIN_TERM = "economy admin"
+# The gates `_ACCOUNT_FLAG_GATES` says it cannot see, because they sit on a decision button
+# rather than on the command. Each of these posts a view whose approve button refuses everyone
+# but the named decider and whose `on_timeout` rejects the request, so a line describing only
+# what the command sends describes half of it. The timeout is checked against
+# `LOAN_PROPOSAL_TIMEOUT_SECONDS` rather than pinned here, since retuning it is what would
+# leave the document quoting a number nothing enforces.
+_BUTTON_GATED_REQUESTS: dict[str, str] = {
+    "/credit borrow": "lender",
+    "/central_bank borrow": "central banker",
+}
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -435,6 +446,37 @@ def test_capabilities_doc_states_every_gate_on_the_gated_command_line() -> None:
             if line is None or wording not in line.lower():
                 unstated.append(f"{command} ({wording})")
     assert not unstated, f"these command lines state no gate: {sorted(unstated)}"
+
+
+def test_capabilities_doc_states_who_answers_a_loan_request_and_when_it_expires() -> None:
+    """A request that needs someone to click approve is not a command that simply works.
+
+    `/central_bank borrow` and `/credit borrow` both post a decision view: the approve button
+    refuses anyone who is not the named decider, and `on_timeout` auto-rejects the request
+    after `LOAN_PROPOSAL_TIMEOUT_SECONDS`. Neither of those gates is on the command, so the
+    guard above states outright that it cannot see them — and a line saying only "request a
+    loan from the central bank" is what the answer model repeats to a member who then watches
+    their request expire unread.
+
+    The number is read off the constant rather than pinned as text, so retuning the timeout
+    fails here until the document says the new one — matched between digit boundaries for the
+    reason `_mentions_command` carries one, since a bare substring would read the documented
+    180 as proof that a constant lowered to 18 was already written down. The wording pinned per
+    command is the decider, not the whole clause: how the line reads is the writer's, but which
+    of the two borrow paths it describes cannot be left to a reader who quotes one line back.
+    """
+    seconds = re.compile(pattern=rf"(?<!\d){LOAN_PROPOSAL_TIMEOUT_SECONDS}(?!\d)")
+    missing: list[str] = []
+    for command, decider in _BUTTON_GATED_REQUESTS.items():
+        line = _command_line(body=CAPABILITIES_DOC, command=command)
+        lowered = line.lower() if line is not None else ""
+        if decider not in lowered:
+            missing.append(f"{command} ({decider})")
+        if seconds.search(string=lowered) is None:
+            missing.append(f"{command} ({LOAN_PROPOSAL_TIMEOUT_SECONDS} seconds)")
+    assert not missing, (
+        f"these lines describe a request as though nobody has to answer it: {sorted(missing)}"
+    )
 
 
 def test_no_command_hides_behind_a_discord_permission() -> None:
