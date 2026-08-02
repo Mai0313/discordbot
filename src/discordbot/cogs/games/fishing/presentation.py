@@ -19,12 +19,15 @@ from discordbot.typings.fishing import (
     FishingPanelData,
     FishGradeConfigView,
 )
+from discordbot.cogs.games.fishing.shop import rarity_bonus_text
 from discordbot.services.economy.presentation import CURRENCY_NAME, bold_currency, currency_text
 
 FISHING_COLOR = 0x1ABC9C
 FISHING_ERROR_COLOR = 0xE74C3C
 _DURABILITY_BAR_SEGMENTS = 10
-_BIG_CATCH_SIZE_BPS = 18_000
+# Top slice of a species' own size band. Bands move with grade now, so a fixed
+# multiplier threshold would mark every 傳說 and every 神話 a big one.
+_BIG_CATCH_RANK_BPS = 8_500
 _MEDALS = ("🥇", "🥈", "🥉")
 
 
@@ -108,7 +111,7 @@ def build_panel_embed(
 def _gear_shop_line(gear: GearView) -> str:
     """Builds one shop line for a rod or bait."""
     price = currency_text(amount=gear.price, compact=True)
-    rarity = f"稀有+{gear.rarity_shift_bps / 100:.1f}%"
+    rarity = rarity_bonus_text(rarity_shift_bps=gear.rarity_shift_bps)
     if gear.gear_type == GearType.ROD:
         return f"  {gear.emoji} {gear.name} · {price} · 耐久{gear.durability} {rarity}"
     value_bonus = f"價值+{gear.value_bonus_bps / 100:.1f}%"
@@ -172,7 +175,7 @@ def build_reveal_embed(
     if roll is None:
         return build_error_embed(message="這一竿沒有結果，請再試一次")
     color, grade_emoji, label = _grade_display(grade=roll.grade, grade_map=grade_map)
-    big = "（大物!）" if roll.size_bps >= _BIG_CATCH_SIZE_BPS else ""
+    big = "（大物!）" if roll.size_rank_bps >= _BIG_CATCH_RANK_BPS else ""
     lines = [
         f"# {roll.emoji}",
         f"## {roll.species_name}",
