@@ -185,6 +185,7 @@ def test_reveal_embed_jackpot_and_broken_within_limits() -> None:
         grade=FishGrade.UR,
         emoji="🐉",
         size_bps=20_000,
+        size_rank_bps=10_000,
         base_value=5_000,
         value=100_000,
         capped=True,

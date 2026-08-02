@@ -19,10 +19,14 @@ FISHING_BPS_DENOMINATOR: Final[int] = 10_000
 # Fishing is high-frequency and can be left running, so this is set well below
 # the casino bet cap to bound how much one lucky cast can mint.
 FISHING_MAX_SINGLE_CATCH: Final[int] = 100_000
-# Luck clamp: no gear combination can push a grade's weight below 0.2x or above
-# 5.0x of its base weight, so rarity can be nudged but never made to dominate.
-LUCK_FACTOR_MIN_BPS: Final[int] = 2_000
-LUCK_FACTOR_MAX_BPS: Final[int] = 50_000
+# Luck clamp, applied per rarity step rather than to the finished factor: with
+# any gear equipped, one step up the rarity ladder is worth at least 0.5x and at
+# most 3.0x the step below. A grade's own factor is this raised to how many steps
+# it sits above the commonest grade, so the clamp bounds a mis-typed gear shift
+# without flattening the ladder the compounding exists to create. What bounds a
+# mis-typed `order_index` is separate and lives in `compose_grade_weights`.
+LUCK_STEP_MIN_BPS: Final[int] = 5_000
+LUCK_STEP_MAX_BPS: Final[int] = 30_000
 # Most bait a single purchase can stack, so one buy cannot lock a huge spend.
 MAX_BAIT_PER_PURCHASE: Final[int] = 100
 
@@ -160,6 +164,9 @@ class CatchRoll(BaseModel):
     grade: FishGrade = Field(..., description="Rarity grade of the rolled species.")
     emoji: str = Field(..., description="Emoji of the rolled species.")
     size_bps: int = Field(..., description="Rolled size multiplier in basis points.")
+    size_rank_bps: int = Field(
+        ..., description="Where the rolled size sits inside the species' own band, 0 to 10000."
+    )
     base_value: int = Field(..., description="Species base value before the size multiplier.")
     value: int = Field(
         ..., description="Final payout after size, bait bonus, and the single-catch cap."
@@ -341,8 +348,8 @@ __all__ = [
     "FISHING_ACTION_TIMEOUT_SECONDS",
     "FISHING_BPS_DENOMINATOR",
     "FISHING_MAX_SINGLE_CATCH",
-    "LUCK_FACTOR_MAX_BPS",
-    "LUCK_FACTOR_MIN_BPS",
+    "LUCK_STEP_MAX_BPS",
+    "LUCK_STEP_MIN_BPS",
     "MAX_BAIT_PER_PURCHASE",
     "AnglerStateView",
     "BaitStackView",

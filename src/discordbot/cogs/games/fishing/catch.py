@@ -8,8 +8,8 @@ from random import Random
 from collections.abc import Sequence
 
 from discordbot.typings.fishing import (
-    LUCK_FACTOR_MAX_BPS,
-    LUCK_FACTOR_MIN_BPS,
+    LUCK_STEP_MAX_BPS,
+    LUCK_STEP_MIN_BPS,
     FISHING_BPS_DENOMINATOR,
     GearView,
     CatchRoll,
@@ -40,24 +40,44 @@ def compose_grade_weights(
 ) -> dict[FishGrade, int]:
     """Reweights grade roll weights by the combined rod and bait luck shift.
 
-    Luck is additive across gear. Each grade's base weight is scaled by a factor
-    that grows with the grade's rarity rank (`order_index`), so a positive shift
-    moves roll mass monotonically from common grades toward rare ones. The factor
-    is clamped to `[LUCK_FACTOR_MIN_BPS, LUCK_FACTOR_MAX_BPS]` so no gear
-    combination can suppress or inflate a grade past those bounds. The most
-    common grade (rank 0) is never affected. A grade whose base weight is zero
-    stays disabled; the floor-to-1 below only protects a positive weight from
+    Luck is additive across gear and compounds per rarity step: the combined
+    shift describes one step up the ladder, and a grade is scaled by that step
+    raised to the number of steps it sits above the commonest one. Compounding
+    is what makes the knob bite at all. Base weights decay geometrically with
+    rarity, so a factor growing only linearly cannot outrun them: it converges on
+    weights proportional to `weight * rank`, which caps 神話 at 1.53% of rolls
+    however large the shift gets and lands most of the moved mass on the
+    second-commonest grade. Measured against the pre-#351 catalog WITH its clamp
+    in force, the whole ladder's EV topped out at 2.45x its floor and then fell
+    back to 1.87x as the shift grew (#351).
+
+    The exponent is a grade's POSITION in `order_index` order, never the raw
+    value, and ties share a position. `order_index` is also the display order, so
+    an operator may well leave gaps in it, and a raw exponent turns a perfectly
+    ordinary 0/10/20/30/40 catalog into 94% 神話; sharing a position on a tie
+    keeps two grades an operator ranked equal from being separated by whatever
+    row order SQLite happened to return. Position also means the commonest grade
+    is untouched even when its own `order_index` is not zero, and bounds the
+    arithmetic to the number of grades. The step itself is clamped to
+    `[LUCK_STEP_MIN_BPS, LUCK_STEP_MAX_BPS]`, so together the two bound what a
+    mis-typed catalog can do to the ladder. A grade whose base weight is zero
+    stays disabled but keeps its position, so removing one never re-spaces the
+    grades around it; the floor-to-1 below only protects a positive weight from
     rounding away, it must not resurrect a grade an operator removed.
     """
     total_shift = rod_rarity_shift_bps + bait_rarity_shift_bps
+    step = max(LUCK_STEP_MIN_BPS, min(LUCK_STEP_MAX_BPS, FISHING_BPS_DENOMINATOR + total_shift))
+    ranks: dict[int, int] = {}
+    for config in sorted(grade_configs, key=lambda item: item.order_index):
+        ranks.setdefault(config.order_index, len(ranks))
     adjusted: dict[FishGrade, int] = {}
     for config in grade_configs:
         if config.weight <= 0:
             adjusted[config.grade] = 0
             continue
-        raw_factor = FISHING_BPS_DENOMINATOR + total_shift * config.order_index
-        factor = max(LUCK_FACTOR_MIN_BPS, min(LUCK_FACTOR_MAX_BPS, raw_factor))
-        adjusted[config.grade] = max(1, config.weight * factor // FISHING_BPS_DENOMINATOR)
+        rank = ranks[config.order_index]
+        scaled = config.weight * step**rank // FISHING_BPS_DENOMINATOR**rank
+        adjusted[config.grade] = max(1, scaled)
     return adjusted
 
 
@@ -111,6 +131,20 @@ def _select_species(
     return in_grade[_weighted_index(rng=rng, weights=weights)]
 
 
+def _size_rank_bps(species: FishSpeciesView, size_bps: int) -> int:
+    """Returns where a rolled size sits inside its own species' band, in basis points.
+
+    Size bands differ per grade, so the raw multiplier no longer says whether a
+    catch was a big one for its kind; this does. A fixed-size species has no band
+    to sit in and reports 0, since calling every one of its catches a big one is
+    the more misleading of the two answers.
+    """
+    span = species.size_max_bps - species.size_min_bps
+    if span <= 0:
+        return 0
+    return (size_bps - species.size_min_bps) * FISHING_BPS_DENOMINATOR // span
+
+
 def roll_catch(  # noqa: PLR0913 -- a roll needs rng, configs, species, rod, bait, and the cap
     rng: Random,
     grade_configs: Sequence[FishGradeConfigView],
@@ -156,6 +190,7 @@ def roll_catch(  # noqa: PLR0913 -- a roll needs rng, configs, species, rod, bai
         grade=chosen.grade,
         emoji=chosen.emoji,
         size_bps=size_bps,
+        size_rank_bps=_size_rank_bps(species=chosen, size_bps=size_bps),
         base_value=chosen.base_value,
         value=value,
         capped=raw > max_value,
