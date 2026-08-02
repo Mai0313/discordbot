@@ -34,6 +34,7 @@ from discordbot.typings.models import (
 from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
+from discordbot.utils.usage_log import UsageRecorder
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -185,6 +186,9 @@ LINK_CONTEXT_GRACE_SECONDS = 180.0
 # Generous relative to an image because video sits in PROCESSING longer, but far under the
 # link-media bound: the clip was just produced here, so it is small and known-good.
 GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS = 60.0
+
+# Recorded as a reply's route when the pipeline failed before the router returned one.
+UNROUTED_REPLY = "unrouted"
 
 
 def _message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]:
@@ -701,6 +705,7 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
+        self.usage_recorder = UsageRecorder()
         # Tracked background tasks for the one-shot restart memory resume.
         self._tasks: set[asyncio.Task[None]] = set()
         self._resume_started = False
@@ -2248,6 +2253,9 @@ class ReplyGeneratorCogs(commands.Cog):
         self, message: Message, user_prompt: str, reactions: ReactionStatusChain
     ) -> None:
         """Routes the message and dispatches the matching handler with speculative QA context."""
+        # Named in the usage record below, which is written from this method's `finally`
+        # because this is the one scope that has both outcomes and the route in hand.
+        route_decision: str | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: (
             asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]] | None
@@ -2303,6 +2311,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
                     )
                 route_done.set()
+                route_decision = route.decision
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if route.decision == "QA" and route.link_context_sources:
                     # The router selects only source names; URL ownership stays local and the
@@ -2459,6 +2468,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 await _discard_task(task=parts_task, label="parts", message_id=message.id)
             await _discard_link_tasks(
                 link_tasks=link_tasks, deadline=link_context_deadline, message_id=message.id
+            )
+            # One record per triggering message, not per delivered artifact: the inline
+            # clips and the media persona reply are all parts of this same turn. A failure
+            # is recorded too — someone still talked to the bot — under the route it had
+            # reached, or `unrouted` when it did not get that far.
+            await self.usage_recorder.record(
+                kind="reply",
+                name=route_decision or UNROUTED_REPLY,
+                user_id=message.author.id,
+                guild_id=message.guild.id if message.guild else None,
+                channel_id=message.channel.id,
             )
 
 

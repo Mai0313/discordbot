@@ -32,8 +32,10 @@ from discordbot.typings.models import (
 )
 from discordbot.services.memory import database as memory_db
 from discordbot.utils.reactions import ReactionStatusChain
+from discordbot.utils.usage_log import UsageRecorder
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.gen_reply.cog import (
+    UNROUTED_REPLY,
     LINK_CONTEXT_SOURCES,
     ReplyGeneratorCogs,
     _discard_task,
@@ -774,6 +776,9 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     cog.config = LLMConfig()
     cog.__dict__["openai_client"] = FakeClient()
     cog.__dict__["gemini_client"] = FakeGeminiVideoClient()
+    # `__new__` skips `__init__`, so the pipeline's usage record needs its recorder wired
+    # here; the autouse `usage_log_isolated_dir` fixture keeps it off the live file.
+    cog.usage_recorder = UsageRecorder()
     handler = cog.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
         handler.__dict__["gemini_client"] = FakeGeminiClient()
@@ -4580,6 +4585,102 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     await cog.on_message(message=as_message(fake=deleted))
     assert deleted.replies == []
     assert deleted.channel.sent[0].embed is not None
+
+
+async def test_a_reply_records_the_route_it_took(
+    monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
+) -> None:
+    """One reply turn is one usage record, named after the route that served it."""
+    cog = _cog()
+
+    async def fake_route(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Routes every message to SUMMARY."""
+        del message, reference_messages, current_message
+        return RouteClassification(decision="SUMMARY")
+
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
+        route_done: object,
+    ) -> ReplyContext:
+        """Keeps the speculative prep off the real memory and history paths."""
+        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        return ReplyContext()
+
+    async def fake_message_handler(**kwargs: object) -> None:
+        """Stands in for the answer so the turn completes without an LLM call."""
+        del kwargs
+
+    monkeypatch.setattr(cog, "_route_classify", fake_route)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+    monkeypatch.setattr(cog, "_handle_message_reply", fake_message_handler)
+
+    message = FakeMessage(content="<@999> recap", author=FakeAuthor(user_id=7))
+    await cog.on_message(message=as_message(fake=message))
+
+    (record,) = _usage_records(directory=usage_log_isolated_dir)
+    assert (record["kind"], record["name"]) == ("reply", "SUMMARY")
+    assert record["user_id"] == 7
+    assert message.guild is not None
+    assert record["guild_id"] == message.guild.id
+
+    # The empty-prompt `?` reply runs no model and takes no route, so it is a misfire
+    # rather than a conversation and stays out of the records.
+    empty = FakeMessage(content="<@999>", author=FakeAuthor(user_id=7))
+    empty.guild = None
+    await cog.on_message(message=as_message(fake=empty))
+
+    assert len(_usage_records(directory=usage_log_isolated_dir)) == 1
+
+
+async def test_a_failed_reply_records_that_it_never_routed(
+    monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
+) -> None:
+    """Someone still talked to the bot, so a failure before the router is still recorded."""
+    cog = _cog()
+
+    async def boom(
+        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+    ) -> RouteClassification:
+        """Fails the way a router outage would."""
+        del message, reference_messages, current_message
+        raise RuntimeError("boom")
+
+    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+        message: FakeMessage,
+        history_limit: int,
+        memory_enabled: bool,
+        parts_task: object,
+        text_parts: object,
+        route_done: object,
+    ) -> ReplyContext:
+        """Keeps the speculative prep off the real memory and history paths."""
+        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        return ReplyContext()
+
+    monkeypatch.setattr(cog, "_route_classify", boom)
+    monkeypatch.setattr(cog, "_prepare_reply_context", fake_prepare)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=7))
+    await cog.on_message(message=as_message(fake=message))
+
+    (record,) = _usage_records(directory=usage_log_isolated_dir)
+    assert (record["kind"], record["name"]) == ("reply", UNROUTED_REPLY)
+
+
+def _usage_records(directory: Path) -> list[dict[str, Any]]:
+    """Reads back every usage record written under a directory."""
+    return [
+        json.loads(line)
+        for path in sorted(directory.glob("*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 async def test_on_message_forward_not_gated_as_empty(monkeypatch: pytest.MonkeyPatch) -> None:
