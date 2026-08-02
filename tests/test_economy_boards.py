@@ -8,7 +8,7 @@ from PIL import Image
 import pytest
 
 from discordbot.typings.economy import LeaderboardEntry, LossLeaderboardEntry
-from discordbot.services.economy.boards import (
+from discordbot.cogs.economy.boards import (
     _BOARD_IMAGE_CACHE_TTL_SECONDS,
     _RankingBoardSpec,
     _board_image_cache,
@@ -105,9 +105,7 @@ def test_balance_leaderboard_board_image_cache(monkeypatch: pytest.MonkeyPatch) 
         del spec
         raise AssertionError("render should be cached")
 
-    monkeypatch.setattr(
-        "discordbot.services.economy.boards._render_ranking_board_image", fail_render
-    )
+    monkeypatch.setattr("discordbot.cogs.economy.boards._render_ranking_board_image", fail_render)
     assert build_balance_leaderboard_board_image(rows=rows) == first
 
 
@@ -124,9 +122,7 @@ def test_an_expired_board_renders_again(monkeypatch: pytest.MonkeyPatch) -> None
         calls += 1
         return _render_ranking_board_image(spec=spec)
 
-    monkeypatch.setattr(
-        "discordbot.services.economy.boards._render_ranking_board_image", count_render
-    )
+    monkeypatch.setattr("discordbot.cogs.economy.boards._render_ranking_board_image", count_render)
     build_balance_leaderboard_board_image(rows=rows)
     assert calls == 1
 

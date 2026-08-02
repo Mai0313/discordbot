@@ -17,13 +17,13 @@ from discordbot.typings.economy import (
     LoanLenderType,
 )
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
-from discordbot.utils.amount_parsing import parse_decimal_amount
-from discordbot.services.economy.boards import (
+from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
     build_loss_leaderboard_board_image,
     build_balance_leaderboard_board_image,
 )
+from discordbot.utils.amount_parsing import parse_decimal_amount
 from discordbot.services.stock.database import get_stock_portfolio
 from discordbot.services.economy.database import (
     top_n,

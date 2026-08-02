@@ -20,6 +20,7 @@ nav:
                   - cog: Reference/discordbot/cogs/auto_unmute/cog.md
                   - prompts: Reference/discordbot/cogs/auto_unmute/prompts.md
               - economy:
+                  - boards: Reference/discordbot/cogs/economy/boards.md
                   - cog: Reference/discordbot/cogs/economy/cog.md
                   - embeds: Reference/discordbot/cogs/economy/embeds.md
                   - views: Reference/discordbot/cogs/economy/views.md
@@ -109,7 +110,6 @@ nav:
                   - cog: Reference/discordbot/cogs/video/cog.md
           - services:
               - economy:
-                  - boards: Reference/discordbot/services/economy/boards.md
                   - database: Reference/discordbot/services/economy/database.md
                   - presentation: Reference/discordbot/services/economy/presentation.md
               - memory:
