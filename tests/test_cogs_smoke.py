@@ -139,9 +139,13 @@ _STUB_COMMENT_TEXT = "a stranger's comment the expansion must ignore"
 class ParseResultStub:
     """Context manager stub for Threads parse results."""
 
-    def __init__(self, results: list[ThreadsOutput] | BaseException) -> None:
-        """Stores parsed results or the error to raise on entry."""
+    def __init__(
+        self, results: list[ThreadsOutput] | BaseException, exit_error: Exception | None = None
+    ) -> None:
+        """Stores parsed results, the error to raise on entry, and the one to raise on exit."""
         self.results = results
+        self.exit_error = exit_error
+        self.exited = False
 
     def __enter__(self) -> ThreadsConversation:
         """Returns the parsed conversation or raises the configured parsing error.
@@ -167,20 +171,28 @@ class ParseResultStub:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Keeps fake parsed outputs available after context exit."""
-        return
+        """Keeps fake parsed outputs available after context exit, or fails the cleanup."""
+        self.exited = True
+        if self.exit_error:
+            raise self.exit_error
 
 
 class ThreadsDownloaderStub:
     """Fake Threads downloader returning a configured parse context manager."""
 
-    def __init__(self, results: list[ThreadsOutput] | BaseException) -> None:
-        """Stores parsed results or parse failure."""
+    def __init__(
+        self, results: list[ThreadsOutput] | BaseException, exit_error: Exception | None = None
+    ) -> None:
+        """Stores parsed results, the parse failure, and any scratch-cleanup failure."""
         self.results = results
+        self.exit_error = exit_error
+        self.parsed: list[ParseResultStub] = []
 
     def parse(self, url: str) -> ParseResultStub:
-        """Returns a fake parse context manager."""
-        return ParseResultStub(results=self.results)
+        """Returns a fake parse context manager, recorded so a test can inspect its exit."""
+        result = ParseResultStub(results=self.results, exit_error=self.exit_error)
+        self.parsed.append(result)
+        return result
 
 
 class FakeSendChannel:
@@ -642,6 +654,67 @@ async def test_threads_cog_delivers_when_the_notice_cannot_be_built(
     assert len(message.replies) == 1
     assert message.replies[0]["embeds"]
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+
+
+async def test_threads_cog_keeps_the_expansion_when_the_scratch_cleanup_fails() -> None:
+    """A temp file the user cannot see must never repaint a delivered expansion as failed."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
+    downloader = ThreadsDownloaderStub(
+        results=[_thread_output(text="貼文內容")], exit_error=OSError("read-only file system")
+    )
+    cog.downloader = cast("ThreadsDownloader", downloader)
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+
+    await cog.on_message(message=as_message(fake=message))
+
+    # The cleanup really ran and really failed, so the ✅ below is the guard's doing.
+    assert downloader.parsed[0].exited
+    assert len(message.replies) == 1
+    assert message.replies[0]["embeds"]
+    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+
+
+async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_after_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Swallowing the cleanup must not swallow the failure the cleanup used to replace."""
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
+    downloader = ThreadsDownloaderStub(
+        results=[_thread_output(text="貼文內容")], exit_error=OSError("read-only file system")
+    )
+    cog.downloader = cast("ThreadsDownloader", downloader)
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    logged: list[tuple[str, str]] = []
+
+    def record_error(message_text: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the message and error type of each error-level log."""
+        logged.append((message_text, kwargs["error_type"]))
+
+    def exploding_plan(*, results: list[ThreadsOutput]) -> parse_threads._EmbedPlan:
+        del results
+        raise RuntimeError("the embed plan blew up")
+
+    monkeypatch.setattr(parse_threads.logfire, "error", record_error)
+    cog._build_embed_plan = exploding_plan  # ty: ignore[invalid-assignment]
+    await cog.on_message(message=as_message(fake=message))
+
+    assert downloader.parsed[0].exited
+    assert message.replies == []
+    assert message.reactions[-1] == "<:redcross:1517565100838355016>"
+    # The step that lost the expansion is logged with its own cause rather than with the
+    # OSError the cleanup used to overwrite it with, and the cleanup gets its own line.
+    assert ("Could not clean up the Threads scratch files", "OSError") in logged
+    assert ("Threads expansion failed outside the parse and delivery steps", "RuntimeError") in (
+        logged
+    )
 
 
 async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
