@@ -22,11 +22,11 @@ from discordbot.typings.economy import (
     LoanProposalAcceptResult,
 )
 from discordbot.utils.number_text import share_quantity_text
-from discordbot.services.stock.market import format_price
-from discordbot.services.economy.boards import (
+from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
 )
+from discordbot.services.stock.market import format_price
 from discordbot.services.economy.database import (
     checkin_reward,
     apply_vip_blackjack_bonus,
