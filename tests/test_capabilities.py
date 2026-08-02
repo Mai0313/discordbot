@@ -40,6 +40,10 @@ _BUTTON_GATED_REQUESTS: dict[str, str] = {
     "/credit borrow": "lender",
     "/central_bank borrow": "central banker",
 }
+# What `/admin collect_tax`'s line owes for `allow_negative=False`, which is the whole
+# difference between what the command is called and what it does to a member holding less
+# than the amount asked for.
+_COLLECT_TAX_CLAMP_WORDING = "never below zero"
 
 
 def _declared_parent(decorator: ast.Call) -> str | None:
@@ -227,6 +231,39 @@ def _account_flag_columns() -> set[str]:
 def _command_line(body: str, command: str) -> str | None:
     """Returns the line naming this command, or `None` when the document has no such line."""
     return next((line for line in body.splitlines() if f"`{command}`" in line), None)
+
+
+def _admin_adjustment_allows_negative() -> bool:
+    """Returns what the `/admin` adjustment path hands `adjust_balance` as `allow_negative`.
+
+    Read by AST for the reason `_account_flag_columns` is: that service owns the process-wide
+    economy engine, and a test asking what one call site passes has no business building one.
+    A form this cannot read is an assertion failure rather than a default, since defaulting to
+    the answer the document wants is how a guard outlives the behavior it guards.
+    """
+    module = (
+        Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs" / "economy" / "cog.py"
+    )
+    parsed = ast.parse(source=module.read_text(encoding="utf-8"), filename=str(module))
+    calls = [
+        node
+        for function in ast.walk(node=parsed)
+        if isinstance(function, ast.AsyncFunctionDef) and function.name == "_run_admin_adjustment"
+        for node in ast.walk(node=function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        if node.func.id == "adjust_balance"
+    ]
+    assert len(calls) == 1, (
+        f"expected one adjust_balance call in the admin path, found {len(calls)}"
+    )
+    passed = next(
+        (keyword.value for keyword in calls[0].keywords if keyword.arg == "allow_negative"), None
+    )
+    allowed = passed.value if isinstance(passed, ast.Constant) else None
+    assert isinstance(allowed, bool), (
+        "the /admin adjustment must pass allow_negative as a literal bool"
+    )
+    return allowed
 
 
 def _literal_description(node: ast.expr, label: str) -> str:
@@ -476,6 +513,29 @@ def test_capabilities_doc_states_who_answers_a_loan_request_and_when_it_expires(
             missing.append(f"{command} ({LOAN_PROPOSAL_TIMEOUT_SECONDS} seconds)")
     assert not missing, (
         f"these lines describe a request as though nobody has to answer it: {sorted(missing)}"
+    )
+
+
+def test_capabilities_doc_states_the_clamp_collect_tax_actually_applies() -> None:
+    """The line is not false; it is incomplete in the way that sets up a surprise.
+
+    `_run_admin_adjustment` passes `allow_negative=False`, so collecting 500 from a member
+    holding 100 collects 100, and collecting from someone who has never held a wallet row
+    reports success having moved nothing. The command already knows this — it hands
+    `is_collect_clamped` to its own result embed — which leaves the document as the one
+    surface that did not say it.
+
+    Both halves are asserted because either one alone rots: the wording without the argument
+    survives an `allow_negative=True` that makes it false, and the argument without the wording
+    is a behavior nothing describes.
+    """
+    assert not _admin_adjustment_allows_negative(), (
+        "the /admin adjustment no longer clamps: capabilities.md still says it stops at zero"
+    )
+    line = _command_line(body=CAPABILITIES_DOC, command="/admin collect_tax")
+    assert line is not None, "capabilities.md names no /admin collect_tax line"
+    assert _COLLECT_TAX_CLAMP_WORDING in line.lower(), (
+        f"/admin collect_tax is clamped and its line does not say so: {line}"
     )
 
 
