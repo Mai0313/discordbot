@@ -97,7 +97,6 @@ nav:
                   - delivery: Reference/discordbot/cogs/research/delivery.md
                   - prompts: Reference/discordbot/cogs/research/prompts.md
                   - streaming: Reference/discordbot/cogs/research/streaming.md
-                  - views: Reference/discordbot/cogs/research/views.md
               - stock:
                   - chart: Reference/discordbot/cogs/stock/chart.md
                   - cog: Reference/discordbot/cogs/stock/cog.md
