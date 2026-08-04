@@ -6538,8 +6538,10 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
-    assert peak_start[0] == ModelSettings(name="gemini-3.1-pro-preview", effort="high")
-    assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
+    assert peak_start[0] == ModelSettings(name="gemini-flash-latest", effort="high")
+    assert peak_start[0] == peak_end[0]
+    assert before_peak[0] == ModelSettings(name="gemini-pro-latest", effort="high")
+    assert before_peak[0] == after_peak[0] == weekend[0]
 
 
 async def test_handle_message_reply_selection_offers_tool_then_answers_with_builtins(
@@ -6649,10 +6651,9 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     )
     evaluate_model = cog.memory_extractor.evaluate_model
     assert evaluate_model is not None
-    assert evaluate_model.name == cog.runtime_models.memory_evaluator_model.name
+    assert evaluate_model.name == cog.runtime_models.memory_writer_model.name
     assert (
-        cog.memory_extractor.consolidate_model.name
-        == cog.runtime_models.memory_consolidator_model.name
+        cog.memory_extractor.consolidate_model.name == cog.runtime_models.memory_writer_model.name
     )
 
 

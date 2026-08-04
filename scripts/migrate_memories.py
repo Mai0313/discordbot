@@ -188,7 +188,7 @@ def main() -> None:
         "running with --apply.[/yellow]"
     )
     asyncio.run(
-        _migrate_all(model=RuntimeModelCatalog().memory_consolidator_model, apply=arguments.apply)
+        _migrate_all(model=RuntimeModelCatalog().memory_writer_model, apply=arguments.apply)
     )
 
 

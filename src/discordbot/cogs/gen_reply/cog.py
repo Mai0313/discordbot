@@ -848,8 +848,8 @@ class ReplyGeneratorCogs(commands.Cog):
         return MemoryExtractorAI(
             client=self.openai_client,
             extract_model=self.runtime_models.memory_extractor_model,
-            evaluate_model=self.runtime_models.memory_evaluator_model,
-            consolidate_model=self.runtime_models.memory_consolidator_model,
+            evaluate_model=self.runtime_models.memory_writer_model,
+            consolidate_model=self.runtime_models.memory_writer_model,
         )
 
     @cached_property
@@ -864,8 +864,8 @@ class ReplyGeneratorCogs(commands.Cog):
         return MemoryExtractorAI(
             client=self.openai_client,
             extract_model=self.runtime_models.memory_extractor_model,
-            evaluate_model=self.runtime_models.memory_evaluator_model,
-            consolidate_model=self.runtime_models.memory_consolidator_model,
+            evaluate_model=self.runtime_models.memory_writer_model,
+            consolidate_model=self.runtime_models.memory_writer_model,
             phase1_prompt=SERVER_PHASE1_PROMPT,
             evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
             consolidate_prompt=SERVER_PHASE2_PROMPT,
