@@ -99,8 +99,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings used with `images.generate` and `images.edit`.
         """
-        image_model = ModelSettings(name="gemini-3.1-flash-image")
-        return image_model
+        return ModelSettings(name="gemini-3.1-flash-image")
 
     @property
     def video_model(self) -> ModelSettings:
@@ -114,8 +113,7 @@ class RuntimeModelCatalog(BaseModel):
             via the proxy). omni unifies text/image/reference/edit video generation, so the same
             model backs plain generation and true source-video editing (`task="edit"`).
         """
-        video_model = ModelSettings(name="gemini-omni-flash-preview")
-        return video_model
+        return ModelSettings(name="gemini-omni-flash-preview")
 
     @property
     def music_model(self) -> ModelSettings:
@@ -127,8 +125,7 @@ class RuntimeModelCatalog(BaseModel):
             Model settings used with the native Gemini (Lyria) Interactions API (a bare model
             name, no provider prefix, since the call goes direct to Google not via the proxy).
         """
-        music_model = ModelSettings(name="lyria-3-clip-preview")
-        return music_model
+        return ModelSettings(name="lyria-3-clip-preview")
 
     @property
     def antigravity_model(self) -> ModelSettings:
@@ -235,8 +232,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Fast minimal-thinking settings.
         """
-        fast_model = ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
-        return fast_model
+        return ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
 
     @property
     def tool_model(self) -> ModelSettings:
