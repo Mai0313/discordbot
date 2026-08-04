@@ -97,8 +97,8 @@ class MemoryCogs(commands.Cog):
         return MemoryExtractorAI(
             client=self.client,
             extract_model=self.runtime_models.memory_extractor_model,
-            evaluate_model=self.runtime_models.memory_evaluator_model,
-            consolidate_model=self.runtime_models.memory_consolidator_model,
+            evaluate_model=self.runtime_models.memory_writer_model,
+            consolidate_model=self.runtime_models.memory_writer_model,
         )
 
     @nextcord.slash_command(

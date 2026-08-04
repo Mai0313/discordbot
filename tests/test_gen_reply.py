@@ -6651,10 +6651,9 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     )
     evaluate_model = cog.memory_extractor.evaluate_model
     assert evaluate_model is not None
-    assert evaluate_model.name == cog.runtime_models.memory_evaluator_model.name
+    assert evaluate_model.name == cog.runtime_models.memory_writer_model.name
     assert (
-        cog.memory_extractor.consolidate_model.name
-        == cog.runtime_models.memory_consolidator_model.name
+        cog.memory_extractor.consolidate_model.name == cog.runtime_models.memory_writer_model.name
     )
 
 
