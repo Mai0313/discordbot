@@ -22,7 +22,7 @@ from typing import Any, Literal, cast
 from datetime import datetime
 
 from pydantic import Field, BaseModel
-from sqlalchemy import String, Integer, DateTime, CursorResult, event, select, update
+from sqlalchemy import String, Integer, DateTime, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
@@ -31,10 +31,9 @@ from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 
-# Lifecycle of a research session, persisted in the `phase` column.
-ResearchPhase = Literal["planning", "researching", "done", "failed", "cancelled"]
-# Phases that still need the bot's attention (block a new launch for the same owner).
-_ACTIVE_PHASES: tuple[ResearchPhase, ...] = ("planning", "researching")
+# Lifecycle of a research session, persisted in the `phase` column. A row left `planning` by the
+# removed escalation tiers is not migrated: nothing selects that value any more, so it is inert.
+ResearchPhase = Literal["researching", "done", "failed", "cancelled"]
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/reply.db")
 
@@ -73,8 +72,10 @@ class ResearchSessionRow(Base):
         guild_id: Guild ID, or `None` for a DM-fallback session with no thread.
         source_message_id: The message the thread was anchored to.
         agent: The Gemini agent string currently running this session.
-        interaction_id: The latest interaction id (plan or research); `None` before it starts.
-        brief: The research brief, kept so an escalation can re-plan from the original topic.
+        interaction_id: The running interaction's id; `None` before it starts.
+        brief: The research brief. Nothing reads it back, but it is the row's only human-readable
+            identity, and the column is `NOT NULL` with no server default, so dropping it from the
+            model would break every INSERT against an already-deployed `reply.db`.
         phase: Lifecycle phase (see `ResearchPhase`).
         created_at: First-write timestamp.
         updated_at: Latest-write timestamp.
@@ -107,11 +108,9 @@ class PersistentResearchSession(BaseModel):
     source_message_id: int = Field(..., description="The message the thread was anchored to.")
     agent: str = Field(..., description="The Gemini agent string currently running this session.")
     interaction_id: str | None = Field(
-        ..., description="The latest interaction id (plan or research); None before it starts."
+        ..., description="The running interaction's id; None before it starts."
     )
-    brief: str = Field(
-        ..., description="The research brief, kept so an escalation can re-plan the same topic."
-    )
+    brief: str = Field(..., description="The research brief the session was launched with.")
     phase: ResearchPhase = Field(..., description="Lifecycle phase of the session.")
 
 
@@ -164,7 +163,7 @@ def _row_to_model(row: ResearchSessionRow) -> PersistentResearchSession:
 
 def cast_phase(value: str) -> ResearchPhase:
     """Narrows a stored phase string to `ResearchPhase`, defaulting odd values to failed."""
-    if value in ("planning", "researching", "done", "failed", "cancelled"):
+    if value in ("researching", "done", "failed", "cancelled"):
         return cast("ResearchPhase", value)
     return "failed"
 
@@ -245,104 +244,8 @@ async def set_phase(*, thread_id: int, phase: ResearchPhase) -> None:
         await session.commit()
 
 
-async def claim_research(*, thread_id: int, plan_interaction_id: str) -> bool:
-    """Atomically claims a planning row for the full research run.
-
-    Transitions `planning` -> `researching` and clears the stale plan `interaction_id` in one
-    UPDATE. Returns True only for the call that actually made the transition, so two fast
-    「接受並開始」 clicks launch at most one paid run. Clearing the id means a restart in the
-    window before the real run id is stored cannot resume the completed plan and deliver its
-    text as a report (`list_resumable` keeps it, but `_resume_one` sees no id and fails it).
-
-    Guarded on `interaction_id` so only the plan the clicked button belongs to can be claimed: a
-    stale approval view left over from a refine flow (its `plan_interaction_id` no longer matches
-    the row) loses the claim instead of launching research from the superseded plan.
-    """
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        result = cast(
-            "CursorResult[Any]",
-            await session.execute(
-                statement=update(ResearchSessionRow)
-                .where(
-                    ResearchSessionRow.thread_id == thread_id,
-                    ResearchSessionRow.phase == "planning",
-                    ResearchSessionRow.interaction_id == plan_interaction_id,
-                )
-                .values(phase="researching", interaction_id=None, updated_at=now)
-            ),
-        )
-        await session.commit()
-        return bool(result.rowcount and result.rowcount > 0)
-
-
-async def claim_planning(*, thread_id: int) -> bool:
-    """Atomically claims a finished report for escalation (done -> planning).
-
-    Returns True only for the call that made the transition, so a double-clicked escalation
-    button spawns at most one planning interaction instead of competing paid plans.
-    """
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        result = cast(
-            "CursorResult[Any]",
-            await session.execute(
-                statement=update(ResearchSessionRow)
-                .where(
-                    ResearchSessionRow.thread_id == thread_id, ResearchSessionRow.phase == "done"
-                )
-                .values(phase="planning", updated_at=now)
-            ),
-        )
-        await session.commit()
-        return bool(result.rowcount and result.rowcount > 0)
-
-
-async def cancel_stale_plan(*, thread_id: int, plan_interaction_id: str) -> bool:
-    """Cancels a still-pending plan whose approval view expired (planning -> cancelled).
-
-    Guarded on `interaction_id` so only the plan currently awaiting approval is cancelled: a
-    superseded view (the plan was refined to a new interaction, or already accepted) is a no-op,
-    so an expired stale view never discards a fresh plan or a running research.
-    """
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        result = cast(
-            "CursorResult[Any]",
-            await session.execute(
-                statement=update(ResearchSessionRow)
-                .where(
-                    ResearchSessionRow.thread_id == thread_id,
-                    ResearchSessionRow.phase == "planning",
-                    ResearchSessionRow.interaction_id == plan_interaction_id,
-                )
-                .values(phase="cancelled", updated_at=now)
-            ),
-        )
-        await session.commit()
-        return bool(result.rowcount and result.rowcount > 0)
-
-
-async def get_session(*, thread_id: int) -> PersistentResearchSession | None:
-    """Reads one session row, or `None` when the thread is not tracked."""
-    await _ensure_schema()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(ResearchSessionRow).where(ResearchSessionRow.thread_id == thread_id)
-        )
-        row = result.scalars().one_or_none()
-        return _row_to_model(row=row) if row is not None else None
-
-
 async def list_resumable() -> list[PersistentResearchSession]:
-    """Returns sessions still `researching`, for the restart resume sweep.
-
-    Planning-phase rows are intentionally excluded: they are mid plan-discussion
-    (waiting on the owner) and not worth resuming after a restart.
-    """
+    """Returns sessions still `researching`, for the restart resume sweep."""
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
@@ -351,43 +254,17 @@ async def list_resumable() -> list[PersistentResearchSession]:
         return [_row_to_model(row=row) for row in result.scalars().all()]
 
 
-async def clear_stale_planning() -> list[PersistentResearchSession]:
-    """Cancels sessions stuck in `planning` after a restart and returns the cleared rows.
-
-    A `planning` row is mid plan-discussion whose approval view and `wait_for` did not survive the
-    restart, yet `active_thread_for_owner` still counts it as active, so left as-is it blocks the
-    owner from launching new research forever. Cancelling it frees the slot (the owner can
-    re-trigger); the returned rows let the caller post a notice in each thread.
-    """
-    await _ensure_schema()
-    now = _database_now()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(ResearchSessionRow).where(ResearchSessionRow.phase == "planning")
-        )
-        rows = [_row_to_model(row=row) for row in result.scalars().all()]
-        if rows:
-            await session.execute(
-                statement=update(ResearchSessionRow)
-                .where(ResearchSessionRow.phase == "planning")
-                .values(phase="cancelled", updated_at=now)
-            )
-            await session.commit()
-        return rows
-
-
 async def active_thread_for_owner(*, owner_id: int) -> int | None:
     """Returns an owner's in-flight research thread id, or `None` when they have none.
 
-    The concurrency guard: an owner may only have one `planning`/`researching`
-    session at a time, so a new launch is refused while one is active.
+    The concurrency guard: an owner may only have one `researching` session at a time, so a new
+    launch is refused while one is active.
     """
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
             statement=select(ResearchSessionRow.thread_id).where(
-                ResearchSessionRow.owner_id == owner_id,
-                ResearchSessionRow.phase.in_(_ACTIVE_PHASES),
+                ResearchSessionRow.owner_id == owner_id, ResearchSessionRow.phase == "researching"
             )
         )
         return result.scalars().first()

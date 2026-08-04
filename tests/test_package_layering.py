@@ -114,14 +114,14 @@ def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:
     """The scan is only worth its assertions if it sees the forms the tree actually uses.
 
     `cogs/maplestory/cog.py` is the one place using relative imports, and
-    `cogs/research/views.py` the one `TYPE_CHECKING` import of a cog module. A scan that
+    `cogs/games/blackjack_views.py` imports a cog module under `TYPE_CHECKING`. A scan that
     silently skipped either would pass the tests above while seeing nothing.
     """
     relative = _imported_modules(_COGS / "maplestory" / "cog.py")
     assert "discordbot.cogs.maplestory.views" in relative
 
-    type_checking = _imported_modules(_COGS / "research" / "views.py")
-    assert "discordbot.cogs.research.cog" in type_checking
+    type_checking = _imported_modules(_COGS / "games" / "blackjack_views.py")
+    assert "discordbot.cogs.games.shoe" in type_checking
 
 
 def test_a_package_init_resolves_relative_imports_against_its_own_package() -> None:

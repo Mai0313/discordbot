@@ -2167,7 +2167,8 @@ class ReplyGeneratorCogs(commands.Cog):
             return
 
         # Skip a (mentioned) message typed inside a research thread the ResearchCogs cog is
-        # actively driving, so QA does not double-handle a plan-refinement turn there.
+        # actively driving: the thread is its workspace until the report lands, so QA must not
+        # answer over the live status edits. The skip lifts the moment the run finishes.
         if _in_active_research_thread(bot=self.bot, channel_id=message.channel.id):
             return
 

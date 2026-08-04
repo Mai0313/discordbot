@@ -47,11 +47,7 @@ class ResearchProgressStreamer(BaseModel):
         ..., description="Opening status message edited in place; None disables the live view."
     )
     label: str = Field(
-        ..., description="Tier label shown in the header, e.g. 'Antigravity' or 'Deep Research'."
-    )
-    action: str = Field(
-        default="Researching",
-        description="Header verb shown before the label, e.g. 'Researching' / 'Planning'.",
+        ..., description="Agent label shown in the header; the cog passes its `RESEARCH_LABEL`."
     )
     reasoning: str = Field(
         default="", description="Accumulated thought-summary text; only a windowed tail is shown."
@@ -98,7 +94,7 @@ class ResearchProgressStreamer(BaseModel):
         """
         elapsed = int(time.monotonic() - self.started_at)
         mins, secs = divmod(elapsed, 60)
-        header = f"-# {self.action}... ({self.label}, {mins}m{secs:02d}s)"
+        header = f"-# Researching... ({self.label}, {mins}m{secs:02d}s)"
         if not self.reasoning:
             return header
         tail = escape_mentions(self.reasoning[-1500:])

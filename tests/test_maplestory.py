@@ -62,7 +62,7 @@ if TYPE_CHECKING:
 
     from nextcord.ui import StringSelect
 
-type JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
+type JsonValue = str | int | float | bool | list["JsonValue"] | dict[str, "JsonValue"] | None
 
 
 class InteractionPayload(TypedDict, total=False):

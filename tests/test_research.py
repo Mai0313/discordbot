@@ -143,14 +143,6 @@ def test_split_report_by_sections_drops_empty_sections() -> None:
 # ----- agent helpers ------------------------------------------------------------------------
 
 
-def test_deep_research_agent_config_shape() -> None:
-    plan_config = agent._deep_research_agent_config(collaborative_planning=True)
-    assert plan_config["type"] == "deep-research"
-    assert plan_config["collaborative_planning"] is True
-    run_config = agent._deep_research_agent_config(collaborative_planning=False)
-    assert run_config["collaborative_planning"] is False
-
-
 class _FakeStream:
     """Async iterator over scripted SSE events; can raise after a prefix to simulate a drop."""
 
@@ -268,6 +260,9 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
     assert kwargs["stream"] is True
     assert kwargs["background"] is True
     assert kwargs["tools"] is agent.RESEARCH_TOOLS
+    # The only agent runs with no `agent_config`: that plumbing carried the removed Deep Research
+    # tiers' `collaborative_planning`, and nothing may put it back on the one surviving call.
+    assert "agent_config" not in kwargs
     assert streamer.reasoning == "searching"
     assert result.ok is True
     assert result.report_text.startswith("# Report")
@@ -391,66 +386,13 @@ async def test_resume_research_stream_drives_from_get_stream() -> None:
     client = _fake_client(
         streams=[_FakeStream([_completed_event(event_id="e1")])], terminal=_terminal_interaction()
     )
-    streamer = ResearchProgressStreamer(status=None, label="Deep Research")
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
     result = await agent.resume_research_stream(
         client=as_client(fake=client), interaction_id="int_9", streamer=streamer
     )
     # Resume re-attaches via get(stream=True) and never calls create.
     assert client.aio.interactions.create_kwargs == {}
     assert result.ok is True
-
-
-async def test_stream_plan_passes_research_tools_and_returns_plan() -> None:
-    client = _fake_client(
-        streams=[
-            _FakeStream([
-                _created_event(interaction_id="plan_x", event_id="e1"),
-                _thought_event("outlining", event_id="e2"),
-                _completed_event(event_id="e3"),
-            ])
-        ],
-        terminal=SimpleNamespace(id="plan_x", status="completed", output_text="a plan", steps=[]),
-    )
-    streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Planning")
-    plan = await agent.stream_plan(
-        client=as_client(fake=client),
-        agent="deep-research-preview-04-2026",
-        brief="b",
-        system_instruction="sys",
-        streamer=streamer,
-    )
-    # Planning must pass the restricted search/url tool set so the agent default (which can include
-    # code execution) cannot leak raw tool-call text into the plan; it now streams reasoning too.
-    assert client.aio.interactions.create_kwargs["tools"] is agent.RESEARCH_TOOLS
-    assert client.aio.interactions.create_kwargs["stream"] is True
-    assert streamer.reasoning == "outlining"
-    assert plan.status == "completed"
-    assert plan.plan_text == "a plan"
-    assert plan.interaction_id == "plan_x"
-
-
-async def test_stream_refine_passes_research_tools_and_returns_plan() -> None:
-    client = _fake_client(
-        streams=[
-            _FakeStream([
-                _created_event(interaction_id="plan_x", event_id="e1"),
-                _completed_event(),
-            ])
-        ],
-        terminal=SimpleNamespace(id="plan_x", status="completed", output_text="a plan", steps=[]),
-    )
-    streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Re-planning")
-    plan = await agent.stream_refine(
-        client=as_client(fake=client),
-        agent="deep-research-preview-04-2026",
-        previous_interaction_id="plan_v1",
-        feedback="tighten the scope",
-        system_instruction="sys",
-        streamer=streamer,
-    )
-    assert client.aio.interactions.create_kwargs["tools"] is agent.RESEARCH_TOOLS
-    assert client.aio.interactions.create_kwargs["previous_interaction_id"] == "plan_v1"
-    assert plan.status == "completed"
 
 
 def test_is_terminal_event_classifies_statuses() -> None:
@@ -465,6 +407,10 @@ def test_is_terminal_event_classifies_statuses() -> None:
     )
     running = SimpleNamespace(event_type="interaction.status_update", status="in_progress")
     assert agent._is_terminal_event(event=_as_event(running)) is False
+    # `requires_action` stays non-terminal: it is a generic Interactions status, not a leftover of
+    # the removed plan-approval flow, and calling it terminal would end a live stream early.
+    waiting = SimpleNamespace(event_type="interaction.status_update", status="requires_action")
+    assert agent._is_terminal_event(event=_as_event(waiting)) is False
     failed = SimpleNamespace(event_type="interaction.status_update", status="budget_exceeded")
     assert agent._is_terminal_event(event=_as_event(failed)) is True
     assert agent._is_terminal_event(event=_as_event(_thought_event("x"))) is False
@@ -541,10 +487,10 @@ def test_streamer_feed_accumulates_only_thought_summaries() -> None:
 
 
 def test_streamer_render_preview_windows_and_escapes_mentions() -> None:
-    streamer = ResearchProgressStreamer(status=None, label="Deep Research", action="Planning")
+    streamer = ResearchProgressStreamer(status=None, label="Antigravity")
     streamer.reasoning = "first line\n@everyone please\nlast line"
     preview = streamer._render_preview()
-    assert preview.startswith("-# Planning... (Deep Research,")
+    assert preview.startswith("-# Researching... (Antigravity,")
     assert "@everyone" not in preview  # agent text is escaped so the thinking can never ping
     assert "last line" in preview
 
@@ -583,14 +529,6 @@ def test_fallback_thread_name_uses_first_line() -> None:
     assert name.startswith("研究 TPU")
     assert "\n" not in name
     assert research_cog._fallback_thread_name(brief="   ") == "深度研究"
-
-
-def test_tier_label_maps_agent_strings() -> None:
-    assert research_cog._tier_label(agent="antigravity-preview-05-2026") == "Antigravity"
-    assert research_cog._tier_label(agent="deep-research-preview-04-2026") == "Deep Research"
-    assert (
-        research_cog._tier_label(agent="deep-research-max-preview-04-2026") == "Deep Research Max"
-    )
 
 
 def test_terminal_phase_mapping() -> None:
@@ -635,6 +573,11 @@ def test_failure_text_distinguishes_budget() -> None:
 # ----- persistence (reply.db) ---------------------------------------------------------------
 
 
+async def _only_resumable(*, thread_id: int) -> rdb.PersistentResearchSession | None:
+    """The one resumable row for a thread; the store has no single-row reader left to use."""
+    return next((row for row in await rdb.list_resumable() if row.thread_id == thread_id), None)
+
+
 async def test_session_round_trip(research_isolated_db: None) -> None:
     await rdb.upsert_session(
         thread_id=1,
@@ -647,13 +590,13 @@ async def test_session_round_trip(research_isolated_db: None) -> None:
         brief="研究 X",
         phase="researching",
     )
-    session = await rdb.get_session(thread_id=1)
+    session = await _only_resumable(thread_id=1)
     assert session is not None
     assert session.owner_id == 99
     assert session.brief == "研究 X"
     assert session.phase == "researching"
     assert session.interaction_id is None
-    assert await rdb.get_session(thread_id=999) is None
+    assert await _only_resumable(thread_id=999) is None
 
 
 async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
@@ -671,18 +614,17 @@ async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
     await rdb.set_interaction(
         thread_id=2,
         interaction_id="int_abc",
-        agent="deep-research-preview-04-2026",
-        phase="planning",
+        agent="antigravity-preview-05-2026",
+        phase="researching",
     )
-    session = await rdb.get_session(thread_id=2)
+    session = await _only_resumable(thread_id=2)
     assert session is not None
     assert session.interaction_id == "int_abc"
-    assert session.agent == "deep-research-preview-04-2026"
-    assert session.phase == "planning"
+    assert session.agent == "antigravity-preview-05-2026"
+    assert session.phase == "researching"
     await rdb.set_phase(thread_id=2, phase="done")
-    refreshed = await rdb.get_session(thread_id=2)
-    assert refreshed is not None
-    assert refreshed.phase == "done"
+    assert await _only_resumable(thread_id=2) is None
+    assert await rdb.active_thread_for_owner(owner_id=1) is None
 
 
 async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: None) -> None:
@@ -707,7 +649,7 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
     # One session per phase, so only the researching one may come back as resumable.
     seeded: tuple[tuple[int, ResearchPhase], ...] = (
         (20, "researching"),
-        (21, "planning"),
+        (21, "cancelled"),
         (22, "done"),
     )
     for thread_id, phase in seeded:
@@ -717,7 +659,7 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
             channel_id=1,
             guild_id=1,
             source_message_id=1,
-            agent="deep-research-preview-04-2026",
+            agent="antigravity-preview-05-2026",
             interaction_id="int_x",
             brief="b",
             phase=phase,
@@ -729,127 +671,32 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
 def test_cast_phase_defaults_unknown_to_failed() -> None:
     assert rdb.cast_phase(value="researching") == "researching"
     assert rdb.cast_phase(value="bogus") == "failed"
+    # A row the removed escalation tiers left in `planning` is no longer a phase this store knows.
+    assert rdb.cast_phase(value="planning") == "failed"
 
 
-async def test_claim_research_is_idempotent_and_clears_stale_id(
+async def test_a_legacy_planning_row_no_longer_blocks_its_owner(
     research_isolated_db: None,
 ) -> None:
-    await rdb.upsert_session(
-        thread_id=30,
-        owner_id=1,
-        channel_id=1,
-        guild_id=1,
-        source_message_id=1,
-        agent="deep-research-preview-04-2026",
-        interaction_id="plan_1",
-        brief="b",
-        phase="planning",
-    )
-    assert await rdb.claim_research(thread_id=30, plan_interaction_id="plan_1") is True
-    session = await rdb.get_session(thread_id=30)
-    assert session is not None
-    assert session.phase == "researching"
-    assert session.interaction_id is None
-    # A second (double-click) claim loses: the row is no longer in `planning`.
-    assert await rdb.claim_research(thread_id=30, plan_interaction_id="plan_1") is False
-
-
-async def test_claim_research_rejects_stale_plan_interaction(research_isolated_db: None) -> None:
-    await rdb.upsert_session(
-        thread_id=31,
-        owner_id=1,
-        channel_id=1,
-        guild_id=1,
-        source_message_id=1,
-        agent="deep-research-preview-04-2026",
-        interaction_id="plan_v2",
-        brief="b",
-        phase="planning",
-    )
-    # A stale approval view (its plan interaction was superseded by a refine) loses the claim, so
-    # research never launches from the old plan; the row stays `planning` for the fresh view.
-    assert await rdb.claim_research(thread_id=31, plan_interaction_id="plan_v1") is False
-    session = await rdb.get_session(thread_id=31)
-    assert session is not None
-    assert session.phase == "planning"
-    assert session.interaction_id == "plan_v2"
-    # The current plan's view wins the claim.
-    assert await rdb.claim_research(thread_id=31, plan_interaction_id="plan_v2") is True
-
-
-async def test_claim_planning_is_idempotent(research_isolated_db: None) -> None:
-    await rdb.upsert_session(
-        thread_id=50,
-        owner_id=1,
-        channel_id=1,
-        guild_id=1,
-        source_message_id=1,
-        agent="antigravity-preview-05-2026",
-        interaction_id="int_done",
-        brief="b",
-        phase="done",
-    )
-    assert await rdb.claim_planning(thread_id=50) is True
-    claimed = await rdb.get_session(thread_id=50)
-    assert claimed is not None
-    assert claimed.phase == "planning"
-    # A second escalation click finds the row already planning and loses.
-    assert await rdb.claim_planning(thread_id=50) is False
-
-
-async def test_cancel_stale_plan_matches_current_interaction(research_isolated_db: None) -> None:
-    await rdb.upsert_session(
-        thread_id=51,
-        owner_id=1,
-        channel_id=1,
-        guild_id=1,
-        source_message_id=1,
-        agent="deep-research-preview-04-2026",
-        interaction_id="plan_v2",
-        brief="b",
-        phase="planning",
-    )
-    # A superseded view (an older plan interaction id) is a no-op, leaving the fresh plan intact.
-    assert await rdb.cancel_stale_plan(thread_id=51, plan_interaction_id="plan_v1") is False
-    still_planning = await rdb.get_session(thread_id=51)
-    assert still_planning is not None
-    assert still_planning.phase == "planning"
-    # The current plan's expired view cancels it and frees the owner's slot.
-    assert await rdb.cancel_stale_plan(thread_id=51, plan_interaction_id="plan_v2") is True
-    cancelled = await rdb.get_session(thread_id=51)
-    assert cancelled is not None
-    assert cancelled.phase == "cancelled"
-
-
-async def test_clear_stale_planning_cancels_only_planning(research_isolated_db: None) -> None:
-    # Two planning sessions plus a researching one, so only the planning pair may be cancelled.
-    seeded: tuple[tuple[int, ResearchPhase], ...] = (
-        (40, "planning"),
-        (41, "researching"),
-        (42, "planning"),
-    )
-    for thread_id, phase in seeded:
-        await rdb.upsert_session(
-            thread_id=thread_id,
-            owner_id=thread_id,
-            channel_id=1,
-            guild_id=1,
-            source_message_id=1,
-            agent="deep-research-preview-04-2026",
-            interaction_id="int_x",
-            brief="b",
-            phase=phase,
+    # Written the way the removed escalation wrote it: the phase literal is gone from the model, so
+    # seed it through the ORM. A stuck row must not hold the one-per-owner slot forever.
+    async with rdb.open_session() as session:
+        session.add(
+            rdb.ResearchSessionRow(
+                thread_id=60,
+                owner_id=61,
+                channel_id=1,
+                guild_id=1,
+                source_message_id=1,
+                agent="deep-research-preview-04-2026",
+                interaction_id="plan_1",
+                brief="b",
+                phase="planning",
+            )
         )
-    cleared = await rdb.clear_stale_planning()
-    assert {session.thread_id for session in cleared} == {40, 42}
-    cancelled = await rdb.get_session(thread_id=40)
-    assert cancelled is not None
-    assert cancelled.phase == "cancelled"
-    researching = await rdb.get_session(thread_id=41)
-    assert researching is not None
-    assert researching.phase == "researching"
-    # The owner whose plan was cleared is no longer blocked from launching new research.
-    assert await rdb.active_thread_for_owner(owner_id=40) is None
+        await session.commit()
+    assert await rdb.active_thread_for_owner(owner_id=61) is None
+    assert await rdb.list_resumable() == []
 
 
 # ----- delivery completion footer -----------------------------------------------------------
@@ -902,7 +749,6 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
         owner_mention="<@1>",
         result=_completed_result(report_text="X" * 1990),
         footer=footer,
-        view=None,
         allowed_mentions=mentions,
         media_delivery=_disabled_delivery(),
     )
@@ -928,7 +774,6 @@ async def test_delivery_inlines_footer_for_short_reports() -> None:
         owner_mention="<@1>",
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
-        view=None,
         allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
         media_delivery=_disabled_delivery(),
     )
@@ -957,7 +802,6 @@ async def test_delivery_hosts_oversized_report_file(tmp_path: Path) -> None:
         owner_mention="<@1>",
         result=_completed_result(report_text="# Report\nbody"),
         footer="-# footer",
-        view=None,
         allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
         media_delivery=planner,
     )
@@ -984,7 +828,6 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
         owner_mention="<@1>",
         result=_completed_result(report_text="R" * 60, image_bytes=b"x" * 60),
         footer="-# footer",
-        view=None,
         allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
         media_delivery=_disabled_delivery(),
     )
