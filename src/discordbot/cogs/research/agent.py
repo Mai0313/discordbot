@@ -1,17 +1,14 @@
 """Direct Gemini Interactions call layer for the deep-research cog.
 
-All three agents (`antigravity-preview-05-2026` default, `deep-research-preview-04-2026`
-and `deep-research-max-preview-04-2026` escalation) run through one injected
-`genai.Client` that talks DIRECT to Google (`gemini_api_key`, no proxy). The proxy is
-bypassed on purpose: it drops `agent_config` in its interactions->responses transform, so
-`collaborative_planning` only works direct (verified 2026-06-20). Every call uses
-`background=True` + `store=True` + `stream=True`, so the agent's reasoning streams live to
-the thread (`_StreamDriver` + `ResearchProgressStreamer`) while it works.
+The one research agent (`antigravity-preview-05-2026`) runs through an injected `genai.Client`
+that talks DIRECT to Google (`gemini_api_key`, no proxy): a managed agent rides the native
+Interactions API, which this project always calls direct rather than through the LiteLLM proxy's
+interactions transform. Every call uses `background=True` + `store=True` + `stream=True`, so the
+agent's reasoning streams live to the thread (`_StreamDriver` + `ResearchProgressStreamer`) while
+it works.
 
-Call shapes share `_StreamDriver` / `_drive` (SSE consume + reconnect + terminal extract):
-- `stream_antigravity`: streams the default one-shot agent in a remote sandbox environment.
-- `stream_plan` / `stream_refine`: Deep Research collaborative planning (returns a plan, not a report).
-- `stream_deep_research`: approves the planned interaction and streams the full research.
+Both call shapes share `_StreamDriver` / `_drive` (SSE consume + reconnect + terminal extract):
+- `stream_antigravity`: streams the one-shot agent in a remote sandbox environment.
 - `resume_research_stream`: re-attaches a live stream to an already-running interaction (restart resume).
 
 Robustness: the SDK can close a long-lived streaming request mid-run while the agent keeps
@@ -37,7 +34,6 @@ from google.genai.interactions import (
     AllowlistParam,
     EnvironmentParam,
     AllowlistEntryParam,
-    DeepResearchAgentConfigParam,
 )
 
 if TYPE_CHECKING:
@@ -60,23 +56,11 @@ RESEARCH_TOOLS = [
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
 # A transient get() error mid-research (e.g. a server 504 gateway timeout) is retried, not fatal;
 # only this many CONSECUTIVE failures give up. There is no wall-clock timeout: the Gemini SDK
-# bounds each request and the agent settles server-side (Deep Research caps at 60 min).
+# bounds each request and the agent settles server-side on its own budget.
 MAX_CONSECUTIVE_POLL_ERRORS = 30
 
 # Reports progress to the thread: (latest thought summary or None, elapsed seconds).
 type ProgressCallback = Callable[[str | None, float], Awaitable[None]]
-
-
-class ResearchPlan(BaseModel):
-    """A proposed research plan returned by Deep Research collaborative planning."""
-
-    interaction_id: str = Field(
-        ..., description="The plan interaction's id, used to refine or approve it."
-    )
-    plan_text: str = Field(
-        ..., description="The proposed research plan text, in the user's language."
-    )
-    status: str = Field(..., description="Terminal interaction status the plan was read from.")
 
 
 class ResearchResult(BaseModel):
@@ -101,16 +85,6 @@ class ResearchResult(BaseModel):
     def ok(self) -> bool:
         """Whether the research finished cleanly."""
         return self.status == "completed"
-
-
-def _deep_research_agent_config(*, collaborative_planning: bool) -> DeepResearchAgentConfigParam:
-    """Builds the Deep Research `agent_config` for a plan or a full run."""
-    return DeepResearchAgentConfigParam(
-        type="deep-research",
-        thinking_summaries="auto",
-        visualization="auto",
-        collaborative_planning=collaborative_planning,
-    )
 
 
 def _latest_thought(*, interaction: object) -> str | None:
@@ -222,7 +196,7 @@ type CreatedCallback = Callable[[str], Awaitable[None]]
 
 
 async def _noop_created(_interaction_id: str) -> None:
-    """A `CreatedCallback` that persists nothing (resume/plan do not re-store the id)."""
+    """A `CreatedCallback` that persists nothing (a resume does not re-store the id)."""
     return
 
 
@@ -373,15 +347,6 @@ async def _drive(
     )
 
 
-def _plan_from_interaction(*, interaction: object, fallback_id: str) -> ResearchPlan:
-    """Maps a terminal planning interaction to a `ResearchPlan` (id falls back to the captured one)."""
-    return ResearchPlan(
-        interaction_id=str(getattr(interaction, "id", "") or fallback_id),
-        plan_text=(getattr(interaction, "output_text", "") or ""),
-        status=str(getattr(interaction, "status", "failed")),
-    )
-
-
 async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs plus the streamer + id callback
     *,
     client: genai.Client,
@@ -391,7 +356,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
     streamer: "ResearchProgressStreamer",
     on_created: "CreatedCallback",
 ) -> ResearchResult:
-    """Streams the default Antigravity research (reasoning live); returns the terminal result."""
+    """Streams the Antigravity research (reasoning live); returns the terminal result."""
     environment = EnvironmentParam(
         type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
     )
@@ -411,109 +376,6 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
         return cast("AsyncIterator[InteractionSSEEvent]", responses)
 
     logfire.info("research antigravity streaming", agent=agent)
-    interaction = await _drive(
-        client=client, driver=driver, streamer=streamer, open_initial=_open, on_created=on_created
-    )
-    return _to_result(interaction=interaction)
-
-
-async def stream_plan(
-    *,
-    client: genai.Client,
-    agent: str,
-    brief: str,
-    system_instruction: str,
-    streamer: "ResearchProgressStreamer",
-) -> ResearchPlan:
-    """Streams a Deep Research collaborative-planning turn (reasoning live); returns the plan."""
-    driver = _StreamDriver(client=client)
-
-    async def _open() -> "AsyncIterator[InteractionSSEEvent]":
-        responses = await client.aio.interactions.create(
-            agent=agent,
-            input=brief,
-            system_instruction=system_instruction,
-            agent_config=_deep_research_agent_config(collaborative_planning=True),
-            tools=RESEARCH_TOOLS,
-            background=True,
-            store=True,
-            stream=True,
-        )
-        return cast("AsyncIterator[InteractionSSEEvent]", responses)
-
-    interaction = await _drive(
-        client=client,
-        driver=driver,
-        streamer=streamer,
-        open_initial=_open,
-        on_created=_noop_created,
-    )
-    return _plan_from_interaction(interaction=interaction, fallback_id=driver.interaction_id)
-
-
-async def stream_refine(  # noqa: PLR0913 -- the streaming refine inputs plus the streamer
-    *,
-    client: genai.Client,
-    agent: str,
-    previous_interaction_id: str,
-    feedback: str,
-    system_instruction: str,
-    streamer: "ResearchProgressStreamer",
-) -> ResearchPlan:
-    """Streams a plan refinement with the owner's feedback (reasoning live); returns the plan."""
-    driver = _StreamDriver(client=client)
-
-    async def _open() -> "AsyncIterator[InteractionSSEEvent]":
-        responses = await client.aio.interactions.create(
-            agent=agent,
-            input=feedback,
-            previous_interaction_id=previous_interaction_id,
-            system_instruction=system_instruction,
-            agent_config=_deep_research_agent_config(collaborative_planning=True),
-            tools=RESEARCH_TOOLS,
-            background=True,
-            store=True,
-            stream=True,
-        )
-        return cast("AsyncIterator[InteractionSSEEvent]", responses)
-
-    interaction = await _drive(
-        client=client,
-        driver=driver,
-        streamer=streamer,
-        open_initial=_open,
-        on_created=_noop_created,
-    )
-    return _plan_from_interaction(interaction=interaction, fallback_id=driver.interaction_id)
-
-
-async def stream_deep_research(  # noqa: PLR0913 -- the streaming create inputs plus the streamer + id callback
-    *,
-    client: genai.Client,
-    agent: str,
-    previous_interaction_id: str,
-    system_instruction: str,
-    streamer: "ResearchProgressStreamer",
-    on_created: "CreatedCallback",
-) -> ResearchResult:
-    """Approves a planned interaction and streams the full Deep Research run; returns the result."""
-    driver = _StreamDriver(client=client)
-
-    async def _open() -> "AsyncIterator[InteractionSSEEvent]":
-        responses = await client.aio.interactions.create(
-            agent=agent,
-            input="The plan looks good, please proceed with the research.",
-            previous_interaction_id=previous_interaction_id,
-            system_instruction=system_instruction,
-            agent_config=_deep_research_agent_config(collaborative_planning=False),
-            tools=RESEARCH_TOOLS,
-            background=True,
-            store=True,
-            stream=True,
-        )
-        return cast("AsyncIterator[InteractionSSEEvent]", responses)
-
-    logfire.info("research deep-research streaming", agent=agent)
     interaction = await _drive(
         client=client, driver=driver, streamer=streamer, open_initial=_open, on_created=on_created
     )

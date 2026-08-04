@@ -4,15 +4,14 @@ The report is long cited markdown. It is delivered two ways at once so nothing i
 lost: chunked inline messages (split on paragraph boundaries so citations and
 headings survive) for in-thread readability, plus the full report as a `research.md`
 File attachment (the durable artifact). A generated chart, if any, rides a follow-up
-message. Every send is best-effort. The completion line (usage footer, escalation
-buttons, owner ping) is owned by the cog, which edits the opening status message.
+message. Every send is best-effort. The completion line (usage footer, owner ping) is
+owned by the cog, which edits the opening status message.
 """
 
 from typing import TYPE_CHECKING
 
 import logfire
 from nextcord import File, Message, AllowedMentions
-from nextcord.ui import View
 
 from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner, upload_limit_for
 
@@ -107,7 +106,6 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     owner_mention: str,
     result: "ResearchResult",
     footer: str,
-    view: View | None,
     allowed_mentions: AllowedMentions,
     media_delivery: MediaDeliveryPlanner,
 ) -> None:
@@ -115,10 +113,10 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
 
     The opening status message ("Researching...") is edited into the first chunk so no message is
     wasted; the remaining chunks follow as new messages; the LAST chunk carries the usage footer,
-    the escalation view, the owner ping, and the full report as a `research.md` attachment (plus
-    any generated image). A report file too big to upload is hosted on the external static server
-    and linked on the last chunk instead of being dropped; if hosting is unavailable it degrades
-    to today's silent drop. Every write is best-effort.
+    the owner ping, and the full report as a `research.md` attachment (plus any generated image).
+    A report file too big to upload is hosted on the external static server and linked on the last
+    chunk instead of being dropped; if hosting is unavailable it degrades to today's silent drop.
+    Every write is best-effort.
 
     `allowed_mentions` restricts the report body (agent-generated, so it may quote `@everyone` /
     roles / other users) to ping only the owner; the caller passes an owner-only policy.
@@ -143,7 +141,7 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     # The completion suffix (owner ping + usage footer, plus a hosted-URL line for any report file
     # too big to attach) rides the last chunk only when it still fits under Discord's message-length
     # cap; otherwise it becomes its own trailing message so a near-limit final chunk never pushes the
-    # send over the limit and drops the chunk / attachment / buttons.
+    # send over the limit and drops the chunk / attachment.
     hosted_lines = ("\n" + "\n".join(hosted_urls)) if hosted_urls else ""
     suffix = f"\n\n{owner_mention}\n{footer}{hosted_lines}"
     if len(chunks[-1]) + len(suffix) <= DISCORD_MESSAGE_LIMIT:
@@ -158,35 +156,27 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
             thread=thread,
             content=chunk,
             files=files if is_last else [],
-            view=view if is_last else None,
             allowed_mentions=allowed_mentions,
             chunk_index=index,
             is_last=is_last,
         )
 
 
-async def _place(  # noqa: PLR0913 -- target message plus its optional files / view / mention policy
+async def _place(  # noqa: PLR0913 -- target message plus its optional files / mention policy
     *,
     status: Message | None,
     thread: "Thread",
     content: str,
     files: list[File],
-    view: View | None,
     allowed_mentions: AllowedMentions,
     chunk_index: int,
     is_last: bool,
 ) -> None:
-    """Edits the opening status message (when given) or sends a new message, with optional files/view."""
+    """Edits the opening status message (when given) or sends a new message, with optional files."""
     if status is not None:
         try:
-            if files and view is not None:
-                await status.edit(
-                    content=content, files=files, view=view, allowed_mentions=allowed_mentions
-                )
-            elif files:
+            if files:
                 await status.edit(content=content, files=files, allowed_mentions=allowed_mentions)
-            elif view is not None:
-                await status.edit(content=content, view=view, allowed_mentions=allowed_mentions)
             else:
                 await status.edit(content=content, allowed_mentions=allowed_mentions)
             return
@@ -200,20 +190,14 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / v
                 _exc_info=exc,
             )
     try:
-        if files and view is not None:
-            await thread.send(
-                content=content, files=files, view=view, allowed_mentions=allowed_mentions
-            )
-        elif files:
+        if files:
             await thread.send(content=content, files=files, allowed_mentions=allowed_mentions)
-        elif view is not None:
-            await thread.send(content=content, view=view, allowed_mentions=allowed_mentions)
         else:
             await thread.send(content=content, allowed_mentions=allowed_mentions)
     except Exception as exc:
         # Broad on purpose: last resort of a best-effort delivery, so it must not abort the
-        # caller's phase bookkeeping. Only the last chunk carries the file, ping, footer and
-        # escalation view, so losing it breaks the deliverable; an earlier one is partial.
+        # caller's phase bookkeeping. Only the last chunk carries the file, ping and footer, so
+        # losing it breaks the deliverable; an earlier one is partial.
         log = logfire.error if is_last else logfire.warn
         log(
             "failed to post research report message",
@@ -221,7 +205,6 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / v
             chunk_index=chunk_index,
             is_last=is_last,
             has_files=bool(files),
-            has_view=view is not None,
             error_type=type(exc).__name__,
             _exc_info=exc,
         )

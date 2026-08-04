@@ -1,16 +1,14 @@
 """Deep-research cog: long-running Gemini managed-agent research delivered in a Discord thread.
 
 A user asks for deep research (the QA answer model emits a `<deep-research>` marker, handed
-here by `gen_reply`, or they run `/deep_research`). The bot opens a thread, runs the default
-`antigravity-preview-05-2026` agent (fast, cheap, one-shot), and posts the cited report there,
-pinging the user. Under the report it offers escalation buttons to `deep-research-preview` /
-`deep-research-max`: those enter a plan discussion (Deep Research native collaborative planning,
-refine by typing in the thread) before spending the pricier run.
+here by `gen_reply`, or they run `/deep_research`). The bot opens a thread, runs the
+`antigravity-preview-05-2026` agent, and posts the cited report there, pinging the user. That
+one report is the whole feature: there is no tier to upgrade into and no button under it.
 
-Everything talks DIRECT to Google (`gemini_api_key`, no proxy): the proxy drops `agent_config`,
-so `collaborative_planning` only works direct (see `agent.py`). Sessions persist in
-`reply.db` so a restart resumes an in-flight research (`store=True` keeps the interaction alive
-server-side). The cog never blocks the gateway: agent work runs in tracked background tasks.
+Everything talks DIRECT to Google (`gemini_api_key`, no proxy), like every Interactions API path
+in this project (see `agent.py`). Sessions persist in `reply.db` so a restart resumes an
+in-flight research (`store=True` keeps the interaction alive server-side). The cog never blocks
+the gateway: agent work runs in tracked background tasks.
 """
 
 from typing import TYPE_CHECKING
@@ -35,7 +33,6 @@ from nextcord import (
     TextChannel,
     AllowedMentions,
 )
-from nextcord.ui import View
 from nextcord.ext import commands
 
 from discordbot.utils.llm import create_text_or_none
@@ -47,28 +44,24 @@ from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.research.agent import (
-    ResearchPlan,
     ResearchResult,
-    stream_plan,
-    stream_refine,
     stream_antigravity,
-    stream_deep_research,
     resume_research_stream,
 )
-from discordbot.cogs.research.views import PlanApprovalView, ResultEscalationView
 from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.utils.media_delivery import build_media_delivery_planner
 from discordbot.cogs.research.prompts import THREAD_TITLE_PROMPT, RESEARCH_SYSTEM_INSTRUCTION
-from discordbot.cogs.research.delivery import split_report, deliver_report
+from discordbot.cogs.research.delivery import deliver_report
 from discordbot.cogs.research.streaming import ResearchProgressStreamer
 
 if TYPE_CHECKING:
     from typing import Any
     from collections.abc import Coroutine
 
-# How long the modify flow waits for the owner to type their changes in the thread.
-MODIFY_WAIT_TIMEOUT_SECONDS = 600.0
+# The agent name shown in the thread's status line and in the streamer's live header. One agent
+# runs every research, so the two must agree on one string rather than each spelling their own.
+RESEARCH_LABEL = "Antigravity"
 # Discord thread names cap at 100 chars; keep margin (a hard-limit safety trim, not length control).
 THREAD_NAME_MAX = 90
 # Bound the small title-generation side call; on timeout/failure the brief's first line is used.
@@ -85,15 +78,6 @@ def _fallback_thread_name(*, brief: str) -> str:
     return title[:THREAD_NAME_MAX]
 
 
-def _tier_label(*, agent: str) -> str:
-    """Human label for an agent string."""
-    if "max" in agent:
-        return "Deep Research Max"
-    if "deep-research" in agent:
-        return "Deep Research"
-    return "Antigravity"
-
-
 def _terminal_phase(*, status: str) -> db.ResearchPhase:
     """Maps a terminal interaction status onto a stored phase."""
     if status == "completed":
@@ -104,7 +88,7 @@ def _terminal_phase(*, status: str) -> db.ResearchPhase:
 
 
 class ResearchCogs(commands.Cog):
-    """Owns the deep-research thread lifecycle, slash command, escalation, and restart resume."""
+    """Owns the deep-research thread lifecycle, slash command, and restart resume."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -114,21 +98,18 @@ class ResearchCogs(commands.Cog):
         # One in-flight research per owner; the lock guards the check-then-create.
         self._owner_locks: KeyedLockManager[int] = KeyedLockManager()
         self._tasks: set[asyncio.Task[None]] = set()
-        # Thread ids the cog is actively driving; `gen_reply` checks this so QA does not
-        # double-handle a message typed inside a research thread.
+        # Thread ids the cog is actively driving; `gen_reply` checks this so QA does not answer
+        # inside a thread the cog is still writing its own status, reasoning and report into.
         self._active_threads: set[int] = set()
-        # Thread ids whose modify flow is awaiting owner feedback; guards `on_modify_plan` against a
-        # double-click installing two `wait_for` listeners (competing refine plans).
-        self._pending_modify: set[int] = set()
         self._resume_started = False
 
     @cached_property
     def interactions_client(self) -> genai.Client:
         """The Gemini Interactions client, built lazily on first use.
 
-        DIRECT to Google (`gemini_api_key`, no base_url / proxy): the LiteLLM proxy drops
-        `agent_config`, so `collaborative_planning` only works direct. Built inline here (not via
-        a `utils/llm.py` factory) so no new factory caller is added. A missing key does not fail
+        DIRECT to Google (`gemini_api_key`, no base_url / proxy): a managed agent rides the native
+        Interactions API, which this project always calls direct. Built inline here (not via a
+        `utils/llm.py` factory) so no new factory caller is added. A missing key does not fail
         construction; it surfaces at the first interaction call, which the run loop catches.
         """
         return genai.Client(api_key=self.config.gemini_api_key)
@@ -180,7 +161,7 @@ class ResearchCogs(commands.Cog):
     async def launch(
         self, *, message: "Message", brief: str, anchor: "Message | None" = None
     ) -> None:
-        """QA-marker entry: opens a thread and starts the default research.
+        """QA-marker entry: opens a thread and starts the research.
 
         `message` identifies the owner; `anchor` is the message the thread hangs off. The bot's
         own reply reads more intuitively than the user's message, so the caller passes it; it
@@ -230,7 +211,7 @@ class ResearchCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Opens a research thread for the given topic and starts the default research.
+        """Opens a research thread for the given topic and starts the research.
 
         Args:
             interaction: The slash interaction.
@@ -275,7 +256,7 @@ class ResearchCogs(commands.Cog):
     async def _start_for(
         self, *, owner_id: int, owner_mention: str, brief: str, anchor: "Message"
     ) -> tuple[str, int | None]:
-        """Claims the owner's slot, opens the thread, and spawns the default research.
+        """Claims the owner's slot, opens the thread, and spawns the research.
 
         Returns `(outcome, thread_or_existing_id)` where outcome is one of
         `started` / `exists` / `unsupported` / `error`.
@@ -321,7 +302,7 @@ class ResearchCogs(commands.Cog):
         with contextlib.suppress(Exception):
             await update_reaction(message=anchor, bot_user=self.bot.user, emoji=DINO_EMOJI)
         self._spawn(
-            self._run_default_research(
+            self._run_research(
                 thread=thread, owner_mention=owner_mention, brief=brief, agent=agent
             )
         )
@@ -329,12 +310,14 @@ class ResearchCogs(commands.Cog):
 
     # ----- research runs ------------------------------------------------------------------
 
-    async def _run_default_research(
+    async def _run_research(
         self, *, thread: "Thread", owner_mention: str, brief: str, agent: str
     ) -> None:
-        """Streams the default Antigravity research and delivers it, offering escalation after."""
-        status = await self._safe_send(thread=thread, content="-# Researching... (Antigravity)")
-        streamer = ResearchProgressStreamer(status=status, label="Antigravity")
+        """Streams the Antigravity research and delivers the report into the thread."""
+        status = await self._safe_send(
+            thread=thread, content=f"-# Researching... ({RESEARCH_LABEL})"
+        )
+        streamer = ResearchProgressStreamer(status=status, label=RESEARCH_LABEL)
 
         async def _persist(interaction_id: str) -> None:
             await db.set_interaction(
@@ -357,18 +340,14 @@ class ResearchCogs(commands.Cog):
             )
         except Exception as exc:
             logfire.error(
-                "default research failed",
+                "research failed",
                 thread_id=thread.id,
                 agent=agent,
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
             await self._fail_run(
-                thread=thread,
-                owner_mention=owner_mention,
-                exc=exc,
-                status=status,
-                label="Antigravity",
+                thread=thread, owner_mention=owner_mention, exc=exc, status=status
             )
             return
         try:
@@ -378,7 +357,6 @@ class ResearchCogs(commands.Cog):
                 result=result,
                 agent=agent,
                 status=status,
-                offer_escalation=True,
             )
         except Exception as exc:
             logfire.error(
@@ -389,90 +367,21 @@ class ResearchCogs(commands.Cog):
                 _exc_info=exc,
             )
             await self._fail_run(
-                thread=thread,
-                owner_mention=owner_mention,
-                exc=exc,
-                status=status,
-                label="Antigravity",
-            )
-
-    async def _run_deep_research(
-        self, *, thread: "Thread", owner_mention: str, agent: str, previous_interaction_id: str
-    ) -> None:
-        """Approves a planned interaction and streams the full Deep Research report."""
-        label = _tier_label(agent=agent)
-        status = await self._safe_send(thread=thread, content=f"-# Researching... ({label})")
-        streamer = ResearchProgressStreamer(status=status, label=label)
-
-        async def _persist(interaction_id: str) -> None:
-            await db.set_interaction(
-                thread_id=thread.id,
-                interaction_id=interaction_id,
-                agent=agent,
-                phase="researching",
-            )
-
-        # Same split as the default run, and broad for the same reason.
-        try:
-            result = await stream_deep_research(
-                client=self.interactions_client,
-                agent=agent,
-                previous_interaction_id=previous_interaction_id,
-                system_instruction=self._system_instruction(),
-                streamer=streamer,
-                on_created=_persist,
-            )
-        except Exception as exc:
-            logfire.error(
-                "deep research failed",
-                thread_id=thread.id,
-                agent=agent,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            await self._fail_run(
-                thread=thread, owner_mention=owner_mention, exc=exc, status=status, label=label
-            )
-            return
-        try:
-            await self._finish(
-                thread=thread,
-                owner_mention=owner_mention,
-                result=result,
-                agent=agent,
-                status=status,
-                offer_escalation=False,
-            )
-        except Exception as exc:
-            logfire.error(
-                "deep research delivery failed",
-                thread_id=thread.id,
-                agent=agent,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            await self._fail_run(
-                thread=thread, owner_mention=owner_mention, exc=exc, status=status, label=label
+                thread=thread, owner_mention=owner_mention, exc=exc, status=status
             )
 
     async def _fail_run(
-        self,
-        *,
-        thread: "Thread",
-        owner_mention: str,
-        exc: Exception,
-        status: Message | None,
-        label: str,
+        self, *, thread: "Thread", owner_mention: str, exc: Exception, status: Message | None
     ) -> None:
         """Tells the owner a run died, finalizes its status message, and frees the owner's slot."""
         await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
         await self._finalize_status(
-            status=status, thread=thread, content=f"-# Research failed ({label})"
+            status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
         )
         await db.set_phase(thread_id=thread.id, phase="failed")
         self._active_threads.discard(thread.id)
 
-    async def _finish(  # noqa: PLR0913 -- terminal-result inputs plus the opening status message
+    async def _finish(
         self,
         *,
         thread: "Thread",
@@ -480,10 +389,8 @@ class ResearchCogs(commands.Cog):
         result: ResearchResult,
         agent: str,
         status: Message | None,
-        offer_escalation: bool,
     ) -> None:
         """Delivers a terminal result, finalizes the opening status message, and records the phase."""
-        tier = _tier_label(agent=agent)
         if not result.ok:
             await self._post_failure(
                 thread=thread,
@@ -491,20 +398,11 @@ class ResearchCogs(commands.Cog):
                 reason=_failure_text(status=result.status),
             )
             await self._finalize_status(
-                status=status, thread=thread, content=f"-# Research failed ({tier})"
+                status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
             )
             await db.set_phase(thread_id=thread.id, phase=_terminal_phase(status=result.status))
             self._active_threads.discard(thread.id)
             return
-        view = (
-            ResultEscalationView(
-                cog=self,
-                owner_id=_owner_id_from_mention(mention=owner_mention),
-                max_enabled=self.config.deep_research_max_enabled,
-            )
-            if offer_escalation and self.config.deep_research_available
-            else None
-        )
         footer = _usage_footer(
             agent=agent, input_tokens=result.input_tokens, output_tokens=result.output_tokens
         )
@@ -514,7 +412,6 @@ class ResearchCogs(commands.Cog):
             owner_mention=owner_mention,
             result=result,
             footer=footer,
-            view=view,
             allowed_mentions=_owner_allowed_mentions(
                 owner_id=_owner_id_from_mention(mention=owner_mention)
             ),
@@ -524,18 +421,16 @@ class ResearchCogs(commands.Cog):
         self._active_threads.discard(thread.id)
 
     async def _finalize_status(
-        self, *, status: Message | None, thread: "Thread", content: str, view: View | None = None
+        self, *, status: Message | None, thread: "Thread", content: str
     ) -> None:
-        """Edits the opening status message to its terminal content (with optional buttons).
+        """Edits the opening status message to its terminal content.
 
         Falls back to a fresh send when there is no status message (a restart resume) or the edit
         fails (e.g. the opening message was deleted).
         """
         if status is not None:
             try:
-                await status.edit(
-                    content=content, view=view, allowed_mentions=AllowedMentions.none()
-                )
+                await status.edit(content=content, allowed_mentions=AllowedMentions.none())
                 return
             except Exception as exc:
                 # Broad: any Discord failure is recoverable by the fallback send below.
@@ -546,7 +441,7 @@ class ResearchCogs(commands.Cog):
                     _exc_info=exc,
                 )
         try:
-            await thread.send(content=content, view=view, allowed_mentions=AllowedMentions.none())
+            await thread.send(content=content, allowed_mentions=AllowedMentions.none())
         except Exception as exc:
             # Broad: callers record the terminal phase right after us and cannot handle a raise.
             logfire.warn(
@@ -596,348 +491,6 @@ class ResearchCogs(commands.Cog):
                 _exc_info=send_exc,
             )
 
-    # ----- escalation (Deep Research) -----------------------------------------------------
-
-    async def on_escalate(
-        self, *, interaction: Interaction[commands.Bot], view: ResultEscalationView, max_tier: bool
-    ) -> None:
-        """Escalation button: opens a Deep Research plan discussion."""
-        with contextlib.suppress(Exception):
-            await interaction.response.edit_message(view=None)
-        thread = interaction.channel
-        if not isinstance(thread, Thread):
-            return
-        existing = await db.active_thread_for_owner(owner_id=view.owner_id)
-        if existing is not None and existing != thread.id:
-            await self._safe_send(
-                thread=thread, content=f"你已經有另一個研究在進行了:<#{existing}>"
-            )
-            return
-        agent = (
-            self.runtime_models.deep_research_max_model.name
-            if max_tier
-            else self.runtime_models.deep_research_model.name
-        )
-        # Atomic claim: a double-clicked escalation (or both tiers at once) fires two callbacks
-        # before the view-removal edit lands; only the one that wins done->planning starts a plan.
-        if not await db.claim_planning(thread_id=thread.id):
-            return
-        self._active_threads.add(thread.id)
-        owner_mention = f"<@{view.owner_id}>"
-        self._spawn(self._run_planning(thread=thread, owner_mention=owner_mention, agent=agent))
-
-    async def _run_planning(self, *, thread: "Thread", owner_mention: str, agent: str) -> None:
-        """Asks Deep Research for a plan and posts it with approve / modify buttons."""
-        session = await db.get_session(thread_id=thread.id)
-        if session is None:
-            return
-        status = await self._safe_send(thread=thread, content="-# Planning... (Deep Research)")
-        streamer = ResearchProgressStreamer(
-            status=status, label=_tier_label(agent=agent), action="Planning"
-        )
-        try:
-            plan = await stream_plan(
-                client=self.interactions_client,
-                agent=agent,
-                brief=session.brief,
-                system_instruction=self._system_instruction(),
-                streamer=streamer,
-            )
-            if await self._fail_incomplete_plan(
-                thread=thread,
-                owner_mention=owner_mention,
-                status=status,
-                plan=plan,
-                failed_status="-# Planning failed (Deep Research)",
-            ):
-                return
-            await db.set_interaction(
-                thread_id=thread.id,
-                interaction_id=plan.interaction_id,
-                agent=agent,
-                phase="planning",
-            )
-            await self._post_plan(
-                thread=thread, owner_mention=owner_mention, plan=plan, agent=agent, status=status
-            )
-        except Exception as exc:
-            # Broad: the terminal catch-all for a minutes-long external agent run.
-            logfire.error(
-                "research planning failed",
-                thread_id=thread.id,
-                agent=agent,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
-            await db.set_phase(thread_id=thread.id, phase="failed")
-            self._active_threads.discard(thread.id)
-
-    async def _fail_incomplete_plan(
-        self,
-        *,
-        thread: "Thread",
-        owner_mention: str,
-        status: Message | None,
-        plan: ResearchPlan,
-        failed_status: str,
-    ) -> bool:
-        """Treats a non-completed plan as a failure so no approval buttons are posted.
-
-        The planning poll can settle on a non-`completed` terminal status without raising; posting
-        that plan would let an approval click start paid research from a failed interaction. Returns
-        True (caller stops) when the plan did not complete, finalizing the status and freeing the
-        owner's slot.
-        """
-        if plan.status == "completed":
-            return False
-        await self._finalize_status(status=status, thread=thread, content=failed_status)
-        await self._post_failure(
-            thread=thread, owner_mention=owner_mention, reason=_failure_text(status=plan.status)
-        )
-        await db.set_phase(thread_id=thread.id, phase="failed")
-        self._active_threads.discard(thread.id)
-        return True
-
-    async def _post_plan(
-        self,
-        *,
-        thread: "Thread",
-        owner_mention: str,
-        plan: ResearchPlan,
-        agent: str,
-        status: Message | None,
-    ) -> None:
-        """Posts the proposed plan text plus the approve / modify view."""
-        if status is not None:
-            with contextlib.suppress(Exception):
-                await status.delete()
-        for chunk in split_report(text=plan.plan_text.strip() or "(沒有收到計畫內容)"):
-            await self._safe_send(thread=thread, content=chunk)
-        owner_id = _owner_id_from_mention(mention=owner_mention)
-        posted = await self._safe_send(
-            thread=thread,
-            content=f"{owner_mention} 📋 接受就開始研究(會花時間與成本),或點「修改計畫」直接打字告訴我要調整什麼",
-            view=PlanApprovalView(
-                cog=self,
-                owner_id=owner_id,
-                plan_interaction_id=plan.interaction_id,
-                agent=agent,
-                thread_id=thread.id,
-            ),
-            allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
-        )
-        if posted is None:
-            # The approval view never reached Discord, so no buttons exist and no view timeout is
-            # registered to free the slot. Cancel this plan and release the owner instead of
-            # blocking them behind an un-actable `planning` row until a restart sweep.
-            await self._cancel_unposted_plan(
-                thread=thread, owner_mention=owner_mention, plan_interaction_id=plan.interaction_id
-            )
-
-    async def _cancel_unposted_plan(
-        self, *, thread: "Thread", owner_mention: str, plan_interaction_id: str
-    ) -> None:
-        """Frees the owner when a plan's approval view could not be posted (best-effort).
-
-        Guarded on the plan's `interaction_id` (via `cancel_stale_plan`) so it only cancels the
-        plan that failed to post, never a fresher one.
-        """
-        if not await db.cancel_stale_plan(
-            thread_id=thread.id, plan_interaction_id=plan_interaction_id
-        ):
-            return
-        self._active_threads.discard(thread.id)
-        await self._post_failure(
-            thread=thread,
-            owner_mention=owner_mention,
-            reason="計畫送不出去,先收起來了,要的話重新發起一次",
-        )
-
-    async def on_plan_timeout(
-        self, *, thread_id: int, owner_id: int, plan_interaction_id: str
-    ) -> None:
-        """Frees a plan the owner left un-acted once its approval view expires (best-effort).
-
-        Guarded on the plan's `interaction_id` so only the plan still awaiting approval is
-        cancelled; a refined or already-accepted plan is a no-op. Without this the row stays
-        `planning` and blocks the owner from launching new research until a restart sweep.
-        """
-        if not await db.cancel_stale_plan(
-            thread_id=thread_id, plan_interaction_id=plan_interaction_id
-        ):
-            return
-        self._active_threads.discard(thread_id)
-        thread = await self._fetch_thread(thread_id=thread_id)
-        if thread is None:
-            return
-        with contextlib.suppress(Exception):
-            await thread.send(
-                content=f"<@{owner_id}> 計畫太久沒動作先收起來了,要的話重新點升級",
-                allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
-            )
-
-    async def on_accept_plan(
-        self, *, interaction: Interaction[commands.Bot], view: PlanApprovalView
-    ) -> None:
-        """Approve button: runs the full Deep Research from the approved plan."""
-        with contextlib.suppress(Exception):
-            await interaction.response.edit_message(view=None)
-        thread = interaction.channel
-        if not isinstance(thread, Thread):
-            return
-        # Atomic claim: a double-click can fire two callbacks before the view-removal edit lands, so
-        # only the call that wins the planning->researching transition spawns the paid run. Guarded
-        # on the view's plan interaction id so a stale approval view (left after a refine) cannot
-        # claim the row and launch research from its superseded plan.
-        if not await db.claim_research(
-            thread_id=thread.id, plan_interaction_id=view.plan_interaction_id
-        ):
-            return
-        self._active_threads.add(thread.id)
-        self._spawn(
-            self._run_deep_research(
-                thread=thread,
-                owner_mention=f"<@{view.owner_id}>",
-                agent=view.agent,
-                previous_interaction_id=view.plan_interaction_id,
-            )
-        )
-
-    async def on_modify_plan(
-        self, *, interaction: Interaction[commands.Bot], view: PlanApprovalView
-    ) -> None:
-        """Modify button: waits for the owner to type changes, then re-plans."""
-        thread = interaction.channel
-        if not isinstance(thread, Thread):
-            return
-        # Idempotency: a double-click would install two `wait_for` listeners, so one feedback
-        # message would spawn competing `_run_refine` plans against the same interaction. Ignore a
-        # second click while one modify is already awaiting this thread's feedback. The membership
-        # check and the add share no `await`, so two clicks cannot both pass on the single loop.
-        if thread.id in self._pending_modify:
-            with contextlib.suppress(Exception):
-                await interaction.response.defer()
-            return
-        self._pending_modify.add(thread.id)
-        try:
-            await interaction.response.send_message(
-                content="好,直接在這個 thread 打你想調整的地方,我會重新規劃(10 分鐘內回覆有效)"
-            )
-            plan_message = interaction.message
-            if plan_message is not None:
-                with contextlib.suppress(Exception):
-                    await plan_message.edit(view=None)
-
-            def _is_owner_reply(candidate: "Message") -> bool:
-                return (
-                    candidate.channel.id == thread.id
-                    and candidate.author.id == view.owner_id
-                    and not candidate.author.bot
-                )
-
-            try:
-                reply = await self.bot.wait_for(
-                    "message", check=_is_owner_reply, timeout=MODIFY_WAIT_TIMEOUT_SECONDS
-                )
-            except TimeoutError:
-                # The modify click removed the approval buttons; the plan is still valid (the row
-                # stays `planning`), so repost a fresh view rather than leaving the owner stuck.
-                reposted = await self._safe_send(
-                    thread=thread,
-                    content="等太久了,要的話用下面的按鈕再試一次",
-                    view=PlanApprovalView(
-                        cog=self,
-                        owner_id=view.owner_id,
-                        plan_interaction_id=view.plan_interaction_id,
-                        agent=view.agent,
-                        thread_id=thread.id,
-                    ),
-                )
-                if reposted is None:
-                    # The fresh view could not be posted either, so no buttons or timeout exist to
-                    # free the slot; cancel the plan and release the owner.
-                    await self._cancel_unposted_plan(
-                        thread=thread,
-                        owner_mention=f"<@{view.owner_id}>",
-                        plan_interaction_id=view.plan_interaction_id,
-                    )
-                return
-            self._spawn(
-                self._run_refine(
-                    thread=thread,
-                    owner_mention=f"<@{view.owner_id}>",
-                    agent=view.agent,
-                    previous_interaction_id=view.plan_interaction_id,
-                    feedback=reply.content,
-                )
-            )
-        finally:
-            self._pending_modify.discard(thread.id)
-
-    async def _run_refine(
-        self,
-        *,
-        thread: "Thread",
-        owner_mention: str,
-        agent: str,
-        previous_interaction_id: str,
-        feedback: str,
-    ) -> None:
-        """Refines the plan with the owner's feedback and reposts it."""
-        status = await self._safe_send(thread=thread, content="-# Re-planning...")
-        streamer = ResearchProgressStreamer(
-            status=status, label=_tier_label(agent=agent), action="Re-planning"
-        )
-        try:
-            plan = await stream_refine(
-                client=self.interactions_client,
-                agent=agent,
-                previous_interaction_id=previous_interaction_id,
-                feedback=feedback,
-                system_instruction=self._system_instruction(),
-                streamer=streamer,
-            )
-            current = await db.get_session(thread_id=thread.id)
-            if current is None or current.phase != "planning":
-                # The plan was accepted (now researching) or cancelled while we were refining; drop
-                # this stale refine so it cannot overwrite a running research's persisted state.
-                await self._finalize_status(
-                    status=status,
-                    thread=thread,
-                    content="-# Re-plan skipped (plan already accepted)",
-                )
-                return
-            if await self._fail_incomplete_plan(
-                thread=thread,
-                owner_mention=owner_mention,
-                status=status,
-                plan=plan,
-                failed_status="-# Re-planning failed",
-            ):
-                return
-            await db.set_interaction(
-                thread_id=thread.id,
-                interaction_id=plan.interaction_id,
-                agent=agent,
-                phase="planning",
-            )
-            await self._post_plan(
-                thread=thread, owner_mention=owner_mention, plan=plan, agent=agent, status=status
-            )
-        except Exception as exc:
-            # Broad: the terminal catch-all for a minutes-long external agent run.
-            logfire.error(
-                "research re-planning failed",
-                thread_id=thread.id,
-                agent=agent,
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
-            await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
-            await db.set_phase(thread_id=thread.id, phase="failed")
-            self._active_threads.discard(thread.id)
-
     # ----- restart resume -----------------------------------------------------------------
 
     @commands.Cog.listener()
@@ -949,37 +502,21 @@ class ResearchCogs(commands.Cog):
         self._spawn(self._resume_all())
 
     async def _resume_all(self) -> None:
-        """Resumes `researching` sessions and clears plans interrupted mid-discussion by a restart."""
-        stale = await db.clear_stale_planning()
-        for session in stale:
-            self._spawn(self._notify_stale_planning(session=session))
+        """Resumes every session still `researching` when the process came back up."""
         sessions = await db.list_resumable()
         for session in sessions:
             self._active_threads.add(session.thread_id)
             self._spawn(self._resume_one(session=session))
         if sessions:
             logfire.info("resumed in-flight research sessions", count=len(sessions))
-        if stale:
-            logfire.info("cleared interrupted planning sessions", count=len(stale))
-
-    async def _notify_stale_planning(self, *, session: db.PersistentResearchSession) -> None:
-        """Tells a thread whose plan discussion was lost to a restart to re-trigger, best-effort."""
-        thread = await self._fetch_thread(thread_id=session.thread_id)
-        if thread is None:
-            return
-        await self._safe_send(
-            thread=thread,
-            content=f"<@{session.owner_id}> 重啟了,剛剛的研究計畫失效,要的話重新發起一次深度研究",
-            allowed_mentions=_owner_allowed_mentions(owner_id=session.owner_id),
-        )
 
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
         """Resumes one research session, delivering when it settles."""
         thread = await self._fetch_thread(thread_id=session.thread_id)
         owner_mention = f"<@{session.owner_id}>"
-        # No interaction id means the row was claimed for research but the bot restarted before the
-        # real run id was stored; there is nothing to resume. Tell the thread so the owner is not
-        # left staring at the old `Researching...` message forever.
+        # No interaction id means the row was written but the bot restarted before the run id was
+        # stored; there is nothing to resume. Tell the thread so the owner is not left staring at
+        # the old `Researching...` message forever.
         if session.interaction_id is None:
             await db.set_phase(thread_id=session.thread_id, phase="failed")
             self._active_threads.discard(session.thread_id)
@@ -987,13 +524,12 @@ class ResearchCogs(commands.Cog):
             return
         # Give the resumed run the same live reasoning view as a fresh one; a fetch miss leaves
         # status None so the streamer's editor no-ops but still drives the stream to a result.
-        label = _tier_label(agent=session.agent)
         status = (
-            await self._safe_send(thread=thread, content=f"-# Researching... ({label})")
+            await self._safe_send(thread=thread, content=f"-# Researching... ({RESEARCH_LABEL})")
             if thread is not None
             else None
         )
-        streamer = ResearchProgressStreamer(status=status, label=label)
+        streamer = ResearchProgressStreamer(status=status, label=RESEARCH_LABEL)
         try:
             result = await resume_research_stream(
                 client=self.interactions_client,
@@ -1018,7 +554,6 @@ class ResearchCogs(commands.Cog):
             result=result,
             agent=session.agent,
             status=status,
-            offer_escalation="deep-research" not in session.agent,
         )
 
     async def _notify_resume_failed(self, *, thread: "Thread | None", owner_id: int) -> None:
@@ -1057,12 +592,7 @@ class ResearchCogs(commands.Cog):
     # ----- helpers ------------------------------------------------------------------------
 
     async def _safe_send(
-        self,
-        *,
-        thread: "Thread",
-        content: str,
-        view: View | None = None,
-        allowed_mentions: "AllowedMentions | None" = None,
+        self, *, thread: "Thread", content: str, allowed_mentions: "AllowedMentions | None" = None
     ) -> Message | None:
         """Best-effort `thread.send`, returning the message or None on failure.
 
@@ -1071,15 +601,12 @@ class ResearchCogs(commands.Cog):
         """
         mentions = allowed_mentions if allowed_mentions is not None else AllowedMentions.none()
         try:
-            if view is not None:
-                return await thread.send(content=content, view=view, allowed_mentions=mentions)
             return await thread.send(content=content, allowed_mentions=mentions)
         except Exception as exc:
             # Broad: every caller treats a missing message as a degraded outcome, never a failure.
             logfire.warn(
                 "failed to send research thread message",
                 thread_id=thread.id,
-                has_view=view is not None,
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
@@ -1115,7 +642,7 @@ def _owner_id_from_mention(*, mention: str) -> int:
 def _owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
     """Restricts a research-thread message to pinging only its owner.
 
-    Report and plan text is agent-generated, so any `@everyone` / role / other-user mention it
+    The report text is agent-generated, so any `@everyone` / role / other-user mention it
     contains must not resolve; only the deliberate owner ping is allowed through.
     """
     return AllowedMentions(everyone=False, roles=False, users=[Object(id=owner_id)])
