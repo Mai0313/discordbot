@@ -215,6 +215,7 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+/assets/
 /data/
 /docs/
 /tmp/
