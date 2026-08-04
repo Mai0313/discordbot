@@ -264,7 +264,7 @@ class RuntimeModelCatalog(BaseModel):
         # side (its Interactions `thinking_level` enum rejects `medium`, allowing only
         # low / high), while the explicit 3.1 snapshot supports `medium`.
         # Both branches dispatch the same model today.
-        # the peak/off-peak split is kept on purpose because Gemini Pro has historically slowed 
+        # the peak/off-peak split is kept on purpose because Gemini Pro has historically slowed
         # down during peak hours and may be needed again.
         # 2026/08/05 update: Testing if there is still an issue for Gemini 3.1 Pro will be routed to Gemini 3 Pro.
         if self.is_peak:
