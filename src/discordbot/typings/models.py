@@ -129,9 +129,9 @@ class RuntimeModelCatalog(BaseModel):
 
     @property
     def antigravity_model(self) -> ModelSettings:
-        """The default deep-research agent: a one-shot Antigravity managed agent.
+        """The deep-research agent: a one-shot Antigravity managed agent.
 
-        Callers: `ResearchCogs` (the deep-research default tier).
+        Callers: `ResearchCogs` (the only research tier there is).
 
         Returns:
             The Antigravity managed-agent string dispatched on the Gemini Interactions API
@@ -139,31 +139,6 @@ class RuntimeModelCatalog(BaseModel):
             agent runs its own internal tool loop.
         """
         return ModelSettings(name="antigravity-preview-05-2026")
-
-    @property
-    def deep_research_model(self) -> ModelSettings:
-        """The Deep Research escalation agent: a multi-step cited research report.
-
-        Callers: `ResearchCogs` (the deep-research escalation tier).
-
-        Returns:
-            The Deep Research managed-agent string dispatched on the Gemini Interactions API
-            (direct). `effort` / `tools` are unused on the agent path; the tier is steered via
-            `agent_config` (collaborative planning, thinking summaries, visualization).
-        """
-        return ModelSettings(name="deep-research-preview-04-2026")
-
-    @property
-    def deep_research_max_model(self) -> ModelSettings:
-        """The Deep Research Max escalation agent: the deepest due-diligence report.
-
-        Callers: `ResearchCogs` (the Max tier, gated by `LLMConfig.deep_research_max_enabled`).
-
-        Returns:
-            The Deep Research Max managed-agent string dispatched on the Gemini Interactions API
-            (direct). `effort` / `tools` are unused on the agent path.
-        """
-        return ModelSettings(name="deep-research-max-preview-04-2026")
 
     @property
     def prompt_model(self) -> ModelSettings:
@@ -264,7 +239,7 @@ class RuntimeModelCatalog(BaseModel):
         # side (its Interactions `thinking_level` enum rejects `medium`, allowing only
         # low / high), while the explicit 3.1 snapshot supports `medium`.
         # Both branches dispatch the same model today.
-        # the peak/off-peak split is kept on purpose because Gemini Pro has historically slowed 
+        # the peak/off-peak split is kept on purpose because Gemini Pro has historically slowed
         # down during peak hours and may be needed again.
         # 2026/08/05 update: Testing if there is still an issue for Gemini 3.1 Pro will be routed to Gemini 3 Pro.
         if self.is_peak:
