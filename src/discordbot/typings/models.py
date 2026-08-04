@@ -270,8 +270,8 @@ class RuntimeModelCatalog(BaseModel):
         # dispatch the same model today; the peak/off-peak split is kept on purpose because
         # Gemini Pro has historically slowed down during peak hours and may be needed again.
         if self.is_peak:
-            return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+            return ModelSettings(name="gemini-flash-latest", effort="high")
+        return ModelSettings(name="gemini-flash-latest", effort="high")
 
     @property
     def memory_extractor_model(self) -> ModelSettings:
