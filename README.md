@@ -22,6 +22,20 @@
 
 A self-hosted Discord bot for AI chat, image and video generation, Threads link expansion, video downloads, virtual currency, casino mini-games, and MapleStory Artale lookups. It runs on nextcord, stores runtime data in local SQLite files, and talks to an OpenAI-compatible LLM endpoint such as LiteLLM.
 
+## Showcase
+
+Mention the bot and ask what it can do. There is no help command; it answers from its own capability reference, in the language you asked in.
+
+![Asking the bot to introduce itself](assets/showcase-ai-chat.png)
+
+Ask for a picture and it generates one, then replies about it in character.
+
+![Asking the bot to generate an image](assets/showcase-image-generation.png)
+
+Ask it to animate that same picture and it returns a short video.
+
+![Asking the bot to turn the generated image into a video](assets/showcase-video-generation.png)
+
 ## Features
 
 - **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos from a prompt or attached images, edit a referenced video, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background — privacy-scoped by source, so something told in one server never surfaces in another (only your tone preferences and clearly harmless general facts carry over) — manageable with `/memory show`, `/memory regenerate`, and `/memory clear`.

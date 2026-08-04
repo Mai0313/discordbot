@@ -34,6 +34,7 @@ gen-docs:  ## Generate documentation
 	cp ./README.zh-CN.md ./docs/zh-CN/index.md
 	cp ./README.zh-TW.md ./docs/zh-TW/index.md
 	cp ./.github/CONTRIBUTING.md ./docs/CONTRIBUTING.md
+	cp -r ./assets ./docs/assets
 	sed -E -i \
 		-e 's|\]\((\./)?README\.md\)|](index.md)|g' \
 		-e 's|\]\((\./)?README\.zh-TW\.md\)|](zh-TW/index.md)|g' \
@@ -45,12 +46,14 @@ gen-docs:  ## Generate documentation
 		-e 's|\]\((\./)?README\.zh-TW\.md\)|](index.md)|g' \
 		-e 's|\]\((\./)?README\.zh-CN\.md\)|](../zh-CN/index.md)|g' \
 		-e 's|\]\((\./)?(\.github/)?CONTRIBUTING\.md\)|](../CONTRIBUTING.md)|g' \
+		-e 's|\]\((\./)?assets/|](../assets/|g' \
 		./docs/zh-TW/index.md
 	sed -E -i \
 		-e 's|\]\((\./)?README\.md\)|](../index.md)|g' \
 		-e 's|\]\((\./)?README\.zh-TW\.md\)|](../zh-TW/index.md)|g' \
 		-e 's|\]\((\./)?README\.zh-CN\.md\)|](index.md)|g' \
 		-e 's|\]\((\./)?(\.github/)?CONTRIBUTING\.md\)|](../CONTRIBUTING.md)|g' \
+		-e 's|\]\((\./)?assets/|](../assets/|g' \
 		./docs/zh-CN/index.md
 	uv run ./scripts/gen_docs.py --source ./src --output ./docs/Reference gen_docs
 	uv run ./scripts/gen_docs.py --source ./scripts --output ./docs/Scripts gen_docs
