@@ -1,0 +1,882 @@
+"""Tests for `/feedback`: the store, the issue text, the panel, and the submit ordering.
+
+Nothing here touches the network or a real credential. The GitHub side is a fake object
+handed to the cog, and the write-up model is a stub, which is also how the feature is
+meant to be reasoned about: every external call is allowed to fail, and the report has to
+survive all of them.
+"""
+
+from typing import Any, cast
+
+from openai import AsyncOpenAI
+import pytest
+from nextcord import Interaction
+from pydantic import Field
+from nextcord.ui import Button, StringSelect
+from nextcord.ext import commands
+
+from discordbot.typings.config import FeedbackConfig
+from discordbot.typings.models import ModelSettings
+from discordbot.utils.timezone import database_now
+from discordbot.cogs.feedback.cog import FeedbackCogs
+from discordbot.cogs.feedback.views import (
+    TicketRow,
+    ReportModal,
+    TicketDetail,
+    TicketDetailView,
+    FeedbackPanelView,
+    build_panel_embed,
+    build_detail_embed,
+)
+from discordbot.cogs.feedback.github import (
+    REPORTER_COMMENT_MARKER,
+    GitHubIssues,
+    IssueSnapshot,
+    GitHubIssuesError,
+    select_conversation,
+)
+from discordbot.cogs.feedback.writeup import (
+    ReportWriteUp,
+    render_issue_body,
+    label_for_category,
+    initial_issue_title,
+)
+from discordbot.cogs.feedback.database import (
+    FeedbackTicket,
+    get_ticket,
+    create_ticket,
+    store_write_up,
+    list_user_tickets,
+    attach_issue_number,
+    count_relayed_reply,
+    tickets_awaiting_issue,
+    seconds_since_last_ticket,
+)
+
+from .helpers.discord_mocks import FakeUser, FakeInteraction
+
+# Never a real credential: every test that uses it answers from a scripted transport.
+_FAKE_TOKEN = "not-a-real-value"  # noqa: S105 -- a placeholder, not a secret
+
+
+class FakeIssues:
+    """Stand-in for the GitHub REST surface, recording what the cog asked for."""
+
+    def __init__(self, *, fail_create: bool = False) -> None:
+        """Initializes an empty repository whose create can be made to fail."""
+        self.fail_create = fail_create
+        self.created: list[dict[str, Any]] = []
+        self.updated: list[dict[str, Any]] = []
+        self.comments: list[dict[str, Any]] = []
+        self.labelled: list[dict[str, Any]] = []
+        self.snapshots: dict[int, IssueSnapshot] = {}
+        self.conversation: list[Any] = []
+        self.next_number = 460
+
+    async def create_issue(self, *, title: str, body: str, labels: list[str]) -> int:
+        """Records a created issue and hands back its number."""
+        if self.fail_create:
+            raise GitHubIssuesError("POST /issues answered 503")
+        self.created.append({"title": title, "body": body, "labels": labels})
+        number = self.next_number
+        self.next_number += 1
+        return number
+
+    async def update_issue(self, *, number: int, title: str, body: str) -> None:
+        """Records an edited issue."""
+        self.updated.append({"number": number, "title": title, "body": body})
+
+    async def add_labels(self, *, number: int, labels: list[str]) -> None:
+        """Records labels added after the write-up."""
+        self.labelled.append({"number": number, "labels": labels})
+
+    async def add_comment(self, *, number: int, body: str) -> None:
+        """Records a relayed comment."""
+        self.comments.append({"number": number, "body": body})
+
+    async def read_issue(self, *, number: int) -> IssueSnapshot:
+        """Returns a prepared snapshot, or an open issue with no comments."""
+        return self.snapshots.get(
+            number,
+            IssueSnapshot(
+                number=number, title="t", state="open", state_reason=None, comment_count=0
+            ),
+        )
+
+    async def read_conversation(self, *, number: int) -> list[Any]:
+        """Returns the prepared conversation."""
+        return self.conversation
+
+
+def _config(**overrides: object) -> FeedbackConfig:
+    """Builds a reporting config from alias keys, hermetically.
+
+    `model_validate` rather than the constructor on purpose: it skips the settings
+    sources, so a checkout or a CI runner that happens to export GITHUB_TOKEN cannot
+    change what a test is asserting about.
+    """
+    values: dict[str, object] = {
+        "FEEDBACK_ENABLED": True,
+        "GITHUB_TOKEN": "fake-credential",
+        "GITHUB_REPOSITORY": "owner/name",
+    }
+    values.update(overrides)
+    return FeedbackConfig.model_validate(values)
+
+
+def _cog(*, issues: FakeIssues, config: FeedbackConfig | None = None) -> FeedbackCogs:
+    """Builds a cog with the GitHub side faked out and no bot behind it."""
+    cog = FeedbackCogs(cast("commands.Bot", object()))
+    cog.config = config or _config()
+    # `issues` is a cached_property, so writing the instance attribute is the injection
+    # point; nothing in the cog reads it any other way.
+    cog.issues = cast("Any", issues)
+    return cog
+
+
+def _ticket(**overrides: object) -> FeedbackTicket:
+    """Builds a stored report with sensible defaults."""
+    values: dict[str, Any] = {
+        "ticket_id": 1,
+        "issue_number": 460,
+        "user_id": 7,
+        "user_name": "alice",
+        "display_name": "Alice",
+        "guild_id": 100,
+        "guild_name": "test guild",
+        "channel_id": 200,
+        "locale": "zh-TW",
+        "raw_text": "下載長影片會卡住",
+        "label": "",
+        "category": "",
+        "draft_title": "",
+        "draft_body": "",
+        "relayed_replies": 0,
+        "created_at": database_now(),
+    }
+    values.update(overrides)
+    return FeedbackTicket(**values)
+
+
+def _row(*, snapshot: IssueSnapshot | None, **overrides: object) -> TicketRow:
+    """Builds one panel row."""
+    return TicketRow(ticket=_ticket(**overrides), snapshot=snapshot)
+
+
+# --------------------------------------------------------------------------- store
+
+
+async def test_a_report_is_stored_before_it_has_an_issue(feedback_isolated_db: None) -> None:
+    """A fresh report is durable immediately, with no issue number yet."""
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=100,
+        guild_name="test guild",
+        channel_id=200,
+        locale="zh-TW",
+        raw_text="壞掉了",
+    )
+    assert ticket.issue_number is None
+    queued = await tickets_awaiting_issue(limit=10)
+    assert [row.ticket_id for row in queued] == [ticket.ticket_id]
+    assert queued[0].raw_text == "壞掉了"
+    await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=460)
+    assert await tickets_awaiting_issue(limit=10) == []
+    stored = await get_ticket(ticket_id=ticket.ticket_id)
+    assert stored is not None
+    assert stored.issue_number == 460
+
+
+async def test_the_store_lists_only_the_asking_users_reports(feedback_isolated_db: None) -> None:
+    """One person's panel never shows another person's reports."""
+    for user_id in (7, 8, 7):
+        await create_ticket(
+            user_id=user_id,
+            user_name="u",
+            display_name="U",
+            guild_id=None,
+            guild_name="",
+            channel_id=None,
+            locale="",
+            raw_text=f"report from {user_id}",
+        )
+    mine = await list_user_tickets(user_id=7, limit=10)
+    assert len(mine) == 2
+    assert {ticket.user_id for ticket in mine} == {7}
+    # Newest first, so the report someone just filed is the one they see at the top.
+    assert mine[0].ticket_id > mine[1].ticket_id
+
+
+async def test_the_write_up_lands_next_to_the_original(feedback_isolated_db: None) -> None:
+    """Storing a write-up never overwrites what the reporter wrote."""
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="原本寫的字",
+    )
+    await store_write_up(
+        ticket_id=ticket.ticket_id,
+        label="下載會卡住",
+        category="bug",
+        draft_title="fix: download stalls",
+        draft_body="The download stalls.",
+    )
+    stored = await get_ticket(ticket_id=ticket.ticket_id)
+    assert stored is not None
+    assert stored.raw_text == "原本寫的字"
+    assert stored.label == "下載會卡住"
+    assert stored.draft_title == "fix: download stalls"
+
+
+async def test_a_relayed_reply_is_counted(feedback_isolated_db: None) -> None:
+    """Replies this bot posts are counted so they never read back as an answer."""
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="x",
+    )
+    await count_relayed_reply(ticket_id=ticket.ticket_id)
+    await count_relayed_reply(ticket_id=ticket.ticket_id)
+    stored = await get_ticket(ticket_id=ticket.ticket_id)
+    assert stored is not None
+    assert stored.relayed_replies == 2
+
+
+async def test_the_cooldown_reads_the_last_submission(feedback_isolated_db: None) -> None:
+    """Someone with no reports has no cooldown; a fresh one starts near zero."""
+    assert await seconds_since_last_ticket(user_id=7) is None
+    await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="x",
+    )
+    elapsed = await seconds_since_last_ticket(user_id=7)
+    assert elapsed is not None
+    assert elapsed < 60
+
+
+# ----------------------------------------------------------------------- issue text
+
+
+def test_the_original_wording_survives_a_code_fence_in_the_report() -> None:
+    """A reporter pasting a fence cannot break out of the quoted block.
+
+    Fencing is what keeps `@name` and `#123` inert on GitHub, so a report that closes
+    the fence early would turn its own text back into live references.
+    """
+    body = render_issue_body(
+        ticket=_ticket(raw_text="see ```py\nprint(1)\n``` and @someone #12"), write_up=None
+    )
+    original = body.split("<summary>Original wording</summary>")[1]
+    assert "````text" in original
+    assert "@someone #12" in original
+    # The opening fence is longer than any run of backticks the reporter wrote, so the
+    # inner one cannot close it: everything they typed stays inside exactly one block.
+    lines = [line for line in original.splitlines() if line.strip()]
+    assert lines[0] == "````text"
+    assert lines[-2] == "````"
+    assert lines[-1] == "</details>"
+
+
+def test_the_issue_body_names_the_reporter() -> None:
+    """The maintainer can tell who filed a report and from where without a lookup."""
+    body = render_issue_body(ticket=_ticket(), write_up=None)
+    assert "Alice" in body
+    assert "alice" in body
+    assert "test guild" in body
+
+
+def test_a_write_up_leads_the_body_and_keeps_the_original() -> None:
+    """The tidied text goes on top; the reporter's words stay underneath."""
+    write_up = ReportWriteUp(
+        label="下載會卡住",
+        category="bug",
+        title="fix: download stalls midway",
+        body="Downloading a long video stalls.",
+    )
+    body = render_issue_body(ticket=_ticket(), write_up=write_up)
+    assert body.startswith("Downloading a long video stalls.")
+    assert "下載長影片會卡住" in body
+
+
+def test_the_first_issue_title_is_the_reporters_own_first_line() -> None:
+    """Before any write-up exists, the only accurate title is what they wrote."""
+    assert initial_issue_title(ticket=_ticket(raw_text="\n\n第一行\n第二行")) == "第一行"
+
+
+def test_an_empty_report_still_gets_a_title() -> None:
+    """A report with nothing usable in it still opens an identifiable issue."""
+    assert initial_issue_title(ticket=_ticket(raw_text="   \n ")) == "user report #1"
+
+
+@pytest.mark.parametrize(
+    ("category", "expected"),
+    [
+        ("bug", ["user-report", "bug"]),
+        ("feature", ["user-report", "feature"]),
+        ("question", ["user-report", "question"]),
+        ("nonsense", ["user-report"]),
+    ],
+)
+def test_labels_follow_the_category(category: str, expected: list[str]) -> None:
+    """Every report is findable as one, and a category the repo has no label for is dropped."""
+    assert label_for_category(category=category) == expected
+
+
+# ------------------------------------------------------------------- comment filter
+
+
+def test_only_the_developer_and_the_reporter_are_shown() -> None:
+    """A passer-by on a public repository is never presented as the developer's reply."""
+    conversation = select_conversation(
+        comments=[
+            {
+                "user": {"login": "mai", "type": "User"},
+                "author_association": "OWNER",
+                "body": "找到原因了",
+                "created_at": "2026-02-04T10:00:00Z",
+            },
+            {
+                "user": {"login": "stranger", "type": "User"},
+                "author_association": "NONE",
+                "body": "+1 我也遇到",
+                "created_at": "2026-02-04T11:00:00Z",
+            },
+            {
+                "user": {"login": "some-bot", "type": "Bot"},
+                "author_association": "OWNER",
+                "body": "CI failed",
+                "created_at": "2026-02-04T12:00:00Z",
+            },
+            {
+                "user": {"login": "mai", "type": "User"},
+                "author_association": "OWNER",
+                "body": f"{REPORTER_COMMENT_MARKER}\n**Alice** wrote from Discord:\n\n補充一下",
+                "created_at": "2026-02-05T09:00:00Z",
+            },
+        ]
+    )
+    assert [comment.from_reporter for comment in conversation] == [False, True]
+    assert conversation[0].body == "找到原因了"
+    # The marker is plumbing, so it never reaches the panel.
+    assert REPORTER_COMMENT_MARKER not in conversation[1].body
+
+
+# ------------------------------------------------------------------------- statuses
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "overrides", "expected", "outstanding"),
+    [
+        (None, {"issue_number": None}, "⏳ 建立中", True),
+        (None, {}, "❔ 讀不到狀態", True),
+        (
+            IssueSnapshot(number=460, title="t", state="open", state_reason=None, comment_count=0),
+            {},
+            "🟡 還沒回覆",
+            True,
+        ),
+        (
+            IssueSnapshot(number=460, title="t", state="open", state_reason=None, comment_count=1),
+            {},
+            "🟢 處理中",
+            True,
+        ),
+        (
+            IssueSnapshot(
+                number=460, title="t", state="closed", state_reason="completed", comment_count=2
+            ),
+            {},
+            "✅ 已處理",
+            False,
+        ),
+        (
+            IssueSnapshot(
+                number=460, title="t", state="closed", state_reason="not_planned", comment_count=1
+            ),
+            {},
+            "⚪ 不處理",
+            False,
+        ),
+    ],
+)
+def test_the_status_comes_from_the_issue(
+    snapshot: IssueSnapshot | None, overrides: dict[str, Any], expected: str, outstanding: bool
+) -> None:
+    """Nothing about the status is stored, so it can never drift from the issue."""
+    row = _row(snapshot=snapshot, **overrides)
+    assert row.status.text == expected
+    assert row.status.outstanding is outstanding
+
+
+def test_a_reporters_own_reply_does_not_read_as_an_answer() -> None:
+    """Someone adding detail to their own report must not look like a reply to them."""
+    row = _row(
+        snapshot=IssueSnapshot(
+            number=460, title="t", state="open", state_reason=None, comment_count=1
+        ),
+        relayed_replies=1,
+    )
+    assert row.status.text == "🟡 還沒回覆"
+
+
+# ---------------------------------------------------------------------------- panel
+
+
+def test_the_empty_panel_still_explains_where_a_report_goes() -> None:
+    """Someone opening the panel for the first time is told what filing one means."""
+    embed = build_panel_embed(rows=[])
+    assert embed.description is not None
+    assert "公開" in embed.description
+    assert not embed.fields
+
+
+def test_the_panel_lists_a_report_by_its_number() -> None:
+    """The ticket number is the issue number, and it leads the row."""
+    embed = build_panel_embed(rows=[_row(snapshot=None)])
+    assert embed.fields[0].name is not None
+    assert embed.fields[0].name.startswith("#460")
+
+
+def test_a_report_without_a_write_up_is_listed_by_its_own_first_line() -> None:
+    """The panel is usable during the window before the background write-up lands."""
+    row = _row(snapshot=None, raw_text="下載長影片會卡住\n第二行")
+    assert row.ticket.summary_line == "下載長影片會卡住"
+    row_with_label = _row(snapshot=None, label="下載會卡住")
+    assert row_with_label.ticket.summary_line == "下載會卡住"
+
+
+def test_the_detail_says_so_when_nobody_has_replied() -> None:
+    """Silence is stated rather than shown as an empty screen."""
+    embed = build_detail_embed(detail=TicketDetail(row=_row(snapshot=None), comments=[]))
+    assert embed.fields[0].name == "還沒有回覆"
+
+
+async def test_the_open_report_cap_reads_what_the_panel_already_fetched() -> None:
+    """The submission cap costs no extra request, because the panel just measured it."""
+    closed = IssueSnapshot(
+        number=1, title="t", state="closed", state_reason="completed", comment_count=0
+    )
+    open_issue = IssueSnapshot(
+        number=2, title="t", state="open", state_reason=None, comment_count=0
+    )
+    view = FeedbackPanelView(
+        host=cast("Any", object()),
+        rows=[_row(snapshot=closed), _row(snapshot=open_issue), _row(snapshot=None)],
+    )
+    assert view.outstanding_count() == 2
+
+
+# --------------------------------------------------------------------------- submit
+
+
+async def test_submitting_stores_the_report_and_opens_the_issue(
+    feedback_isolated_db: None,
+) -> None:
+    """The happy path: stored, filed, and answered with the number."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(
+        interaction=cast("Any", interaction), text="下載長影片會卡住", outstanding=0
+    )
+    stored = await list_user_tickets(user_id=7, limit=10)
+    assert len(stored) == 1
+    assert stored[0].issue_number == 460
+    assert stored[0].raw_text == "下載長影片會卡住"
+    assert issues.created[0]["labels"] == ["user-report"]
+    assert "下載長影片會卡住" in issues.created[0]["body"]
+    embed = interaction.followup.sent[0]["embed"]
+    assert "#460" in str(embed.title)
+
+
+async def test_a_failed_issue_never_loses_the_report(feedback_isolated_db: None) -> None:
+    """GitHub being down delays the number; it does not cost the report."""
+    issues = FakeIssues(fail_create=True)
+    cog = _cog(issues=issues)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", interaction), text="壞掉了", outstanding=0)
+    queued = await tickets_awaiting_issue(limit=10)
+    assert len(queued) == 1
+    assert queued[0].raw_text == "壞掉了"
+    embed = interaction.followup.sent[0]["embed"]
+    assert "存下來了" in str(embed.title)
+
+
+async def test_the_retry_sweep_files_what_the_submit_path_could_not(
+    feedback_isolated_db: None,
+) -> None:
+    """The queued report is what makes writing locally first worth anything."""
+    cog = _cog(issues=FakeIssues(fail_create=True))
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", interaction), text="壞掉了", outstanding=0)
+    recovered = FakeIssues()
+    cog.issues = cast("Any", recovered)
+    await cog.retry_unfiled_reports()
+    assert await tickets_awaiting_issue(limit=10) == []
+    assert len(recovered.created) == 1
+
+
+async def test_a_report_is_refused_once_too_many_are_open(feedback_isolated_db: None) -> None:
+    """The cap is enforced before anything is written or filed."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", interaction), text="第四張單", outstanding=3)
+    assert await list_user_tickets(user_id=7, limit=10) == []
+    assert issues.created == []
+    assert "還沒處理完" in str(interaction.followup.sent[0]["embed"].description)
+
+
+async def test_a_second_report_within_the_cooldown_is_refused(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Back-to-back submissions are throttled even when nothing is open."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", interaction), text="第一張", outstanding=0)
+    second = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", second), text="第二張", outstanding=0)
+    assert len(await list_user_tickets(user_id=7, limit=10)) == 1
+    assert "再送下一張" in str(second.followup.sent[0]["embed"].description)
+
+
+async def test_the_cooldown_lets_a_later_report_through(feedback_isolated_db: None) -> None:
+    """The throttle is a gap, not a lock: the next report goes through afterwards."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    cog.config = _config(FEEDBACK_SUBMIT_COOLDOWN_SECONDS=0)
+    for text in ("第一張", "第二張"):
+        interaction = FakeInteraction(user=FakeUser(user_id=7))
+        await cog.submit_report(interaction=cast("Any", interaction), text=text, outstanding=0)
+    assert len(await list_user_tickets(user_id=7, limit=10)) == 2
+
+
+# ---------------------------------------------------------------------------- reply
+
+
+async def test_a_reply_is_relayed_and_marked_as_the_reporters(feedback_isolated_db: None) -> None:
+    """A relayed line is tagged so it never comes back as the developer's answer."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="x",
+    )
+    await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=460)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_reply(
+        interaction=cast("Any", interaction), ticket_id=ticket.ticket_id, text="補充一下"
+    )
+    assert issues.comments[0]["number"] == 460
+    assert issues.comments[0]["body"].startswith(REPORTER_COMMENT_MARKER)
+    assert "補充一下" in issues.comments[0]["body"]
+    stored = await get_ticket(ticket_id=ticket.ticket_id)
+    assert stored is not None
+    assert stored.relayed_replies == 1
+
+
+async def test_nobody_can_reply_on_someone_elses_report(feedback_isolated_db: None) -> None:
+    """The panel is private, and the write is checked anyway before it reaches GitHub."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="x",
+    )
+    await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=460)
+    interaction = FakeInteraction(user=FakeUser(user_id=8))
+    await cog.submit_reply(
+        interaction=cast("Any", interaction), ticket_id=ticket.ticket_id, text="我來亂"
+    )
+    assert issues.comments == []
+
+
+# -------------------------------------------------------------------------- write-up
+
+
+async def test_the_write_up_rewrites_the_issue_and_stores_the_draft(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A successful write-up replaces the raw issue text and labels it."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="下載長影片會卡住",
+    )
+    await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=460)
+    ticket = ticket.model_copy(update={"issue_number": 460})
+
+    async def _fake_write_up(
+        *, client: AsyncOpenAI, model: ModelSettings, ticket: FeedbackTicket
+    ) -> ReportWriteUp:
+        return ReportWriteUp(
+            label="下載會卡住",
+            category="bug",
+            title="fix: download stalls midway",
+            body="Downloading a long video stalls.",
+        )
+
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.write_up_report", _fake_write_up)
+    await cog._apply_write_up(ticket=ticket)
+    assert issues.updated[0]["title"] == "fix: download stalls midway"
+    assert "下載長影片會卡住" in issues.updated[0]["body"]
+    assert issues.labelled[0]["labels"] == ["user-report", "bug"]
+    stored = await get_ticket(ticket_id=ticket.ticket_id)
+    assert stored is not None
+    assert stored.label == "下載會卡住"
+
+
+async def test_a_failed_write_up_leaves_the_issue_as_the_reporter_wrote_it(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The model failing is an ordinary outcome with nothing to clean up."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    ticket = _ticket()
+
+    async def _no_write_up(
+        *, client: AsyncOpenAI, model: ModelSettings, ticket: FeedbackTicket
+    ) -> None:
+        return None
+
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.write_up_report", _no_write_up)
+    await cog._apply_write_up(ticket=ticket)
+    assert issues.updated == []
+    assert issues.labelled == []
+
+
+async def test_a_raising_write_up_never_escapes_the_background_task(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing in the background half may surface as an unhandled task exception."""
+    cog = _cog(issues=FakeIssues())
+
+    async def _boom(
+        *, client: AsyncOpenAI, model: ModelSettings, ticket: FeedbackTicket
+    ) -> ReportWriteUp:
+        raise RuntimeError("proxy exploded")
+
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.write_up_report", _boom)
+    await cog._apply_write_up(ticket=_ticket())
+
+
+# ----------------------------------------------------------------------- the command
+
+
+async def test_the_command_offers_a_contact_when_reports_cannot_be_filed() -> None:
+    """Without a token the command names someone to talk to instead of accepting a report."""
+    cog = _cog(issues=FakeIssues())
+    cog.config = _config(GITHUB_TOKEN="", FEEDBACK_CONTACT="mai9999")
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.feedback(cast("Any", interaction))
+    description = str(interaction.response.sent[0]["embed"].description)
+    assert "mai9999" in description
+    assert interaction.response.deferred is False
+
+
+async def test_the_command_shows_the_panel(feedback_isolated_db: None) -> None:
+    """The panel replaces the deferred placeholder, with the caller's own reports on it."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="下載長影片會卡住",
+    )
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.feedback(cast("Any", interaction))
+    assert interaction.response.deferred_ephemeral is True
+    embed = interaction.edits[0]["embed"]
+    assert embed.fields[0].value is not None
+    assert "下載長影片會卡住" in embed.fields[0].value
+
+
+def test_the_config_is_unavailable_without_both_halves() -> None:
+    """A token with no repository, or a repository with no token, files nothing."""
+    assert not _config(GITHUB_REPOSITORY="").available
+    assert not _config(GITHUB_TOKEN="").available
+    assert not _config(FEEDBACK_ENABLED=False).available
+    assert _config().available
+    # A slug missing its owner is not a repository, however non-empty it looks.
+    assert not _config(GITHUB_REPOSITORY="discordbot").available
+
+
+# ------------------------------------------------------------------------ REST logic
+
+
+class _ScriptedIssues(GitHubIssues):
+    """A GitHub client whose transport is scripted, so the REST logic runs without a network.
+
+    Attributes:
+        calls: Every request the client attempted, in order.
+        fail_status: Status the scripted transport answers with, 0 to always succeed.
+        fail_once: Whether only the first attempt fails.
+    """
+
+    calls: list[dict[str, Any]] = Field(default_factory=list)
+    fail_status: int = 0
+    fail_once: bool = True
+
+    async def _request(
+        self, *, method: str, path: str, payload: dict[str, Any] | None = None
+    ) -> Any:  # noqa: ANN401 -- mirrors the signature it overrides
+        """Records the attempt and answers from the script."""
+        self.calls.append({"method": method, "path": path, "payload": payload})
+        if self.fail_status and (not self.fail_once or len(self.calls) == 1):
+            raise GitHubIssuesError(f"{method} {path} answered {self.fail_status}: nope")
+        if method == "POST" and path == "/issues":
+            return {"number": 460}
+        if method == "GET" and path.endswith("/comments"):
+            return []
+        if method == "GET":
+            return {
+                "number": 460,
+                "title": "t",
+                "state": "closed",
+                "state_reason": "not_planned",
+                "comments": 3,
+            }
+        return {}
+
+
+async def test_a_missing_label_never_costs_the_report() -> None:
+    """A label the repository does not carry must not take the whole issue down with it."""
+    client = _ScriptedIssues(token=_FAKE_TOKEN, repository="owner/name", fail_status=422)
+    number = await client.create_issue(title="t", body="b", labels=["user-report"])
+    assert number == 460
+    assert len(client.calls) == 2
+    assert "labels" not in client.calls[1]["payload"]
+
+
+async def test_a_real_create_failure_is_not_swallowed() -> None:
+    """Anything other than a rejected label is the caller's problem to handle."""
+    client = _ScriptedIssues(token=_FAKE_TOKEN, repository="owner/name", fail_status=503)
+    with pytest.raises(GitHubIssuesError):
+        await client.create_issue(title="t", body="b", labels=["user-report"])
+    assert len(client.calls) == 1
+
+
+async def test_the_snapshot_carries_why_an_issue_was_closed() -> None:
+    """A closed issue cannot tell finished from not-doing-it, so the reason rides along."""
+    client = _ScriptedIssues(token=_FAKE_TOKEN, repository="owner/name")
+    snapshot = await client.read_issue(number=460)
+    assert snapshot.state == "closed"
+    assert snapshot.state_reason == "not_planned"
+    assert snapshot.comment_count == 3
+
+
+# ---------------------------------------------------------------------- view wiring
+
+
+class _FakeHost:
+    """Records what the views ask the cog to do."""
+
+    def __init__(self, *, detail: TicketDetail | None) -> None:
+        """Initializes the host with the detail its lookups will return."""
+        self.detail = detail
+        self.rows: list[TicketRow] = []
+        self.submitted: list[dict[str, Any]] = []
+        self.replied: list[dict[str, Any]] = []
+
+    async def load_rows(self, *, user_id: int) -> list[TicketRow]:
+        """Returns the prepared rows."""
+        return self.rows
+
+    async def load_detail(self, *, ticket_id: int) -> TicketDetail | None:
+        """Returns the prepared detail."""
+        return self.detail
+
+    async def submit_report(
+        self, *, interaction: Interaction[commands.Bot], text: str, outstanding: int
+    ) -> None:
+        """Records a submitted report."""
+        self.submitted.append({"text": text, "outstanding": outstanding})
+
+    async def submit_reply(
+        self, *, interaction: Interaction[commands.Bot], ticket_id: int, text: str
+    ) -> None:
+        """Records a relayed reply."""
+        self.replied.append({"ticket_id": ticket_id, "text": text})
+
+
+async def test_picking_a_report_opens_it_in_place() -> None:
+    """The panel and the detail share one ephemeral message, so the picker edits it."""
+    detail = TicketDetail(row=_row(snapshot=None), comments=[])
+    host = _FakeHost(detail=detail)
+    view = FeedbackPanelView(host=cast("Any", host), rows=[_row(snapshot=None)])
+    select = next(child for child in view.children if isinstance(child, StringSelect))
+    select._selected_values = ["1"]
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await select.callback(cast("Any", interaction))
+    assert "#460" in str(interaction.response.edited[0]["embed"].title)
+
+
+async def test_the_report_form_carries_the_open_count_it_was_opened_with() -> None:
+    """The cap is measured against the list the person was looking at."""
+    host = _FakeHost(detail=None)
+    view = FeedbackPanelView(host=cast("Any", host), rows=[_row(snapshot=None)])
+    button = next(child for child in view.children if isinstance(child, Button))
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await button.callback(cast("Any", interaction))
+    modal = interaction.response.modals[0]
+    assert isinstance(modal, ReportModal)
+    assert modal.outstanding == 1
+
+
+async def test_a_report_without_a_number_cannot_be_replied_to_yet() -> None:
+    """There is nowhere to put a reply until the issue exists, so the form stays shut."""
+    detail = TicketDetail(row=_row(snapshot=None, issue_number=None), comments=[])
+    host = _FakeHost(detail=detail)
+    view = TicketDetailView(host=cast("Any", host), detail=detail)
+    reply_button = next(
+        child
+        for child in view.children
+        if isinstance(child, Button) and "回一句" in str(child.label)
+    )
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await reply_button.callback(cast("Any", interaction))
+    assert interaction.response.modals == []
+    assert "建立中" in str(interaction.response.sent[0]["embed"].description)
