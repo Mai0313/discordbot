@@ -24,6 +24,13 @@ nav:
                   - cog: Reference/discordbot/cogs/economy/cog.md
                   - embeds: Reference/discordbot/cogs/economy/embeds.md
                   - views: Reference/discordbot/cogs/economy/views.md
+              - feedback:
+                  - cog: Reference/discordbot/cogs/feedback/cog.md
+                  - database: Reference/discordbot/cogs/feedback/database.md
+                  - github: Reference/discordbot/cogs/feedback/github.md
+                  - prompts: Reference/discordbot/cogs/feedback/prompts.md
+                  - views: Reference/discordbot/cogs/feedback/views.md
+                  - writeup: Reference/discordbot/cogs/feedback/writeup.md
               - games:
                   - fishing:
                       - catch: Reference/discordbot/cogs/games/fishing/catch.md
