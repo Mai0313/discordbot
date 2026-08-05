@@ -130,9 +130,13 @@ def _cog(*, issues: FakeIssues, config: FeedbackConfig | None = None) -> Feedbac
     """Builds a cog with the GitHub side faked out and no bot behind it."""
     cog = FeedbackCogs(cast("commands.Bot", object()))
     cog.config = config or _config()
-    # `issues` is a cached_property, so writing the instance attribute is the injection
-    # point; nothing in the cog reads it any other way.
+    # Both are cached_property, so writing the instance attribute is the injection point;
+    # nothing in the cog reads either one any other way. The LLM client matters even
+    # where no model call is expected: building the real one needs a credential, and a
+    # test that quietly depends on the developer's own .env passes locally and fails in
+    # CI, which is exactly what happened to this file.
     cog.issues = cast("Any", issues)
+    cog.client = cast("Any", object())
     return cog
 
 
