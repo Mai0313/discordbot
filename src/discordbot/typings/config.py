@@ -33,6 +33,72 @@ class EconomyConfig(BaseSettings):
     )
 
 
+class FeedbackConfig(BaseSettings):
+    """User-report settings loaded from environment variables.
+
+    Attributes:
+        enabled: Kill-switch for the whole `/feedback` command.
+        github_token: Token used to open and read this repository's issues.
+        github_repository: The `owner/name` the reports are filed against.
+        contact: Where to send people when reports cannot be filed at all.
+        max_open_reports: How many unresolved reports one person may hold at once.
+        submit_cooldown_seconds: Minimum gap between one person's submissions.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether the /feedback command accepts and shows user reports.",
+        examples=[True],
+        validation_alias=AliasChoices("FEEDBACK_ENABLED"),
+    )
+    github_token: str = Field(
+        default="",
+        description="Token with issue read/write on the reporting repository.",
+        examples=["github_pat_..."],
+        validation_alias=AliasChoices("GITHUB_TOKEN"),
+    )
+    github_repository: str = Field(
+        default="",
+        description="The owner/name repository that user reports become issues on.",
+        examples=["Mai0313/discordbot"],
+        validation_alias=AliasChoices("GITHUB_REPOSITORY"),
+    )
+    contact: str = Field(
+        default="",
+        description="Contact shown when reports cannot be filed, e.g. a Discord handle.",
+        examples=["mai9999"],
+        validation_alias=AliasChoices("FEEDBACK_CONTACT"),
+    )
+    max_open_reports: int = Field(
+        default=3,
+        description="How many still-open reports one person may hold before being asked to wait.",
+        examples=[3],
+        validation_alias=AliasChoices("FEEDBACK_MAX_OPEN_REPORTS"),
+    )
+    submit_cooldown_seconds: int = Field(
+        default=300,
+        description="Minimum seconds between two submissions from the same person.",
+        examples=[300],
+        validation_alias=AliasChoices("FEEDBACK_SUBMIT_COOLDOWN_SECONDS"),
+    )
+
+    @property
+    def available(self) -> bool:
+        """Whether a submitted report can actually reach the developer.
+
+        Without a token and a repository nothing would ever read the report, so the
+        command offers the contact line instead of accepting one into a void.
+        """
+        return self.enabled and bool(self.github_token.strip()) and bool(self.repository_slug)
+
+    @property
+    def repository_slug(self) -> str:
+        """The trimmed `owner/name` slug, empty when it is not a usable pair."""
+        slug = self.github_repository.strip().strip("/")
+        owner, _, name = slug.partition("/")
+        return slug if owner and name else ""
+
+
 class LoggingConfig(BaseSettings):
     """Console and log-file verbosity, loaded from environment variables."""
 
@@ -46,4 +112,4 @@ class LoggingConfig(BaseSettings):
     )
 
 
-__all__ = ["DiscordConfig", "EconomyConfig", "LoggingConfig"]
+__all__ = ["DiscordConfig", "EconomyConfig", "FeedbackConfig", "LoggingConfig"]
