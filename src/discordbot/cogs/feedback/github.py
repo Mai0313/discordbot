@@ -16,7 +16,8 @@ panel open, and a client held on the cog would outlive the event loop it was bui
 from typing import Any, Final, Literal
 
 import httpx
-from pydantic import Field, BaseModel
+import logfire
+from pydantic import Field, BaseModel, ValidationError
 
 _API_ROOT: Final[str] = "https://api.github.com"
 _API_VERSION: Final[str] = "2022-11-28"
@@ -34,9 +35,27 @@ REPORTER_COMMENT_MARKER: Final[str] = "<!-- feedback:reporter -->"
 
 _UNPROCESSABLE = 422
 
+# The comments endpoint answers 30 per page by default; 100 is its maximum, and three
+# pages is far past any report thread while keeping a slow issue from stalling the panel.
+_COMMENTS_PER_PAGE = 100
+_MAX_COMMENT_PAGES = 3
+
 
 class GitHubIssuesError(RuntimeError):
-    """A GitHub REST call answered with something other than success."""
+    """A GitHub REST call did not produce a usable answer.
+
+    `status_code` carries GitHub's own status when there was one, and is `None` when the
+    call never got that far (transport error, or a 2xx body that would not decode).
+    Callers that branch on a status read it here rather than matching on the message.
+
+    Attributes:
+        status_code: The HTTP status GitHub answered with, if it answered at all.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        """Initializes the error with the message and the status behind it."""
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class IssueSnapshot(BaseModel):
@@ -73,6 +92,8 @@ def select_conversation(*, comments: list[dict[str, Any]]) -> list[IssueComment]
     """
     conversation: list[IssueComment] = []
     for comment in comments:
+        if not isinstance(comment, dict):
+            continue
         author = comment.get("user") or {}
         body = str(comment.get("body") or "")
         from_reporter = body.lstrip().startswith(REPORTER_COMMENT_MARKER)
@@ -119,9 +140,14 @@ class GitHubIssues(BaseModel):
     ) -> Any:  # noqa: ANN401 -- the GitHub REST payload shape differs per endpoint
         """Runs one REST call and returns its decoded body.
 
+        Decoding is inside the contract, not next to it: every caller treats
+        `GitHubIssuesError` as the one thing this module raises, so a 2xx carrying an
+        HTML error page from something in front of GitHub has to arrive as that too,
+        rather than as a `JSONDecodeError` nobody upstream is catching.
+
         Raises:
-            GitHubIssuesError: The request failed to reach GitHub, or GitHub answered
-                with a non-2xx status.
+            GitHubIssuesError: The request never reached GitHub, GitHub answered with a
+                non-2xx status, or the answer was not decodable JSON.
         """
         url = f"{_API_ROOT}/repos/{self.repository}{path}"
         try:
@@ -131,17 +157,28 @@ class GitHubIssues(BaseModel):
                 )
         except httpx.HTTPError as exc:
             raise GitHubIssuesError(f"{method} {path} could not reach GitHub: {exc}") from exc
-        if response.is_success:
+        if not response.is_success:
+            raise GitHubIssuesError(
+                f"{method} {path} answered {response.status_code}: {response.text[:500]}",
+                response.status_code,
+            )
+        try:
             return response.json()
-        raise GitHubIssuesError(
-            f"{method} {path} answered {response.status_code}: {response.text[:500]}"
-        )
+        except ValueError as exc:
+            raise GitHubIssuesError(
+                f"{method} {path} answered {response.status_code} with undecodable content: "
+                f"{response.text[:200]}",
+                response.status_code,
+            ) from exc
 
     async def create_issue(self, *, title: str, body: str, labels: list[str]) -> int:
         """Opens an issue and returns its number.
 
-        A label the repository does not have makes GitHub reject the whole create, which
-        would cost the report over a piece of metadata, so that one case retries bare.
+        GitHub answers 422 when it will not accept the request as sent, and a label the
+        repository does not carry is one of the reasons. Losing a whole report over a
+        piece of metadata is the worse outcome, so a 422 retries bare — and says so,
+        because `user-report` is the handle that would rebuild the local store, and a
+        silent drop would take that away with nothing to notice it by.
 
         Raises:
             GitHubIssuesError: The issue could not be created.
@@ -150,12 +187,17 @@ class GitHubIssues(BaseModel):
         try:
             created = await self._request(method="POST", path="/issues", payload=payload)
         except GitHubIssuesError as exc:
-            if labels and f"answered {_UNPROCESSABLE}" in str(exc):
-                created = await self._request(
-                    method="POST", path="/issues", payload={"title": title, "body": body}
-                )
-            else:
+            if not labels or exc.status_code != _UNPROCESSABLE:
                 raise
+            logfire.warn(
+                "GitHub refused the labels; opening the issue without them",
+                repository=self.repository,
+                labels=labels,
+                _exc_info=exc,
+            )
+            created = await self._request(
+                method="POST", path="/issues", payload={"title": title, "body": body}
+            )
         return int(created["number"])
 
     async def update_issue(self, *, number: int, title: str, body: str) -> None:
@@ -181,27 +223,50 @@ class GitHubIssues(BaseModel):
     async def read_issue(self, *, number: int) -> IssueSnapshot:
         """Reads one issue's current state.
 
+        A payload that does not carry what a snapshot needs is reported as this module's
+        own error, for the same reason decoding is: the panel catches one type, and a
+        `KeyError` from here would sail past it and take the whole list down.
+
         Raises:
-            GitHubIssuesError: The issue could not be read.
+            GitHubIssuesError: The issue could not be read or did not parse.
         """
         issue = await self._request(method="GET", path=f"/issues/{number}")
         state = "closed" if issue.get("state") == "closed" else "open"
-        return IssueSnapshot(
-            number=int(issue["number"]),
-            title=str(issue.get("title") or ""),
-            state=state,
-            state_reason=issue.get("state_reason"),
-            comment_count=int(issue.get("comments") or 0),
-        )
+        try:
+            return IssueSnapshot(
+                number=int(issue["number"]),
+                title=str(issue.get("title") or ""),
+                state=state,
+                state_reason=issue.get("state_reason"),
+                comment_count=int(issue.get("comments") or 0),
+            )
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            raise GitHubIssuesError(f"GET /issues/{number} answered an unreadable issue") from exc
 
     async def read_conversation(self, *, number: int) -> list[IssueComment]:
         """Reads the comments that belong in the reporter's view of their own report.
 
+        Paged rather than one call: the endpoint answers 30 at a time by default, and the
+        panel shows the *newest* replies, so a thread past the first page would hide the
+        very answer the reporter came to read while the status still said someone had
+        replied. `_MAX_COMMENT_PAGES` bounds it — past that many the oldest are dropped,
+        which is the end nobody is looking at.
+
         Raises:
             GitHubIssuesError: The comments could not be read.
         """
-        comments = await self._request(method="GET", path=f"/issues/{number}/comments")
-        return select_conversation(comments=comments)
+        collected: list[dict[str, Any]] = []
+        for page in range(1, _MAX_COMMENT_PAGES + 1):
+            comments = await self._request(
+                method="GET",
+                path=f"/issues/{number}/comments?per_page={_COMMENTS_PER_PAGE}&page={page}",
+            )
+            if not isinstance(comments, list):
+                raise GitHubIssuesError(f"GET /issues/{number}/comments answered a non-list body")
+            collected.extend(comments)
+            if len(comments) < _COMMENTS_PER_PAGE:
+                break
+        return select_conversation(comments=collected)
 
     async def add_comment(self, *, number: int, body: str) -> None:
         """Posts a comment on an issue.

@@ -18,11 +18,11 @@ the `Mapped[datetime]` column annotations at class-definition time, and postpone
 evaluation breaks that.
 """
 
-from typing import Any
+from typing import Any, cast
 from datetime import datetime, timedelta
 
 from pydantic import Field, BaseModel
-from sqlalchemy import String, Integer, DateTime, func, event, select, update
+from sqlalchemy import String, Integer, DateTime, CursorResult, func, event, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -237,16 +237,30 @@ async def create_ticket(  # noqa: PLR0913 -- one row's columns are all per-call 
         return _row_to_model(row=row)
 
 
-async def attach_issue_number(*, ticket_id: int, issue_number: int) -> None:
-    """Records the issue a report became, taking it out of the retry sweep."""
+async def attach_issue_number(*, ticket_id: int, issue_number: int) -> bool:
+    """Records the issue a report became, and says whether this call is the one that did.
+
+    Conditional on the column still being empty, because two writers can reach the same
+    row: the submit path and the retry sweep both select on `issue_number IS NULL`, and
+    the window between opening an issue and recording it is a real one. Last-write-wins
+    would quietly replace the number the reporter was already given.
+
+    Returns:
+        True when this call recorded the number, False when the row already had one.
+    """
     await _ensure_schema()
     async with open_session() as session:
-        await session.execute(
+        result = await session.execute(
             statement=update(FeedbackTicketRow)
-            .where(FeedbackTicketRow.ticket_id == ticket_id)
+            .where(
+                FeedbackTicketRow.ticket_id == ticket_id, FeedbackTicketRow.issue_number.is_(None)
+            )
             .values(issue_number=issue_number, updated_at=_database_now())
         )
         await session.commit()
+        # An UPDATE always yields a CursorResult; the async wrapper is typed as the wider
+        # `Result`, which does not carry the row count this call is asking for.
+        return cast("CursorResult[Any]", result).rowcount > 0
 
 
 async def store_write_up(
@@ -254,8 +268,9 @@ async def store_write_up(
 ) -> None:
     """Stores the background write-up next to the original text.
 
-    Kept locally as well as on the issue so a failed edit knows what to retry, and so a
-    later pass over the store can read the drafts without calling GitHub.
+    Written only after the issue itself carries it, so the panel's summary line can never
+    describe a report in words the issue does not use. Kept locally as well so a later
+    pass over the store can read the drafts without calling GitHub.
     """
     await _ensure_schema()
     async with open_session() as session:
@@ -308,11 +323,27 @@ async def list_user_tickets(*, user_id: int, limit: int) -> list[FeedbackTicket]
         return [_row_to_model(row=row) for row in result.scalars().all()]
 
 
+async def count_user_tickets(*, user_id: int) -> int:
+    """How many reports one person has filed in total.
+
+    The panel lists only the newest few, and it says how many it is not showing rather
+    than letting an older report look like it was never filed.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(func.count())
+            .select_from(FeedbackTicketRow)
+            .where(FeedbackTicketRow.user_id == user_id)
+        )
+        return int(result.scalar_one())
+
+
 async def get_ticket(*, ticket_id: int) -> FeedbackTicket | None:
     """Returns one report by its local id, or None when it is gone."""
     await _ensure_schema()
     async with open_session() as session:
-        row = await session.get(FeedbackTicketRow, ticket_id)
+        row = await session.get(entity=FeedbackTicketRow, ident=ticket_id)
         return _row_to_model(row=row) if row is not None else None
 
 
@@ -334,17 +365,26 @@ async def seconds_since_last_ticket(*, user_id: int) -> float | None:
     return max((reference - latest) / timedelta(seconds=1), 0.0)
 
 
-async def tickets_awaiting_issue(*, limit: int) -> list[FeedbackTicket]:
+async def tickets_awaiting_issue(
+    *, limit: int, min_age_seconds: float = 0.0
+) -> list[FeedbackTicket]:
     """Returns reports whose issue was never opened, oldest first.
 
     These are the rows the submit path could not hand to GitHub. They are the whole
     reason the local write comes first, so the sweep exists to finish that hand-off.
+
+    `min_age_seconds` excludes rows a submit may still be working on: between opening an
+    issue and recording its number the row looks exactly like one that failed, and taking
+    it here would open a second issue for the same report.
     """
     await _ensure_schema()
+    cutoff = _database_now() - timedelta(seconds=min_age_seconds)
     async with open_session() as session:
         result = await session.execute(
             statement=select(FeedbackTicketRow)
-            .where(FeedbackTicketRow.issue_number.is_(None))
+            .where(
+                FeedbackTicketRow.issue_number.is_(None), FeedbackTicketRow.created_at <= cutoff
+            )
             .order_by(FeedbackTicketRow.ticket_id.asc())
             .limit(limit)
         )

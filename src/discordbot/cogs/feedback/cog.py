@@ -29,8 +29,10 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.config import FeedbackConfig
 from discordbot.typings.models import RuntimeModelCatalog
+from discordbot.utils.timezone import as_taipei, database_now
 from discordbot.cogs.feedback.views import (
     MAX_PANEL_TICKETS,
+    PanelRows,
     TicketRow,
     TicketDetail,
     FeedbackPanelView,
@@ -41,6 +43,7 @@ from discordbot.cogs.feedback.views import (
 from discordbot.cogs.feedback.github import (
     REPORTER_COMMENT_MARKER,
     GitHubIssues,
+    IssueComment,
     IssueSnapshot,
     GitHubIssuesError,
 )
@@ -56,6 +59,7 @@ from discordbot.cogs.feedback.database import (
     create_ticket,
     store_write_up,
     list_user_tickets,
+    count_user_tickets,
     attach_issue_number,
     count_relayed_reply,
     tickets_awaiting_issue,
@@ -67,6 +71,14 @@ from discordbot.cogs.feedback.database import (
 RETRY_INTERVAL_MINUTES = 10
 RETRY_BATCH_SIZE = 10
 
+# A submit that is still in flight has already opened its issue and has not recorded the
+# number yet; anything younger than this is left to finish rather than filed twice.
+RETRY_MIN_AGE_SECONDS = 120
+
+# Past this, an unfiled report is not waiting out an outage any more. The queue is ordered,
+# so one report GitHub will never accept holds up every report behind it.
+RETRY_STALLED_AFTER_SECONDS = 24 * 60 * 60
+
 
 def _locale_text(*, interaction: Interaction[commands.Bot]) -> str:
     """The reporter's Discord locale as a plain string, or empty when unknown."""
@@ -74,6 +86,12 @@ def _locale_text(*, interaction: Interaction[commands.Bot]) -> str:
     if isinstance(locale, Locale):
         return str(locale.value)
     return str(locale or "")
+
+
+def _age_seconds(*, ticket: FeedbackTicket) -> float:
+    """How long ago a report was filed, in seconds."""
+    created = as_taipei(dt=ticket.created_at)
+    return max((database_now() - created).total_seconds(), 0.0)
 
 
 class FeedbackCogs(commands.Cog):
@@ -136,34 +154,51 @@ class FeedbackCogs(commands.Cog):
             )
             return None
 
-    async def load_rows(self, *, user_id: int) -> list[TicketRow]:
-        """Returns one person's reports with their current issue state."""
+    async def load_rows(self, *, user_id: int) -> PanelRows:
+        """Returns one person's newest reports with their current issue state."""
         tickets = await list_user_tickets(user_id=user_id, limit=MAX_PANEL_TICKETS)
+        total = await count_user_tickets(user_id=user_id)
         snapshots = await asyncio.gather(
             *(self._read_snapshot(ticket=ticket) for ticket in tickets)
         )
-        return [
-            TicketRow(ticket=ticket, snapshot=snapshot)
-            for ticket, snapshot in zip(tickets, snapshots, strict=True)
-        ]
+        return PanelRows(
+            rows=[
+                TicketRow(ticket=ticket, snapshot=snapshot)
+                for ticket, snapshot in zip(tickets, snapshots, strict=True)
+            ],
+            total=total,
+        )
 
-    async def load_detail(self, *, ticket_id: int) -> TicketDetail | None:
-        """Returns one report with its conversation, or None when it is gone."""
+    async def load_detail(self, *, ticket_id: int, viewer_id: int) -> TicketDetail | None:
+        """Returns one report with its conversation, or None when the viewer may not see it.
+
+        An unread conversation stays `None` rather than collapsing to an empty list: the
+        screen it feeds exists to answer "has anyone replied", and an empty list there
+        would be an answer we did not actually obtain.
+        """
         ticket = await get_ticket(ticket_id=ticket_id)
         if ticket is None:
             return None
+        if ticket.user_id != viewer_id:
+            logfire.warn(
+                "Refused to show a report to someone who did not file it",
+                ticket_id=ticket_id,
+                viewer_id=viewer_id,
+            )
+            return None
         snapshot = await self._read_snapshot(ticket=ticket)
-        comments = []
+        comments: list[IssueComment] | None = []
         if ticket.issue_number is not None:
             try:
                 comments = await self.issues.read_conversation(number=ticket.issue_number)
             except GitHubIssuesError as exc:
                 logfire.warn(
-                    "Could not read a report's replies; showing the report alone",
+                    "Could not read a report's replies; the panel says so rather than guessing",
                     ticket_id=ticket.ticket_id,
                     issue_number=ticket.issue_number,
                     _exc_info=exc,
                 )
+                comments = None
         return TicketDetail(row=TicketRow(ticket=ticket, snapshot=snapshot), comments=comments)
 
     async def _open_issue(self, *, ticket: FeedbackTicket) -> int | None:
@@ -171,6 +206,11 @@ class FeedbackCogs(commands.Cog):
 
         Returning None is safe precisely because the report is already stored: the sweep
         picks the row up again, and the reporter was told their words were kept.
+
+        Failing to record the number afterwards is the one case that is not safe, because
+        the row goes back into the sweep with an issue already open against it and gets a
+        second one. It cannot be undone from here — the issue exists — so it is reported
+        at `error` with the number in it, which is what a human needs to reconcile it.
         """
         try:
             number = await self.issues.create_issue(
@@ -185,7 +225,28 @@ class FeedbackCogs(commands.Cog):
                 _exc_info=exc,
             )
             return None
-        await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=number)
+        try:
+            recorded = await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=number)
+        # Broad on purpose: every storage error means the same thing here — an issue
+        # exists that this process can no longer connect to the report that caused it.
+        except Exception as exc:
+            logfire.error(
+                "Opened an issue but could not record it against the report",
+                ticket_id=ticket.ticket_id,
+                issue_number=number,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            return None
+        if not recorded:
+            # Another pass got there first. Whichever number the row already carries is
+            # the one the reporter was told, so this issue is the spare.
+            logfire.warn(
+                "A second issue was opened for a report that already had one",
+                ticket_id=ticket.ticket_id,
+                issue_number=number,
+            )
+            return None
         return number
 
     async def _apply_write_up(self, *, ticket: FeedbackTicket) -> None:
@@ -193,6 +254,11 @@ class FeedbackCogs(commands.Cog):
 
         Every failure here leaves the issue exactly as the reporter wrote it, which is
         why none of them is escalated.
+
+        The issue is rewritten before the draft is stored, not after. Nothing retries a
+        failed rewrite, so storing first would leave the panel showing a tidy summary
+        line for an issue that still reads as the raw report — two descriptions of the
+        same thing, with no way to tell which one the developer is looking at.
         """
         try:
             write_up = await write_up_report(
@@ -204,6 +270,29 @@ class FeedbackCogs(commands.Cog):
                     ticket_id=ticket.ticket_id,
                 )
                 return
+            if ticket.issue_number is None:
+                logfire.warn(
+                    "A report was written up before its issue existed; dropping the draft",
+                    ticket_id=ticket.ticket_id,
+                )
+                return
+            try:
+                await self.issues.update_issue(
+                    number=ticket.issue_number,
+                    title=write_up.title,
+                    body=render_issue_body(ticket=ticket, write_up=write_up),
+                )
+            except GitHubIssuesError as exc:
+                # Named separately from the model call above: the write-up worked, and
+                # what did not is the edit. Nothing retries it, so the issue keeps the
+                # reporter's own words and the panel keeps showing their first line.
+                logfire.warn(
+                    "Could not rewrite a report's issue; it keeps the original wording",
+                    ticket_id=ticket.ticket_id,
+                    issue_number=ticket.issue_number,
+                    _exc_info=exc,
+                )
+                return
             await store_write_up(
                 ticket_id=ticket.ticket_id,
                 label=write_up.label,
@@ -211,23 +300,15 @@ class FeedbackCogs(commands.Cog):
                 draft_title=write_up.title,
                 draft_body=write_up.body,
             )
-            if ticket.issue_number is None:
-                return
-            await self.issues.update_issue(
-                number=ticket.issue_number,
-                title=write_up.title,
-                body=render_issue_body(ticket=ticket, write_up=write_up),
-            )
             try:
                 await self.issues.add_labels(
                     number=ticket.issue_number,
                     labels=label_for_category(category=write_up.category),
                 )
             except GitHubIssuesError as exc:
-                # Its own step so the log says what actually failed: the issue is
-                # already rewritten by this point, and a label the repository does not
-                # carry costs only the label.
-                logfire.info(
+                # Its own step so the log says what actually failed: the issue is already
+                # rewritten by this point, and a rejected label costs only the label.
+                logfire.warn(
                     "Could not label a report's issue",
                     ticket_id=ticket.ticket_id,
                     issue_number=ticket.issue_number,
@@ -254,6 +335,13 @@ class FeedbackCogs(commands.Cog):
             application = await self.bot.application_info()
             owner = application.owner
             if owner is None:
+                # A team-owned application has no single owner to write to. This is a
+                # standing configuration state, not a blip, so it is said out loud once
+                # per report rather than returning as if nothing was meant to happen.
+                logfire.warn(
+                    "This application has no owner to notify; new reports arrive silently",
+                    ticket_id=ticket.ticket_id,
+                )
                 return
             number = f"#{ticket.issue_number}" if ticket.issue_number else "（還沒有單號）"
             origin = ticket.guild_name or "私訊"
@@ -264,10 +352,12 @@ class FeedbackCogs(commands.Cog):
             )
             embed.set_footer(text=f"{ticket.display_name} ({ticket.user_name}) · {origin}")
             await owner.send(embed=embed)
-        # Broad on purpose: a closed DM, a team-owned application, or a transport hiccup
+        # Broad on purpose: a closed DM, a missing shared server, or a transport hiccup
         # all mean the same thing here, and none of them should touch the report itself.
+        # `warn`, not `info`: this is the only channel that announces a new report, and a
+        # closed DM keeps failing, so every report after it would arrive unannounced.
         except Exception as exc:
-            logfire.info(
+            logfire.warn(
                 "Could not notify the owner about a new report",
                 ticket_id=ticket.ticket_id,
                 error_type=type(exc).__name__,
@@ -277,11 +367,11 @@ class FeedbackCogs(commands.Cog):
     async def _throttle_notice(self, *, user_id: int, outstanding: int) -> str:
         """Returns why this person may not file right now, or an empty string."""
         if outstanding >= self.config.max_open_reports:
-            return f"你已經有 {outstanding} 張還沒處理完的單了, 先等其中一張有結果再回報新的吧。"
+            return f"你已經有 {outstanding} 張還沒處理完的單了，先等其中一張有結果再回報新的吧。"
         elapsed = await seconds_since_last_ticket(user_id=user_id)
         if elapsed is not None and elapsed < self.config.submit_cooldown_seconds:
             wait_minutes = max(1, int((self.config.submit_cooldown_seconds - elapsed) // 60) + 1)
-            return f"你剛剛才回報過, 大約 {wait_minutes} 分鐘後再送下一張。"
+            return f"你剛剛才回報過，大約 {wait_minutes} 分鐘後再送下一張。"
         return ""
 
     async def submit_report(
@@ -300,29 +390,51 @@ class FeedbackCogs(commands.Cog):
             )
             return
         guild = interaction.guild
-        ticket = await create_ticket(
-            user_id=interaction.user.id,
-            user_name=interaction.user.name,
-            display_name=interaction.user.display_name,
-            guild_id=guild.id if guild is not None else None,
-            guild_name=guild.name if guild is not None else "",
-            channel_id=interaction.channel_id,
-            locale=_locale_text(interaction=interaction),
-            raw_text=text.strip(),
-        )
+        try:
+            ticket = await create_ticket(
+                user_id=interaction.user.id,
+                user_name=interaction.user.name,
+                display_name=interaction.user.display_name,
+                guild_id=guild.id if guild is not None else None,
+                guild_name=guild.name if guild is not None else "",
+                channel_id=interaction.channel_id,
+                locale=_locale_text(interaction=interaction),
+                raw_text=text.strip(),
+            )
+        # Broad on purpose: this is the one step whose failure loses the report outright,
+        # and the interaction is already deferred, so anything escaping here would leave
+        # the person watching a spinner that never resolves with nothing in the log.
+        except Exception as exc:
+            logfire.error(
+                "Could not store a user report; it is lost",
+                user_id=interaction.user.id,
+                guild_id=guild.id if guild is not None else None,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            await interaction.followup.send(
+                embed=build_notice_embed(
+                    description="出了點問題，你寫的東西沒有存下來，再試一次看看。"
+                ),
+                ephemeral=True,
+            )
+            return
         number = await self._open_issue(ticket=ticket)
         if number is not None:
             ticket = ticket.model_copy(update={"issue_number": number})
-        await interaction.followup.send(embed=build_submitted_embed(ticket=ticket), ephemeral=True)
+        # Logged before the answer, not after: a failed followup would otherwise leave a
+        # filed report with no trace of it anywhere.
         logfire.info(
             "A user report was filed",
             ticket_id=ticket.ticket_id,
             issue_number=ticket.issue_number,
+            user_id=ticket.user_id,
             guild_id=ticket.guild_id,
         )
         self._spawn(self._notify_owner(ticket=ticket))
         if number is not None:
             self._spawn(self._apply_write_up(ticket=ticket))
+        await interaction.followup.send(embed=build_submitted_embed(ticket=ticket), ephemeral=True)
 
     async def submit_reply(
         self, *, interaction: Interaction[commands.Bot], ticket_id: int, text: str
@@ -332,12 +444,31 @@ class FeedbackCogs(commands.Cog):
             return
         await interaction.response.defer(ephemeral=True)
         ticket = await get_ticket(ticket_id=ticket_id)
+        if ticket is None:
+            await interaction.followup.send(
+                embed=build_notice_embed(description="這張單找不到了。"), ephemeral=True
+            )
+            return
         # The panel is ephemeral, so only its owner can reach this; the check is here
         # because the call writes to a public issue and cheap certainty is worth more
-        # than the assumption.
-        if ticket is None or ticket.user_id != interaction.user.id or ticket.issue_number is None:
+        # than the assumption. It is loud because nothing should ever reach it.
+        if ticket.user_id != interaction.user.id:
+            logfire.warn(
+                "Refused to relay a reply onto someone else's report",
+                ticket_id=ticket.ticket_id,
+                viewer_id=interaction.user.id,
+                owner_id=ticket.user_id,
+            )
             await interaction.followup.send(
-                embed=build_notice_embed(description="這張單現在沒辦法補充。"), ephemeral=True
+                embed=build_notice_embed(description="這不是你的單。"), ephemeral=True
+            )
+            return
+        if ticket.issue_number is None:
+            await interaction.followup.send(
+                embed=build_notice_embed(
+                    description="這張單還在建立中，等它有單號之後就可以補充了。"
+                ),
+                ephemeral=True,
             )
             return
         body = (
@@ -355,13 +486,25 @@ class FeedbackCogs(commands.Cog):
                 _exc_info=exc,
             )
             await interaction.followup.send(
-                embed=build_notice_embed(description="送不出去, 等一下再試一次。"), ephemeral=True
+                embed=build_notice_embed(description="送不出去，等一下再試一次。"), ephemeral=True
             )
             return
-        await count_relayed_reply(ticket_id=ticket.ticket_id)
+        try:
+            await count_relayed_reply(ticket_id=ticket.ticket_id)
+        # Broad on purpose: the comment is already on the issue, so nothing here can be
+        # undone. Losing the count would make the reporter's own line read back to them
+        # as the developer's answer, which is the one thing this counter exists to stop.
+        except Exception as exc:
+            logfire.error(
+                "Relayed a reply but could not count it; the panel may read it as an answer",
+                ticket_id=ticket.ticket_id,
+                issue_number=ticket.issue_number,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
         await interaction.followup.send(
             embed=build_notice_embed(
-                description=f"補上去了, 開發者會在 #{ticket.issue_number} 看到。",
+                description=f"補上去了，開發者會在 #{ticket.issue_number} 看到。",
                 color=DISCORD_GREEN,
             ),
             ephemeral=True,
@@ -375,11 +518,11 @@ class FeedbackCogs(commands.Cog):
         """
         if self.config.contact:
             description = (
-                "這台 bot 還沒接上回報系統, 我沒辦法幫你開單。\n"
-                f"有問題的話直接找 **{self.config.contact}**, 他就是做這隻 bot 的人。"
+                "這台 bot 還沒接上回報系統，我沒辦法幫你開單。\n"
+                f"有問題的話直接找 **{self.config.contact}**，他就是做這隻 bot 的人。"
             )
         else:
-            description = "回報功能目前沒有開, 我沒辦法幫你開單。"
+            description = "回報功能目前沒有開，我沒辦法幫你開單。"
         return build_notice_embed(description=description, color=DISCORD_YELLOW)
 
     @nextcord.slash_command(
@@ -387,7 +530,7 @@ class FeedbackCogs(commands.Cog):
         description="Report a problem or ask for a feature, and read the developer's replies.",
         name_localizations={Locale.zh_TW: "回報", Locale.ja: "フィードバック"},
         description_localizations={
-            Locale.zh_TW: "回報問題或許願, 也可以看開發者的回覆",
+            Locale.zh_TW: "回報問題或許願，也可以看開發者的回覆",
             Locale.ja: "不具合や要望を開発者に送り、返信を確認します。",
         },
         nsfw=False,
@@ -404,9 +547,11 @@ class FeedbackCogs(commands.Cog):
         # Deferred because the panel reads every listed report from GitHub; the edit
         # below turns the placeholder into the panel itself.
         await interaction.response.defer(ephemeral=True)
-        rows = await self.load_rows(user_id=interaction.user.id)
-        view = FeedbackPanelView(host=self, rows=rows)
-        await interaction.edit_original_message(embed=build_panel_embed(rows=rows), view=view)
+        panel = await self.load_rows(user_id=interaction.user.id)
+        view = FeedbackPanelView(host=self, rows=panel.rows, total=panel.total)
+        await interaction.edit_original_message(
+            embed=build_panel_embed(rows=panel.rows, total=panel.total), view=view
+        )
         view.bind_origin(interaction=interaction)
 
     @tasks.loop(minutes=RETRY_INTERVAL_MINUTES)
@@ -416,17 +561,57 @@ class FeedbackCogs(commands.Cog):
         This is the other half of writing locally first. Without it a report filed during
         a GitHub outage would sit in the store forever, which is indistinguishable from
         losing it as far as the reporter can tell.
+
+        Wrapped whole, because an exception escaping a `tasks.loop` stops it for the rest
+        of the process (nextcord only retries a short list of connection errors), and this
+        loop is the entire mechanism behind the promise the reporter was given.
+
+        Rows younger than `RETRY_MIN_AGE_SECONDS` are left alone: a submit in flight has
+        already opened its issue and is about to record the number, and picking it up here
+        would open a second one.
         """
-        if not self.config.available:
-            return
-        pending = await tickets_awaiting_issue(limit=RETRY_BATCH_SIZE)
-        for ticket in pending:
-            number = await self._open_issue(ticket=ticket)
-            if number is None:
-                # GitHub is still refusing; the rest of the batch would only repeat it.
+        try:
+            pending = await tickets_awaiting_issue(
+                limit=RETRY_BATCH_SIZE, min_age_seconds=RETRY_MIN_AGE_SECONDS
+            )
+            if not pending:
                 return
-            self._spawn(
-                self._apply_write_up(ticket=ticket.model_copy(update={"issue_number": number}))
+            if not self.config.available:
+                # Worth saying: reports are queueing up behind a switch or a missing
+                # token, and the reporters were told they would be filed.
+                logfire.info(
+                    "Reports are waiting for an issue but reporting is not configured",
+                    pending=len(pending),
+                )
+                return
+            stalled = [
+                ticket
+                for ticket in pending
+                if _age_seconds(ticket=ticket) > RETRY_STALLED_AFTER_SECONDS
+            ]
+            if stalled:
+                # Past this age it is no longer an outage waiting to clear, and the queue
+                # is ordered, so one report nothing will ever accept blocks every later one.
+                logfire.error(
+                    "Reports have been waiting for an issue far too long",
+                    stalled=len(stalled),
+                    oldest_ticket_id=stalled[0].ticket_id,
+                )
+            for ticket in pending:
+                number = await self._open_issue(ticket=ticket)
+                if number is None:
+                    # GitHub is still refusing; the rest of the batch would only repeat it.
+                    return
+                self._spawn(
+                    self._apply_write_up(ticket=ticket.model_copy(update={"issue_number": number}))
+                )
+        # Broad on purpose, see the docstring: the alternative is a loop that dies once
+        # and takes every queued report with it, silently, until the next deploy.
+        except Exception as exc:
+            logfire.error(
+                "The report retry sweep failed; it will run again next interval",
+                error_type=type(exc).__name__,
+                _exc_info=exc,
             )
 
     @commands.Cog.listener()
@@ -436,6 +621,10 @@ class FeedbackCogs(commands.Cog):
             return
         self._started = True
         self.retry_unfiled_reports.start()
+
+    def cog_unload(self) -> None:
+        """Stops the retry sweep when the cog is unloaded or reloaded."""
+        self.retry_unfiled_reports.cancel()
 
 
 def setup(bot: commands.Bot) -> None:

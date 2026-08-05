@@ -55,13 +55,17 @@ class FeedbackConfig(BaseSettings):
         default="",
         description="Token with issue read/write on the reporting repository.",
         examples=["github_pat_..."],
-        validation_alias=AliasChoices("GITHUB_TOKEN"),
+        # Prefixed, unlike a provider credential: GitHub Actions always exports
+        # GITHUB_REPOSITORY and `gh` users often export GITHUB_TOKEN, and `load_dotenv`
+        # does not override an existing variable, so the bare names would silently lose
+        # to whatever the surrounding shell happened to have set.
+        validation_alias=AliasChoices("FEEDBACK_GITHUB_TOKEN"),
     )
     github_repository: str = Field(
         default="",
         description="The owner/name repository that user reports become issues on.",
         examples=["Mai0313/discordbot"],
-        validation_alias=AliasChoices("GITHUB_REPOSITORY"),
+        validation_alias=AliasChoices("FEEDBACK_GITHUB_REPOSITORY"),
     )
     contact: str = Field(
         default="",

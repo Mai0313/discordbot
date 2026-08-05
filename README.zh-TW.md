@@ -46,6 +46,7 @@ tag bot 並問它會做什麼。這裡沒有 help 指令，它會讀自己的功
 - **虛擬歡樂豆與金融系統**：使用者可從訊息獲得虛擬歡樂豆，可每日簽到、轉帳、購買 VIP、使用長期個人信貸或央行借款，並查看排行榜。
 - **模擬股市**：`/stock` 開啟一則公開 market message，內含 DB-managed virtual companies；選股、受 float supply、borrow cap 與單人 49% long holding cap 限制的交易、部位摘要、近期交易紀錄、liquidity-based slippage、定期刷新新聞與 7 日圖表都在同一則公開 message 內 edit 切換，只有發起 `/stock` 的 user 可以操作 controls。
 - **賭場遊戲**：多人 `/games blackjack` 與 `/games dragon_gate` lobby。Blackjack 莊家改為賭場系統 (deterministic H17)，bot 本身會以玩家身份入桌並由獨立的確定性策略 (fractional-Kelly 下注與 EV 決策) 決策，`/casino` 與 `/pocat` 分別顯示賭場帳本與 bot 玩家錢包。單人 `/games fishing` 則是買釣具拋竿的小遊戲，魚分 N 到 UR 稀有度並有最大單筆漁獲排行榜，裝備越好，稀有魚的機率與價值都明顯提高。
+- **問題回報**：`/feedback` 開啟只有本人看得到的面板，用單號列出自己回報過的問題，並提供表單把新的回報開成設定好的 repository 上的 GitHub issue（背景會由 LLM 整理成好讀的內容）。開發者在該 issue 上的回覆會出現在同一個面板裡，也有按鈕可以再補一句，讓回報是雙向的對話而不是單向信箱。
 - **MapleStory Artale 資料庫**：`/maplestory` 子命令可查詢怪物、裝備、卷軸、NPC、任務、地圖、掉落來源與資料庫統計。
 - **本地化指令**：slash command metadata 支援英文、繁體中文、日文。AI 回覆會跟隨使用者語言。沒有 help 指令：直接問 bot 會做什麼，它會讀一份英文的功能說明並用你發問的語言回答。
 
@@ -58,6 +59,7 @@ tag bot 並問它會做什麼。這裡沒有 help 指令，它會讀自己的功
 | _抖音 URL_                                                       | 自動傳回影片或圖片；被 tag 時改為看過影片再回答。                                      |
 | _Bilibili URL + tag_                                             | 看過連結的影片後回答（單獨貼連結不會自動展開）。                                       |
 | `/download_video <url> [quality]`                                | 下載影片並傳回 Discord。抖音的圖文貼文會傳回圖片。                                     |
+| `/feedback`                                                      | 開啟只有你看得到的回報面板：用單號列出你的回報、開發者的回覆，以及開新回報的表單。     |
 | `/balance [member]`                                              | 私密顯示成員的虛擬歡樂豆餘額、債務、stock holdings、淨資產與 VIP 狀態。                |
 | `/checkin`                                                       | 領取每日簽到獎勵。                                                                     |
 | `/vip`                                                           | 購買永久 VIP 權益。                                                                    |
@@ -131,6 +133,8 @@ GEMINI_API_KEY=your_google_ai_studio_key
 
 `OPENAI_BASE_URL` 可以直接指向 OpenAI，也可以指向 LiteLLM 這類 OpenAI-compatible gateway。`GEMINI_API_KEY` 是 Google AI Studio key，用於直連 Google（不經 gateway）的功能：影片生成、Gemini Files API 附件上傳、YouTube 影片回答與深度研究；未設定即停用這些功能。
 
+`/feedback` 要設定 `FEEDBACK_GITHUB_TOKEN` 與 `FEEDBACK_GITHUB_REPOSITORY` 之後才會啟用，token 只需要那一個 repository 的 issue 讀寫權限。在那之前指令會顯示 `FEEDBACK_CONTACT`，而不是收下一張沒有人看得到的回報。名稱刻意加上前綴，因為 shell 若已經 export `GITHUB_TOKEN` 或 `GITHUB_REPOSITORY`，會蓋過 `.env` 裡的值。
+
 本機測試央行批准流程時，可以設定 `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`。正式環境請保持未設定或 `false`。
 
 個人長期記憶永遠開啟；使用者可以用 `/memory show`、`/memory regenerate` 與 `/memory clear` 管理自己的記憶。每筆記憶都標記學到它的來源，私密內容只會留在該伺服器或 DM 使用。
@@ -144,10 +148,11 @@ GEMINI_API_KEY=your_google_ai_studio_key
 - `database/stock.db`：DB-managed 模擬 stock profile、float supply、price tick、position、trade operation、ordered trade leg 與 AI-or-fallback stock news。
 - `database/games.db`：每位玩家的 Blackjack 對局歷史、釣魚目錄與每位使用者的裝備、魚餌與漁獲紀錄，以及公開 expiring response 的清理追蹤（guild/channel 名稱、user name、channel ID 與 message ID），用於 bot 重啟後的清理。
 - 臨時 media 下載使用專案根目錄的 `tmp/` scratch folder（不在 `data/` 底下），傳送完成後即刪除。
+- `database/feedback.db`：透過 `/feedback` 送出的問題回報，包含原封不動的內容、回報者是誰與從哪裡送出、對應的 issue 編號，以及背景整理過的版本。
 - `database/reply.db`：背景 AI 的作業狀態，包含某位使用者或伺服器目前排定的記憶擷取工作（在處理完成前會保留那段對話的文字），以及 deep research session，兩者都是為了在重啟後還能接著跑。
 - `memories/`：每個 Discord user id 一個資料夾的純文字 markdown 個人長期記憶，由你的對話在背景累積，並在後續 AI 回覆時注入。`/memory clear` 可以清掉自己的記憶，包含排定中的擷取工作。bot 自己對每個伺服器的社群記憶則放在旁邊的 `memories/bot_memories/<server id>`。
 
-當 bot 需要用 AI 回覆時，當前上下文中的相關文字、支援的附件、embedded media 與參與者身份會送到你設定的 LLM endpoint。本專案不會把這些資料送到其他服務。
+當 bot 需要用 AI 回覆時，當前上下文中的相關文字、支援的附件、embedded media 與參與者身份會送到你設定的 LLM endpoint。唯一的例外是 `/feedback`：送出回報時，寫的內容連同回報者的 Discord 顯示名稱、使用者名稱、id 與來源伺服器，會以公開 issue 的形式送到設定好的 GitHub repository。除此之外，本專案不會把資料送到 LLM endpoint 以外的地方；沒有設定 token 時 `/feedback` 不會啟用。
 
 ## 故障排除
 

@@ -20,6 +20,7 @@ from discordbot.typings.models import ModelSettings
 from discordbot.utils.timezone import database_now
 from discordbot.cogs.feedback.cog import FeedbackCogs
 from discordbot.cogs.feedback.views import (
+    PanelRows,
     TicketRow,
     ReportModal,
     TicketDetail,
@@ -31,6 +32,7 @@ from discordbot.cogs.feedback.views import (
 from discordbot.cogs.feedback.github import (
     REPORTER_COMMENT_MARKER,
     GitHubIssues,
+    IssueComment,
     IssueSnapshot,
     GitHubIssuesError,
     select_conversation,
@@ -53,7 +55,7 @@ from discordbot.cogs.feedback.database import (
     seconds_since_last_ticket,
 )
 
-from .helpers.discord_mocks import FakeUser, FakeInteraction
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction
 
 # Never a real credential: every test that uses it answers from a scripted transport.
 _FAKE_TOKEN = "not-a-real-value"  # noqa: S105 -- a placeholder, not a secret
@@ -112,13 +114,13 @@ def _config(**overrides: object) -> FeedbackConfig:
     """Builds a reporting config from alias keys, hermetically.
 
     `model_validate` rather than the constructor on purpose: it skips the settings
-    sources, so a checkout or a CI runner that happens to export GITHUB_TOKEN cannot
+    sources, so a checkout or a CI runner that happens to export FEEDBACK_GITHUB_TOKEN cannot
     change what a test is asserting about.
     """
     values: dict[str, object] = {
         "FEEDBACK_ENABLED": True,
-        "GITHUB_TOKEN": "fake-credential",
-        "GITHUB_REPOSITORY": "owner/name",
+        "FEEDBACK_GITHUB_TOKEN": "fake-credential",
+        "FEEDBACK_GITHUB_REPOSITORY": "owner/name",
     }
     values.update(overrides)
     return FeedbackConfig.model_validate(values)
@@ -386,7 +388,7 @@ def test_only_the_developer_and_the_reporter_are_shown() -> None:
     ("snapshot", "overrides", "expected", "outstanding"),
     [
         (None, {"issue_number": None}, "⏳ 建立中", True),
-        (None, {}, "❔ 讀不到狀態", True),
+        (None, {}, "❔ 讀不到狀態", False),
         (
             IssueSnapshot(number=460, title="t", state="open", state_reason=None, comment_count=0),
             {},
@@ -481,7 +483,10 @@ async def test_the_open_report_cap_reads_what_the_panel_already_fetched() -> Non
         host=cast("Any", object()),
         rows=[_row(snapshot=closed), _row(snapshot=open_issue), _row(snapshot=None)],
     )
-    assert view.outstanding_count() == 2
+    # The closed one is done and the unreadable one is not known to be open, so only the
+    # middle row counts. Counting the unreadable one would mean a GitHub outage stops
+    # people filing reports, which is the situation the local store exists to survive.
+    assert view.outstanding_count() == 1
 
 
 # --------------------------------------------------------------------------- submit
@@ -521,7 +526,7 @@ async def test_a_failed_issue_never_loses_the_report(feedback_isolated_db: None)
 
 
 async def test_the_retry_sweep_files_what_the_submit_path_could_not(
-    feedback_isolated_db: None,
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The queued report is what makes writing locally first worth anything."""
     cog = _cog(issues=FakeIssues(fail_create=True))
@@ -529,6 +534,9 @@ async def test_the_retry_sweep_files_what_the_submit_path_could_not(
     await cog.submit_report(interaction=cast("Any", interaction), text="壞掉了", outstanding=0)
     recovered = FakeIssues()
     cog.issues = cast("Any", recovered)
+    # The sweep leaves very fresh rows to the submit that may still be filing them; this
+    # one was filed a moment ago, so the age gate is dropped for the test.
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.RETRY_MIN_AGE_SECONDS", 0)
     await cog.retry_unfiled_reports()
     assert await tickets_awaiting_issue(limit=10) == []
     assert len(recovered.created) == 1
@@ -545,9 +553,7 @@ async def test_a_report_is_refused_once_too_many_are_open(feedback_isolated_db: 
     assert "還沒處理完" in str(interaction.followup.sent[0]["embed"].description)
 
 
-async def test_a_second_report_within_the_cooldown_is_refused(
-    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_second_report_within_the_cooldown_is_refused(feedback_isolated_db: None) -> None:
     """Back-to-back submissions are throttled even when nothing is open."""
     issues = FakeIssues()
     cog = _cog(issues=issues)
@@ -704,7 +710,7 @@ async def test_a_raising_write_up_never_escapes_the_background_task(
 async def test_the_command_offers_a_contact_when_reports_cannot_be_filed() -> None:
     """Without a token the command names someone to talk to instead of accepting a report."""
     cog = _cog(issues=FakeIssues())
-    cog.config = _config(GITHUB_TOKEN="", FEEDBACK_CONTACT="mai9999")
+    cog.config = _config(FEEDBACK_GITHUB_TOKEN="", FEEDBACK_CONTACT="mai9999")
     interaction = FakeInteraction(user=FakeUser(user_id=7))
     await cog.feedback(cast("Any", interaction))
     description = str(interaction.response.sent[0]["embed"].description)
@@ -736,12 +742,12 @@ async def test_the_command_shows_the_panel(feedback_isolated_db: None) -> None:
 
 def test_the_config_is_unavailable_without_both_halves() -> None:
     """A token with no repository, or a repository with no token, files nothing."""
-    assert not _config(GITHUB_REPOSITORY="").available
-    assert not _config(GITHUB_TOKEN="").available
+    assert not _config(FEEDBACK_GITHUB_REPOSITORY="").available
+    assert not _config(FEEDBACK_GITHUB_TOKEN="").available
     assert not _config(FEEDBACK_ENABLED=False).available
     assert _config().available
     # A slug missing its owner is not a repository, however non-empty it looks.
-    assert not _config(GITHUB_REPOSITORY="discordbot").available
+    assert not _config(FEEDBACK_GITHUB_REPOSITORY="discordbot").available
 
 
 # ------------------------------------------------------------------------ REST logic
@@ -766,7 +772,9 @@ class _ScriptedIssues(GitHubIssues):
         """Records the attempt and answers from the script."""
         self.calls.append({"method": method, "path": path, "payload": payload})
         if self.fail_status and (not self.fail_once or len(self.calls) == 1):
-            raise GitHubIssuesError(f"{method} {path} answered {self.fail_status}: nope")
+            raise GitHubIssuesError(
+                f"{method} {path} answered {self.fail_status}: nope", self.fail_status
+            )
         if method == "POST" and path == "/issues":
             return {"number": 460}
         if method == "GET" and path.endswith("/comments"):
@@ -808,6 +816,26 @@ async def test_the_snapshot_carries_why_an_issue_was_closed() -> None:
     assert snapshot.comment_count == 3
 
 
+class _PagingIssues(GitHubIssues):
+    """A client whose scripted transport answers a conversation longer than one page."""
+
+    async def _request(
+        self, *, method: str, path: str, payload: dict[str, Any] | None = None
+    ) -> Any:  # noqa: ANN401 -- mirrors the signature it overrides
+        """Answers 100 comments on the first page and 20 on the second."""
+        page = int(path.rsplit("page=", maxsplit=1)[1])
+        start, count = ((0, 100) if page == 1 else (100, 20)) if page <= 2 else (0, 0)
+        return [
+            {
+                "user": {"login": "mai", "type": "User"},
+                "author_association": "OWNER",
+                "body": f"第 {start + index} 則",
+                "created_at": "2026-02-04T10:00:00Z",
+            }
+            for index in range(count)
+        ]
+
+
 # ---------------------------------------------------------------------- view wiring
 
 
@@ -818,15 +846,17 @@ class _FakeHost:
         """Initializes the host with the detail its lookups will return."""
         self.detail = detail
         self.rows: list[TicketRow] = []
+        self.viewed: list[dict[str, Any]] = []
         self.submitted: list[dict[str, Any]] = []
         self.replied: list[dict[str, Any]] = []
 
-    async def load_rows(self, *, user_id: int) -> list[TicketRow]:
+    async def load_rows(self, *, user_id: int) -> PanelRows:
         """Returns the prepared rows."""
-        return self.rows
+        return PanelRows(rows=self.rows, total=len(self.rows))
 
-    async def load_detail(self, *, ticket_id: int) -> TicketDetail | None:
+    async def load_detail(self, *, ticket_id: int, viewer_id: int) -> TicketDetail | None:
         """Returns the prepared detail."""
+        self.viewed.append({"ticket_id": ticket_id, "viewer_id": viewer_id})
         return self.detail
 
     async def submit_report(
@@ -847,17 +877,26 @@ async def test_picking_a_report_opens_it_in_place() -> None:
     detail = TicketDetail(row=_row(snapshot=None), comments=[])
     host = _FakeHost(detail=detail)
     view = FeedbackPanelView(host=cast("Any", host), rows=[_row(snapshot=None)])
+    view.stop()
     select = next(child for child in view.children if isinstance(child, StringSelect))
     select._selected_values = ["1"]
     interaction = FakeInteraction(user=FakeUser(user_id=7))
     await select.callback(cast("Any", interaction))
-    assert "#460" in str(interaction.response.edited[0]["embed"].title)
+    # Deferred, then edited: reading the report is two GitHub calls, well past Discord's
+    # three-second window for a first response.
+    assert interaction.response.deferred is True
+    assert "#460" in str(interaction.edits[0]["embed"].title)
+    assert host.viewed[0]["viewer_id"] == 7
 
 
 async def test_the_report_form_carries_the_open_count_it_was_opened_with() -> None:
     """The cap is measured against the list the person was looking at."""
     host = _FakeHost(detail=None)
-    view = FeedbackPanelView(host=cast("Any", host), rows=[_row(snapshot=None)])
+    open_issue = IssueSnapshot(
+        number=460, title="t", state="open", state_reason=None, comment_count=0
+    )
+    view = FeedbackPanelView(host=cast("Any", host), rows=[_row(snapshot=open_issue)])
+    view.stop()
     button = next(child for child in view.children if isinstance(child, Button))
     interaction = FakeInteraction(user=FakeUser(user_id=7))
     await button.callback(cast("Any", interaction))
@@ -880,3 +919,156 @@ async def test_a_report_without_a_number_cannot_be_replied_to_yet() -> None:
     await reply_button.callback(cast("Any", interaction))
     assert interaction.response.modals == []
     assert "建立中" in str(interaction.response.sent[0]["embed"].description)
+
+
+# ------------------------------------------------------- what the review pass found
+
+
+def test_a_long_report_cannot_break_the_panel() -> None:
+    """A 2000-character report used to build a field Discord rejects, locking the panel.
+
+    The form takes 2000 characters and the write-up may never land, so the panel's own
+    summary line is the reporter's raw text. Discord caps a field value at 1024 and the
+    whole message at 6000, and it answers a violation with a 400 that would leave this
+    person unable to open their reports at all, every time, permanently.
+    """
+    rows = [_row(snapshot=None, ticket_id=index, raw_text="壞" * 2000) for index in range(10)]
+    embed = build_panel_embed(rows=rows, total=len(rows))
+    assert all(len(str(field.value)) <= 1024 for field in embed.fields)
+    assert len(embed) < 6000
+
+
+def test_a_long_conversation_cannot_break_the_detail_screen() -> None:
+    """Same budget, the other screen: several long maintainer replies used to overflow it."""
+    comments = [
+        IssueComment(
+            author="mai", body="說" * 2000, created_at="2026-02-04T10:00:00Z", from_reporter=False
+        )
+        for _ in range(8)
+    ]
+    embed = build_detail_embed(
+        detail=TicketDetail(row=_row(snapshot=None, raw_text="壞" * 2000), comments=comments)
+    )
+    assert all(len(str(field.value)) <= 1024 for field in embed.fields)
+    assert len(embed) < 6000
+
+
+def test_what_is_cut_off_is_said_rather_than_silently_dropped() -> None:
+    """Truncation is visible: a report has to be recognisable to the person who wrote it."""
+    embed = build_panel_embed(rows=[_row(snapshot=None, raw_text="壞" * 2000)], total=25)
+    assert "…" in str(embed.fields[0].value)
+    assert "24" in str(embed.footer.text)
+    comments = [
+        IssueComment(
+            author="mai",
+            body=f"第 {index} 則",
+            created_at="2026-02-04T10:00:00Z",
+            from_reporter=False,
+        )
+        for index in range(9)
+    ]
+    detail = build_detail_embed(detail=TicketDetail(row=_row(snapshot=None), comments=comments))
+    assert any("比較早的對話" in str(field.name) for field in detail.fields)
+
+
+def test_unreadable_replies_are_not_reported_as_no_replies() -> None:
+    """The screen exists to answer "has anyone replied", so it must not answer it wrongly.
+
+    A failed comment read used to collapse into an empty list, which rendered as the
+    developer not having answered — while the panel next to it said someone had.
+    """
+    embed = build_detail_embed(detail=TicketDetail(row=_row(snapshot=None), comments=None))
+    assert embed.fields[0].name == "現在讀不到回覆"
+    assert not any("還沒有回覆" in str(field.name) for field in embed.fields)
+
+
+async def test_an_issue_number_is_recorded_once(feedback_isolated_db: None) -> None:
+    """Two writers race for one row, and the number the reporter was given has to win."""
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="x",
+    )
+    assert await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=460) is True
+    assert await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=461) is False
+    stored = await get_ticket(ticket_id=ticket.ticket_id)
+    assert stored is not None
+    assert stored.issue_number == 460
+
+
+async def test_the_sweep_leaves_a_submit_in_flight_alone(feedback_isolated_db: None) -> None:
+    """A row mid-submit looks exactly like a failed one, and filing it twice is the cost."""
+    await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="x",
+    )
+    assert await tickets_awaiting_issue(limit=10, min_age_seconds=120) == []
+    assert len(await tickets_awaiting_issue(limit=10, min_age_seconds=0)) == 1
+
+
+async def test_the_sweep_survives_a_failure_and_runs_again(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exception escaping the loop would stop it for the life of the process.
+
+    nextcord only retries a short list of connection errors; anything else ends the task
+    and nothing restarts it, so every queued report would sit there until the next deploy.
+    """
+    cog = _cog(issues=FakeIssues())
+
+    async def _boom(**_kwargs: object) -> list[FeedbackTicket]:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.tickets_awaiting_issue", _boom)
+    await cog.retry_unfiled_reports()
+
+
+async def test_a_report_that_cannot_be_stored_says_so(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one failure that loses a report outright must not be a silent spinner."""
+    cog = _cog(issues=FakeIssues())
+
+    async def _boom(**_kwargs: object) -> FeedbackTicket:
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.create_ticket", _boom)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", interaction), text="壞掉了", outstanding=0)
+    assert "沒有存下來" in str(interaction.followup.sent[0]["embed"].description)
+
+
+async def test_nobody_can_read_someone_elses_report(feedback_isolated_db: None) -> None:
+    """The panel is private, and the read path is where the other person's words are."""
+    cog = _cog(issues=FakeIssues())
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="私密的內容",
+    )
+    assert await cog.load_detail(ticket_id=ticket.ticket_id, viewer_id=8) is None
+    assert await cog.load_detail(ticket_id=ticket.ticket_id, viewer_id=7) is not None
+
+
+async def test_every_comment_page_is_read() -> None:
+    """The newest reply is the one being looked for, and it is on the last page."""
+    client = _PagingIssues(token=_FAKE_TOKEN, repository="owner/name")
+    conversation = await client.read_conversation(number=460)
+    assert len(conversation) == 120
+    assert conversation[-1].body == "第 119 則"
