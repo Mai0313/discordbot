@@ -1,9 +1,32 @@
 """Deterministic decision logic for the Blackjack bot player.
 
-The bot is a regular Blackjack player; the casino system is the dealer. Its
-bet sizing, action, and insurance choices are computed without any LLM:
-fractional-Kelly betting off the channel shoe's Hi-Lo true count, the hole-aware
-EV engine for the action, and a count-based +EV rule for insurance.
+The bot is a regular Blackjack player; the casino system is the dealer. It settles like any
+human, so everything here answers one of the three choices a seat makes, and every one of them
+is computed rather than asked of a model (the games cog holds no LLM client at all):
+
+- Bet sizing is fractional Kelly (`kelly_bet`) over the per-round edge, which
+  `count_adjusted_edge` spreads by the channel shoe's Hi-Lo true count. `games/cog.py` calls both
+  when it seats the bot in a lobby.
+- The action is the hole-aware recommendation the EV engine (`blackjack_ev.py`) computes, carried
+  on a `BotPlayerActionContext` and read back by `choose_bot_action`. `fallback_action` degrades
+  to a classic up-card-only basic-strategy table whenever the engine cannot run.
+- Insurance is priced from the remaining shoe's ten-value density alone
+  (`build_bot_insurance_context` / `fallback_insurance`) and is the one decision deliberately kept
+  hole-blind, since the side bet pays exactly on a ten-value hole.
+
+`blackjack_views.py` drives the last two from the round loop. Splitting this off from
+`blackjack.py` splits the table's rules from one seat's strategy: nothing here mutates round
+state or touches Discord, every function is pure over the cards it is handed, and that is what
+lets `tests/test_bot_player.py` pin the constants and the decisions arithmetically instead of by
+simulation.
+
+A context model is the whole computed picture of one decision, and it is built to an information
+boundary: it carries the dealer's up-card plus rank counts of the true remaining shoe, never the
+hole card and never the shoe's order, so nothing read back off one can reconstruct what comes
+next. Only the EV engine's private pass sees the hole. What the table actually acts on is
+narrower still — `ActionAnalysis.basic_strategy_action` and
+`BotPlayerInsuranceContext.insurance_recommendation` — and the draw odds, the summaries and
+`information_boundary` alongside them are reference data no production caller reads today.
 """
 
 from typing import Final
@@ -54,6 +77,8 @@ _INFO_BOUNDARY: Final[str] = (
     "server_true_remaining_shoe_counts_and_dealer_up_card; no hole card, "
     "no next-card field, and no ordered future shoe"
 )
+# Up-cards each pair splits against, keyed by the pair's Blackjack value, so 11 is a pair of
+# aces. Ten-value pairs and fives are absent on purpose: basic strategy never splits either.
 _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
     11: frozenset(range(2, 12)),
     8: frozenset(range(2, 12)),
@@ -67,7 +92,11 @@ _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
 
 
 class ShoeSummary(BaseModel):
-    """Rank-level summary of the true remaining Blackjack shoe."""
+    """Rank-level summary of the true remaining Blackjack shoe.
+
+    Counts only. Dropping the order is what makes the summary safe to expose: it says what is
+    left, never what comes next.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -91,11 +120,11 @@ class ShoeSummary(BaseModel):
 
 
 class DealerKnowledge(BaseModel):
-    """Dealer state exposed to the bot player AI.
+    """Dealer state exposed on a bot-player decision context.
 
-    Only the up-card is shared, exactly what any seated player sees. The hole
-    card, the combined two-card total, and the natural-Blackjack flag are
-    deliberately withheld so nothing the model receives can reveal the hole.
+    Only the up-card is shared, exactly what any seated player sees. The hole card, the combined
+    two-card total, and the natural-Blackjack flag are deliberately withheld so nothing carried
+    on a context can reveal the hole.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -109,7 +138,12 @@ class DealerKnowledge(BaseModel):
 
 
 class DrawOdds(BaseModel):
-    """One-card draw probabilities derived from current hand plus rank counts."""
+    """One-card draw probabilities derived from current hand plus rank counts.
+
+    Every probability is over the next single card only, and the two 過五關 fields are zero
+    whenever the draw is a double's card: a doubled hand takes exactly one card, so it can never
+    reach five.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -134,7 +168,12 @@ class DrawOdds(BaseModel):
 
 
 class ActionAnalysis(BaseModel):
-    """Computed reference data for the bot player's action decision."""
+    """Computed reference data for the bot player's action decision.
+
+    `basic_strategy_action` is the only field the table acts on; it holds the EV engine's
+    hole-aware recommendation whenever `ev_analysis` is present and the up-card-only fallback
+    otherwise, which is why its name outlives what it now usually carries.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -173,7 +212,12 @@ class ActionAnalysis(BaseModel):
 
 
 class BotPlayerActionContext(BaseModel):
-    """Complete computed context for one bot-player action decision."""
+    """Complete computed context for one bot-player action decision.
+
+    Built once per bot turn by `build_bot_action_context`, then read back by `choose_bot_action`
+    for the recommendation alone. Everything else on it is reference data no production caller
+    reads today.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -195,9 +239,9 @@ class BotPlayerActionContext(BaseModel):
 class BotPlayerInsuranceContext(BaseModel):
     """Computed context for one bot-player insurance decision.
 
-    Insurance is priced from the remaining-shoe ten-value density (card
-    counting), not the hole card, so the recommendation never reveals whether
-    the dealer actually has Blackjack.
+    Insurance is priced from the remaining-shoe ten-value density (card counting), not the hole
+    card, so the recommendation never reveals whether the dealer actually has Blackjack.
+    `fallback_insurance` reads `insurance_recommendation`; the rest is reference data.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -232,6 +276,8 @@ class BotPlayerInsuranceContext(BaseModel):
     )
 
 
+# Up-cards each total doubles against, keyed by hand total. Soft totals need their own table
+# because a soft 18 doubles where a hard 18 never does.
 _HARD_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
     9: frozenset({3, 4, 5, 6}),
     10: frozenset(range(2, 10)),
@@ -248,7 +294,14 @@ _SOFT_DOUBLE_DEALERS: Final[dict[int, frozenset[int]]] = {
 
 
 def _dealer_up_value(*, up_card: Card | None) -> int:
-    """Returns the Blackjack value of the dealer's up-card (A counts as 11)."""
+    """Returns the Blackjack value of the dealer's up-card (A counts as 11).
+
+    Args:
+        up_card (Card | None): The dealer's face-up card, or None when it has not been dealt.
+
+    Returns:
+        The card's value, or 0 when there is no up-card.
+    """
     if up_card is None:
         return 0
     if up_card.rank == "A":
@@ -259,13 +312,33 @@ def _dealer_up_value(*, up_card: Card | None) -> int:
 
 
 def _hand_total_and_soft(*, cards: list[Card]) -> tuple[int, bool]:
-    """Returns the best total and whether at least one Ace remains high."""
+    """Returns the best total and whether at least one Ace remains high.
+
+    Flips `is_soft_total`'s pair so the total, which most callers here want on its own, comes
+    first.
+
+    Args:
+        cards (list[Card]): Cards to evaluate.
+
+    Returns:
+        `(total, is_soft)` for the hand.
+    """
     is_soft, total = is_soft_total(cards=cards)
     return total, is_soft
 
 
 def _pair_value(*, cards: list[Card]) -> int | None:
-    """Returns the pair value for same-value two-card hands."""
+    """Returns the pair value for same-value two-card hands.
+
+    Compares Blackjack values rather than ranks, matching the table's own Split rule where any
+    two ten-value cards are a pair; an Ace pair therefore keys the split table at 11.
+
+    Args:
+        cards (list[Card]): Cards to inspect.
+
+    Returns:
+        The shared Blackjack value, or None when the hand is not a two-card pair.
+    """
     if len(cards) != 2:
         return None
     first = _card_blackjack_value(card=cards[0])
@@ -274,14 +347,38 @@ def _pair_value(*, cards: list[Card]) -> int | None:
 
 
 def _should_surrender(*, hand_total: int, dealer_value: int) -> bool:
-    """Returns whether late surrender is the fallback table choice."""
+    """Returns whether late surrender is the fallback table choice.
+
+    The two standard Late Surrender spots, 16 against 9/10/A and 15 against 10. Softness is not
+    read, so a soft 16 matches as well; `_basic_strategy_table_action` tries the split branch
+    first, so 8-8 reaches here only when a split is unavailable.
+
+    Args:
+        hand_total (int): The hand's best total.
+        dealer_value (int): Blackjack value of the dealer up-card.
+
+    Returns:
+        True when the table would surrender this hand.
+    """
     return (hand_total == 16 and dealer_value in {9, 10, 11}) or (
         hand_total == 15 and dealer_value == 10
     )
 
 
 def _should_double(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
-    """Returns whether double down is the fallback table choice."""
+    """Returns whether double down is the fallback table choice.
+
+    Softness picks the table, since a soft 18 doubles where a hard 18 never does; `cards` is
+    read for that alone and `hand_total` is trusted as given.
+
+    Args:
+        cards (list[Card]): The hand, read only to tell soft from hard.
+        hand_total (int): The hand's best total, keying the double table.
+        dealer_value (int): Blackjack value of the dealer up-card.
+
+    Returns:
+        True when the table would double this hand.
+    """
     _, is_soft = _hand_total_and_soft(cards=cards)
     double_dealers = (
         _SOFT_DOUBLE_DEALERS.get(hand_total, frozenset())
@@ -292,7 +389,19 @@ def _should_double(*, cards: list[Card], hand_total: int, dealer_value: int) -> 
 
 
 def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
-    """Returns whether stand is the fallback table choice."""
+    """Returns whether stand is the fallback table choice.
+
+    Standard stiff-hand rules: stand on hard 17+, on 13-16 against a dealer 6 or lower, and on
+    12 only against 4-6; a soft hand stands from 19, or on 18 against a dealer 2-8.
+
+    Args:
+        cards (list[Card]): The hand, read only to tell soft from hard.
+        hand_total (int): The hand's best total.
+        dealer_value (int): Blackjack value of the dealer up-card.
+
+    Returns:
+        True when the table would stand on this hand.
+    """
     _, is_soft = _hand_total_and_soft(cards=cards)
     if is_soft:
         return hand_total >= 19 or (hand_total == 18 and 2 <= dealer_value <= 8)
@@ -304,7 +413,17 @@ def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> b
 
 
 def _rank_counts(*, cards: list[Card]) -> dict[str, int]:
-    """Counts card ranks in stable Blackjack rank order."""
+    """Counts card ranks in stable Blackjack rank order.
+
+    Every rank is present at zero so a caller can index one without a KeyError, and the insertion
+    order is `_RANK_ORDER`, which is what makes the rendered summary of a shoe stable.
+
+    Args:
+        cards (list[Card]): Cards to count, in any order.
+
+    Returns:
+        Count per rank, keyed by `Card.rank`.
+    """
     counts = dict.fromkeys(_RANK_ORDER, 0)
     for card in cards:
         counts[card.rank] = counts.get(card.rank, 0) + 1
@@ -312,7 +431,14 @@ def _rank_counts(*, cards: list[Card]) -> dict[str, int]:
 
 
 def build_shoe_summary(*, shoe: list[Card]) -> ShoeSummary:
-    """Builds rank-count context from the true remaining shoe."""
+    """Builds rank-count context from the true remaining shoe.
+
+    Args:
+        shoe (list[Card]): The true remaining undealt shoe.
+
+    Returns:
+        The per-rank counts plus the Hi-Lo groupings (low 2-6, neutral 7-9, high tens and aces).
+    """
     counts = _rank_counts(cards=shoe)
     ace_count = counts["A"]
     ten_value_count = sum(counts[rank] for rank in _TEN_VALUE_RANKS)
@@ -330,7 +456,17 @@ def build_shoe_summary(*, shoe: list[Card]) -> ShoeSummary:
 
 
 def build_dealer_knowledge(*, dealer_up: Card | None) -> DealerKnowledge:
-    """Builds the up-card-only dealer state exposed to the bot player AI."""
+    """Builds the up-card-only dealer state carried on a decision context.
+
+    Takes the up-card alone rather than the dealer's hand, so no caller can hand the hole card
+    to a context by mistake.
+
+    Args:
+        dealer_up (Card | None): The dealer's face-up card, or None when it has not been dealt.
+
+    Returns:
+        The dealer state, labelled `unknown` at value 0 when there is no up-card.
+    """
     return DealerKnowledge(
         up_card=str(dealer_up) if dealer_up is not None else "unknown",
         up_value=_dealer_up_value(up_card=dealer_up),
@@ -338,14 +474,37 @@ def build_dealer_knowledge(*, dealer_up: Card | None) -> DealerKnowledge:
 
 
 def _probability(*, count: int, total: int) -> float:
-    """Returns a zero-safe probability in the range [0.0, 1.0]."""
+    """Returns a zero-safe probability in the range [0.0, 1.0].
+
+    Args:
+        count (int): Favorable outcomes.
+        total (int): Possible outcomes.
+
+    Returns:
+        `count / total`, or 0.0 when there is nothing to draw from rather than a
+        ZeroDivisionError.
+    """
     if total <= 0:
         return 0.0
     return count / total
 
 
 def _draw_odds(*, hand_cards: list[Card], shoe: list[Card], doubled: bool) -> DrawOdds:
-    """Computes one-card draw odds from rank counts, not shoe order."""
+    """Computes one-card draw odds from rank counts, not shoe order.
+
+    Walking the counts once per rank instead of the shoe itself is what keeps the result blind
+    to which card is actually next; the representative card drawn per rank carries an arbitrary
+    suit, which no total depends on.
+
+    Args:
+        hand_cards (list[Card]): The hand the next card lands on.
+        shoe (list[Card]): The true remaining undealt shoe.
+        doubled (bool): Whether this draw is a double's single card, which zeroes both 過五關
+            probabilities since such a hand can never reach five cards.
+
+    Returns:
+        The per-outcome probabilities for that one card.
+    """
     counts = _rank_counts(cards=shoe)
     total_draws = len(shoe)
     busts = 0
@@ -382,7 +541,14 @@ def _draw_odds(*, hand_cards: list[Card], shoe: list[Card], doubled: bool) -> Dr
 
 
 def _basic_strategy_reason(*, action: BotAction) -> str:
-    """Returns a compact English reason for the fallback action hint."""
+    """Returns a compact English reason for the fallback action hint.
+
+    Args:
+        action (BotAction): The action the fallback table chose.
+
+    Returns:
+        The reason string recorded on `ActionAnalysis.basic_strategy_reason`.
+    """
     return f"Deterministic fallback table would choose {action}; use as a hint, not a hard rule."
 
 
@@ -397,35 +563,33 @@ def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap
 ) -> int:
     """Returns the fractional-Kelly wager from the per-round edge.
 
-    The growth-optimal stake is a fraction of the bankroll set by the edge. With
-    a fresh shoe the edge is the constant `BOT_TABLE_EDGE`; with a persistent shoe
-    it is `count_adjusted_edge(...)` so the bot spreads its bet by true count.
+    The growth-optimal stake is a fraction of the bankroll set by the edge. With a fresh shoe the
+    edge is the constant `BOT_TABLE_EDGE`; with a persistent shoe it is `count_adjusted_edge(...)`
+    so the bot spreads its bet by true count.
 
-    `max_fraction` of the bankroll is a hard ceiling, not merely a cap on the Kelly
-    fraction: the owner-chosen table stake floors the bet only up to that ceiling,
-    so a large table stake can no longer drag the bot past its risk limit. The bot
-    still sits at any table, but it never wagers more than `max_fraction` of its
-    balance in one round. A non-positive edge falls back to that capped table floor
-    instead of refusing to play.
+    `max_fraction` of the bankroll is a hard ceiling, not merely a cap on the Kelly fraction: the
+    owner-chosen table stake floors the bet only up to that ceiling, so a large table stake can no
+    longer drag the bot past its risk limit. The bot still sits at any table, but it never wagers
+    more than `max_fraction` of its balance in one round. A non-positive edge falls back to that
+    capped table floor instead of refusing to play.
 
     Args:
-        balance: The bot's spendable balance.
-        table_minimum: The table stake the bot matches, up to the bankroll ceiling.
-        edge: Per-round expected value in base-bet units.
-        variance: Per-round variance in base-bet units.
-        kelly_fraction: Fraction of full Kelly to apply (0.5 is half-Kelly).
-        max_fraction: Hard ceiling on the bankroll fraction wagered in one round.
+        balance (int): The bot's spendable balance.
+        table_minimum (int): The table stake the bot matches, up to the bankroll ceiling.
+        edge (float): Per-round expected value in base-bet units.
+        variance (float): Per-round variance in base-bet units.
+        kelly_fraction (float): Fraction of full Kelly to apply (0.5 is half-Kelly).
+        max_fraction (float): Hard ceiling on the bankroll fraction wagered in one round.
 
     Returns:
-        A positive integer wager within `[1, max_fraction * balance]`, never above
-        `balance`.
+        A wager of at least 1, never above `max_fraction` of the balance once that rounds to 1
+        or more. An empty bankroll returns 1, which no production path reaches because
+        `games/cog.py` keeps the bot out of the lobby on an empty wallet.
     """
     if balance <= 0:
         return 1
-    # The bankroll fraction is a hard ceiling: the bot never risks more than
-    # `max_fraction` of its balance in one round, even when the owner-chosen table
-    # stake is larger. The stake only floors the bet up to this ceiling so the bot
-    # still sits; it can no longer be dragged past its Kelly risk limit.
+    # The table stake only floors the bet up to the ceiling, so the bot still sits at a rich
+    # table without being dragged past its Kelly risk limit.
     ceiling = max(1, min(round(max_fraction * balance), balance))
     floor = max(1, min(table_minimum, ceiling))
     if edge <= 0 or variance <= 0:
@@ -438,10 +602,17 @@ def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap
 def count_adjusted_edge(*, true_count: float) -> float:
     """Returns the per-round edge adjusted for the Hi-Lo true count.
 
-    A persistent shoe lets the bot read a true count before betting; a positive
-    count means the remaining shoe is rich in ten-value cards and aces, which lifts
-    the edge. The slope is measured against this table's five-card rules, so the
-    bot meaningfully spreads its wager toward favorable counts.
+    A persistent shoe lets the bot read a true count before betting; a positive count means the
+    remaining shoe is rich in ten-value cards and aces, which lifts the edge. The slope is
+    measured against this table's five-card rules, so the bot meaningfully spreads its wager
+    toward favorable counts. Unclamped on purpose: a deeply negative count returns a negative
+    edge, which `kelly_bet` reads as the table-minimum floor.
+
+    Args:
+        true_count (float): Hi-Lo true count of the channel shoe, from `shoe.py`.
+
+    Returns:
+        The per-round edge in base-bet units, `BOT_TABLE_EDGE` at a neutral count.
     """
     return BOT_TABLE_EDGE + BOT_EDGE_PER_TRUE_COUNT * true_count
 
@@ -455,7 +626,24 @@ def _safe_compute_action_evs(  # noqa: PLR0913 -- thin EV-engine wrapper mirrori
     doubled: bool,
     bet: int | None = None,
 ) -> ActionEvAnalysis | None:
-    """Runs the EV engine, returning None on any failure so a bot turn never crashes."""
+    """Runs the EV engine, returning None on any failure so a bot turn never crashes.
+
+    The broad `except` is the point of the wrapper: `blackjack_ev.py` is free to raise on a state
+    it cannot price, and the seat degrades to the up-card-only table instead of stalling the
+    round mid-hand. A `warn` rather than an `error` because the round still completes.
+
+    Args:
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        dealer_cards (list[Card]): The dealer's cards, hole card included.
+        shoe (list[Card]): The true remaining undealt shoe.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand.
+        doubled (bool): Whether the active hand has already doubled.
+        bet (int | None): Base hand bet used to price surrender exactly; None takes the
+            theoretical half-bet.
+
+    Returns:
+        The EV analysis, or None when the engine raised.
+    """
     try:
         return compute_action_evs(
             hand_cards=hand_cards,
@@ -487,7 +675,22 @@ def _basic_strategy_table_action(
     is_pair_hand: bool,
     allowed_actions: tuple[BotAction, ...],
 ) -> BotAction:
-    """Classic up-card-only basic-strategy table, used when the EV engine is unavailable."""
+    """Classic up-card-only basic-strategy table, used when the EV engine is unavailable.
+
+    The branches are tried in the order basic strategy resolves them (split, surrender, double,
+    stand, hit), and each is gated on `allowed_actions`, so a hand that cannot afford a split or
+    has already acted falls through to the next rung rather than emitting an illegal action.
+
+    Args:
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        hand_total (int): The hand's best total.
+        dealer_up (Card | None): The dealer's face-up card.
+        is_pair_hand (bool): Whether the caller treats this hand as a splittable pair.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand.
+
+    Returns:
+        An action from `allowed_actions`, falling back to its first entry when no rung matched.
+    """
     dealer_value = _dealer_up_value(up_card=dealer_up)
     pair_value = _pair_value(cards=hand_cards) if is_pair_hand else None
     if (
@@ -525,9 +728,25 @@ def fallback_action(  # noqa: PLR0913 -- hole-card-aware fallback also accepts d
 ) -> BotAction:
     """Deterministic fallback that only emits allowed actions.
 
-    When the full dealer cards and remaining shoe are supplied, the exact EV
-    engine drives the choice (hole-card-aware). Otherwise it degrades to the
-    classic up-card-only basic-strategy table.
+    When the full dealer cards and remaining shoe are supplied, the exact EV engine drives the
+    choice (hole-card-aware) and prices the hand as undoubled. Otherwise it degrades to the
+    classic up-card-only basic-strategy table, which is also where an engine failure or an
+    out-of-bounds recommendation lands. Both callers inside this module omit `dealer_cards` and
+    `shoe` — `build_bot_action_context` has run the engine itself already, and `choose_bot_action`
+    arrives here only with no context at all — so the engine branch is the seam the tests drive.
+
+    Args:
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        hand_total (int): The hand's best total.
+        dealer_up (Card | None): The dealer's face-up card.
+        is_pair_hand (bool): Whether the caller treats this hand as a splittable pair.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand.
+        dealer_cards (list[Card] | None): The dealer's cards including the hole, or None to skip
+            the EV engine.
+        shoe (list[Card] | None): The true remaining undealt shoe, or None to skip the EV engine.
+
+    Returns:
+        An action from `allowed_actions`.
     """
     if dealer_cards is not None and shoe is not None:
         analysis = _safe_compute_action_evs(
@@ -560,7 +779,27 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
     balance_remaining: int,
     doubled: bool = False,
 ) -> BotPlayerActionContext:
-    """Builds computed AI context without exposing the future shoe order."""
+    """Builds the computed context for one bot turn without exposing the future shoe order.
+
+    The recommendation is the EV engine's when it runs and the up-card-only table's when it does
+    not, and only that field is acted on; the odds and summaries alongside it are reference data.
+    `dealer_cards` reaches the EV engine (which needs the hole) but never the returned context,
+    which carries `dealer_up` alone.
+
+    Args:
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        dealer_cards (list[Card]): The dealer's cards, hole card included.
+        dealer_up (Card | None): The dealer's face-up card, the only dealer card exposed.
+        shoe (list[Card]): The true remaining undealt shoe.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand.
+        is_pair_hand (bool): Whether the caller treats this hand as a splittable pair.
+        bet (int): The hand's bet, which prices the split cost and the surrender loss.
+        balance_remaining (int): Balance left after the wagers already committed this round.
+        doubled (bool): Whether the active hand has already doubled.
+
+    Returns:
+        The full action context, with `action_analysis.ev_analysis` None when the engine failed.
+    """
     hand_total, _is_soft = _hand_total_and_soft(cards=hand_cards)
     ev_analysis = _safe_compute_action_evs(
         hand_cards=hand_cards,
@@ -641,9 +880,22 @@ def choose_bot_action(  # noqa: PLR0913 -- deterministic action picker mirrors t
 ) -> BotAction:
     """Returns the deterministic action the bot plays this turn.
 
-    The action is the EV engine's hole-aware recommendation carried on the
-    action context (always one of `allowed_actions`); it degrades to the
-    up-card-only basic-strategy fallback only when the context is missing.
+    The action is the EV engine's hole-aware recommendation carried on the action context
+    (always one of `allowed_actions`); it degrades to the up-card-only basic-strategy fallback
+    only when the context is missing. The hand arguments are duplicated from the context on
+    purpose, since that fallback has to run without one.
+
+    Args:
+        action_context (BotPlayerActionContext | None): Context from
+            `build_bot_action_context`, or None to decide from the hand arguments alone.
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        hand_total (int): The hand's best total.
+        dealer_up (Card | None): The dealer's face-up card.
+        is_pair_hand (bool): Whether the caller treats this hand as a splittable pair.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand.
+
+    Returns:
+        The action to play, always one of `allowed_actions`.
     """
     if action_context is not None:
         return action_context.action_analysis.basic_strategy_action
@@ -661,11 +913,19 @@ def build_bot_insurance_context(
 ) -> BotPlayerInsuranceContext:
     """Builds insurance context from the remaining-shoe ten density only.
 
-    The dealer hole card is never passed in, so it cannot reach the decision or
-    the prompt. Insurance pays only on a ten-value hole, so the remaining shoe's
-    ten-value fraction is the fair probability a counter would use. Insurance is
-    +EV only when that fraction clears 1/3; the probability matches the exposed
-    shoe counts exactly, leaving nothing to cross-solve.
+    The dealer hole card is never passed in, so it cannot reach the decision. Insurance pays only
+    on a ten-value hole, so the remaining shoe's ten-value fraction is the fair probability a
+    counter would use, and it is +EV only when that fraction clears 1/3. The probability matches
+    the exposed shoe counts exactly, leaving nothing to cross-solve.
+
+    Args:
+        dealer_up (Card | None): The dealer's face-up card, carried through for display only.
+        shoe (list[Card]): The true remaining undealt shoe, which excludes the hole card.
+        insurance_cost (int): Stake for the side bet, half the hand's bet at the call site.
+
+    Returns:
+        The insurance context, whose `insurance_recommendation` is what `fallback_insurance`
+        reads back.
     """
     ten_count = sum(1 for card in shoe if card.rank in _TEN_VALUE_RANKS)
     total = len(shoe)
@@ -695,9 +955,16 @@ def build_bot_insurance_context(
 def fallback_insurance(*, insurance_context: BotPlayerInsuranceContext | None = None) -> bool:
     """Count-based insurance decision: take only when the unseen deck makes it +EV.
 
-    This is the bot's authoritative insurance choice, not just a failure
-    fallback: insurance is +EV only when the remaining-shoe ten density clears
-    one third, so the deterministic count drives the decision.
+    This is the bot's authoritative insurance choice despite the name, not just a failure
+    fallback: insurance is +EV only when the remaining-shoe ten density clears one third, so the
+    deterministic count drives the decision.
+
+    Args:
+        insurance_context (BotPlayerInsuranceContext | None): Context from
+            `build_bot_insurance_context`, or None.
+
+    Returns:
+        Whether to take insurance, declining when there is no context to price it from.
     """
     if insurance_context is None:
         return False

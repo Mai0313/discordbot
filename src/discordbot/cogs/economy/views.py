@@ -1,4 +1,29 @@
-"""Button views for deciding public loan requests."""
+"""Decision buttons that sit under a public loan request until it is settled.
+
+`cog.py` posts the request embed and hands that message to one of these views, so everything
+after the slash command returns happens here. `CentralBankLoanDecisionView` backs
+`/central_bank borrow` and `CreditLoanDecisionView` backs `/credit borrow`; both carry the same
+three buttons (批准 / 拒絕 / 取消) over a different permission model:
+
+- Central bank: approve and reject are open to any central banker (the `is_central_banker` DB
+  flag, set offline and unrelated to Discord admin). Approving one's own request additionally
+  needs `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL`, a local-testing switch that stays off in
+  production, which is why the flag is carried in from the cog rather than read here.
+- Personal credit: approve and reject belong to the single member the borrower named as lender.
+- Cancel belongs to whoever opened the request, in both.
+
+That gate is only the fast half. Every decision is settled by `services/economy/database.py`,
+which re-checks the same permission inside its own transaction and also answers for what a view
+cannot see: a proposal already decided, one whose window expired while the buttons sat there, a
+lender who has since spent the money, central-bank capacity that no longer covers the amount.
+All of those come back as None, so each callback answers with one ephemeral embed naming every
+possible reason instead of claiming to know which one fired.
+
+A settled or timed-out request is rewritten in place with its controls dropped, then handed to
+`schedule_public_message_delete` so the channel does not collect dead request cards. The view
+keeps its own handle on that message because `on_timeout` has no interaction to reach it
+through; `send_loan_request_followup` writes the message onto the view for exactly that reason.
+"""
 
 import contextlib
 
@@ -30,12 +55,28 @@ from discordbot.utils.interaction_responses import edit_response_embed, send_eph
 
 
 class LoanDecisionViewBase(View):
-    """Shared cleanup behavior for public loan-decision views."""
+    """Shared cleanup behavior for public loan-decision views.
+
+    Both subclasses set `message` in `__init__` and `send_loan_request_followup` overwrites it
+    with the posted request. The annotation lives here so `_schedule_cleanup` can read it off
+    the base instead of being duplicated into each view.
+    """
 
     message: Message | None
 
     def _schedule_cleanup(self, interaction: Interaction[commands.Bot] | None = None) -> None:
-        """Schedules the public request message for cleanup after a terminal state."""
+        """Hands the public request message to the delayed-deletion scheduler.
+
+        Prefers the message recorded at send time, which is the only handle `on_timeout` has,
+        and falls back to the message the button was clicked on. Does nothing when neither
+        exists, so a request whose message was never recorded is simply left in the channel
+        rather than raising into a component callback.
+
+        Args:
+            interaction (Interaction[commands.Bot] | None): The click that settled the request,
+                whose user is recorded with the pending deletion. None on timeout, where there
+                is no actor.
+        """
         message = self.message or getattr(interaction, "message", None)
         if message is None:
             return
@@ -55,7 +96,21 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         creator_id: int,
         allow_self_approval: bool = False,
     ) -> None:
-        """Initializes a decision view for one proposal."""
+        """Initializes a decision view for one central-bank proposal.
+
+        The view's timeout and the database's expiry check both run on
+        `LOAN_PROPOSAL_TIMEOUT_SECONDS`, so the buttons stop working around the moment a
+        decision would be refused as stale anyway.
+
+        Args:
+            bot (commands.Bot): The running bot, whose own account is excluded from the
+                central-bank lending pool on approval.
+            proposal_id (int): The pending proposal these buttons decide.
+            creator_id (int): The borrower who opened the request, and the only user allowed to
+                cancel it.
+            allow_self_approval (bool): Whether that borrower may also approve it. Carried in
+                from the cog's config because it is a local-testing switch, unset in production.
+        """
         super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
         self.bot = bot
         self.proposal_id = proposal_id
@@ -64,7 +119,13 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         self.message: Message | None = None
 
     async def on_timeout(self) -> None:
-        """Rejects a stale central-bank request and cleans up its message."""
+        """Rejects the stale central-bank request and retires its message.
+
+        Rejecting in the database comes first: a proposal that is no longer pending was already
+        settled by a button, so this returns without touching the message that callback wrote.
+        The rewrite is best-effort and the cleanup runs either way, so a request whose message a
+        moderator deleted still leaves the proposal closed rather than pending forever.
+        """
         proposal = await reject_expired_loan_proposal(proposal_id=self.proposal_id)
         if proposal is None or self.message is None:
             return
@@ -74,6 +135,8 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
             description="### 申請已逾時，自動拒絕",
             color=CENTRAL_BANK_COLOR,
         )
+        # Broad: this runs in a detached timeout task, and every way the edit can fail (deleted
+        # message, lost permissions, a 5xx) leaves the proposal correctly rejected already.
         with contextlib.suppress(Exception):
             await self.message.edit(
                 embed=embed,
@@ -83,20 +146,45 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         self._schedule_cleanup()
 
     async def _send_permission_denied(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies privately when a non-banker clicks a decision button."""
+        """Tells a non-banker privately that the request is not theirs to decide.
+
+        Ephemeral, so a bystander's failed click never adds noise under a request everyone in
+        the channel can see.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The rejected click, which has not been
+                answered yet.
+        """
         embed = build_error_embed(
             title="權限不足", description="### 只有央行成員可以處理央行借款申請"
         )
         await send_ephemeral_response(interaction=interaction, embed=embed)
 
     async def _is_central_banker(self, interaction: Interaction[commands.Bot]) -> bool:
-        """Returns whether the clicking user can decide central-bank proposals."""
+        """Whether the clicking user carries the central-banker flag.
+
+        Reads the flag per click rather than caching it on the view, so revoking someone's
+        banker status takes effect on requests already sitting in the channel.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The click to authorize.
+
+        Returns:
+            True when the user is a central banker, False for an unknown user.
+        """
         if interaction.user is None:
             return False
         return await get_central_banker(user_id=interaction.user.id)
 
     def _central_bank_exclude_user_ids(self) -> tuple[int, ...]:
-        """Returns bot-owned account IDs excluded from central-bank capacity."""
+        """The accounts left out of the balance pool that backs central-bank capacity.
+
+        Only the bot's own wallet. Capacity is the sum of every positive balance, so leaving the
+        bot in would let its own winnings enlarge the pool it lends against.
+
+        Returns:
+            The bot's user id, or an empty tuple before the gateway has assigned one.
+        """
         return (self.bot.user.id,) if self.bot.user is not None else ()
 
     @nextcord.ui.button(
@@ -111,7 +199,19 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         _button: Button["CentralBankLoanDecisionView"],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Approves the central-bank request when clicked by a central banker."""
+        """Approves the central-bank request and opens the loan contract.
+
+        A non-banker gets an ephemeral refusal and nothing is written. `accept_loan_proposal` is
+        the authority and re-checks the same rules inside its own write lock, so its None covers
+        four outcomes at once — proposal gone, already decided, self-approval closed, capacity
+        below the amount — which is why the failure embed names them all instead of guessing
+        which one fired. On success the view stops listening before the request message is
+        rewritten into the approval record, and the message is queued for deletion.
+
+        Args:
+            _button (Button["CentralBankLoanDecisionView"]): The clicked button, unused.
+            interaction (Interaction[commands.Bot]): The click to authorize and answer.
+        """
         if interaction.user is None:
             return
         if not await self._is_central_banker(interaction=interaction):
@@ -153,7 +253,17 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         _button: Button["CentralBankLoanDecisionView"],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Rejects the central-bank request when clicked by a central banker."""
+        """Turns the central-bank request down on a banker's click.
+
+        Rejection is a banker's call rather than the borrower's, so the same gate as approval
+        applies. `reject_loan_proposal` runs its own permission check as well and answers None
+        for a proposal that is gone, already decided, or expired between the click and the
+        write.
+
+        Args:
+            _button (Button["CentralBankLoanDecisionView"]): The clicked button, unused.
+            interaction (Interaction[commands.Bot]): The click to authorize and answer.
+        """
         if interaction.user is None:
             return
         if not await self._is_central_banker(interaction=interaction):
@@ -191,7 +301,18 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         _button: Button["CentralBankLoanDecisionView"],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Cancels the central-bank request when clicked by its creator."""
+        """Withdraws the central-bank request on its creator's click.
+
+        The one button the borrower owns, so it carries its own refusal wording rather than the
+        banker-flavored `_send_permission_denied`. `cancel_loan_proposal` re-checks the creator
+        itself and answers None for a proposal that is gone, already decided, or expired between
+        the click and the write, so a click that lost that race gets an ephemeral failure rather
+        than a cancellation embed over an approved loan.
+
+        Args:
+            _button (Button["CentralBankLoanDecisionView"]): The clicked button, unused.
+            interaction (Interaction[commands.Bot]): The click to authorize and answer.
+        """
         if interaction.user is None:
             return
         if interaction.user.id != self.creator_id:
@@ -225,7 +346,21 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     """Button controls for deciding a public personal credit request."""
 
     def __init__(self, proposal_id: int, lender_id: int, creator_id: int) -> None:
-        """Initializes a decision view for one personal credit proposal."""
+        """Initializes a decision view for one personal credit proposal.
+
+        The view's timeout and the database's expiry check both run on
+        `LOAN_PROPOSAL_TIMEOUT_SECONDS`, so the buttons stop working around the moment a
+        decision would be refused as stale anyway. No bot handle is needed here: a personal loan
+        moves money between two wallets and never reads the central-bank pool the bot's own
+        balance is excluded from.
+
+        Args:
+            proposal_id (int): The pending proposal these buttons decide.
+            lender_id (int): The member the borrower asked to lend, and the only user allowed to
+                approve or reject.
+            creator_id (int): The borrower who opened the request, and the only user allowed to
+                cancel it.
+        """
         super().__init__(timeout=LOAN_PROPOSAL_TIMEOUT_SECONDS)
         self.proposal_id = proposal_id
         self.lender_id = lender_id
@@ -233,7 +368,13 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         self.message: Message | None = None
 
     async def on_timeout(self) -> None:
-        """Rejects a stale personal credit request and cleans up its message."""
+        """Rejects the stale personal credit request and retires its message.
+
+        Rejecting in the database comes first: a proposal that is no longer pending was already
+        settled by a button, so this returns without touching the message that callback wrote.
+        The rewrite is best-effort and the cleanup runs either way, so a request whose message a
+        moderator deleted still leaves the proposal closed rather than pending forever.
+        """
         proposal = await reject_expired_loan_proposal(proposal_id=self.proposal_id)
         if proposal is None or self.message is None:
             return
@@ -241,6 +382,8 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         embed = build_simple_embed(
             title="信貸申請已逾時", description="### 申請已逾時，自動拒絕", color=REPAY_COLOR
         )
+        # Broad: this runs in a detached timeout task, and every way the edit can fail (deleted
+        # message, lost permissions, a 5xx) leaves the proposal correctly rejected already.
         with contextlib.suppress(Exception):
             await self.message.edit(
                 embed=embed,
@@ -252,12 +395,32 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     async def _send_permission_denied(
         self, interaction: Interaction[commands.Bot], description: str
     ) -> None:
-        """Replies privately when a user clicks a button they cannot use."""
+        """Tells a user privately that the button they pressed is not theirs.
+
+        Ephemeral, so a bystander's failed click never adds noise under a request everyone in
+        the channel can see. The description is a parameter because approve/reject and cancel
+        are gated on different people and each says who.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The rejected click, which has not been
+                answered yet.
+            description (str): The refusal body, already carrying its Markdown heading.
+        """
         embed = build_error_embed(title="權限不足", description=description)
         await send_ephemeral_response(interaction=interaction, embed=embed)
 
     async def _require_lender(self, interaction: Interaction[commands.Bot]) -> bool:
-        """Returns whether the clicking user is the requested lender."""
+        """Whether the clicking user is the named lender, refusing them privately if not.
+
+        Unlike the central-bank gate this answers the interaction on the way out, so a caller
+        that gets False must return without responding again.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The click to authorize.
+
+        Returns:
+            True when the clicker is the lender the borrower named.
+        """
         if interaction.user is None:
             return False
         if interaction.user.id == self.lender_id:
@@ -273,7 +436,19 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     async def approve(
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Approves the personal credit request when clicked by the lender."""
+        """Approves the request, debiting the lender and crediting the borrower.
+
+        The lender's guild avatar is resolved before the write because it is both stored as the
+        contract's lender identity and shown as the approval embed's thumbnail.
+        `accept_loan_proposal` moves both wallets in one transaction and re-checks everything,
+        so its None covers proposal gone, already decided, a clicker who is not the lender, and
+        a lender whose balance no longer covers the amount, which is why the failure embed names
+        them all instead of guessing which one fired.
+
+        Args:
+            _button (Button["CreditLoanDecisionView"]): The clicked button, unused.
+            interaction (Interaction[commands.Bot]): The click to authorize and answer.
+        """
         if interaction.user is None or not await self._require_lender(interaction=interaction):
             return
 
@@ -309,7 +484,16 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     async def reject(
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Rejects the personal credit request when clicked by the lender."""
+        """Turns the request down on the named lender's click.
+
+        `reject_loan_proposal` re-checks the lender itself and answers None for a proposal that
+        is gone, already decided, or expired between the click and the write, which is what the
+        failure embed's three reasons correspond to.
+
+        Args:
+            _button (Button["CreditLoanDecisionView"]): The clicked button, unused.
+            interaction (Interaction[commands.Bot]): The click to authorize and answer.
+        """
         if interaction.user is None or not await self._require_lender(interaction=interaction):
             return
 
@@ -338,7 +522,18 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     async def cancel(
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Cancels the personal credit request when clicked by its creator."""
+        """Withdraws the request on its creator's click.
+
+        Gated on the borrower rather than the lender, so it checks `creator_id` directly instead
+        of going through `_require_lender`. `cancel_loan_proposal` re-checks the creator itself
+        and answers None for a proposal that is gone, already decided, or expired between the
+        click and the write, so a click that lost that race gets an ephemeral failure rather
+        than a cancellation embed over an approved loan.
+
+        Args:
+            _button (Button["CreditLoanDecisionView"]): The clicked button, unused.
+            interaction (Interaction[commands.Bot]): The click to authorize and answer.
+        """
         if interaction.user is None:
             return
         if interaction.user.id != self.creator_id:

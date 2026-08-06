@@ -1,18 +1,27 @@
 """Persistent Blackjack round history for the games cog.
 
-Every settled Blackjack round writes one row per seated player (the bot
-player included) into `data/database/games.db`. The query side reads the most recent
-rounds for a single player so `/games blackjack_history` can show someone's
-recent hands, bets, dealer hands, and results.
+Every settled Blackjack round writes one row per seated player (the bot player included) into
+`data/database/games.db`. The query side reads the most recent rounds for a single player so
+`/games blackjack_history` can show someone's recent hands, bets, dealer hands, and results.
+It is a separate file from the table itself because the two halves run at different times: the
+rules and the money settle inside `blackjack_views.py`, and this store is written afterwards
+from a background task, the one thing that round deliberately does off its critical path. A
+failure here therefore costs a history row and nothing else, so nothing in this module may be
+awaited from inside a live round.
 
-The engine is a module-level `AsyncEngine` singleton, mirroring the economy
-and stock stores. Each operation opens an `AsyncSession` bound to the current
-`_engine`, so tests can monkeypatch `_engine` per-test and every subsequent
-call sees the swap. Money and bet columns use `StoredInteger` decimal text so
-large wagers do not inherit SQLite's 64-bit integer ceiling. The rich per-hand
-card detail (player hands, dealer hand, insurance) is serialized into one typed
-`BlackjackHistoryPayload` JSON column; the flat `user_id` / `created_at` /
-`outcome` / `delta` columns drive filtering, ordering, and summaries.
+The engine is a module-level `AsyncEngine` singleton, mirroring the economy and stock stores.
+Each operation opens an `AsyncSession` bound to the current `_engine`, so tests can monkeypatch
+`_engine` per-test and every subsequent call sees the swap. `games.db` is shared with fishing
+and the message-cleanup table, each of which owns its own engine and its own tables over the
+same file; the PRAGMA setup all three agree on comes from `utils/sqlite_config.py`.
+
+Money and bet columns use `StoredInteger` decimal text so large wagers do not inherit SQLite's
+64-bit integer ceiling. The rich per-hand card detail (player hands, dealer hand, insurance) is
+serialized into one typed `BlackjackHistoryPayload` JSON column; the flat `user_id` /
+`created_at` / `outcome` / `delta` columns drive filtering, ordering, and summaries. That split
+is also how the shape evolves: `_ensure_schema` only ever runs `create_all`, so an existing file
+never gains a column, while every payload field carries a default and a row written before a
+field existed still reads back.
 """
 
 from typing import Any, cast
@@ -47,20 +56,48 @@ _schema_lock = LoopLocalLock()
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Configures a newly opened games-history SQLite connection."""
+    """Configures a newly opened games-history SQLite connection.
+
+    The one place this store's PRAGMA choices are made, and both are the shared helper's
+    defaults: no `PRAGMA foreign_keys`, since nothing here references another table, and the
+    `StoredInteger` UDFs registered for the decimal-text `bet` / `delta` columns.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+    """
     configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 @event.listens_for(_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures a newly opened SQLite connection."""
+    """Configures a newly opened SQLite connection.
+
+    Bound to the import-time `_engine` by the decorator, and handed to `ensure_sqlite_hooks` by
+    every session open so an engine a test swapped in gets the same listener; it stays a named
+    module-level function so that second registration can be deduplicated.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+        _connection_record (Any): SQLAlchemy's pool record for the connection, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _configure_sqlite_on_checkout(
     dbapi_connection: object, _connection_record: object, _connection_proxy: object
 ) -> None:
-    """Configures pooled connections from test-swapped engines."""
+    """Configures pooled connections from test-swapped engines.
+
+    `connect` fires only when the pool opens a new connection, so a fixture that created the
+    schema before monkeypatching `_engine` leaves one pooled connection the connect listener
+    never reaches; this catches it on its way out of the pool instead.
+
+    Args:
+        dbapi_connection (object): The connection being handed out of the pool.
+        _connection_record (object): SQLAlchemy's pool record for the connection, unused.
+        _connection_proxy (object): SQLAlchemy's proxy wrapping the checked-out connection,
+            unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
@@ -71,7 +108,13 @@ class Base(DeclarativeBase):
 
 
 class BlackjackRoundResult(Base):
-    """One seated player's settled result for a single Blackjack round."""
+    """One seated player's settled result for a single Blackjack round.
+
+    A round writes one row per seat, all sharing a `round_id` and one `created_at`. The
+    composite `(user_id, created_at)` index is the read path: one player's rows, newest first.
+    Nothing selects on `round_id` today — it is written so a round's seats can be reassembled,
+    and its index is there for that read whenever one appears.
+    """
 
     __tablename__ = "blackjack_round_result"
     __table_args__ = (
@@ -98,12 +141,23 @@ class BlackjackRoundResult(Base):
 
 
 def _current_schema_lock() -> asyncio.Lock:
-    """Returns the schema bootstrap lock bound to the current event loop."""
+    """Returns the schema bootstrap lock bound to the current event loop.
+
+    Returns:
+        The lock for the running loop, rebuilt whenever the loop changed, so a per-test loop
+        never waits on a primitive bound to a dead one.
+    """
     return _schema_lock.get()
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps the games-history schema once per engine."""
+    """Bootstraps the games-history schema once per engine.
+
+    The listeners are re-installed on every call, because an engine a test monkeypatched in was
+    never reached by the import-time `@event.listens_for`. `_schema_ready_for` holds engine
+    identity rather than a flag for the same reason, and the check is repeated under the lock so
+    two rounds settling together still run `create_all` once.
+    """
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     ensure_sqlite_hooks(
         engine=_engine,
@@ -121,7 +175,16 @@ async def _ensure_schema() -> None:
 
 
 def open_session() -> AsyncSession:
-    """Creates an async session bound to the current games-history engine."""
+    """Creates an async session bound to the current games-history engine.
+
+    `_engine` is read at call time rather than through a cached sessionmaker, so a test swap
+    takes effect on the next call; the listeners are installed here for the same reason
+    `_ensure_schema` installs them. `expire_on_commit=False` keeps a written row readable after
+    its commit.
+
+    Returns:
+        A new session the caller owns closing, usually as an async context manager.
+    """
     ensure_sqlite_hooks(
         engine=_engine,
         on_connect_fn=_configure_sqlite,
@@ -131,7 +194,17 @@ def open_session() -> AsyncSession:
 
 
 def _history_hand(hand: BlackjackHandSettlement) -> BlackjackHistoryHand:
-    """Projects a settled sub-hand into its persisted history snapshot."""
+    """Projects a settled sub-hand into its persisted history snapshot.
+
+    `total` is evaluated once here, so displaying a stored hand never re-runs the rules engine's
+    ace demotion over cards that can no longer change.
+
+    Args:
+        hand (BlackjackHandSettlement): One settled sub-hand of a player's round.
+
+    Returns:
+        The snapshot stored inside the row's payload.
+    """
     return BlackjackHistoryHand(
         cards=list(hand.cards),
         total=hand_value(cards=hand.cards),
@@ -149,7 +222,19 @@ def _history_hand(hand: BlackjackHandSettlement) -> BlackjackHistoryHand:
 def _history_payload(
     *, result: BlackjackPlayerResult, dealer_cards: Sequence[Card], dealer_total: int
 ) -> BlackjackHistoryPayload:
-    """Builds the full per-player snapshot stored in the history row."""
+    """Builds the full per-player snapshot stored in the history row.
+
+    The dealer's hand is copied into every seat's payload rather than stored once for the round,
+    so a single row renders on its own without reading the other seats back.
+
+    Args:
+        result (BlackjackPlayerResult): The seat and the settlement it is being paired with.
+        dealer_cards (Sequence[Card]): The dealer's final hand for the round.
+        dealer_total (int): The dealer's final hand value.
+
+    Returns:
+        The payload serialized into the row's JSON column.
+    """
     settlement = result.settlement
     insurance = (
         BlackjackHistoryInsurance(
@@ -183,7 +268,25 @@ async def record_blackjack_history(  # noqa: PLR0913 -- round persistence needs 
     dealer_cards: Sequence[Card],
     dealer_total: int,
 ) -> None:
-    """Persists one Blackjack round's per-player results in a single commit."""
+    """Persists one Blackjack round's per-player results in a single commit.
+
+    One timestamp is taken before the loop and stamped on every row, so a round's seats carry
+    the same ordering key and only their insertion `id` separates them. A seat is marked
+    `is_bot` only when `bot_user_id` was given and matches it, so a table the bot never joined
+    marks nothing. An empty `results` returns before the schema bootstrap, leaving a round with
+    no seats touching no file at all.
+
+    Args:
+        round_id (str): Identifier shared by every row this call writes.
+        channel_id (int): Discord channel the round was played in.
+        guild_id (int): Discord guild the round was played in, or 0 for a DM.
+        message_id (int): Discord message id of the settled table.
+        bot_user_id (int | None): The bot's own user id, or None when it did not sit at this
+            table.
+        results (Sequence[BlackjackPlayerResult]): One entry per seated player, in seat order.
+        dealer_cards (Sequence[Card]): The dealer's final hand.
+        dealer_total (int): The dealer's final hand value.
+    """
     if not results:
         return
     await _ensure_schema()
@@ -215,7 +318,19 @@ async def record_blackjack_history(  # noqa: PLR0913 -- round persistence needs 
 
 
 def _history_record(row: BlackjackRoundResult) -> BlackjackHistoryRecord:
-    """Projects a stored row into the typed read model used for display."""
+    """Projects a stored row into the typed read model used for display.
+
+    `outcome` is cast rather than validated: the column is plain text and every value in it was
+    written from a `SettleOutcome`. `created_at` comes back naive from SQLite, so `as_taipei`
+    re-attaches the zone it was stamped in instead of letting the container's local time shift
+    it.
+
+    Args:
+        row (BlackjackRoundResult): One persisted round-result row.
+
+    Returns:
+        The record the history renderer reads.
+    """
     return BlackjackHistoryRecord(
         round_id=row.round_id,
         channel_id=row.channel_id,
@@ -236,7 +351,19 @@ def _history_record(row: BlackjackRoundResult) -> BlackjackHistoryRecord:
 async def fetch_recent_blackjack_rounds(
     *, user_id: int, limit: int
 ) -> tuple[BlackjackHistoryRecord, ...]:
-    """Returns the most recent settled rounds for one player, newest first."""
+    """Returns the most recent settled rounds for one player, newest first.
+
+    `created_at` has a per-round granularity, so two rounds settled in the same instant tie on
+    it; the descending `id` is what keeps the order total instead of leaving it to whatever
+    SQLite returns.
+
+    Args:
+        user_id (int): Discord user id whose rows are read; the bot's own id is a valid target.
+        limit (int): Maximum number of rows to return.
+
+    Returns:
+        The player's rows newest first, empty when they have never sat at a settled table.
+    """
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(

@@ -149,7 +149,7 @@ class StockProfileView(BaseModel):
 class StockProfileUpsert(BaseModel):
     """The write side of a profile, carrying only what an operator may set by hand.
 
-    Companies are seeded and retuned offline, never from runtime code, and there is no schema
+    Companies are seeded and re-tuned offline, never from runtime code, and there is no schema
     migration mechanism, so the bounds live on the fields and reject a bad payload before it
     reaches the row. The daily anchors and timestamps are absent on purpose: they are derived,
     and an upsert seeds them from `price_cents` on create rather than accepting them.

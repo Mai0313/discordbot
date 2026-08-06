@@ -1,4 +1,41 @@
-"""Slash commands that surface point balances, leaderboards, transfers, and loans."""
+"""The economy's Discord surface: balances, boards, transfers, check-in, VIP, loans, admin.
+
+Registers one cog, `EconomyCogs`, and no listeners. The flat commands are `/balance`,
+`/leaderboard`, `/loss_leaderboard`, `/give`, `/casino`, `/pocat`, `/checkin` and `/vip`; the
+groups are `/credit` (borrow, repay, call, status), `/central_bank` (borrow, repay, call, status)
+and `/admin` (refund_tax, collect_tax). Each group's own callback is an empty registration
+anchor, since Discord only ever dispatches a leaf.
+
+Nothing here owns state or does arithmetic on money. Every figure shown or moved comes from
+`services/economy/database.py` (stock holdings from `services/stock/`), the embeds are built in
+`embeds.py`, the two leaderboard PNGs in `boards.py`, and the accept / reject buttons under a
+loan request in `views.py`. What is left is the Discord half: parse the arguments, gate them,
+pick a visibility, render.
+
+Money arguments are `str` options rather than integers, because balances outgrow Discord's
+integer option range. `_parse_positive_amount` and `_parse_collect_amount` turn that text into
+ints and answer malformed input with an ephemeral embed as the interaction's INITIAL response,
+before anything is deferred or mutated, so a typo can never reach a settlement half-parsed.
+
+Visibility follows the economy's ephemeral-vs-public boundary. Personal state (`/balance`,
+`/checkin`, `/vip`, `/credit status`), every permission refusal and every nothing-to-do outcome
+answer the caller alone; a transfer, settlement, board or admin adjustment is a public followup
+that `send_expiring_followup` schedules for deletion. The two borrow commands are the deliberate
+exception: their public request message is handed to its decision view, which owns the cleanup
+so the request outlives the interaction and is tidied on a decision or on the view's timeout.
+
+Which side of that boundary an answer lands on can depend on the result, so `/credit repay`,
+`/credit call`, `/central_bank repay` and `/central_bank call` settle FIRST and defer only
+afterwards — ephemerally when there was nothing to repay or collect, publicly when money moved.
+The interaction's acknowledgement window is what that spends.
+
+Two permission gates, both read off the economy account row rather than a Discord role:
+`get_admin` for `/admin *`, `get_central_banker` for `/central_bank call`. `/credit call` needs
+neither, because `call_personal_loans` is scoped to the caller as lender and so can only reach
+debt already owed to them. This cog has no kill-switch; `EconomyConfig` carries only
+`ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL`, which is read once at load and handed to the
+central-bank decision view rather than gating any command here.
+"""
 
 from io import BytesIO
 from datetime import UTC, datetime
@@ -59,7 +96,15 @@ from discordbot.services.economy.presentation import CURRENCY_NAME, currency_tex
 
 
 def _parse_positive_amount(raw_amount: str | None) -> int | None:
-    """Parses user-entered positive amount text with optional comma separators."""
+    """Parses an amount option that has to be strictly positive.
+
+    Args:
+        raw_amount (str | None): The raw option text, possibly None or empty.
+
+    Returns:
+        The parsed amount, or None when the text is unreadable or not above zero. The two are
+        deliberately not distinguished: every caller answers both with the same embed.
+    """
     amount = parse_decimal_amount(raw=raw_amount)
     if amount is None or amount <= 0:
         return None
@@ -67,10 +112,17 @@ def _parse_positive_amount(raw_amount: str | None) -> int | None:
 
 
 def _parse_collect_amount(raw_amount: str | None) -> tuple[bool, int | None]:
-    """Parses optional collection-amount text; blank or 0 collects all owed.
+    """Parses a collection amount where blank or 0 both mean "collect everything owed".
 
-    Returns ``(is_valid, amount)`` where ``amount`` is ``None`` when collecting
-    everything owed. ``is_valid`` is ``False`` only for malformed text.
+    The settlement helpers read a None amount as all owed, so blank and 0 collapse onto it
+    rather than being rejected as a non-positive amount would be elsewhere in this file.
+
+    Args:
+        raw_amount (str | None): The raw option text, possibly None or empty.
+
+    Returns:
+        `(is_valid, amount)`, where `amount` is None for collect-everything and `is_valid` is
+        False only for text `parse_decimal_amount` could not read at all.
     """
     if not (raw_amount or "").strip():
         return True, None
@@ -81,17 +133,19 @@ def _parse_collect_amount(raw_amount: str | None) -> tuple[bool, int | None]:
 
 
 class EconomyCogs(commands.Cog):
-    """Player-facing point balance, leaderboards, loans, VIP, and check-in commands.
+    """The economy slash surface: balances, boards, transfers, loans, VIP, check-in, admin.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
+        bot: The bot that owns this cog. Needed for its own identity in `/pocat` and
+            `/central_bank status`, and handed to the central-bank decision view.
+        economy_config: Environment settings, read once at cog load rather than per command.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialises the EconomyCogs instance.
+        """Stores the bot handle and reads the economy environment settings.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The bot this cog is being added to.
         """
         self.bot = bot
         self.economy_config = EconomyConfig()
@@ -107,7 +161,12 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def admin(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for economy admin operations."""
+        """Registration anchor for the `/admin` group; Discord only dispatches its subcommands.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Unused; nextcord requires the parameter on a
+                group callback.
+        """
 
     @admin.subcommand(
         name="refund_tax",
@@ -143,7 +202,16 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Credits points to a member through the manual-adjustment audit path."""
+        """Credits a member or bot through the admin adjustment path.
+
+        The amount is validated before the admin check runs, so a typo is answered without a
+        permission lookup; both refusals are ephemeral either way.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            member (Member): Who receives the credit; a bot account is allowed.
+            amount (str): Raw amount text, commas allowed.
+        """
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
@@ -192,7 +260,16 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Debits points from a member through the manual-adjustment audit path."""
+        """Debits a member or bot through the admin adjustment path.
+
+        The positive amount typed here is negated for `_run_admin_adjustment`, which is also
+        where the clamp at balance 0 lives, so a collection never opens a debt.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            member (Member): Who is debited; a bot account is allowed.
+            amount (str): Raw amount text, commas allowed.
+        """
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
@@ -215,7 +292,22 @@ class EconomyCogs(commands.Cog):
         title: str,
         delta: int,
     ) -> None:
-        """Runs a gated admin balance adjustment and publishes successful results."""
+        """Applies one admin adjustment behind the `is_admin` gate and publishes the result.
+
+        A non-admin is refused ephemerally with nothing written. The adjustment itself goes
+        through `adjust_balance` with `allow_negative=False`, deliberately not through the casino
+        or loan settlement helpers, so it moves the wallet without touching contracts or daily
+        casino counters. `action` is only read to decide whether that zero clamp deserves a
+        footer; the embed shows the requested and the applied delta side by side regardless.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            member (Member): The account being adjusted.
+            action (str): Which subcommand called in, `"refund_tax"` or `"collect_tax"`; only a
+                collection can report a clamp.
+            title (str): Title for the success embed.
+            delta (int): Signed amount to apply, already negated by a collection.
+        """
         if interaction.user is None:
             return
         actor = interaction.user
@@ -279,11 +371,16 @@ class EconomyCogs(commands.Cog):
             default=None,
         ),
     ) -> None:
-        """Replies with a member's balance, loans, stocks, and VIP status.
+        """Shows one member's balance, debt, stock holdings and VIP state, privately.
+
+        Ephemeral even when inspecting someone else, so `/balance` is never a way to publish
+        another member's finances. `age_days` is the age of the Discord account, not of the
+        economy account. Reading the portfolio accrues interest on active debt as a side effect,
+        so the debt figures are current rather than as-of the last payment.
 
         Args:
-            interaction: The interaction that triggered the command.
-            member: Optional member to inspect.
+            interaction (Interaction[commands.Bot]): The invoking interaction.
+            member (Member | None): Whose balance to show; None means the caller.
         """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
@@ -314,10 +411,14 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top 10 point holders.
+        """Posts the global top 10 balances as a rendered board image.
+
+        Public, since a ranking is a shared event. The whole table lives in the PNG and the embed
+        names only the champion. An empty ledger answers with a starter hint instead of a board,
+        so a fresh deployment does not post an empty table.
 
         Args:
-            interaction: The interaction that triggered the command.
+            interaction (Interaction[commands.Bot]): The invoking interaction.
         """
         await interaction.response.defer()
         rows = await top_n(limit=10)
@@ -350,10 +451,14 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def loss_leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top 10 gross casino losses for the current day.
+        """Posts today's top 10 gross casino losses as a rendered board image.
+
+        Gross, not net: a later winning session does not offset the day's losses. The counters
+        are scoped to the current Taipei day, so an empty board means nobody has lost yet today
+        rather than that nobody ever has.
 
         Args:
-            interaction: The interaction that triggered the command.
+            interaction (Interaction[commands.Bot]): The invoking interaction.
         """
         await interaction.response.defer()
         rows = await top_losers(limit=10)
@@ -410,12 +515,16 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Transfers points from the caller to `member`.
+        """Transfers 虛擬歡樂豆 from the caller to another member or bot.
+
+        Refuses a self-transfer. `transfer` burns a tax out of the amount, so the recipient is
+        credited less than the sender is debited, and it rejects an insufficient balance without
+        reporting one, which is why the shortfall message costs one extra `get_balance` read.
 
         Args:
-            interaction: The interaction that triggered the command.
-            member: The recipient.
-            amount: Raw transfer amount text parsed by the bot.
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            member (Member): The recipient; a bot account is allowed.
+            amount (str): Raw transfer amount text, commas allowed.
         """
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
@@ -491,7 +600,14 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def casino(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the casino system's accumulated P&L (was `/house`)."""
+        """Posts the casino system's cumulative profit and loss.
+
+        Reads the `casino_ledger` row, which is the house's own book. What the bot player holds
+        in its wallet is the separate question `/pocat` answers.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction.
+        """
         await interaction.response.defer()
         snapshot = await get_casino_ledger()
         embed = embeds.build_casino_embed(snapshot=snapshot)
@@ -508,7 +624,16 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def pocat(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the bot player's `user_wallet` balance and gross flows."""
+        """Posts the bot player's own wallet, the shortcut for `/balance @bot`.
+
+        The bot sits at the tables as an ordinary player, so this is its wallet rather than the
+        house book `/casino` shows. A wallet the bot has never opened reads as all zeros instead
+        of failing, and the stored account name is used only when Discord hands back no display
+        name. Answers with an error embed while the bot's own identity is still unresolved.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction.
+        """
         await interaction.response.defer()
         if self.bot.user is None:
             await send_expiring_followup(
@@ -550,7 +675,12 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def credit(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for personal credit operations."""
+        """Registration anchor for the `/credit` group; Discord only dispatches its subcommands.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Unused; nextcord requires the parameter on a
+                group callback.
+        """
 
     @credit.subcommand(
         name="borrow",
@@ -599,13 +729,19 @@ class EconomyCogs(commands.Cog):
             max_value=100,
         ),
     ) -> None:
-        """Creates a personal loan request for the target lender.
+        """Files a personal loan request for one named lender to accept or reject.
+
+        A bot lender and a self-loan are refused before anything is written. Nothing moves here:
+        the public request message carries `CreditLoanDecisionView`, which debits the lender only
+        once they press accept, rejects on its own timeout, and owns the message's cleanup — so
+        this is the one public answer `send_expiring_followup` must not schedule.
 
         Args:
-            interaction: The interaction that triggered the command.
-            member: The requested lender.
-            amount: Raw borrow amount text parsed by the bot.
-            monthly_rate_percent: Monthly simple-interest rate.
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            member (Member): The lender being asked.
+            amount (str): Raw principal text, commas allowed.
+            monthly_rate_percent (float): Monthly simple-interest percent; the conversion to basis
+                points clamps it into the allowed range rather than rejecting an outlier.
         """
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
@@ -713,12 +849,16 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Pays down active personal loans owed to `member`.
+        """Pays down the caller's active personal loans owed to one lender.
+
+        `amount` is a ceiling rather than an instalment, so a smaller debt takes only what it
+        needs. The repayment runs BEFORE the defer because its result picks the visibility:
+        nothing owed answers the caller alone, a real repayment is public.
 
         Args:
-            interaction: The interaction that triggered the command.
-            member: The personal lender.
-            amount: Raw repayment amount text parsed by the bot.
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            member (Member): The lender being repaid.
+            amount (str): Raw ceiling text, commas allowed.
         """
         if interaction.user is None:
             return
@@ -797,7 +937,18 @@ class EconomyCogs(commands.Cog):
             default="",
         ),
     ) -> None:
-        """Forcibly collects a personal loan from a borrower."""
+        """Forcibly collects what a borrower owes the caller, out of their available balance.
+
+        Needs no permission gate: `call_personal_loans` is scoped to the caller as lender, so it
+        can only reach debt already owed to them. A blank or 0 amount collects everything owed.
+        Like `/credit repay`, the collection runs before the defer so a nothing-to-collect
+        outcome stays private while a real one is public.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            member (Member): The borrower to collect from.
+            amount (str): Raw ceiling text; blank or 0 collects all owed.
+        """
         if interaction.user is None:
             return
         is_valid, collect_amount = _parse_collect_amount(raw_amount=amount)
@@ -848,7 +999,16 @@ class EconomyCogs(commands.Cog):
         },
     )
     async def credit_status(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the caller's active personal credit contracts."""
+        """Shows the caller's active personal contracts, both directions, privately.
+
+        `list_loan_contracts` answers with every contract the caller is borrower or lender on,
+        central-bank ones included, so those are filtered out here and the embed reads
+        `viewer_id` to say which side of each remaining contract the caller is on. The listing
+        accrues interest as a side effect, so the amounts are current.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction.
+        """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
@@ -879,7 +1039,12 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def central_bank(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for central bank operations."""
+        """Registration anchor for `/central_bank`; Discord only dispatches its subcommands.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Unused; nextcord requires the parameter on a
+                group callback.
+        """
 
     @central_bank.subcommand(
         name="borrow",
@@ -918,7 +1083,20 @@ class EconomyCogs(commands.Cog):
             max_value=100,
         ),
     ) -> None:
-        """Creates a central bank loan request."""
+        """Files a central bank loan request for a central banker to approve or reject.
+
+        Anyone may ask; approval is the gated half and lives in `CentralBankLoanDecisionView`,
+        which is handed `allow_central_bank_self_approval` so a local deployment can let a banker
+        approve their own request. There is no lender to name because approval mints the
+        principal rather than debiting anyone. As with `/credit borrow`, the request message's
+        cleanup belongs to its view, not to the followup helper.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            amount (str): Raw principal text, commas allowed.
+            monthly_rate_percent (float): Monthly simple-interest percent; the conversion to basis
+                points clamps it into the allowed range rather than rejecting an outlier.
+        """
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
@@ -991,7 +1169,16 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Repays central-bank debt."""
+        """Repays the caller's own central-bank debt, up to `amount`.
+
+        The repayment burns rather than crediting a lender, since the principal was minted on
+        approval. Settles before the defer, like `/credit repay`, so a caller with no
+        central-bank debt is answered privately and a real repayment is public.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            amount (str): Raw ceiling text, commas allowed.
+        """
         if interaction.user is None:
             return
         parsed_amount = _parse_positive_amount(raw_amount=amount)
@@ -1063,7 +1250,17 @@ class EconomyCogs(commands.Cog):
             default="",
         ),
     ) -> None:
-        """Central-bank forced collection."""
+        """Central-banker forced collection of central-bank debt from a borrower.
+
+        The one command in this group behind `get_central_banker`, which is a flag on the economy
+        account set offline and unrelated to Discord's own admin permission. The check runs after
+        the amount is parsed and before anything is collected. Blank or 0 collects all owed.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet deferred.
+            member (Member): The borrower to collect from.
+            amount (str): Raw ceiling text; blank or 0 collects all owed.
+        """
         if interaction.user is None:
             return
         is_valid, collect_amount = _parse_collect_amount(raw_amount=amount)
@@ -1120,7 +1317,14 @@ class EconomyCogs(commands.Cog):
         },
     )
     async def central_bank_status(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows central bank lending capacity."""
+        """Posts how much the central bank can still lend.
+
+        Capacity is derived from the sum of positive player balances, so the bot's own wallet is
+        excluded: the bot plays with the same money and counting it would inflate the pool.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction.
+        """
         await interaction.response.defer()
         exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
         status = await get_central_bank_status(exclude_user_ids=exclude_user_ids)
@@ -1144,10 +1348,14 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def checkin_command(self, interaction: Interaction[commands.Bot]) -> None:
-        """Claims today's check-in reward; ephemeral so only the caller sees it.
+        """Claims today's check-in reward, privately.
+
+        One of only two faucets in the whole economy that mint an action reward. A second claim
+        on the same Taipei day is the ordinary outcome rather than a failure, so it is reported as
+        an ephemeral notice; `checkin` owns the streak, the VIP multiplier and the day boundary.
 
         Args:
-            interaction: The interaction that triggered the command.
+            interaction (Interaction[commands.Bot]): The invoking interaction.
         """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
@@ -1188,10 +1396,15 @@ class EconomyCogs(commands.Cog):
         nsfw=False,
     )
     async def vip_command(self, interaction: Interaction[commands.Bot]) -> None:
-        """Buys the permanent VIP perk for a one-time fixed cost.
+        """Buys the permanent VIP perk for a fixed one-time cost, privately.
+
+        Three outcomes, all ephemeral: already VIP, not enough balance (`buy_vip` rejects without
+        reporting one, so the shortfall message costs an extra `get_balance` read), and a
+        purchase. VIP lives on the cross-server account row, so there is nothing to renew and no
+        per-guild state to write.
 
         Args:
-            interaction: The interaction that triggered the command.
+            interaction (Interaction[commands.Bot]): The invoking interaction.
         """
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
@@ -1230,9 +1443,12 @@ class EconomyCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the EconomyCogs to the bot.
+    """Registers `EconomyCogs` on the bot.
+
+    Sync on purpose: the loader schedules an `async def setup` without awaiting it, which breaks
+    the first command sync.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The bot to add the cog to.
     """
     bot.add_cog(EconomyCogs(bot), override=True)

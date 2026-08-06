@@ -1,16 +1,31 @@
 """Persistent store and settlement service for the fishing mini-game.
 
-State lives in `data/database/games.db` (shared file, fishing-owned engine and
-tables); wallet cash stays in the economy database. Catalog rows (grades,
-species, gear) are the source of truth and are seeded offline; runtime never
-seeds them.
+State lives in `data/database/games.db` — a file `cogs/games/database.py` and the message-cleanup
+cog also open, each through an engine of its own, which is why the schema here is created lazily
+by `_ensure_schema` rather than by a shared migration step. This module owns six tables in it: the
+three tunable catalog ones (`fish_grade_config`, `fish_species`, `fishing_gear`), the two per-user
+ones (`angler_state`, `bait_inventory`), and the append-only `catch_log` the leaderboard and the
+history read. No ORM row leaves the module: every value handed back is one of the frozen views in
+`typings/fishing.py`.
 
-Two operations cross databases. A purchase debits (burns) the wallet first, then
-grants gear in games.db, refunding on a grant failure. A cast consumes bait and
-durability and logs the catch in games.db first, then credits the payout in the
-economy database; a payout that fails after the catch is logged is reported as
-deferred rather than rolled back, which only ever deflates further. Hard crashes
-between the two file commits are an accepted non-atomicity.
+This is the cog's whole storage and settlement half. `views.py` renders and never splits a read
+and a write of its own, `catch.py` holds the pure roll rules this module feeds catalog rows to and
+calls, and wallet cash stays in `services/economy/database.py`, which this module spends and
+collects through rather than keeping money of its own. Catalog rows are the tuning source of truth
+and are written offline (`defaults.py` -> `scripts/seed_fishing.py` -> the `upsert_*` calls);
+runtime never seeds them, so an unseeded database has no gear to sell and nobody who can cast.
+
+Two operations cross databases and neither is atomic across the pair. A purchase debits (burns)
+the wallet first, then grants gear in games.db, refunding on a grant failure. A cast consumes bait
+and durability and logs the catch in games.db first, then credits the payout in the economy
+database; a payout that fails after the catch is logged is reported as deferred rather than rolled
+back, which only ever deflates further. Hard crashes between the two file commits are an accepted
+non-atomicity.
+
+Inside games.db a mutation is serialized twice over. `_angler_lock` keeps one angler's purchases
+and casts from interleaving within this process, and `_begin_immediate` takes SQLite's write lock
+before the reads a mutation plan is built from, so another writer on the same file cannot change
+the row between that read and the write.
 """
 
 from random import Random, SystemRandom
@@ -76,35 +91,83 @@ _PRODUCTION_RNG: Final[SystemRandom] = SystemRandom()
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Configures SQLite for fishing storage."""
+    """Applies the shared PRAGMA setup to one fishing SQLite connection.
+
+    Takes the shared defaults whole: no foreign keys, since no table here declares one, and the
+    `StoredInteger` UDFs registered, since `fetch_top_catches` orders by one of them by name.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+    """
     configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 @event.listens_for(_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures SQLite for fishing storage."""
+    """SQLAlchemy `connect` listener: configures each connection the pool opens.
+
+    Registered at import time against the engine that existed then, which is why
+    `ensure_sqlite_hooks` re-installs it on whatever `_engine` currently is.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+        _connection_record (Any): SQLAlchemy's pool record, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _configure_sqlite_on_checkout(
     dbapi_connection: object, _connection_record: object, _connection_proxy: object
 ) -> None:
-    """Configures pooled connections from test-swapped engines."""
+    """SQLAlchemy `checkout` listener: configures a pooled connection on its way out.
+
+    The `connect` hook alone misses connections a test-swapped engine had already pooled before
+    the listener was installed; `ensure_sqlite_hooks`'s docstring has the full reasoning.
+
+    Args:
+        dbapi_connection (object): The pooled DBAPI connection being handed out.
+        _connection_record (object): SQLAlchemy's pool record, unused.
+        _connection_proxy (object): SQLAlchemy's connection proxy, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _current_schema_lock() -> asyncio.Lock:
-    """Returns the schema bootstrap lock bound to the current event loop."""
+    """Returns the schema bootstrap lock bound to the current event loop.
+
+    Returns:
+        The `asyncio.Lock` guarding `create_all` for the loop now running.
+    """
     return _schema_lock.get()
 
 
 def _angler_lock(user_id: int) -> AbstractAsyncContextManager[None]:
-    """Returns a per-user fishing mutation lock bound to the current event loop."""
+    """Serializes one angler's mutations, on the loop now running.
+
+    A purchase and a cast each read the angler row and then write it, so two of them interleaving
+    would lose a bait or a durability point. Keyed per user, so two anglers never wait on each
+    other, and not reentrant — no path here takes it twice.
+
+    Args:
+        user_id (int): The angler whose mutations serialize.
+
+    Returns:
+        An async context manager holding that angler's lock for the duration of its body.
+    """
     return _angler_locks.hold(key=user_id)
 
 
 def open_fishing_session() -> AsyncSession:
-    """Creates an async session bound to the current fishing database engine."""
+    """Opens an async session on the current fishing engine, re-installing its PRAGMA listeners.
+
+    The listeners are re-installed on every open (idempotently) because a test-swapped engine
+    carries none of its own, and an unconfigured connection would run without WAL and without the
+    `StoredInteger` UDFs the leaderboard's ORDER BY calls.
+
+    Returns:
+        A session bound to `_engine` with `expire_on_commit=False`, so a view built out of a
+        just-committed row is still readable.
+    """
     ensure_sqlite_hooks(
         engine=_engine,
         on_connect_fn=_configure_sqlite,
@@ -114,12 +177,26 @@ def open_fishing_session() -> AsyncSession:
 
 
 async def _begin_immediate(session: AsyncSession) -> None:
-    """Acquires SQLite's write lock before reading state for a mutation plan."""
+    """Takes SQLite's write lock before the reads a mutation plan is built from.
+
+    SQLite's default deferred transaction upgrades to a write lock only at the first write, by
+    which point the plan has already read state another writer may have changed underneath it.
+
+    Args:
+        session (AsyncSession): The session whose transaction to start immediately.
+    """
     await session.execute(statement=text("BEGIN IMMEDIATE"))
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps the fishing schema once per engine."""
+    """Creates the fishing tables once per engine.
+
+    Every public entry point awaits this first, so there is no migration step and a fresh
+    `games.db` grows the tables on first use. The flag holds the engine rather than a bool, so a
+    test that swaps `_engine` bootstraps again against the new file, and the double check around
+    the lock keeps the settled case lock-free. The connection listeners are re-installed on every
+    call for the same swapped-engine reason.
+    """
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     ensure_sqlite_hooks(
         engine=_engine,
@@ -137,7 +214,22 @@ async def _ensure_schema() -> None:
 
 
 def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 -- SQLAlchemy columns are generic expressions
-    """Returns ORDER BY terms for descending numeric order over decimal text."""
+    """Returns ORDER BY terms for descending numeric order over decimal text.
+
+    A `StoredInteger` column sorts lexicographically in SQL, where "9" beats "10", and the
+    registered UDF only yields a sign for one pair of values. So the numeric order is rebuilt out
+    of five terms: sign first, then for positives longer text (more digits) before shorter and
+    lexicographic within a length, and for negatives the mirror image. Doing it in SQL rather than
+    in Python is what lets `fetch_top_catches` apply its `LIMIT` before any row is materialized.
+    The economy ledger builds the same five terms; `utils/stored_integer.py` deliberately carries
+    no numeric ORDER BY of its own.
+
+    Args:
+        column (Any): The `StoredInteger` column to order by.
+
+    Returns:
+        ORDER BY terms to splat into `order_by`, highest value first.
+    """
     sign = func.discordbot_int_compare_text(column, stored_int_to_text(value=0))
     positive_length = case((sign > 0, func.length(column)), else_=0)
     negative_length = case((sign < 0, func.length(column)), else_=0)
@@ -211,7 +303,12 @@ class FishingGear(Base):
 
 
 class AnglerState(Base):
-    """Per-user rod, durability, and lifetime fishing stats. One row per user."""
+    """Per-user rod, durability, and lifetime fishing stats. One row per user.
+
+    No `guild_id`: an angler is one person across every server, like the wallet the payouts land
+    in. A broken rod keeps its `rod_id` with `durability_remaining` at zero, so the panel can
+    still name what broke.
+    """
 
     __tablename__ = "angler_state"
 
@@ -239,7 +336,11 @@ class BaitInventory(Base):
 
 
 class CatchLog(Base):
-    """Append-only catch record powering the leaderboard and history."""
+    """Append-only catch record powering the leaderboard and history.
+
+    The species name, grade and emoji are denormalized onto the row rather than referenced, so
+    retuning or retiring a catalog entry never rewrites what someone already caught.
+    """
 
     __tablename__ = "catch_log"
     __table_args__ = (
@@ -263,7 +364,17 @@ class CatchLog(Base):
 
 
 def _grade_view(row: FishGradeConfig) -> FishGradeConfigView:
-    """Projects an ORM grade config into a typed view."""
+    """Projects an ORM grade config into a typed view.
+
+    The stored grade text is parsed back into `FishGrade` here, so a hand-seeded row naming a
+    grade the enum does not carry fails at the store's edge instead of reaching a caller.
+
+    Args:
+        row (FishGradeConfig): The mapped catalog row.
+
+    Returns:
+        The frozen view everything outside this module sees.
+    """
     return FishGradeConfigView(
         grade=FishGrade(row.grade),
         weight=row.weight,
@@ -275,7 +386,14 @@ def _grade_view(row: FishGradeConfig) -> FishGradeConfigView:
 
 
 def _species_view(row: FishSpecies) -> FishSpeciesView:
-    """Projects an ORM species row into a typed view."""
+    """Projects an ORM species row into a typed view.
+
+    Args:
+        row (FishSpecies): The mapped catalog row.
+
+    Returns:
+        The frozen view everything outside this module sees.
+    """
     return FishSpeciesView(
         species_id=row.species_id,
         name=row.name,
@@ -290,7 +408,14 @@ def _species_view(row: FishSpecies) -> FishSpeciesView:
 
 
 def _gear_view(row: FishingGear) -> GearView:
-    """Projects an ORM gear row into a typed view."""
+    """Projects an ORM gear row into a typed view.
+
+    Args:
+        row (FishingGear): The mapped catalog row, rod or bait.
+
+    Returns:
+        The frozen view everything outside this module sees.
+    """
     return GearView(
         gear_id=row.gear_id,
         gear_type=GearType(row.gear_type),
@@ -307,7 +432,19 @@ def _gear_view(row: FishingGear) -> GearView:
 def _angler_view(
     angler: AnglerState | None, user_id: int, rod: GearView | None
 ) -> AnglerStateView:
-    """Projects an ORM angler row into a typed view, defaulting to an empty angler."""
+    """Projects an ORM angler row into a typed view, defaulting to an empty angler.
+
+    Somebody who has never fished has no row at all, and the view's own defaults describe that
+    state exactly, so no caller has to branch on None; `rod` is ignored on that path.
+
+    Args:
+        angler (AnglerState | None): The mapped row, or None when the user has never fished.
+        user_id (int): The angler the view is for, used when there is no row.
+        rod (GearView | None): The equipped rod the caller already resolved, or None.
+
+    Returns:
+        The frozen angler view.
+    """
     if angler is None:
         return AnglerStateView(user_id=user_id)
     return AnglerStateView(
@@ -323,7 +460,17 @@ def _angler_view(
 
 
 def _catch_log_view(row: CatchLog) -> CatchLogView:
-    """Projects an ORM catch row into a typed view."""
+    """Projects an ORM catch row into a typed view.
+
+    A blank stored name falls back to the user id rather than rendering as an empty leaderboard
+    cell.
+
+    Args:
+        row (CatchLog): The mapped catch row.
+
+    Returns:
+        The frozen catch view.
+    """
     return CatchLogView(
         user_id=row.user_id,
         user_name=row.user_name or str(row.user_id),
@@ -338,13 +485,30 @@ def _catch_log_view(row: CatchLog) -> CatchLogView:
 
 
 async def _load_gear_map(session: AsyncSession) -> dict[str, FishingGear]:
-    """Loads every gear row keyed by id for one session."""
+    """Loads every gear row keyed by id for one session.
+
+    The catalog is small and a panel needs the rod plus every owned bait's row, so one read beats
+    a `session.get` per stack.
+
+    Args:
+        session (AsyncSession): The open session to read through.
+
+    Returns:
+        Every gear row keyed by `gear_id`.
+    """
     result = await session.execute(statement=select(FishingGear))
     return {row.gear_id: row for row in result.scalars()}
 
 
 async def list_grade_configs() -> tuple[FishGradeConfigView, ...]:
-    """Lists grade configs ordered by rarity rank."""
+    """Lists grade configs ordered by rarity rank.
+
+    Nothing depends on that order: `get_grade_config_map` collapses the tuple into a dict, and
+    the roll engine sorts by `order_index` itself before it reads a position off it.
+
+    Returns:
+        Every grade config, ascending by `order_index`.
+    """
     await _ensure_schema()
     async with open_fishing_session() as session:
         result = await session.execute(
@@ -354,12 +518,23 @@ async def list_grade_configs() -> tuple[FishGradeConfigView, ...]:
 
 
 async def get_grade_config_map() -> dict[FishGrade, FishGradeConfigView]:
-    """Returns grade configs keyed by grade for display lookups."""
+    """Returns grade configs keyed by grade for display lookups.
+
+    Returns:
+        Every grade config keyed by its `FishGrade`.
+    """
     return {config.grade: config for config in await list_grade_configs()}
 
 
 async def list_fish_species() -> tuple[FishSpeciesView, ...]:
-    """Lists fish species ordered by grade then identifier."""
+    """Lists fish species ordered by grade then identifier.
+
+    The grade half of that order is the stored text's, not the rarity rank's, and no display reads
+    it: the seed script keys the rows by id.
+
+    Returns:
+        Every species row, ascending by stored grade text then `species_id`.
+    """
     await _ensure_schema()
     async with open_fishing_session() as session:
         result = await session.execute(
@@ -371,7 +546,14 @@ async def list_fish_species() -> tuple[FishSpeciesView, ...]:
 
 
 async def list_gear() -> tuple[GearView, ...]:
-    """Lists all gear ordered by type then tier."""
+    """Lists all gear ordered by type then tier.
+
+    The shop re-partitions and re-sorts what it gets (`shop.py::partition_gear`), so this order
+    is a stable read rather than the one a user sees.
+
+    Returns:
+        Every rod and bait row, ascending by gear type, then tier, then `gear_id`.
+    """
     await _ensure_schema()
     async with open_fishing_session() as session:
         result = await session.execute(
@@ -385,7 +567,18 @@ async def list_gear() -> tuple[GearView, ...]:
 async def upsert_grade_config(
     config: FishGradeConfigUpsert, now: datetime | None = None
 ) -> FishGradeConfigView:
-    """Creates or updates one grade config from a maintenance payload."""
+    """Creates or updates one grade config from a maintenance payload.
+
+    Offline path only, reached through `scripts/seed_fishing.py`; runtime never writes a catalog
+    row. The payload's own field bounds are the whole validation, so nothing is re-checked here.
+
+    Args:
+        config (FishGradeConfigUpsert): The validated catalog payload to write.
+        now (datetime | None): Timestamp to stamp the row with; defaults to the database clock.
+
+    Returns:
+        The stored row as a view.
+    """
     await _ensure_schema()
     effective_now = now or _database_now()
     async with open_fishing_session() as session:
@@ -415,7 +608,18 @@ async def upsert_grade_config(
 async def upsert_fish_species(
     species: FishSpeciesUpsert, now: datetime | None = None
 ) -> FishSpeciesView:
-    """Creates or updates one fish species from a maintenance payload."""
+    """Creates or updates one fish species from a maintenance payload.
+
+    Offline path only, like the other two upserts. An update keeps the row's original
+    `created_at`, so re-seeding an existing catalog does not restate when it was written.
+
+    Args:
+        species (FishSpeciesUpsert): The validated catalog payload to write.
+        now (datetime | None): Timestamp to stamp the row with; defaults to the database clock.
+
+    Returns:
+        The stored row as a view.
+    """
     await _ensure_schema()
     effective_now = now or _database_now()
     async with open_fishing_session() as session:
@@ -450,7 +654,19 @@ async def upsert_fish_species(
 
 
 async def upsert_gear(gear: GearUpsert, now: datetime | None = None) -> GearView:
-    """Creates or updates one gear item from a maintenance payload."""
+    """Creates or updates one gear item from a maintenance payload.
+
+    Offline path only, like the other two upserts. Retuning a rod's durability does not reach the
+    anglers already holding it: durability is copied onto `angler_state` at purchase time, so the
+    new figure only applies to the next one sold.
+
+    Args:
+        gear (GearUpsert): The validated catalog payload to write.
+        now (datetime | None): Timestamp to stamp the row with; defaults to the database clock.
+
+    Returns:
+        The stored row as a view.
+    """
     await _ensure_schema()
     effective_now = now or _database_now()
     async with open_fishing_session() as session:
@@ -485,7 +701,17 @@ async def upsert_gear(gear: GearUpsert, now: datetime | None = None) -> GearView
 
 
 async def get_angler_state(user_id: int) -> AnglerStateView:
-    """Returns the angler's rod and lifetime fishing state."""
+    """Returns the angler's rod and lifetime fishing state.
+
+    A `rod_id` pointing at gear that is no longer in the catalog reads back as no rod, matching the
+    `NO_ROD` a cast with the same row would get, so a retired rod degrades instead of raising.
+
+    Args:
+        user_id (int): The angler to read.
+
+    Returns:
+        That angler's view, all-zero when the user has never fished.
+    """
     await _ensure_schema()
     async with open_fishing_session() as session:
         angler = await session.get(entity=AnglerState, ident=user_id)
@@ -497,7 +723,18 @@ async def get_angler_state(user_id: int) -> AnglerStateView:
 
 
 async def _latest_catch_view(session: AsyncSession, user_id: int) -> CatchLogView | None:
-    """Returns the angler's most recent catch, if any."""
+    """Returns the angler's most recent catch, if any.
+
+    Ties on `created_at` break by descending id, so the order is total even for two casts stamped
+    at the same instant.
+
+    Args:
+        session (AsyncSession): The open session to read through.
+        user_id (int): The angler whose latest catch to read.
+
+    Returns:
+        The newest catch, or None when the angler has never caught anything.
+    """
     result = await session.execute(
         statement=select(CatchLog)
         .where(CatchLog.user_id == user_id)
@@ -509,7 +746,20 @@ async def _latest_catch_view(session: AsyncSession, user_id: int) -> CatchLogVie
 
 
 async def get_fishing_panel(user_id: int) -> FishingPanelData:
-    """Aggregates balance, angler state, owned bait, and last catch for the panel."""
+    """Aggregates balance, angler state, owned bait, and last catch for the panel.
+
+    The balance comes from the economy database and everything else from games.db, so the two
+    halves are not one snapshot; this is a read-only render, and a cast landing between them shows
+    up one refresh later. Emptied bait stacks are dropped rather than listed at zero, and a stack
+    whose catalog row is gone keeps its id as its name and sorts last, so a retired bait is still
+    visible to whoever holds it.
+
+    Args:
+        user_id (int): The angler the panel is for.
+
+    Returns:
+        Everything one panel render needs, with the bait stacks ordered by gear tier then id.
+    """
     await _ensure_schema()
     balance = await get_balance(user_id=user_id)
     async with open_fishing_session() as session:
@@ -550,12 +800,25 @@ async def get_fishing_panel(user_id: int) -> FishingPanelData:
 async def _get_or_create_angler_in_session(
     session: AsyncSession, user_id: int, name: str, now: datetime
 ) -> AnglerState:
-    """Loads the angler row, creating an empty one when absent."""
+    """Loads the angler row, creating an empty one when absent.
+
+    A created row is added to the session and left uncommitted, so it lands or rolls back with
+    whatever the caller's transaction does next.
+
+    Args:
+        session (AsyncSession): The open session, already inside the caller's transaction.
+        user_id (int): The angler to load or create.
+        name (str): Last-seen display name to store on a newly created row.
+        now (datetime): Timestamp to stamp a newly created row with.
+
+    Returns:
+        The mapped angler row, pending insert when this call created it.
+    """
     angler = await session.get(entity=AnglerState, ident=user_id)
     if angler is None:
         # Set every column explicitly: SQLAlchemy `default=` only applies at INSERT
         # flush time, so the StoredInteger/Integer fields would read as None until
-        # then and break the in-place arithmetic below.
+        # then and break the callers' in-place arithmetic on them.
         angler = AnglerState(
             user_id=user_id,
             user_name=name,
@@ -580,7 +843,21 @@ async def _grant_gear_in_session(  # noqa: PLR0913 -- gear grant needs identity,
     total_cost: int,
     now: datetime,
 ) -> None:
-    """Grants a purchased rod or bait and bumps the angler's lifetime gear spend."""
+    """Grants a purchased rod or bait and bumps the angler's lifetime gear spend.
+
+    A rod replaces whatever is equipped and resets durability to the new rod's, so the casts left
+    on the old one are deliberately forfeited; bait adds to the stack it already has. Writes into
+    the caller's transaction and commits nothing.
+
+    Args:
+        session (AsyncSession): The open session, already inside the caller's transaction.
+        user_id (int): The buyer.
+        name (str): Last-seen display name, refreshed on every row this touches.
+        gear (GearView): The catalog row that was bought.
+        quantity (int): Units of bait to add; a rod ignores it.
+        total_cost (int): Amount already burned, added to `total_spent_on_gear`.
+        now (datetime): Timestamp to stamp every row this touches with.
+    """
     angler = await _get_or_create_angler_in_session(
         session=session, user_id=user_id, name=name, now=now
     )
@@ -612,11 +889,26 @@ async def purchase_gear(
 ) -> PurchaseResult:
     """Buys a rod or bait, burning the wallet first then granting in games.db.
 
-    Rods are bought exactly one at a time and replace any current rod. Bait stacks
-    by the requested quantity, which must be positive and within
-    `MAX_BAIT_PER_PURCHASE`. Quantity semantics are enforced here so the economy
-    invariant never depends on the view layer. A grant failure after the wallet
-    debit triggers a best-effort refund so the player is not charged for nothing.
+    Rods are bought exactly one at a time and replace any current rod. Bait stacks by the
+    requested quantity, which must be positive and within `MAX_BAIT_PER_PURCHASE`. Quantity
+    semantics are enforced here so the economy invariant never depends on the view layer.
+
+    The debit is what the whole ordering turns on: it happens before the grant, so a failure can
+    only ever charge for nothing, never grant for nothing. That failure triggers a best-effort
+    refund; a refund that also fails is logged at error level and left for manual repair, because
+    nothing retries it.
+
+    Args:
+        user_id (int): The buyer.
+        name (str): Last-seen display name, stored on both the wallet and the angler row.
+        gear_id (str): Catalog id of the rod or bait to buy.
+        quantity (int): Units of bait to buy; must be at least 1, and a rod costs and grants
+            exactly one however many are asked for.
+        avatar_url (str): Last-seen avatar URL, passed through to the wallet write.
+
+    Returns:
+        The settled outcome, carrying a `reason` of `unknown_gear`, `invalid_quantity`,
+        `insufficient` or `grant_failed` when it did not succeed.
     """
     await _ensure_schema()
     async with open_fishing_session() as session:
@@ -710,7 +1002,19 @@ async def purchase_gear(
 def _build_cast_log(  # noqa: PLR0913 -- one catch row needs identity, roll, gear ids, and time
     user_id: int, name: str, roll: CatchRoll, rod_id: str, bait_id: str, now: datetime
 ) -> CatchLog:
-    """Builds the persisted catch row for one successful cast."""
+    """Builds the persisted catch row for one successful cast.
+
+    Args:
+        user_id (int): The angler who made the catch.
+        name (str): Last-seen display name, stored so history renders without a Discord lookup.
+        roll (CatchRoll): The pure roll this row records.
+        rod_id (str): Catalog id of the rod used.
+        bait_id (str): Catalog id of the bait consumed.
+        now (datetime): Timestamp the catch is recorded at.
+
+    Returns:
+        The unsaved row, for the caller to add inside its own transaction.
+    """
     return CatchLog(
         user_id=user_id,
         user_name=name,
@@ -737,9 +1041,28 @@ async def settle_cast(  # noqa: PLR0913 -- a cast needs identity, bait, avatar, 
 ) -> CastResult:
     """Consumes bait and durability, rolls a catch, then credits the payout.
 
-    The bait, durability, and catch log commit to games.db first; the payout is
-    then credited to the economy wallet. A payout credit that fails after the
-    catch is logged returns `PAYOUT_DEFERRED` rather than rolling back.
+    Everything in games.db — the bait decrement, the durability decrement, the lifetime totals and
+    the catch row — commits as one transaction, held under the angler's lock and SQLite's write
+    lock, so two casts cannot spend the same bait. The payout is credited to the economy wallet
+    only after that commit, and a credit that fails returns `PAYOUT_DEFERRED` with the balance as
+    it stands and the payout still owed, rather than rolling the catch back; nothing retries it, so
+    the error log is the only repair record.
+
+    Every guard returns before the first write, so a cast that cannot run costs neither bait nor
+    durability.
+
+    Args:
+        user_id (int): The angler casting.
+        name (str): Last-seen display name, refreshed on the angler row and stored on the catch.
+        bait_id (str): Catalog id of the bait to consume.
+        avatar_url (str): Last-seen avatar URL, passed through to the wallet credit.
+        rng (Random | None): Roll source; defaults to the module's `SystemRandom`, and tests inject
+            a seeded `Random` for a reproducible catch.
+        now (datetime | None): Timestamp for every row written; defaults to the database clock.
+
+    Returns:
+        The settled outcome: `SUCCESS` or `PAYOUT_DEFERRED` carrying the roll, or `NO_ROD` /
+        `BROKEN_ROD` / `NO_BAIT` with no roll and nothing written.
     """
     await _ensure_schema()
     effective_rng = rng or _PRODUCTION_RNG
@@ -832,7 +1155,18 @@ async def settle_cast(  # noqa: PLR0913 -- a cast needs identity, bait, avatar, 
 
 
 async def fetch_top_catches(limit: int = 10) -> tuple[CatchLogView, ...]:
-    """Returns the highest-value single catches across all anglers."""
+    """Returns the highest-value single catches across all anglers.
+
+    It ranks catches, not anglers, so one lucky angler can hold several places. The ordering is
+    numeric over the decimal-text `value` column and runs in SQL, which is what lets `LIMIT` land
+    before any row is materialized; equal values put the newer catch first.
+
+    Args:
+        limit (int): Most rows to return.
+
+    Returns:
+        Catches from the highest value down, at most `limit` of them.
+    """
     await _ensure_schema()
     async with open_fishing_session() as session:
         result = await session.execute(
@@ -846,7 +1180,18 @@ async def fetch_top_catches(limit: int = 10) -> tuple[CatchLogView, ...]:
 
 
 async def fetch_recent_catches(user_id: int, limit: int = 10) -> tuple[CatchLogView, ...]:
-    """Returns one angler's most recent catches, newest first."""
+    """Returns one angler's most recent catches, newest first.
+
+    Ties on `created_at` break by descending id, so a burst of casts still reads back in the order
+    it happened.
+
+    Args:
+        user_id (int): The angler whose history to read.
+        limit (int): Most rows to return.
+
+    Returns:
+        That angler's catches, newest first, at most `limit` of them.
+    """
     await _ensure_schema()
     async with open_fishing_session() as session:
         result = await session.execute(
@@ -861,9 +1206,12 @@ async def fetch_recent_catches(user_id: int, limit: int = 10) -> tuple[CatchLogV
 async def reset_all_fishing() -> int:
     """Clears all per-user fishing state, leaving the tunable catalog intact.
 
-    Used by the offline economy reset so stale rods, bait, and catch history do
-    not survive a wallet deflation. Grade, species, and gear catalog rows are
-    intentionally left untouched.
+    The offline wipe half of the store, so that stale rods, bait, and catch history do not survive
+    a wallet deflation: anglers, bait and catches go, while the grade, species and gear rows stay,
+    and a reset therefore needs no re-seed. It touches games.db alone, so wallets remain the
+    economy reset's own business. Nothing under `src/` calls it today — the offline economy-reset
+    script that did has since been removed — and `tests/test_fishing_db.py` is what still exercises
+    it.
 
     Returns:
         The number of angler rows cleared.

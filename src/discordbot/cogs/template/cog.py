@@ -1,4 +1,15 @@
-"""Small utility cog for ping and simple message-trigger reactions."""
+"""Discord surface for `/ping` and the fixed message-trigger reactions.
+
+Despite the directory name this is a real, always-loaded cog rather than a scaffold to copy or
+delete: `cogs/template/` holds a `cog.py`, so `DiscordBot._load_cogs_sync` takes it like any
+other cog, and `/ping` is listed in `gen_reply/capabilities.md` as a user-facing command.
+
+It registers one slash command and one listener, and nothing else. `/ping` reports the gateway
+heartbeat latency in an embed, with name and description localized for `zh_TW` and `ja` like
+every user-facing command here. `on_message` adds one fixed reaction to each of a handful of
+exact phrases sent by a human. Neither half reads configuration, writes storage, or sits behind
+a kill-switch, which is why the two share one file instead of each getting a cog of its own.
+"""
 
 import nextcord
 from nextcord import Embed, Locale, Message, Interaction
@@ -15,25 +26,28 @@ class TemplateCogs(commands.Cog):
     """
 
     def __init__(self, bot: commands.Bot):
-        """Initializes the TemplateCogs instance.
+        """Builds the cog with the bot handle `/ping` reads its latency from.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Listens for messages and handles specific triggers.
+        """Adds a fixed reaction to the few exact phrases this cog watches for.
+
+        The comparison is against the whole lowercased content, so a phrase buried in a longer
+        sentence is not a trigger. Any bot's message is skipped, this bot's own replies included.
+        As a cog listener it is dispatched alongside `DiscordBot.on_message` and every other
+        cog's listener rather than replacing one, so nothing here can swallow a message.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that was just sent in a visible channel.
         """
-        # 忽略來自機器人的訊息
         if message.author.bot:
             return
 
-        # 如果訊息內容是 "debug"，對該訊息按讚
         if message.content.lower() == "debug":
             await message.add_reaction("🤬")
         if message.content.lower() == "可愛捏":
@@ -52,19 +66,20 @@ class TemplateCogs(commands.Cog):
         nsfw=False,
     )
     async def ping(self, interaction: Interaction[commands.Bot]) -> None:
-        """Checks the bot's response time.
+        """Answers with the bot's current gateway latency in an embed.
+
+        The figure is nextcord's websocket heartbeat latency, not the round trip of this
+        interaction, so it describes the connection rather than how long this command took. The
+        embed goes out through `embed_spacer_payload`, which pins it to one rendered width so
+        the card does not resize from one invocation to the next as the number changes.
 
         Args:
-            interaction: The interaction that triggered the command.
+            interaction (Interaction[commands.Bot]): The `/ping` invocation to answer.
         """
         await interaction.response.defer()
-        bot_latency = round(self.bot.latency * 1000, 2)  # 取得 API 延遲
+        bot_latency = round(self.bot.latency * 1000, 2)
 
-        embed = Embed(
-            title=":ping_pong: Pong!",
-            color=0x00FF00,  # 綠色
-            timestamp=nextcord.utils.utcnow(),
-        )
+        embed = Embed(title=":ping_pong: Pong!", color=0x00FF00, timestamp=nextcord.utils.utcnow())
         embed.add_field(name="Bot Latency", value=f"`{bot_latency}ms`")
         user = interaction.user
         if user is not None:
@@ -77,11 +92,10 @@ class TemplateCogs(commands.Cog):
         )
 
 
-# 註冊 Cog
 def setup(bot: commands.Bot) -> None:
     """Adds the TemplateCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(TemplateCogs(bot), override=True)

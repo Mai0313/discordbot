@@ -1,4 +1,31 @@
-"""Views and embed builders for the /memory show and /memory clear commands."""
+"""Everything the memory commands put on screen: the page splitter, the embeds, and the two views.
+
+`cog.py` owns the `/memory` surface and the store reads behind it, so each command body stays a
+scope lookup plus a send; what the user actually sees is built here. Three groups live in this
+file.
+
+The two display decisions `/memory show` makes. `compartment_label` names who can see a
+compartment, because the privacy boundary is which directory a fact sits in (#408) and the owner
+is entitled to know where each thing they told the bot can resurface. `paginate_on_lines` splits
+the assembled document into embed-sized pages, needed here and nowhere else because this view is
+deliberately uncapped: it shows the owner their whole store rather than the slice a reply prompt
+would carry.
+
+The `build_*_embed` helpers, which hold every user-facing string both commands produce. The copy
+is Traditional Chinese while the command names and descriptions in `cog.py` carry per-locale
+localizations, since these are sentences about the user's own memory rather than command metadata
+Discord translates for us.
+
+`MemoryPagesView` and `MemoryClearConfirmView`. Both ride ephemeral responses, so only the invoker
+can see or press them and neither needs an author check; both go inert after
+`MEMORY_VIEW_TIMEOUT_SECONDS` by disabling their buttons and leaving the text in place, rather
+than deleting the message the way the public panels in `utils/owned_message_views.py` do.
+
+The confirm button, never the command, is this cog's single call into
+`services.memory.pipeline.clear_scope_memory`. The erase is irreversible and reaches tiers
+`/memory show` never puts on screen (the staged observation log and the detail evidence behind
+it), which is the whole reason it runs behind a confirmation rather than in the command body.
+"""
 
 from typing import cast
 import contextlib
@@ -26,6 +53,14 @@ def compartment_label(compartment: str, bot: commands.Bot) -> str:
     The guild name is resolved when the bot still shares that server, and falls back to
     the id when it does not — a user can have memory from a server the bot has since
     left, and hiding that would misrepresent what is stored.
+
+    Args:
+        compartment (str): One of `global`, `dm` or `g/<guild_id>`.
+        bot (commands.Bot): Used to resolve a guild id to the name the user knows it by.
+
+    Returns:
+        The phrase naming who can see that compartment's facts, which the caller turns into
+        the section heading above them.
     """
     if compartment == GLOBAL_COMPARTMENT:
         return "全部聊天都看得到"
@@ -47,6 +82,14 @@ def paginate_on_lines(text: str, limit: int) -> list[str]:
 
     A single line longer than the limit is hard-split as a fallback so every
     page honors the limit.
+
+    Args:
+        text (str): The assembled document to split.
+        limit (int): Maximum characters a single page may carry.
+
+    Returns:
+        The pages in reading order, always at least one (empty text yields one empty page,
+        so the caller can build an embed without a special case).
 
     Raises:
         ValueError: The limit is not positive (the hard-split fallback would
@@ -76,7 +119,15 @@ def paginate_on_lines(text: str, limit: int) -> list[str]:
 
 
 def memory_footer_text(pending_count: int) -> str:
-    """Returns the footer line describing pending background observations."""
+    """Returns the footer line describing pending background observations.
+
+    Args:
+        pending_count (int): Raw observations staged for this scope but not yet consolidated.
+
+    Returns:
+        A line naming the pending count, or the generic background-update line at zero, so a
+        user who sees less than they expected learns the rest is still being written.
+    """
     if pending_count:
         return f"另有 {pending_count} 筆新觀察待整理，會在背景慢慢併入"
     return "記憶會在你與我對話後於背景慢慢更新"
@@ -85,7 +136,19 @@ def memory_footer_text(pending_count: int) -> str:
 def build_memory_embed(
     page_text: str, page_index: int, page_count: int, footer_text: str, title: str
 ) -> Embed:
-    """Builds one /memory show embed page with the shared footer."""
+    """Builds one `/memory show` embed page with the shared footer.
+
+    Args:
+        page_text (str): This page's slice of the memory document.
+        page_index (int): Zero-based index of this page.
+        page_count (int): Total pages; the page indicator is prefixed only past one, so a
+            single-page reply carries no pagination noise.
+        footer_text (str): The shared line from `memory_footer_text`.
+        title (str): Embed title, shared by every page.
+
+    Returns:
+        The embed for this page.
+    """
     embed = Embed(title=title, description=page_text, color=MEMORY_EMBED_COLOR)
     footer = footer_text
     if page_count > 1:
@@ -97,9 +160,13 @@ def build_memory_embed(
 def build_clear_confirm_embed() -> Embed:
     """Builds the warning shown above the clear confirmation buttons.
 
-    Names every tier that goes, since the user only ever saw the consolidated
-    half through `/memory show` and would not otherwise know the observation
-    log and the tone note are part of the wipe.
+    Names every tier that goes. `/memory show` displays the consolidated facts and
+    the tone note; the staged observations reach the user only as a footer count and
+    the detail log not at all, so a warning naming just what was on screen would
+    understate the wipe.
+
+    Returns:
+        The warning embed that carries the confirm and cancel buttons.
     """
     return Embed(
         title=MEMORY_CLEAR_TITLE,
@@ -114,7 +181,15 @@ def build_clear_confirm_embed() -> Embed:
 
 
 def build_clear_result_embed(removed: bool) -> Embed:
-    """Builds the outcome embed for a completed clear."""
+    """Builds the outcome embed for a completed clear.
+
+    Args:
+        removed (bool): Whether the clear actually erased anything.
+
+    Returns:
+        The success embed, or a neutral one saying there was nothing stored, so an empty
+        scope does not read as a wipe that happened.
+    """
     if removed:
         return Embed(
             title=MEMORY_CLEAR_TITLE,
@@ -135,6 +210,9 @@ def build_clear_failed_embed() -> Embed:
     is guaranteed to have changed nothing, while a filesystem error can land after
     some tiers are already gone. Pointing at a retry is the honest advice, since
     the clear is idempotent and a second run finishes whatever the first left.
+
+    Returns:
+        The failure embed asking for a retry.
     """
     return Embed(
         title=MEMORY_CLEAR_TITLE,
@@ -144,7 +222,11 @@ def build_clear_failed_embed() -> Embed:
 
 
 def build_clear_cancelled_embed() -> Embed:
-    """Builds the outcome embed for a cancelled clear."""
+    """Builds the outcome embed for a cancelled clear.
+
+    Returns:
+        The neutral embed confirming nothing was touched.
+    """
     return Embed(
         title=MEMORY_CLEAR_TITLE,
         description="已取消，沒有清掉任何東西。",
@@ -163,20 +245,41 @@ class MemoryClearConfirmView(View):
     """
 
     def __init__(self, scope: str) -> None:
-        """Initializes the confirmation prompt for one scope's pending clear."""
+        """Initializes the confirmation prompt for one scope's pending clear.
+
+        Args:
+            scope (str): The memory scope `confirm_clear` will erase.
+        """
         super().__init__(timeout=MEMORY_VIEW_TIMEOUT_SECONDS)
         self.scope = scope
         self._origin: Interaction[commands.Bot] | None = None
 
     def bind_origin(self, interaction: Interaction[commands.Bot]) -> None:
-        """Records the originating interaction so timeout can disable the buttons."""
+        """Records the originating interaction so timeout can disable the buttons.
+
+        Called after the send, since the view has to be handed to it. An unbound view still
+        times out, it just leaves an abandoned prompt showing buttons that look pressable.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction whose original message
+                carries this view.
+        """
         self._origin = interaction
 
     @nextcord.ui.button(label="確認清除", style=ButtonStyle.danger)
     async def confirm_clear(
         self, _button: Button["MemoryClearConfirmView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Erases the scope's memory and replaces the prompt with the outcome."""
+        """Erases the scope's memory and replaces the prompt with the outcome.
+
+        The cog's only call into `clear_scope_memory`, and the only irreversible thing it does.
+        Never raises: the interaction is deferred before the erase starts, so an escaping
+        exception would leave the prompt silently unedited instead of reporting anything.
+
+        Args:
+            _button (Button["MemoryClearConfirmView"]): The pressed button, unused.
+            interaction (Interaction[commands.Bot]): The press to ack and then edit.
+        """
         if self.is_finished():
             # A second click lands while the first press is still on its way to
             # removing the buttons. Re-running the clear is harmless (it is
@@ -215,12 +318,24 @@ class MemoryClearConfirmView(View):
     async def cancel_clear(
         self, _button: Button["MemoryClearConfirmView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Dismisses the prompt without touching any memory."""
+        """Dismisses the prompt without touching any memory.
+
+        Deliberately does not stamp the scope either: `clear_scope_memory`'s opening stamp
+        aborts every in-flight turn for it, and a cancel must cost the user nothing.
+
+        Args:
+            _button (Button["MemoryClearConfirmView"]): The pressed button, unused.
+            interaction (Interaction[commands.Bot]): The press, answered with the edit itself.
+        """
         self.stop()
         await interaction.response.edit_message(embed=build_clear_cancelled_embed(), view=None)
 
     async def on_timeout(self) -> None:
-        """Disables the buttons once the prompt goes idle; nothing is cleared."""
+        """Disables the buttons once the prompt goes idle; nothing is cleared.
+
+        An idle prompt is a live one-click wipe, which is why it is worth an extra edit. A view
+        that was never bound has no message to reach and returns silently.
+        """
         if self._origin is None:
             return
         for child in self.children:
@@ -244,7 +359,17 @@ class MemoryPagesView(View):
     """
 
     def __init__(self, pages: list[str], footer_text: str, title: str) -> None:
-        """Initializes the view on the first page."""
+        """Initializes the view on the first page.
+
+        The pages are already split by the caller, so navigation is a slice of a list rather
+        than a re-read of the store: what the owner is paging through stays the document they
+        asked for, even if a background consolidation rewrites it meanwhile.
+
+        Args:
+            pages (list[str]): Page texts, each already within one embed description.
+            footer_text (str): Footer line shared by every page.
+            title (str): Embed title shared by every page.
+        """
         super().__init__(timeout=MEMORY_VIEW_TIMEOUT_SECONDS)
         self.pages = pages
         self.footer_text = footer_text
@@ -254,11 +379,23 @@ class MemoryPagesView(View):
         self._sync_buttons()
 
     def bind_origin(self, interaction: Interaction[commands.Bot]) -> None:
-        """Records the originating interaction so timeout can disable the buttons."""
+        """Records the originating interaction so timeout can disable the buttons.
+
+        Called after the send, since the view has to be handed to it. An unbound view still
+        times out, it just leaves buttons that look pressable on an abandoned pager.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction whose original message
+                carries this view.
+        """
         self._origin = interaction
 
     def current_embed(self) -> Embed:
-        """Returns the embed for the currently displayed page."""
+        """Returns the embed for the currently displayed page.
+
+        Returns:
+            The embed for `page_index`, carrying the page indicator in its footer.
+        """
         return build_memory_embed(
             page_text=self.pages[self.page_index],
             page_index=self.page_index,
@@ -268,7 +405,11 @@ class MemoryPagesView(View):
         )
 
     def _sync_buttons(self) -> None:
-        """Disables the boundary buttons at the first and last page."""
+        """Disables the boundary buttons at the first and last page.
+
+        The casts are what the decorator costs: it retypes each callback to a `Callable` alias,
+        while `View.__init__` has rebound the same name to the `Button` this reaches for.
+        """
         cast("Button[MemoryPagesView]", self.previous_page).disabled = self.page_index <= 0
         cast("Button[MemoryPagesView]", self.next_page).disabled = (
             self.page_index >= len(self.pages) - 1
@@ -278,7 +419,12 @@ class MemoryPagesView(View):
     async def previous_page(
         self, _button: Button["MemoryPagesView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Shows the previous page in place."""
+        """Shows the previous page in place.
+
+        Args:
+            _button (Button["MemoryPagesView"]): The pressed button, unused.
+            interaction (Interaction[commands.Bot]): The press, answered with the edit itself.
+        """
         self.page_index = max(self.page_index - 1, 0)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
@@ -287,13 +433,21 @@ class MemoryPagesView(View):
     async def next_page(
         self, _button: Button["MemoryPagesView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Shows the next page in place."""
+        """Shows the next page in place.
+
+        Args:
+            _button (Button["MemoryPagesView"]): The pressed button, unused.
+            interaction (Interaction[commands.Bot]): The press, answered with the edit itself.
+        """
         self.page_index = min(self.page_index + 1, len(self.pages) - 1)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
 
     async def on_timeout(self) -> None:
-        """Disables the buttons once the view goes idle."""
+        """Disables the buttons once the view goes idle.
+
+        A view that was never bound has no message to reach and returns silently.
+        """
         if self._origin is None:
             return
         for child in self.children:

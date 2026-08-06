@@ -1,4 +1,28 @@
-"""Discord bot entry point and runtime event handlers."""
+"""Process entry point: the `DiscordBot` gateway client plus the handlers no cog owns.
+
+`main` is what the `cli` / `discordbot` console scripts declared in `pyproject.toml` run —
+configure logging, read the token, build the bot, connect — so everything the bot can actually do
+lives under `cogs/` and only the pieces that have to sit above them are here.
+
+Construction order is load-bearing. `__init__` loads every cog synchronously BEFORE the gateway
+connects, so the command tree is already populated when `on_ready` syncs it; that is also what
+forces each cog's `setup` to be sync (`_load_cogs_sync` carries the failure mode). `on_ready`
+itself re-fires on every reconnect and resume, so its body is latched and the sync, the status
+loop and the price-table warm-up happen once per process.
+
+Two globally shared behaviors live here rather than in a cog. `on_message` pays the flat
+per-message economy reward — one of only two faucets in the whole bot, the other being
+`/checkin` — behind a process-local per-user cooldown, and then calls `process_commands` itself,
+because overriding `Bot.on_message` replaces the nextcord default that would have done it (the
+same trap `cogs/usage/cog.py` documents for `on_interaction`); a cog's own
+`@commands.Cog.listener()` message handler is dispatched separately and is unaffected.
+`on_command_error` is the single place a common command failure becomes a user-facing embed, so a
+new case is added here instead of in each cog. It and `on_command_completion` are the
+prefix-command surface (`commands.Context`); a slash command's failure and its usage record go
+elsewhere, to `on_application_command_error` and `cogs/usage/cog.py` respectively.
+
+Bot presence is hardcoded in `status_task`; there is no DB-backed rotation.
+"""
 
 import os
 from time import monotonic
@@ -24,15 +48,22 @@ from discordbot.services.economy.database import credit_with_repayment
 
 
 class DiscordBot(commands.Bot):
-    """Discord bot configured with project-specific intents and cogs.
+    """The bot process itself: intents, cog loading, and the events no cog handles.
 
     Attributes:
-        discord_config: Runtime Discord configuration loaded from settings.
-        logger: Logger used by Nextcord state events.
+        discord_config: Runtime Discord configuration. `main` reads its own copy for the token,
+            and nothing in the tree reads this one.
+        logger: nextcord's own `nextcord.state` logger, pinned to WARNING and routed into
+            logfire so gateway chatter does not bury the bot's own records.
     """
 
     def __init__(self) -> None:
-        """Initialises the Discord bot with specific intents and configuration."""
+        """Builds the gateway client, creates the data directories, and loads every cog.
+
+        `data/database` and `data/memories` are created up front because several cogs write into
+        them and none of them owns the directory, so a first boot on an empty volume has
+        somewhere to put its files.
+        """
         intents = Intents.all()
         intents.members = False
         intents.presences = False
@@ -59,7 +90,16 @@ class DiscordBot(commands.Bot):
         self._message_reward_pruned_at = 0.0
 
     def _prune_message_reward_cooldowns(self, now: float) -> None:
-        """Drops expired message-reward cooldown entries."""
+        """Drops expired message-reward cooldown entries, at most once per cooldown window.
+
+        Every message reaches this, so the sweep is itself rate-limited rather than rebuilding
+        the whole dict per message on a busy guild. `_message_reward_pruned_at` is read through
+        `getattr` so a bot object that never ran `__init__` still prunes.
+
+        Args:
+            now (float): The `monotonic()` reading the caller also measures its own cooldown
+                against, so both see one clock read.
+        """
         if now - getattr(self, "_message_reward_pruned_at", 0.0) < MESSAGE_REWARD_COOLDOWN_SECONDS:
             return
         cutoff = now - MESSAGE_REWARD_COOLDOWN_SECONDS
@@ -80,6 +120,9 @@ class DiscordBot(commands.Bot):
         `load_extensions` raises `NoEntryPointError` and aborts boot under
         `stop_at_error=True`. A directory that is not a cog raises here rather than
         being skipped, so a half-finished move cannot silently stop loading a cog.
+
+        Raises:
+            RuntimeError: A directory under `cogs/` is missing `__init__.py` or `cog.py`.
         """
         cog_dir = Path(__file__).parent / "cogs"
         cog_files: list[str] = []
@@ -96,18 +139,21 @@ class DiscordBot(commands.Bot):
         logfire.info("Cogs Loaded", cogs=cog_files)
 
     async def on_connect(self) -> None:
-        """Called when the bot has successfully connected to Discord."""
+        """Records the identity the gateway handed back.
+
+        Fires on every reconnect and before the cache is ready, so it does no setup work; that
+        belongs in `on_ready`. Nothing is logged while the client still has no user.
+        """
         bot_user = self.user
         if bot_user is None:
             return
         logfire.info("Bot Connected", bot_name=bot_user.name, bot_id=bot_user.id)
 
     async def on_ready(self) -> None:
-        """Called when the bot is ready; performs first-time-only setup.
+        """Runs the once-per-process startup: command sync, status loop, price-table warm-up.
 
-        `on_ready` re-fires on every gateway reconnect/resume, so the body
-        is gated on `_initial_setup_done` to keep sync + status_task.start
-        idempotent.
+        `on_ready` re-fires on every gateway reconnect/resume, so the body is gated on
+        `_initial_setup_done` to keep sync + status_task.start idempotent.
         """
         if self._initial_setup_done:
             return
@@ -141,7 +187,11 @@ class DiscordBot(commands.Bot):
 
     @tasks.loop(minutes=1.0)
     async def status_task(self) -> None:
-        """Periodically updates the bot's game status."""
+        """Sets the bot's game status, once a minute for as long as the loop runs.
+
+        Started from `on_ready` and never stopped; the status list is hardcoded here, so there is
+        nothing to configure at runtime.
+        """
         statuses = ["your mama"]
         random_status = secrets.choice(statuses)
         await self.change_presence(activity=Game(random_status))
@@ -151,14 +201,24 @@ class DiscordBot(commands.Bot):
 
     @status_task.before_loop
     async def before_status_task(self) -> None:
-        """Ensures the bot is ready before starting the status task."""
+        """Holds the status loop back until the gateway reports ready.
+
+        `change_presence` needs a live connection, so the first iteration cannot run before one
+        exists.
+        """
         await self.wait_until_ready()
 
     async def on_message(self, message: Message) -> None:
-        """Handles incoming messages.
+        """Pays the flat per-message reward, then hands the message to the command processor.
+
+        The reward is best-effort: a failure only warns, and the reserved cooldown slot is rolled
+        back so a transient error does not cost the author their next window. Messages from any
+        bot, this one included, are dropped before either step. `process_commands` is called here
+        because this override replaces the nextcord default that normally makes that call, and
+        without it no prefix command would ever run.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that arrived in a channel the bot can see.
         """
         if message.author == self.user or message.author.bot:
             return
@@ -197,10 +257,13 @@ class DiscordBot(commands.Bot):
         await self.process_commands(message)
 
     async def on_command_completion(self, context: commands.Context[commands.Bot]) -> None:
-        """Handles successful command execution.
+        """Logs one line per prefix command that ran to completion.
+
+        Only the first word of the qualified name is recorded, so a subcommand is counted under
+        its group. Slash commands never reach this event; `cogs/usage/cog.py` records those.
 
         Args:
-            context: The context of the command that was executed.
+            context (commands.Context[commands.Bot]): The invocation that just finished.
         """
         command = context.command
         if command is None:
@@ -229,11 +292,17 @@ class DiscordBot(commands.Bot):
         | commands.CommandNotFound
         | Exception,
     ) -> None:
-        """Handles command errors.
+        """Answers a failed prefix command with the shared error embed, or logs what has no branch.
+
+        The one place a common command failure becomes user-facing text, so a cog adds a case
+        here rather than growing a handler of its own. Overriding this drops nextcord's default,
+        which stood down whenever the command or its cog carried a local error handler; this one
+        does not, so a cog-local handler and this method both run. An unrecognised failure is
+        logged rather than answered, since the user has no action to take on it.
 
         Args:
-            context: The context of the command that failed.
-            exception: The exception that was raised.
+            context (commands.Context[commands.Bot]): The invocation that failed.
+            exception (commands.CommandOnCooldown | commands.NotOwner | commands.MissingPermissions | commands.BotMissingPermissions | commands.MissingRequiredArgument | commands.CommandNotFound | Exception): The failure nextcord dispatched.
         """
         if isinstance(exception, commands.CommandOnCooldown):
             minutes, seconds = divmod(exception.retry_after, 60)
@@ -281,7 +350,7 @@ class DiscordBot(commands.Bot):
         elif isinstance(exception, commands.MissingRequiredArgument):
             embed = Embed(
                 title="Error!",
-                # We need to capitalize because the command arguments have no capital letter in the code and they are the first word in the error message.
+                # Capitalized here: the argument name opens the message and is lowercase in code.
                 description=str(exception).capitalize(),
                 color=0xE02B2B,
             )
@@ -312,7 +381,13 @@ class DiscordBot(commands.Bot):
 
 
 def main() -> None:
-    """Initialises and runs the Discord bot."""
+    """Configures logging, then runs the bot until the connection is closed.
+
+    The console-script entry point for `cli` and `discordbot`. The token is read through its own
+    `DiscordConfig`, so a deployment missing `DISCORD_BOT_TOKEN` fails with a pydantic
+    `ValidationError` here, before the bot is built and before the gateway is contacted.
+    `bot.run` owns the event loop and does not return while the bot is connected.
+    """
     setup_logging()
     discord_config = DiscordConfig()
     bot = DiscordBot()

@@ -1,7 +1,40 @@
-"""Pydantic models for MapleStory data.
+"""The pydantic shapes the local Artale JSON export validates into.
 
-This module defines the data structures used for monsters, equipment, NPCs,
-quests, maps, etc., loaded from JSON data files.
+`service.py` hands each file in `./data/maplestory` to one of the top-level models here
+(`monsters.json` to `Monster`, `equipment.json` to `Equipment`, and likewise for scrolls, useable
+items, NPCs, quests, maps and misc items), and every builder in `embeds.py` reads that result
+rather than the raw dicts. The shapes sit apart from `service.py` because its loader is generic
+over `type[T]`, so this file is the only place the field names exist; keeping them here lets
+`embeds.py` and `tests/test_maplestory.py` name a type without importing the loader.
+
+The export is scraped rather than authored, so the models are written to survive it:
+
+- `_Base` ignores unknown keys, because the files already carry fields nothing here models
+  (`reborn` and `description` on a monster, `fromMapHint` / `toMapHint` on a map). A key added
+  upstream must never fail the load.
+- Only the identifying name is required. Everything else defaults, because the exporter omits a
+  key instead of writing an empty value: 20 of 371 monsters carry no `nameZh`, 1431 of 1840
+  equipment rows no `attackSpeed`, and `boss` appears on 9 quests out of 426. A default here
+  means "the export said nothing", not "the game says zero".
+- The JSON is camelCase, so most aliases are only that (`nameZh`, `regionToMapsList`,
+  `equipmentItems`). Three carry one for a second reason: `str`, `int` and `def` are a Python
+  builtin or keyword, and land as `str_stat` / `str_req`, `int_stat` / `int_req` and `def_stats`
+  / `def_stat`. `populate_by_name` is on so code and tests can build a model by either spelling.
+
+`MapleStats` is the one model with no file behind it: `MapleStoryService.get_stats` computes it
+for `/maplestory stats`, which is why all of its fields are required.
+
+What is modelled is the export's shape, not the subset the eight `/maplestory` subcommands render
+today. `Acquisition.craftings`, `NPC.recipes`, `MapEntry.from_map` / `to_map` / `to_region` and
+the whole of `Useable` past its name reach no embed yet, and are kept so a new surface does not
+have to reopen the files to find out what is in them.
+
+The handful of properties and methods are the readings the embed builders would otherwise each
+redo: the Chinese-name fallback (`display_name`), the flattened map list (`all_maps`), the
+non-meso drops (`MonsterDrops.all_items`) and the two equipment reductions
+(`EquipmentStats.non_zero_stats`, `EquipmentRestriction.has_requirements`). Nothing here reads a
+file or reaches Discord. Only a record's own `nameZh` travels inline; a name that belongs to
+another record is translated through `MapleStoryService.translate` against `translations.json`.
 """
 
 from __future__ import annotations
@@ -10,7 +43,12 @@ from pydantic import Field, BaseModel, ConfigDict
 
 
 class _Base(BaseModel):
-    """Base model for MapleStory data, ignoring extra fields."""
+    """Shared config for every model here: ignore unknown keys, accept either field spelling.
+
+    `extra="ignore"` is what keeps a scraped export loadable, since the files carry keys nothing
+    here models. `populate_by_name` lets a caller build a model with the python field name while
+    the JSON supplies the camelCase alias.
+    """
 
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
@@ -20,6 +58,9 @@ class _Base(BaseModel):
 
 class RegionMaps(_Base):
     """Represents maps within a region.
+
+    How both `Monster` and `NPC` carry their locations; `all_maps` on either flattens the
+    grouping away, while `create_monster_embed` / `create_npc_embed` keep it as a heading.
 
     Attributes:
         region: Region name.
@@ -81,6 +122,10 @@ class CraftingMaterial(_Base):
 class CraftingRecipe(_Base):
     """Represents a crafting recipe.
 
+    Listed from two sides: as `Acquisition.craftings` under a craftable item and as `NPC.recipes`
+    under a crafting NPC. Rare in the export (one entry each) and rendered by neither embed, so
+    `npc` and `output` default rather than being required.
+
     Attributes:
         npc: NPC name associated with the recipe.
         output: Crafted output name.
@@ -96,6 +141,10 @@ class CraftingRecipe(_Base):
 
 class Acquisition(_Base):
     """Represents all ways an item can be acquired.
+
+    Hangs off `Equipment`, `Scroll`, `Useable` and `MiscItem` alike. `_add_acquisition_fields`
+    renders the first three lists and skips `craftings`, so an empty `Acquisition` (which is what
+    an item with no known source validates into) costs the embed nothing.
 
     Attributes:
         monsters: Monster acquisition entries.
@@ -138,6 +187,10 @@ class DefenseStats(_Base):
 class AccuracyStats(_Base):
     """Represents monster accuracy statistics.
 
+    Both fields are -1 together on the 30 monsters the export has no accuracy data for, so
+    neither can be read as a plain number; `create_monster_embed` prints `required` through
+    unchanged and shows -1 for those.
+
     Attributes:
         required: Required accuracy value.
         decrease: Accuracy decrease value.
@@ -149,6 +202,10 @@ class AccuracyStats(_Base):
 
 class DropItem(_Base):
     """Represents an item dropped by a monster.
+
+    One shape for all four drop lists, so `level` and `jobs` are empty on the roughly half of
+    entries that are not equipment. The name is the drop's English name and the key
+    `MapleStoryService.get_monsters_by_drop` matches on, not a display name.
 
     Attributes:
         name: Dropped item name.
@@ -167,6 +224,12 @@ class DropItem(_Base):
 
 class MonsterDrops(_Base):
     """Represents all drops for a monster.
+
+    The four item lists are kept apart because the embed labels them separately and
+    `MapleStoryService.get_item_type` decides an item's category purely by which list it sits in.
+    `meso_range` is the odd one out: a `[min, max]` pair rather than items, which is why it is
+    excluded from `all_items` and why `create_monster_embed` renders anything but a two-element
+    list as N/A.
 
     Attributes:
         equipment_items: Equipment items dropped by the monster.
@@ -202,8 +265,12 @@ class MonsterDrops(_Base):
     def all_items(self) -> list[DropItem]:
         """Returns all non-meso drop items.
 
+        Builds a fresh list on every read, so a caller iterating it cannot disturb the four
+        underlying lists. Nothing is deduped here; `MapleStoryService.search_items_by_name`
+        collects into a set of its own.
+
         Returns:
-            Equipment, useable, scroll, and miscellaneous drop items.
+            Equipment, useable, scroll, and miscellaneous drop items, in that order.
         """
         return self.equipment_items + self.useable_items + self.scrolls + self.misc_items
 
@@ -222,6 +289,13 @@ class MonsterQuest(_Base):
 
 class Monster(_Base):
     """Represents a MapleStory monster.
+
+    The record every item lookup leans on: `MapleStoryService.search_items_by_name`,
+    `get_monsters_by_drop` and `get_item_type` all walk `drops` across the monster list rather
+    than the `Acquisition` blocks the item files carry, so `/maplestory item` can only find an
+    item some monster drops.
+    `modifiers` are the elemental affinity tags (`STRONG FIRE`, `WEAK ICE`, `IMMUNE POISON`,
+    `CAN HEAL ATTACK`), translated through the `modifiers` category.
 
     Attributes:
         name: Monster name.
@@ -274,6 +348,9 @@ class Monster(_Base):
     def all_maps(self) -> list[str]:
         """Returns every map where the monster appears.
 
+        Drops the region grouping that `create_monster_embed` renders as headings, keeping
+        `region_to_maps_list` order.
+
         Returns:
             Map names flattened from all region entries.
         """
@@ -286,6 +363,11 @@ class Monster(_Base):
 class StatValue(_Base):
     """Represents a stat value with a middle value and a range.
 
+    `middle` is the nominal figure the embed prints and `range` the `[min, max]` a rolled item
+    can land in; they are independent in the export, so `middle` is not the midpoint of `range`
+    and either can be missing. A row carrying only a `range` therefore defaults `middle` to 0 and
+    disappears from `EquipmentStats.non_zero_stats`.
+
     Attributes:
         middle: Middle stat value.
         range: Stat value range.
@@ -297,6 +379,12 @@ class StatValue(_Base):
 
 class EquipmentStats(_Base):
     """Represents equipment statistics.
+
+    Every stat is optional rather than zero-defaulted, so "the export listed no ATK" stays
+    distinguishable from "ATK is 0". `attack_speed` and `upgrade_slots` are plain ints, not
+    `StatValue`s, which is why `non_zero_stats` cannot report them and `_add_equip_stats` appends
+    them itself. Note the numeric `attack_speed` here is a different field from the `FAST` /
+    `NORMAL` label on `Equipment`, despite both coming from a JSON key spelled `attackSpeed`.
 
     Attributes:
         str_stat: STR stat value.
@@ -345,6 +433,12 @@ class EquipmentStats(_Base):
     def non_zero_stats(self) -> list[tuple[str, StatValue]]:
         """Returns (label, value) pairs for stats with non-zero middle.
 
+        Covers only the fourteen `StatValue` fields, so `attack_speed` and `upgrade_slots` never
+        appear and `_add_equip_stats` appends those itself. Filtering on `middle` also hides a
+        stat the export gave a `range` but no `middle`. The labels match `_STAT_LABELS` in
+        `embeds.py`, which spells the same set out again for the scroll embed because a scroll's
+        stats arrive as a plain int map.
+
         Returns:
             A list of tuples containing the stat label and its value.
         """
@@ -370,6 +464,10 @@ class EquipmentStats(_Base):
 class EquipmentRestriction(_Base):
     """Represents equipment requirements.
 
+    The export writes this block on every equipment row, including the roughly one in four that
+    require nothing at all, which is what `has_requirements` exists to tell apart from a real
+    requirement.
+
     Attributes:
         str_req: STR requirement.
         dex: DEX requirement.
@@ -385,6 +483,9 @@ class EquipmentRestriction(_Base):
     def has_requirements(self) -> bool:
         """Checks if there are any stat requirements.
 
+        The gate `_add_equip_requirements` reads before adding its field, so an all-zero block
+        produces no embed field rather than four zeros.
+
         Returns:
             True if any requirement is non-zero, False otherwise.
         """
@@ -393,6 +494,11 @@ class EquipmentRestriction(_Base):
 
 class Equipment(_Base):
     """Represents a MapleStory equipment item.
+
+    `attack_speed` here is the `FAST` / `NORMAL` / `SLOW` label, not the number of the same name
+    inside `stats`; both come from a JSON key spelled `attackSpeed`, one at each level. The four
+    label-ish fields (`tradeable`, `event`, `limited_time`, `unavailable`) are written by the
+    export only when they apply, so their defaults mean "ordinary" rather than "unknown".
 
     Attributes:
         type: Equipment type.
@@ -458,6 +564,11 @@ class Equipment(_Base):
 class Scroll(_Base):
     """Represents a MapleStory scroll.
 
+    `stats` is a flat `{"dex": 3}` map rather than the `StatValue` shape `EquipmentStats` uses,
+    because a scroll grants a fixed bonus with no roll. `create_scroll_embed` puts the keys
+    through `_STAT_LABELS` for display, and an unrecognised key falls through as itself rather
+    than being dropped. `type` names the equipment slot the scroll applies to.
+
     Attributes:
         name: Scroll name.
         name_zh: Chinese scroll name.
@@ -492,6 +603,9 @@ class Scroll(_Base):
 class UseableStat(_Base):
     """Represents a stat value for useable items.
 
+    A one-field wrapper because that is the export's shape (`"hp": {"amount": 50}`), not because
+    a second field is expected.
+
     Attributes:
         amount: Amount applied by the useable item stat.
     """
@@ -501,6 +615,16 @@ class UseableStat(_Base):
 
 class Useable(_Base):
     """Represents a MapleStory useable item.
+
+    `description` is a `{"zh": ..., "en": ...}` map on the few rows that carry one at all; the
+    `str` arm of the union is what the empty default occupies, not a second export shape. Every
+    stat is `None` when absent rather than a zeroed `UseableStat`, so a potion that restores only
+    HP carries no `mp` block.
+
+    There is no `/maplestory useable` subcommand and no embed builder for this model.
+    `useable.json` is loaded for the `/maplestory stats` count and the `MapleStoryService.useable`
+    property, and a useable item named in a monster's drops is translated through
+    `translations.json` instead.
 
     Attributes:
         name: Useable item name.
@@ -557,6 +681,10 @@ class Useable(_Base):
 
 class NPCItem(_Base):
     """Represents an item sold by an NPC.
+
+    Every name in the export carries a category prefix (`potion/Red Potion`), unlike the bare
+    names everywhere else, which is why `create_npc_embed` splits on `/` before translating.
+    Stored as it arrives so a caller can still see which category the shop listed it under.
 
     Attributes:
         name: Sold item name.
@@ -625,6 +753,9 @@ class NPC(_Base):
     def all_maps(self) -> list[str]:
         """Returns every map where the NPC appears.
 
+        Drops the region grouping that `create_npc_embed` renders as headings, keeping
+        `region_to_maps_list` order.
+
         Returns:
             Map names flattened from all region entries.
         """
@@ -661,6 +792,10 @@ class CollectItem(_Base):
 class QuestReward(_Base):
     """Represents rewards for a quest.
 
+    `items` takes a union because the export writes it two ways: usually one `{"scroll": [...]}`
+    map, occasionally a list of such maps. Nothing renders it or `mesos` yet, so the union is
+    carried rather than normalised; `_format_quest_step` shows only `exp` and `fame`.
+
     Attributes:
         exp: Reward EXP.
         fame: Reward fame.
@@ -678,6 +813,10 @@ class QuestReward(_Base):
 
 class QuestStep(_Base):
     """Represents a step in a quest.
+
+    `items_to_collect` keys the item lists by category, the same grouping `QuestReward.items`
+    uses. A quest holds its steps in `Quest.steps`, and `create_quest_embed` renders the first
+    three as separate fields.
 
     Attributes:
         start_npc: NPC that starts the quest step.
@@ -706,6 +845,11 @@ class QuestStep(_Base):
 
 class Quest(_Base):
     """Represents a MapleStory quest.
+
+    `lv_upper` defaults to `None` while `lv_lower` defaults to 0, because only 32 quests of 426
+    declare an upper limit and `create_quest_embed` prints the range only when one exists.
+    `frequency` carries the export's own spelling (`one-time`, `daily`, `12hr`, ...), which
+    `FREQ_ZH` maps for display and falls back to verbatim on an unrecognised value.
 
     Attributes:
         name: Quest name.
@@ -743,6 +887,10 @@ class Quest(_Base):
 class MapNPC(_Base):
     """Represents an NPC on a map.
 
+    One NPC's placement, not a link to the `NPC` record of the same name: `type` here is the role
+    the map lists (`Weapon Seller`), and `sub_map` names the shop or room inside the map when the
+    NPC is not out on it.
+
     Attributes:
         name: NPC name.
         type: NPC type.
@@ -768,6 +916,10 @@ class MapMonster(_Base):
 
 class MapEntry(_Base):
     """Represents a MapleStory map.
+
+    `from_map` / `to_map` / `to_region` record which map this one connects to. The export pairs
+    each with a Chinese `fromMapHint` / `toMapHint` describing where the entrance is, and `_Base`
+    drops both, so a surface that wants to show the connection has to model the hint first.
 
     Attributes:
         region: Map region name.
@@ -842,6 +994,13 @@ class MiscItem(_Base):
 
 class MapleStats(_Base):
     """Represents database statistics.
+
+    The one model here with no JSON file behind it: `MapleStoryService.get_stats` builds and
+    memoizes it from the loaded categories, and `build_stats_embed` renders it for
+    `/maplestory stats`. Every field is required, since a caller that computed the summary
+    computed all of it. `level_distribution` is keyed by a ten-level bucket label (`"0-9"`), and
+    `popular_items` is already sorted by how many monsters drop each item and cut to 20 by the
+    service.
 
     Attributes:
         total_monsters: Total monster count.

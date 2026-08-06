@@ -1,5 +1,21 @@
 """Cog that expands Threads post URLs into Discord embeds and media files.
 
+The surface is one `on_message` listener and no slash command: a human message carrying a
+Threads URL is expanded where it was posted. Progress is reactions on that message — 🔗 while
+the post is being read, then ✅, ⚠️ for a post that cannot be shown within Discord's limits, or
+❌ for a failure — and the expansion itself is one reply carrying the reply chain as embeds plus
+the target post's videos, attached natively or posted as links when they are larger than the
+channel's upload limit. Discord's own preview of the source link is suppressed first, which
+needs Manage Messages and is skipped when the guild withholds it. Posts the embed budget could
+not carry are listed as permalinks in follow-up replies. Nothing else gates the expansion:
+there is no kill-switch and no permission check beyond that cosmetic suppression.
+
+Most of the module is that budget. Discord caps one message at ten embeds, 4096 characters per
+description and 6000 across every text-bearing field of the message, and a Threads chain plus
+the post it quotes routinely exceeds all three, so `_build_embed_plan` spends the slots in
+relevance order (the target, the post it quotes, then up the chain) while
+`_omitted_post_notice_pages` renders what it shed as permalinks rather than dropping it silently.
+
 Expansion is skipped when the message is addressed to the bot (a DM, or an explicit
 mention): `gen_reply` self-parses the linked post and answers about it, so expanding as
 well would download the same media twice and post an embed nobody asked for. The two
@@ -82,12 +98,32 @@ class _EmbedPlan(BaseModel):
 
 
 def _utf16_length(value: str) -> int:
-    """Counts UTF-16 code units, the conservative interpretation of Discord characters."""
+    """Counts UTF-16 code units, the conservative interpretation of Discord characters.
+
+    Discord's documentation leaves what a "character" is unspecified, so an astral-plane emoji
+    is counted as the two units its surrogate pair takes rather than as one code point.
+
+    Args:
+        value (str): The text to measure.
+
+    Returns:
+        The number of UTF-16 code units in `value`.
+    """
     return sum(2 if ord(character) > 0xFFFF else 1 for character in value)
 
 
 def _embed_text_length(embed: Embed) -> int:
-    """Counts every text-bearing embed field against Discord's message-wide limit."""
+    """Counts every text-bearing embed field against Discord's message-wide limit.
+
+    The 6000-character budget covers the title, description, footer, author name and every
+    field, not the description alone, so measuring one field would under-count a rendered embed.
+
+    Args:
+        embed (Embed): The rendered embed to measure.
+
+    Returns:
+        The embed's total text length in UTF-16 code units.
+    """
     payload: EmbedData = embed.to_dict()
     text_parts = [
         value for value in (payload.get("title"), payload.get("description")) if value is not None
@@ -103,7 +139,19 @@ def _embed_text_length(embed: Embed) -> int:
 
 
 def _omitted_post_line(post: ThreadsOutput) -> str:
-    """Renders one omitted post as a permalink line."""
+    """Renders one omitted post as a permalink line.
+
+    The url is wrapped in angle brackets so Discord attaches no preview of its own: this notice
+    exists precisely because the embed budget ran out, and a preview per line would spend it
+    again. A post whose permalink could not be reconstructed still gets a line, since the header
+    counts it either way.
+
+    Args:
+        post (ThreadsOutput): The post left out of the embeds.
+
+    Returns:
+        One list line naming the author and its permalink.
+    """
     if post.url:
         return f"- @{post.author_name}: <{post.url}>"
     return f"- @{post.author_name}: 原始連結無法取得"
@@ -113,7 +161,16 @@ def _closed_with_remainder(page: str, *, unlisted: int) -> str:
     """Closes the last page with the count of permalinks it could not carry.
 
     Trailing lines are handed back to that count until the closing line fits, so the notice
-    reports what it dropped instead of growing another reply to hold it.
+    reports what it dropped instead of growing another reply to hold it. The header alone is
+    never dropped, so the true total survives even when no permalink does.
+
+    Args:
+        page (str): The last page as built so far, header included.
+        unlisted (int): Permalinks already missing from the notice, before any line this call
+            hands back.
+
+    Returns:
+        The page with the closing count appended.
     """
     lines = page.split("\n")
     while True:
@@ -131,6 +188,14 @@ def _omitted_post_notice_pages(posts: list[ThreadsOutput]) -> list[str]:
     every line past the cap, is handed to the closing count instead. The notice exists so an
     over-budget chain degrades rather than dropping posts silently, so it must not be able to
     cost the expansion it reports on. The header states the true total either way.
+
+    Args:
+        posts (list[ThreadsOutput]): The posts no embed carried, in the order they should be
+            listed.
+
+    Returns:
+        One string per follow-up reply, each within Discord's 2000-character message cap; empty
+        when nothing was omitted.
     """
     if not posts:
         return []
@@ -160,7 +225,21 @@ def _omitted_post_notice_pages(posts: list[ThreadsOutput]) -> list[str]:
 def _allocate_embed_slots(
     *, posts: list[ThreadsOutput], priority: list[int], reserved: list[int]
 ) -> list[int]:
-    """Allocates Discord's ten embed slots in relevance order."""
+    """Allocates Discord's ten embed slots in relevance order.
+
+    A reserved post takes one slot before any image competes, and that slot counts towards its
+    own gallery. What is left goes to whole galleries in `priority` order, and only what
+    survives that gives an unslotted post the single text-only embed that carries it as context.
+
+    Args:
+        posts (list[ThreadsOutput]): Every post competing for a slot, chain order first.
+        priority (list[int]): Indices into `posts`, most relevant first.
+        reserved (list[int]): Indices guaranteed one slot ahead of every image.
+
+    Returns:
+        One slot count per post, positionally aligned with `posts`; 0 means the post is not
+        rendered at all.
+    """
     slots = [0] * len(posts)
     budget = _MAX_EMBEDS_PER_MESSAGE
     for index in reserved:
@@ -184,7 +263,21 @@ def _allocate_embed_slots(
 def _collect_omitted_posts(
     *, trimmed_posts: list[ThreadsOutput], candidate_posts: list[ThreadsOutput], slots: list[int]
 ) -> list[ThreadsOutput]:
-    """Returns unrendered posts once each, excluding an equivalent shown permalink."""
+    """Returns unrendered posts once each, excluding an equivalent shown permalink.
+
+    A post whose permalink is already on screen is not worth a fallback line, and the same
+    permalink twice reads as two lost posts, so the url is the identity here — a self-quote is
+    the ordinary way one post appears in the chain and as the quoted post at once. A post with
+    no permalink cannot be matched that way and is always listed.
+
+    Args:
+        trimmed_posts (list[ThreadsOutput]): Chain members cut before slot allocation ran.
+        candidate_posts (list[ThreadsOutput]): The posts that competed for slots.
+        slots (list[int]): Slot counts positionally aligned with `candidate_posts`.
+
+    Returns:
+        The posts a permalink fallback has to name, trimmed ancestors first.
+    """
     shown_urls = {
         post.url for index, post in enumerate(candidate_posts) if slots[index] and post.url
     }
@@ -207,13 +300,18 @@ class ThreadsCogs(commands.Cog):
         bot: The Discord bot instance that owns this cog.
         output_folder: Directory where downloaded Threads media is stored.
         downloader: Downloader used to parse Threads posts and fetch media.
+        media_delivery: Planner deciding which videos attach natively and which are hosted as
+            URLs because they exceed the destination's upload limit.
     """
 
     def __init__(self, bot: commands.Bot):
-        """Initializes the ThreadsCogs instance.
+        """Wires the downloader to a scratch directory and the shared media-delivery planner.
+
+        Downloads go to the system temp dir rather than under `data/`: they are scratch files
+        the parse context manager removes as soon as the expansion is on screen.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The bot whose user identity owns the status reactions.
         """
         self.bot = bot
         self.output_folder = Path(tempfile.gettempdir())
@@ -226,6 +324,13 @@ class ThreadsCogs(commands.Cog):
 
         Both ends stay inside [0x40, 0xC0] so every layer renders a visible stripe; pure black
         (#000000) is reserved for "no stripe" on solo posts.
+
+        Args:
+            index (int): The post's position in the chain.
+            total (int): The chain's length.
+
+        Returns:
+            The stripe color, or the default (no stripe) for a chain of one.
         """
         if total <= 1:
             return Color.default()
@@ -236,7 +341,19 @@ class ThreadsCogs(commands.Cog):
 
     @staticmethod
     def _build_post_embed(output: ThreadsOutput, color: Color) -> Embed:
-        """Builds an embed for a single Threads post."""
+        """Builds the text-bearing embed for a single Threads post.
+
+        The embed url is the post's permalink, which is also what lets `_build_post_embeds` hang
+        further image embeds off the same url for Discord to merge into one gallery. The footer
+        carries the engagement counts, so it counts against the message-wide text budget.
+
+        Args:
+            output (ThreadsOutput): The parsed post.
+            color (Color): The stripe color for this post's place in the chain.
+
+        Returns:
+            The post's main embed, without any image attached yet.
+        """
         embed = Embed(
             description=output.text, url=output.url, color=color, timestamp=output.taken_at
         )
@@ -267,6 +384,18 @@ class ThreadsCogs(commands.Cog):
         The main embed carries the post text plus its first shown image; further shown
         images become bare image embeds reusing the post URL so Discord merges them into
         one gallery. `image_count == 0` yields a single text-only context embed.
+
+        Args:
+            output (ThreadsOutput): The parsed post.
+            color (Color): The stripe color for this post's place in the chain.
+            image_count (int): How many of the post's images this render may show.
+            is_target (bool): Whether this is the linked post, whose videos are attached as
+                files rather than hinted at with a link.
+            is_quoted (bool): Whether this is the post the target quotes rather than a chain
+                member.
+
+        Returns:
+            The post's embeds, the text-bearing one first.
         """
         main_embed = self._build_post_embed(output=output, color=color)
         embeds = [main_embed]
@@ -304,7 +433,24 @@ class ThreadsCogs(commands.Cog):
         chain_depth: int,
         quoted_index: int,
     ) -> set[int]:
-        """Selects complete posts by relevance until the message-wide text budget is full."""
+        """Selects complete posts by relevance until the message-wide text budget is full.
+
+        Whole posts, so a gallery never survives the text that owns it. The target is kept
+        whatever it costs — an expansion without the linked post is not an expansion — and a
+        target that alone overruns the budget is caught by the description guard in `on_message`
+        instead. Measurement renders each post at `image_count=0`, since the image embeds carry
+        no text of their own.
+
+        Args:
+            posts (list[ThreadsOutput]): Chain members followed by the quoted post, if any.
+            priority (list[int]): Indices into `posts`, most relevant first.
+            chain_depth (int): How many of `posts` are chain members; the last of them is the
+                target.
+            quoted_index (int): Index of the quoted post in `posts`, or -1 when there is none.
+
+        Returns:
+            The indices into `posts` that fit.
+        """
         selected: set[int] = set()
         text_budget = _EMBED_TOTAL_LENGTH_LIMIT
         for index in priority:
@@ -330,8 +476,14 @@ class ThreadsCogs(commands.Cog):
     def _build_embed_plan(self, results: list[ThreadsOutput]) -> _EmbedPlan:
         """Builds embeds and permalink fallbacks for a Threads reply chain.
 
+        Emission order is the thread's own (root first, the quoted post last), which is not the
+        order the slots were spent in; see the allocation comments below.
+
         Args:
-            results: Ordered chain `[root, ..., direct_parent, target]`.
+            results (list[ThreadsOutput]): Ordered chain `[root, ..., direct_parent, target]`.
+
+        Returns:
+            The embeds to send plus the posts no embed carried.
         """
         # Discord caps a single message at 10 embeds, one image each. The posted URL is the
         # target (last item) and owns the message, so an embed for its own words is reserved
@@ -401,11 +553,26 @@ class ThreadsCogs(commands.Cog):
         return _EmbedPlan(embeds=embeds, omitted_posts=omitted_posts)
 
     def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
-        """Builds embeds for callers that do not need permalink fallback metadata."""
+        """Builds embeds for callers that do not need permalink fallback metadata.
+
+        Args:
+            results (list[ThreadsOutput]): Ordered chain `[root, ..., direct_parent, target]`.
+
+        Returns:
+            The embeds to send, with what they left out discarded.
+        """
         return self._build_embed_plan(results=results).embeds
 
     async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
-        """Swaps the progress reaction for the failure cross."""
+        """Swaps the progress reaction for the failure cross.
+
+        Best effort like every reaction here: `update_reaction` suppresses its own failures, so
+        a source message that went away costs nothing.
+
+        Args:
+            message (Message): The message carrying the link.
+            current_emoji (str): The status reaction to remove first.
+        """
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
@@ -430,6 +597,16 @@ class ThreadsCogs(commands.Cog):
         Only the expansion itself can fail this step. The permalink fallbacks are built and sent
         afterwards, past the ✅ and behind their own guard, because they exist to describe what
         the expansion left out and must never be able to take the expansion down with them.
+
+        Marks the source ✅ on success, ⚠️ when an oversize video could not be hosted, and ❌ on
+        any other failure; nothing raises out of here.
+
+        Args:
+            message (Message): The message carrying the link, replied to and reacted on.
+            url (str): The matched Threads URL, for logging only.
+            results (list[ThreadsOutput]): The chain, whose last entry owns the videos to send.
+            embed_plan (_EmbedPlan): The already-built embeds and permalink fallbacks.
+            current_emoji (str): The status reaction to replace with the outcome.
         """
         target = results[-1]
         embeds = embed_plan.embeds
@@ -547,6 +724,11 @@ class ThreadsCogs(commands.Cog):
         changed under it. Both are broad on purpose — the expansion is already delivered and
         marked done, so a failure here costs only the permalink list and must never travel back
         to the delivery's failure path.
+
+        Args:
+            message (Message): The message the notices reply to.
+            url (str): The matched Threads URL, for logging only.
+            posts (list[ThreadsOutput]): The posts no embed carried; an empty list posts nothing.
         """
         try:
             notices = _omitted_post_notice_pages(posts=posts)
@@ -575,10 +757,16 @@ class ThreadsCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Listens for messages and parses Threads links.
+        """Expands the first Threads link a human posts, unless the bot was addressed.
+
+        Only the first match is expanded, and only for a human author. Every outcome is a
+        reaction on the source message rather than an exception: a parse failure or an
+        unexpected error is ❌, an unreadable post or one past the embed description limit is ⚠️,
+        and a delivered expansion is ✅. The scratch files the parse downloaded are always
+        removed, whether or not the expansion made it out.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that was sent.
         """
         if message.author.bot:
             return
@@ -597,9 +785,9 @@ class ThreadsCogs(commands.Cog):
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
         try:
-            # parse() blocks on HTTP fetch + media downloads, so run its enter
-            # off the event loop; the reply runs while the temp files still exist
-            # and the matching exit cleans them up afterwards.
+            # parse() blocks on HTTP fetch + media downloads, so run its enter off the event
+            # loop; the reply runs while the temp files still exist and the matching exit
+            # cleans them up afterwards.
             parse_cm = self.downloader.parse(url=url)
             try:
                 conversation = await asyncio.to_thread(parse_cm.__enter__)
@@ -697,7 +885,10 @@ class ThreadsCogs(commands.Cog):
 def setup(bot: commands.Bot) -> None:
     """Adds the ThreadsCogs to the bot.
 
+    Sync, and the cog is added with `override=True`, like every cog here: an async `setup` is
+    scheduled without being awaited and breaks the first command sync.
+
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(ThreadsCogs(bot), override=True)

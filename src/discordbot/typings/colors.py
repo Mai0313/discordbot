@@ -7,7 +7,7 @@ inside that cog (`economy/embeds.py`'s borrow / check-in / VIP hexes, `stock/pre
 market / detail / news hexes) even where two cogs happen to have landed on the same value.
 
 Consumers usually re-alias these under their own domain words, so each surface's meaning can be
-retuned on its own: `games/presentation.py` as `WIN_COLOR` / `LOSE_COLOR` / `PUSH_COLOR`,
+re-tuned on its own: `games/presentation.py` as `WIN_COLOR` / `LOSE_COLOR` / `PUSH_COLOR`,
 `economy/embeds.py` as `BALANCE_COLOR` / `LEADERBOARD_COLOR` / `ERROR_COLOR`, and so on. That is
 a habit rather than a rule: `research/cog.py`, `gen_reply/cog.py` and `memory/views.py` each
 pass a constant straight into `Embed(color=...)` where an alias would buy nothing. Neither list

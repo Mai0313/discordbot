@@ -1,4 +1,31 @@
-"""Shared base lobby views for multiplayer casino game sessions."""
+"""The join / leave / start scaffold both wagered tables open on, carrying no game rules.
+
+`BlackjackLobbyView` and `DragonGateLobbyView` are the same view up to two hooks: how a roster
+renders as an embed, and what happens once Start is pressed. The seat map, the lock every
+mutation runs under, the owner-only Start, the balance re-check just before the deal, and the
+idle timeout that greys the buttons and queues the message for deletion all live here, so a
+third table would cost an embed builder and a hand-off rather than a second copy of the seating
+rules.
+
+Nothing here knows what a wager is. A game's stake, its mode (`clamp` for a table bet, `exact`
+for an ante) and its own insufficient-balance copy are bound into the two callables the cog
+hands in — `PrepareParticipant` and `RefreshParticipants`, both a `functools.partial` of a games
+cog method — which is what lets the refusal a player sees name their own game while the lobby
+stays generic.
+
+One public message carries the whole session: the lobby edits it on every roster change and then
+hands that same message to the game view, so the table opens where the lobby was rather than as
+a second message.
+
+The base lobby moves no money at all; a Blackjack table debits nothing until the round resolves.
+`BaseJackpotLobbyView` is the second layer, for a table backed by the shared `jackpot_pool` row
+instead of the casino ledger, and it does move money: every seat's `ante` is charged through ONE
+`apply_jackpot_settlement_batch` with `require_full_debit=True`, so a seat that cannot cover it
+rejects the batch whole with nothing committed. The lobby then drops those seats, re-renders and
+stays startable, rather than opening a table someone has already paid into. Only once that
+settlement commits does the game hook run, which is why its hand-off edit is the one edit in the
+cog that must not be lost.
+"""
 
 from __future__ import annotations
 
@@ -28,29 +55,46 @@ if TYPE_CHECKING:
 
 
 class PrepareParticipant(Protocol):
-    """Callable used by lobby join buttons to validate a participant.
+    """Turns a user who pressed Join into a seat, or refuses them.
 
-    Game-specific wager / mode / insufficient-balance copy are bound by the
-    caller (typically via `functools.partial`) so the callable signature
-    stays uniform across lobbies.
+    The game-specific half — the stake, its clamp-or-exact mode, and the insufficient-balance
+    copy — is bound by the caller (via `functools.partial`) so every lobby calls one uniform
+    shape. An implementation owns the refusal it shows: the lobby defers the interaction before
+    calling one, and says nothing itself when None comes back.
     """
 
     async def __call__(self, interaction: Interaction[commands.Bot]) -> GameParticipant | None:
-        """Returns a prepared participant or sends the interaction error."""
+        """Prepares a seat for the user behind a Join press.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The already-deferred Join interaction.
+
+        Returns:
+            The prepared seat, or None once the refusal has been shown to the user.
+        """
 
 
 class RefreshParticipants(Protocol):
-    """Callable used by lobby start to re-check balances.
+    """Re-stakes every queued seat against a freshly read balance, just before the deal.
 
-    Wager / mode are bound by the caller via `functools.partial`.
+    Bound to the game's wager and mode by the caller, like `PrepareParticipant`. It is handed no
+    interaction and shows nothing: the lobby names the dropped players itself, out of the display
+    names this returns.
     """
 
     async def __call__(self, participants: list[GameParticipant]) -> RefreshParticipantsResult:
-        """Returns refreshed participants and display names removed from the table."""
+        """Re-checks the queued seats against current balances.
+
+        Args:
+            participants (list[GameParticipant]): The seats queued in the lobby, in join order.
+
+        Returns:
+            The seats that can still cover the stake, plus the display names of those dropped.
+        """
 
 
 class BaseGameLobbyView(View):
-    """Join / leave / start scaffold shared by multiplayer game lobbies.
+    """Join / leave / start scaffold shared by the multiplayer game lobbies.
 
     Subclasses must override:
       - `_build_lobby_embed(status: str) -> Embed` — used by refresh + timeout
@@ -58,6 +102,11 @@ class BaseGameLobbyView(View):
 
     Optional class attribute:
       - `max_players: ClassVar[int | None]` — None means unlimited
+
+    Every seat mutation runs under `_lock` and re-reads `_started` inside it, so a Join racing
+    the Start press either takes a seat the balance re-check then sees, or is refused. The view
+    stops only once `_start_game` reports the table is on screen; anything else leaves the lobby
+    open and pressable.
     """
 
     max_players: ClassVar[int | None] = None
@@ -73,7 +122,27 @@ class BaseGameLobbyView(View):
         timeout: int,
         extra_initial_participants: Iterable[GameParticipant] | None = None,
     ) -> None:
-        """Initializes shared lobby state and registers the owner."""
+        """Seats the owner plus any pre-seated players, and arms the idle timeout.
+
+        `extra_initial_participants` is how a table seats someone who never pressed Join, which
+        is how the Blackjack bot takes its place; a duplicate of the owner in it is ignored so
+        the owner keeps the first seat and the join order the embeds render. `self.message` is
+        left for whoever sends the lobby message to fill in.
+
+        Args:
+            owner (GameParticipant): The seat that opened the lobby; alone may press Start, and
+                may not leave.
+            rng (Random): Random source handed to the game this lobby starts.
+            system_name (str): Casino display name the game's dealer side is drawn with.
+            system_avatar_url (str): Casino avatar carried through to the game view.
+            prepare_participant (PrepareParticipant): Join-time validation, bound to this game's
+                stake by the cog.
+            refresh_participants (RefreshParticipants): Start-time balance re-check, bound to the
+                same stake.
+            timeout (int): Idle seconds before `on_timeout` closes a lobby that never started.
+            extra_initial_participants (Iterable[GameParticipant] | None): Seats present before
+                anyone joins.
+        """
         super().__init__(timeout=timeout)
         self.owner = owner
         self.rng = rng
@@ -91,11 +160,20 @@ class BaseGameLobbyView(View):
 
     @property
     def participants(self) -> list[GameParticipant]:
-        """Returns participants in join order."""
+        """The queued seats, owner first and then in join order.
+
+        Returns:
+            A copy of the seat map's values, not a live view of it.
+        """
         return list(self._participants.values())
 
     async def on_timeout(self) -> None:
-        """Cleans up a lobby that never started."""
+        """Closes a lobby nobody started, and queues its message for deletion.
+
+        Does nothing once Start has taken: from then on the game view owns the message and its
+        own timeout. The closing edit is best-effort because a message deleted or made
+        uneditable meanwhile must not cost the cleanup scheduled after it.
+        """
         if self._started or self.message is None:
             return
         self._disable_buttons()
@@ -113,7 +191,17 @@ class BaseGameLobbyView(View):
     async def join(
         self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Adds the interacting user to the lobby."""
+        """Seats the pressing user, refusing a started, full or already-seated table.
+
+        The whole check-and-seat runs under `_lock`, so two people pressing Join for the last
+        seat cannot both take it. Deferring is left until after the cheap refusals because it is
+        `prepare_participant` that needs it: its own refusal is an ephemeral followup, which only
+        becomes legal once the interaction has been answered.
+
+        Args:
+            _button (Button[BaseGameLobbyView]): The Join button, unused.
+            interaction (Interaction[commands.Bot]): The Join press.
+        """
         if interaction.user is None:
             return
         async with self._lock:
@@ -139,7 +227,15 @@ class BaseGameLobbyView(View):
     async def leave(
         self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Removes the interacting user from the lobby."""
+        """Removes the pressing user's seat, refusing the owner and a started table.
+
+        The owner is refused because Start is theirs alone, so a lobby they left could never be
+        started. Runs under `_lock`, and defers only once a seat is really being removed.
+
+        Args:
+            _button (Button[BaseGameLobbyView]): The Leave button, unused.
+            interaction (Interaction[commands.Bot]): The Leave press.
+        """
         if interaction.user is None:
             return
         async with self._lock:
@@ -162,7 +258,20 @@ class BaseGameLobbyView(View):
     async def start(
         self, _button: Button[BaseGameLobbyView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Starts the game if the lobby owner pressed the button."""
+        """Re-checks every balance and hands the table over, for the owner only.
+
+        Seats that can no longer cover the stake are dropped by `refresh_participants` and named
+        back to whoever pressed Start; an owner among them stops the start and leaves the lobby
+        open. `_started` is set inside the lock and `_start_game` then runs outside it, so the
+        settlement and the hand-off edit do not hold the lock while a second press is already
+        refused by the flag. A hook returning False must have cleared `_started` itself, since
+        the view is stopped only once the table is really on screen.
+
+        Args:
+            _button (Button[BaseGameLobbyView]): The Start button, unused.
+            interaction (Interaction[commands.Bot]): The Start press, deferred before the lock is
+                taken.
+        """
         if interaction.user is None:
             return
         if interaction.user.id != self.owner.user_id:
@@ -190,7 +299,17 @@ class BaseGameLobbyView(View):
             self.stop()
 
     async def _refresh_message(self, message: Message | None, status: str) -> None:
-        """Edits the lobby message with the latest participant state."""
+        """Re-renders the lobby message with the roster as it now stands.
+
+        Adopts the passed message as the lobby's own, so `on_timeout` closes the message the last
+        press came from. The spacer rides through `embed_spacer_payload(..., target=)` so a lobby
+        edited on every press retains the uploaded file instead of re-uploading it into Discord
+        error 400009.
+
+        Args:
+            message (Message | None): The lobby message to edit; None skips the render.
+            status (str): Status line the embed shows.
+        """
         if message is None:
             return
         self.message = message
@@ -202,7 +321,16 @@ class BaseGameLobbyView(View):
         )
 
     async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Sends a private lobby notice to the interacting user."""
+        """Tells the pressing user, privately, why their press was refused.
+
+        Never raises: a notice explains a press that has already been rejected, so a delivery
+        failure is logged inside `send_ephemeral_notice` rather than surfacing as a failed
+        interaction.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The press being refused.
+            content (str): The refusal text, shown to that user only.
+        """
         await send_ephemeral_notice(
             interaction=interaction, content=content, log_message="Failed to send lobby notice"
         )
@@ -213,7 +341,14 @@ class BaseGameLobbyView(View):
         item: Item[BaseGameLobbyView],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Logs lobby component failures instead of only printing to stderr."""
+        """Records a component failure nextcord would otherwise only print to stderr.
+
+        Args:
+            error (Exception): The exception the component callback raised.
+            item (Item[BaseGameLobbyView]): The component that raised; its label is read
+                defensively, since not every item carries one.
+            interaction (Interaction[commands.Bot]): The press being handled.
+        """
         logfire.error(
             "Lobby interaction failed",
             item_label=getattr(item, "label", None),
@@ -222,25 +357,57 @@ class BaseGameLobbyView(View):
         )
 
     def _disable_buttons(self) -> None:
-        """Disables all button components on the lobby view."""
+        """Greys the buttons out, leaving them on screen for the closing render."""
         disable_view_components(children=self.children, component_types=(Button,))
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
-        """Builds the lobby embed for a concrete game type."""
+        """Renders the current roster as this game's own lobby embed.
+
+        Called on every roster change and once more when the lobby times out, so it must render
+        from `participants` alone.
+
+        Args:
+            status (str): Status line for the description, e.g. who just joined, or why Start did
+                not take.
+
+        Returns:
+            The lobby embed for the roster as it stands.
+
+        Raises:
+            NotImplementedError: The subclass did not override the hook.
+        """
         raise NotImplementedError
 
     async def _start_game(self, message: Message | None) -> bool:
-        """Starts a concrete game from the current lobby participants."""
+        """Starts this game from the queued seats, taking the lobby message over.
+
+        Called with `_started` already set, and outside the lobby lock. Returning False leaves
+        the lobby alive and pressable, so an implementation that refuses to start has to clear
+        `_started` itself.
+
+        Args:
+            message (Message | None): The lobby message the game view takes over.
+
+        Returns:
+            True once the game is on screen, False when the lobby was left open.
+
+        Raises:
+            NotImplementedError: The subclass did not override the hook.
+        """
         raise NotImplementedError
 
 
 class BaseJackpotLobbyView(BaseGameLobbyView):
-    """Base lobby for games sharing a global jackpot pool.
+    """Base lobby for a game backed by the shared jackpot pool rather than the casino ledger.
 
-    On Start, each participant is charged `ante` into the jackpot via
-    one `apply_jackpot_settlement_batch` call before the table begins.
-    Subclasses must declare `game_id` / `ante` and override
-    `_start_game_after_antes`.
+    On Start each participant is charged `ante` into the pool through one
+    `apply_jackpot_settlement_batch`, all or nothing, before the table begins; only then does
+    `_start_game_after_antes` run. Subclasses declare `game_id` / `ante` and override that hook
+    alongside `_build_lobby_embed`.
+
+    The pool balance and the generation it was read at ride on the view: the balance is what the
+    lobby embed shows, and the generation travels into the table so a payout claimed against a
+    pool that has since been drained and reseeded is refused instead of paid out of the new seed.
     """
 
     game_id: ClassVar[str]
@@ -259,7 +426,26 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         initial_jackpot_generation: int | None = None,
         extra_initial_participants: Iterable[GameParticipant] | None = None,
     ) -> None:
-        """Initializes jackpot lobby state with the live pool snapshot."""
+        """Seats the lobby and records the pool the table is being opened against.
+
+        Both pool fields are re-read from the ante settlement before the table starts, so what
+        the game view receives is the pool after the antes rather than this snapshot.
+
+        Args:
+            owner (GameParticipant): The seat that opened the lobby.
+            rng (Random): Random source handed to the game this lobby starts.
+            system_name (str): Casino display name the game's dealer side is drawn with.
+            system_avatar_url (str): Casino avatar carried through to the game view.
+            prepare_participant (PrepareParticipant): Join-time validation, bound to the ante.
+            refresh_participants (RefreshParticipants): Start-time balance re-check, bound to the
+                same ante.
+            initial_jackpot (int): Pool balance observed when the lobby was opened.
+            timeout (int): Idle seconds before `on_timeout` closes a lobby that never started.
+            initial_jackpot_generation (int | None): Generation that balance was read at, or None
+                to claim against whichever generation is live at settlement time.
+            extra_initial_participants (Iterable[GameParticipant] | None): Seats present before
+                anyone joins.
+        """
         super().__init__(
             owner=owner,
             rng=rng,
@@ -274,7 +460,21 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         self._jackpot_generation = initial_jackpot_generation
 
     async def _start_game(self, message: Message | None) -> bool:
-        """Charges antes before delegating to the jackpot game start hook."""
+        """Charges every ante in one transaction, then starts the table.
+
+        A rejected batch means at least one seat could not cover the ante and nothing was
+        committed, so the lobby reopens instead of starting: `_started` goes back to False, every
+        rejected seat other than the owner is dropped, and the re-render names them (or says the
+        owner is the one short). A missing message is the same kind of non-start, since the
+        hand-off would have nothing to edit.
+
+        Args:
+            message (Message | None): The lobby message the table takes over.
+
+        Returns:
+            True once the antes are committed and the table is on screen, False when the lobby
+            was left open.
+        """
         if message is None:
             self._started = False
             return False
@@ -302,10 +502,16 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
         return True
 
     async def _settle_pregame_antes(self) -> JackpotSettlementBatchResult:
-        """Charges each participant `ante` into the jackpot pool.
+        """Debits `ante` from every seat into the pool, in one transaction.
 
-        Applies all participant antes in one DB transaction so the lobby cannot
-        partially charge a table.
+        `require_full_debit` makes the batch all-or-nothing: a seat short of the ante rejects the
+        whole batch with nothing committed, so a table can never be half paid for. No generation
+        guard is sent, because that guard only refuses a payout and every ante here is a debit.
+        The returned pool balance and generation are adopted either way — on a rejection they are
+        the live pool the reopened lobby's embed should show.
+
+        Returns:
+            The batch result, carrying the post-ante balances or the rejected player ids.
         """
         settlements: list[JackpotSettlementRequest] = []
         for participant in self.participants:
@@ -328,5 +534,18 @@ class BaseJackpotLobbyView(BaseGameLobbyView):
     async def _start_game_after_antes(
         self, message: Message, final_balances: dict[int, int]
     ) -> None:
-        """Starts a jackpot-backed game after ante settlement succeeds."""
+        """Deals the concrete game once every ante is committed.
+
+        Reached only after the settlement succeeded, so the money is already in the pool: an
+        implementation that gives up here leaves a table that has been paid for, which is why its
+        hand-off edit retries rather than dropping the round.
+
+        Args:
+            message (Message): The lobby message, reused as the table message.
+            final_balances (dict[int, int]): Post-ante wallet balance per player, from the
+                settlement that charged them.
+
+        Raises:
+            NotImplementedError: The subclass did not override the hook.
+        """
         raise NotImplementedError

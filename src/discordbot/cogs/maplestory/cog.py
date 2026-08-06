@@ -1,4 +1,23 @@
-"""Slash commands for querying local MapleStory Artale data."""
+"""The `/maplestory` slash command group, the Discord half of the Artale lookup cog.
+
+Eight subcommands hang off one group (`monster`, `equip`, `scroll`, `npc`, `quest`, `map`, `item`
+and `stats`), each localized for English, `zh_TW` and `ja`, and each taking a single free-text
+`name` except `stats`. There is no listener, no permission check and no kill-switch here: the data
+is read-only JSON maintained offline under `./data/maplestory`, so nothing a user types can change
+state, and the one failure this surface can report is that the directory yielded nothing.
+
+Every lookup runs the same shape: defer, confirm the data is loaded, search through
+`MapleStoryService`, then answer with exactly one message. A single match answers with the finished
+embed; several answer with a count plus a `MapleDropSearchView`, whose select edits that same
+message into the chosen entry instead of posting again; none answers with a 找不到 notice. What the
+user reads is Traditional Chinese throughout, since the display names in the JSON are; only the
+command metadata carries the other locales.
+
+`_send_maple_followup` is the single send point, so every result the feature posts renders at the
+one width the shared spacer pins (`utils/discord_embeds.py`). The searching, the embed building and
+the select itself live in `service.py`, `embeds.py` and `views.py`; this file only wires them to
+Discord.
+"""
 
 from pathlib import Path
 
@@ -30,7 +49,16 @@ _ERROR_COLOR = 0xFF0000
 async def _send_maple_followup(
     interaction: Interaction[commands.Bot], embed: Embed, view: View | None = None
 ) -> None:
-    """Sends a MapleStory result embed at a uniform width."""
+    """Sends one MapleStory result as a followup at the feature's uniform embed width.
+
+    Always a send rather than an edit: the only edit in this feature is the select's own, which
+    `views.py` builds its own payload for. `embed` is mutated in place to carry the spacer image.
+
+    Args:
+        interaction (Interaction[commands.Bot]): The already-deferred interaction to answer.
+        embed (Embed): The result embed, mutated in place by the spacer helper.
+        view (View | None): The select menu to attach when the query matched several entries.
+    """
     payload = embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction)
     if view is not None:
         await interaction.followup.send(embed=embed, view=view, **payload)
@@ -39,39 +67,80 @@ async def _send_maple_followup(
 
 
 class MapleStoryCogs(commands.Cog):
-    """Slash commands for querying MapleStory Artale data."""
+    """The `/maplestory` group and its lookup subcommands."""
 
     def __init__(self, bot: commands.Bot, data_dir: Path = DEFAULT_DATA_DIR):
-        """Initializes the MapleStoryCogs instance.
+        """Loads the Artale data for this cog.
+
+        The read happens here rather than lazily because cogs are added synchronously before the
+        gateway connects. It cannot fail the load: a missing or unreadable file leaves that
+        category empty, and `_ensure_data` is what turns an empty service into a user-visible
+        error on the first command instead.
 
         Args:
-            bot: The Discord bot instance.
-            data_dir: The directory where game data is stored.
+            bot (commands.Bot): The bot this cog is added to.
+            data_dir (Path): Directory holding the Artale JSON files.
         """
         self.bot = bot
         self.data_dir = data_dir
         self.service = MapleStoryService.from_directory(data_dir)
 
     def _ensure_data(self) -> bool:
-        """Ensures that game data is loaded."""
+        """Confirms the Artale data is loaded, re-reading the directory once when it is not.
+
+        The re-read is what lets a directory populated after the bot started serve commands
+        without a restart. It costs a full reload per command only while the data is genuinely
+        absent, since a service holding monsters never reaches it.
+
+        Returns:
+            True when a search can run, False when the directory still yields nothing.
+        """
         if self.service.has_data():
             return True
         self.service.reload(self.data_dir)
         return self.service.has_data()
 
     def _translate(self, category: str, name: str) -> str:
-        """Translates a game string based on category and name."""
+        """Looks a name up in the loaded translation tables.
+
+        Exists as a bound method so it can be handed to the embed builders as their `TranslateFn`
+        without them holding the service.
+
+        Args:
+            category (str): Translation table to read, such as `equipment`, `eqType` or `region`.
+            name (str): The name to translate.
+
+        Returns:
+            The translated name, or `name` unchanged when that table has no entry for it.
+        """
         return self.service.translate(category=category, name=name)
 
     def _item_select_label(self, item: str) -> str:
-        """Returns the item search option label, translating equipment once."""
+        """Builds the select label for one drop item.
+
+        A drop carries no category of its own, so the name is probed against the equipment table
+        first and the misc table second.
+
+        Args:
+            item (str): The drop name as it appears in the monster data.
+
+        Returns:
+            The translated label, or `item` unchanged when neither table has it.
+        """
         equipment_label = self._translate(category="equipment", name=item)
         if equipment_label != item:
             return equipment_label
         return self._translate(category="misc", name=item)
 
     async def _send_error(self, interaction: Interaction[commands.Bot]) -> None:
-        """Sends a generic error message to the user."""
+        """Answers with the data-unavailable embed.
+
+        Reached only when the JSON directory yielded nothing, which is an operator problem rather
+        than a bad query, so the wording points the user at the administrator.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The already-deferred interaction to answer.
+        """
         embed = Embed(
             title=":x: 錯誤", description="無法載入資料，請聯絡管理員", color=_ERROR_COLOR
         )
@@ -80,7 +149,13 @@ class MapleStoryCogs(commands.Cog):
     async def _send_not_found(
         self, interaction: Interaction[commands.Bot], kind: str, query: str
     ) -> None:
-        """Sends a 'not found' message to the user."""
+        """Answers with a no-match notice that quotes the query back.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The already-deferred interaction to answer.
+            kind (str): Chinese noun for what was searched, spliced into the notice.
+            query (str): The user's query, echoed so a typo is visible in the reply.
+        """
         embed = Embed(
             title=":mag: 搜尋結果",
             description=f"找不到名稱包含「{query}」的{kind}",
@@ -98,7 +173,12 @@ class MapleStoryCogs(commands.Cog):
         },
     )
     async def maplestory(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for MapleStory Artale data queries."""
+        """Holds the Artale lookups; Discord cannot invoke a group, so this body never runs.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Unused; every invocation dispatches to a
+                subcommand.
+        """
 
     # ── /maplestory monster ─────────────────────────────────────────
 
@@ -125,11 +205,11 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Searches for monster information in MapleStory.
+        """Answers with a monster's entry, or a select menu when the query matches several.
 
         Args:
-            interaction: The interaction that triggered the command.
-            name: The name of the monster to search for.
+            interaction (Interaction[commands.Bot]): The interaction that invoked the command.
+            name (str): Substring matched case-insensitively against English and Chinese names.
         """
         await interaction.response.defer()
         if not self._ensure_data():
@@ -181,11 +261,11 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Searches for equipment in MapleStory.
+        """Answers with an equipment entry, or a select menu when the query matches several.
 
         Args:
-            interaction: The interaction that triggered the command.
-            name: The name of the equipment to search for.
+            interaction (Interaction[commands.Bot]): The interaction that invoked the command.
+            name (str): Substring matched case-insensitively against English and Chinese names.
         """
         await interaction.response.defer()
         if not self._ensure_data():
@@ -241,11 +321,11 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Searches for scrolls in MapleStory.
+        """Answers with a scroll's entry, or a select menu when the query matches several.
 
         Args:
-            interaction: The interaction that triggered the command.
-            name: The name of the scroll to search for.
+            interaction (Interaction[commands.Bot]): The interaction that invoked the command.
+            name (str): Substring matched case-insensitively against English and Chinese names.
         """
         await interaction.response.defer()
         if not self._ensure_data():
@@ -301,11 +381,11 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Searches for NPCs in MapleStory.
+        """Answers with an NPC's entry, or a select menu when the query matches several.
 
         Args:
-            interaction: The interaction that triggered the command.
-            name: The name of the NPC to search for.
+            interaction (Interaction[commands.Bot]): The interaction that invoked the command.
+            name (str): Substring matched case-insensitively against English and Chinese names.
         """
         await interaction.response.defer()
         if not self._ensure_data():
@@ -356,11 +436,11 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Searches for quests in MapleStory.
+        """Answers with a quest's entry, or a select menu when the query matches several.
 
         Args:
-            interaction: The interaction that triggered the command.
-            name: The name of the quest to search for.
+            interaction (Interaction[commands.Bot]): The interaction that invoked the command.
+            name (str): Substring matched case-insensitively against English and Chinese names.
         """
         await interaction.response.defer()
         if not self._ensure_data():
@@ -414,11 +494,11 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Searches for maps in MapleStory.
+        """Answers with a map's entry, or a select menu when the query matches several.
 
         Args:
-            interaction: The interaction that triggered the command.
-            name: The name of the map to search for.
+            interaction (Interaction[commands.Bot]): The interaction that invoked the command.
+            name (str): Substring matched case-insensitively against English and Chinese names.
         """
         await interaction.response.defer()
         if not self._ensure_data():
@@ -474,11 +554,15 @@ class MapleStoryCogs(commands.Cog):
             required=True,
         ),
     ) -> None:
-        """Searches for item drop sources in MapleStory.
+        """Answers with the monsters that drop an item, or a select menu when several items match.
+
+        The searchable set is the drop tables themselves, not the item files, so an item no
+        monster drops cannot be found here even though the other subcommands know it.
 
         Args:
-            interaction: The interaction that triggered the command.
-            name: The name of the item to search for.
+            interaction (Interaction[commands.Bot]): The interaction that invoked the command.
+            name (str): Substring matched case-insensitively against drop names and their
+                translations.
         """
         await interaction.response.defer()
         if not self._ensure_data():
@@ -525,10 +609,10 @@ class MapleStoryCogs(commands.Cog):
         },
     )
     async def maple_stats(self, interaction: Interaction[commands.Bot]) -> None:
-        """Gets MapleStory database statistics.
+        """Answers with the loaded data's counts, monster level distribution and top drops.
 
         Args:
-            interaction: The interaction that triggered the command.
+            interaction (Interaction[commands.Bot]): The interaction that invoked the command.
         """
         await interaction.response.defer()
         if not self._ensure_data():
@@ -541,9 +625,12 @@ class MapleStoryCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the MapleStoryCogs to the bot.
+    """Registers the MapleStory cog, reading the data directory as a side effect.
+
+    Sync on purpose: `_load_cogs_sync` adds every cog before the gateway connects, and an async
+    `setup` here would break the first command sync.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The bot to add the cog to.
     """
     bot.add_cog(MapleStoryCogs(bot), override=True)

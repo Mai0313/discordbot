@@ -1,4 +1,36 @@
-"""Slash command cog for downloading videos through yt-dlp."""
+"""Cog that downloads the video behind a pasted link and sends the file back.
+
+The whole Discord surface is one slash command, `/download_video` (localized for `zh_TW` and
+`ja`), and no listener. The user hands over a URL — or the entire blob of share text a platform's
+copy button produced — plus an optional `quality` preset, and one deferred message is edited in
+place through every state: the `-# 正在下載影片...` placeholder first, then the file itself with
+its size and source link, or a hosted URL when the file is too big to attach, or a subtext line
+naming the failure. Nothing is ephemeral and nothing is posted as a follow-up, so one invocation
+stays one message.
+
+No kill-switch gates it. `DouyinConfig.auto_expand_enabled` gates `parse_douyin`'s automatic
+expansion of a pasted link, not this command: typing the command IS the explicit request, so it
+keeps serving Douyin while auto-expansion is off.
+
+Two download paths sit behind the one command. A Douyin link is routed to `DouyinDownloader`
+(`utils/douyin.py`) before a yt-dlp downloader is ever constructed, because yt-dlp's extractor
+needs cookies, never yields a photo post, and caps below the source resolution; everything else
+goes to `VideoDownloader` (`utils/downloader.py`). Only the Douyin branch can deliver several
+attachments at once, since a photo post is a gallery, and only it has to say how much of that
+gallery the 10-attachment cap left behind.
+
+Oversize is not a failure here. `MediaDeliveryPlanner` (`utils/media_delivery.py`) makes the
+attach-vs-host-vs-drop decision against the destination's real ceiling (`upload_limit_for`, so a
+boosted guild's raised limit is honored), and a file over it is published to the external media
+host and posted as a URL rather than re-downloaded at a lower quality — the 480p downgrade retry
+this cog used to carry is gone. Only a file that cannot be hosted at all reaches the "too large"
+message, which is the exact behavior a deployment with hosting unconfigured gets throughout.
+
+Every failure path reports through `_edit_quietly`, and the broad `except` blocks are deliberate:
+the bot registers no application-command error handler (`DiscordBot.on_command_error` covers
+prefix commands only), so anything escaping this cog would leave the user staring at
+`正在下載影片...` for good.
+"""
 
 import asyncio
 from pathlib import Path
@@ -39,17 +71,24 @@ QUALITY_CHOICES: dict[str, VideoQuality] = {
 
 
 class VideoCogs(commands.Cog):
-    """Downloads videos from slash command requests.
+    """Serves `/download_video`, editing the download into the deferred reply.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
+        media_delivery: Planner owning the attach-vs-host-vs-drop decision for whatever was
+            downloaded. An instance attribute rather than a module singleton so a test can swap
+            in a planner pointed at its own serve dir.
     """
 
     def __init__(self, bot: commands.Bot):
-        """Initializes the VideoCogs instance.
+        """Builds the cog with its own media-delivery planner.
+
+        The planner reads the `MEDIA_HOSTING_*` environment as it is built and self-disables when
+        the host is unconfigured, so an unconfigured deployment degrades to the host-free path
+        with no branch of its own here.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self.media_delivery = build_media_delivery_planner()
@@ -78,12 +117,19 @@ class VideoCogs(commands.Cog):
             choices=QUALITY_CHOICES,
         ),
     ) -> None:
-        """Downloads a video from various platforms and sends it back.
+        """Downloads the linked video and edits it into the deferred reply.
+
+        Defers and puts a placeholder up before anything else, since a download runs far past
+        Discord's initial-response window and every later state is an edit of that same message.
+        A Douyin link leaves for its own branch before a yt-dlp downloader is constructed, and a
+        file over the destination's ceiling is hosted as a URL rather than re-downloaded smaller.
+        Nothing raises out of here: the broad `except` reports the failure in the placeholder.
 
         Args:
-            interaction: The interaction that triggered the command.
-            url: The URL of the video to download.
-            quality: The desired video quality.
+            interaction (Interaction[commands.Bot]): The invocation to defer and then edit.
+            url (str): A video URL, or the share text carrying one.
+            quality (VideoQuality): Preset selecting the format asked for; a Douyin photo post
+                ignores it.
         """
         await interaction.response.defer()
         await interaction.edit_original_message(content="-# 正在下載影片...")
@@ -162,10 +208,10 @@ class VideoCogs(commands.Cog):
         several attachments on one message rather than the single file the yt-dlp path delivers.
 
         Args:
-            interaction: The interaction that triggered the command.
-            url: The Douyin URL.
-            quality: The desired video quality; ignored for a photo post.
-            upload_limit: The destination's attachment ceiling.
+            interaction (Interaction[commands.Bot]): The interaction that triggered the command.
+            url (str): The Douyin URL.
+            quality (VideoQuality): The desired video quality; ignored for a photo post.
+            upload_limit (int): The destination's attachment ceiling in bytes.
         """
         # A private directory per invocation, because the filenames are derived from the post id:
         # two people downloading the same post into one shared temp dir would write the same paths,
@@ -188,7 +234,21 @@ class VideoCogs(commands.Cog):
         upload_limit: int,
         download_dir: str,
     ) -> None:
-        """Runs the Douyin download and delivery inside a caller-owned download directory."""
+        """Downloads the Douyin post into the caller's directory and delivers what came back.
+
+        Nothing escapes into the command: the download and the delivery each sit under their own
+        broad `except`, so either one failing edits the placeholder into a reason rather than
+        stranding it. A lone oversize file collapses to the bare-URL reply; a gallery never does,
+        because that reply carries one link and would silently lose the rest of the post.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction whose deferred message is
+                edited with the outcome.
+            url (str): The Douyin URL.
+            quality (VideoQuality): The desired video quality; ignored for a photo post.
+            upload_limit (int): The destination's attachment ceiling in bytes.
+            download_dir (str): Scratch directory the caller owns and removes once this returns.
+        """
         downloader = DouyinDownloader(output_folder=download_dir)
         try:
             # Capped at the attachment limit so a 48-image gallery does not download 38 files
@@ -215,9 +275,9 @@ class VideoCogs(commands.Cog):
         try:
             with result:
                 items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
-                # Read BEFORE planning, which caches it: a successful host moves the source out of
-                # the temp dir, so measuring afterwards would stat a deleted path and break the very
-                # oversize-to-URL fallback this number describes.
+                # Read BEFORE planning, since the read is what caches it: a successful host moves
+                # the source out of the temp dir, so measuring afterwards would stat a deleted path
+                # and break the very oversize-to-URL fallback this number describes.
                 total_mb = result.total_bytes / 1024 / 1024
                 plan = await self.media_delivery.plan(
                     items=items,
@@ -280,10 +340,10 @@ class VideoCogs(commands.Cog):
         dropped item means delivery itself failed.
 
         Args:
-            interaction: The interaction that triggered the command.
-            plan: The attach-vs-host outcome for the downloaded files.
-            result: The downloaded post, carrying the pre-cap image count.
-            url: The source Douyin URL.
+            interaction (Interaction[commands.Bot]): The interaction that triggered the command.
+            plan (MediaPlan): The attach-vs-host outcome for the downloaded files.
+            result (DouyinDownload): The downloaded post, carrying the pre-cap image count.
+            url (str): The source Douyin URL.
         """
         total_mb = result.total_bytes / 1024 / 1024
         lines = [f"-# 檔案大小: {total_mb:.1f}MB", f"-# 來源: <{url}>"]
@@ -323,6 +383,11 @@ class VideoCogs(commands.Cog):
 
         Broad on purpose: this is the last-resort reporter every failure path in the cog uses, so
         it must never raise a second exception on top of the one being reported.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction whose deferred message is
+                edited.
+            content (str): The message body to show, already worded for the user.
         """
         try:
             await interaction.edit_original_message(content=content)
@@ -341,7 +406,19 @@ class VideoCogs(commands.Cog):
         file_path: Path,
         url: str,
     ) -> None:
-        """Edits the deferred placeholder into the final downloaded file response."""
+        """Edits the deferred placeholder into the downloaded file plus its size and source.
+
+        The source link is wrapped in `<>` so Discord suppresses a preview card beside the
+        attachment, and mentions are disabled because the line echoes what the user typed: an
+        input no URL pattern matched is passed through verbatim, so `@everyone` can reach here.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction whose deferred message is
+                edited.
+            file_size_mb (float): Size of the download, for the caption.
+            file_path (Path): The downloaded file to attach.
+            url (str): The source URL, as it was resolved from the request.
+        """
         body = f"-# 檔案大小: {file_size_mb:.1f}MB\n-# 來源: <{url}>"
         await interaction.edit_original_message(
             content=body,
@@ -358,6 +435,12 @@ class VideoCogs(commands.Cog):
         (a second URL such as the source link, even wrapped in `<>`, stops Discord from rendering
         the inline player, so the source is intentionally omitted here). Under ~100 MiB Discord
         inline-plays the link; above it the link is browser-playable.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction whose deferred message is
+                edited.
+            file_size_mb (float): Size of the hosted file, for the caption.
+            public_url (str): The host's public URL for the file.
         """
         body = f"-# 檔案大小: {file_size_mb:.1f}MB (過大，改用連結)\n{public_url}"
         await interaction.edit_original_message(
@@ -365,11 +448,13 @@ class VideoCogs(commands.Cog):
         )
 
 
-# 註冊 Cog
 def setup(bot: commands.Bot) -> None:
     """Adds the VideoCogs to the bot.
 
+    Sync, like every cog entry point here: an async `setup` is scheduled without being awaited
+    and breaks the first command sync.
+
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(VideoCogs(bot), override=True)

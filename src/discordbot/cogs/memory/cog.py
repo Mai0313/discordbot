@@ -1,10 +1,28 @@
-"""Slash commands for viewing, regenerating, and clearing long-term memory.
+"""The long-term memory Discord surface: viewing, rebuilding and erasing what the bot remembers.
 
-`/memory show`, `/memory regenerate` and `/memory clear` operate on the caller's
-own per-user memory; `/memory server show` views the bot's per-server
-(community) memory for the current guild. Only the personal scope is erasable
-from chat, and only behind a confirmation: server memory stays
-operator-maintained.
+Registers one cog, `MemoryCogs`, and no listeners. `/memory show`, `/memory regenerate` and
+`/memory clear` act on the caller's OWN per-user scope, which is keyed by Discord id and so covers
+every server plus their DMs; `/memory server show` reads the bot's per-server (community) scope and
+is refused outside a guild, because that scope does not exist in a DM. Every reply is ephemeral —
+this is where a user sees their own stored memory, and it is nobody else's business.
+
+Nothing here stores, renders or erases anything itself. Scopes, compartments and the rendered
+document come from `services/memory/store.py`; the background rebuild and the clear from
+`services/memory/pipeline.py`; the embeds, the pager and the confirmation buttons from `views.py`.
+What is left is the Discord half: resolve the scope, decide whether there is anything to show, pick
+the placeholder that matches when there is not, and page what there is.
+
+Three asymmetries are deliberate. There is no server-side rebuild or clear, because community
+memory stays operator-maintained. `/memory clear` only OPENS its confirmation and
+`MemoryClearConfirmView` owns the wipe, which is irreversible and reaches tiers `/memory show`
+never displays. And `/memory regenerate` answers before its work starts: a from-scratch rebuild is
+minutes of LLM work, far past Discord's acknowledgement window, so it is dispatched to the
+pipeline's background queue and the user checks back with `/memory show`.
+
+No kill-switch and no permission gate. The commands are self-scoped instead, so a caller can only
+ever reach their own memory and the one server-scoped command is read-only. The proxy client and
+the extractor behind the rebuild are `cached_property`, so a deployment where nobody runs
+`/memory regenerate` never builds either.
 """
 
 from functools import cached_property
@@ -60,19 +78,20 @@ _SHOW_MAX_CHARS = 200_000
 
 
 class MemoryCogs(commands.Cog):
-    """Provides the long-term memory viewing, regeneration, and clearing commands.
+    """Registers the `/memory` group, its `/memory server` subgroup, and no listeners.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
-        config: The LLM client configuration used for memory regeneration.
-        runtime_models: Catalog providing the memory model settings.
+        bot: The Discord bot instance that owns this cog, and the only way a compartment
+            heading can name a guild.
+        config: LLM proxy settings, read once at load and used only by the rebuild path.
+        runtime_models: Catalog supplying the memory model tiers handed to the extractor.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initializes the memory cog.
+        """Initializes the cog and reads the settings the rebuild path will need.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance that owns this cog.
         """
         self.bot = bot
         self.config = LLMConfig()
@@ -80,19 +99,27 @@ class MemoryCogs(commands.Cog):
 
     @cached_property
     def client(self) -> AsyncOpenAI:
-        """The cached AsyncOpenAI client instance.
+        """The LiteLLM-proxy client, opened on first use.
+
+        Only `/memory regenerate` reaches it, so a deployment where nobody runs that command
+        never opens a client at all.
 
         Returns:
-            A configured AsyncOpenAI client reused across regeneration requests.
+            An `AsyncOpenAI` bound to the proxy, shared by every rebuild this process runs.
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
-        """The cached memory extraction service used for regeneration.
+        """The extraction service handed to a background rebuild, built on first use.
+
+        A rebuild only ever runs the consolidation half, so `extract_model` and `evaluate_model`
+        are filled in to complete the service rather than because this path calls them. The
+        per-user prompts are left at their defaults, which is correct here since only the
+        personal scope is rebuildable from chat.
 
         Returns:
-            An extractor bound to this cog's client and the memory models.
+            A `MemoryExtractorAI` on this cog's client and the catalog's memory model tiers.
         """
         return MemoryExtractorAI(
             client=self.client,
@@ -112,7 +139,12 @@ class MemoryCogs(commands.Cog):
         nsfw=False,
     )
     async def memory(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for memory management."""
+        """Registration anchor for the `/memory` group; Discord only dispatches its subcommands.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Unused; nextcord requires the parameter on
+                a group callback.
+        """
 
     @memory.subcommand(
         name="show",
@@ -124,7 +156,15 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_show(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the caller's consolidated memory, paginated."""
+        """Shows the caller their own consolidated memory, tone note first, paginated.
+
+        The only command that reads the tone note, since it is a per-user tier the per-server
+        view has no counterpart for. An interaction carrying no user names no scope to read, so
+        it is dropped without a reply.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet answered.
+        """
         if interaction.user is None:
             return
         scope = user_scope(user_id=interaction.user.id)
@@ -150,7 +190,12 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_server(self, interaction: Interaction[commands.Bot]) -> None:
-        """Subcommand group for per-server memory viewing."""
+        """Registration anchor for the `/memory server` subgroup; only its leaf is dispatched.
+
+        Args:
+            interaction (Interaction[commands.Bot]): Unused; nextcord requires the parameter on
+                a group callback.
+        """
 
     @memory_server.subcommand(
         name="show",
@@ -162,7 +207,15 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_server_show(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the bot's consolidated memory of the current server, paginated."""
+        """Shows the bot's consolidated memory of the current server, paginated.
+
+        Read-only, and the whole subgroup: community memory is operator-maintained, so there is
+        no server-side rebuild or clear to pair with it. The scope has one compartment and no
+        tone note, so the document is rendered bare rather than under visibility headings.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, not yet answered.
+        """
         if interaction.guild is None:
             # Per-server memory only exists inside a guild; there is no scope in DMs.
             embed = Embed(
@@ -193,17 +246,24 @@ class MemoryCogs(commands.Cog):
         pending_template: str,
         tone_text: str = "",
     ) -> None:
-        """Shows a scope's stored memory, or a friendly placeholder when empty.
+        """Shows a scope's stored memory, or a friendly placeholder when there is none.
 
-        `tone_text` is the per-user tone note (empty for the per-server view); when
-        present it leads the display as its own section, and it counts as content so
-        a user with only a tone note still sees it instead of the empty placeholder.
+        The tone note leads the display as its own section when there is one, and it counts as
+        content, so a user with only a tone note sees it instead of the empty placeholder.
 
-        The caller's own memory is shown compartment by compartment, each under a
-        heading naming who can see it. Provenance used to be a per-bullet tag the model
-        wrote and the reply path had to strip; now it is which directory a fact lives
-        in, so showing it costs nothing and tells the owner exactly where each thing
-        they told the bot can come back up.
+        The caller's own memory is shown compartment by compartment, each under a heading naming
+        who can see it. Provenance used to be a per-bullet tag the model wrote and the reply path
+        had to strip; now it is which directory a fact lives in, so showing it costs nothing and
+        tells the owner exactly where each thing they told the bot can come back up.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, answered here.
+            scope (str): The memory scope to read, personal or per-server.
+            title (str): Embed title shared by every page.
+            empty_description (str): Shown when the scope holds nothing at all.
+            pending_template (str): Shown instead when only unconsolidated observations exist;
+                formatted with a `count` field.
+            tone_text (str): The per-user tone note, empty for the per-server view.
         """
         pending_count = count_raw_entries(scope=scope)
         sections: list[str] = []
@@ -229,10 +289,17 @@ class MemoryCogs(commands.Cog):
     def _memory_sections(self, scope: str) -> list[str]:
         """Renders one scope's compartments as labelled display sections.
 
-        A server scope has exactly one compartment and no boundary to explain, so it is
-        rendered bare; a user scope gets one heading per compartment. The cap is lifted
-        far above the injection ceiling here on purpose: this view is for the owner, so
-        it should show everything stored rather than what a reply would fit.
+        A server scope has exactly one compartment and no boundary to explain, so it is rendered
+        bare; a user scope gets one heading per compartment. The cap is lifted far above the
+        injection ceiling on purpose: this view is for the owner, so it should show everything
+        stored rather than what a reply would fit.
+
+        Args:
+            scope (str): The memory scope to read.
+
+        Returns:
+            One section per non-empty compartment in `list_compartments` order, empty when the
+            scope has nothing stored.
         """
         flavor = flavor_of(scope=scope)
         compartments = list_compartments(scope=scope)
@@ -254,7 +321,17 @@ class MemoryCogs(commands.Cog):
     async def _send_memory_pages(
         self, interaction: Interaction[commands.Bot], text: str, footer_text: str, title: str
     ) -> None:
-        """Sends paginated memory pages, attaching the pager only when needed."""
+        """Sends the first page, attaching the pager view only when there is more than one.
+
+        The view is bound to the interaction after the send, since its timeout needs the
+        originating interaction to disable its own buttons.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, answered here.
+            text (str): The whole document to split across pages.
+            footer_text (str): Footer line shared by every page.
+            title (str): Embed title shared by every page.
+        """
         pages = paginate_on_lines(text=text, limit=MEMORY_PAGE_MAX_CHARS)
         embed = build_memory_embed(
             page_text=pages[0],
@@ -280,7 +357,16 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_regenerate(self, interaction: Interaction[commands.Bot]) -> None:
-        """Schedules a background rebuild of the caller's memory from evidence alone."""
+        """Schedules a background rebuild of the caller's memory from evidence alone.
+
+        Both refusals are checked here rather than left to the background task, which reports
+        only to the log: a cooldown and a scope with no cold-tier evidence would each be a
+        silent no-op the user was told had been scheduled. The pipeline re-checks the cooldown
+        under the scope lock, so this one is the up-front answer and not the authority.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, answered here.
+        """
         if interaction.user is None:
             return
         scope = user_scope(user_id=interaction.user.id)
@@ -334,7 +420,14 @@ class MemoryCogs(commands.Cog):
         },
     )
     async def memory_clear(self, interaction: Interaction[commands.Bot]) -> None:
-        """Asks for confirmation before erasing the caller's own memory."""
+        """Opens the confirmation prompt guarding an erase of the caller's own memory.
+
+        Erases nothing itself. The view is bound to the interaction after the send so its
+        timeout can disable its own buttons.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The invoking interaction, answered here.
+        """
         if interaction.user is None:
             return
         # The wipe is irreversible and covers tiers `/memory show` never displays,
@@ -347,9 +440,12 @@ class MemoryCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the MemoryCogs to the bot.
+    """Registers `MemoryCogs` on the bot.
+
+    Sync on purpose: the loader schedules an `async def setup` without awaiting it, which breaks
+    the first command sync.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The bot to add the cog to.
     """
     bot.add_cog(MemoryCogs(bot), override=True)

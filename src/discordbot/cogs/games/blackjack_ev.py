@@ -1,29 +1,34 @@
 """Blackjack expected-value engine for the bot player.
 
-An LLM reasons poorly about multi-step no-replacement probability, so this pure
-module turns the table state into decision-grade numbers: the dealer's H17
-final-total distribution and the expected value of every legal action, measured
-in multiples of the base hand bet.
+Pure arithmetic over one table state: the dealer's H17 final-total distribution and the expected
+value of every legal action, measured in multiples of the base hand bet. It is its own file
+because `bot_player.py` owns the policy (fractional-Kelly sizing, the insurance rule, the
+basic-strategy fallback, which action is actually played) while this one owns the probability;
+`shoe.py` takes only `compute_true_count` from it. Nothing here touches Discord, the ledger or an
+LLM, and the games cog keeps no model in the loop at all.
 
-The engine runs two passes. The exact pass knows the dealer hole card and drives
-the recommended action only; it is the bot's private informational edge and is
-never surfaced verbatim. The marginal pass integrates a hypothetical hole out
-over the remaining shoe (the real hole is never added back, so every exposed
-number depends only on the up-card and the shoe) and, when the dealer has
-already peeked under an Ace/ten up-card, conditions on "no dealer Blackjack".
-Only the marginal dealer distribution and marginal per-action EVs are exposed,
-so nothing handed to the model can reveal or reconstruct the actual hole card.
+The engine runs two passes over the same state. The exact pass knows the dealer hole card and
+drives the recommended action only; it is the bot's private informational edge. The marginal pass
+draws a hypothetical hole from the remaining shoe instead. The real hole was dealt out of that
+shoe and is never added back, so every marginal number depends on the up-card and the shoe alone.
+Under an Ace or ten up-card the marginal pass also conditions on "no dealer Blackjack", because
+the dealer peeked before player actions began and a natural would already have settled the round.
+Only the marginal dealer distribution and the marginal per-action EVs reach `ActionEvAnalysis`, so
+nothing a caller reads back can reconstruct the hole.
 
-Everything here is deterministic and order-independent: the shoe is collapsed
-to a 10-bucket value-count multiset (`2..9`, ten-value, ace), so results depend
-only on which cards remain, not their order. The recursions terminate naturally
-(dealer stands at hard 17+, a player hand auto-finishes at five non-bust cards),
-and per-call memoization keeps a single decision well under a millisecond.
+Everything here is deterministic and order-independent: the shoe is collapsed to a 10-bucket
+value-count multiset (`2..9`, ten-value, ace), so results depend only on which cards remain, not
+their order. The recursions terminate naturally (dealer stands at hard 17+, a player hand
+auto-finishes at five non-bust cards), and per-call memoization keeps a single decision well under
+a millisecond.
 
-This table's non-standard payouts are modeled directly: a five-card non-bust
-wins immediately, and a five-card 21 also earns a system-funded bonus. The
-VIP payout bonus is intentionally excluded; it is a settlement-layer perk, not
-a per-hand strategic lever.
+This table's non-standard payouts are modeled directly: a five-card non-bust wins immediately, and
+a five-card 21 also earns a system-funded bonus. The VIP payout bonus is intentionally excluded;
+it is a settlement-layer perk, not a per-hand strategic lever. Split is the one action priced by
+approximation rather than exactly, which is what `SPLIT_EV_MARGIN` absorbs.
+
+Raising is acceptable here: `bot_player.py::_safe_compute_action_evs` catches everything and
+degrades to the up-card-only basic-strategy table, so a bot turn never dies on an EV failure.
 """
 
 from typing import Final
@@ -85,7 +90,14 @@ class _EvContext(BaseModel):
 
 
 def _bucket_for_rank(*, rank: str) -> int:
-    """Maps a card rank to its value bucket index."""
+    """Maps a card rank to its value bucket index.
+
+    Args:
+        rank (str): Rank as spelled on `Card.rank`: `A`, `2`-`10`, `J`, `Q` or `K`.
+
+    Returns:
+        The index into `_BUCKET_VALUES`; every ten-value rank collapses onto `_TEN_BUCKET`.
+    """
     if rank == "A":
         return _ACE_BUCKET
     if rank in ("10", "J", "Q", "K"):
@@ -94,7 +106,17 @@ def _bucket_for_rank(*, rank: str) -> int:
 
 
 def build_shoe_value_counts(*, shoe: list[Card]) -> tuple[int, ...]:
-    """Collapses a card shoe into a 10-bucket value-count vector (2..9, ten, ace)."""
+    """Collapses a card shoe into a 10-bucket value-count vector (2..9, ten, ace).
+
+    Suit and draw order are dropped, which is what lets every recursion below be memoized on a
+    deck it can compare by equality.
+
+    Args:
+        shoe (list[Card]): Cards still undealt, in any order.
+
+    Returns:
+        Counts per bucket, indexed as `_BUCKET_VALUES`.
+    """
     counts = [0] * 10
     for card in shoe:
         counts[_bucket_for_rank(rank=card.rank)] += 1
@@ -112,7 +134,12 @@ def compute_true_count(*, shoe: list[Card]) -> float:
     the negative of the Hi-Lo sum still in `shoe`. The true count divides that
     running count by the decks remaining; a positive true count means the
     remaining shoe is rich in ten-value cards and aces, which favors the player.
-    Returns 0.0 for an empty shoe (a neutral, just-shuffled count).
+
+    Args:
+        shoe (list[Card]): Cards still undealt.
+
+    Returns:
+        The true count, or 0.0 for an empty shoe (a neutral, just-shuffled count).
     """
     if not shoe:
         return 0.0
@@ -125,14 +152,33 @@ def compute_true_count(*, shoe: list[Card]) -> float:
 
 
 def _decrement(*, shoe: tuple[int, ...], bucket: int) -> tuple[int, ...]:
-    """Returns a copy of the shoe vector with one card removed from a bucket."""
+    """Returns a copy of the shoe vector with one card removed from a bucket.
+
+    Unguarded: every caller has already skipped empty buckets, so a count is never driven
+    negative here.
+
+    Args:
+        shoe (tuple[int, ...]): Bucket counts to copy from.
+        bucket (int): Index of the bucket to decrement.
+
+    Returns:
+        The reduced count vector, reusable as a memo key.
+    """
     mutable = list(shoe)
     mutable[bucket] -= 1
     return tuple(mutable)
 
 
 def _hole_completes_blackjack(*, up_bucket: int, hole_bucket: int) -> bool:
-    """Returns whether an up-card plus this hole would be a natural Blackjack."""
+    """Returns whether an up-card plus this hole would be a natural Blackjack.
+
+    Args:
+        up_bucket (int): Value bucket index of the dealer up-card.
+        hole_bucket (int): Value bucket index of the hypothetical hole card.
+
+    Returns:
+        True for an ace against a ten-value card, in either order.
+    """
     return (up_bucket == _ACE_BUCKET and hole_bucket == _TEN_BUCKET) or (
         up_bucket == _TEN_BUCKET and hole_bucket == _ACE_BUCKET
     )
@@ -147,9 +193,9 @@ def _add_value(*, total: int, soft: bool, bucket: int) -> tuple[int, bool]:
     hard 12, not a bust).
 
     Args:
-        total: Best current total with any high ace already counted as 11.
-        soft: Whether an ace is currently counted as 11.
-        bucket: Value bucket index of the drawn card.
+        total (int): Best current total with any high ace already counted as 11.
+        soft (bool): Whether an ace is currently counted as 11.
+        bucket (int): Value bucket index of the drawn card.
 
     Returns:
         The updated `(total, soft)` state.
@@ -168,8 +214,18 @@ def _dealer_distribution(
 ) -> _DealerDist:
     """Computes the exact dealer final-total distribution under H17.
 
-    The dealer hits while below 17 and on soft 17, and stands on hard 17+.
-    Probabilities are over `{17, 18, 19, 20, 21, bust}`.
+    The dealer hits while below 17 and on soft 17, and stands on hard 17+, so the recursion
+    terminates without a depth bound. `memo` is mutated in place; its key is the whole node state,
+    so an entry stays valid for any caller playing the same rules.
+
+    Args:
+        total (int): Dealer total so far, with any high ace counted as 11.
+        soft (bool): Whether that total counts an ace as 11.
+        shoe (tuple[int, ...]): Bucket counts the dealer still draws from.
+        memo (_DealerMemo): Cache shared across the recursion.
+
+    Returns:
+        Probabilities over `{17, 18, 19, 20, 21, bust}`, bust at `_BUST_INDEX`.
     """
     if total > 21:
         return (0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
@@ -210,6 +266,15 @@ def _marginalize_hole(*, ctx: _EvContext, deck: tuple[int, ...], apply_peek: boo
     would complete a natural Blackjack are excluded and the rest renormalized,
     matching the information a player has once an Ace/ten up-card round survives
     the dealer's peek.
+
+    Args:
+        ctx (_EvContext): Per-pass state supplying the up-card and the dealer memo.
+        deck (tuple[int, ...]): Bucket counts the hypothetical hole is drawn from.
+        apply_peek (bool): Whether to exclude Blackjack-completing holes and renormalize.
+
+    Returns:
+        Probabilities over `{17, 18, 19, 20, 21, bust}`, falling back to the up-card alone as a
+        terminal hand when no hole is admissible.
     """
     accumulator = [0.0] * 6
     weight = 0.0
@@ -245,7 +310,15 @@ def _marginalize_hole(*, ctx: _EvContext, deck: tuple[int, ...], apply_peek: boo
 
 
 def _dealer_marginal_distribution(*, ctx: _EvContext, deck: tuple[int, ...]) -> _DealerDist:
-    """Memoized marginal dealer distribution from the up-card and unseen deck."""
+    """Memoized marginal dealer distribution from the up-card and unseen deck.
+
+    Args:
+        ctx (_EvContext): Per-pass state supplying the up-card, the peek flag and the cache.
+        deck (tuple[int, ...]): Unseen bucket counts at this node.
+
+    Returns:
+        Probabilities over `{17, 18, 19, 20, 21, bust}`.
+    """
     cached = ctx.marginal_memo.get(deck)
     if cached is not None:
         return cached
@@ -259,6 +332,13 @@ def _dealer_dist_for(*, ctx: _EvContext, shoe: tuple[int, ...]) -> _DealerDist:
 
     Exact pass: the known two-card dealer total plays out over `shoe`. Marginal
     pass: `shoe` is the unseen deck and the hole is integrated out of it.
+
+    Args:
+        ctx (_EvContext): Per-pass state selecting which dealer model applies.
+        shoe (tuple[int, ...]): Bucket counts at this node, after the player's own draws.
+
+    Returns:
+        Probabilities over `{17, 18, 19, 20, 21, bust}`.
     """
     if ctx.marginalize:
         return _dealer_marginal_distribution(ctx=ctx, deck=shoe)
@@ -273,7 +353,17 @@ def _stand_ev_unit(
     """Returns the per-unit EV of standing on a non-bust hand against the dealer.
 
     A five-card non-bust wins immediately (+1); a five-card 21 also earns the
-    system bonus, so its EV is `2 - P(dealer 21)`.
+    system bonus, so its EV is `2 - P(dealer 21)`, the dealer-paid leg pushing against a dealer
+    21 while the bonus still pays.
+
+    Args:
+        player_total (int): The player's final total; the caller has ruled out a bust.
+        five_card_eligible (bool): Whether this is a five-card non-bust hand that wins outright.
+        shoe (tuple[int, ...]): Bucket counts left for the dealer to draw from.
+        ctx (_EvContext): Per-pass state selecting which dealer model applies.
+
+    Returns:
+        EV in units of one base bet; a doubled hand is scaled by the caller, not here.
     """
     if five_card_eligible:
         if player_total == 21:
@@ -294,7 +384,24 @@ def _stand_ev_unit(
 def _player_optimal_ev(
     *, total: int, soft: bool, num_cards: int, shoe: tuple[int, ...], ctx: _EvContext
 ) -> float:
-    """Returns the best EV reachable from a player state via optimal hit/stand."""
+    """Returns the best EV reachable from a player state via optimal hit/stand.
+
+    Double, split and surrender are absent on purpose: each is legal only on a hand that has not
+    acted yet, so `_evaluate_actions` prices them once at the root and every node below this one
+    really is a hit-or-stand choice. A five-card non-bust hand cannot hit, so it short-circuits to
+    its stand value before the memo is consulted.
+
+    Args:
+        total (int): Player total so far, with any high ace counted as 11.
+        soft (bool): Whether that total counts an ace as 11.
+        num_cards (int): Cards held, which is what makes the five-card rules reachable.
+        shoe (tuple[int, ...]): Bucket counts left to draw from.
+        ctx (_EvContext): Per-pass state; its `player_memo` is filled in as the recursion runs.
+
+    Returns:
+        EV in base-bet units: -1.0 for a busted total, otherwise the better of standing and
+        hitting. An exhausted shoe forces the stand value, since no draw is possible.
+    """
     if total > 21:
         return -1.0
     stand_ev = _stand_ev_unit(
@@ -331,7 +438,18 @@ def _player_optimal_ev(
 def _hit_action_ev(
     *, total: int, soft: bool, num_cards: int, shoe: tuple[int, ...], ctx: _EvContext
 ) -> float:
-    """Returns the EV of hitting now and then playing optimally."""
+    """Returns the EV of hitting now and then playing optimally.
+
+    Args:
+        total (int): Player total so far, with any high ace counted as 11.
+        soft (bool): Whether that total counts an ace as 11.
+        num_cards (int): Cards held before this draw.
+        shoe (tuple[int, ...]): Bucket counts left to draw from.
+        ctx (_EvContext): Per-pass state threaded into the continuation.
+
+    Returns:
+        EV in base-bet units, or -1.0 against an exhausted shoe where the hit cannot happen.
+    """
     shoe_total = sum(shoe)
     if shoe_total == 0:
         return -1.0
@@ -351,7 +469,21 @@ def _hit_action_ev(
 
 
 def _double_ev(*, total: int, soft: bool, shoe: tuple[int, ...], ctx: _EvContext) -> float:
-    """Returns the EV of doubling: one card at double stake, then stand."""
+    """Returns the EV of doubling: one card at double stake, then stand.
+
+    The drawn card is the hand's third, so the five-card rules are unreachable from here and the
+    stand leg never claims them.
+
+    Args:
+        total (int): Player total before the double card, with any high ace counted as 11.
+        soft (bool): Whether that total counts an ace as 11.
+        shoe (tuple[int, ...]): Bucket counts the double card comes from.
+        ctx (_EvContext): Per-pass state selecting which dealer model applies.
+
+    Returns:
+        EV in base-bet units, already carrying the doubled stake (a bust is -2.0). An exhausted
+        shoe falls back to twice the current stand value.
+    """
     shoe_total = sum(shoe)
     if shoe_total == 0:
         return 2.0 * _stand_ev_unit(
@@ -382,7 +514,22 @@ def _double_ev(*, total: int, soft: bool, shoe: tuple[int, ...], ctx: _EvContext
 def _single_split_hand_ev(
     *, pair_bucket: int, is_ace_pair: bool, shoe: tuple[int, ...], ctx: _EvContext
 ) -> float:
-    """Returns the optimal EV of one post-split hand under split constraints."""
+    """Returns the optimal EV of one post-split hand under split constraints.
+
+    A split hand starts as the pair card plus one fresh draw. Split aces are then finished on the
+    spot, matching `BlackjackRound.split`, so that branch stands instead of playing on. A
+    split-derived two-card 21 is priced as an ordinary 21 because settlement denies it the natural
+    Blackjack payout.
+
+    Args:
+        pair_bucket (int): Value bucket index of the split pair's rank.
+        is_ace_pair (bool): Whether the pair was aces, which allows a single card and no hit.
+        shoe (tuple[int, ...]): Bucket counts the second card is drawn from.
+        ctx (_EvContext): Per-pass state threaded into the continuation.
+
+    Returns:
+        EV of one hand in base-bet units, or 0.0 against an exhausted shoe.
+    """
     shoe_total = sum(shoe)
     if shoe_total == 0:
         return 0.0
@@ -406,7 +553,21 @@ def _single_split_hand_ev(
 
 
 def _split_estimate(*, hand_cards: list[Card], shoe: tuple[int, ...], ctx: _EvContext) -> float:
-    """Estimates split EV as twice one independent split hand (shared-shoe approximation)."""
+    """Estimates split EV as twice one independent split hand (shared-shoe approximation).
+
+    Both halves are priced against the same untouched deck, so the second hand never sees what
+    the first drew. That runs slightly optimistic, which is what `SPLIT_EV_MARGIN` and the
+    `is_estimate` flag on the returned `ActionEv` exist for.
+
+    Args:
+        hand_cards (list[Card]): The pair being split; only the first card's rank is read, since
+            the caller offers split for an actual pair.
+        shoe (tuple[int, ...]): Bucket counts both halves draw from.
+        ctx (_EvContext): Per-pass state threaded into the continuation.
+
+    Returns:
+        Estimated EV of the split in base-bet units, across both hands.
+    """
     pair_bucket = _bucket_for_rank(rank=hand_cards[0].rank)
     single = _single_split_hand_ev(
         pair_bucket=pair_bucket, is_ace_pair=pair_bucket == _ACE_BUCKET, shoe=shoe, ctx=ctx
@@ -415,7 +576,14 @@ def _split_estimate(*, hand_cards: list[Card], shoe: tuple[int, ...], ctx: _EvCo
 
 
 def _dist_to_outcome(*, dist: _DealerDist) -> DealerOutcome:
-    """Converts the internal dealer distribution tuple into the public model."""
+    """Converts the internal dealer distribution tuple into the public model.
+
+    Args:
+        dist (_DealerDist): Probabilities in positional order, bust at `_BUST_INDEX`.
+
+    Returns:
+        The same six probabilities as named fields.
+    """
     return DealerOutcome(
         total_17_probability=dist[0],
         total_18_probability=dist[1],
@@ -429,7 +597,22 @@ def _dist_to_outcome(*, dist: _DealerDist) -> DealerOutcome:
 def dealer_outcome_distribution(
     *, dealer_total: int, dealer_soft: bool, shoe: tuple[int, ...], memo: _DealerMemo | None = None
 ) -> DealerOutcome:
-    """Public entry: exact dealer final-total distribution from a known dealer hand."""
+    """Public entry: exact dealer final-total distribution from a known dealer hand.
+
+    The distribution follows whatever total is handed in, so a caller passing the dealer's real
+    two-card total gets a hole-aware answer. Nothing `compute_action_evs` exposes is computed this
+    way, and only the tests call it today.
+
+    Args:
+        dealer_total (int): Dealer total, with any high ace counted as 11.
+        dealer_soft (bool): Whether that total counts an ace as 11.
+        shoe (tuple[int, ...]): Bucket counts the dealer draws from, from
+            `build_shoe_value_counts`.
+        memo (_DealerMemo | None): Cache to reuse across calls; a fresh one is made when omitted.
+
+    Returns:
+        The dealer's final-total distribution under H17.
+    """
     distribution = _dealer_distribution(
         total=dealer_total, soft=dealer_soft, shoe=shoe, memo={} if memo is None else memo
     )
@@ -437,7 +620,15 @@ def dealer_outcome_distribution(
 
 
 def _select_recommended(*, ordered: tuple[ActionEv, ...]) -> ActionEv:
-    """Picks the EV-max action, only preferring split past the safety margin."""
+    """Picks the EV-max action, only preferring split past the safety margin.
+
+    Args:
+        ordered (tuple[ActionEv, ...]): Priced actions sorted by EV, highest first, non-empty.
+
+    Returns:
+        The top action, or the best non-split one when split leads by no more than
+        `SPLIT_EV_MARGIN` and so cannot be trusted over an exactly priced rival.
+    """
     best = ordered[0]
     if best.action != "split":
         return best
@@ -459,7 +650,24 @@ def _evaluate_actions(  # noqa: PLR0913 -- mirrors the full per-action decision 
     doubled: bool,
     bet: int | None,
 ) -> list[ActionEv]:
-    """Computes each legal action's EV for one pass over a deck."""
+    """Computes each legal action's EV for one pass over a deck.
+
+    A doubled hand has its stand EV scaled and loses five-card eligibility, matching settlement,
+    which pays the five-card rules only on a hand that did not double. Surrender is priced from
+    the loss `settle_hand` actually charges, so the rounding on an odd bet is not lost.
+
+    Args:
+        ctx (_EvContext): Per-pass state selecting the exact or marginal dealer model.
+        deck (tuple[int, ...]): Bucket counts of the remaining shoe.
+        hand_cards (list[Card]): The active sub-hand's cards.
+        allowed_actions (tuple[BotAction, ...]): Actions the round currently permits.
+        doubled (bool): Whether the active hand has already doubled.
+        bet (int | None): Base hand bet used to price surrender; None takes the theoretical -0.5.
+
+    Returns:
+        One `ActionEv` per allowed action, in this function's own fixed order rather than by EV;
+        the caller sorts.
+    """
     player_total = hand_value(cards=hand_cards)
     player_soft = is_soft_total(cards=hand_cards)[0]
     num_cards = len(hand_cards)
@@ -508,7 +716,20 @@ def _evaluate_actions(  # noqa: PLR0913 -- mirrors the full per-action decision 
 
 
 def _make_context(*, marginalize: bool, dealer_cards: list[Card], up_card: Card) -> _EvContext:
-    """Builds a fixed per-pass EV context from the dealer's cards and up-card."""
+    """Builds a fixed per-pass EV context from the dealer's cards and up-card.
+
+    `peek_no_blackjack` is set from the up-card alone: an Ace or ten up-card means the dealer
+    already peeked before player actions opened, and a natural would have settled the round there,
+    so a live decision under that up-card is by definition a no-Blackjack one.
+
+    Args:
+        marginalize (bool): True for the exposed marginal pass, False for the hole-aware one.
+        dealer_cards (list[Card]): The dealer's cards, hole first.
+        up_card (Card): The dealer's up-card.
+
+    Returns:
+        A frozen context with empty memos, so no cache outlives its pass.
+    """
     return _EvContext(
         marginalize=marginalize,
         dealer_total=hand_value(cards=dealer_cards),
@@ -539,21 +760,22 @@ def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring 
 
     - The exact pass knows the hole card and selects `recommended_action`; this
       is the bot's private edge and is never surfaced directly.
-    - The marginal pass integrates the hole out over the unseen deck (remaining
-      shoe plus the hole as one anonymous unknown) and supplies the
-      `dealer_outcome` distribution and every `action_evs` value. These hole-free
-      numbers are all that the model ever sees, so they cannot reveal the hole.
+    - The marginal pass draws a hypothetical hole from the remaining shoe and
+      integrates it out, then supplies the `dealer_outcome` distribution and
+      every `action_evs` value. The real hole is never added back, so these
+      numbers depend on the up-card and the shoe alone and cannot reveal it.
 
     `recommended_expected_value` is reported as the recommended action's marginal
     EV to stay consistent with the exposed numbers.
 
     Args:
-        hand_cards: The bot's active sub-hand cards.
-        dealer_cards: The dealer's cards (hole card first, then up-card).
-        shoe: The true remaining undealt shoe.
-        allowed_actions: Legal actions for the active hand.
-        doubled: Whether the active hand has already doubled.
-        bet: The base hand bet, used to price surrender from its actual rounded
+        hand_cards (list[Card]): The bot's active sub-hand cards.
+        dealer_cards (list[Card]): The dealer's cards (hole card first, then up-card). A
+            single-card list is read as the up-card alone.
+        shoe (list[Card]): The true remaining undealt shoe.
+        allowed_actions (tuple[BotAction, ...]): Legal actions for the active hand.
+        doubled (bool): Whether the active hand has already doubled.
+        bet (int | None): The base hand bet, used to price surrender from its actual rounded
             half-bet loss (`settle_hand` charges `-((bet + 1) // 2)`). When None
             the theoretical -0.5 is used.
 

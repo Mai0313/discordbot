@@ -1,7 +1,40 @@
-"""Pure Blackjack rules and shoe helpers.
+"""Pure rules engine for the multiplayer Blackjack table behind `/games blackjack`.
 
-Kept side-effect free so the unit tests can drive deterministic deals via a
-fixed `rng`. The cog wires this up with `random.SystemRandom()` for production.
+Everything here is side-effect free: no Discord object, no database, no clock and no LLM. A round
+is driven entirely by the `random.Random` it is handed (production passes `random.SystemRandom()`,
+the tests a seeded `Random`), so a whole table replays deterministically. The Discord surface is
+`blackjack_views.py`, the money is `settlement.py`, the bot player's decisions are `bot_player.py`
+/ `blackjack_ev.py`, and the cross-round shoe is `shoe.py`; all of them read this file and none of
+it reads them.
+
+Three layers live here:
+
+- Hand vocabulary. `hand_value` and the `is_*` predicates each answer one question about a list of
+  `Card`s, and are the only place ace demotion and 10/J/Q/K equivalence are decided. The EV engine,
+  the bot player and the history store all evaluate hands through them.
+- `BlackjackRound`, the mutable table. `BlackjackPlayerHand` is one seat, `BlackjackHandState` one
+  of its hands (two only after a Split), and the round walks `phase` through insurance ->
+  player_actions -> dealer -> settled while the `can_*` predicates say which controls a view may
+  still offer.
+- `settle_hand`, which turns one finished hand plus the final dealer cards into an outcome label
+  and the dealer-paid delta. That delta is the whole of what this file decides: the system-funded
+  過五關 21 bonus, the VIP multiplier and the wallet write belong to `settlement.py`.
+
+The house rules encoded here are not the same everywhere, so they are worth naming: the dealer
+hits soft 17, a natural pays 3:2, Late Surrender ends a hand at half the original bet rounded up,
+Double after Split is a caller-supplied flag the views never set, no hand can be re-split (so a
+seat holds at most two), split Aces take exactly one card each and cannot be hit again, a
+split-derived two-card 21 is not a natural, and 過五關 pays any five-or-more-card non-bust hand
+whatever the dealer holds — with the five-card 21 the one exception that still needs the dealer to
+play, since its main leg pushes against a dealer 21.
+
+Two seams exist for the callers rather than for this file's own use. `auto_play_dealer` decides
+whether the round draws the dealer's cards the moment the last player finishes; the views set it
+False and animate the draws one message edit at a time through `needs_dealer_play` /
+`draw_dealer_card` / `mark_dealer_played`. And a round deals from a finite FIFO `shoe` so that card
+counting has signal, with `shoe.py` carrying it between rounds in the same channel; `draw_card`'s
+notional infinite shoe is left as the fallback for an empty one and as the seam the tests
+monkeypatch.
 """
 
 from random import Random
@@ -33,7 +66,7 @@ def draw_card(rng: Random) -> Card:
     is empty.
 
     Args:
-        rng: Random source used to choose rank and suit.
+        rng (Random): Random source used to choose rank and suit.
 
     Returns:
         The drawn card.
@@ -44,9 +77,17 @@ def draw_card(rng: Random) -> Card:
 def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
     """Returns a shuffled multi-deck shoe (default 4 decks = 208 cards).
 
-    Cards are popped from index 0 (FIFO); the head of the list is the next
-    card. The shoe is sized to comfortably cover the worst-case 6-player table
-    with splits and double-downs without ever needing to reshuffle mid-round.
+    Cards are popped from index 0, so the head of the list is the next card out. 208 cards is far
+    more than the worst-case single round needs, and `shoe.py` cuts a fresh shoe before a round
+    starts once the remainder drops under its threshold, which together are what stop a shoe
+    emptying mid-round into the `draw_card` fallback and corrupting the running count.
+
+    Args:
+        rng (Random): Random source used to shuffle the built shoe.
+        deck_count (int): Number of 52-card decks to stack into the shoe.
+
+    Returns:
+        The shuffled shoe, next card first.
     """
     shoe: list[Card] = [
         Card(rank=rank, suit=suit)
@@ -66,7 +107,7 @@ def hand_value(cards: list[Card]) -> int:
     callers can detect a bust by checking `> 21`.
 
     Args:
-        cards: Cards to evaluate.
+        cards (list[Card]): Cards to evaluate.
 
     Returns:
         Best total for the hand under Blackjack ace rules.
@@ -88,7 +129,17 @@ def hand_value(cards: list[Card]) -> int:
 
 
 def _card_blackjack_value(card: Card) -> int:
-    """Returns the Blackjack value used for pair and up-card checks."""
+    """Returns the Blackjack value used for pair and up-card checks.
+
+    An Ace is always 11 here, never demoted, which is what keeps A + 10 out of `is_pair`. Read by
+    `bot_player.py` too, so a change here moves the bot's decisions as well as the Split guard.
+
+    Args:
+        card (Card): Card to value.
+
+    Returns:
+        11 for an Ace, 10 for a face card, otherwise the rank's own number.
+    """
     if card.rank == "A":
         return 11
     if card.rank in ("J", "Q", "K"):
@@ -99,8 +150,12 @@ def _card_blackjack_value(card: Card) -> int:
 def is_blackjack(cards: list[Card]) -> bool:
     """Returns whether a hand is a natural Blackjack.
 
+    Card-count only: a hand that reached 21 in three cards, and a split hand's two-card 21, are
+    both excluded (the split exclusion is `BlackjackHandState.is_blackjack`'s job, since only the
+    hand state knows where it came from).
+
     Args:
-        cards: Cards to evaluate.
+        cards (list[Card]): Cards to evaluate.
 
     Returns:
         True only when the hand has exactly two cards summing to 21.
@@ -111,8 +166,11 @@ def is_blackjack(cards: list[Card]) -> bool:
 def is_five_card_twenty_one(cards: list[Card]) -> bool:
     """Returns whether a hand has five or more cards totaling 21.
 
+    The 過五關 21, the one five-card hand whose main leg is not an automatic win: it pushes
+    against a dealer 21, and pays a separate system-funded bonus that `settlement.py` mints.
+
     Args:
-        cards: Cards to evaluate.
+        cards (list[Card]): Cards to evaluate.
 
     Returns:
         True only when the hand has at least five cards and totals 21.
@@ -121,7 +179,17 @@ def is_five_card_twenty_one(cards: list[Card]) -> bool:
 
 
 def is_five_card_win(cards: list[Card]) -> bool:
-    """Returns whether a hand qualifies for the non-bust five-card win."""
+    """Returns whether a hand qualifies for the non-bust five-card win.
+
+    The plain 過五關: five or more cards without busting beats whatever the dealer ends on. `hit`
+    reads it to auto-stand the hand the moment it lands.
+
+    Args:
+        cards (list[Card]): Cards to evaluate.
+
+    Returns:
+        True when the hand holds at least five cards and has not busted.
+    """
     return len(cards) >= 5 and hand_value(cards=cards) <= 21
 
 
@@ -129,7 +197,7 @@ def is_bust(cards: list[Card]) -> bool:
     """Returns whether a hand is over 21.
 
     Args:
-        cards: Cards to evaluate.
+        cards (list[Card]): Cards to evaluate.
 
     Returns:
         True when the hand total is greater than 21.
@@ -145,7 +213,7 @@ def is_pair(cards: list[Card]) -> bool:
     value of 11 here.
 
     Args:
-        cards: Cards to evaluate; only meaningful on exactly two cards.
+        cards (list[Card]): Cards to evaluate; only meaningful on exactly two cards.
 
     Returns:
         True only when exactly two cards share the same Blackjack value.
@@ -161,7 +229,7 @@ def is_soft_total(cards: list[Card]) -> tuple[bool, int]:
     A hand is "soft" while at least one Ace is still being counted as 11.
 
     Args:
-        cards: Cards to evaluate.
+        cards (list[Card]): Cards to evaluate.
 
     Returns:
         `(is_soft, total)` where total is the best Blackjack total.
@@ -187,8 +255,11 @@ def is_soft_total(cards: list[Card]) -> tuple[bool, int]:
 def is_soft_17(cards: list[Card]) -> bool:
     """Returns whether the hand is exactly a soft 17.
 
+    The dealer's one discretionary rule keys off this: H17 means the dealer draws on a soft 17 and
+    stands on a hard one.
+
     Args:
-        cards: Cards to evaluate.
+        cards (list[Card]): Cards to evaluate.
 
     Returns:
         True only when the hand totals 17 with at least one Ace still
@@ -201,11 +272,12 @@ def is_soft_17(cards: list[Card]) -> bool:
 def dealer_up_card(dealer: list[Card]) -> Card | None:
     """Returns the dealer's visible up-card.
 
-    The first dealt card is the hole card (hidden); the second is the up-card.
-    When the dealer only has one card so far that card is treated as visible.
+    The first dealt card is the hole card (hidden); the second is the up-card. That ordering is
+    this file's convention and `render_hand(hide_first=True)` is its other half, so a caller that
+    reorders the dealer list shows the wrong card rather than getting an error.
 
     Args:
-        dealer: Dealer's cards in draw order.
+        dealer (list[Card]): Dealer's cards in draw order.
 
     Returns:
         The visible card, or `None` if the dealer has not been dealt yet.
@@ -220,18 +292,23 @@ class BlackjackHandState(BaseModel):
 
     Split turns a single hand into two sibling hand states sharing one
     participant; otherwise a participant has exactly one entry in
-    `BlackjackPlayerHand.hands`.
+    `BlackjackPlayerHand.hands`. Re-splitting is refused, so two is the ceiling.
+
+    `bet` is what the round settles and `base_bet` what it was dealt at: they differ only after a
+    Double Down, and both the Surrender refund and a Split sibling's stake read `base_bet`, so
+    neither follows a doubled wager.
 
     Attributes:
         cards: Cards currently held in this hand.
         bet: Active wager for this hand (doubled after Double Down).
-        base_bet: Original wager kept for Surrender refund math.
+        base_bet: Original wager, read by the Surrender refund and by the Split sibling's stake.
         finished: True once this hand no longer needs Hit / Stand actions.
         doubled: True after a Double Down on this hand.
         surrendered: True after a Surrender on this hand.
         is_split_hand: True when this hand came out of a Split.
         is_split_aces: True when both split halves came from an Ace pair.
-        actions_taken: Hit / Double / Surrender counter used by action guards.
+        actions_taken: Hit / Double / Surrender counter used by the action guards. Only an
+            untouched hand may Double, Split or Surrender, so this reaching 1 closes all three.
     """
 
     cards: list[Card] = Field(
@@ -259,7 +336,11 @@ class BlackjackHandState(BaseModel):
         return hand_value(cards=self.cards)
 
     def is_blackjack(self) -> bool:
-        """Returns whether this sub-hand is a natural Blackjack."""
+        """Returns whether this sub-hand is a natural Blackjack.
+
+        A split half that draws to 21 in two cards is deliberately not one, so it never collects
+        the 3:2 payout; `settle_hand` routes it to the even-money path instead.
+        """
         return not self.is_split_hand and is_blackjack(cards=self.cards)
 
     def is_bust(self) -> bool:
@@ -274,13 +355,17 @@ class BlackjackPlayerHand(BaseModel):
     `BlackjackHandState` rows. Split adds a second entry; everything else
     keeps a single hand entry.
 
+    The seat is what the balance is measured against, not the hand: `participant.balance_at_start`
+    is a snapshot taken when the round began, so every affordability check subtracts
+    `committed_wagers` from it rather than re-reading a wallet that may have moved since.
+
     Attributes:
         participant: Discord player and wager metadata.
         hands: All active sub-hands in display order.
         insurance_bet: Insurance side bet amount, `0` when none was taken.
-        insurance_resolved: True once the player has made an insurance choice
-            (yes or no) and the surrounding round phase has progressed past
-            insurance.
+        insurance_resolved: True once this player has taken or declined insurance, including the
+            forced decline a timeout applies. Every seat carrying it is what closes the phase, so
+            it is set before the round leaves `insurance`, not after.
     """
 
     participant: GameParticipant = Field(..., description="Discord player and wager metadata.")
@@ -296,7 +381,11 @@ class BlackjackPlayerHand(BaseModel):
 
     @property
     def finished(self) -> bool:
-        """Returns True once every owned hand has finished."""
+        """Returns True once every owned hand has finished.
+
+        A seat holding no hands at all reads as unfinished, so a half-built player cannot let the
+        turn cursor skip straight past it on an empty `all()`.
+        """
         return bool(self.hands) and all(hand.finished for hand in self.hands)
 
 
@@ -308,7 +397,7 @@ def committed_wagers(player: BlackjackPlayerHand) -> int:
     when validating Double / Split / Insurance affordability.
 
     Args:
-        player: The player whose committed wagers should be summed.
+        player (BlackjackPlayerHand): The player whose committed wagers should be summed.
 
     Returns:
         Total committed points across hands and insurance for the player.
@@ -321,15 +410,17 @@ def can_double(
 ) -> bool:
     """Returns whether Double Down is allowed on this hand right now.
 
+    `allow_after_split` defaults off and the views never pass it, so Double after Split is closed
+    in production; the parameter exists so the rule can be flipped in one place.
+
     Args:
-        hand: Hand to inspect.
-        balance_remaining: Points still available after current commitments.
-        allow_after_split: Whether the house rule permits Double after Split.
+        hand (BlackjackHandState): Hand to inspect.
+        balance_remaining (int): Points still available after current commitments.
+        allow_after_split (bool): Whether the house rule permits Double after Split.
 
     Returns:
-        True only when no actions have been taken yet, the hand has exactly
-        two cards, the DAS rule allows it, and the player can still afford
-        the extra wager.
+        True only when no action has been taken on a two-card hand, the DAS rule allows it, the
+        doubled stake still fits `MAX_SINGLE_BET`, and the player can afford the extra wager.
     """
     if hand.finished or hand.surrendered or hand.doubled:
         return False
@@ -347,9 +438,12 @@ def can_double(
 def can_split(hand: BlackjackHandState, balance_remaining: int) -> bool:
     """Returns whether Split is allowed on this hand right now.
 
+    A hand that already came out of a Split is refused, so re-splitting is impossible and a seat
+    never holds more than two hands.
+
     Args:
-        hand: Hand to inspect.
-        balance_remaining: Points still available after current commitments.
+        hand (BlackjackHandState): Hand to inspect.
+        balance_remaining (int): Points still available after current commitments.
 
     Returns:
         True only when the hand has exactly two cards of the same value, has
@@ -368,14 +462,17 @@ def can_split(hand: BlackjackHandState, balance_remaining: int) -> bool:
 def can_insure(player: "BlackjackPlayerHand", balance_remaining: int) -> bool:
     """Returns whether the player can still place an insurance side bet.
 
+    Reads the seat alone: whether the table is even offering insurance is the round's `phase`,
+    which `take_insurance` checks before calling here. The side bet is always half the original
+    participant bet, so a 1-point seat rounds down to 0 and is refused rather than insured free.
+
     Args:
-        player: Player container to inspect.
-        balance_remaining: Points still available after current commitments.
+        player (BlackjackPlayerHand): Player container to inspect.
+        balance_remaining (int): Points still available after current commitments.
 
     Returns:
-        True only when insurance was offered for this player and they have
-        not yet decided, and the half-bet side wager fits the remaining
-        balance.
+        True only when this player has not yet decided, has no insurance bet on the table, and the
+        half-bet side wager fits the remaining balance.
     """
     if player.insurance_resolved or player.insurance_bet != 0:
         return False
@@ -389,8 +486,8 @@ def can_surrender(hand: BlackjackHandState, peeked_blackjack: bool) -> bool:
     """Returns whether Late Surrender is allowed on this hand right now.
 
     Args:
-        hand: Hand to inspect.
-        peeked_blackjack: Whether the dealer already peeked a Blackjack;
+        hand (BlackjackHandState): Hand to inspect.
+        peeked_blackjack (bool): Whether the dealer already peeked a Blackjack;
             Surrender is closed once that happened.
 
     Returns:
@@ -408,7 +505,18 @@ def can_surrender(hand: BlackjackHandState, peeked_blackjack: bool) -> bool:
 def _settle_split_twenty_one(
     hand: BlackjackHandState, dealer: list[Card]
 ) -> tuple[SettleOutcome, int]:
-    """Resolves a split-derived two-card 21 without treating it as natural Blackjack."""
+    """Resolves a split-derived two-card 21 without treating it as natural Blackjack.
+
+    It wins even money instead of 3:2, pushes against any other dealer 21, and still loses
+    outright to a dealer natural.
+
+    Args:
+        hand (BlackjackHandState): The split half holding a two-card 21.
+        dealer (list[Card]): Final dealer cards.
+
+    Returns:
+        `(outcome, delta)` for this hand alone.
+    """
     dealer_total = hand_value(cards=dealer)
     if is_blackjack(cards=dealer):
         outcome: SettleOutcome = "lose"
@@ -423,7 +531,19 @@ def _settle_split_twenty_one(
 def _settle_regular_hand(
     hand: BlackjackHandState, dealer: list[Card]
 ) -> tuple[SettleOutcome, int]:
-    """Resolves a finished non-surrender, non-special Blackjack sub-hand."""
+    """Resolves a finished non-surrender, non-special Blackjack sub-hand.
+
+    Ordinary Blackjack comparison: naturals first (a mutual one pushes), then either side's bust,
+    then the higher total. The natural pays `_BLACKJACK_PAYOUT_NUM / _BLACKJACK_PAYOUT_DEN`
+    floored, so an odd bet keeps its 3:2 rounded in the casino's favour.
+
+    Args:
+        hand (BlackjackHandState): Finished sub-hand to resolve.
+        dealer (list[Card]): Final dealer cards.
+
+    Returns:
+        `(outcome, delta)` for this hand alone.
+    """
     bet = hand.bet
     player_total = hand.total()
     dealer_total = hand_value(cards=dealer)
@@ -453,18 +573,28 @@ def _settle_regular_hand(
 def settle_hand(hand: BlackjackHandState, dealer: list[Card]) -> tuple[SettleOutcome, int]:
     """Resolves one finished sub-hand into an outcome label and net delta.
 
-    Surrender short-circuits to a half-bet refund. Five-card 21 is flagged
-    before the generic five-card win so split hands can still earn the
-    five-card bonus. Split-derived two-card 21 is handled before natural
-    Blackjack so it never receives the natural Blackjack payout.
+    The delta is only what the casino pays: the system-funded 過五關 21 bonus is minted by
+    `settlement.py` off the returned `five_card_twenty_one` label, and the VIP multiplier and the
+    wallet write happen there too.
+
+    The order of the checks is the rule set. Surrender short-circuits to a loss of half the hand's
+    `base_bet` rounded up, never its `bet`. Both 過五關 checks run before
+    either Blackjack check, so a split half that reaches five cards still earns them, and the
+    five-card 21 is tested first because it is also a five-card win but pushes against a dealer 21
+    instead of winning outright. A split-derived two-card 21 is settled before the natural path so
+    it never collects 3:2. The `doubled` guard on the 過五關 checks is belt and braces: a Double
+    draws exactly one card and finishes the hand, so a doubled hand holds three cards at most.
 
     Args:
-        hand: Finished sub-hand to settle.
-        dealer: Final dealer cards.
+        hand (BlackjackHandState): Finished sub-hand to settle.
+        dealer (list[Card]): Final dealer cards.
 
     Returns:
         `(outcome, delta)` where delta is the signed point change for
         this single hand.
+
+    Raises:
+        ValueError: The hand has not finished, so its outcome is not yet decided.
     """
     if not hand.finished:
         raise ValueError("Cannot settle an unfinished Blackjack hand")
@@ -489,17 +619,30 @@ class BlackjackRound(BaseModel):
     next player; natural Blackjacks, surrendered, doubled, and busted hands
     are skipped automatically.
 
+    `phase` is the lifecycle and each transition is one-way: a round opens in `insurance` only
+    when the up-card is an Ace, otherwise straight into `player_actions`, and reaches `settled`
+    either through the dealer or through a peeked Blackjack that ends it before anyone acts. Every
+    player action refuses to run outside the phase that owns it, so a view may gate its buttons on
+    `phase` without becoming the thing that enforces the rule.
+
+    The turn cursor is the `(current_player_index, current_hand_index)` pair and only
+    `_advance_or_finish` moves it. Because `active_player` / `active_hand` call it to skip past
+    what is already finished, reading the active seat is itself a mutation.
+
     Attributes:
         rng: Random source used for card draws.
         players: Per-player containers (each holds one or more sub-hands).
-        dealer: Dealer cards shared by the table.
+        dealer: Dealer cards shared by the table, hole card first.
+        shoe: Cards left in the round's FIFO shoe; the caller persists this list, not the one it
+            passed to `from_participants`.
         current_player_index: Index of the player whose turn is active.
         current_hand_index: Index of the active sub-hand within that player.
         dealer_played: True once the dealer has drawn for all standing
             players.
         finished: True once no more player actions remain.
         auto_play_dealer: True when the pure rules should draw dealer cards
-            synchronously after player actions finish.
+            synchronously after player actions finish. The views set it False and animate the
+            dealer themselves.
         phase: Lifecycle phase of the round (insurance / player_actions /
             dealer / settled).
         insurance_offered: True only when the dealer up-card is an Ace.
@@ -554,11 +697,24 @@ class BlackjackRound(BaseModel):
     ) -> "BlackjackRound":
         """Builds a round from registered lobby participants.
 
+        Deals nobody in: the table is seated with one empty hand each and `deal_initial` is a
+        separate call, so a caller can inject cards before the deal.
+
         When `shoe` is provided the round deals from it (a persistent per-channel
         shoe carried across rounds for card counting); otherwise a fresh shuffled
         multi-deck shoe is built. The shoe is validated into `round_state.shoe`,
         which may be a copy of the passed list, so callers persist card depletion
         by saving `round_state.shoe` after the round, not the list passed in.
+
+        Args:
+            rng (Random): Random source for the shoe shuffle and every later draw.
+            participants (list[GameParticipant]): Seats in the order they will act.
+            auto_play_dealer (bool): Whether the round draws the dealer's cards itself once the
+                last player finishes.
+            shoe (list[Card] | None): Shoe to deal from, or None to build a fresh shuffled one.
+
+        Returns:
+            The seated round, before any card has been dealt.
         """
         players = [
             BlackjackPlayerHand(
@@ -582,6 +738,9 @@ class BlackjackRound(BaseModel):
         holds 208 cards which is more than enough for a 6-seat table; tests
         that want deterministic draws clear `self.shoe` to force the
         `draw_card` fallback they monkeypatch.
+
+        Returns:
+            The next card out of the shoe, or a freshly rolled one once it is empty.
         """
         if self.shoe:
             return self.shoe.pop(0)
@@ -590,13 +749,18 @@ class BlackjackRound(BaseModel):
     def deal_initial(self) -> None:
         """Deals two cards to every player and two cards to the dealer.
 
-        Dealer up-card drives the post-deal lifecycle:
+        The dealer's first card is the hole and its second the up-card, which then drives the
+        post-deal lifecycle:
         - Up-card is Ace: enter `insurance` phase and let players decide
           before peeking the hole card. The peek runs at the close of the
           insurance phase.
         - Up-card is a 10-value card: peek silently (no insurance offered);
           if the peek reveals a Blackjack the round settles immediately.
         - Anything else: jump straight to `player_actions`.
+
+        Whichever way the round reaches `player_actions` (here, or at the close of insurance) a
+        player dealt a natural is finished on the spot, so the cursor never stops on a hand that
+        has nothing left to decide.
         """
         for player in self.players:
             for hand in player.hands:
@@ -628,9 +792,17 @@ class BlackjackRound(BaseModel):
     def take_insurance(self, user_id: int, amount: int) -> None:
         """Records an insurance side bet for the player.
 
+        Closes the insurance phase, and with it peeks the hole card, once this was the last
+        undecided seat.
+
         Args:
-            user_id: Discord user ID placing the insurance.
-            amount: Side-bet amount; must equal `participant.bet // 2`.
+            user_id (int): Discord user ID placing the insurance.
+            amount (int): Side-bet amount; must equal `participant.bet // 2`.
+
+        Raises:
+            ValueError: The round is not in the insurance phase, the user is not seated, this
+                player already decided, the amount is not exactly half the original bet, or the
+                balance cannot cover it.
         """
         if self.phase != "insurance":
             raise ValueError("Insurance is not currently offered")
@@ -652,8 +824,15 @@ class BlackjackRound(BaseModel):
     def decline_insurance(self, user_id: int) -> None:
         """Records that the player has declined to take insurance.
 
+        Closes the insurance phase, and with it peeks the hole card, once this was the last
+        undecided seat.
+
         Args:
-            user_id: Discord user ID declining the insurance offer.
+            user_id (int): Discord user ID declining the insurance offer.
+
+        Raises:
+            ValueError: The round is not in the insurance phase, the user is not seated, or this
+                player already decided.
         """
         if self.phase != "insurance":
             raise ValueError("Insurance is not currently offered")
@@ -667,7 +846,8 @@ class BlackjackRound(BaseModel):
         """Marks every undecided player as declining insurance.
 
         Used by view timeouts and forced-finish paths so the round can leave
-        the insurance phase even when one of the players never clicked.
+        the insurance phase even when one of the players never clicked. A no-op outside that
+        phase, so a timeout firing late cannot disturb a round already in play.
         """
         if self.phase != "insurance":
             return
@@ -677,7 +857,11 @@ class BlackjackRound(BaseModel):
         self._maybe_close_insurance_phase()
 
     def active_player(self) -> BlackjackPlayerHand | None:
-        """Returns the player whose turn is active, if any."""
+        """Returns the player whose turn is active, if any.
+
+        Not a pure read: a seat that has already finished advances the turn cursor and, once the
+        last one does, settles the round.
+        """
         if self.finished or self.phase != "player_actions":
             return None
         if self.current_player_index >= len(self.players):
@@ -689,7 +873,11 @@ class BlackjackRound(BaseModel):
         return player
 
     def active_hand(self) -> BlackjackHandState | None:
-        """Returns the active sub-hand of the active player, if any."""
+        """Returns the active sub-hand of the active player, if any.
+
+        Advances the turn cursor past finished hands the same way `active_player` does, so this is
+        a mutation too.
+        """
         player = self.active_player()
         if player is None:
             return None
@@ -705,14 +893,18 @@ class BlackjackRound(BaseModel):
     def hit(self, user_id: int) -> Card:
         """Draws one card for the active sub-hand.
 
+        Finishes the hand and advances the table on a bust or on the fifth non-bust card, since
+        過五關 auto-stands rather than letting the player keep drawing.
+
         Args:
-            user_id: Discord user ID that must match the active player.
+            user_id (int): Discord user ID that must match the active player.
 
         Returns:
             The drawn card.
 
         Raises:
-            ValueError: The user is not the active player.
+            ValueError: The round is not in the player-action phase, the user is not the active
+                player, or the hand came out of a Split of Aces.
         """
         _, hand = self._require_active(user_id=user_id)
         if hand.is_split_aces:
@@ -726,7 +918,14 @@ class BlackjackRound(BaseModel):
         return card
 
     def stand(self, user_id: int) -> None:
-        """Marks the active sub-hand as standing and advances the table."""
+        """Marks the active sub-hand as standing and advances the table.
+
+        Propagates `_require_active`'s `ValueError` when the round is not in the player-action
+        phase or the caller is not the active player.
+
+        Args:
+            user_id (int): Discord user ID that must match the active player.
+        """
         _, hand = self._require_active(user_id=user_id)
         hand.finished = True
         self._advance_or_finish()
@@ -734,11 +933,18 @@ class BlackjackRound(BaseModel):
     def double_down(self, user_id: int) -> Card:
         """Doubles the active hand's wager, draws one card, then finishes it.
 
+        Only `bet` doubles; `base_bet` keeps the original wager. The hand is finished after the
+        single card, so a doubled hand never acts again.
+
         Args:
-            user_id: Discord user ID that must match the active player.
+            user_id (int): Discord user ID that must match the active player.
 
         Returns:
             The single card drawn after the bet was doubled.
+
+        Raises:
+            ValueError: The round is not in the player-action phase, the user is not the active
+                player, or `can_double` refuses the hand.
         """
         player, hand = self._require_active(user_id=user_id)
         balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
@@ -756,12 +962,19 @@ class BlackjackRound(BaseModel):
     def split(self, user_id: int) -> None:
         """Splits the active hand into two sibling sub-hands.
 
-        Each sibling gets the matching original card plus one fresh draw.
-        Splitting Aces marks both siblings as `is_split_aces` and finishes
+        Each sibling gets the matching original card plus one fresh draw, both staked at
+        `base_bet`. Splitting Aces marks both siblings as `is_split_aces` and finishes
         them after a single draw, matching standard house rules.
 
+        The new hand is inserted directly after the active one, so the sibling is played next
+        rather than behind the rest of the seat's hands.
+
         Args:
-            user_id: Discord user ID that must match the active player.
+            user_id (int): Discord user ID that must match the active player.
+
+        Raises:
+            ValueError: The round is not in the player-action phase, the user is not the active
+                player, or `can_split` refuses the hand.
         """
         player, hand = self._require_active(user_id=user_id)
         balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
@@ -787,7 +1000,15 @@ class BlackjackRound(BaseModel):
         self._advance_or_finish()
 
     def surrender(self, user_id: int) -> None:
-        """Surrenders the active hand for a half-bet refund."""
+        """Surrenders the active hand, conceding half its original wager.
+
+        Args:
+            user_id (int): Discord user ID that must match the active player.
+
+        Raises:
+            ValueError: The round is not in the player-action phase, the user is not the active
+                player, or `can_surrender` refuses the hand.
+        """
         _, hand = self._require_active(user_id=user_id)
         if not can_surrender(hand=hand, peeked_blackjack=self.peeked_blackjack):
             raise ValueError("Cannot surrender this hand")
@@ -797,7 +1018,11 @@ class BlackjackRound(BaseModel):
         self._advance_or_finish()
 
     def stand_all_remaining(self) -> None:
-        """Marks every unresolved hand as standing, then finishes the table."""
+        """Marks every unresolved hand as standing, then finishes the table.
+
+        The view's timeout path. Insurance is declined for anyone still undecided first, since a
+        round abandoned during that phase has to leave it before it can settle.
+        """
         if self.phase == "insurance":
             self.decline_insurance_for_all_unresolved()
         for player in self.players:
@@ -810,7 +1035,7 @@ class BlackjackRound(BaseModel):
         return hand_value(cards=self.dealer)
 
     def dealer_visible_value(self) -> int:
-        """Returns the visible dealer card value for hint prompts."""
+        """Returns the value of the dealer's up-card, hole card excluded."""
         return dealer_visible_value(dealer=self.dealer)
 
     def dealer_is_soft_17(self) -> bool:
@@ -818,30 +1043,69 @@ class BlackjackRound(BaseModel):
         return is_soft_17(cards=self.dealer)
 
     def needs_dealer_play(self) -> bool:
-        """Returns whether the dealer still needs a draw/stand phase."""
+        """Returns whether the dealer still needs a draw/stand phase.
+
+        The animated dealer's entry point: the view asks this before it starts editing, so a round
+        already decided never shows a dealer turn that changes nothing.
+        """
         return self._needs_dealer_play()
 
     def draw_dealer_card(self) -> Card:
-        """Draws one card into the dealer hand and returns it."""
+        """Draws one card into the dealer hand.
+
+        One step of the animated dealer, so the caller owns the H17 decision and the stopping
+        condition; `_play_dealer` is the same loop run to completion in one go.
+
+        Returns:
+            The card added to the dealer's hand.
+        """
         card = self._draw_one_card()
         self.dealer.append(card)
         return card
 
     def mark_dealer_played(self) -> None:
-        """Marks the dealer phase complete."""
+        """Closes the dealer phase and settles the round.
+
+        The animated dealer's exit: it lands the round in exactly the state `_play_dealer` would
+        have left it in, so both paths reach settlement identically.
+        """
         self.dealer_played = True
         self.finished = True
         self.phase = "settled"
 
     def _find_player(self, user_id: int) -> BlackjackPlayerHand:
-        """Returns the player by user_id or raises when unknown."""
+        """Returns the seat belonging to a user.
+
+        Args:
+            user_id (int): Discord user ID to look up.
+
+        Returns:
+            The player container for that user.
+
+        Raises:
+            ValueError: No seat at this table belongs to that user.
+        """
         for player in self.players:
             if player.participant.user_id == user_id:
                 return player
         raise ValueError("Unknown user for this round")
 
     def _require_active(self, user_id: int) -> tuple[BlackjackPlayerHand, BlackjackHandState]:
-        """Returns the active (player, hand) tuple or raises when not turn."""
+        """Returns the active seat and hand, refusing anyone whose turn it is not.
+
+        The single gate every player action goes through, which is why none of them re-checks the
+        phase or the identity itself.
+
+        Args:
+            user_id (int): Discord user ID the action arrived from.
+
+        Returns:
+            The active `(player, hand)` pair.
+
+        Raises:
+            ValueError: The round is not in the player-action phase, no hand is active, or the
+                active hand belongs to someone else.
+        """
         if self.phase != "player_actions":
             raise ValueError("Not in player action phase")
         player = self.active_player()
@@ -879,7 +1143,11 @@ class BlackjackRound(BaseModel):
         self._advance_or_finish()
 
     def _advance_or_finish(self) -> None:
-        """Skips completed sub-hands and settles the table when none remain."""
+        """Skips completed sub-hands and settles the table when none remain.
+
+        The only writer of the turn cursor. It walks hands within a seat before moving to the next
+        seat, so a Split is played out in place rather than queued behind the other players.
+        """
         while self.current_player_index < len(self.players):
             player = self.players[self.current_player_index]
             while self.current_hand_index < len(player.hands):
@@ -891,7 +1159,13 @@ class BlackjackRound(BaseModel):
         self._finish_after_players_done()
 
     def _finish_after_players_done(self) -> None:
-        """Finishes the round after all player actions have resolved."""
+        """Finishes the round after all player actions have resolved.
+
+        Draws the dealer here only under `auto_play_dealer`. With it off the round still lands in
+        `settled` but `dealer_played` stays False, which is the signal the caller reads before
+        animating the dealer itself through `needs_dealer_play` / `draw_dealer_card` /
+        `mark_dealer_played`.
+        """
         if self.finished:
             return
         if self._needs_dealer_play() and self.auto_play_dealer:
@@ -901,7 +1175,13 @@ class BlackjackRound(BaseModel):
         self.phase = "settled"
 
     def _needs_dealer_play(self) -> bool:
-        """Returns whether the dealer must draw before settlement."""
+        """Returns whether the dealer must draw before settlement.
+
+        False once nothing is left that a dealer total could still change: a peeked or dealt
+        dealer natural ends the round, and surrendered, natural, busted and plain 過五關 hands are
+        each already decided. A five-card 21 is the exception that keeps the dealer playing, since
+        its main leg pushes against a dealer 21 and wins against anything else.
+        """
         if self.peeked_blackjack:
             return False
         if is_blackjack(cards=self.dealer):
@@ -922,7 +1202,12 @@ class BlackjackRound(BaseModel):
         return False
 
     def _play_dealer(self) -> None:
-        """Draws dealer cards under H17 rules (hits soft 17, stands hard 17+)."""
+        """Draws dealer cards under H17 rules (hits soft 17, stands hard 17+).
+
+        The `auto_play_dealer` path only. The animated path in `blackjack_views.py` runs the same
+        rule step by step and records each decision, so a change to H17 here has to be made there
+        too.
+        """
         while True:
             total = hand_value(cards=self.dealer)
             if total < 17:
@@ -938,9 +1223,12 @@ class BlackjackRound(BaseModel):
 def render_hand(cards: list[Card], hide_first: bool = False) -> str:
     """Formats a hand for display.
 
+    Lives here rather than in the views because `hide_first` encodes the same hole-card-first
+    convention `dealer_up_card` reads, and the two have to agree on which card stays covered.
+
     Args:
-        cards: Cards to render.
-        hide_first: Whether to replace the first card with a hidden-card marker.
+        cards (list[Card]): Cards to render.
+        hide_first (bool): Whether to replace the first card with a hidden-card marker.
 
     Returns:
         A space-separated display string for the hand.
@@ -955,10 +1243,11 @@ def dealer_visible_value(dealer: list[Card]) -> int:
     """Returns the numeric value of the dealer's visible card.
 
     The second dealer card is visible while the first card is hidden. If only
-    one card exists, that card is treated as visible.
+    one card exists, that card is treated as visible. An Ace is 11 here, the same fixed value
+    `_card_blackjack_value` uses, since a single card has nothing to demote against.
 
     Args:
-        dealer: Dealer cards in draw order.
+        dealer (list[Card]): Dealer cards in draw order.
 
     Returns:
         The visible card's Blackjack value, or 0 when the dealer has no cards.

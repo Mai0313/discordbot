@@ -1,7 +1,24 @@
-"""Embed generators for MapleStory cog.
+"""Discord embed builders for every `/maplestory` result.
 
-This module provides functions to create Discord embeds for various MapleStory
-entities like monsters, equipment, NPCs, quests, maps, etc.
+One builder per entity the cog can look up (monster, equipment, scroll, NPC, quest, map, the
+drop sources of an item) plus `build_stats_embed` for the loaded data set's summary. They are
+pure: a model in, an `Embed` out, no Interaction and no service. That is what lets `cog.py` and
+`views.py` render the same result from two places — the command answers a single hit, the select
+menu re-renders whichever hit the user picked — and what lets the tests assert on fields with no
+Discord in the loop.
+
+The data files are English and the surface is Traditional Chinese, so each builder takes a
+`TranslateFn` (`MapleStoryService.translate` in production, `_identity` by default so a builder
+stays callable with no data loaded) and translates names at render time; the headings, footers
+and units written here are the only Chinese the module owns. An entity's own `display_name`
+already prefers its Chinese name and is used as-is, while the site url and thumbnail path are
+slugged from the English `name`, which is what `SITE` keys its pages on.
+
+Discord's limits are honoured here rather than at the send: `_truncate` keeps each field value
+under the 1024-character cap, and every list is cut to a fixed head (10 drops, 8 shop NPCs, 15
+drop sources, 3 quest steps, ...) so a densely populated entity degrades to a prefix rather than
+tripping a Discord 400. A section whose source list is empty is skipped entirely, so a sparse
+entity yields a short embed instead of blank fields.
 """
 
 from __future__ import annotations
@@ -33,33 +50,72 @@ SITE = "https://www.artalemaplestory.com"
 
 
 class TranslateFn(Protocol):
-    """Protocol for translation functions."""
+    """Call shape of the name translator every builder renders through.
+
+    `MapleStoryService.translate` satisfies it, and `views.py` types its resolvers against it so
+    the builders never have to import the service.
+    """
 
     def __call__(self, category: str, name: str) -> str:
-        """Translates a MapleStory entity name for a category.
+        """Translates one MapleStory name within a translation category.
+
+        Both implementations reachable here return the source name on a miss, so a caller cannot
+        tell an untranslated name from one that translates to itself.
 
         Args:
-            category: Translation category to look up.
-            name: Source name to translate.
+            category (str): Translation table to look up, e.g. `monsters`, `equipment`, `region`.
+            name (str): Source name as stored in the data files.
 
         Returns:
-            The translated name, or an implementation-defined fallback.
+            The translated name, or the source name when the table has no entry for it.
         """
         ...
 
 
 def _identity(category: str, name: str) -> str:
-    """Returns the name as-is."""
+    """Returns the name unchanged, ignoring the category.
+
+    The default translator, so every builder stays callable without a loaded service.
+
+    Args:
+        category (str): Translation category, unused.
+        name (str): Source name.
+
+    Returns:
+        `name`, unchanged.
+    """
     return name
 
 
 def _truncate(text: str, limit: int = 1024) -> str:
-    """Truncates text to a limit, adding an ellipsis if truncated."""
+    """Truncates text to an embed field's value limit, marking the cut with an ellipsis.
+
+    The ellipsis is counted inside `limit`, so the result never exceeds it and never 400s the
+    send. The default is Discord's 1024-character cap for a field value.
+
+    Args:
+        text (str): Text destined for an embed field value.
+        limit (int): Maximum length of the returned string.
+
+    Returns:
+        `text` unchanged, or its first `limit - 3` characters followed by an ellipsis.
+    """
     return text[: limit - 3] + "..." if len(text) > limit else text
 
 
 def _translate_map_name(name: str, translate: TranslateFn) -> str:
-    """Translate composite map names like 'Amherst > Weapon Store'."""
+    """Translates a composite map name such as `Amherst > Weapon Store` segment by segment.
+
+    The data stores a map as a ` > `-joined path while the `maps` table is keyed on the
+    individual names, so translating the joined string whole would always miss.
+
+    Args:
+        name (str): Map name, possibly a ` > `-joined path.
+        translate (TranslateFn): Translator applied to each segment.
+
+    Returns:
+        The path with every segment translated and rejoined with ` > `.
+    """
     parts = [translate(category="maps", name=p.strip()) for p in name.split(" > ")]
     return " > ".join(parts)
 
@@ -71,7 +127,18 @@ def _add_acquisition_fields(
     acq_quests: Sequence[AcquisitionQuest],
     translate: TranslateFn,
 ) -> None:
-    """Add monster/NPC/quest acquisition fields to an embed."""
+    """Adds the drop / shop / quest-reward fields shared by the equipment and scroll embeds.
+
+    Mutates `embed` in place, skipping any source that is empty. Each list is cut (10 monsters,
+    8 NPCs, 5 quests) before the field cap applies.
+
+    Args:
+        embed (Embed): Embed to add the fields to.
+        acq_monsters (Sequence[AcquisitionMonster]): Monsters that drop the item.
+        acq_npcs (Sequence[AcquisitionNPC]): NPCs that sell it, rendered with their price.
+        acq_quests (Sequence[AcquisitionQuest]): Quests that hand it out as a reward.
+        translate (TranslateFn): Translator for the monster, NPC and quest names.
+    """
     if acq_monsters:
         text = "\n".join(
             f"• {translate(category='monsters', name=m.name)} (Lv.{m.level})"
@@ -96,14 +163,19 @@ def _add_acquisition_fields(
 
 
 def create_monster_embed(monster: Monster, translate: TranslateFn = _identity) -> Embed:
-    """Creates an embed for a monster.
+    """Builds the `/maplestory monster` embed: stats, resistances, spawn maps, drops and quests.
+
+    Spawn maps list the first 5 of each region and append that region's total count, so a
+    monster that spawns everywhere still shows how much was left out. Everything else is a plain
+    head (10 items per drop kind, 5 quests). A monster whose data carries no meso range shows
+    `N/A` rather than an empty stat line.
 
     Args:
-        monster: The monster data.
-        translate: Function to translate names.
+        monster (Monster): The monster to render.
+        translate (TranslateFn): Translator for the modifier, region, map, drop and quest names.
 
     Returns:
-        An Embed object with monster details.
+        An embed titled with the monster's display name, linking to its page on the site.
     """
     embed = Embed(
         title=f"\U0001f432 {monster.display_name}",
@@ -151,6 +223,8 @@ def create_monster_embed(monster: Monster, translate: TranslateFn = _identity) -
         )
         embed.add_field(name="\u2694\ufe0f 裝備掉落", value=_truncate(text), inline=True)
 
+    # Useable and misc drops share one field but not one translation table, so the table is
+    # chosen per item.
     consumables = drops.useable_items + drops.misc_items
     if consumables:
         text = "\n".join(
@@ -180,7 +254,17 @@ def create_monster_embed(monster: Monster, translate: TranslateFn = _identity) -
 
 
 def _add_equip_stats(embed: Embed, equip: Equipment) -> None:
-    """Adds equipment stats to the embed."""
+    """Adds the equipment stat field, listing only the stats with a non-zero middle value.
+
+    Mutates `embed` in place. Upgrade slots and the attack-speed label ride the same field
+    although neither is part of `non_zero_stats` — and the label is `Equipment.attack_speed`,
+    not the unrelated `EquipmentStats.attack_speed` number. Both are lost when the item has no
+    non-zero stat at all, since the whole field is skipped then.
+
+    Args:
+        embed (Embed): Embed to add the field to.
+        equip (Equipment): The equipment whose stats are rendered.
+    """
     stats = equip.stats.non_zero_stats()
     if not stats:
         return
@@ -193,7 +277,15 @@ def _add_equip_stats(embed: Embed, equip: Equipment) -> None:
 
 
 def _add_equip_requirements(embed: Embed, equip: Equipment) -> None:
-    """Adds equipment requirements to the embed."""
+    """Adds the stat-requirement field for equipment that requires anything.
+
+    Mutates `embed` in place; an item with every requirement at zero gets no field. The stat
+    labels are fixed English, matching the stat field above.
+
+    Args:
+        embed (Embed): Embed to add the field to.
+        equip (Equipment): The equipment whose requirements are rendered.
+    """
     req = equip.equipment_restriction
     if not req.has_requirements():
         return
@@ -210,7 +302,15 @@ def _add_equip_requirements(embed: Embed, equip: Equipment) -> None:
 
 
 def _add_equip_tags(embed: Embed, equip: Equipment) -> None:
-    """Adds equipment tags to the embed."""
+    """Adds the tag field: the tradeability label plus the EVENT and UNAVAILABLE markers.
+
+    Mutates `embed` in place. The markers are raw data labels rather than translated text, and
+    an item carrying none of the three gets no field.
+
+    Args:
+        embed (Embed): Embed to add the field to.
+        equip (Equipment): The equipment whose flags are rendered.
+    """
     tags = [
         t
         for t in [
@@ -225,14 +325,18 @@ def _add_equip_tags(embed: Embed, equip: Equipment) -> None:
 
 
 def create_equipment_embed(equip: Equipment, translate: TranslateFn = _identity) -> Embed:
-    """Creates an embed for an equipment item.
+    """Builds the `/maplestory equip` embed: stats, requirements, jobs, sources and tags.
+
+    Each `_add_equip_*` helper adds nothing when its own source is empty, so the section order
+    is fixed but the section set is not. Both the page url and the thumbnail are slugged from
+    the English `type` and `name`, which is how the site addresses an item.
 
     Args:
-        equip: The equipment data.
-        translate: Function to translate names.
+        equip (Equipment): The equipment to render.
+        translate (TranslateFn): Translator for the equipment type, job and source names.
 
     Returns:
-        An Embed object with equipment details.
+        An embed titled with the equipment's display name, linking to its page on the site.
     """
     slug = equip.name.lower().replace(" ", "-")
     type_slug = equip.type.lower().replace(" ", "-")
@@ -287,14 +391,19 @@ _STAT_LABELS = {
 
 
 def create_scroll_embed(scroll: Scroll, translate: TranslateFn = _identity) -> Embed:
-    """Creates an embed for a scroll.
+    """Builds the `/maplestory scroll` embed: the stat bonuses and where the scroll comes from.
+
+    A scroll with no applicable equipment type gets an empty description rather than a dangling
+    prefix. Bonus keys are rendered through `_STAT_LABELS` and fall back to the raw key, so a
+    stat the map has not caught up with is still shown. Unlike the monster and equipment embeds
+    this one carries no site url and no thumbnail.
 
     Args:
-        scroll: The scroll data.
-        translate: Function to translate names.
+        scroll (Scroll): The scroll to render.
+        translate (TranslateFn): Translator for the applicable equipment type and source names.
 
     Returns:
-        An Embed object with scroll details.
+        An embed titled with the scroll's display name.
     """
     embed = Embed(
         title=f"\U0001f4dc {scroll.display_name}",
@@ -325,14 +434,19 @@ def create_scroll_embed(scroll: Scroll, translate: TranslateFn = _identity) -> E
 
 
 def create_npc_embed(npc: NPC, translate: TranslateFn = _identity) -> Embed:
-    """Creates an embed for an NPC.
+    """Builds the `/maplestory npc` embed: where the NPC stands and what it sells.
+
+    Locations are grouped by region with every map path translated segment by segment. Shop
+    entries store their item path-qualified (`equipment/Wooden Sword`), so only the segment
+    after the last `/` is translated and shown; both shop lists are cut to 10 entries. The NPC's
+    scroll and misc stock, its quests and its crafting recipes are not rendered.
 
     Args:
-        npc: The NPC data.
-        translate: Function to translate names.
+        npc (NPC): The NPC to render.
+        translate (TranslateFn): Translator for the NPC type, region, map and item names.
 
     Returns:
-        An Embed object with NPC details.
+        An embed titled with the NPC's display name.
     """
     npc_type_zh = translate(category="npcType", name=npc.type) if npc.type else ""
     embed = Embed(title=f"\U0001f464 {npc.display_name}", description=npc_type_zh, color=0x00CCFF)
@@ -380,7 +494,20 @@ FREQ_ZH = {
 
 
 def _format_quest_step(step: QuestStep, translate: TranslateFn) -> list[str]:
-    """Format a single quest step into display lines."""
+    """Renders one quest step as display lines: start NPC, hunt targets, items, reward.
+
+    Caps each part (5 hunt targets, 3 items per collection group) so one crowded step cannot eat
+    a whole field. Collected items are looked up in the `misc` table whatever category the data
+    keyed them under, and only EXP and fame are taken from the reward. An empty result is the
+    caller's signal to add no field at all for this step.
+
+    Args:
+        step (QuestStep): The quest step to render.
+        translate (TranslateFn): Translator for the NPC, monster and item names.
+
+    Returns:
+        The step's display lines, empty when the step carries nothing worth showing.
+    """
     lines: list[str] = []
     if step.start_npc:
         lines.append(f"**NPC**: {translate(category='npcs', name=step.start_npc)}")
@@ -403,14 +530,18 @@ def _format_quest_step(step: QuestStep, translate: TranslateFn) -> list[str]:
 
 
 def create_quest_embed(quest: Quest, translate: TranslateFn = _identity) -> Embed:
-    """Creates an embed for a quest.
+    """Builds the `/maplestory quest` embed: level range, frequency and the first steps.
+
+    Only the first 3 steps are rendered and the rest are dropped without a notice. A multi-step
+    quest numbers its fields, a single-step one gets one unnumbered field instead. A frequency
+    the `FREQ_ZH` map does not know falls through as its raw label rather than blank.
 
     Args:
-        quest: The quest data.
-        translate: Function to translate names.
+        quest (Quest): The quest to render.
+        translate (TranslateFn): Translator for the names inside each step.
 
     Returns:
-        An Embed object with quest details.
+        An embed titled with the quest's display name.
     """
     freq = FREQ_ZH.get(quest.frequency, quest.frequency)
     level_text = f"Lv. {quest.lv_lower}"
@@ -440,14 +571,17 @@ def create_quest_embed(quest: Quest, translate: TranslateFn = _identity) -> Embe
 
 
 def create_map_embed(map_entry: MapEntry, translate: TranslateFn = _identity) -> Embed:
-    """Creates an embed for a map.
+    """Builds the `/maplestory map` embed: region, resident monsters and NPCs.
+
+    Both rosters are cut to 10 entries. The hidden-map field is added only for a hidden map, so
+    its absence is the "not hidden" state rather than an omission.
 
     Args:
-        map_entry: The map data.
-        translate: Function to translate names.
+        map_entry (MapEntry): The map to render.
+        translate (TranslateFn): Translator for the region, monster and NPC names.
 
     Returns:
-        An Embed object with map details.
+        An embed titled with the map's display name.
     """
     region_zh = translate(category="region", name=map_entry.region)
     embed = Embed(
@@ -482,15 +616,24 @@ def create_map_embed(map_entry: MapEntry, translate: TranslateFn = _identity) ->
 def create_item_source_embed(
     item_name: str, monsters: Iterable[Monster], translate: TranslateFn = _identity
 ) -> Embed:
-    """Creates an embed showing which monsters drop an item.
+    """Builds the `/maplestory item` embed: which monsters drop one item.
+
+    Lists the first 15 monsters by their own display name, which already prefers the Chinese
+    name and needs no lookup. An empty `monsters` still yields the embed, just with no drop
+    field.
+
+    The item name itself is looked up across four tables, but a translator miss returns the
+    source name rather than an empty string, so the `equipment` lookup always wins and the three
+    fallbacks only run for a name that translates to nothing. An item whose Chinese name lives
+    in one of the other tables is therefore shown in English.
 
     Args:
-        item_name: The name of the item.
-        monsters: An iterable of monsters that drop the item.
-        translate: Function to translate names.
+        item_name (str): Source name of the item, as stored in the data files.
+        monsters (Iterable[Monster]): Monsters that drop it, consumed once into a list.
+        translate (TranslateFn): Translator for the item name.
 
     Returns:
-        An Embed object with item source details.
+        An embed titled with the item name, translated when the equipment table knows it.
     """
     monsters_list = list(monsters)
     item_zh = (
@@ -517,13 +660,17 @@ def create_item_source_embed(
 
 
 def build_stats_embed(stats: MapleStats) -> Embed:
-    """Builds an embed for database statistics.
+    """Builds the `/maplestory stats` embed: category totals, level spread and popular drops.
+
+    The only builder that takes no translator: every value here is a count or a data-file name,
+    so nothing is looked up. Level ranges are sorted as strings, which orders `100-109` ahead of
+    `20-29`. Popular items are cut to 15 and shown exactly as stored, in English.
 
     Args:
-        stats: The database statistics.
+        stats (MapleStats): Counts and distributions taken from the loaded data set.
 
     Returns:
-        An Embed object with statistics summary.
+        An embed summarizing what the service currently has loaded.
     """
     embed = Embed(
         title="\U0001f4ca 楓之谷資料庫統計", description="Artale 楓之谷資料庫概覽", color=0x00FF88

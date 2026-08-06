@@ -1,5 +1,15 @@
 """Cog that expands Douyin post URLs into Discord attachments.
 
+The whole surface is one `on_message` listener and no command. A human message carrying a
+Douyin post link earns a 🔗 while the fetch runs, then a reply carrying the clip (or the photo
+gallery) and a caption card in Douyin's own palette, and a green check closes it. Discord's
+own preview of the source link is suppressed first, which needs Manage Messages and is skipped
+when the guild withholds it. A Douyin-side failure swaps in ⚠️, or ⏱️ for a retryable bot wall,
+and says in the reply which of the two happened; a failure anywhere else leaves a red cross and
+no wording, since there is nothing useful to say about it. `DouyinConfig.auto_expand_enabled`
+gates all of that and is read last, after the cheaper gates have each had their chance to
+return.
+
 Unlike `/download_video`, which serves many platforms where a pasted link often just means
 "look at this page", a Douyin link has no such ambiguity: posting one means "watch this",
 so it is converted without anyone typing a command.
@@ -73,6 +83,9 @@ class DouyinCogs(commands.Cog):
         bot: The Discord bot instance that owns this cog.
         config: Runtime configuration carrying the auto-expansion kill-switch.
         media_delivery: Planner deciding which files attach and which are hosted as a URL.
+        downloader_factory: Builds one downloader per expansion, over that expansion's own
+            scratch dir. It is an attribute rather than a direct call so the tests can replace
+            it and never reach Douyin.
     """
 
     # A retryable block gets its own reaction so it never reads like the ⚠️ "could not read
@@ -82,8 +95,11 @@ class DouyinCogs(commands.Cog):
     def __init__(self, bot: commands.Bot):
         """Initializes the DouyinCogs instance.
 
+        `DouyinConfig()` reads the environment once here, so flipping the kill-switch takes a
+        restart rather than taking effect on the next pasted link.
+
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self.config = DouyinConfig()
@@ -92,7 +108,16 @@ class DouyinCogs(commands.Cog):
 
     @staticmethod
     def _build_embed(post: DouyinPost, url: str) -> Embed:
-        """Builds the caption card that accompanies the expanded media."""
+        """Builds the caption card that accompanies the expanded media.
+
+        Args:
+            post (DouyinPost): The parsed post, whose caption and author name fill the card.
+            url (str): The pasted post link, set on the embed and on the author line, which is
+                what makes the author name lead back to the post.
+
+        Returns:
+            The caption card, carrying no author line when the post named no author.
+        """
         embed = Embed(description=post.title, url=url, color=_EMBED_COLOR)
         if post.author_name:
             embed.set_author(name=post.author_name, url=url)
@@ -100,10 +125,14 @@ class DouyinCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Listens for messages and expands Douyin links.
+        """Expands a Douyin post link a human pasted, reporting progress with reactions.
+
+        The listener sees every message in every channel, so the gates below run cheapest
+        first. An expansion that fails outside the Douyin fetch leaves only a cross reaction:
+        the reason goes to the log, since there is nothing useful to tell the channel.
 
         Args:
-            message: The message that was sent.
+            message (Message): The message that was sent.
         """
         if message.author.bot:
             return
@@ -148,7 +177,20 @@ class DouyinCogs(commands.Cog):
             )
 
     async def _expand(self, message: Message, url: str, current_emoji: str) -> None:
-        """Fetches the post and posts it back, reporting every failure mode distinctly."""
+        """Fetches the post and posts it back, reporting every failure mode distinctly.
+
+        Only the Douyin-facing half is guarded: a fetch failure becomes a worded reply, while
+        anything the delivery raises falls through to the listener's cross reaction. The files
+        live and die with the scratch dir opened here, so an expansion that never reaches
+        delivery still leaves nothing behind.
+
+        Args:
+            message (Message): The message carrying the link; the reply hangs off it and the
+                reactions land on it.
+            url (str): The matched Douyin post URL.
+            current_emoji (str): The status reaction now on the message, removed as the next
+                one goes on.
+        """
         # A private directory per invocation, because the filenames are derived from the post id:
         # two expansions of the same post in one shared temp dir would write the same paths,
         # letting one truncate the other's file and letting either one's cleanup delete a file
@@ -202,6 +244,13 @@ class DouyinCogs(commands.Cog):
         A bot wall is retryable and the post is fine, so it gets its own reaction rather than
         the ⚠️ that means "this post could not be read". The reason is stated in the reply, so
         a reader is never left guessing which of the two happened.
+
+        Args:
+            message (Message): The message the reaction and the failure reply attach to.
+            url (str): The matched Douyin post URL, recorded on the log line.
+            error (Exception): The failure to report; anything unrecognised gets the generic
+                wording rather than a guess.
+            current_emoji (str): The status reaction to replace.
         """
         if isinstance(error, DouyinUnavailableError):
             # A deleted or private post is a routine remote outcome, not a defect; the message
@@ -237,11 +286,24 @@ class DouyinCogs(commands.Cog):
         result: DouyinDownload,
         current_emoji: str,
     ) -> None:
-        """Posts the downloaded media plus its caption card, then marks the source done."""
+        """Posts the downloaded media plus its caption card, then marks the source done.
+
+        A plan holding neither an attachment nor a hosted URL is the one path that stops here:
+        it states the size and leaves the source message's own preview in place, since nothing
+        replaced it.
+
+        Args:
+            message (Message): The message the expansion replies to and reacts on.
+            url (str): The matched Douyin post URL, for the caption card and the log line.
+            post (DouyinPost): The parsed metadata behind the caption card.
+            result (DouyinDownload): The downloaded files, owned by `_expand`'s scratch dir
+                rather than by this call.
+            current_emoji (str): The status reaction to replace.
+        """
         items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
-        # Read BEFORE planning, which caches it: a successful host moves the source out of the
-        # temp dir, so measuring afterwards would stat a deleted path and break the very
-        # oversize-to-URL fallback this number describes.
+        # Read BEFORE planning, since `total_bytes` caches on first access: a successful host
+        # moves the source out of the temp dir, so measuring afterwards would stat a deleted
+        # path and break the very oversize-to-URL fallback this number describes.
         total_mb = result.total_bytes / 1024 / 1024
         plan = await self.media_delivery.plan(
             items=items,
@@ -286,7 +348,16 @@ class DouyinCogs(commands.Cog):
     async def _send(
         self, message: Message, url: str, post: DouyinPost, result: DouyinDownload, plan: MediaPlan
     ) -> None:
-        """Sends the expansion, stating anything that was left out rather than dropping it."""
+        """Sends the expansion, stating anything that was left out rather than dropping it.
+
+        Args:
+            message (Message): The message the expansion replies to.
+            url (str): The matched Douyin post URL, for the caption card and the log line.
+            post (DouyinPost): The parsed metadata behind the caption card.
+            result (DouyinDownload): The download, read here only for `omitted_images`, the
+                images the attachment cap left undownloaded.
+            plan (MediaPlan): The attach-vs-host-vs-drop outcome for the downloaded files.
+        """
         lines: list[str] = []
         if result.omitted_images:
             lines.append(
@@ -324,6 +395,6 @@ def setup(bot: commands.Bot) -> None:
     """Adds the DouyinCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The bot instance to register the cog on.
     """
     bot.add_cog(DouyinCogs(bot), override=True)

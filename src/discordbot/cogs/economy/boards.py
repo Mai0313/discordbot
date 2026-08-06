@@ -1,4 +1,23 @@
-"""Pillow board renderers for public economy rankings."""
+"""Pillow renderers for the two public economy ranking boards, plus the cache that serves them.
+
+`/leaderboard` and `/loss_leaderboard` each post a top-ten table. Ten rows of CJK names against
+兆-scale amounts do not line up in an embed's proportional text, so the table is drawn here on a
+fixed column grid and attached as a PNG under the filenames this module exports, leaving the embed
+beside it to carry only the champion. Both boards are the same drawing: one renderer consumes a
+`_RankingBoardSpec`, and the two `build_*` entry points differ only in title, subtitle, accent
+colour and which field of the caller's row model is ranked.
+
+This is the economy cog's own rendering half rather than a `services/` module because nothing else
+draws these boards, and because the ledger must not reach Pillow — #415 moved the file out of
+`services/economy/` for exactly that. Nothing here touches Discord either, so the cog stays about
+commands and this file stays about pixels; the shared font, measuring and anchoring primitives sit
+one layer further down, in `utils/pil_text.py`.
+
+Rendered bytes are cached on the whole spec, rows included, so a cached board can never go stale in
+content: a balance change mints a new key rather than poisoning the old one. No ledger write path
+invalidates this cache and none may, which is what keeps the import direction one-way; the TTL
+bounds the dict's size rather than its freshness. `_drop_expired_boards` has the rest.
+"""
 
 from io import BytesIO
 from time import monotonic
@@ -38,7 +57,10 @@ _BOARD_IMAGE_CACHE_TTL_SECONDS: Final[float] = 5.0
 
 
 class _BoardFonts(BaseModel):
-    """Font set used by economy board images."""
+    """The five faces one board render draws with.
+
+    `Font` is a Pillow union pydantic cannot model, hence `arbitrary_types_allowed`.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -50,7 +72,11 @@ class _BoardFonts(BaseModel):
 
 
 class _RankingBoardSpec(BaseModel):
-    """Data needed to render one ranking board."""
+    """Everything one ranking board is drawn from, and the render cache's key.
+
+    Frozen so it can be that key. The rows travel inside it, which is what makes a cached board
+    impossible to serve stale: different rows are a different spec.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -61,7 +87,7 @@ class _RankingBoardSpec(BaseModel):
         ..., description="Label prefixed to each amount cell, empty for none."
     )
     accent: tuple[int, int, int] = Field(
-        ..., description="Accent RGB color for headers and medals."
+        ..., description="Accent RGB color for the badge, amount header and top three ranks."
     )
     rows: tuple[tuple[str, int], ...] = Field(
         ..., description="Ranked (name, amount) rows to render."
@@ -82,7 +108,17 @@ _board_image_cache: dict[_RankingBoardSpec, tuple[float, bytes]] = {}
 
 
 def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> bytes:
-    """Renders the public balance leaderboard as a PNG board."""
+    """Renders the balance board `/leaderboard` attaches.
+
+    The ranking is the caller's: rows are drawn in the order given and nothing here sorts, dedupes
+    or truncates them, so the ten rows a user sees are `top_n`'s own limit rather than this file's.
+
+    Args:
+        rows (Sequence[LeaderboardEntry]): Accounts in ranking order, highest balance first.
+
+    Returns:
+        PNG bytes, freshly rendered or served from the render cache.
+    """
     return _build_ranking_board_image(
         spec=_RankingBoardSpec(
             title=f"{CURRENCY_NAME} 排行榜",
@@ -96,7 +132,18 @@ def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> b
 
 
 def build_loss_leaderboard_board_image(rows: Sequence[LossLeaderboardEntry]) -> bytes:
-    """Renders the public daily loss leaderboard as a PNG board."""
+    """Renders the daily casino loss board `/loss_leaderboard` attaches.
+
+    Same contract as the balance board: the order is the caller's. The subtitle states the
+    Asia/Taipei reset because the amounts come from `casino_account`'s day counter, not from a
+    window this renderer computes.
+
+    Args:
+        rows (Sequence[LossLeaderboardEntry]): Accounts in ranking order, largest loss first.
+
+    Returns:
+        PNG bytes, freshly rendered or served from the render cache.
+    """
     return _build_ranking_board_image(
         spec=_RankingBoardSpec(
             title="今日輸錢榜",
@@ -110,7 +157,18 @@ def build_loss_leaderboard_board_image(rows: Sequence[LossLeaderboardEntry]) -> 
 
 
 def _build_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
-    """Returns a cached rendered ranking board image."""
+    """Returns the board for `spec`, rendering it only on a cache miss.
+
+    The sweep runs before the lookup, so an expired entry is never handed back. A hit does not
+    refresh the stored timestamp either: an entry lives at most one TTL from the render that
+    created it, however often it is asked for.
+
+    Args:
+        spec (_RankingBoardSpec): The board to draw, and the cache key it is stored under.
+
+    Returns:
+        PNG bytes for the board.
+    """
     now = monotonic()
     _drop_expired_boards(now=now)
     cached = _board_image_cache.get(spec)
@@ -125,10 +183,13 @@ def _build_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
 def _drop_expired_boards(now: float) -> None:
     """Evicts board images past the TTL.
 
-    The cache key carries the rows it rendered, so an entry can never go stale in
-    content: a balance change mints a new key and strands the old one instead of
-    poisoning it. Expiry is therefore the size bound rather than a freshness rule,
-    and nothing on the write side has to clear this.
+    The cache key carries the rows it rendered, so an entry can never go stale in content: a
+    balance change mints a new key and strands the old one instead of poisoning it. Expiry is
+    therefore the size bound rather than a freshness rule, and nothing on the write side has to
+    clear this.
+
+    Args:
+        now (float): The `monotonic()` reading every entry's age is measured against.
     """
     expired = [
         spec
@@ -140,7 +201,18 @@ def _drop_expired_boards(now: float) -> None:
 
 
 def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
-    """Renders a fixed-column ranking board."""
+    """Draws one board and encodes it, uncached.
+
+    Only the height varies: it is computed from the row count, so a longer table grows the image
+    instead of being clipped or paged. An empty table still reserves one row, which is what the
+    placeholder line is drawn into.
+
+    Args:
+        spec (_RankingBoardSpec): The board to draw.
+
+    Returns:
+        The encoded PNG bytes.
+    """
     rows = spec.rows
     row_count = max(len(rows), 1)
     height = (
@@ -179,7 +251,14 @@ def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
 
 @cache
 def _board_fonts() -> _BoardFonts:
-    """Loads CJK-capable fonts for ranking boards."""
+    """Loads the board's five faces, once per process.
+
+    Cached because opening a face is the expensive half of a render and the sizes never vary. The
+    consequence is that a font installed or replaced on disk is only picked up after a restart.
+
+    Returns:
+        The shared font set; callers must treat it as read-only.
+    """
     return _BoardFonts(
         title=load_font(size=34, bold=True),
         header=load_font(size=19, bold=True),
@@ -196,7 +275,18 @@ def _draw_header(
     subtitle: str,
     accent: tuple[int, int, int],
 ) -> None:
-    """Draws the board title area."""
+    """Draws the title, the subtitle line and the `PUBLIC` badge.
+
+    Every offset is taken from the top margin and none is measured, so this block occupies exactly
+    `_BOARD_HEADER_HEIGHT` and the table below can start from that constant.
+
+    Args:
+        draw (ImageDraw.ImageDraw): Canvas to draw on.
+        fonts (_BoardFonts): Faces for the title, subtitle and badge.
+        title (str): Board title text.
+        subtitle (str): Line under the title.
+        accent (tuple[int, int, int]): RGB colour for the badge outline and caption.
+    """
     x = _BOARD_MARGIN
     y = _BOARD_MARGIN
     draw.text(xy=(x, y), text=title, font=fonts.title, fill=_TEXT)
@@ -220,7 +310,18 @@ def _draw_table_header(
     amount_header: str,
     accent: tuple[int, int, int],
 ) -> None:
-    """Draws table headers."""
+    """Draws the column header strip at `y`.
+
+    Uses the same column constants and the same right anchor as `_draw_rank_row`, which is the
+    only thing keeping a header over its own cells.
+
+    Args:
+        draw (ImageDraw.ImageDraw): Canvas to draw on.
+        fonts (_BoardFonts): Faces for the header row.
+        y (int): Top edge of the strip.
+        amount_header (str): Right-anchored caption of the amount column.
+        accent (tuple[int, int, int]): RGB colour for that caption.
+    """
     draw.rectangle(
         xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _TABLE_HEADER_HEIGHT),
         fill=_SURFACE,
@@ -240,7 +341,20 @@ def _draw_rank_row(
     spec: _RankingBoardSpec,
     y: int,
 ) -> None:
-    """Draws one ranking row."""
+    """Draws one ranked row band at `y`.
+
+    The banding and the top-three highlight both key off the one-based position, so a row drawn out
+    of order would take the wrong stripe and the wrong colour. A blank name falls back to 未知玩家,
+    and the name is trimmed to `_NAME_MAX_WIDTH` before it is drawn so it cannot run into the
+    right-anchored amount.
+
+    Args:
+        draw (ImageDraw.ImageDraw): Canvas to draw on.
+        fonts (_BoardFonts): Faces for the rank number and the row text.
+        row (_RankingRow): Position, name and amount for this row.
+        spec (_RankingBoardSpec): Board the row belongs to, read for the accent and amount label.
+        y (int): Top edge of the row band.
+    """
     position = row.position
     fill = _SURFACE if position % 2 == 1 else _ROW_ALT
     draw.rectangle(xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=fill)
@@ -269,7 +383,16 @@ def _draw_rank_row(
 
 
 def _draw_empty_row(draw: ImageDraw.ImageDraw, fonts: _BoardFonts, y: int) -> None:
-    """Draws an empty-state row."""
+    """Draws the placeholder line into the row an empty table reserved.
+
+    Both commands answer an empty ranking with an embed of their own before they ever build a
+    board, so this is the fallback for a direct caller rather than something a user normally sees.
+
+    Args:
+        draw (ImageDraw.ImageDraw): Canvas to draw on.
+        fonts (_BoardFonts): Faces for the placeholder text.
+        y (int): Top edge of the reserved row.
+    """
     draw.rectangle(
         xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=_SURFACE
     )
@@ -277,7 +400,19 @@ def _draw_empty_row(draw: ImageDraw.ImageDraw, fonts: _BoardFonts, y: int) -> No
 
 
 def _ranking_amount_text(spec: _RankingBoardSpec, amount: int) -> str:
-    """Formats the amount column for one ranking row."""
+    """Formats the amount cell for one row.
+
+    Compact units are what keep a 兆-scale balance inside its column; the exact digits would
+    overrun it. Both shipped specs leave `amount_label` empty, so the prefix is there for a future
+    board whose column needs naming in the cell.
+
+    Args:
+        spec (_RankingBoardSpec): Board the row belongs to, read for its amount label.
+        amount (int): Value to render.
+
+    Returns:
+        The compact amount, prefixed with the label and a space when the spec carries one.
+    """
     amount_text = compact_amount(amount=amount)
     if not spec.amount_label:
         return amount_text
@@ -285,6 +420,17 @@ def _ranking_amount_text(spec: _RankingBoardSpec, amount: int) -> str:
 
 
 def _rank_text(position: int) -> str:
-    """Formats a ranking number."""
+    """Formats the rank cell for one position.
+
+    The top three are singled out by the accent colour in `_draw_rank_row`, not by their text: the
+    medal emoji this table once held went with the embed-era rows, and every entry left in it maps
+    to its own plain digit.
+
+    Args:
+        position (int): One-based ranking position.
+
+    Returns:
+        The position as decimal text.
+    """
     medals = {1: "1", 2: "2", 3: "3"}
     return medals.get(position, str(position))

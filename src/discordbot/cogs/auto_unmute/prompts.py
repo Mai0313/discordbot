@@ -1,3 +1,26 @@
+"""The prompt behind the auto-unmute comeback.
+
+`UNMUTE_PROMPT` is the only thing here. `cog.py::_generate_reply` hands it to
+`create_text_or_none(instructions=...)`, so it has developer authority over the single `fast_model`
+turn that writes the bot's reaction after it has already released itself from the timeout. It sits
+beside `cog.py` rather than inside it for the reason every cog's prompt copy does: the cog owns the
+audit-log lookup, the channel choice and the send, this owns the wording, and retuning the persona
+touches none of that flow.
+
+The prompt and the user turn `_generate_reply` builds only work as a pair, because these rules key
+off that turn's exact literals. `Moderator: unknown (audit log unavailable)` is what a failed or
+forbidden audit lookup renders, and it is what switches the reply off mentions altogether. The
+`Moderator: <display_name> (<username>) [id: <N>]` line is the only place a real id can come from,
+which is why the prompt forbids inventing one — a guessed id pings a bystander — and it is also
+input metadata, hence the hard rule against echoing that prefix back as the message's own opening.
+`(no reason given)` is what the mock-the-missing-reason branch reads. Reword either side alone and
+the matching rule quietly stops firing.
+
+Authored in English per project convention, but the output language is not the reply pipeline's
+follow-the-user rule: there is no asker here, only a moderator's audit-log reason that is usually
+absent or a few words, so both branches of the language rule land on Traditional Chinese.
+"""
+
 UNMUTE_PROMPT = """
 You are a Discord bot that just got timed out by a server moderator. You have already
 released yourself from the timeout via the API; now write a single short Discord message

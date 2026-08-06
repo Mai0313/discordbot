@@ -1,4 +1,38 @@
-"""Interactive components for multiplayer 射龍門 sessions."""
+"""Discord surface for 射龍門 (In-Between): the lobby view, the live table view, and their embeds.
+
+`dragon_gate.py` next door is the pure half — it rotates turns, draws the gate and the third card,
+and returns a signed `delta` — and it moves no money at all. Everything financial lives here: each
+bet settles the moment it resolves, through one atomic `apply_jackpot_settlement` against the
+player's wallet and the shared `jackpot_pool` row, and the post-settlement pool balance is fed back
+so `current_min_bet` / `current_max_bet` follow the live pool instead of the snapshot the table
+opened with. That seam is what keeps the rules Discord-free and testable without a database.
+
+What lives here:
+
+- `build_dragon_gate_*_embed` — the four renders (lobby, live table, history plus scoreboard, final
+  settlement), kept as free functions so a test can assert on a render without building a view.
+- `DragonGateLobbyView` — a `BaseJackpotLobbyView`, so join / leave / start and the one-transaction
+  `ANTE` charge are inherited; this file only supplies the lobby embed and the hand-off that turns
+  the same public message into the table.
+- `DragonGateView` — the live table: two same-point direction buttons, the bet select, and the
+  leave button. Controls are presence-based, added and removed rather than disabled, so an
+  unavailable action is not on screen at all.
+- `DragonGateBetModal` — the exact-amount input behind the select's 自訂 option.
+
+The invariants the table rests on:
+
+- Every mutation runs under `_round_lock` and re-checks `_settled` inside it, so a bet racing a
+  leave or the idle timeout cannot settle one table twice.
+- The database is the authority on how much money moved. It clamps a loss at the player's balance
+  and refuses a payout claimed against a pool generation that has since been reseeded, so an
+  applied delta smaller than the rules produced is written back into the round and the embeds
+  report what actually moved.
+- The maximum bet is bounded by the player's live wallet, not only by the pool (`_max_bet_for`).
+- 逆贏不拿: a player who leaves while ahead, or who is still ahead when the table times out, pushes
+  that running delta back into the jackpot before the final render.
+- By the time `_finalize_locked` runs, every settlement is committed, so that render is allowed to
+  fail but never to raise: it logs and still schedules the public message for deletion.
+"""
 
 from __future__ import annotations
 
@@ -73,7 +107,20 @@ DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 def _dragon_gate_table_edit_kwargs(
     *, embeds: list[Embed], view: View | None, target: object | None = None
 ) -> dict[str, Any]:
-    """Builds the shared edit payload for 射龍門 table renders."""
+    """Builds the shared edit payload for one 射龍門 table render.
+
+    Every table edit goes through here so the spacer attachment is retained by id instead of
+    re-uploaded; this table is edited on every turn, which is exactly the pattern a re-upload
+    turns into Discord error 400009.
+
+    Args:
+        embeds (list[Embed]): The table embeds, mutated in place by the spacer helper.
+        view (View | None): The view to leave on the message, or None to strip the controls.
+        target (object | None): The message being edited, used to find its uploaded spacer.
+
+    Returns:
+        Keyword arguments to splat into `Message.edit`.
+    """
     return {
         "embeds": embeds,
         "view": view,
@@ -82,7 +129,15 @@ def _dragon_gate_table_edit_kwargs(
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
-    """Formats visible lobby participants and hidden overflow count."""
+    """Formats the lobby's seated players as one numbered line each.
+
+    Args:
+        participants (list[GameParticipant]): Seated players in join order.
+
+    Returns:
+        The visible lines, closed by a `-#` count of the players past
+        `DRAGON_GATE_VISIBLE_PLAYER_LINES`.
+    """
     lines: list[str] = []
     visible = participants[:DRAGON_GATE_VISIBLE_PLAYER_LINES]
     for index, participant in enumerate(visible, start=1):
@@ -94,7 +149,14 @@ def _participant_lines(participants: list[GameParticipant]) -> str:
 
 
 def _direction_label(direction: DragonGateDirection | None) -> str:
-    """Returns the display label for a pair-gate direction choice."""
+    """Returns the display label for a same-point gate's high / low choice.
+
+    Args:
+        direction (DragonGateDirection | None): The stored choice, None before one is made.
+
+    Returns:
+        The label matching the button that sets it, or 尚未選擇 while nothing is chosen.
+    """
     if direction == "higher":
         return "⬆️ 猜大"
     if direction == "lower":
@@ -103,7 +165,14 @@ def _direction_label(direction: DragonGateDirection | None) -> str:
 
 
 def _outcome_presentation(outcome: DragonGateOutcome) -> tuple[str, int]:
-    """Returns the display label and embed color for a turn outcome."""
+    """Returns the label and embed color for a resolved turn outcome.
+
+    Args:
+        outcome (DragonGateOutcome): The outcome the rules resolved this turn into.
+
+    Returns:
+        A `(label, color)` tuple.
+    """
     values: dict[DragonGateOutcome, tuple[str, int]] = {
         "gate_win": ("✅ 射中", WIN_COLOR),
         "outside_lose": ("❌ 射偏", LOSE_COLOR),
@@ -116,7 +185,15 @@ def _outcome_presentation(outcome: DragonGateOutcome) -> tuple[str, int]:
 
 
 def _result_line(result: DragonGateTurnResult) -> str:
-    """Formats the latest resolved turn for the main embed."""
+    """Formats one resolved turn as the final embed's 最後一手 block.
+
+    Args:
+        result (DragonGateTurnResult): The turn to render.
+
+    Returns:
+        The gate and third card, then the player and turn number, then the outcome and the delta
+        that was actually applied.
+    """
     outcome_label, _color = _outcome_presentation(outcome=result.outcome)
     direction = f" · {_direction_label(direction=result.direction)}" if result.direction else ""
     pillars = " ".join(str(card) for card in result.pillars)
@@ -128,7 +205,17 @@ def _result_line(result: DragonGateTurnResult) -> str:
 
 
 def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
-    """Builds monospace history lines for completed turns."""
+    """Builds the monospace log lines for every completed turn.
+
+    Names each player by `account_name` rather than the guild `display_name`, so a long server
+    nickname cannot stretch the fixed-width block.
+
+    Args:
+        history (list[DragonGateTurnResult]): Resolved turns in play order.
+
+    Returns:
+        One line per turn, to be joined inside the history embed's code block.
+    """
     lines: list[str] = []
     for result in history:
         outcome_label, _color = _outcome_presentation(outcome=result.outcome)
@@ -142,7 +229,15 @@ def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
 
 
 def _scoreboard_code_lines(round_state: DragonGateRound) -> list[str]:
-    """Builds monospace scoreboard lines from current table deltas."""
+    """Builds the monospace scoreboard lines from each seat's running table delta.
+
+    Args:
+        round_state (DragonGateRound): Live table state, read for seats and deltas.
+
+    Returns:
+        One line per participant up to `DRAGON_GATE_VISIBLE_PLAYER_LINES`, a withdrawn seat marked
+        已離桌.
+    """
     lines: list[str] = []
     for participant in round_state.participants[:DRAGON_GATE_VISIBLE_PLAYER_LINES]:
         delta = round_state.player_delta(user_id=participant.user_id)
@@ -154,7 +249,14 @@ def _scoreboard_code_lines(round_state: DragonGateRound) -> list[str]:
 
 
 def _last_result_line(result: DragonGateTurnResult) -> str:
-    """One-line summary of the previous turn for placement above the current state."""
+    """Formats the previous turn as the one line sitting above the live table state.
+
+    Args:
+        result (DragonGateTurnResult): The most recently resolved turn.
+
+    Returns:
+        One Markdown line naming the player, the cards, the outcome and the applied delta.
+    """
     outcome_label, _color = _outcome_presentation(outcome=result.outcome)
     pillars = " ".join(str(card) for card in result.pillars)
     return (
@@ -165,7 +267,15 @@ def _last_result_line(result: DragonGateTurnResult) -> str:
 
 
 def _gate_description_block(turn: DragonGateTurn) -> str:
-    """Formats the active gate and pair-choice hint for the main embed."""
+    """Formats the active gate, plus the high / low prompt when the pillars are a pair.
+
+    Args:
+        turn (DragonGateTurn): The turn awaiting a bet.
+
+    Returns:
+        The pillar heading, followed on a same-point gate by either the pending-choice warning or
+        the direction already chosen.
+    """
     left_card, right_card = turn.pillars
     cards = f"# {left_card} ------- {right_card}"
     if turn.is_pair:
@@ -177,7 +287,15 @@ def _gate_description_block(turn: DragonGateTurn) -> str:
 
 
 def _table_color(results: list[DragonGatePlayerResult]) -> int:
-    """Returns the final embed color from the table's net result."""
+    """Returns the final embed color from the table's net result against the pool.
+
+    Args:
+        results (list[DragonGatePlayerResult]): Per-player settlement results.
+
+    Returns:
+        `WIN_COLOR` when the seats took money off the pool, `LOSE_COLOR` when the pool took it,
+        `PUSH_COLOR` when the two net out.
+    """
     total_delta = sum(result.delta for result in results)
     if total_delta > 0:
         return WIN_COLOR
@@ -187,7 +305,15 @@ def _table_color(results: list[DragonGatePlayerResult]) -> int:
 
 
 def _settlement_result_heading(delta: int) -> str:
-    """Formats one player's final net delta as an embed heading."""
+    """Formats one player's final net delta as a settlement heading.
+
+    Args:
+        delta (int): That player's net win or loss for the table, ante excluded and any 逆贏不拿
+            refund already deducted.
+
+    Returns:
+        A `##` heading carrying the signed amount, or 持平 at zero.
+    """
     if delta > 0:
         return f"## {WIN_RESULT_EMOJI} {amount_code(amount=delta, signed=True, compact=True)}"
     if delta < 0:
@@ -196,7 +322,14 @@ def _settlement_result_heading(delta: int) -> str:
 
 
 def _final_title(results: list[DragonGatePlayerResult]) -> str:
-    """Builds the final 射龍門 title for single or multiplayer results."""
+    """Builds the final title, which reads differently for a solo and a multiplayer table.
+
+    Args:
+        results (list[DragonGatePlayerResult]): Per-player settlement results.
+
+    Returns:
+        A lone player's own net delta, or the win / loss counts plus the table's net.
+    """
     if len(results) == 1:
         delta = results[0].delta
         if delta > 0:
@@ -225,7 +358,18 @@ def build_dragon_gate_lobby_embed(
     jackpot: int,
     status: str = "等待玩家加入",
 ) -> Embed:
-    """Builds the lobby embed shown before a 射龍門 table starts."""
+    """Builds the lobby embed shown before a 射龍門 table starts.
+
+    Args:
+        owner (GameParticipant): The player who opened the lobby; only their avatar is used here.
+        participants (list[GameParticipant]): Seated players in join order.
+        jackpot (int): Live balance of the pool, which is shared across every table of this game.
+        status (str): Latest lobby event line; the idle default is left out of the description
+            rather than repeated under a title that already says it.
+
+    Returns:
+        The lobby embed.
+    """
     embed = Embed(title="♦️ 射龍門 · 開桌準備", color=PUSH_COLOR)
     if status and status != "等待玩家加入":
         embed.description = status
@@ -246,7 +390,18 @@ def build_dragon_gate_lobby_embed(
 
 
 def build_dragon_gate_in_progress_embed(round_state: DragonGateRound, jackpot: int) -> Embed:
-    """Builds the active 射龍門 table embed (current state only)."""
+    """Builds the live table embed: last hand, pool, active gate, and whose turn it is.
+
+    Current state only. The per-turn log and the scoreboard go in their own embed, so this one
+    stays a fixed length however long the table runs.
+
+    Args:
+        round_state (DragonGateRound): Live table state.
+        jackpot (int): Pool balance after the most recent settlement.
+
+    Returns:
+        The in-progress table embed.
+    """
     active_turn = round_state.active_turn
 
     description_parts: list[str] = []
@@ -276,9 +431,15 @@ def build_dragon_gate_in_progress_embed(round_state: DragonGateRound, jackpot: i
 def build_dragon_gate_history_embed(
     history: list[DragonGateTurnResult], round_state: DragonGateRound
 ) -> Embed | None:
-    """Builds an auxiliary embed with each turn's history and cumulative scoreboard.
+    """Builds the auxiliary embed carrying the per-turn log and the running scoreboard.
 
-    Returns `None` when there is nothing to show (no history and zero deltas).
+    Args:
+        history (list[DragonGateTurnResult]): Resolved turns in play order.
+        round_state (DragonGateRound): Live table state, read for the scoreboard.
+
+    Returns:
+        The history embed, or None when there is nothing to show yet — no resolved turn and every
+        seat still at zero.
     """
     has_deltas = any(
         round_state.player_delta(user_id=participant.user_id) != 0
@@ -302,7 +463,20 @@ def build_dragon_gate_history_embed(
 def build_dragon_gate_final_embed(
     round_state: DragonGateRound, results: list[DragonGatePlayerResult], jackpot: int, reason: str
 ) -> Embed:
-    """Builds the final embed for a settled 射龍門 table."""
+    """Builds the final embed for a settled 射龍門 table.
+
+    Every figure here is already committed: each bet settled as it resolved, and any 逆贏不拿
+    refund went back into the pool before this render, so `delta` is net of that refund.
+
+    Args:
+        round_state (DragonGateRound): Final table state, read for the last hand and the avatar.
+        results (list[DragonGatePlayerResult]): Per-player settlement results in seat order.
+        jackpot (int): Pool balance after the table's last settlement.
+        reason (str): Why the table closed, shown under 結束原因.
+
+    Returns:
+        The final table embed.
+    """
     description_parts: list[str] = [f"### {FINISH_REASON_FIELD_EMOJI} 結束原因", reason, ""]
     description_parts.append(f"## {POT_FIELD_EMOJI} 彩金池 {compact_amount(amount=jackpot)}")
     description_parts.append("")
@@ -337,7 +511,12 @@ def build_dragon_gate_final_embed(
 
 
 class DragonGateLobbyView(BaseJackpotLobbyView):
-    """Join / leave / start lobby for a 射龍門 game session."""
+    """Join / leave / start lobby for a 射龍門 table.
+
+    The base class owns the buttons and charges every seat's `ANTE` into the jackpot in one
+    transaction; this subclass only supplies the lobby embed and, once those antes are committed,
+    swaps the same public message over to `DragonGateView`.
+    """
 
     game_id = GAME_ID
     ante = ANTE
@@ -353,7 +532,22 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         initial_jackpot: int,
         initial_jackpot_generation: int | None = None,
     ) -> None:
-        """Initializes a 射龍門 lobby with the current jackpot snapshot."""
+        """Initializes a 射龍門 lobby against the jackpot snapshot the command just read.
+
+        Args:
+            owner (GameParticipant): The player who opened the lobby and the only one who may
+                start it.
+            rng (Random): Random source handed to the round once the table starts.
+            system_name (str): Display name of the casino system.
+            system_avatar_url (str): Avatar URL of the casino system.
+            prepare_participant (PrepareParticipant): Validates a joining user's balance and sends
+                its own refusal, returning None when the seat is refused.
+            refresh_participants (RefreshParticipants): Re-reads balances at start and drops seats
+                that can no longer cover the ante.
+            initial_jackpot (int): Pool balance read when the command ran.
+            initial_jackpot_generation (int | None): Pool generation observed with that balance, so
+                a payout claimed against a since-reseeded pool is refused.
+        """
         super().__init__(
             owner=owner,
             rng=rng,
@@ -367,7 +561,14 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         )
 
     def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
-        """Builds the 射龍門 lobby embed from participants and jackpot state."""
+        """Builds the 射龍門 lobby embed from the current seats and pool snapshot.
+
+        Args:
+            status (str): Latest lobby event line.
+
+        Returns:
+            The lobby embed.
+        """
         return build_dragon_gate_lobby_embed(
             owner=self.owner,
             participants=self.participants,
@@ -378,7 +579,17 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
     async def _start_game_after_antes(
         self, message: Message, final_balances: dict[int, int]
     ) -> None:
-        """Starts the active table after all lobby antes have been charged."""
+        """Deals the round and turns the lobby message into the live table.
+
+        The base class calls this only once every ante is committed, so the money is already in
+        the pool when the hand-off runs; that is why the edit retries transient Discord 5xx errors
+        rather than giving up and leaving a stopped lobby that has taken payment.
+
+        Args:
+            message (Message): The public lobby message, reused as the table message.
+            final_balances (dict[int, int]): Post-ante wallet balance per player, seeding the
+                table's own balance cache.
+        """
         round_state = DragonGateRound.from_participants(
             rng=self.rng, participants=self.participants
         )
@@ -403,7 +614,13 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
 
 
 class DragonGateView(View):
-    """High / low buttons, bet select, and leave button for an active 射龍門 table."""
+    """The live 射龍門 table: high / low buttons, bet select, and leave button.
+
+    Owns everything after the lobby: it resolves a bet through the rules, settles it against the
+    wallet and the pool, re-renders the message, and closes the table. Every mutating path takes
+    `_round_lock` and re-checks `_settled` inside it, so a bet racing a leave or the idle timeout
+    cannot settle one table twice.
+    """
 
     def __init__(  # noqa: PLR0913 -- view needs round, jackpot, and initial balances
         self,
@@ -415,7 +632,23 @@ class DragonGateView(View):
         system_avatar_url: str = "",
         jackpot_generation: int | None = None,
     ) -> None:
-        """Initializes the active 射龍門 table view."""
+        """Initializes the live table view and renders its controls for the opening gate.
+
+        `_buttons` / `_selects` keep the decorator-created components by custom id because
+        `sync_controls` adds and removes them from `children` as the turn changes, so `children`
+        is not somewhere they can be looked up from.
+
+        Args:
+            round_state (DragonGateRound): Table state already dealt from the lobby's seats.
+            owner (GameParticipant): The player who opened the table; only their account name is
+                used, to tag the message's scheduled deletion.
+            system_name (str): Display name of the casino system.
+            jackpot_snapshot (int): Pool balance after the antes were charged.
+            final_balances (dict[int, int]): Post-ante wallet balance per player, copied into the
+                table's own cache.
+            system_avatar_url (str): Avatar URL of the casino system.
+            jackpot_generation (int | None): Pool generation observed alongside `jackpot_snapshot`.
+        """
         super().__init__(timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS)
         self.round_state = round_state
         self.owner = owner
@@ -440,7 +673,19 @@ class DragonGateView(View):
         self.sync_controls()
 
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:
-        """Restricts bet/direction to the active player; leave is open to all seated."""
+        """Restricts betting and direction to the active player; leaving is open to every seat.
+
+        The pressed component is read out of the raw interaction payload's `custom_id`, since the
+        base signature carries no item to branch on. A refused press is answered here with its own
+        ephemeral notice, so no callback has to; a settled table is the one refusal that stays
+        silent, since the final render takes the controls away and any press after it is stale.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The component interaction being checked.
+
+        Returns:
+            True when the press may run its callback.
+        """
         if self._settled or interaction.user is None:
             return False
         data = (
@@ -466,7 +711,11 @@ class DragonGateView(View):
         return False
 
     async def on_timeout(self) -> None:
-        """Finalises an abandoned table; refunds in-flight winnings into the pool."""
+        """Closes an abandoned table, returning any winnings still on it to the pool first.
+
+        The 逆贏不拿 refund runs before the close so the final embed reports the post-refund
+        figures. A view holding no message handle has nothing to render and does nothing.
+        """
         if self.message is None:
             return
         async with self._round_lock:
@@ -481,7 +730,12 @@ class DragonGateView(View):
     async def choose_higher(
         self, _button: Button[DragonGateView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Chooses higher for a same-point gate."""
+        """Records 猜大 for the active same-point gate.
+
+        Args:
+            _button (Button[DragonGateView]): The pressed button, unused.
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+        """
         await self._choose_direction(interaction=interaction, direction="higher")
 
     @nextcord.ui.button(
@@ -490,7 +744,12 @@ class DragonGateView(View):
     async def choose_lower(
         self, _button: Button[DragonGateView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Chooses lower for a same-point gate."""
+        """Records 猜小 for the active same-point gate.
+
+        Args:
+            _button (Button[DragonGateView]): The pressed button, unused.
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+        """
         await self._choose_direction(interaction=interaction, direction="lower")
 
     @nextcord.ui.string_select(
@@ -508,7 +767,12 @@ class DragonGateView(View):
     async def bet_select(
         self, select: StringSelect[DragonGateView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Routes the bet select choice to a fixed amount or a custom modal."""
+        """Routes the picked bet option to a fixed amount or to the custom-amount modal.
+
+        Args:
+            select (StringSelect[DragonGateView]): The select carrying the picked value.
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+        """
         await self._handle_bet_choice(choice=select.values[0], interaction=interaction)
 
     @nextcord.ui.button(
@@ -517,13 +781,27 @@ class DragonGateView(View):
     async def leave_table(
         self, _button: Button[DragonGateView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Lets any seated player withdraw mid-table without ending the round."""
+        """Withdraws the pressing player without ending the table for anyone else.
+
+        Args:
+            _button (Button[DragonGateView]): The pressed button, unused.
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+        """
         await self._handle_leave(interaction=interaction)
 
     async def _handle_bet_choice(
         self, choice: str, interaction: Interaction[commands.Bot]
     ) -> None:
-        """Routes a select-menu choice to a fixed bet or custom modal."""
+        """Turns a select value into a bet, or opens the modal for the 自訂 option.
+
+        The modal alone is refused while a same-point gate still needs its direction: the fixed
+        amounts reach `place_bet`, which answers with its own rule notice, whereas a modal opened
+        in that state could only be rejected on submission.
+
+        Args:
+            choice (str): The select value, `min` / `max` / `custom`.
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+        """
         if choice == "custom":
             if self.round_state.needs_pair_choice():
                 await interaction.response.send_message(
@@ -546,7 +824,15 @@ class DragonGateView(View):
     async def submit_custom_bet(
         self, interaction: Interaction[commands.Bot], raw_amount: str | None
     ) -> None:
-        """Handles the custom bet modal submission."""
+        """Parses the modal's amount and places it as this turn's bet.
+
+        Public because `DragonGateBetModal` holds no table state of its own and hands the typed
+        text straight back here. Unparsable text is answered ephemerally and settles nothing.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The modal submission to answer.
+            raw_amount (str | None): The raw text typed into the amount input, commas allowed.
+        """
         amount = parse_wager_amount(raw_amount=raw_amount)
         if amount is None:
             await interaction.response.send_message(content="下注金額要是整數", ephemeral=True)
@@ -555,7 +841,17 @@ class DragonGateView(View):
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
     def sync_controls(self) -> None:
-        """Updates button labels and select options from the current table state."""
+        """Rebuilds which controls are on the message, and their labels, from the table state.
+
+        Controls are added and removed rather than disabled: the direction buttons show only for
+        an undecided same-point gate, the bet select only while a legal bet exists, and the leave
+        button only while a seat is still active. A wallet under the table minimum leaves no legal
+        bet, so the select disappears and leaving is the player's only remaining move.
+
+        The select's option labels carry the live minimum and maximum, so the range a player reads
+        is the range `place_bet` will enforce. Call after every state change and before the edit
+        that renders it.
+        """
         active = self.round_state.active_turn
         needs_pair_choice = not self._settled and self.round_state.needs_pair_choice()
         minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
@@ -616,7 +912,16 @@ class DragonGateView(View):
     async def _choose_direction(
         self, interaction: Interaction[commands.Bot], direction: DragonGateDirection
     ) -> None:
-        """Stores a high or low choice for the active pair gate."""
+        """Stores the active player's high / low choice and re-renders the table.
+
+        Acknowledges the press before taking `_round_lock`, which a bet or a leave may be holding
+        for the length of a settlement. Rule errors become ephemeral notices instead of
+        propagating: on a table several people are clicking, a stale press is an ordinary outcome.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+            direction (DragonGateDirection): The choice to store on the active pair gate.
+        """
         await interaction.response.defer()
         if interaction.user is None or interaction.message is None:
             return
@@ -653,6 +958,13 @@ class DragonGateView(View):
         risks only their wallet yet could win the full pool. If the balance drops
         below the table minimum, the betting controls are hidden until the player
         leaves instead of flooring the maximum back above their wallet.
+
+        Args:
+            user_id (int | None): The player to bound for; None asks for the pool maximum alone.
+
+        Returns:
+            The largest bet that player may place right now, falling back to the pool maximum for
+            a user the table's balance cache has never seen.
         """
         pool_max = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
         if user_id is None:
@@ -663,20 +975,48 @@ class DragonGateView(View):
         return min(pool_max, max(balance, 0))
 
     def _active_max_bet(self) -> int:
-        """Returns the active player's balance-bounded maximum bet."""
+        """Returns the maximum bet for whoever is on turn.
+
+        Returns:
+            That player's balance-bounded maximum, or the pool maximum when no turn is active.
+        """
         active = self.round_state.active_turn
         user_id = active.participant.user_id if active is not None else None
         return self._max_bet_for(user_id=user_id)
 
     async def _place_select_bet(self, interaction: Interaction[commands.Bot], amount: int) -> None:
-        """Defers a select interaction and places the chosen fixed bet."""
+        """Acknowledges the select press, then places the chosen fixed bet.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+            amount (int): The bet to place.
+        """
         await interaction.response.defer()
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
     async def _place_bet_locked_by_interaction(
         self, interaction: Interaction[commands.Bot], amount: int
     ) -> None:
-        """Resolves a bet, settles it against the jackpot, and refreshes the table."""
+        """Resolves a bet, settles it against the jackpot, and re-renders or closes the table.
+
+        The whole sequence holds `_round_lock`. The wallet is re-read from the database first,
+        because the in-table cache dates from the ante and the player may have spent elsewhere
+        since; that read is also what makes the balance bound on the maximum bet real rather than
+        advisory.
+
+        Settlement is the authority on how much money moved. When the database applies less than
+        the rules produced — a loss clamped at a zero balance, or a payout refused because the
+        pool was reseeded under this snapshot — the smaller delta is written back into the round,
+        so the log and the final embed report what actually moved rather than what was rolled.
+
+        The table closes here on two outcomes: a win that emptied the pool, and a loss that took
+        the last active seat to zero (a player busting out is simply withdrawn while others play).
+
+        Args:
+            interaction (Interaction[commands.Bot]): The already-acknowledged interaction whose
+                user is betting.
+            amount (int): The bet to place.
+        """  # noqa: DOC501 -- the bet-range error is caught in this same try, never raised out
         if interaction.user is None:
             return
         message = interaction.message or self.message
@@ -746,7 +1086,15 @@ class DragonGateView(View):
             )
 
     async def _handle_leave(self, interaction: Interaction[commands.Bot]) -> None:
-        """Withdraws a seated player and refunds positive table delta to the jackpot."""
+        """Withdraws a seated player, returning any winnings to the pool on the way out.
+
+        This is 逆贏不拿: a player who leaves while ahead returns that running delta to the
+        jackpot, so leaving mid-table is not a way to bank a win. Leaving level or down settles
+        nothing. The table closes once the last seat goes.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction to answer, whose user leaves.
+        """
         if interaction.user is None:
             return
         await interaction.response.defer()
@@ -787,7 +1135,11 @@ class DragonGateView(View):
             )
 
     def in_progress_embeds(self) -> list[Embed]:
-        """Builds the current table and optional history embeds."""
+        """Builds the message's embeds for the live table.
+
+        Returns:
+            The table embed, followed by the history embed once there is anything to log.
+        """
         embeds: list[Embed] = [
             build_dragon_gate_in_progress_embed(
                 round_state=self.round_state, jackpot=self._jackpot_snapshot
@@ -801,7 +1153,13 @@ class DragonGateView(View):
         return embeds
 
     async def _refund_remaining_winners_locked(self) -> None:
-        """Returns positive in-flight deltas to the jackpot before table cleanup."""
+        """Returns every still-seated player's positive running delta to the jackpot.
+
+        The timeout half of 逆贏不拿, so walking away from a table cannot bank a win that leaving
+        it would have given back. Each refund is its own settlement and the amount the database
+        actually took is recorded per player, which is what the final embed names. Caller holds
+        `_round_lock`.
+        """
         for participant in self.round_state.active_participants():
             delta = self.round_state.player_delta(user_id=participant.user_id)
             if delta <= 0:
@@ -821,7 +1179,21 @@ class DragonGateView(View):
                 self._refunded_to_pool[participant.user_id] = refunded_to_pool
 
     async def _finalize_locked(self, message: Message, reason: str) -> None:
-        """Builds final results, disables controls, and schedules cleanup."""
+        """Closes the table: builds the results, renders the final embeds, schedules cleanup.
+
+        Every settlement is already committed when this runs, so what is left is presentation and
+        cleanup and it must not raise back into the round: a failed render is logged and the
+        message is still queued for deletion. `_settled` is set first and re-checked on entry, so
+        the loser of a race does nothing.
+
+        A player's reported delta is net of any 逆贏不拿 refund, and a balance the table's cache
+        never saw is re-read from the database rather than reported as zero. The final edit is
+        bounded by `DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS`, since it runs with `_round_lock` held.
+
+        Args:
+            message (Message): The public table message to replace with the final render.
+            reason (str): Why the table closed, shown under 結束原因.
+        """
         if self._settled:
             return
         self._settled = True
@@ -880,22 +1252,47 @@ class DragonGateView(View):
         schedule_public_message_delete(message=message, user_name=self.owner.account_name)
 
     def _participant_for(self, user_id: int) -> GameParticipant | None:
-        """Returns the participant matching a Discord user ID."""
+        """Finds a seat by Discord user id.
+
+        Args:
+            user_id (int): The Discord user id to look up.
+
+        Returns:
+            The matching participant, or None when that id is not seated at this table.
+        """
         for participant in self.round_state.participants:
             if participant.user_id == user_id:
                 return participant
         return None
 
     def _button(self, custom_id: str) -> Button[DragonGateView]:
-        """Returns a button component by custom ID."""
+        """Looks a button up in the registry by custom id.
+
+        Args:
+            custom_id (str): The button's `custom_id`.
+
+        Returns:
+            The registered button.
+        """
         return self._buttons[custom_id]
 
     def _select(self, custom_id: str) -> StringSelect[DragonGateView]:
-        """Returns a string select component by custom ID."""
+        """Looks a string select up in the registry by custom id.
+
+        Args:
+            custom_id (str): The select's `custom_id`.
+
+        Returns:
+            The registered select.
+        """
         return self._selects[custom_id]
 
     def _current_turn_notice(self) -> str:
-        """Returns the ephemeral notice for users acting out of turn."""
+        """Builds the notice for a press that arrived out of turn.
+
+        Returns:
+            Whose turn it actually is, or that the table can no longer be acted on.
+        """
         active_turn = self.round_state.active_turn
         if active_turn is None:
             return "這桌已經不能操作了"
@@ -904,7 +1301,17 @@ class DragonGateView(View):
     async def _send_bet_error_notice(
         self, interaction: Interaction[commands.Bot], error: DragonGateError
     ) -> None:
-        """Maps Dragon Gate rule errors to user-facing ephemeral notices."""
+        """Maps a 射龍門 rule error to the notice the pressing player sees.
+
+        The range branch reads the bounds back off the live state instead of echoing the rejected
+        amount, and says 餘額不足以下注 when the wallet cannot even cover the minimum, since there
+        is no legal amount to quote in that case. An unrecognised rule error falls through to the
+        table-closed wording rather than surfacing an internal message.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+            error (DragonGateError): The rule error raised while resolving the bet.
+        """
         if isinstance(error, DragonGatePairChoiceRequiredError):
             content = "同點門柱要先猜大或猜小"
         elif isinstance(error, DragonGateTableFinishedError):
@@ -927,7 +1334,15 @@ class DragonGateView(View):
         await self._send_notice(interaction=interaction, content=content)
 
     async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
-        """Sends a private action notice to the interacting user."""
+        """Sends a private notice to the pressing user.
+
+        The shared helper logs and swallows a delivery failure, so a refusal never raises into the
+        callback that was doing the refusing.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The interaction to answer.
+            content (str): The notice text, shown to that user only.
+        """
         await send_ephemeral_notice(
             interaction=interaction,
             content=content,
@@ -937,7 +1352,13 @@ class DragonGateView(View):
     async def on_error(
         self, error: Exception, item: Item[DragonGateView], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Logs active-table component failures instead of only printing to stderr."""
+        """Logs a failed table component press instead of letting nextcord print to stderr.
+
+        Args:
+            error (Exception): The exception the callback raised.
+            item (Item[DragonGateView]): The component whose callback raised.
+            interaction (Interaction[commands.Bot]): The interaction being handled.
+        """
         logfire.error(
             "Dragon Gate action interaction failed",
             item_label=getattr(item, "label", None),
@@ -947,10 +1368,23 @@ class DragonGateView(View):
 
 
 class DragonGateBetModal(Modal):
-    """Modal for entering an exact 射龍門 bet amount."""
+    """Exact-amount input behind the bet select's 自訂 option.
+
+    Holds no table state: it collects text and hands it straight back to the view, which is the
+    only thing allowed to read the live range and settle.
+    """
 
     def __init__(self, view: DragonGateView, minimum: int, maximum: int) -> None:
-        """Initializes the modal with a range-aware amount input."""
+        """Builds the modal with an amount input sized to the current bet range.
+
+        `max_length` counts the comma-grouped maximum because the parser strips commas: an input
+        sized to the bare digits would cut off a player typing `1,000,000`.
+
+        Args:
+            view (DragonGateView): The table view the submitted amount is handed back to.
+            minimum (int): Lowest legal bet, shown in the placeholder.
+            maximum (int): Highest legal bet, shown in the placeholder and sizing the input.
+        """
         super().__init__(title="自訂下注")
         self.view = view
         self.amount: TextInput[View] = TextInput(
@@ -963,12 +1397,24 @@ class DragonGateBetModal(Modal):
         self.add_item(item=self.amount)
 
     async def callback(self, interaction: Interaction[commands.Bot]) -> None:
-        """Submits the custom bet amount back to the active table view."""
+        """Hands the typed amount back to the table view.
+
+        Args:
+            interaction (Interaction[commands.Bot]): The modal submission to answer.
+        """
         await self.view.submit_custom_bet(interaction=interaction, raw_amount=self.amount.value)
 
 
 async def fetch_dragon_gate_jackpot_snapshot() -> JackpotSnapshot:
-    """Reads the live 射龍門 jackpot pool balance and generation."""
+    """Reads the shared 射龍門 jackpot pool.
+
+    The one read the games cog needs before opening a lobby, so it does not have to know this
+    game's pool id.
+
+    Returns:
+        The pool's balance and its generation; a later settlement passes the generation back so a
+        payout claimed against a since-reseeded pool is refused.
+    """
     return await get_jackpot_snapshot(game_id=GAME_ID)
 
 

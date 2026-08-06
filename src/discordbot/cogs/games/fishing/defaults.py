@@ -1,22 +1,24 @@
-"""Default fishing catalog: grades, species, and gear.
+"""Default fishing catalog: the grade ladder, the species table, and the rod and bait rows.
 
-This is the single source of truth for the seed data. It is consumed only by
-`scripts/seed_fishing.py` and tests. Runtime never seeds the database from here;
-catalog rows are written offline.
+This is the single source of truth for the seed data, consumed only by `scripts/seed_fishing.py`
+and tests. Runtime never seeds the database from here; catalog rows are written offline, so
+retuning a value below changes nothing in a deployed bot until that script applies it. The same
+rows are published in two shapes: `build_default_catalog` bundles them as the bound-free `*View`
+read models, for a caller that wants a catalog without a database, and the three
+`default_*_upserts` functions re-validate them through the `*Upsert` payloads the seed script
+writes, which are where the field bounds and the cross-field rules live.
 
-Fishing is deliberately no longer a currency sink (#351). Values are tuned so
-every rod+bait combo returns at least its per-cast cost and no more than 1.7x
-it, so that upgrading either the rod or the bait raises both the rare-catch rate
-and the return, and so that on any given bait each grade's payout band sits
-entirely above the grade below it. `tests/test_fishing_catch.py` computes those
-figures exactly rather than by sampling and fails on any retuning that breaks
+Fishing is deliberately no longer a currency sink (#351). Values are tuned so every rod+bait
+combo returns at least its per-cast cost and no more than 1.7x it, so that upgrading either the
+rod or the bait raises both the rare-catch rate and the return, and so that on any given bait
+each grade's payout band sits entirely above the grade below it. `tests/test_fishing_catch.py`
+computes those figures exactly rather than by sampling and fails on any retuning that breaks
 them, so it also covers gear added here.
 
 Adding a rod needs the most care: the rod axis at the cheapest bait clears the
-never-pays-backwards rule by under half a percentage point (107.18 / 107.64 /
-109.56), and a mid-tier rod interpolated between the two below breaks it. A
-total rarity shift at or above 20000 bps also buys nothing further, since
-`LUCK_STEP_MAX_BPS` saturates there.
+never-pays-backwards rule by under half a percentage point (107.18 / 107.64 / 109.56), and a
+mid-tier rod interpolated between the two below breaks it. A total rarity shift at or above
+20000 bps also buys nothing further, since `LUCK_STEP_MAX_BPS` saturates there.
 """
 
 from discordbot.typings.fishing import (
@@ -66,7 +68,23 @@ _GRADES: tuple[FishGradeConfigView, ...] = (
 def _species(  # noqa: PLR0913 -- a species row needs id, name, grade, emoji, weight, and value
     species_id: str, name: str, grade: FishGrade, emoji: str, weight: int, base_value: int
 ) -> FishSpeciesView:
-    """Builds one default species row with its grade's size range."""
+    """Builds one default species row, taking its size band from `_SIZE_BPS_BY_GRADE`.
+
+    The band belongs to the grade rather than to the fish, so every species in a grade shares
+    one and a row added here cannot be given a multiplier range that contradicts what its grade
+    promises on the reveal.
+
+    Args:
+        species_id (str): Stable identifier for the species row.
+        name (str): Display name of the species.
+        grade (FishGrade): Rarity grade whose size band the row inherits.
+        emoji (str): Emoji shown for the species.
+        weight (int): Roll weight against the other species of the same grade.
+        base_value (int): Base sell value, before the size multiplier and the bait bonus.
+
+    Returns:
+        The species row, with its grade's size band filled in.
+    """
     size_min_bps, size_max_bps = _SIZE_BPS_BY_GRADE[grade]
     return FishSpeciesView(
         species_id=species_id,
@@ -198,22 +216,54 @@ _GEAR: tuple[GearView, ...] = (
 
 
 def build_default_catalog() -> FishingCatalog:
-    """Returns the default grades, species, and gear as typed views."""
+    """Bundles the default grades, species, and gear as one frozen read model.
+
+    The `*View` shape carries no field bounds, so this is what a caller that wants the catalog
+    without a database gets; `tests/test_fishing_catch.py` reads the whole tuning off it. The
+    seed script takes the same rows through the upsert payloads below instead.
+
+    Returns:
+        The whole default catalog as one value.
+    """
     return FishingCatalog(grades=_GRADES, species=_SPECIES, gear=_GEAR)
 
 
 def default_grade_upserts() -> tuple[FishGradeConfigUpsert, ...]:
-    """Returns the default grade configs as validated upsert payloads."""
+    """Re-validates the default grade configs as the write payloads the seed script takes.
+
+    Round-tripping each view through `FishGradeConfigUpsert` is what applies the field bounds
+    the read model deliberately does not carry, so a retuning that leaves a negative weight or a
+    blank label above fails here rather than reaching the table.
+
+    Returns:
+        One upsert payload per default grade, in catalog order.
+    """
     return tuple(FishGradeConfigUpsert(**grade.model_dump()) for grade in _GRADES)
 
 
 def default_species_upserts() -> tuple[FishSpeciesUpsert, ...]:
-    """Returns the default species as validated upsert payloads."""
+    """Re-validates the default species as the write payloads the seed script takes.
+
+    `FishSpeciesUpsert` is where the field bounds and the well-ordered size-band check live, so
+    an inverted `_SIZE_BPS_BY_GRADE` entry is caught here instead of raising out of
+    `random.randint` mid-cast once the row is in the table.
+
+    Returns:
+        One upsert payload per default species, in catalog order.
+    """
     return tuple(FishSpeciesUpsert(**species.model_dump()) for species in _SPECIES)
 
 
 def default_gear_upserts() -> tuple[GearUpsert, ...]:
-    """Returns the default gear as validated upsert payloads."""
+    """Re-validates the default gear as the write payloads the seed script takes.
+
+    `GearUpsert` is where the rod-versus-bait rule lives, so a rod added above without
+    durability, which would sell a rod that answers `BROKEN_ROD` on its first cast, is rejected
+    here instead of being written to the table.
+
+    Returns:
+        One upsert payload per default rod and bait, in catalog order.
+    """
     return tuple(GearUpsert(**gear.model_dump()) for gear in _GEAR)
 
 
