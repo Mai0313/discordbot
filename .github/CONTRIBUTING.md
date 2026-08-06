@@ -109,14 +109,14 @@ Google style, which ruff already enforces the shape of (`convention = "google"`)
 
 This is the deliberate exception to "concise". A reader should finish it knowing what the file is for, what lives in it, and how it fits with its neighbours. Do not compress one into a single vague line. What it owes depends on the layer:
 
-| Layer | What the module docstring owes its reader |
-| --- | --- |
-| `cogs/<name>/cog.py` | The Discord surface: the commands and listeners it registers, what the user sees, and which kill-switch or permission gates it. |
-| the rest of `cogs/<name>/` | That cog's own half of the feature, and why it is a separate file rather than part of `cog.py`. |
-| `services/` | The engine: its invariants, what settles atomically, which storage it owns, and who is allowed to call it. |
-| `utils/` | The contract: what the helper promises, what it deliberately does not, and why it sits below the cogs instead of inside one. |
-| `typings/` | The vocabulary: what the types describe and which code keys off them. |
-| `tests/` | What the file pins, and why that behavior is worth pinning. |
+| Layer                      | What the module docstring owes its reader                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `cogs/<name>/cog.py`       | The Discord surface: the commands and listeners it registers, what the user sees, and which kill-switch or permission gates it. |
+| the rest of `cogs/<name>/` | That cog's own half of the feature, and why it is a separate file rather than part of `cog.py`.                                 |
+| `services/`                | The engine: its invariants, what settles atomically, which storage it owns, and who is allowed to call it.                      |
+| `utils/`                   | The contract: what the helper promises, what it deliberately does not, and why it sits below the cogs instead of inside one.    |
+| `typings/`                 | The vocabulary: what the types describe and which code keys off them.                                                           |
+| `tests/`                   | What the file pins, and why that behavior is worth pinning.                                                                     |
 
 An empty `__init__.py` stays empty. A package `__init__.py` that carries code is a module like any other.
 

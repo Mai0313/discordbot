@@ -423,6 +423,10 @@ keep-runtime-typing = true
 "__init__.py" = ["F401", "D104"]
 "*.ipynb" = ["T201", "F401", "S105", "F811", "ANN", "PERF", "SLF"]
 "tests/*" = ["S101", "SLF001"]
+# The docstring convention in `.github/CONTRIBUTING.md` covers `src/` and `tests/`, the two trees
+# someone reads to understand or change the bot. `scripts/` is offline maintenance tooling run by
+# hand, so it is held to the `D` rules like everything else but exempt from the pydoclint sections.
+"scripts/*.py" = ["DOC"]
 "notebooks/*.ipynb" = ["UP", "DOC", "RUF", "D", "C", "F401", "T201"]
 "examples/*.py" = ["UP", "DOC", "RUF", "D", "C", "F401", "T201"]
 
