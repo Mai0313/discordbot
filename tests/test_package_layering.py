@@ -4,6 +4,13 @@ The layering is what the cog-per-directory layout buys: a cog directory holds on
 that cog uses, so "where does this feature live" has one answer. Nothing else enforces it
 — an import reaching sideways into a peer cog's directory runs perfectly well and only
 shows up as a tangle months later, which is the state this replaced.
+
+Two tests carry the rule itself: no module under `cogs/<a>/` may name `cogs/<b>/`, and `services/`
+may not name `cogs/` while `utils/` and `typings/` may name neither. Two more guard the scan those
+rest on, which walks the parsed source with `ast` instead of importing anything and so sees an
+edge that never executes; a scan blind to a relative or `TYPE_CHECKING` import would pass both
+rules while reading nothing. The last one pins the loader's own shape rule, that a directory under
+`cogs/` holds `__init__.py` plus `cog.py`, against the tree rather than at boot.
 """
 
 import ast
@@ -23,6 +30,9 @@ def _relative_import_base(module: Path) -> str:
     level too high makes every relative import in an `__init__.py` look like it points at a
     sibling package — which both hides a real `from ..peer.mod import X` and invents a
     violation out of an ordinary `from .own_mod import X`.
+
+    Returns:
+        The dotted package name, such as `discordbot.cogs.economy`.
     """
     return ".".join(module.relative_to(_PACKAGE.parent).with_suffix("").parts[:-1])
 
@@ -33,6 +43,10 @@ def _imported_modules(module: Path) -> set[str]:
     Reads `TYPE_CHECKING` and function-local imports too: they are still edges in the
     dependency graph, and the one cog-to-cog import this repo ever had was a
     `TYPE_CHECKING` one that never executes and so no test could otherwise see.
+
+    A `from X import a` contributes `X.a` as well as `X`, even though `X.a` may be a function
+    rather than a module: `from discordbot.cogs import games` names a peer cog only through the
+    joined form, since `discordbot.cogs` alone is too short for the layer checks to read.
     """
     parent = _relative_import_base(module)
 
@@ -49,6 +63,7 @@ def _imported_modules(module: Path) -> set[str]:
                 found.update(f"{node.module}.{alias.name}" for alias in node.names)
             continue
         base = parent
+        # One dot resolves against the module's own package; every extra one climbs a level.
         for _ in range(node.level - 1):
             base = base.rsplit(".", maxsplit=1)[0]
         prefix = f"{base}.{node.module}" if node.module else base
@@ -58,12 +73,20 @@ def _imported_modules(module: Path) -> set[str]:
 
 
 def _modules(root: Path) -> list[Path]:
-    """Every Python module under a directory, ignoring bytecode caches."""
+    """Every Python module under a directory, ignoring bytecode caches.
+
+    Returns:
+        Every `.py` path under `root`, sorted.
+    """
     return sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
 
 
 def _cog_of(module: Path) -> str:
-    """The cog directory a module under `cogs/` belongs to, empty for `cogs/__init__.py`."""
+    """The cog directory a module under `cogs/` belongs to, empty for `cogs/__init__.py`.
+
+    Returns:
+        The directory name, or "" for a module sitting directly in `cogs/`.
+    """
     relative = module.relative_to(_COGS)
     return relative.parts[0] if len(relative.parts) > 1 else ""
 
@@ -113,7 +136,7 @@ def test_a_lower_layer_never_imports_a_higher_one(layer: str, forbidden: tuple[s
 def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:
     """The scan is only worth its assertions if it sees the forms the tree actually uses.
 
-    `cogs/maplestory/cog.py` is the one place using relative imports, and
+    `cogs/maplestory/` is the one package written with relative imports, and
     `cogs/games/blackjack_views.py` imports a cog module under `TYPE_CHECKING`. A scan that
     silently skipped either would pass the tests above while seeing nothing.
     """

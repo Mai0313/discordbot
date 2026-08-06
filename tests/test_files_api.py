@@ -1,4 +1,29 @@
-"""Tests for the shared Gemini Files API upload used by link-media ingestion."""
+"""Pins the shared Gemini Files API upload behind link media and generated clips.
+
+The subject is `gen_reply/files_api.py`, the one place media the bot fetched itself is handed
+to the answer model. Three of its properties are worth pinning, and none of them is visible
+from its signature.
+
+It never raises. Every caller — the link-context builders, the generated-video persona reply —
+already carries a text-only degradation, so a failure has to arrive as None rather than
+propagate into the reply pipeline: a timeout, a terminal non-ACTIVE state and an SDK exception
+each degrade, while a file still PROCESSING is polled through to ACTIVE first.
+
+The bound covers the transfer, not only that poll, and sits inside the shared upload
+semaphore. google-genai disables the transport timeout by default, so an upload into a
+black-holed connection never returns on its own; bounding only the poll would let two of them
+hold both slots for the life of the process, which surfaces in production merely as every
+link-media build spending its whole budget here and degrading to text. That is what
+`test_a_hung_upload_frees_its_slot_for_the_next_caller` is for, and why it queues exactly
+`LINK_MEDIA_UPLOAD_CONCURRENCY` hung uploads behind one healthy one.
+
+The `input_file` part carries the uri as `file_id`, never `file_url` (the proxy rewrites an
+http-bearing url into base64 inline data), and keeps an extension-bearing filename, because the
+native Interactions path classifies a part as video / audio / image / document by that alone.
+
+`_Files` drives the whole upload state machine — how many PROCESSING rounds precede the final
+state, and what that final state is — so nothing here needs the network or a Files API key.
+"""
 
 import io
 from types import SimpleNamespace
@@ -31,17 +56,29 @@ class _Files:
         self._remaining = 0
 
     def _file(self, state: FileState) -> SimpleNamespace:
-        """Builds a fake file object carrying the uri the answer would reference."""
+        """Builds a fake file object carrying the uri the answer would reference.
+
+        Returns:
+            A stub with the `name`, `uri` and `state` the helper reads off an uploaded file.
+        """
         return SimpleNamespace(name="files/abc", uri="https://files.test/abc", state=state)
 
     async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
-        """Records the upload source and returns a PROCESSING or final file."""
+        """Records the upload source and returns a PROCESSING or final file.
+
+        Returns:
+            A PROCESSING file when rounds are scheduled, else the configured final state.
+        """
         self.uploads.append((file, config["mime_type"], config["display_name"]))
         self._remaining = self.processing_rounds
         return self._file(FileState.PROCESSING if self.processing_rounds else self.final_state)
 
     async def get(self, name: str) -> SimpleNamespace:
-        """Polls the file, flipping to the final state once the rounds elapse."""
+        """Polls the file, flipping to the final state once the rounds elapse.
+
+        Returns:
+            A PROCESSING file while rounds remain, then the configured final state.
+        """
         del name
         self.get_calls += 1
         self._remaining -= 1
@@ -49,7 +86,11 @@ class _Files:
 
 
 def _client(files: _Files) -> genai.Client:
-    """Wraps a fake Files resource in the client shape the helper reaches through."""
+    """Wraps a fake Files resource in the client shape the helper reaches through.
+
+    Returns:
+        A double whose `aio.files` is `files`, typed as the `genai.Client` the helper takes.
+    """
     return as_client(fake=SimpleNamespace(aio=SimpleNamespace(files=files)))
 
 
@@ -122,8 +163,14 @@ async def test_the_bound_covers_the_transfer_not_only_the_poll() -> None:
     """
 
     class _Hangs(_Files):
+        """Files resource whose upload never completes on its own."""
+
         async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
-            """Never returns, the way a black-holed connection behaves."""
+            """Never returns, the way a black-holed connection behaves.
+
+            Raises:
+                AssertionError: The sleep ran to completion, so the bound never fired.
+            """
             await asyncio.sleep(30)
             raise AssertionError("should have been abandoned")
 
@@ -144,8 +191,14 @@ async def test_a_hung_upload_frees_its_slot_for_the_next_caller() -> None:
     """The slot is shared, so a hung upload must not starve everything behind it."""
 
     class _Hangs(_Files):
+        """Files resource whose upload never completes on its own."""
+
         async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
-            """Never returns, the way a black-holed connection behaves."""
+            """Never returns, the way a black-holed connection behaves.
+
+            Raises:
+                AssertionError: The sleep ran to completion, so the bound never fired.
+            """
             await asyncio.sleep(30)
             raise AssertionError("should have been abandoned")
 
@@ -189,8 +242,14 @@ async def test_upload_degrades_when_the_sdk_raises() -> None:
     """The helper is best-effort: an SDK failure returns None instead of raising."""
 
     class _Boom(_Files):
+        """Files resource whose upload fails instead of returning a file."""
+
         async def upload(self, file: object, config: dict[str, str]) -> SimpleNamespace:
-            """Fails the upload the way a transport error would."""
+            """Fails the upload the way a transport error would.
+
+            Raises:
+                RuntimeError: Always, standing in for the SDK's own transport failure.
+            """
             raise RuntimeError("network down")
 
     uri = await upload_to_files_api(

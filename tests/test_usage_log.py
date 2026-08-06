@@ -1,4 +1,30 @@
-"""Tests for the append-only usage records and the slash-command listener that feeds them."""
+"""Pins the append-only usage records and the slash listener that feeds them.
+
+`data/usage/<YYYY-MM>.jsonl` is the only answer to "is anyone still running this command", and
+nothing in the bot ever reads a record back, so a recorder that quietly stopped writing would
+look exactly like a feature nobody uses. These tests are the read side production does not have:
+the month file a record lands in, the append that never rewrites the lines before it, the
+Asia/Taipei stamp with its offset present, and the exact key set — numeric ids only, no names,
+no message content, no command arguments — which is the privacy decision that has to survive
+because nothing ever prunes these files.
+
+The other half is that recording must never cost the feature it records. The kill-switch path is
+pinned to create no directory at all, and an unwritable destination is pinned to be swallowed
+rather than raised into the command or the reply pipeline that triggered it.
+
+The listener half pins where a record is taken from. `command_path` walks the raw payload's own
+option tree, because `interaction.application_command` is still unset that early; it keeps a
+subcommand its own unit (`memory server show`) and stops at the first plain option, so a value
+the user typed can never land inside a recorded name. The `on_interaction` guards cover
+everything that shares that event without being a use — components, autocomplete, modals, pings
+— plus the two payloads that name no feature. The listener is also asserted to be a cog listener
+rather than a `DiscordBot.on_interaction` override, which is the one mistake here that stops
+every slash command executing while the records themselves still look healthy.
+
+`_recorder` builds the recorders these tests write through, always against `tmp_path`; the
+autouse `usage_log_isolated_dir` fixture in `conftest.py` covers the default recorder a cog
+constructs for itself, so no test can append to the live `data/usage`.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +51,9 @@ def _recorder(directory: Path, enabled: bool = True) -> UsageRecorder:
 
     `model_validate` over the env-alias names keeps the alias spelling type-clean and,
     unlike `__init__`, never merges the ambient environment in.
+
+    Returns:
+        A `UsageRecorder` writing into `directory` and nowhere else.
     """
     return UsageRecorder(
         config=UsageLogConfig.model_validate({
@@ -35,7 +64,12 @@ def _recorder(directory: Path, enabled: bool = True) -> UsageRecorder:
 
 
 def _lines(directory: Path) -> list[dict[str, Any]]:
-    """Reads every recorded line back, parsed as its own JSON object."""
+    """Reads every recorded line back, parsed as its own JSON object.
+
+    Returns:
+        Every record across every month file, in month order and in write order within a month,
+        which is what lets a caller index the second record it wrote.
+    """
     return [
         json.loads(line)
         for path in sorted(directory.glob("*.jsonl"))
@@ -268,6 +302,8 @@ def test_the_recorder_defaults_to_the_data_directory(monkeypatch: pytest.MonkeyP
     The runtime log is debug-level, hand-cleaned and gated on `LOG_LEVEL`; a usage history
     kept inside it would die with it or silently stop recording.
     """
+    # The autouse isolation fixture sets both, so the model's own defaults only surface once
+    # they are removed.
     monkeypatch.delenv(name="USAGE_LOG_DIR", raising=False)
     monkeypatch.delenv(name="USAGE_LOG_ENABLED", raising=False)
 

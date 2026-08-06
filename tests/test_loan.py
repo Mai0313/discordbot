@@ -1,4 +1,33 @@
-"""Tests for shared economy income, transfer, and settlement helpers."""
+"""Pins the shared income facade and the lifetime totals every economy write path has to keep.
+
+`services/economy/database.py` carries no transaction table, so `balance == total_earned -
+total_spent` per side is the only self-check the ledger owns, and each path exercised here is one
+where what the caller asked for and what was applied deliberately differ. `transfer` debits the
+sender the gross amount but credits the receiver only the taxed net, so the burn has to leave
+circulation on both halves of the identity; `apply_round_settlement` mirrors into the casino
+ledger only the debit it actually collected, so a loss clamped at a player's balance cannot book
+house income nobody paid; `adjust_balance` spends the clamped applied delta rather than the
+requested one. A path that moved a balance and bumped the wrong lifetime total leaves nothing else
+to catch it, which is why these three assert the whole triple rather than the balance alone.
+
+`credit_with_repayment` is the single income facade — the per-message reward, `/checkin`, casino
+payouts and fishing payouts all land in it — so the tests around it pin the full credit, the
+zero-amount call that must not mint phantom income, the first-sight row creation, and twenty
+concurrent credits accumulating instead of losing an update.
+
+The one loan test is what the file is named after and the reason it stays separate from the
+ledger's own suite: income used to auto-repay long-term debt and no longer does, so a real
+proposal is opened and accepted purely to assert that a later credit lands entirely in the
+borrower's balance and leaves `principal_remaining` untouched. The function still carries
+`repayment` in its name, which is exactly what makes the negative worth a test instead of a
+comment. The contracts themselves — capacity, interest, collection — belong to
+`tests/test_finance.py`.
+
+`apply_vip_blackjack_bonus` needs no ledger at all and is parametrized instead: the 1.2x perk
+fires only on a win, and it floors, so it never mints the fraction of a point a 1-unit win would
+otherwise round up to. Everything else runs against the throwaway ledger `economy_isolated_db`
+installs.
+"""
 
 import asyncio
 
@@ -22,7 +51,14 @@ pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
 
 async def _add_balance(user_id: int, name: str, amount: int) -> int:
-    """Seeds a positive balance through the public adjustment path."""
+    """Seeds a positive balance through the public adjustment path.
+
+    Going through `adjust_balance` rather than writing the row keeps the seeded `total_earned`
+    consistent with the balance, so a test can assert the accounting identity on top of it.
+
+    Returns:
+        The post-adjustment balance.
+    """
     result = await adjust_balance(user_id=user_id, name=name, delta=amount)
     return result.new_balance
 
@@ -42,7 +78,7 @@ async def _add_balance(user_id: int, name: str, amount: int) -> int:
     ],
 )
 def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> None:
-    """VIP bonus applies only to positive winnings and floors fractional fifths."""
+    """The VIP bonus lifts only a winning delta and floors the fifth it adds."""
     assert apply_vip_blackjack_bonus(delta=delta, is_vip=is_vip) == expected
 
 
@@ -50,7 +86,7 @@ def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> N
 
 
 async def test_credit_with_repayment_full_credit() -> None:
-    """Income credits the full amount and leaves repayment fields at zero."""
+    """Income credits the full amount and reports no repayment against it."""
     result = await credit_with_repayment(user_id=1, name="alice", amount=100)
 
     assert result.new_balance == 100
@@ -60,7 +96,7 @@ async def test_credit_with_repayment_full_credit() -> None:
 
 
 async def test_credit_with_repayment_zero_amount_is_noop() -> None:
-    """Non-positive reward calls do not create phantom income."""
+    """A zero-amount credit reports the standing balance and mints nothing."""
     await _add_balance(user_id=1, name="alice", amount=50)
 
     result = await credit_with_repayment(user_id=1, name="alice", amount=0)
@@ -72,7 +108,7 @@ async def test_credit_with_repayment_zero_amount_is_noop() -> None:
 
 
 async def test_credit_with_repayment_first_sight_creates_row() -> None:
-    """A first reward creates the user account row."""
+    """A credit for a never-seen user creates the wallet row rather than dropping the income."""
     result = await credit_with_repayment(user_id=1, name="alice", amount=200)
 
     assert result.credited_amount == 200
@@ -80,7 +116,7 @@ async def test_credit_with_repayment_first_sight_creates_row() -> None:
 
 
 async def test_credit_with_repayment_concurrent_credits_accumulate() -> None:
-    """Concurrent reward writes add up instead of losing one update."""
+    """Concurrent credits all land instead of losing an update to a read-modify-write race."""
     await asyncio.gather(
         *(credit_with_repayment(user_id=1, name="alice", amount=10) for _ in range(20))
     )
@@ -89,7 +125,7 @@ async def test_credit_with_repayment_concurrent_credits_accumulate() -> None:
 
 
 async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
-    """Passive income does not auto-repay explicit long-term loan contracts."""
+    """Income never auto-repays an accepted long-term loan contract."""
     await _add_balance(user_id=2, name="bob", amount=1_000)
     proposal = await create_personal_loan_request(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
@@ -114,7 +150,7 @@ async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
 
 
 async def test_transfer_updates_sender_and_receiver_totals() -> None:
-    """Transfer debits sender the full amount and credits receiver the taxed net."""
+    """A transfer spends the sender the gross amount and earns the receiver only the taxed net."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
     await transfer(sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=40)
@@ -129,7 +165,7 @@ async def test_transfer_updates_sender_and_receiver_totals() -> None:
 
 
 async def test_apply_round_settlement_updates_player_and_casino_totals() -> None:
-    """Casino settlement stores actual applied deltas in account / ledger totals."""
+    """Casino settlement books the applied delta into both the player's and the ledger's totals."""
     await _add_balance(user_id=1, name="alice", amount=100)
 
     await apply_round_settlement(
@@ -144,7 +180,7 @@ async def test_apply_round_settlement_updates_player_and_casino_totals() -> None
 
 
 async def test_adjust_balance_counts_applied_delta_not_requested_delta() -> None:
-    """A clamped manual adjustment spends only the applied balance delta."""
+    """A clamped manual debit spends only the delta it applied, not the one it was handed."""
     await _add_balance(user_id=1, name="alice", amount=10)
 
     await adjust_balance(user_id=1, name="alice", delta=-1_000)

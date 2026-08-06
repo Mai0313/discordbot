@@ -1,4 +1,26 @@
-"""Tests for Blackjack round-history persistence and its history text renderer."""
+"""Pins Blackjack round history end to end: the persisted store and the table rendered from it.
+
+Both halves fail quietly in production, which is why they are pinned here. The store
+(`cogs/games/database.py`) is written from a background task after the round has already settled
+and paid out, so a broken write costs a history row and nothing a player at the table would
+notice. The roundtrip test is therefore what asserts that split hands, the insurance side bet,
+the dealer hand and the `is_bot` flag all survive the single JSON payload column — every field of
+which carries a default, with no migration mechanism behind it, so a shape change surfaces
+nowhere else. Ordering is pinned on its own because every seat of one round shares a timestamp,
+which leaves the descending `id` to make the newest-first read total.
+
+The renderer (`cogs/games/history_text.py`) packs those records into an embed description, which
+Discord caps at 4096 characters and refuses with a 400 past it. Ordinary rounds sit far inside
+the budget, so a full 50 of them only pin that the common case stays under the cap, while
+`_wide_record_view` builds the widest row the columns allow — 12-digit money, a Split putting two
+four-card hands in one cell — because that is what reaches the trim loop and its `未顯示` note. The
+render assertions read the user-facing Chinese copy directly, since the summary line and the
+empty-history notice are the strings a player sees.
+
+`games_isolated_db` is file-local rather than a `tests/conftest.py` fixture because no other test
+file touches this store; it mirrors the conftest ones, swapping the module-level `_engine` for a
+`tmp_path` file and clearing the per-engine schema-bootstrap cache.
+"""
 
 from pathlib import Path
 from datetime import datetime
@@ -36,7 +58,7 @@ _DEALER_TOTAL = 16
 async def games_isolated_db(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncIterator[None]:
-    """Per-test SQLite file with the full games-history schema."""
+    """Points the games-history store at a per-test SQLite file carrying the full schema."""
     db_path = tmp_path / "games.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     async with engine.begin() as conn:
@@ -48,7 +70,11 @@ async def games_isolated_db(
 
 
 def _participant(*, user_id: int, name: str, bet: int) -> GameParticipant:
-    """Builds a minimal seated participant for settlement input."""
+    """Builds a minimal seated participant for settlement input.
+
+    Returns:
+        A seat holding `bet` against a fixed 10,000 starting balance, never all-in.
+    """
     return GameParticipant(
         user_id=user_id,
         account_name=name,
@@ -69,7 +95,11 @@ def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
     insurance: BlackjackInsuranceSettlement | None = None,
     is_vip: bool = False,
 ) -> BlackjackPlayerResult:
-    """Wraps settlement fields into a `BlackjackPlayerResult`."""
+    """Wraps settlement fields into a `BlackjackPlayerResult`.
+
+    Returns:
+        The seat paired with its settlement, as `record_blackjack_history` takes it.
+    """
     settlement = BlackjackPlayerSettlement(
         delta=delta,
         payout=max(delta, 0),
@@ -87,7 +117,12 @@ def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
 
 
 def _record_view(*, delta: int, outcome: SettleOutcome) -> BlackjackHistoryRecord:
-    """Builds a read-model record without touching the database."""
+    """Builds a read-model record without touching the database.
+
+    Returns:
+        One round of a single 21 hand against the shared dealer hand, at a fixed timestamp so the
+        rendered `MM/DD HH:MM` cell has a known width.
+    """
     return BlackjackHistoryRecord(
         round_id="r",
         channel_id=1,
@@ -118,7 +153,12 @@ def _record_view(*, delta: int, outcome: SettleOutcome) -> BlackjackHistoryRecor
 
 
 def _wide_record_view() -> BlackjackHistoryRecord:
-    """Builds a worst-case record that maxes out every cell width."""
+    """Builds a worst-case record that maxes out every cell width.
+
+    Returns:
+        A split round whose money, player cell and dealer cell each sit at the widest the
+        renderer's columns allow.
+    """
     big = 999_999_999_999
     four_cards = [Card(rank="10", suit=suit) for suit in "♠♥♦♣"]
     hand = BlackjackHistoryHand(
@@ -144,7 +184,7 @@ def _wide_record_view() -> BlackjackHistoryRecord:
 
 
 async def test_record_and_fetch_roundtrip(games_isolated_db: None) -> None:
-    """A settled round persists split hands, insurance, and the dealer hand per player."""
+    """Each seat reads back with its split hands, insurance, dealer hand and bot flag."""
     human = _participant(user_id=1, name="alice", bet=1_000)
     split_hands = [
         BlackjackHandSettlement(
@@ -259,7 +299,7 @@ async def test_recent_ordering_and_limit(games_isolated_db: None) -> None:
 
 
 async def test_fetch_recent_empty(games_isolated_db: None) -> None:
-    """A player with no recorded rounds returns no records."""
+    """A player with no recorded rounds reads back as an empty tuple."""
     rows = await fetch_recent_blackjack_rounds(user_id=4242, limit=10)
     assert rows == ()
 
@@ -278,7 +318,7 @@ def test_summary_counts_by_delta_sign() -> None:
 
 
 def test_history_embed_renders_code_block_table() -> None:
-    """The history embed packs rounds into a fenced monospace table."""
+    """The fenced table carries the summary line, hand cells, outcome tags and signed P&L."""
     records = tuple(
         _record_view(delta=delta, outcome=outcome)
         for delta, outcome in ((1_500, "blackjack"), (-2_000, "player_bust"), (0, "push"))

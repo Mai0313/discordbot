@@ -1,4 +1,35 @@
-"""Tests for the deep-research feature: marker extraction, delivery, agent helpers, and store."""
+"""Pins the deep-research feature end to end: marker, chunking, streaming agent, store, delivery.
+
+A research run costs minutes of wall clock and real money on a managed Gemini agent, so almost
+none of this is reachable from a live call. Every guard here drives the production code over
+fabricated SSE events and a fake `client.aio.interactions`, which is the only way to exercise the
+paths that appear solely when something goes wrong.
+
+The streaming driver carries most of the file. `agent.py` treats a stream that ends or drops
+without a terminal event as a re-attach (`get(stream=True, last_event_id=...)`) rather than as
+completion, degrades to the poll once the re-attaches stop making progress, and re-raises only
+when the create itself died before `interaction.created` left an id to resume from. Those are
+three different outcomes behind one identical-looking symptom, so each has its own test. Beside
+them sit the id being persisted on the first event rather than after the long wait,
+`RESEARCH_TOOLS` riding every create, and no `agent_config` going out at all, since it carried
+the removed escalation tiers' `collaborative_planning` that #447 dropped. The result is always
+read back from the terminal non-stream `get(id)`, because `interaction.completed` carries an
+empty payload on purpose.
+
+Delivery is the other half where a bug is expensive. The report is agent-written text of
+arbitrary length that may quote arbitrary mentions, so the chunker has to cut on the report's own
+`---` / paragraph / line structure without losing a character, the owner-only mention policy has
+to reach every message, and a near-limit final chunk must not swallow the footer, the owner ping
+or the `research.md` attachment. One test pins that a file past the guild's upload ceiling becomes
+a hosted URL instead of disappearing, and its host-off twin pins that the two attachments are
+still decided independently, so a merely combined overflow never peels the report away.
+
+The rest is smaller but load-bearing. The `<deep-research>` marker is the QA route's only inline
+trigger, so a brief leaking into visible text would post the prompt instead of running it. The
+reply.db row is both the restart-resume set and the one-per-owner concurrency slot, so a row
+parked in a phase the store no longer knows (`planning`, left behind by those same removed tiers)
+must hold neither. The store tests take `research_isolated_db`; nothing here needs credentials.
+"""
 
 from types import SimpleNamespace
 import base64
@@ -35,7 +66,12 @@ if TYPE_CHECKING:
 
 
 def _disabled_delivery() -> MediaDeliveryPlanner:
-    """A planner whose host is off, so report files attach natively exactly as before hosting."""
+    """Builds a delivery planner whose media host is switched off.
+
+    Returns:
+        A planner that never hosts, so a report file either attaches natively or is dropped,
+        which is byte-for-byte the pre-hosting delivery path.
+    """
     return MediaDeliveryPlanner(
         media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
     )
@@ -45,6 +81,7 @@ def _disabled_delivery() -> MediaDeliveryPlanner:
 
 
 def test_deep_research_block_is_pulled_and_brief_captured() -> None:
+    """A complete `<deep-research>` block yields the brief and vanishes from the visible text."""
     markers = extract_inline_markers(
         text="好喔幫你查 <deep-research>研究 TPU 的競爭格局</deep-research> 等等貼到 thread"
     )
@@ -54,12 +91,14 @@ def test_deep_research_block_is_pulled_and_brief_captured() -> None:
 
 
 def test_unclosed_trailing_deep_research_is_still_pulled() -> None:
+    """An unclosed trailing marker still yields its brief instead of leaking it into chat."""
     markers = extract_inline_markers(text="開查囉 <deep-research>研究量子計算最新進展")
     assert markers.research_brief == "研究量子計算最新進展"
     assert "量子" not in markers.cleaned_text
 
 
 def test_deep_research_coexists_with_voice() -> None:
+    """One reply carrying both markers keeps the spoken segment visible and pulls the brief."""
     markers = extract_inline_markers(
         text="<generate-voice>馬上幫你查</generate-voice> <deep-research>研究 X</deep-research>"
     )
@@ -70,10 +109,12 @@ def test_deep_research_coexists_with_voice() -> None:
 
 
 def test_scrub_hides_deep_research_mid_stream() -> None:
+    """The live preview hides a half-streamed brief, so it never flickers into the message."""
     assert "TPU" not in scrub_markers_for_preview(text="好喔 <deep-research>研究 TPU")
 
 
 def test_no_marker_leaves_text_and_brief_untouched() -> None:
+    """A marker-free reply comes back byte-for-byte and asks for no research."""
     markers = extract_inline_markers(text="這只是一般回覆,沒有任何 marker")
     assert markers.research_brief is None
     assert markers.cleaned_text == "這只是一般回覆,沒有任何 marker"
@@ -83,10 +124,12 @@ def test_no_marker_leaves_text_and_brief_untouched() -> None:
 
 
 def test_split_report_keeps_short_text_as_one_chunk() -> None:
+    """Text already under the message cap is one chunk, unsplit."""
     assert split_report(text="short report") == ["short report"]
 
 
 def test_split_report_prefers_paragraph_boundaries() -> None:
+    """An over-limit report cuts on its blank-line paragraph boundary, not mid-paragraph."""
     para_a = "A" * 1200
     para_b = "B" * 1200
     chunks = split_report(text=f"{para_a}\n\n{para_b}")
@@ -96,17 +139,20 @@ def test_split_report_prefers_paragraph_boundaries() -> None:
 
 
 def test_split_report_hard_cuts_an_oversized_line() -> None:
+    """A single line longer than the limit is hard-cut at the limit with nothing dropped."""
     chunks = split_report(text="C" * 5000, limit=2000)
     assert all(len(chunk) <= 2000 for chunk in chunks)
     assert "".join(chunks) == "C" * 5000
 
 
 def test_split_report_by_sections_splits_on_thematic_breaks() -> None:
+    """A `---` thematic break starts its own message, and the separator line itself is dropped."""
     chunks = split_report_by_sections(text="## A\n\nAlpha body\n\n---\n\n## B\n\nBeta body")
     assert chunks == ["## A\n\nAlpha body", "## B\n\nBeta body"]
 
 
 def test_split_report_by_sections_subsplits_oversized_section() -> None:
+    """A section still over the limit is sub-packed, leaving the sections beside it whole."""
     chunks = split_report_by_sections(text="intro\n\n---\n\n" + "X" * 2500, limit=2000)
     assert chunks[0] == "intro"
     assert all(len(chunk) <= 2000 for chunk in chunks)
@@ -115,27 +161,32 @@ def test_split_report_by_sections_subsplits_oversized_section() -> None:
 
 
 def test_split_report_by_sections_falls_back_to_paragraph_packing() -> None:
+    """A report with no thematic break packs byte-for-byte like plain `split_report`."""
     text = f"{'A' * 1200}\n\n{'B' * 1200}"
     assert split_report_by_sections(text=text) == split_report(text=text)
 
 
 def test_split_report_by_sections_ignores_break_inside_code_fence() -> None:
+    """A `---` line inside a fenced code block is content, never a section break."""
     chunks = split_report_by_sections(text="before\n\n```\n---\n```\n\nafter")
     assert len(chunks) == 1
     assert "---" in chunks[0]
 
 
 def test_split_report_by_sections_keeps_table_delimiter_row() -> None:
+    """A markdown table's `| --- |` delimiter row never cuts the table in half."""
     chunks = split_report_by_sections(text="| Col | Val |\n| --- | --- |\n| a | 1 |")
     assert len(chunks) == 1
 
 
 def test_split_report_by_sections_keeps_setext_heading() -> None:
+    """A setext heading underline, having no blank line above it, is not a section break."""
     chunks = split_report_by_sections(text="Heading\n---\n\nbody")
     assert len(chunks) == 1
 
 
 def test_split_report_by_sections_drops_empty_sections() -> None:
+    """A leading or trailing break yields no empty message."""
     chunks = split_report_by_sections(text="---\n\nonly body\n\n---")
     assert chunks == ["only body"]
 
@@ -147,14 +198,29 @@ class _FakeStream:
     """Async iterator over scripted SSE events; can raise after a prefix to simulate a drop."""
 
     def __init__(self, events: list[object], *, raise_after: int | None = None) -> None:
+        """Scripts the events to yield, and how many of them may pass before it raises."""
         self._events = list(events)
         self._raise_after = raise_after
         self._yielded = 0
 
     def __aiter__(self) -> "_FakeStream":
+        """Iterates itself, like the SDK's own stream object.
+
+        Returns:
+            This same stream.
+        """
         return self
 
     async def __anext__(self) -> object:
+        """Hands back the next scripted event, or drops the stream once `raise_after` is reached.
+
+        Returns:
+            The next scripted event.
+
+        Raises:
+            RuntimeError: `raise_after` events have been yielded, standing in for a dropped stream.
+            StopAsyncIteration: The script ran out, standing in for a bounded request closing.
+        """
         if self._raise_after is not None and self._yielded >= self._raise_after:
             raise RuntimeError("stream dropped")
         if not self._events:
@@ -170,16 +236,27 @@ class _FakeInteractions:
     """
 
     def __init__(self, *, streams: list[_FakeStream], terminal: object) -> None:
+        """Queues the streams each open hands out, and starts the call recorders."""
         self._streams = list(streams)
         self._terminal = terminal
         self.create_kwargs: dict[str, object] = {}
         self.stream_get_calls: list[dict[str, object]] = []
 
     async def create(self, **kwargs: object) -> _FakeStream:
+        """Records the create kwargs and hands out the next queued stream.
+
+        Returns:
+            The next scripted stream.
+        """
         self.create_kwargs = kwargs
         return self._streams.pop(0)
 
     async def get(self, **kwargs: object) -> object:
+        """Hands out the next queued stream for a streaming get, else the terminal interaction.
+
+        Returns:
+            The next scripted stream when `stream=True`, else the terminal interaction.
+        """
         if kwargs.get("stream"):
             self.stream_get_calls.append(kwargs)
             return self._streams.pop(0)
@@ -187,6 +264,12 @@ class _FakeInteractions:
 
 
 def _fake_client(*, streams: list[_FakeStream], terminal: object) -> SimpleNamespace:
+    """Builds the `client.aio.interactions` chain `agent.py` reaches through.
+
+    Returns:
+        The client double; its `.aio.interactions` is the `_FakeInteractions` a test reads the
+        recorded create kwargs and streaming-get calls back off.
+    """
     return SimpleNamespace(
         aio=SimpleNamespace(interactions=_FakeInteractions(streams=streams, terminal=terminal))
     )
@@ -196,11 +279,19 @@ def _as_event(fake: object) -> "InteractionSSEEvent":
     """Views a fabricated SSE event double as the real SDK union a production signature expects.
 
     Production discriminates on `.event_type`, not isinstance, so a SimpleNamespace event is safe.
+
+    Returns:
+        `fake` unchanged, typed as `InteractionSSEEvent`.
     """
     return cast("InteractionSSEEvent", fake)
 
 
 def _created_event(*, interaction_id: str = "int_9", event_id: str = "e1") -> SimpleNamespace:
+    """Builds the `interaction.created` event the driver captures the interaction id off.
+
+    Returns:
+        The event double, carrying the id under `.interaction.id`.
+    """
     return SimpleNamespace(
         event_type="interaction.created",
         event_id=event_id,
@@ -209,6 +300,11 @@ def _created_event(*, interaction_id: str = "int_9", event_id: str = "e1") -> Si
 
 
 def _thought_event(text: str, *, event_id: str = "e2") -> SimpleNamespace:
+    """Builds the one delta shape the progress streamer accumulates: a thought-summary delta.
+
+    Returns:
+        The event double, shaped so `_feed`'s `event_type` then `delta.type` narrowing reaches it.
+    """
     return SimpleNamespace(
         event_type="step.delta",
         event_id=event_id,
@@ -217,12 +313,23 @@ def _thought_event(text: str, *, event_id: str = "e2") -> SimpleNamespace:
 
 
 def _completed_event(*, event_id: str = "e9") -> SimpleNamespace:
+    """Builds the terminal `interaction.completed` event that stops the driver re-attaching.
+
+    Returns:
+        The event double, its `.interaction` deliberately empty: the real one carries no report
+        body either, which is why the result is read from the terminal `get(id)` instead.
+    """
     return SimpleNamespace(
         event_type="interaction.completed", event_id=event_id, interaction=SimpleNamespace()
     )
 
 
 def _terminal_interaction() -> SimpleNamespace:
+    """Builds the settled interaction the non-stream `get(id)` answers with.
+
+    Returns:
+        A completed interaction carrying the report text and usage `_to_result` maps.
+    """
     return SimpleNamespace(
         id="int_9",
         status="completed",
@@ -233,6 +340,7 @@ def _terminal_interaction() -> SimpleNamespace:
 
 
 async def test_stream_antigravity_persists_id_streams_and_returns_terminal_result() -> None:
+    """The happy path: id persisted on the first event, reasoning painted, result from the get."""
     client = _fake_client(
         streams=[_FakeStream([_created_event(), _thought_event("searching"), _completed_event()])],
         terminal=_terminal_interaction(),
@@ -271,8 +379,8 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
 
 
 async def test_stream_reconnects_when_stream_ends_without_terminal(monkeypatch) -> None:  # noqa: ANN001 -- pytest monkeypatch fixture
-    # The SDK can close a bounded request mid-run; ending WITHOUT a terminal event must re-attach
-    # (from the last event id), not be mistaken for completion.
+    """A stream that simply ends with no terminal event re-attaches from the last event id."""
+    # The SDK closes a bounded request mid-run, so a clean end is not evidence the run finished.
     monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
     client = _fake_client(
         streams=[
@@ -301,6 +409,7 @@ async def test_stream_reconnects_when_stream_ends_without_terminal(monkeypatch) 
 
 
 async def test_stream_reconnects_after_a_mid_stream_drop(monkeypatch) -> None:  # noqa: ANN001 -- pytest monkeypatch fixture
+    """A stream that raises mid-run re-attaches from the last event id rather than failing."""
     monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
     client = _fake_client(
         streams=[
@@ -329,6 +438,7 @@ async def test_stream_reconnects_after_a_mid_stream_drop(monkeypatch) -> None:  
 
 
 async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) -> None:  # noqa: ANN001 -- pytest monkeypatch fixture
+    """Once the re-attaches give up, the run is settled by the poll instead of being lost."""
     monkeypatch.setattr(agent, "RESEARCH_POLL_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr(agent, "MAX_STREAM_RECONNECTS", 0)
     client = _fake_client(
@@ -357,6 +467,7 @@ async def test_stream_falls_back_to_poll_when_streaming_gives_up(monkeypatch) ->
 
 
 async def test_stream_antigravity_reraises_when_create_never_yields_an_id() -> None:
+    """A stream that dies before `interaction.created` raises: there is no id to poll or resume."""
     client = _fake_client(
         streams=[_FakeStream([], raise_after=0)], terminal=_terminal_interaction()
     )
@@ -383,6 +494,7 @@ async def test_stream_antigravity_reraises_when_create_never_yields_an_id() -> N
 
 
 async def test_resume_research_stream_drives_from_get_stream() -> None:
+    """A restart resume re-attaches through `get(stream=True)` and never calls `create`."""
     client = _fake_client(
         streams=[_FakeStream([_completed_event(event_id="e1")])], terminal=_terminal_interaction()
     )
@@ -390,12 +502,12 @@ async def test_resume_research_stream_drives_from_get_stream() -> None:
     result = await agent.resume_research_stream(
         client=as_client(fake=client), interaction_id="int_9", streamer=streamer
     )
-    # Resume re-attaches via get(stream=True) and never calls create.
     assert client.aio.interactions.create_kwargs == {}
     assert result.ok is True
 
 
 def test_is_terminal_event_classifies_statuses() -> None:
+    """Which SSE events settle a run and stop the driver re-attaching."""
     assert agent._is_terminal_event(event=_as_event(_completed_event())) is True
     assert (
         agent._is_terminal_event(
@@ -417,6 +529,7 @@ def test_is_terminal_event_classifies_statuses() -> None:
 
 
 def test_to_result_extracts_text_image_and_usage() -> None:
+    """A completed interaction maps to its report text, decoded chart bytes and token counts."""
     image_b64 = base64.b64encode(b"PNGBYTES").decode()
     interaction = SimpleNamespace(
         id="int_123",
@@ -439,6 +552,7 @@ def test_to_result_extracts_text_image_and_usage() -> None:
 
 
 def test_to_result_handles_failure_and_missing_fields() -> None:
+    """An interaction carrying only id and status degrades to defaults instead of raising."""
     interaction = SimpleNamespace(id="int_x", status="failed")
     result = agent._to_result(interaction=interaction)
     assert result.ok is False
@@ -448,6 +562,7 @@ def test_to_result_handles_failure_and_missing_fields() -> None:
 
 
 def test_latest_thought_returns_last_summary() -> None:
+    """The content-shaped steps yield the newest summary; a step-less interaction yields None."""
     interaction = SimpleNamespace(
         steps=[
             SimpleNamespace(content=[SimpleNamespace(type="thought_summary", text="first")]),
@@ -459,6 +574,7 @@ def test_latest_thought_returns_last_summary() -> None:
 
 
 def test_latest_thought_reads_thought_step_summary() -> None:
+    """A materialized `thought` step keeps its text in `summary[].text`, not in `content`."""
     interaction = SimpleNamespace(
         steps=[
             SimpleNamespace(type="thought", summary=[SimpleNamespace(text="planning the search")]),
@@ -474,6 +590,7 @@ def test_latest_thought_reads_thought_step_summary() -> None:
 
 
 def test_streamer_feed_accumulates_only_thought_summaries() -> None:
+    """Only a thought-summary delta reaches the live view, not report text or lifecycle events."""
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
     streamer._feed(event=_as_event(_thought_event("searching...")))
     text_delta = SimpleNamespace(
@@ -487,6 +604,7 @@ def test_streamer_feed_accumulates_only_thought_summaries() -> None:
 
 
 def test_streamer_render_preview_windows_and_escapes_mentions() -> None:
+    """The preview keeps the newest lines under the timed header, and escapes agent mentions."""
     streamer = ResearchProgressStreamer(status=None, label="Antigravity")
     streamer.reasoning = "first line\n@everyone please\nlast line"
     preview = streamer._render_preview()
@@ -496,6 +614,7 @@ def test_streamer_render_preview_windows_and_escapes_mentions() -> None:
 
 
 async def test_streamer_write_snapshot_edits_and_skips_unchanged() -> None:
+    """A snapshot write carries a no-ping policy, and an unchanged snapshot writes nothing."""
     status = _FakeStatusMessage()
     streamer = ResearchProgressStreamer(status=status, label="Antigravity", reasoning="thinking")
     await streamer._write_preview_snapshot()
@@ -508,6 +627,7 @@ async def test_streamer_write_snapshot_edits_and_skips_unchanged() -> None:
 
 
 async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
+    """Streaming concatenates the thought deltas and leaves no cadence editor task behind."""
     status = _FakeStatusMessage()
     streamer = ResearchProgressStreamer(
         status=status, label="Antigravity", preview_interval_seconds=0.01
@@ -525,6 +645,7 @@ async def test_streamer_stream_accumulates_and_stops_editor_cleanly() -> None:
 
 
 def test_fallback_thread_name_uses_first_line() -> None:
+    """With no LLM title, the thread is named after the brief's first line, or `深度研究`."""
     name = research_cog._fallback_thread_name(brief="研究 TPU 的歷史與競爭格局\n更多細節")
     assert name.startswith("研究 TPU")
     assert "\n" not in name
@@ -532,18 +653,21 @@ def test_fallback_thread_name_uses_first_line() -> None:
 
 
 def test_terminal_phase_mapping() -> None:
+    """A terminal status maps onto a stored phase; all but completed and cancelled read failed."""
     assert research_cog._terminal_phase(status="completed") == "done"
     assert research_cog._terminal_phase(status="cancelled") == "cancelled"
     assert research_cog._terminal_phase(status="budget_exceeded") == "failed"
 
 
 def test_owner_id_from_mention_parses_digits() -> None:
+    """Both `<@id>` spellings parse back to the owner id, and a non-mention yields 0."""
     assert research_cog._owner_id_from_mention(mention="<@123456789>") == 123456789
     assert research_cog._owner_id_from_mention(mention="<@!42>") == 42
     assert research_cog._owner_id_from_mention(mention="nobody") == 0
 
 
 def test_deep_research_available_requires_enabled_and_key() -> None:
+    """Deep research needs the kill-switch on AND a non-blank key: it runs direct to Google."""
     config = LLMConfig()
     config.deep_research_enabled = True
     config.gemini_api_key = "AIza-key"
@@ -556,6 +680,7 @@ def test_deep_research_available_requires_enabled_and_key() -> None:
 
 
 def test_owner_allowed_mentions_blocks_everyone_and_roles() -> None:
+    """The report's mention policy resolves the owner alone, never `@everyone` or a role."""
     mentions = research_cog._owner_allowed_mentions(owner_id=42)
     assert mentions.everyone is False
     assert mentions.roles is False
@@ -565,6 +690,7 @@ def test_owner_allowed_mentions_blocks_everyone_and_roles() -> None:
 
 
 def test_failure_text_distinguishes_budget() -> None:
+    """A cost stop and a cancellation each say so; every other failure gets the generic line."""
     assert "成本上限" in research_cog._failure_text(status="budget_exceeded")
     assert "取消" in research_cog._failure_text(status="cancelled")
     assert research_cog._failure_text(status="failed")
@@ -574,11 +700,17 @@ def test_failure_text_distinguishes_budget() -> None:
 
 
 async def _only_resumable(*, thread_id: int) -> rdb.PersistentResearchSession | None:
-    """The one resumable row for a thread; the store has no single-row reader left to use."""
+    """Picks one thread out of the resumable set; the store has no single-row reader left to use.
+
+    Returns:
+        That thread's session while it is still `researching`, or None once it is terminal or
+        was never written.
+    """
     return next((row for row in await rdb.list_resumable() if row.thread_id == thread_id), None)
 
 
 async def test_session_round_trip(research_isolated_db: None) -> None:
+    """A launched session reads back every column the resume needs; an unknown thread has none."""
     await rdb.upsert_session(
         thread_id=1,
         owner_id=99,
@@ -600,6 +732,7 @@ async def test_session_round_trip(research_isolated_db: None) -> None:
 
 
 async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
+    """The id lands on the row, and leaving `researching` drops it from resume and owner slot."""
     await rdb.upsert_session(
         thread_id=2,
         owner_id=1,
@@ -628,6 +761,7 @@ async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
 
 
 async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: None) -> None:
+    """The one-per-owner slot is held only while researching, and only against that owner."""
     await rdb.upsert_session(
         thread_id=10,
         owner_id=500,
@@ -646,6 +780,7 @@ async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: N
 
 
 async def test_list_resumable_only_returns_researching(research_isolated_db: None) -> None:
+    """The restart sweep picks up in-flight sessions alone, never a terminal one."""
     # One session per phase, so only the researching one may come back as resumable.
     seeded: tuple[tuple[int, ResearchPhase], ...] = (
         (20, "researching"),
@@ -669,6 +804,7 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
 
 
 def test_cast_phase_defaults_unknown_to_failed() -> None:
+    """A stored phase this store no longer knows narrows to `failed`: nothing is in flight."""
     assert rdb.cast_phase(value="researching") == "researching"
     assert rdb.cast_phase(value="bogus") == "failed"
     # A row the removed escalation tiers left in `planning` is no longer a phase this store knows.
@@ -678,6 +814,7 @@ def test_cast_phase_defaults_unknown_to_failed() -> None:
 async def test_a_legacy_planning_row_no_longer_blocks_its_owner(
     research_isolated_db: None,
 ) -> None:
+    """A row stuck in the removed tiers' `planning` holds no owner slot and is never resumed."""
     # Written the way the removed escalation wrote it: the phase literal is gone from the model, so
     # seed it through the ORM. A stuck row must not hold the one-per-owner slot forever.
     async with rdb.open_session() as session:
@@ -706,9 +843,11 @@ class _FakeStatusMessage:
     """Records `edit` calls on the opening status message."""
 
     def __init__(self) -> None:
+        """Starts the edit recorder."""
         self.edits: list[dict[str, object]] = []
 
     async def edit(self, **kwargs: object) -> None:
+        """Records one edit payload whole, so a test can read its content, files and mentions."""
         self.edits.append(kwargs)
 
 
@@ -718,16 +857,27 @@ class _FakeThread:
     id = 1
 
     def __init__(self) -> None:
+        """Starts the send recorder and a guild reporting a plain 10MB upload ceiling.
+
+        `_upload_limit` reads `guild.filesize_limit`, so a test that wants an oversize attachment
+        overwrites `guild` with a tiny one rather than growing the file.
+        """
         self.sends: list[dict[str, object]] = []
         self.guild = SimpleNamespace(filesize_limit=10 * 1024 * 1024)
 
     async def send(self, **kwargs: object) -> None:
+        """Records one send payload whole, so a test can read its content, files and mentions."""
         self.sends.append(kwargs)
 
 
 def _completed_result(
     *, report_text: str, image_bytes: bytes | None = None
 ) -> agent.ResearchResult:
+    """Builds a settled research result the delivery path treats as a finished run.
+
+    Returns:
+        A `completed` result carrying that report markdown and, when given, a chart image.
+    """
     return agent.ResearchResult(
         interaction_id="int_1",
         status="completed",
@@ -737,6 +887,7 @@ def _completed_result(
 
 
 async def test_delivery_keeps_footer_message_under_the_limit() -> None:
+    """A near-limit last chunk pushes footer, ping and `research.md` onto a trailing message."""
     status = _FakeStatusMessage()
     thread = _FakeThread()
     footer = "-# antigravity-preview-05-2026 · ⬆ 0 ⬇ 0 · $0.00000000"
@@ -766,6 +917,7 @@ async def test_delivery_keeps_footer_message_under_the_limit() -> None:
 
 
 async def test_delivery_inlines_footer_for_short_reports() -> None:
+    """A short report is one edit of the opening status message, footer, ping and file included."""
     status = _FakeStatusMessage()
     thread = _FakeThread()
     await deliver_report(

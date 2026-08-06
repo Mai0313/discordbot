@@ -1,4 +1,29 @@
-"""Tests for keeping the injected capability reference aligned with what the bot can do."""
+"""Pins `gen_reply/capabilities.md` against what the bot can actually do, in both directions.
+
+That document replaced the deleted `/help` cog and rides on every QA answer turn as the model's
+own feature reference, which makes it the only description of any feature anywhere: a command
+missing from it is a command nobody, the answer model included, can find, and a line a rename
+left behind is the bot telling someone to run something Discord will not offer.
+
+The command guards read the code, never the document's own claims. `_slash_command_paths` walks
+`src/discordbot/cogs` by AST — importing a cog would build the process-wide economy engine and
+want a gateway — resolving `@slash_command`, `@<group>.subcommand` and a nested group such as
+`/memory server show` through the decorated callback; a declaration form it cannot resolve is an
+assertion rather than a skip, since a scan that shrinks in silence is how subcommands went
+undocumented in the first place. The forward guard asserts every runnable path appears in the
+document, the mirror guard asserts every `/command` the document names still resolves to a
+runnable path or a group node, and both rest on each command being written as a code span of its
+own, so a third guard reports every mention the reader cannot see.
+
+The rest of the file pins what neither guard can match on because it carries no command: the
+inline marker set (reached in plain language, so the document describes it in plain language
+too), the `UserAccount` boolean flags and the gate wording each owes on its own command line,
+the two loan requests whose real gate is a decision button plus the timeout that auto-rejects
+them, and the clamp `/admin collect_tax` applies. Two guards read Discord's own surface instead
+of the document — no command may declare `default_member_permissions`, and no command
+description may name an admin without saying which admin it means — and the last one pins that
+the reference is injected as a low-authority `role=assistant` note.
+"""
 
 import re
 import ast
@@ -188,6 +213,9 @@ def _mentions_command(body: str, command: str) -> bool:
 
     The trailing lookahead stops a documented sibling from covering an undocumented one
     by prefix, so `/games blackjack_history` never answers for `/games blackjack`.
+
+    Returns:
+        True when the document names this exact command.
     """
     return re.search(pattern=rf"/{re.escape(pattern=command)}(?![\w-])", string=body) is not None
 
@@ -318,7 +346,11 @@ def _picker_descriptions() -> dict[str, list[str]]:
 
 
 def _names_an_unqualified_admin(text: str) -> bool:
-    """Reports whether a description names an admin without saying which one it means."""
+    """Reports whether a description names an admin without saying which one it means.
+
+    Returns:
+        True when the text names an admin and never narrows it to the economy one.
+    """
     lowered = text.lower()
     if _ECONOMY_ADMIN_TERM in lowered:
         return False

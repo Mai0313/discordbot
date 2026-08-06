@@ -1,4 +1,23 @@
-"""Tests for the in-memory per-channel persistent Blackjack shoe store."""
+"""Deterministic tests for the in-memory per-channel persistent Blackjack shoe store.
+
+Pins `cogs/games/shoe.py`, the one piece of Blackjack state that outlives a round: the shoe a
+channel carries between tables so the bot's Hi-Lo counting and Kelly bet sizing have real
+depletion to read. Every case builds its own shoe as a run of identical ranks at an exact offset
+from `RESHUFFLE_THRESHOLD_CARDS`, so an assertion is a boundary condition or a card count rather
+than a sample; the seeded `Random` only feeds `build_shoe`'s shuffle, which nothing here reads.
+
+Four behaviors are worth pinning. The reshuffle policy: a fresh shoe is the full 208 cards of the
+4-deck build, a stored shoe under the threshold is cut before the round starts (the cut is what
+keeps a shoe from emptying mid-round into `draw_card`'s infinite fallback and corrupting the
+count), and a channel's first shoe is deliberately not flagged as a reshuffle, or every new
+channel would open by announcing one. Taking removes the shoe from the store, so two tables open
+in the same channel deal from separate lists instead of interleaving draws on a shared one, and
+saving it back is what carries depletion into the next round. `true_count` reads the stored shoe
+without taking it, since bet sizing consults the count before a table is dealt, and reports a
+neutral 0.0 whenever the next round would deal from a fresh shoe anyway. And the generation
+token, the ordering guard: two overlapping tables settle in whatever order their rounds finish,
+so a save carrying an older token is dropped rather than allowed to clobber the newer shoe.
+"""
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
@@ -9,7 +28,11 @@ from discordbot.cogs.games.shoe import RESHUFFLE_THRESHOLD_CARDS, BlackjackShoeS
 
 
 def _card(rank: str) -> Card:
-    """Builds a card with an arbitrary suit for shoe tests."""
+    """Builds a card of the given rank; the suit is arbitrary since nothing here counts suits.
+
+    Returns:
+        A `Card` of that rank in spades.
+    """
     return Card(rank=rank, suit="♠")
 
 

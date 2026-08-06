@@ -1,4 +1,30 @@
-"""Tests for YouTube URL detection and the Gemini Interactions answer-path adapters."""
+"""Pins YouTube link detection and the Interactions answer-path translation `gen_reply` swaps to.
+
+Two halves of one feature. `utils/youtube.py::YOUTUBE_URL_RE` decides whether a message names a
+watchable video at all; `gen_reply/interactions.py` then translates the already-assembled OpenAI
+answer input into Gemini's Interactions step schema and adapts the event stream back into the
+shapes `ResponseStreamer._consume` reads. Both halves degrade silently rather than loudly, which
+is what makes them worth pinning: a link the regex misses leaves the turn on the LiteLLM Responses
+bridge, where the URL is fetched as HTML and the video simply goes unwatched, while a channel or
+playlist page it wrongly matches hands Gemini a video uri with no single video behind it. Neither
+outcome raises anywhere.
+
+The regex cases cover the four watchable shapes (`watch?v=`, `youtu.be/`, `/shorts/`, `/live/`),
+the `m.` host and the query-tail variants, and a link written mid-sentence, where the id alphabet
+is what makes the match stop before a trailing `。` or `,`. The rejections cover the pages that
+name no single video, plus a non-YouTube host copying the `watch?v=` path.
+
+The translation cases pin the role mapping (system folds into a user step, assistant becomes
+`model_output`, consecutive same-role messages coalesce), the extension-driven choice between the
+video / image / audio / document content params, and the video riding the last user step, one
+being fabricated for it when the answer input is empty since the request has nowhere else to
+carry it.
+The adapter cases pin the renaming: `_consume` discriminates on `.type` and reads `.delta` /
+`.response.model` / `.response.usage.input_tokens`, so a field left under its Interactions name
+(`event_type`, `total_input_tokens`) would leave the preview, footer and usage accounting quietly
+empty instead of failing. Events are `SimpleNamespace`s here for the reason production accepts
+them: neither side does an isinstance check against the SDK event classes.
+"""
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -122,7 +148,7 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
 
 
 def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
-    """Empty content is dropped, and a video with no prior user step still gets one."""
+    """An empty answer input yields exactly one user step, fabricated to carry the video."""
     steps = step_dicts(
         steps=to_interactions_input(answer_input=[], youtube_url="https://youtu.be/abcdefghijk")
     )
@@ -132,7 +158,12 @@ def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
 
 
 def _interaction_events() -> list[SimpleNamespace]:
-    """A minimal Interactions stream: created, a thought, two text deltas, completed+usage."""
+    """A minimal Interactions stream: created, a thought, two text deltas, completed+usage.
+
+    Returns:
+        The events in stream order, carrying only the fields the adapter reads off the real SSE
+        events.
+    """
     return [
         SimpleNamespace(
             event_type="interaction.created",
@@ -158,13 +189,22 @@ def _interaction_events() -> list[SimpleNamespace]:
 
 
 async def _aiter(events: list[SimpleNamespace]) -> AsyncIterator[SimpleNamespace]:
-    """Yields fake Interactions events in order."""
+    """Replays fabricated events as the async stream the adapter iterates.
+
+    Yields:
+        Each event, in list order.
+    """
     for event in events:
         yield event
 
 
 def _ns(event: object) -> SimpleNamespace:
-    """Narrows an adapted event to the namespace shape the adapter fabricates."""
+    """Narrows an adapted event to the namespace shape the adapter fabricates.
+
+    Returns:
+        `event` unchanged, typed so the fabricated attributes can be read without the checker
+        objecting that no `ResponseStreamEvent` member declares them.
+    """
     assert isinstance(event, SimpleNamespace)
     return event
 

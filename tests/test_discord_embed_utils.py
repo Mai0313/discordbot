@@ -1,4 +1,20 @@
-"""Tests for shared Discord embed helpers."""
+"""Pins `utils/discord_embeds.py`'s spacer rules, none of which show up in a render that works.
+
+The spacer buys one rendered width for every embed in a message, so what is worth pinning is not
+the alignment itself but the cases where the spacer must NOT simply be uploaded: an embed that
+carries a real image of its own, an edit whose message already holds a spacer (re-uploading it
+trips Discord error 400009 on a rapidly edited message such as the Blackjack table), a channel
+denying `attach_files`, and a caller whose own `extra_files` already fill the 10-attachment cap.
+Each of those breaks on Discord's side rather than in code — a rejected edit, or an embed left
+pointing at an `attachment://` file the payload never sent — so this is the only place they are
+cheap to catch.
+
+The rest is the shape of the increment callers splat into a send or edit they own: `attachments`
+on an edit and never on a send, a fresh `File` per call because nextcord reads a `File`'s buffer
+to EOF, and the caller's own uploads keeping their order in front of the spacer. Embed objects
+are reused across sends throughout the cogs, so wherever the spacer is dropped these tests also
+assert the url comes back off the embeds.
+"""
 
 from types import SimpleNamespace
 
@@ -14,16 +30,32 @@ from discordbot.utils.discord_embeds import (
 
 
 def _permission_target(*, attach_files: bool) -> SimpleNamespace:
-    """Builds a Discord target stub with channel permissions."""
+    """Builds a target whose channel answers `permissions_for` with the given `attach_files`.
+
+    Shaped as the guild branch of `_target_allows_file_uploads`, whose every unanswerable step
+    falls through to True: the bot member hangs off `guild.me` and the channel resolves its
+    permissions, so a False here is the deliberate denial rather than an accident of the stub.
+
+    Returns:
+        A stub carrying `guild` and `channel`, to pass as `embed_spacer_payload(target=...)`.
+    """
     member = object()
     guild = SimpleNamespace(me=member)
 
     class _Channel:
+        """The channel half of the stub, carrying the guild and the permission lookup."""
+
         def __init__(self) -> None:
+            """Points the channel at the guild the target also carries."""
             self.guild = guild
 
         @staticmethod
         def permissions_for(target_member: object) -> SimpleNamespace:
+            """Asserts the lookup is about the bot member before answering it.
+
+            Returns:
+                A permissions stub carrying the requested `attach_files`.
+            """
             assert target_member is member
             return SimpleNamespace(attach_files=attach_files)
 
@@ -31,7 +63,7 @@ def _permission_target(*, attach_files: bool) -> SimpleNamespace:
 
 
 def test_apply_embed_spacer_image_sets_attachment_url() -> None:
-    """Spacer image helpers keep multiple embeds on the same rendered width."""
+    """Every embed with no image of its own gets the spacer url, in the list handed in."""
     embeds = [Embed(description="short"), Embed(description="also short")]
 
     result = apply_embed_spacer_image(embeds=embeds)

@@ -1,4 +1,22 @@
-"""Tests for the offline fishing catalog seeder."""
+"""Guards over what the offline fishing catalog seeder does to a `games.db`.
+
+Pins `scripts/seed_fishing.py`, the only thing that carries the hand-tuned catalog in
+`cogs/games/fishing/defaults.py` into a deployed database. Grades, species, and gear are seeded
+offline and runtime never writes them, so retuning a default changes nothing in a running bot
+until an operator runs that script; that is what makes the properties below worth holding.
+
+A first run over an empty database creates every row of all three tables, and a second run writes
+nothing, so a run interrupted part way is safe to repeat. A stored row that drifted from the
+defaults is reported field by field as `field old -> new` and then rewritten, which is what the
+operator reads before deciding to apply anything. `--dry-run` produces that same diff with the
+writes withheld, so the preview can never become a separate, weaker code path than the apply. And
+a row an operator added beyond the defaults survives a run untouched: this seeds, it does not
+reconcile, and eating someone's hand-added gear on a routine reseed would be the worst outcome
+the script could produce.
+
+Every test runs under `fishing_isolated_db`, which deliberately leaves the catalog unseeded, so
+the empty-database case is the starting state rather than something a test has to arrange.
+"""
 
 import pytest
 from scripts import seed_fishing as seed_fishing_script

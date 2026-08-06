@@ -1,4 +1,36 @@
-"""Tests for the stock cog and interactive views."""
+"""Pins the `/stock` panel's ownership, its one-message discipline, and what its renders cache on.
+
+The stock feature is a single public message. `cog.py` posts it, binds a `StockMarketView` to it
+and records it for cleanup; every later screen — paging, one stock's detail, its news, the action
+dropdown, the settlement receipt — repaints that same message through `edit_owned_public_message`
+rather than sending a second one. Two things follow from that shape and both are held here. The
+panel is operable by its opener alone, and the quantity modal is the hole in that rule: a modal
+submit arrives on its own interaction that never runs the view's `interaction_check`, so
+`submit_stock_quantity` re-applies the gate by hand, and a regression there lets a stranger
+holding a stale modal trade on their own wallet and repaint someone else's panel with the receipt.
+The message can also be gone by the time a result is ready, so an edit that 404s re-sends the
+result as a public followup, drops the stale cleanup row and tracks the replacement rather than
+losing the only receipt the trade has.
+
+The two render caches are the other half. The market board PNG and the 7D chart are process-wide
+`lru_cache`s that no write path invalidates, so their keys have to carry every field that reaches
+a pixel; each cache test clears the cache, renders twice for a hit, then moves one such field and
+asserts a miss. A key blind to a field would serve the previous board for a price that has moved.
+
+What is left is the presentation contract. Market rows live in the board PNG rather than in
+Markdown text (proportional CJK columns do not line up, and a 兆-scale market cap has nowhere to
+fit), a select option label stays inside Discord's cap, the shareholder and recent-trade fields
+are trimmed to three, the detail fields are labelled in Chinese rather than half-translated, and a
+failed settlement carrying an operation id is titled a plain failure rather than a reconciliation
+incident.
+
+Nothing here reads `stock.db` or a wallet: every service call is monkeypatched onto the module
+that resolves it — `cog.py` for the market read and the cleanup tracker, `views.py` for the
+detail, news and settlement ones — so the assertions are about the panel, not about the market
+simulation `tests/test_stock.py` owns. The stubs at the top stand in for the slice of a nextcord
+interaction these paths touch, and the `_quote` / `_detail` builders freeze the read models at
+fixed prices and timestamps so a render is reproducible.
+"""
 
 from __future__ import annotations
 
@@ -59,7 +91,7 @@ BCAT_NAME = "破貓科技股份有限公司"
 
 
 class ResponseStub:
-    """Minimal interaction response stub."""
+    """Records which response path a callback took: defer, send, edit or modal."""
 
     def __init__(self) -> None:
         """Initializes captured response state."""
@@ -69,7 +101,7 @@ class ResponseStub:
         self.modals: list[StockQuantityModal] = []
 
     async def defer(self, ephemeral: bool = False) -> None:
-        """Records a deferred response."""
+        """Records the defer and whether the panel would have gone private with it."""
         self.deferred = True
         self.deferred_ephemeral = ephemeral
 
@@ -78,33 +110,33 @@ class ResponseStub:
         self.sent.append(kwargs)
 
     async def edit_message(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double
-        """Records an edited response."""
+        """Records a single-request edit, in the same list as a send."""
         self.sent.append(kwargs)
 
     async def send_modal(self, modal: StockQuantityModal) -> None:
-        """Records a launched modal."""
+        """Records a launched modal, kept whole so its fields can be read back."""
         self.modals.append(modal)
 
     def is_done(self) -> bool:
-        """Returns whether this response has been used."""
+        """Returns whether anything already answered this interaction, as production reads it."""
         return self.deferred or bool(self.sent) or bool(self.modals)
 
 
 class FollowupStub:
-    """Minimal interaction followup stub."""
+    """Records the followup payloads a panel falls back to sending."""
 
     def __init__(self) -> None:
         """Initializes captured followup payloads."""
         self.sent: list[dict[str, Any]] = []
 
     async def send(self, **kwargs: Any) -> MessageStub:  # noqa: ANN401 -- test double
-        """Records a followup send."""
+        """Returns a fresh message stub for the send, after recording its payload."""
         self.sent.append(kwargs)
         return MessageStub()
 
 
 class MessageStub:
-    """Minimal sent message stub."""
+    """Records the edits and the deletion a panel aims at the message it owns."""
 
     def __init__(self) -> None:
         """Initializes fake message identity."""
@@ -123,15 +155,18 @@ class MessageStub:
 
 
 class DeletedMessageStub(MessageStub):
-    """Message stub that has already been deleted remotely."""
+    """Message stub standing in for a panel message Discord no longer has."""
 
     async def edit(self, **kwargs: Any) -> None:  # noqa: ANN401 -- test double
-        """Raises the same exception nextcord emits for deleted messages."""
+        """Raises the `NotFound` nextcord raises for a message that is already gone.
+
+        Built through `make_not_found` because `NotFound` needs an aiohttp response to construct.
+        """  # noqa: DOC501 -- ruff reads the raise as `make_not_found`, a builder, not a type
         raise make_not_found(message="missing")
 
 
 class UserStub:
-    """Minimal user stub."""
+    """Minimal presser identity: the id the owner gate weighs and the name settlement stores."""
 
     def __init__(self, user_id: int = 1, name: str = "alice") -> None:
         """Initializes fake user identity."""
@@ -142,10 +177,10 @@ class UserStub:
 
 
 class InteractionStub:
-    """Minimal interaction stub."""
+    """The interaction slice a panel reads: presser, guild, response, followup and its message."""
 
     def __init__(self, user_id: int | None = 1, name: str = "alice") -> None:
-        """Initializes fake Discord interaction pieces."""
+        """Builds the pieces; `user_id=None` is the identity-less interaction the panel refuses."""
         self.user = UserStub(user_id=user_id, name=name) if user_id is not None else None
         self.guild = None
         self.response = ResponseStub()
@@ -154,7 +189,12 @@ class InteractionStub:
 
 
 def _quote(name: str = BCAT_NAME) -> StockMarketQuote:
-    """Builds a deterministic market quote."""
+    """Builds the one quote every board and detail render here is drawn from.
+
+    Returns:
+        A flat quote — no change, no pressure, a round price and a fixed timestamp — so a render
+        is byte-stable and a cache test only moves the field it is about.
+    """
     profile = StockProfileView(
         symbol=BCAT_SYMBOL,
         name=name,
@@ -177,7 +217,12 @@ def _quote(name: str = BCAT_NAME) -> StockMarketQuote:
 
 
 def _detail(long_shares: int = 0, short_shares: int = 0) -> StockDetailViewData:
-    """Builds a deterministic stock detail payload."""
+    """Builds the detail read the detail and action embeds render from.
+
+    Returns:
+        A detail whose stock-wide lists are all empty, so a test that cares about one of them
+        fills only that one back in through `model_copy`.
+    """
     return StockDetailViewData(
         quote=_quote(),
         balance=1_000_000,
@@ -196,7 +241,12 @@ def _detail(long_shares: int = 0, short_shares: int = 0) -> StockDetailViewData:
 
 
 def _stock_trade_leg(index: int, user_name: str) -> StockTradeLegView:
-    """Builds one deterministic stock trade leg."""
+    """Builds one recent-trade leg, every figure derived from its index.
+
+    Returns:
+        An OPEN_LONG leg whose shares, price and deltas all follow `index`, so a rendered line
+        names the leg it came from and a trimmed list is readable as a rank.
+    """
     return StockTradeLegView(
         operation_id=f"operation-{index}",
         leg_order=index,
@@ -217,7 +267,12 @@ def _stock_trade_leg(index: int, user_name: str) -> StockTradeLegView:
 def _stock_participant(
     user_id: int, user_name: str, long_shares: int, short_shares: int = 0
 ) -> StockParticipantPositionView:
-    """Builds one deterministic public participant position."""
+    """Builds one row of the public shareholder table.
+
+    Returns:
+        A participant holding what was asked for, its realized P&L derived from the id so no two
+        rows render alike.
+    """
     return StockParticipantPositionView(
         user_id=user_id,
         user_name=user_name,
@@ -228,7 +283,12 @@ def _stock_participant(
 
 
 def _field_value(embed: Embed, name: str) -> str:
-    """Returns one embed field value by name."""
+    """Returns one embed field's value, looked up by the heading a user reads.
+
+    Raises:
+        AssertionError: No field on the embed carries that name, which means the field was
+            renamed or dropped rather than that its contents changed.
+    """
     for field in embed.fields:
         if field.name == name:
             return str(field.value)
@@ -236,11 +296,11 @@ def _field_value(embed: Embed, name: str) -> str:
 
 
 def test_stock_setup_is_sync_and_adds_cog_with_override() -> None:
-    """The setup hook is synchronous and uses override=True."""
+    """`setup` is sync, adds the cog with `override=True`, and `/stock` keeps its zh_TW name."""
     calls: list[dict[str, Any]] = []
 
     class BotStub:
-        """Bot stub with add_cog capture."""
+        """Bot stub capturing what `setup` registers."""
 
         def add_cog(self, cog: StockCogs, override: bool = False) -> None:
             """Records add_cog arguments."""
@@ -257,12 +317,12 @@ def test_stock_setup_is_sync_and_adds_cog_with_override() -> None:
 async def test_stock_command_sends_public_market_and_schedules_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The slash command sends public market list and tracks cleanup."""
+    """`/stock` posts the public board, binds and tracks that message, owned by its opener."""
     scheduled: list[MessageStub] = []
     scheduled_news_refreshes: list[object] = []
 
     async def fake_list_market_quotes(refresh_news: bool = True) -> tuple[StockMarketQuote, ...]:
-        """Returns one fake quote."""
+        """Returns one quote, pinning that a writer-backed command leaves the inline sweep off."""
         assert refresh_news is False
         return (_quote(),)
 
@@ -295,7 +355,7 @@ async def test_stock_command_sends_public_market_and_schedules_cleanup(
 
 
 async def test_stock_news_background_refresh_is_deduped(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Concurrent stock command refresh scheduling keeps one active task."""
+    """A `/stock` landing during a news sweep is dropped, and the slot frees when it ends."""
     calls = 0
     started = asyncio.Event()
     release = asyncio.Event()
@@ -336,7 +396,7 @@ async def test_stock_command_raises_when_interaction_has_no_user(
     called = False
 
     async def fake_list_market_quotes() -> tuple[StockMarketQuote, ...]:
-        """Records unexpected market loading."""
+        """Returns one quote, recording a market read that should never happen at all."""
         nonlocal called
         called = True
         return (_quote(),)
@@ -368,7 +428,7 @@ async def test_stock_public_view_rejects_non_owner_interaction() -> None:
 
 
 async def test_stock_market_select_edits_public_detail(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Selecting a stock edits the same public detail flow."""
+    """The market select hands the picked symbol and the panel's owner to the detail path."""
     selected: list[str] = []
     owners: list[int | None] = []
 
@@ -418,7 +478,7 @@ def test_stock_market_embed_uses_board_attachment_for_rows() -> None:
 
 
 def test_stock_market_board_handles_large_market_caps() -> None:
-    """The market board renders huge market caps without relying on long text rows."""
+    """A 兆-scale market cap renders on the board's fixed width instead of stretching a row."""
     quote = _quote().model_copy(
         update={
             "profile": _quote().profile.model_copy(
@@ -438,7 +498,7 @@ def test_stock_market_board_handles_large_market_caps() -> None:
 
 
 def test_stock_market_board_image_cache_key_changes_with_quote_digest() -> None:
-    """Market board renders are cached by immutable quote fields."""
+    """The board render cache keys on the quote fields it draws, so a moved price is a miss."""
     _build_market_board_image_cached.cache_clear()
     quote = _quote()
 
@@ -457,7 +517,7 @@ def test_stock_market_board_image_cache_key_changes_with_quote_digest() -> None:
 
 
 def test_stock_chart_image_cache_key_changes_with_ticks() -> None:
-    """7D chart renders are cached by immutable tick rows."""
+    """The 7D chart cache keys on the tick tuple, so one cent of movement is a fresh render."""
     _render_price_chart.cache_clear()
     first_ticks = (
         StockPriceTickView(
@@ -481,10 +541,10 @@ def test_stock_chart_image_cache_key_changes_with_ticks() -> None:
 async def test_stock_detail_buttons_edit_same_public_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Detail buttons edit the original public message instead of sending followups."""
+    """Operate, news and back each repaint the panel's own message instead of adding a second."""
 
     async def fake_news(symbol: str) -> tuple[StockNewsView, ...]:
-        """Returns no fake news."""
+        """Returns no news, so the embed falls back to its placeholder line."""
         return ()
 
     async def fake_quotes() -> tuple[StockMarketQuote, ...]:
@@ -492,7 +552,7 @@ async def test_stock_detail_buttons_edit_same_public_message(
         return (_quote(),)
 
     async def fake_detail(symbol: str, user_id: int, user_name: str) -> StockDetailViewData:
-        """Returns fake detail for the operation panel."""
+        """Returns a held-both-ways detail, checking the presser's identity reached the read."""
         assert symbol == BCAT_SYMBOL
         assert user_id == 1
         assert user_name == "alice"
@@ -536,7 +596,7 @@ async def test_stock_detail_buttons_edit_same_public_message(
 
 
 def test_stock_detail_embed_uses_localized_user_labels() -> None:
-    """The public stock detail embed avoids placeholder-like mixed UI labels."""
+    """The detail embed labels its fields in Chinese rather than half-translated placeholders."""
     embed = build_stock_detail_embed(detail=_detail(), chart_filename="chart.png")
 
     field_names = {field.name for field in embed.fields}
@@ -549,7 +609,7 @@ def test_stock_detail_embed_uses_localized_user_labels() -> None:
 
 
 def test_stock_detail_embed_displays_large_share_counts_as_lots() -> None:
-    """The public stock detail embed keeps huge share counts readable."""
+    """The detail embed reads a 兆-scale holding back as 張 and 股 rather than raw digits."""
     embed = build_stock_detail_embed(
         detail=_detail(long_shares=10_000_000_000_000, short_shares=1_234),
         chart_filename="chart.png",
@@ -561,7 +621,7 @@ def test_stock_detail_embed_displays_large_share_counts_as_lots() -> None:
 
 
 def test_stock_detail_embed_compacts_public_position_summary() -> None:
-    """The public stock detail embed shows only the top three shareholders."""
+    """The shareholder field keeps the top three long holders and drops a short-only one."""
     detail = _detail().model_copy(
         update={
             "public_positions": (
@@ -589,7 +649,7 @@ def test_stock_detail_embed_compacts_public_position_summary() -> None:
 
 
 def test_stock_detail_embed_compacts_recent_trades() -> None:
-    """The public stock detail embed shows only three recent trade rows."""
+    """The recent-trade field keeps the first three legs and drops the tail."""
     detail = _detail().model_copy(
         update={
             "recent_trades": (
@@ -612,7 +672,7 @@ def test_stock_detail_embed_compacts_recent_trades() -> None:
 
 
 async def test_stock_action_dropdown_launches_quantity_modal() -> None:
-    """Action dropdown launches one modal with only the quantity input."""
+    """The action dropdown opens a modal of one quantity input, carrying the panel's owner id."""
     view = StockActionView(symbol=BCAT_SYMBOL, owner_id=1)
     child = next(
         child for child in view.children if getattr(child, "custom_id", "") == "stock:action"
@@ -638,7 +698,7 @@ async def test_stock_modal_rejects_non_owner_before_settlement(
     calls: list[dict[str, Any]] = []
 
     async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
-        """Records unexpected settlement calls."""
+        """Returns a failure after recording a settlement the owner gate should have refused."""
         calls.append(kwargs)
         return StockSettlementResult(
             success=False,
@@ -668,7 +728,7 @@ async def test_stock_modal_rejects_non_owner_before_settlement(
 async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Invalid modal input edits the public message with the root-cause error."""
+    """A rejected quantity repaints the public message with the service's reason and a retry."""
 
     async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
         """Returns the same invalid-format failure the service would return."""
@@ -705,7 +765,7 @@ async def test_stock_modal_reports_invalid_input_root_cause_in_public_message(
 async def test_successful_stock_modal_edits_result_and_refresh_view(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Successful modal submission edits the public message with a refresh control."""
+    """A settled quantity repaints the public message with the receipt and the post-trade view."""
 
     async def fake_settle_stock_operation(**kwargs: Any) -> StockSettlementResult:  # noqa: ANN401
         """Returns a successful fake settlement."""
@@ -757,7 +817,7 @@ async def test_successful_stock_modal_edits_result_and_refresh_view(
 
 
 def test_failed_stock_settlement_title_does_not_depend_on_operation_id() -> None:
-    """Failed stock settlements with audit IDs are not reconciliation incidents."""
+    """A FAILED settlement is titled a plain failure even though it carries an operation id."""
     result = StockSettlementResult(
         success=False,
         operation_id="op-1",
@@ -782,7 +842,7 @@ def test_failed_stock_settlement_title_does_not_depend_on_operation_id() -> None
 async def test_edit_owned_public_message_recovers_when_target_was_deleted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A stale panel message edit sends a public followup instead of dropping the result."""
+    """An edit onto a deleted panel message re-sends the result publicly and re-mints its file."""
     forgotten: list[int] = []
     tracked: list[MessageStub] = []
 
@@ -823,7 +883,7 @@ async def test_edit_owned_public_message_recovers_when_target_was_deleted(
 async def test_stock_public_view_timeout_deletes_bound_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The active stock view uses shared public-message cleanup after idle timeout."""
+    """An idle panel deletes its bound message through the shared cleanup, not `Message.delete`."""
     deleted: list[MessageStub] = []
 
     async def fake_delete(message: MessageStub) -> None:
@@ -841,5 +901,5 @@ async def test_stock_public_view_timeout_deletes_bound_message(
 
 
 def test_stock_readme_and_capability_metadata_are_covered() -> None:
-    """Stock command metadata stays discoverable by the capability-doc and readme tests."""
+    """`/stock` still declares the English picker description the docs are written around."""
     assert StockCogs.stock.description == "Open the simulated stock market."

@@ -1,4 +1,31 @@
-"""Tests for the cog that auto-expands Douyin links pasted into a channel."""
+"""Tests for the cog that auto-expands Douyin links pasted into a channel.
+
+`DouyinCogs.on_message` is a listener with no command in front of it, so what it does is decided
+entirely by what a message happens to carry. Both halves of that are pinned here: which messages
+it must leave untouched, and what it posts back for the ones it takes.
+
+The gates are pinned one at a time because each one costs a Douyin request when it is wrong, and
+Douyin's WAF bans a share path for tens of minutes once it is hit hard. A bot author, a message
+with no link, a profile or live-room link, a message addressed to the bot (which `gen_reply`
+answers about instead, so expanding as well would fetch the same media twice) and the
+`auto_expand_enabled` kill-switch each have to end the listener with no reaction, no reply, and
+(asserted through the `made` dict `_cog` hands back) no downloader ever built.
+
+The outcomes are pinned as distinct failures rather than as one error path, because reporting a
+retryable WAF block as a deleted post is the worst thing this feature can produce: ⏱️ plus retry
+wording for a block, ⚠️ plus deletion wording only for a post Douyin actually filtered out, a
+pointer at `/download_video` for an oversize one, a red cross with no wording for a failure
+outside the fetch, and a stalled expansion that reads as retryable so it never accuses a working
+link. The delivery half pins the clip plus caption card plus suppressed source preview, the
+oversize-to-hosted-URL fallback, the unhostable case that states the size and leaves the source
+preview in place because nothing replaced it, and the gallery that names how many images the
+attachment cap left behind.
+
+Every test builds its cog through `_cog`, which is what keeps the suite hermetic and honest: it
+stubs the downloader so Douyin is never contacted, pins the kill-switch on so a dev box's `.env`
+cannot turn every assertion below into a no-op that still passes, and hands the cog a hosting-off
+delivery planner so nothing can write into a real serve dir.
+"""
 
 import time
 from types import SimpleNamespace
@@ -69,7 +96,12 @@ class _StubDownloader:
         max_bytes: int | None = None,
         post: DouyinPost | None = None,
     ) -> DouyinDownload:
-        """Writes the canned files into the scratch dir, or raises the canned failure."""
+        """Writes the canned files into the scratch dir, or raises the canned failure.
+
+        Returns:
+            A `DouyinDownload` over the paths just written, described by the `post` the cog
+            handed in rather than by the canned one, so dropping `post=` is visible.
+        """
         del url, quality, max_images, max_bytes
         self.download_calls += 1
         self.received_post = post
@@ -102,7 +134,12 @@ class _StubOptions(TypedDict, total=False):
 def _cog(
     bot_id: int = 999, **downloader_kwargs: Unpack[_StubOptions]
 ) -> tuple[DouyinCogs, dict[str, _StubDownloader]]:
-    """Builds a cog wired to a stub downloader and a hosting-off delivery planner."""
+    """Builds a cog wired to a stub downloader and a hosting-off delivery planner.
+
+    Returns:
+        The cog, plus a dict the downloader factory fills under `"stub"` once the cog builds
+        one, so an empty dict is the assertion that Douyin was never contacted at all.
+    """
     cog = DouyinCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_id))))
     # Pinned explicitly: DouyinConfig reads the real environment (typings/douyin.py loads .env
     # at import), so a dev box with DOUYIN_AUTO_EXPAND_ENABLED=false would silently turn every
@@ -116,7 +153,11 @@ def _cog(
     made: dict[str, _StubDownloader] = {}
 
     def factory(output_folder: str) -> _StubDownloader:
-        """Records the stub so a test can assert on what it was asked to do."""
+        """Records the stub so a test can assert on what it was asked to do.
+
+        Returns:
+            The stub standing in for this expansion's downloader.
+        """
         stub = _StubDownloader(output_folder=output_folder, **downloader_kwargs)
         made["stub"] = stub
         return stub
@@ -137,7 +178,12 @@ class _DouyinMessage(FakeDiscordMessage):
 
 
 def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> _DouyinMessage:
-    """Builds a guild message carrying a Douyin link."""
+    """Builds a guild message carrying a Douyin link.
+
+    Returns:
+        A message double whose guild reports `filesize_limit`, which is what the cog reads to
+        decide whether a file attaches or has to be hosted.
+    """
     return _DouyinMessage(
         author=FakeUser(bot=False),
         content=content,
@@ -272,7 +318,11 @@ async def test_an_unexpected_failure_marks_the_message() -> None:
     cog, _ = _cog()
 
     async def boom(*, message: Message, url: str, current_emoji: str) -> None:
-        """Fails the way a Discord API error would."""
+        """Fails the way a Discord API error would.
+
+        Raises:
+            RuntimeError: Always, standing in for a failure outside the Douyin fetch.
+        """
         del message, url, current_emoji
         raise RuntimeError("discord exploded")
 
@@ -381,7 +431,11 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     cog, _ = _cog()
 
     def never_returns(url: str) -> DouyinPost:
-        """Blocks the worker thread the way a stalling CDN read does."""
+        """Blocks the worker thread the way a stalling CDN read does.
+
+        Raises:
+            AssertionError: The sleep ran to completion, so the timeout never abandoned it.
+        """
         del url
         time.sleep(1.0)
         raise AssertionError("should have been abandoned")

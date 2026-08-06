@@ -1,4 +1,48 @@
-"""Tests for the simulated stock market service."""
+"""Pins the simulated stock market: the price formula, its store, and cross-database settlement.
+
+Covers `services/stock/market.py` (the pure arithmetic: the price formula, tick boundaries and
+the guardrails), `services/stock/database.py` (`stock.db`, lazy tick advancement, the news cadence
+and the single settlement entry point), the news copy in `services/stock/prompts.py` and the chart
+in `cogs/stock/chart.py`. Cash is not in either module, so the settlement tests pair
+`stock_isolated_db` with `economy_isolated_db` and read the wallet back out of
+`services/economy/database.py`.
+
+What is pinned here, and why each is worth pinning:
+
+- The guardrails. A company profile is operator-written data with no ceiling of its own, so the
+  caps are the only thing between a mis-tuned row and a money printer: the global per-tick change
+  ceiling, the Taiwan-style daily band around the previous close, the volatility scale, the
+  order-flow pressure limit and the per-order slippage cap. They were set by offline simulation,
+  which is why the seeded Monte Carlo run exists — it is what notices a later change that weakens
+  mean reversion, drops impulse semantics or widens the bounds.
+- News as a one-shot impulse. Each headline contributes its clamped sentiment exactly once, at the
+  first applied boundary at or after its own, and a compressed backlog carries a headline out of a
+  dropped boundary instead of losing it. The decayed value is a different mechanic entirely and
+  only ever feeds the prompt writing the next headline.
+- Lazy advancement. There is no market loop, so a symbol replays its backlog on the next
+  interaction: nothing moves inside one interval, compression keeps the Asia/Taipei midnight the
+  daily band is anchored on, and the insert-once tick write is what makes two concurrent advances
+  agree on one price history instead of forking it.
+- The two-database seam. `stock.db` and `economy.db` cannot commit together, so settlement's
+  lifecycle is the whole design: a wallet failure parks the operation at RECONCILE_REQUIRED, where
+  it keeps reserving float and blocks that user's next trade on the symbol, a cancellation still
+  records that marker, and a rejected debit finalizes as failed with no position written. Rolling
+  back or silently retrying is what would leave a position with no cash behind it.
+- Integer money. Prices are cents and shares are whole, so a same-price round trip is expected to
+  cost the ceil/floor spread rather than break even, and the wallet legs stay gross so the
+  economy's `total_earned - total_spent == balance` invariant keeps describing real flow.
+- The supply limits, which are this market's own anti-inflation levers: new long exposure clamps
+  to remaining float and again to one user's share of it, a short clamps to borrow capacity, and
+  an oversized numeric request clamps to what the balance affords instead of failing outright.
+- Decimal-text storage. Money and share columns are `StoredInteger` text to escape SQLite's 64-bit
+  ceiling, so the schema tests assert TEXT affinity and a 10**30 round trip proves `typeof()`
+  never drifted to REAL.
+
+Nothing seeds a company, so the fixtures are local rather than shared: `stock_empty_db` swaps the
+module-level engine onto a `tmp_path` file that bootstraps its own schema on the first call, and
+`stock_isolated_db` adds the BCAT profile the `BCAT_*` constants below describe. A test that needs
+a symbol thin enough for one small order to move the price creates `THIN` itself.
+"""
 
 import math
 from random import Random
@@ -74,7 +118,11 @@ BCAT_INDIVIDUAL_OWNERSHIP_CAP = (
 
 
 def test_stock_news_prompt_and_fallback_templates_are_safe_and_bounded() -> None:
-    """Stock news copy should stay fictional, safe, and bounded for market impact."""
+    """Both headline sources stay fictional, name nothing real, and are bounded to ±180 bps.
+
+    Sentiment is a price input, so a template written outside the range the prompt states would
+    move the market harder than any headline the model can write.
+    """
     assert "fictional" in STOCK_NEWS_PROMPT
     assert "Do not claim this is real financial news" in STOCK_NEWS_PROMPT
     assert "Do not mention real people" in STOCK_NEWS_PROMPT
@@ -90,7 +138,7 @@ def test_stock_news_prompt_and_fallback_templates_are_safe_and_bounded() -> None
 
 
 def test_stock_fallback_news_uses_absurd_templates() -> None:
-    """Deterministic fallback news should match the same goofy style as AI news."""
+    """The template fallback keeps the AI copy's style and takes its sign from the market."""
     profile = StockProfileView(
         symbol=BCAT_SYMBOL,
         name=BCAT_NAME,
@@ -133,13 +181,25 @@ def test_stock_fallback_news_uses_absurd_templates() -> None:
 
 
 def _rng(seed: int) -> Random:
-    """Returns a deterministic test RNG."""
+    """Builds the seeded generator every price path in this file is driven by.
+
+    The formula draws randomness from an injected `Random` and nowhere else, so one seed replays
+    a tick exactly; that is what lets these tests assert figures instead of ranges.
+
+    Returns:
+        A generator that produces the same draw sequence for the same seed.
+    """
     return Random(seed)  # noqa: S311 -- deterministic market tests require seeded Random
 
 
 @pytest.fixture
 async def stock_empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
-    """Per-test SQLite file with no stock company rows."""
+    """Points the stock store at a throwaway SQLite file holding no company rows.
+
+    `_schema_ready_for` is cleared alongside the engine because it caches readiness by engine
+    identity, so the fresh file bootstraps its own tables on the first call instead of inheriting
+    the previous engine's "ready".
+    """
     stock_db_path = tmp_path / "stock.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{stock_db_path}")
     monkeypatch.setattr(stock_db, "_engine", engine)
@@ -152,7 +212,7 @@ async def stock_empty_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Asy
 
 @pytest.fixture
 async def stock_isolated_db(stock_empty_db: None) -> None:
-    """Per-test SQLite file with one DB-managed test stock."""
+    """Adds the BCAT company to the empty store, since nothing seeds one at bootstrap."""
     await _upsert_bcat_profile()
 
 
@@ -161,7 +221,14 @@ async def _upsert_bcat_profile(
     name: str = BCAT_NAME,
     category: str = BCAT_CATEGORY,
 ) -> StockProfileView:
-    """Creates or updates the DB-owned BCAT test profile."""
+    """Writes the BCAT test company through the operator's own upsert path.
+
+    Everything but the three arguments is pinned to the `BCAT_*` constants, so a re-upsert changes
+    only what the caller named.
+
+    Returns:
+        The stored profile, as the upsert hands it back.
+    """
     return await stock_db.upsert_stock_profile(
         profile=StockProfileUpsert(
             symbol=BCAT_SYMBOL,
@@ -183,7 +250,14 @@ async def _upsert_bcat_profile(
 
 
 async def _upsert_illiquid_profile() -> StockProfileView:
-    """Creates a stock whose small orders visibly move execution price."""
+    """Writes THIN, a company thin enough that a ten-share order visibly moves its fill price.
+
+    Volatility, the amplifier and mean reversion are all zeroed, so the only thing left moving a
+    number in these tests is the slippage or the supply limit being measured.
+
+    Returns:
+        The stored profile, as the upsert hands it back.
+    """
     return await stock_db.upsert_stock_profile(
         profile=StockProfileUpsert(
             symbol="THIN",
@@ -207,7 +281,14 @@ async def _upsert_illiquid_profile() -> StockProfileView:
 def _bcat_news_context(
     profile: StockProfileView, change_bps: int = 0, pressure_bps: int = 0
 ) -> StockNewsGenerationContext:
-    """Builds a deterministic BCAT news generation context."""
+    """Builds the market picture a BCAT headline is generated from.
+
+    Only daily movement and order-flow pressure vary; the flow counters and recent sentiment stay
+    at zero, so the bullish / bearish / neutral template set turns on the two arguments alone.
+
+    Returns:
+        A context ready to hand to the template picker or a fake provider.
+    """
     return StockNewsGenerationContext(
         profile=profile,
         change_cents=profile.price_cents * change_bps // 10_000,
@@ -222,14 +303,18 @@ def _bcat_news_context(
 
 
 def test_stock_cash_rounding_and_price_format() -> None:
-    """Prices are cent-based and cash conversion is explicit."""
+    """A cent price converts to whole cash by an explicit ceiling or floor, never a bare round."""
     assert cash_ceil(cents=10_001) == 101
     assert cash_floor(cents=10_001) == 100
     assert format_price(price_cents=10_001) == "100.01"
 
 
 def test_stock_tick_helpers_noop_and_compress_backlog() -> None:
-    """Lazy ticks no-op inside one interval and compress long backlogs."""
+    """Nothing advances inside one interval, and a compressed backlog still keeps midnight.
+
+    The day rollover is what the daily price band is anchored on, so dropping it while trimming a
+    backlog to `MAX_TICKS_PER_INTERACTION` would silently widen the band for that day.
+    """
     latest = datetime(2026, 1, 1, 0, 0)
     assert tick_boundaries_to_apply(latest_tick_at=latest, now=latest + timedelta(minutes=4)) == ()
     assert tick_boundaries_to_apply(
@@ -246,7 +331,7 @@ def test_stock_tick_helpers_noop_and_compress_backlog() -> None:
 
 
 def test_stock_tick_boundary_treats_naive_datetime_as_taipei() -> None:
-    """Naive SQLite-style datetimes are interpreted as Asia/Taipei."""
+    """A naive SQLite-style datetime is read as Asia/Taipei, not as the container's local time."""
     naive = datetime(2026, 1, 1, 1, 23)
     aware = datetime(2026, 1, 1, 1, 23, tzinfo=TAIWAN_TIMEZONE)
 
@@ -254,7 +339,7 @@ def test_stock_tick_boundary_treats_naive_datetime_as_taipei() -> None:
 
 
 def test_stock_price_formula_is_deterministic_and_clamped() -> None:
-    """The pure price formula is deterministic with seeded randomness."""
+    """Seeded ticks replay exactly, prices never reach zero, and news sentiment decays linearly."""
     first = calculate_next_price_cents(
         previous_price_cents=100,
         news_sentiment_bps=-20_000,
@@ -284,7 +369,11 @@ def test_stock_price_formula_is_deterministic_and_clamped() -> None:
 
 
 def test_effective_volatility_width_is_scaled_below_raw() -> None:
-    """The global volatility scale shrinks the raw per-company width toward realism."""
+    """The global volatility scale shrinks the raw per-company width toward realism.
+
+    Neither profile knob has a ceiling of its own, so this scale is the only thing holding the
+    random component near real-market magnitudes.
+    """
     raw_width = 180 * 360 // 100
     scaled = effective_volatility_width_bps(base_volatility_bps=180, volatility_amplifier_bps=360)
     assert 0 < scaled < raw_width
@@ -292,7 +381,7 @@ def test_effective_volatility_width_is_scaled_below_raw() -> None:
 
 
 def test_apply_daily_price_limit_clamps_to_band_around_previous_close() -> None:
-    """Each tick price is bounded to a Taiwan-style band around the previous close."""
+    """A tick price is bounded to a Taiwan-style band around the previous close, or passed on."""
     assert (
         apply_daily_price_limit(price_cents=12_000, previous_close_cents=10_000, limit_bps=1_000)
         == 11_000
@@ -332,7 +421,11 @@ def test_global_per_tick_ceiling_caps_change_below_company_limit() -> None:
 def _stock_news_row(
     created_at: datetime, sentiment_bps: int, news_id: str = "test"
 ) -> stock_db.StockNews:
-    """Builds a StockNews ORM row for impulse helper tests."""
+    """Builds one `stock_news` row for the impulse tests, with no database behind it.
+
+    Returns:
+        An unattached ORM row carrying the creation stamp and sentiment the helper reads.
+    """
     return stock_db.StockNews(
         id=news_id,
         symbol=BCAT_SYMBOL,
@@ -370,7 +463,11 @@ def test_stock_news_impulse_clamps_per_news_to_sentiment_limit() -> None:
 
 
 def test_stock_news_impulse_skips_pre_window_news() -> None:
-    """News whose tick boundary predates all applied boundaries is dropped."""
+    """News whose tick boundary predates all applied boundaries is dropped.
+
+    Its impulse already landed on an earlier lazy advance, so re-applying it would price the same
+    headline twice.
+    """
     b0 = tick_boundary(dt=datetime(2026, 1, 1, 1, 0, tzinfo=TAIWAN_TIMEZONE))
     older = _stock_news_row(created_at=b0 - timedelta(hours=1), sentiment_bps=180, news_id="stale")
     impulse = stock_db._news_impulse_by_boundary(news_rows=(older,), applied_boundaries=(b0,))
@@ -391,12 +488,13 @@ def test_stock_news_impulse_routes_skipped_news_to_next_surviving_boundary() -> 
 
 
 def test_stock_price_formula_stays_bounded_under_impulse_news_monte_carlo() -> None:
-    """Property test: with impulse news + random pressure, prices stay bounded.
+    """A week of impulse news and random pressure never runs the price away from fair value.
 
-    Seeded Monte Carlo using the aggressive OCTE-like profile (highest volatility
-    and biggest amplifier in the production set). If a future change weakens mean
-    reversion, removes impulse semantics, or widens tick bounds, the runaway
-    behavior surfaces here instead of silently in production.
+    Seeded Monte Carlo over the most aggressive profile in the production set (highest volatility,
+    biggest amplifier), because the guardrails were set by offline simulation and no single-tick
+    assertion can show what a long run of same-sign ticks does. A change that weakens mean
+    reversion, drops impulse semantics or widens the tick bounds surfaces here rather than as
+    quiet inflation in production.
     """
     base_volatility_bps = 180
     volatility_amplifier_bps = 360
@@ -497,7 +595,10 @@ def test_stock_execution_price_uses_order_size_and_liquidity() -> None:
 
 
 def test_stock_order_flow_decay_preserves_small_trade_pressure() -> None:
-    """Small trades retain fractional decay before aggregate pressure conversion."""
+    """Per-leg decay stays fractional, so two one-share trades still register as pressure.
+
+    Rounding each leg to an integer first would floor both to zero and lose the flow entirely.
+    """
     at = datetime(2026, 1, 2, tzinfo=TAIWAN_TIMEZONE)
     pressure_rows = (
         (StockTradeLegType.OPEN_LONG.value, 1, at - timedelta(seconds=1)),
@@ -513,7 +614,11 @@ def test_stock_order_flow_decay_preserves_small_trade_pressure() -> None:
 
 
 async def test_stock_schema_bootstrap_does_not_seed_companies(stock_empty_db: None) -> None:
-    """Schema bootstrap creates stock tables but company rows are DB-managed."""
+    """Bootstrap creates the tables, in decimal-text affinity, and seeds no company at all.
+
+    A fresh database is an empty market on purpose: companies are operator data written offline,
+    so anything that seeds one from runtime code would ship a market nobody tuned.
+    """
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
 
     assert quotes == ()
@@ -561,7 +666,7 @@ async def test_stock_schema_bootstrap_does_not_seed_companies(stock_empty_db: No
 
 
 async def test_stock_profile_upsert_manages_database_company(stock_empty_db: None) -> None:
-    """Company profile data is created and updated through the stock DB."""
+    """The operator upsert creates a company, updates it in place, and marks a tick each time."""
     profile = await _upsert_bcat_profile()
 
     assert profile.symbol == BCAT_SYMBOL
@@ -601,7 +706,11 @@ async def test_stock_profile_upsert_manages_database_company(stock_empty_db: Non
 
 
 async def test_stock_large_numbers_use_text_storage(stock_empty_db: None) -> None:
-    """Stock money and share quantities can exceed SQLite's integer ceiling."""
+    """Money and share columns round-trip past SQLite's 64-bit ceiling as decimal text.
+
+    `typeof()` is read back on every one of them, because an affinity that drifted to REAL would
+    keep working on ordinary numbers and start silently losing precision on large ones.
+    """
     large_value = 10**30
     now = datetime(2026, 1, 1)
     profile = await stock_db.upsert_stock_profile(
@@ -692,7 +801,7 @@ async def test_stock_large_numbers_use_text_storage(stock_empty_db: None) -> Non
 
 
 def test_stock_profile_upsert_rejects_invalid_share_structure() -> None:
-    """DB-owned company payloads reject impossible share counts before persistence."""
+    """An impossible share structure is refused by the payload model, before anything persists."""
     with pytest.raises(ValueError, match="float_shares cannot exceed total_shares"):
         StockProfileUpsert(
             symbol="TEST",
@@ -712,7 +821,7 @@ def test_stock_profile_upsert_rejects_invalid_share_structure() -> None:
 
 
 async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: None) -> None:
-    """Due news uses the provider once per cadence bucket and persists metadata."""
+    """A provider is called once per cadence bucket, and its source and model land on the row."""
     await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
     async with stock_db.open_stock_session() as session:
         await session.execute(
@@ -756,7 +865,11 @@ async def test_stock_due_news_uses_ai_provider_and_cadence(stock_isolated_db: No
 
 
 async def test_stock_news_provider_receives_market_context(stock_isolated_db: None) -> None:
-    """Generated news can react to daily movement, trade flow, and recent news."""
+    """The context handed to a provider carries the day's move, the trade flow and the last news.
+
+    That is what lets a headline agree with the chart a reader is looking at rather than
+    contradict it; the deterministic templates pick their tone off the same figures.
+    """
     now = datetime(2026, 1, 2, 12, 0)
     trade_at = now - timedelta(hours=1)
     async with stock_db.open_stock_session() as session:
@@ -811,7 +924,11 @@ async def test_stock_news_provider_receives_market_context(stock_isolated_db: No
     contexts: list[StockNewsGenerationContext] = []
 
     async def provider(context: StockNewsGenerationContext) -> StockGeneratedNews:
-        """Records the market context passed to AI news."""
+        """Captures the context the engine built, then answers like a real provider.
+
+        Returns:
+            One fake AI news item.
+        """
         contexts.append(context)
         return StockGeneratedNews(
             headline=f"{context.profile.symbol} context 測試新聞",
@@ -836,7 +953,11 @@ async def test_stock_news_provider_receives_market_context(stock_isolated_db: No
 
 
 async def test_stock_generated_news_upgrades_template_bucket(stock_isolated_db: None) -> None:
-    """AI news can replace deterministic fallback news in the same cadence bucket."""
+    """A bucket holds one headline, and an AI one written into it replaces a template in place.
+
+    The upgrade is deliberately one-way, so a late provider improves the bucket while a template
+    refresh can never undo it, and neither stacks a second impulse onto the same ticks.
+    """
     profile = await _upsert_bcat_profile()
     now = datetime(year=2026, month=1, day=2)
 
@@ -874,7 +995,7 @@ async def test_stock_generated_news_upgrades_template_bucket(stock_isolated_db: 
 async def test_stock_due_news_upgrades_template_when_provider_available(
     stock_isolated_db: None,
 ) -> None:
-    """Provider-backed refreshes can upgrade fallback news before the next cadence."""
+    """Passing a provider reopens a bucket a template already filled, before the next cadence."""
     now = datetime(year=2026, month=1, day=2)
     await stock_db.ensure_due_stock_news(symbols=(BCAT_SYMBOL,), now=now)
     calls = 0
@@ -909,7 +1030,11 @@ async def test_stock_due_news_upgrades_template_when_provider_available(
 async def test_stock_due_news_serializes_concurrent_provider_calls(
     stock_isolated_db: None,
 ) -> None:
-    """Concurrent news refreshes do not pay for duplicate provider calls."""
+    """Two refreshes arriving together find the symbol due once, so only one provider call is paid.
+
+    Without the process-wide serialization each interaction would bill its own LLM call for the
+    same bucket, and one of the two answers would then be discarded by the per-bucket insert.
+    """
     await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
     async with stock_db.open_stock_session() as session:
         await session.execute(
@@ -951,7 +1076,7 @@ async def test_stock_due_news_serializes_concurrent_provider_calls(
 
 
 async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated_db: None) -> None:
-    """Crossing Asia/Taipei midnight updates previous close and day open."""
+    """Crossing Asia/Taipei midnight rolls the previous close and opens a new day."""
     await stock_db.list_market_quotes(now=datetime(2026, 1, 1, 12, 0), rng=_rng(seed=1))
     latest = datetime(2026, 1, 1, 23, 55)
     async with stock_db.open_stock_session() as session:
@@ -984,7 +1109,12 @@ async def test_stock_day_rollover_updates_open_and_previous_close(stock_isolated
 async def test_stock_compressed_day_rollover_materializes_midnight(
     stock_isolated_db: None,
 ) -> None:
-    """Compressed backlogs keep the actual midnight boundary for day-open pricing."""
+    """A compressed backlog still materializes the real midnight tick the day open is read from.
+
+    Both figures are read back off the persisted ticks rather than recomputed, since a rollover
+    that landed on the nearest surviving boundary instead would anchor the daily band on the
+    wrong price.
+    """
     await _set_bcat_price(price_cents=10_000)
 
     quotes = await stock_db.list_market_quotes(now=datetime(2026, 1, 2, 1, 0), rng=_rng(seed=0))
@@ -1013,7 +1143,11 @@ async def test_stock_compressed_day_rollover_materializes_midnight(
 async def test_stock_day_rollover_uses_persisted_boundary_price(
     stock_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Day open follows the stored tick when a concurrent writer wins the boundary."""
+    """Day open follows the stored tick when a concurrent writer wins the boundary.
+
+    The loser of that race has to carry on from the winner's price, or two interactions over one
+    backlog would leave the day anchored on two different opens.
+    """
     await _set_bcat_price(price_cents=10_000)
     original_insert_tick = stock_db._insert_price_tick_or_existing
     midnight = datetime(2026, 1, 2, 0, 0, tzinfo=TAIWAN_TIMEZONE)
@@ -1022,6 +1156,11 @@ async def test_stock_day_rollover_uses_persisted_boundary_price(
     async def insert_tick_after_concurrent_writer(
         session: AsyncSession, symbol: str, price_cents: int, created_at: datetime
     ) -> int:
+        """Plants another writer's midnight tick just before the real insert runs.
+
+        Returns:
+            Whatever the real insert reports is now stored at that boundary.
+        """
         if created_at == midnight:
             session.add(
                 instance=stock_db.StockPriceTick(
@@ -1046,7 +1185,7 @@ async def test_stock_day_rollover_uses_persisted_boundary_price(
 async def test_stock_concurrent_market_advancement_writes_one_tick_per_boundary(
     stock_isolated_db: None,
 ) -> None:
-    """Concurrent quote refreshes do not fork price history at the same tick."""
+    """Concurrent quote refreshes write one tick per boundary instead of forking the history."""
     await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
 
     await asyncio.gather(
@@ -1067,11 +1206,16 @@ async def test_stock_concurrent_market_advancement_writes_one_tick_per_boundary(
 async def test_stock_market_advancement_starts_write_transaction(
     stock_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Quote refreshes use a SQLite write transaction before market reads."""
+    """Every symbol's advance takes SQLite's write lock before it reads the state it plans from.
+
+    A deferred transaction upgrades only at the first write, by which point another writer may
+    already have moved the rows the plan was built on.
+    """
     original_begin_immediate = stock_db._begin_immediate
     calls = 0
 
     async def begin_immediate(session: AsyncSession) -> None:
+        """Counts the write-lock openings while still starting the real transaction."""
         nonlocal calls
         calls += 1
         await original_begin_immediate(session=session)
@@ -1086,7 +1230,11 @@ async def test_stock_market_advancement_starts_write_transaction(
 async def test_stock_buy_long_debits_wallet_and_writes_ledger(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Buying long debits cash, opens position, and writes operation + leg."""
+    """A long buy debits the wallet, opens the position, and leaves an applied operation and leg.
+
+    The legs are the only audit trail there is, since there is no transaction table on either
+    side of the seam.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
 
     result = await stock_db.settle_stock_operation(
@@ -1117,7 +1265,11 @@ async def test_stock_buy_long_debits_wallet_and_writes_ledger(
 async def test_stock_trade_refreshes_last_seen_user_name(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """A stable user ID can update its stored display name on later trades."""
+    """A later trade refreshes the display name stored beside the user id, everywhere it is kept.
+
+    The UI shows stored names rather than resolving ids, so a rename that only reached one table
+    would leave the position, the operation, the legs and the wallet disagreeing about a person.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
     await stock_db.settle_stock_operation(
         symbol=BCAT_SYMBOL,
@@ -1159,7 +1311,7 @@ async def test_stock_trade_refreshes_last_seen_user_name(
 async def test_stock_detail_shows_stock_level_trades_and_positions(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Stock detail exposes public trade history and non-zero positions across users."""
+    """A stock's detail view is public: every trader's recent trades and non-zero positions."""
     await adjust_balance(user_id=1, name="alice", delta=1_000)
     await adjust_balance(user_id=2, name="bob", delta=1_000)
     await stock_db.settle_stock_operation(
@@ -1193,7 +1345,11 @@ async def test_stock_detail_shows_stock_level_trades_and_positions(
 async def test_stock_portfolio_lists_non_zero_positions_and_values(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Stock portfolio values long and short positions from current quotes."""
+    """A portfolio values a long at the floor and a short at the ceiling of the current quote.
+
+    Rounding runs against the holder on both sides, so the equity a portfolio reports can never
+    exceed what closing the position would actually pay out.
+    """
     await _upsert_illiquid_profile()
     await adjust_balance(user_id=1, name="alice", delta=10_000)
     await stock_db.settle_stock_operation(
@@ -1240,7 +1396,11 @@ async def test_stock_portfolio_lists_non_zero_positions_and_values(
 async def test_stock_portfolio_short_cache_and_invalidation(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Production portfolio reads use a short cache that stock writes can clear."""
+    """A portfolio read is served from a short-lived cache until a stock write invalidates it.
+
+    The position is changed behind the cache's back, which is how a stale read can be told apart
+    from a fresh one that happens to agree.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000_000)
     await stock_db.settle_stock_operation(
         symbol=BCAT_SYMBOL,
@@ -1273,7 +1433,7 @@ async def test_stock_portfolio_short_cache_and_invalidation(
 async def test_stock_oversized_buy_defaults_to_affordable_all(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Numeric buy requests above the spendable balance clamp to the affordable maximum."""
+    """A numeric buy above the spendable balance fills what it can afford instead of failing."""
     await adjust_balance(user_id=1, name="alice", delta=100)
 
     result = await stock_db.settle_stock_operation(
@@ -1296,7 +1456,11 @@ async def test_stock_oversized_buy_defaults_to_affordable_all(
 async def test_stock_buy_clamps_to_remaining_float(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """New long exposure cannot exceed the DB-managed floating share supply."""
+    """Aggregate long exposure stops at the floating supply, and the next buyer is refused.
+
+    Float is what makes the market finite; without the clamp any balance could keep opening long
+    exposure against shares the company never issued.
+    """
     await adjust_balance(user_id=1, name="alice", delta=100_000_000)
     await adjust_balance(user_id=2, name="bob", delta=100_000_000)
     await adjust_balance(user_id=3, name="carol", delta=100_000_000)
@@ -1358,7 +1522,7 @@ async def test_stock_buy_clamps_to_remaining_float(
 async def test_stock_buy_clamps_to_individual_ownership_cap(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """A single user cannot open long exposure above 49% of floating shares."""
+    """One user's long exposure stops at 49% of float, whether asked for numerically or as ALL."""
     await adjust_balance(user_id=1, name="alice", delta=100_000_000)
     await adjust_balance(user_id=2, name="bob", delta=100_000_000)
 
@@ -1403,7 +1567,11 @@ async def test_stock_buy_clamps_to_individual_ownership_cap(
 async def test_stock_large_buy_uses_execution_slippage(
     stock_empty_db: None, economy_isolated_db: None
 ) -> None:
-    """Buy-side settlement stores the execution price after liquidity impact."""
+    """Settlement stores the price the order actually filled at, not the quote it was shown.
+
+    The leg, the wallet delta and the reported price all come from the slipped figure, so a large
+    order cannot be settled at a price only a small one could have had.
+    """
     await _upsert_illiquid_profile()
     await adjust_balance(user_id=1, name="alice", delta=2_000)
 
@@ -1427,7 +1595,11 @@ async def test_stock_large_buy_uses_execution_slippage(
 async def test_stock_zero_affordable_buy_leaves_stock_untouched(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Oversized numeric requests still fail with the real root cause when nothing is executable."""
+    """A buy nobody can afford fails naming the balance, and leaves no position or leg behind.
+
+    The clamp-to-affordable path must not swallow the reason and report an empty fill as a
+    success, or the two databases disagree about an operation that never happened.
+    """
     result = await stock_db.settle_stock_operation(
         symbol=BCAT_SYMBOL,
         user_id=1,
@@ -1450,7 +1622,12 @@ async def test_stock_zero_affordable_buy_leaves_stock_untouched(
 async def test_stock_long_round_trip_uses_integer_basis(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Same-price long round trips expose ceil/floor spread and consume dust."""
+    """A same-price long round trip costs the ceil/floor spread and clears the basis to zero.
+
+    Cents-to-cash rounds against the trader on both legs, so buying and selling at one price is
+    expected to lose the dust rather than break even; a round trip that broke even would mean the
+    rounding could be farmed.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
     await _set_bcat_price(price_cents=10_001)
 
@@ -1483,7 +1660,7 @@ async def test_stock_long_round_trip_uses_integer_basis(
 async def test_stock_short_round_trip_uses_collateral_and_integer_entry(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Shorting locks collateral and same-price cover reflects spread."""
+    """Opening a short locks collateral, and a same-price cover returns all but the spread."""
     await adjust_balance(user_id=1, name="alice", delta=1_000)
     await _set_bcat_price(price_cents=10_001)
 
@@ -1519,7 +1696,7 @@ async def test_stock_short_round_trip_uses_collateral_and_integer_entry(
 async def test_stock_oversized_short_defaults_to_affordable_all(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Numeric short requests above the collateral balance clamp to the affordable maximum."""
+    """A numeric short beyond the collateral the balance covers opens what it can instead."""
     await adjust_balance(user_id=1, name="alice", delta=100)
 
     result = await stock_db.settle_stock_operation(
@@ -1541,7 +1718,11 @@ async def test_stock_oversized_short_defaults_to_affordable_all(
 async def test_stock_short_clamps_to_available_borrow(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """New short exposure cannot exceed the DB-managed floating share supply."""
+    """Short borrow stops at the floating supply, and the next borrower is refused.
+
+    The same float bounds both sides, so a short cannot borrow shares the company never issued
+    any more than a long can buy them.
+    """
     await adjust_balance(user_id=1, name="alice", delta=100_000_000)
 
     result = await stock_db.settle_stock_operation(
@@ -1578,7 +1759,14 @@ async def test_stock_short_clamps_to_available_borrow(
 async def test_stock_pending_operations_reserve_supply(
     stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Non-final operation legs reserve float and borrow capacity until reconciliation."""
+    """An operation stuck short of a final state keeps holding the float and borrow it opened.
+
+    Reserving is what stops the same shares being sold twice while the two databases are out of
+    step; the capacity comes back only when the operation is reconciled or fails.
+
+    The individual ownership cap is why three pending longs share THIN's float: one user cannot
+    take more than 49% of it, so the last of them is left the 20-share remainder.
+    """
     await _upsert_illiquid_profile()
     await adjust_balance(user_id=1, name="alice", delta=200_000)
     await adjust_balance(user_id=2, name="bob", delta=1_000)
@@ -1589,7 +1777,11 @@ async def test_stock_pending_operations_reserve_supply(
     original_apply = stock_db.apply_ordered_wallet_deltas
 
     async def fail_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
-        """Simulates uncertainty after the stock operation reserves market supply."""
+        """Leaves the wallet side uncertain after the stock side has reserved supply.
+
+        Raises:
+            RuntimeError: Always, standing in for an unreachable economy database.
+        """
         raise RuntimeError("wallet unavailable")
 
     monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", fail_wallet)
@@ -1673,7 +1865,12 @@ async def test_stock_pending_operations_reserve_supply(
 async def test_stock_cover_can_use_withheld_short_entry_value(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Cover can consume withheld short proceeds when spendable balance is zero."""
+    """A cover is paid out of its own collateral and proceeds, with a spendable balance of zero.
+
+    This is what the gross, ordered wallet legs buy: the collateral and entry credits land before
+    the cover debit, so the economy side can cover in full at that point in the sequence even
+    though the balance never held the money.
+    """
     await adjust_balance(user_id=1, name="alice", delta=100)
     await _set_bcat_price(price_cents=10_000)
     opened = await stock_db.settle_stock_operation(
@@ -1715,7 +1912,11 @@ async def test_stock_cover_can_use_withheld_short_entry_value(
 async def test_stock_compound_operation_uses_ordered_wallet_legs(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Cover plus open-long writes ordered legs and preserves gross invariant."""
+    """A buy that both covers a short and opens a long writes the two legs in that order.
+
+    The legs are never netted back to one wallet movement, which is what keeps the economy's
+    `total_earned - total_spent == balance` identity describing real flow.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
     opened = await stock_db.settle_stock_operation(
         symbol=BCAT_SYMBOL,
@@ -1752,7 +1953,12 @@ async def test_stock_compound_operation_uses_ordered_wallet_legs(
 async def test_stock_concurrent_trades_do_not_reuse_stale_position(
     stock_isolated_db: None, economy_isolated_db: None
 ) -> None:
-    """Same-user same-stock submissions are serialized by the service lock."""
+    """Two buys from one user on one stock serialize, and the key leaves no lock behind.
+
+    The second submission has to re-read the position the first wrote, or both would price
+    against the same stale row and spend the balance twice. `is_empty` is the other half: an
+    unbounded key space would leak an entry per user and symbol if a lock outlived its holders.
+    """
     await adjust_balance(user_id=1, name="alice", delta=100)
 
     results = await asyncio_gather_stock_buys()
@@ -1764,7 +1970,11 @@ async def test_stock_concurrent_trades_do_not_reuse_stale_position(
 
 
 async def asyncio_gather_stock_buys() -> tuple[StockSettlementResult, StockSettlementResult]:
-    """Runs two concurrent buys for the concurrency test."""
+    """Submits the same one-share buy twice at once, against a balance that affords one.
+
+    Returns:
+        Both settlement results, in submission order.
+    """
     return await asyncio.gather(
         stock_db.settle_stock_operation(
             symbol=BCAT_SYMBOL,
@@ -1790,11 +2000,19 @@ async def asyncio_gather_stock_buys() -> tuple[StockSettlementResult, StockSettl
 async def test_stock_reconciliation_helper_lists_non_final_operations(
     stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Wallet-side uncertainty is surfaced as a reconciliation operation."""
+    """A wallet failure after the stock commit parks the operation where an operator can see it.
+
+    Nothing rolls back and nothing retries, because whether the debit landed is exactly what is
+    unknown; the operation, its legs and the names on both are what the operator reads instead.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
 
     async def fail_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
-        """Simulates a wallet-side failure after stock commit."""
+        """Fails the wallet application after the stock side has already committed.
+
+        Raises:
+            RuntimeError: Always, standing in for an unreachable economy database.
+        """
         raise RuntimeError("wallet unavailable")
 
     monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", fail_wallet)
@@ -1823,12 +2041,20 @@ async def test_stock_reconciliation_helper_lists_non_final_operations(
 async def test_stock_reconciliation_blocks_later_trades(
     stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A non-final operation blocks more trading for the same user and symbol."""
+    """A parked operation stops that user trading that symbol, even once the wallet is healthy.
+
+    The refusal names the blocking operation rather than opening a second one on top of it, so
+    the seam stops the feature for one user instead of quietly stacking uncertainty.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
     original_apply = stock_db.apply_ordered_wallet_deltas
 
     async def fail_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
-        """Simulates uncertain wallet application."""
+        """Fails the first operation's wallet application, then is swapped back out.
+
+        Raises:
+            RuntimeError: Always, standing in for an unreachable economy database.
+        """
         raise RuntimeError("wallet unavailable")
 
     monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", fail_wallet)
@@ -1862,11 +2088,19 @@ async def test_stock_reconciliation_blocks_later_trades(
 async def test_stock_wallet_cancellation_marks_reconciliation(
     stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Cancelled wallet application leaves an explicit reconciliation marker."""
+    """A cancel in flight still records the marker before the cancellation propagates.
+
+    Cancellation is the one path that could return without writing anything, and it leaves the
+    same "did the debit land" question behind as a failure does.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
 
     async def cancel_wallet(**_kwargs: object) -> OrderedWalletDeltaResult:
-        """Simulates cancellation while the wallet operation is in flight."""
+        """Cancels while the wallet application is in flight.
+
+        Raises:
+            CancelledError: Always, standing in for a cancelled settlement task.
+        """
         raise asyncio.CancelledError
 
     monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", cancel_wallet)
@@ -1891,11 +2125,15 @@ async def test_stock_wallet_cancellation_marks_reconciliation(
 async def test_stock_wallet_reject_does_not_apply_position(
     stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A full-debit wallet rejection finalizes as failed without a stock position."""
+    """A wallet that answers "no" finalizes the operation as failed, with no position written.
+
+    A rejection is a definite answer, unlike a raise, so nothing is left for an operator to
+    reconcile and the reservation goes back to the market immediately.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
 
     async def reject_wallet(**_kwargs: object) -> None:
-        """Simulates a wallet race that makes the debit impossible."""
+        """Refuses the debit outright, as a wallet race that emptied the balance would."""
         return
 
     monkeypatch.setattr(stock_db, "apply_ordered_wallet_deltas", reject_wallet)
@@ -1923,7 +2161,12 @@ async def test_stock_wallet_reject_does_not_apply_position(
 async def test_stock_success_records_wallet_applied_before_final_status(
     stock_isolated_db: None, economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Successful cross-DB operations pass through the wallet_applied lifecycle."""
+    """A healthy operation is marked wallet_applied before the position is written.
+
+    That status marks the window where the money has moved and the position has not, which is
+    what a failure there is recorded against; skipping straight to applied would leave an
+    operator unable to tell that window from one where nothing happened at all.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
     statuses: list[StockOperationStatus] = []
     original_mark_operation = stock_db._mark_operation
@@ -1931,7 +2174,7 @@ async def test_stock_success_records_wallet_applied_before_final_status(
     async def record_mark_operation(
         operation_id: str, status: StockOperationStatus, failure_reason: str
     ) -> None:
-        """Records lifecycle updates while preserving the real stock update."""
+        """Records each lifecycle step while still performing the real update."""
         statuses.append(status)
         await original_mark_operation(
             operation_id=operation_id, status=status, failure_reason=failure_reason
@@ -1960,7 +2203,11 @@ async def test_stock_success_records_wallet_applied_before_final_status(
 async def test_ordered_wallet_deltas_do_not_touch_casino_counters(
     economy_isolated_db: None,
 ) -> None:
-    """Stock wallet legs use gross totals without casino side effects."""
+    """Stock wallet legs move gross lifetime totals and go nowhere near the casino counters.
+
+    Settling a trade is not gambling, so it must not feed the daily casino loss the casino
+    settlement helpers maintain; the balance and the two lifetime totals are all that move.
+    """
     await adjust_balance(user_id=1, name="alice", delta=1_000)
     result = await apply_ordered_wallet_deltas(
         user_id=1, name="alice", deltas=(WalletDeltaLeg(delta=-100), WalletDeltaLeg(delta=80))
@@ -1975,7 +2222,10 @@ async def test_ordered_wallet_deltas_do_not_touch_casino_counters(
 
 
 def test_stock_chart_generates_non_empty_image_with_too_few_ticks() -> None:
-    """Chart rendering works with one tick."""
+    """A single tick still renders a real PNG rather than failing on a line with no segment.
+
+    A freshly upserted company has exactly one tick, so this is the first chart anyone sees.
+    """
     image = build_price_chart(
         ticks=(
             stock_db.StockPriceTickView(
@@ -1990,7 +2240,11 @@ def test_stock_chart_generates_non_empty_image_with_too_few_ticks() -> None:
 
 
 async def _set_bcat_price(price_cents: int) -> None:
-    """Pins BCAT to a deterministic price for settlement tests."""
+    """Advances the market once, then pins BCAT's quote and its whole tick history to one price.
+
+    The close and day open are pinned alongside it, so the daily band cannot clamp the next
+    advance and a settlement test's arithmetic is exact rather than approximate.
+    """
     await stock_db.list_market_quotes(now=datetime(2026, 1, 1), rng=_rng(seed=1))
     async with stock_db.open_stock_session() as session:
         now = datetime(2026, 1, 1)
@@ -2013,9 +2267,13 @@ async def _set_bcat_price(price_cents: int) -> None:
 
 
 async def test_reset_all_positions_flattens_and_zeros_pnl(stock_empty_db: None) -> None:
-    """reset_all_positions flattens every position and zeroes realized P&L."""
+    """The offline economy reset flattens every position, zeroes P&L and bumps the row version.
+
+    Prices are deliberately left alone, so a deflated balance cannot be topped back up out of a
+    position that still values at the old scale.
+    """
     del stock_empty_db
-    # Touch the DB once so the schema exists, then seed a fat position.
+    # The first call is what bootstraps the schema; the position can only be seeded after it.
     assert await stock_db.reset_all_positions() == 0
     async with stock_db.open_stock_session() as session:
         session.add(
@@ -2051,7 +2309,11 @@ async def test_reset_all_positions_flattens_and_zeros_pnl(stock_empty_db: None) 
 
 
 async def test_reset_all_positions_finalizes_non_final_operations(stock_empty_db: None) -> None:
-    """reset_all_positions forces non-final operations to failed so they stop blocking trades."""
+    """The reset also finalizes non-final operations, or they would go on blocking their owners.
+
+    A reset that flattened positions but left a pending operation behind would claim the stock
+    state was cleared while `_blocking_operation` kept refusing that user on that symbol.
+    """
     del stock_empty_db
     assert await stock_db.reset_all_positions() == 0
     async with stock_db.open_stock_session() as session:

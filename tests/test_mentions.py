@@ -1,4 +1,21 @@
-"""Tests for the shared "is this message addressed to the bot" predicate."""
+"""Pins `utils/mentions.py`, the predicate deciding whether a message is the bot's to answer.
+
+One message gets one treatment: `gen_reply` answers a message addressed to the bot, and the link
+expansion cogs (`parse_threads`, `parse_douyin`) return early on exactly that test, so a pasted
+link is either expanded into the channel or answered about, never both. Each side spells the
+question its own way — `gen_reply` as an inline `is_dm or has_bot_mention` pair, the cogs as
+`is_addressed_to_bot` — over this one helper, so a wrong answer changes which treatment a link
+gets, and the two spellings drifting apart would make it both or neither.
+
+Pinned here: the two mention forms Discord sends (`<@id>` and the legacy nickname `<@!id>`),
+another user's mention not counting as the bot's, a message arriving before the gateway hands
+over a bot user answering False rather than raising, and the DM-versus-guild split. The message
+doubles are `SimpleNamespace`s carrying `guild` / `content` / `author` and no `mentions`, which
+is what also pins the reason the helper reads the raw content: a reply notification populates
+`message.mentions`, so reading that attribute would count every reply to one of the bot's own
+functional posts (a Threads embed, a downloaded video) as a mention, and going back to it fails
+here on the missing attribute instead of in production.
+"""
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast

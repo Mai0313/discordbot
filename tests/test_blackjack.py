@@ -1,4 +1,39 @@
-"""Tests for the Blackjack pure-rules module."""
+"""Pins the house rules behind `/games blackjack`, which decide how much a round pays out.
+
+`cogs/games/blackjack.py` is a pure rules engine — no Discord object, no database, no clock and
+no LLM — so its whole contract is checkable from here: hand a list of `Card`s to a predicate, or a
+finished `BlackjackHandState` plus the final dealer cards to `settle_hand`, and read the answer
+back. The tests drive that seam directly, with a seeded `random.Random`, hands assigned onto a
+round instead of dealt, and a monkeypatched `draw_card` wherever one specific next card is the
+point, because a table replays deterministically only while nothing else touches it.
+
+What is pinned, and why each part is worth the test:
+
+- The hand vocabulary. Ace demotion, 10/J/Q/K equivalence and the soft/hard distinction are
+  decided in exactly one place, and `blackjack_ev.py`, `bot_player.py` and the round-history store
+  all read hands through it, so a drift there moves far more than the hand in front of the player.
+- `settle_hand`'s outcome label and dealer-paid delta, which is the money. A natural pays 3:2
+  floored, Surrender concedes half of `base_bet` rounded up (so a 1-point bet is not free), and
+  過五關 beats whatever the dealer ends on — except the five-card 21, whose main leg only pushes
+  against a dealer 21. These are this deployment's house rules rather than universal ones, so
+  nothing outside that file would notice them changing.
+- The Split rules, which get the most cases here because they are the easiest to get wrong: a
+  split-derived two-card 21 is not a natural, so it takes even money, pushes a non-natural dealer
+  21 and still loses to a dealer natural; split Aces take one card each and stop; and a hand that
+  came out of a Split cannot be split again, so a seat holds at most two hands.
+- `BlackjackRound`'s table mechanics: join-order turns, the insurance / peek / player_actions /
+  settled phase machine, H17 dealer play, the `auto_play_dealer=False` seam the views animate
+  through, refusing an action from a seat whose turn it is not, and dealing from an injected shoe
+  so `shoe.py` can carry card-counting signal between rounds.
+- The `can_*` guards a view reads to decide which buttons to draw, including the one that is an
+  economy guardrail rather than a Blackjack rule: Double is refused when the doubled stake would
+  clear `MAX_SINGLE_BET`.
+
+A few tests reach past the pure rules, into the three places those rules become something a player
+sees: the early-finish note that explains a hand which never got a button (`settlement.py`), the
+settlement footnote's VIP figures (`presentation.py`), and the in-progress dealer seat keeping the
+hole card covered (`blackjack_views.py`).
+"""
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
@@ -141,19 +176,34 @@ def test_is_bust_above_21() -> None:
 
 
 def _settled_hand(cards: list[Card], bet: int = 100) -> BlackjackHandState:
-    """Builds a finished production hand state for settlement assertions."""
+    """Builds an already-finished hand state, the only kind `settle_hand` accepts.
+
+    Returns:
+        The finished hand, staked and dealt at the same `bet` so no Double is implied.
+    """
     return BlackjackHandState(cards=cards, bet=bet, base_bet=bet, finished=True)
 
 
 def _settle_cards(player: list[Card], dealer: list[Card], bet: int = 100) -> tuple[str, int]:
-    """Settles a finished hand state against dealer cards."""
+    """Settles a plain finished hand against the dealer's final cards.
+
+    Returns:
+        The `(outcome, delta)` pair `settle_hand` decided, delta being the dealer-paid half only.
+    """
     return settle_hand(hand=_settled_hand(cards=player, bet=bet), dealer=dealer)
 
 
 def _participant(
     user_id: int, display_name: str, bet: int = 100, balance_at_start: int = 1_000
 ) -> GameParticipant:
-    """Builds a prepared Blackjack participant for round tests."""
+    """Builds one seat for a round, already staked.
+
+    The default balance leaves 900 uncommitted behind a 100 bet, so Double, Split and Insurance
+    all clear their affordability guards unless a test narrows `balance_at_start` on purpose.
+
+    Returns:
+        The seated participant, never flagged all-in.
+    """
     return GameParticipant(
         user_id=user_id,
         account_name=display_name.lower(),
@@ -175,7 +225,7 @@ def test_settle_player_blackjack_pays_three_to_two() -> None:
 
 
 def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
-    """VIP winning settlements surface the base and boosted deltas."""
+    """The footnote breaks the VIP bonus out of the net delta and never prints the pre-bonus one."""
     metadata = settlement_metadata(
         delta=150, new_balance=1_150, is_allin=False, base_delta=100, vip_bonus=50
     )
@@ -228,7 +278,7 @@ def test_blackjack_early_finish_note_ignores_regular_twenty_one() -> None:
 
 
 def test_blackjack_player_early_finish_note_names_peeked_up_card() -> None:
-    """Peek notes tell players the dealer used the visible up-card plus hole card."""
+    """A peeked dealer Blackjack is explained by naming the up-card, never the hole card."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[_participant(user_id=1, display_name="Bob")]
     )
@@ -300,7 +350,7 @@ def test_settle_equal_total_is_push() -> None:
 
 
 def test_settle_five_card_twenty_one_keeps_main_hand_push_against_dealer_21() -> None:
-    """Five-card 21 uses its own outcome while the main hand can still push."""
+    """A five-card 21 keeps its own outcome label but pushes against a dealer 21."""
     outcome, delta = _settle_cards(
         player=[
             Card(rank="2", suit="♠"),
@@ -399,7 +449,7 @@ def test_blackjack_round_advances_players_and_dealer_after_all_stand() -> None:
 
 
 def test_blackjack_round_can_wait_for_async_dealer_play() -> None:
-    """Async dealer mode leaves the dealer hand unchanged after players stand."""
+    """With `auto_play_dealer` off the players finish but the dealer is left to the caller."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=12345),
         participants=[
@@ -532,7 +582,11 @@ def test_is_soft_17_only_when_soft_and_seventeen() -> None:
 
 
 def _make_hand(cards: list[Card], bet: int = 100) -> BlackjackHandState:
-    """Helper for hand-state predicates."""
+    """Builds a live hand state, untouched, for the `can_*` guards to inspect.
+
+    Returns:
+        The unfinished hand, with `actions_taken` still 0 so every guard starts from allowed.
+    """
     return BlackjackHandState(cards=cards, bet=bet, base_bet=bet)
 
 
@@ -582,7 +636,7 @@ def test_can_split_only_on_same_value_pairs() -> None:
 
 
 def test_can_surrender_only_before_any_action() -> None:
-    """Surrender is offered only on the very first action of the original hand."""
+    """Surrender needs an untouched original hand and closes once the dealer peeked a Blackjack."""
     fresh = _make_hand(cards=[Card(rank="10", suit="♠"), Card(rank="6", suit="♥")])
     assert can_surrender(hand=fresh, peeked_blackjack=False) is True
     fresh.actions_taken = 1
@@ -602,7 +656,14 @@ def test_can_surrender_only_before_any_action() -> None:
 def _two_player_round(
     cards_a: list[Card], cards_b: list[Card], dealer: list[Card]
 ) -> BlackjackRound:
-    """Builds a deterministic two-player round skipping `deal_initial`."""
+    """Builds a two-player round with every hand assigned rather than dealt.
+
+    Skipping `deal_initial` is what keeps the cards exact: the round opens straight in
+    `player_actions` with Alice active, so no peek or insurance phase intervenes.
+
+    Returns:
+        The round, with Alice seated first and Bob behind her.
+    """
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[
@@ -617,7 +678,7 @@ def _two_player_round(
 
 
 def test_single_player_round_hit_finishes_on_fifth_card_twenty_one() -> None:
-    """A production round hand auto-finishes when the fifth card makes 21."""
+    """A single-seat hand auto-finishes when the fifth card brings it to 21."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[_participant(user_id=1, display_name="Alice")]
     )
@@ -896,7 +957,7 @@ def test_take_insurance_requires_ace_phase() -> None:
 
 
 def test_take_insurance_requires_uncommitted_balance() -> None:
-    """All-in players cannot add an insurance side bet on top of their wager."""
+    """A seat whose whole starting balance is already staked cannot add an insurance side bet."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[
@@ -937,7 +998,8 @@ def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[_participant(user_id=1, display_name="Alice")]
     )
-    # Force a deterministic deal by pre-loading the shoe in FIFO order.
+    # Force a deterministic deal by pre-loading the shoe in FIFO order: players are dealt before
+    # the dealer, and the dealer's first card is the hole one.
     round_state.shoe = [
         Card(rank="10", suit="♠"),
         Card(rank="10", suit="♥"),  # player
@@ -972,7 +1034,7 @@ def test_dealer_peek_blackjack_settles_round_immediately() -> None:
 
 
 def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
-    """After each player decides, the round peeks and advances accordingly."""
+    """The insurance phase closes on the last decision and peeks the hole card as it does."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0), participants=[_participant(user_id=1, display_name="Alice")]
     )
@@ -980,7 +1042,7 @@ def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
         Card(rank="9", suit="♠"),
         Card(rank="8", suit="♥"),  # player
         Card(rank="K", suit="♣"),  # dealer hole
-        Card(rank="A", suit="♦"),  # dealer up — BJ!
+        Card(rank="A", suit="♦"),  # dealer up — an Ace, so the peek is deferred to insurance
     ]
 
     round_state.deal_initial()
@@ -993,12 +1055,7 @@ def test_insurance_phase_closes_after_all_decisions_and_peeks() -> None:
 
 
 def test_from_participants_deals_from_an_injected_shoe() -> None:
-    """An injected persistent shoe is the round's deck, dealt front to back.
-
-    The round's own `shoe` depletes as cards are dealt; the caller persists card
-    counting by saving `round_state.shoe` after the round, not by relying on the
-    passed list being mutated in place.
-    """
+    """An injected persistent shoe is the round's deck, dealt front to back."""
     injected = [
         Card(rank="2", suit="♠"),
         Card(rank="3", suit="♥"),
@@ -1021,4 +1078,7 @@ def test_from_participants_deals_from_an_injected_shoe() -> None:
         Card(rank="2", suit="♠"),
         Card(rank="3", suit="♥"),
     ]
+    # Depletion is asserted on the round's own shoe: pydantic validated `injected` into a copy,
+    # so a caller persists card counting by saving `round_state.shoe` rather than the list it
+    # passed in, which is never mutated.
     assert round_state.shoe == [Card(rank="5", suit="♠"), Card(rank="6", suit="♥")]

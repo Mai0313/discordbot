@@ -1,7 +1,17 @@
-"""Tests for the media-cleanup cog: setup registration and the on_ready start gate.
+"""Tests for the media-cleanup cog's `setup` registration and its `on_ready` start gate.
 
-These never let the real sweep run — it would delete against the env-resolved live serve dir — so
-the startup sweep is stubbed and only the gating decision (start vs no-op) is asserted.
+Three decisions are pinned, all of them about whether the sweep is scheduled at all. Hosting
+configured with at least one cap starts the `tasks.loop` AND spawns exactly one immediate startup
+sweep, because the loop itself first fires a whole interval after `start()` and a restart would
+otherwise leave an over-cap serve dir alone for hours. Both caps off means `cleanup_enabled` is
+false, so nothing starts and nothing in the serve dir is touched. And since `on_ready` fires again
+on every gateway reconnect, the cog's `_started` gate has to make the second one a no-op rather
+than a second loop plus a second sweep.
+
+The sweep itself never runs here. `MediaCleanupCogs` builds its own `MediaHostingService` from
+`MediaHostingConfig()`, which reads the process environment, so a real `run_maintenance` would
+delete against whatever serve dir the deployment resolves. Every test therefore monkeypatches
+`_sweep` and replaces `cog.media_hosting` with `_service`, which is pointed at a `tmp_path`.
 """
 
 from types import SimpleNamespace
@@ -17,17 +27,24 @@ from tests.helpers.casting import as_bot, make_media_hosting_config
 
 
 class _FakeBot:
-    """A bot stub whose wait_until_ready resolves immediately (for the loop's before_loop)."""
+    """A bot stub carrying only what the cog reaches for: `wait_until_ready`."""
 
     async def wait_until_ready(self) -> None:
-        """Returns immediately so the loop's before_loop never blocks the test."""
+        """Resolves immediately so the loop's `before_loop` never blocks the test."""
         return
 
 
 def _service(
     *, serve_dir: Path, max_bytes: int = 8 * 1024**3, retention_hours: float = 168.0
 ) -> MediaHostingService:
-    """A hosting service over an explicit temp serve dir (never the live env-resolved dir)."""
+    """Builds a hosting service over an explicit serve dir, never the env-resolved live one.
+
+    The cap defaults mirror `MediaHostingConfig`'s own, so a caller overrides only the cap it is
+    testing and an enabled service is otherwise shaped like the deployed one.
+
+    Returns:
+        A `MediaHostingService` built with no `.env` or process environment mixed in.
+    """
     return MediaHostingService(
         config=make_media_hosting_config(
             enabled=True,

@@ -1,4 +1,34 @@
-"""Tests for the bot's per-server (community) long-term memory flavor."""
+"""Tests for the bot's per-server (community) long-term memory flavor.
+
+Per-server memory reuses the whole per-user machinery — the same store, the same delta protocol,
+the same renderer — with one hardcoded compartment and its own prompt vocabulary. So almost
+everything that can break it sits where the two flavors have to agree without sharing code, and
+that is what this file aims at. Following the banner comments, it pins:
+
+- **the scope** (`services/memory/store.py`): a server scope nests under the fixed, non-numeric
+  `bot_memories/` directory, so it can never be mistaken for a user scope on disk and a bot
+  account change strands nothing; one snowflake read as a user and as a server keeps two
+  independent trees rendered under each flavor's own headings; and the scope never grows a second
+  compartment, because a server observation carries no source to route by.
+- **the injected block**: a guild name is user-controlled, so `render_server_identity` must not be
+  talkable into forging the owner id it carries, and the memory rides as a low-authority
+  `role=assistant` note rather than as instructions.
+- **the prompts** (`services/memory/server_prompts.py`): the clauses code depends on them
+  carrying — the three delta actions, exactly the sections the flavor's allowlist has, a verbatim
+  `fact_id`, the fixed `sharing="global"`, that dating and aging belong to code now, and that a
+  server pass never writes a tone note. These are string assertions because the prompt is the only
+  half of the contract the code cannot enforce.
+- **the member-alias table**, the one carve-out from the no-individuals rule: `## 成員稱呼` stays
+  in a rendered shape `allowlist_ids_from_server_memory` parses back, a delta whose `subject_id`
+  is missing or guessed is dropped without taking the rest of the batch down with it, and the
+  freshness sweep never ages an alias row out from under the allowlist.
+- **`/memory server show`** (`cogs/memory/cog.py`): the stored document, the placeholder for a
+  guild nothing has been consolidated for yet, and the DM refusal that answers before it touches
+  the store.
+
+Anything durable takes `memory_isolated_dir`. Nothing here calls an LLM — the prompts are read as
+strings and deltas go straight to `apply_deltas` — so the file needs no credentials.
+"""
 
 from types import SimpleNamespace
 from pathlib import Path
@@ -56,7 +86,11 @@ def _fact(
     text: str = "社群慣於高強度的粗口互嗆",
     last_confirmed: datetime = _NOW,
 ) -> MemoryFact:
-    """Builds a stored fact in the single compartment a server scope ever has."""
+    """Builds a stored fact in the single compartment a server scope ever has.
+
+    Returns:
+        The fact, stamped with the server owner identity and ready for `write_fact`.
+    """
     return MemoryFact(
         fact_id=fact_id,
         summary="社群文化",
@@ -80,7 +114,11 @@ def _alias_fact(
     durability: MemoryDurability = "permanent",
     last_confirmed: datetime = _NOW,
 ) -> MemoryFact:
-    """Builds one member-alias row, the server flavor's carve-out from no-individuals."""
+    """Builds one member-alias row, the server flavor's carve-out from no-individuals.
+
+    Returns:
+        The fact carrying `subject_id`, the field the rendered table hands to the allowlist.
+    """
     row = _fact(
         fact_id=fact_id,
         section="member_alias",
@@ -98,7 +136,14 @@ def _alias_delta(
     subject_id: str = "4242",
     action: MemoryDeltaAction = "create",
 ) -> MemoryFactDelta:
-    """Builds one member-alias consolidation delta."""
+    """Builds one member-alias consolidation delta.
+
+    `subject_id` is a string here because that is what the model emits; code is what turns it
+    into an id, or drops the delta when it cannot.
+
+    Returns:
+        The delta, shaped as a consolidation pass would return it.
+    """
     return MemoryFactDelta(
         action=action,
         section="member_alias",
@@ -110,7 +155,11 @@ def _alias_delta(
 
 
 def _server_document() -> str:
-    """Renders the server scope the way both the reply path and the cog read it."""
+    """Renders the server scope the way both the reply path and the cog read it.
+
+    Returns:
+        The merged document, or "" when the scope holds no fact yet.
+    """
     return read_memory_document(
         scope=SERVER_SCOPE, compartments=[GLOBAL_COMPARTMENT], flavor="server"
     )
@@ -383,13 +432,27 @@ class ResponseStub:
 
 
 def _server_cog() -> MemoryCogs:
-    """Builds a MemoryCogs whose bot exposes a stable user id."""
+    """Builds a MemoryCogs over a bot stub.
+
+    Only the constructor needs the bot: the server view renders its one compartment bare, so it
+    never reaches the compartment labelling that is the cog's sole reader of `self.bot`.
+
+    Returns:
+        The cog, ready to have a command callback invoked on it directly.
+    """
     bot = SimpleNamespace(user=SimpleNamespace(id=BOT_ID))
     return MemoryCogs(bot=as_bot(fake=bot))
 
 
 def _guild_interaction(guild_id: int | None = GUILD_ID) -> SimpleNamespace:
-    """Builds a minimal guild interaction stub for the server memory command."""
+    """Builds a minimal guild interaction stub for the server memory command.
+
+    Passing None for the guild is how the DM path is reached, since that is all the command
+    reads before refusing.
+
+    Returns:
+        The stub, whose `response` records what the command answered with.
+    """
     guild = None if guild_id is None else SimpleNamespace(id=guild_id)
     return SimpleNamespace(guild=guild, response=ResponseStub())
 

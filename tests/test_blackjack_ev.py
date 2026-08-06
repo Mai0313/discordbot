@@ -1,4 +1,25 @@
-"""Deterministic tests for the hole-card-aware Blackjack EV engine."""
+"""Deterministic tests for the hole-card-aware Blackjack EV engine.
+
+Pins `cogs/games/blackjack_ev.py`, the pure probability half of the bot player: the H17 dealer
+final-total distribution, the per-action EVs in base-bet units, and the recommendation drawn from
+them. Every case is exact arithmetic over a fixed shoe rather than a simulation, so an assertion
+is a closed-form equality or a strict inequality between two priced actions instead of a sampling
+tolerance, and a regression surfaces as a wrong number rather than as flakiness.
+
+Three groups of behavior are worth pinning. The dealer model: H17 keeps drawing on soft 17 while
+a hard 17 stands, and the six outcome probabilities always form a proper distribution. This
+table's non-standard payouts: a five-card non-bust wins one unit outright, a five-card 21 adds the
+system-funded bonus on top, and surrender is charged the rounded half-bet `settle_hand` actually
+takes rather than a flat -0.5. And the information boundary that keeps the bot fair to play
+against: the recommendation may use the dealer's hole card, but `dealer_outcome` and every exposed
+action EV are marginalized over the remaining shoe alone, so two decisions sharing an up-card and
+a shoe must expose exactly equal numbers however different their holes are.
+
+The remainder covers what `bot_player.py` and `shoe.py` read out of the engine (the ten-value
+bucket collapse, the sign of the Hi-Lo true count) plus the degraded inputs it must survive
+without raising, since `bot_player.py` only falls back to basic strategy on an exception: an empty
+shoe, and a soft hand drawing a second ace.
+"""
 
 from discordbot.typings.games import Card, DealerOutcome, ActionEvAnalysis
 from discordbot.cogs.games.blackjack_ev import (
@@ -11,19 +32,31 @@ from discordbot.cogs.games.blackjack_ev import (
 
 
 def _card(rank: str) -> Card:
-    """Builds a card with an arbitrary suit for EV tests."""
+    """Builds a card of the given rank, with an arbitrary suit the engine never reads.
+
+    Returns:
+        A card the engine collapses onto its rank's value bucket.
+    """
     return Card(rank=rank, suit="♠")
 
 
 def _full_shoe() -> list[Card]:
-    """Builds a fresh four-deck shoe (208 cards) as a flat card list."""
+    """Builds a fresh four-deck shoe as a flat card list.
+
+    Returns:
+        208 cards: four decks of four suits each, so every rank appears 16 times and the Hi-Lo
+        count of the whole shoe is balanced at zero.
+    """
     ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
-    # Four decks of four suits each: every rank appears 16 times.
     return [_card(rank=rank) for rank in ranks] * 16
 
 
 def _distribution_total(outcome: DealerOutcome) -> float:
-    """Sums the six dealer-outcome probabilities."""
+    """Sums the six dealer-outcome probabilities.
+
+    Returns:
+        The total probability mass, which a well-formed distribution puts at 1.0.
+    """
     return (
         outcome.bust_probability
         + outcome.total_17_probability
@@ -35,7 +68,14 @@ def _distribution_total(outcome: DealerOutcome) -> float:
 
 
 def _ev_for(analysis: ActionEvAnalysis, action: str) -> float:
-    """Returns the computed EV for a single action."""
+    """Reads one action's EV out of the analysis.
+
+    Always the exposed marginal value, never the hole-aware one the recommendation came from,
+    since `action_evs` only ever carries the marginal pass.
+
+    Returns:
+        The expected value in base-bet units.
+    """
     return next(item.expected_value for item in analysis.action_evs if item.action == action)
 
 
@@ -70,7 +110,7 @@ def test_dealer_hits_soft_17_under_h17() -> None:
 
 
 def test_dealer_distribution_sums_to_one() -> None:
-    """The dealer outcome distribution is a proper probability distribution."""
+    """The six dealer outcome probabilities sum to one from every stiff and soft starting total."""
     shoe = build_shoe_value_counts(shoe=_full_shoe())
     for dealer_total, dealer_soft in ((12, False), (15, False), (16, False), (13, True)):
         outcome = dealer_outcome_distribution(
@@ -80,7 +120,7 @@ def test_dealer_distribution_sums_to_one() -> None:
 
 
 def test_standing_beats_hitting_on_hard_twenty() -> None:
-    """A hard 20 should stand, never hit, against a weak dealer."""
+    """A hard 20 against a weak dealer stands, and standing outranks hitting on EV too."""
     analysis = compute_action_evs(
         hand_cards=[_card(rank="10"), _card(rank="10")],
         dealer_cards=[_card(rank="9"), _card(rank="6")],
@@ -94,13 +134,7 @@ def test_standing_beats_hitting_on_hard_twenty() -> None:
 
 
 def test_recommendation_uses_hole_but_shown_distribution_hides_it() -> None:
-    """The recommendation reflects the true hole, yet the shown distribution does not.
-
-    Both hands face an up-card 10 but a different hole (a weak 5 versus a strong
-    10). The hole-aware recommendation diverges, the bot's private edge. The
-    exposed dealer distribution is marginalized over the remaining shoe only, so
-    for the same up-card and shoe it is byte-identical and reveals no hole.
-    """
+    """A different hole moves the recommendation but leaves every exposed number untouched."""
     shoe = _full_shoe()
     weak = compute_action_evs(
         hand_cards=[_card(rank="10"), _card(rank="6")],
@@ -177,7 +211,7 @@ def test_five_card_chase_beats_standing_into_a_sure_loss() -> None:
 
 
 def test_surrender_ev_is_minus_half_and_only_when_allowed() -> None:
-    """Surrender is always exactly -0.5 and absent when not legal."""
+    """Surrender prices at exactly -0.5 with no bet given, and is absent once it is not legal."""
     with_surrender = compute_action_evs(
         hand_cards=[_card(rank="10"), _card(rank="6")],
         dealer_cards=[_card(rank="10"), _card(rank="10")],
@@ -198,7 +232,7 @@ def test_surrender_ev_is_minus_half_and_only_when_allowed() -> None:
 
 
 def test_surrender_ev_uses_rounded_loss_for_odd_bets() -> None:
-    """Surrender EV matches settle_hand's rounded half-bet loss for odd and tiny bets."""
+    """Surrender EV matches `settle_hand`'s rounded half-bet loss for odd and tiny bets."""
     one_point = compute_action_evs(
         hand_cards=[_card(rank="10"), _card(rank="6")],
         dealer_cards=[_card(rank="10"), _card(rank="10")],
@@ -237,7 +271,7 @@ def test_split_is_flagged_as_estimate_and_can_be_recommended() -> None:
 
 
 def test_action_evs_only_cover_legal_actions() -> None:
-    """The analysis never reports EV for an action outside allowed_actions."""
+    """The analysis never reports an EV for an action outside `allowed_actions`."""
     analysis = compute_action_evs(
         hand_cards=[_card(rank="10"), _card(rank="6")],
         dealer_cards=[_card(rank="9"), _card(rank="7")],
@@ -252,7 +286,7 @@ def test_action_evs_only_cover_legal_actions() -> None:
 
 
 def test_empty_shoe_does_not_crash() -> None:
-    """The engine degrades gracefully when the shoe is empty."""
+    """An exhausted shoe still yields a legal recommendation instead of raising."""
     analysis = compute_action_evs(
         hand_cards=[_card(rank="10"), _card(rank="6")],
         dealer_cards=[_card(rank="9"), _card(rank="7")],
@@ -265,7 +299,7 @@ def test_empty_shoe_does_not_crash() -> None:
 
 
 def test_add_value_demotes_existing_ace_when_drawing_another_ace() -> None:
-    """Soft 21 drawing an ace becomes hard 12, mirroring hand_value, not a 22 bust."""
+    """Soft 21 drawing an ace becomes hard 12, mirroring `hand_value`, not a 22 bust."""
     total, soft = _add_value(total=21, soft=True, bucket=9)
 
     assert (total, soft) == (12, False)

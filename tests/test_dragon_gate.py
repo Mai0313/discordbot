@@ -1,4 +1,48 @@
-"""Tests for 射龍門 rules and interaction views."""
+"""Pins 射龍門 (In-Between): the pure table rules, and the money its Discord surface moves.
+
+The feature is split across two modules and this file drives both halves.
+`cogs/games/dragon_gate.py` deals a gate, resolves a third card into a signed delta and rotates
+the seats, and touches nothing else, so those tests hand `DragonGateRound` a scripted `Random`
+and read the result straight back. `cogs/games/dragon_gate_views.py` owns everything financial: a
+bet settles the moment it resolves, against the player's wallet and the shared `jackpot_pool`
+row, so its tests replace that settlement with an in-memory model and assert both on what the
+table asked for and on what it did with the answer.
+
+`RiggedRandom` is what makes either half exact rather than statistical: `choice` walks a scripted
+rank/suit stream, so "the third card lands on a pillar" is a named hand instead of a seed
+somebody has to trust. Its filler tail is load-bearing — the rules deal the next seat a gate as
+soon as the asserted hand resolves, because closing a table on an emptied pool is the view's
+decision and not a rule.
+
+`JackpotState` stands in for `apply_jackpot_settlement` and its batch twin, and models only the
+three ways the database disagrees with the rules: a loss clamps at the player's balance, a payout
+claimed against a pool generation that has since been reseeded applies as zero, and a drained
+seeded pool refills and bumps that generation. Those three are the whole reason the view writes
+the applied figure back through `replace_last_result_delta`, and the tests here pin that the log,
+the scoreboard and the final embed report what moved rather than what was rolled.
+
+What the view tests protect beyond the rendering:
+
+- 逆贏不拿 on both exits. Leaving while ahead, or still being ahead when the table times out,
+  pushes that running delta back into the pool, so a mid-table exit cannot bank a win.
+- The maximum bet is bounded by the player's live wallet, not by the pool alone. A loss already
+  clamps at the balance, so an unbounded ceiling would be a free option on the whole pot, and a
+  wallet under the table minimum leaves no legal bet at all rather than a floored one.
+- That wallet is re-read per bet, since the table's own cache dates from the ante.
+- The ante is charged all-or-nothing, and a rejection leaves the lobby open and startable instead
+  of opening a table somebody has already paid into.
+- Controls are presence-based, so the assertions read the attached custom-id set and its rows. A
+  control left merely disabled would still be on screen, and no `disabled` check would say so.
+
+`edit_message_with_retry` is exercised here rather than beside its own module because this is the
+edit it exists for: the lobby-to-table handover runs after every ante is committed, so losing it
+would leave a stopped lobby that has already taken payment.
+
+The doubles are local rather than `tests/helpers/discord_mocks.py`'s, because none of what these
+tests need is in that family: `interaction_check` reads the pressed component out of
+`interaction.data`, the bet select opens a modal, and the retry test needs a message that fails
+exactly once. They reach production signatures through `tests/helpers/casting.py`'s pure casts.
+"""
 
 from __future__ import annotations
 
@@ -72,12 +116,19 @@ class RetryMessageStub:
     """Message stub that fails once with a transient Discord error."""
 
     def __init__(self) -> None:
-        """Initializes retry records."""
+        """Initializes the recorded edits, and the id the retry helper's warning log reads."""
         self.id = 123
         self.edits: list[dict[str, Any]] = []
 
     async def edit(self, **kwargs: Any) -> RetryMessageStub:  # noqa: ANN401 -- Discord kwargs
-        """Records an edit and fails the first attempt."""
+        """Records an edit, failing the first attempt the way a transient Discord 5xx does.
+
+        Returns:
+            The stub itself, standing in for the message `Message.edit` hands back.
+
+        Raises:
+            _TransientEditError: On the first call only, so exactly one retry is forced.
+        """
         self.edits.append(kwargs)
         if len(self.edits) == 1:
             raise _TransientEditError
@@ -85,7 +136,11 @@ class RetryMessageStub:
 
 
 class _TransientEditError(Exception):
-    """Fake Discord 5xx error for retry tests."""
+    """Fake Discord 5xx error for retry tests.
+
+    Monkeypatched over `DiscordServerError` so the retry helper catches it. `status` is here
+    because the warning it logs before each retry reads one off the error.
+    """
 
     status = 503
 
@@ -124,7 +179,11 @@ class FollowupStub:
         self.sent: list[dict[str, Any]] = []
 
     async def send(self, **kwargs: Any) -> MessageStub:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Records followup sends and returns a fake message."""
+        """Records one followup send.
+
+        Returns:
+            A fresh `MessageStub`, standing in for the message Discord answers a followup with.
+        """
         self.sent.append(kwargs)
         return MessageStub()
 
@@ -135,7 +194,12 @@ class InteractionStub:
     def __init__(
         self, user_id: int = 1, message: MessageStub | None = None, custom_id: str = ""
     ) -> None:
-        """Initializes a callback interaction with user and component data."""
+        """Initializes a callback interaction with its user and the pressed component's id.
+
+        `data` carries that `custom_id` because `DragonGateView.interaction_check` branches on
+        it: the base signature hands the check no item, so the raw payload is the only place the
+        pressed control can be read from.
+        """
         self.user = SimpleNamespace(
             id=user_id,
             name=f"user{user_id}",
@@ -164,18 +228,23 @@ class RiggedRandom(Random):
         self._scripted_choices: Iterator[str] = iter(padded)
 
     def choice(self, seq: SupportsLenAndGetItem[T]) -> T:
-        """Returns the next scripted choice and verifies it belongs to the input."""
+        """Returns the next scripted choice, asserting the caller could have drawn it.
+
+        The assertion catches a script that has drifted out of step with the draws, which
+        otherwise builds a card out of a rank handed back where a suit was asked for.
+        """
         value = next(self._scripted_choices)
         assert value in [seq[index] for index in range(len(seq))]
         return cast("T", value)
 
 
 class JackpotState:
-    """In-memory simulator for jackpot settlement helpers used in view tests.
+    """In-memory stand-in for the jackpot settlement helpers the table settles through.
 
-    Each `settle` call mutates the simulated player balance and jackpot
-    snapshot, lets tests assert the running effect of multiple settlements
-    without spinning up a real database.
+    Models only the three ways the database disagrees with the rules — a loss clamps at the
+    player's balance, a payout claimed against a stale pool generation applies as zero, and a
+    drained seeded pool refills and bumps its generation — plus a log of every call, so a test
+    reads back both what the view asked for and what it was told.
     """
 
     def __init__(
@@ -184,7 +253,11 @@ class JackpotState:
         initial_balance: int = 100_000,
         replenish_seed: int = 100_000,
     ) -> None:
-        """Initializes simulated player balances and jackpot state."""
+        """Initializes the simulated pool, and the wallet each player is lazily seeded with.
+
+        A player's balance is only recorded on their first settlement, so a test wanting a wallet
+        that differs from `initial_balance` writes it into `balances` beforehand.
+        """
         self.jackpot = initial_jackpot
         self.generation = 0
         self.balances: dict[int, int] = {}
@@ -201,7 +274,12 @@ class JackpotState:
         player_avatar_url: str = "",
         expected_jackpot_generation: int | None = None,
     ) -> JackpotSettlementResult:
-        """Mocks `apply_jackpot_settlement` and tracks the call chain."""
+        """Settles one player delta against the simulated pool, recording the call.
+
+        Returns:
+            What the view reads back: `applied_player_delta` falls short of the request when a
+            loss clamped at the player's balance or a stale generation refused a payout.
+        """
         assert game_id == GAME_ID
         self.balances.setdefault(player_id, self.initial_balance)
         starting_balance = self.balances[player_id]
@@ -240,7 +318,12 @@ class JackpotState:
     async def settle_batch(
         self, game_id: str, settlements: Sequence[JackpotSettlementRequest]
     ) -> JackpotSettlementBatchResult:
-        """Mocks `apply_jackpot_settlement_batch` with the same state model."""
+        """Settles a whole batch through `settle`, as the lobby's ante charge does.
+
+        Returns:
+            The combined result. Nothing is ever rejected here, so the test covering a refused
+            ante supplies its own stub instead of this one.
+        """
         player_balances: dict[int, int] = {}
         applied_player_deltas: dict[int, int] = {}
         for settlement in settlements:
@@ -264,7 +347,12 @@ class JackpotState:
 
 
 def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> GameParticipant:
-    """Builds a prepared 射龍門 participant for view tests."""
+    """Builds one seated 射龍門 player, staked at the table ante.
+
+    Returns:
+        The seat. `balance` is only its own record of the starting wallet; the view bounds a bet
+        against the `final_balances` cache it is constructed with.
+    """
     return GameParticipant(
         user_id=user_id,
         account_name=display_name.lower(),
@@ -276,7 +364,12 @@ def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> G
 
 
 def _install_jackpot_mock(monkeypatch: pytest.MonkeyPatch, state: JackpotState) -> None:
-    """Patches jackpot database calls to use an in-memory state model."""
+    """Points the table and the lobby at `state` instead of the economy database.
+
+    Patched once per importing module, since each resolves the imported name from its own globals
+    at call time. `schedule_public_message_delete` is stubbed alongside them so a finalized table
+    leaves no real cleanup task behind.
+    """
     monkeypatch.setattr(
         "discordbot.cogs.games.dragon_gate_views.apply_jackpot_settlement", state.settle
     )
@@ -320,7 +413,12 @@ def _component_rows(view: DragonGateView) -> dict[str, int | None]:
 
 
 def _attached_button(view: DragonGateView, custom_id: str) -> Button[Any]:
-    """Returns an attached button by custom ID."""
+    """Returns the attached button carrying `custom_id`.
+
+    Raises:
+        AssertionError: No such button is attached, which for a presence-based control set means
+            the state under test hid it.
+    """
     for child in view.children:
         if isinstance(child, Button) and child.custom_id == custom_id:
             return child
@@ -328,7 +426,12 @@ def _attached_button(view: DragonGateView, custom_id: str) -> Button[Any]:
 
 
 def _attached_select(view: DragonGateView, custom_id: str) -> StringSelect[Any]:
-    """Returns an attached select menu by custom ID."""
+    """Returns the attached select menu carrying `custom_id`.
+
+    Raises:
+        AssertionError: No such select is attached, which for a presence-based control set means
+            the state under test hid it.
+    """
     for child in view.children:
         if isinstance(child, StringSelect) and child.custom_id == custom_id:
             return child
@@ -344,7 +447,7 @@ def test_card_value_uses_ace_low_and_faces_above_ten() -> None:
 
 
 def test_adjacent_non_pair_pillars_are_redealt_without_counting_turn() -> None:
-    """Adjacent non-pair pillars have no gate and are skipped before betting."""
+    """Adjacent non-pair pillars are redealt, and the redeal costs no turn number."""
     assert has_open_gate(pillars=[Card(rank="4", suit="♠"), Card(rank="3", suit="♥")]) is False
     assert has_open_gate(pillars=[Card(rank="7", suit="♠"), Card(rank="7", suit="♥")]) is True
 
@@ -481,7 +584,7 @@ def test_withdraw_finishes_round_when_last_player_leaves() -> None:
 
 
 def test_withdraw_rejects_non_participant() -> None:
-    """Withdrawing someone not at the table is a programmer error."""
+    """Withdrawing a user who never sat at the table raises instead of passing silently."""
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥")),
         participants=[_participant(user_id=1, display_name="Alice")],
@@ -492,7 +595,7 @@ def test_withdraw_rejects_non_participant() -> None:
 
 
 def test_dragon_gate_embeds_show_lobby_progress_and_final_state() -> None:
-    """Embed builders produce well-formed lobby / progress / final embeds."""
+    """The lobby, in-progress and final embeds all render, the pool as a compact amount."""
     owner = _participant(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     lobby = build_dragon_gate_lobby_embed(
@@ -558,6 +661,7 @@ async def test_edit_message_with_retry_rebuilds_payload_between_attempts(
     assert result is message
     assert sleep_delays == [0.5]
     assert len(payloads) == 2
+    # Each attempt carries the payload built for it, so no File object is ever sent twice.
     # order-contract: the retry helper awaits the failed edit before building the retry payload.
     assert message.edits[0]["files"][0] is payloads[0]
     # order-contract: the successful retry carries the second payload built after that failure.
@@ -609,7 +713,12 @@ async def test_prepare_participant_insufficient_balance_applies_embed_spacer() -
     interaction = InteractionStub(user_id=7)
 
     async def fake_participant_from_user(**_kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Stands in for a balance check that rejects the wager."""
+        """Stands in for the balance check, refusing the seat.
+
+        Returns:
+            A result carrying no participant and a zero balance, the shape the refusal branch
+            of `_prepare_participant` reads.
+        """
         return SimpleNamespace(participant=None, balance=0)
 
     stub_self = SimpleNamespace(_participant_from_user=fake_participant_from_user)
@@ -650,7 +759,11 @@ async def test_dragon_gate_lobby_join_leave_and_owner_start(
     async def refresh_participants(
         participants: list[GameParticipant],
     ) -> RefreshParticipantsResult:
-        """Leaves all participants seated for lobby start."""
+        """Passes every queued seat through untouched.
+
+        Returns:
+            The same participants, so the start path is never gated on a balance re-read.
+        """
         return RefreshParticipantsResult(participants=participants)
 
     view = DragonGateLobbyView(
@@ -711,13 +824,22 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
     async def refresh_participants(
         participants: list[GameParticipant],
     ) -> RefreshParticipantsResult:
-        """Leaves all participants seated for lobby start."""
+        """Passes every queued seat through untouched.
+
+        Returns:
+            The same participants, so the start path is never gated on a balance re-read.
+        """
         return RefreshParticipantsResult(participants=participants)
 
     async def rejected_ante_batch(
         game_id: str, settlements: Sequence[JackpotSettlementRequest]
     ) -> JackpotSettlementBatchResult:
-        """Rejects Bob's ante without mutating the table."""
+        """Rejects Bob's ante without mutating the table.
+
+        Returns:
+            A batch result naming user 2 as rejected, which is how the real helper reports an
+            all-or-nothing debit it could not apply in full.
+        """
         assert game_id == GAME_ID
         assert all(settlement.require_full_debit for settlement in settlements)
         return JackpotSettlementBatchResult(
@@ -762,7 +884,7 @@ async def test_dragon_gate_lobby_ante_rejection_keeps_lobby_open(
 async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bet calls apply_jackpot_settlement and updates the live snapshot."""
+    """A direction press then a bet settles at once and moves the table's pool snapshot."""
     owner = _participant(user_id=1, display_name="Alice")
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("7", "♠", "7", "♥", "8", "♣")), participants=[owner]
@@ -846,7 +968,7 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
 async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A player whose balance is below the minimum bet cannot win above wallet risk."""
+    """A wallet under the table minimum leaves no legal bet, so betting is hidden and refused."""
     owner = _participant(user_id=1, display_name="Alice", balance=15)
     round_state = DragonGateRound.from_participants(
         rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=[owner]
@@ -1208,7 +1330,7 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
 async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Only the active player can bet; the leave button is open to all seated."""
+    """Only the active player may bet, any seat may leave, and unparsable text settles nothing."""
     alice = _participant(user_id=1, display_name="Alice")
     bob = _participant(user_id=2, display_name="Bob")
     round_state = DragonGateRound.from_participants(

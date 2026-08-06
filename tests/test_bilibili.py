@@ -1,4 +1,26 @@
-"""Tests for the Bilibili video URL regex."""
+"""Pins `BILIBILI_URL_RE`, the shape test deciding whether a message names a Bilibili video.
+
+The regex is the whole admission gate. The Bilibili link source registers no `url_filter` (unlike
+Douyin, whose regex matches the host and needs a second check for the path), so what this matches
+is what `gen_reply` may hand to yt-dlp. It is also how the builder recognises a `b23.tv` link that
+resolved somewhere else: `link_sources/bilibili.py` re-matches it against the canonical URL of a
+playlist-shaped result and injects its neutral notice when it fails. Widening the regex therefore
+costs twice — a non-video surface would be admitted here AND slip past that guard, putting some
+other video's metadata in front of the model under the user's link.
+
+Three things are pinned. What must match: `/video/` pages under every host form Bilibili answers
+on (`www.`, `m.`, bare, either scheme), BV and av ids alike, with or without a trailing slash or a
+query tail, plus the `b23.tv` links the mobile share button copies. Where a match ends: chat
+writes a URL flush against Chinese punctuation, and a tail greedy enough to swallow `。` would
+send yt-dlp a URL nobody linked. What must never match: Bilibili's non-video surfaces, a host that
+merely contains `bilibili.com` (the downloader attaches a Bilibili `Referer` only to a real one,
+and this regex is the half that decides such a URL is worth reading at all), and an id of the
+wrong length.
+
+Nothing here fetches anything, which mirrors the regex itself: a match is a claim about shape,
+never about a video existing, being public or being region-available. What the builder does once
+it holds the URL is `tests/test_parse_bilibili.py`.
+"""
 
 import pytest
 
@@ -42,7 +64,8 @@ def test_bilibili_url_re_stops_before_sentence_punctuation() -> None:
 @pytest.mark.parametrize(
     argnames="url",
     argvalues=[
-        # Non-video Bilibili surfaces: no single anonymous-fetchable video behind them.
+        # Non-video Bilibili surfaces: a live room, a profile, a moment, a bangumi episode and
+        # an article are none of them one ordinary video page the builder can read.
         "https://live.bilibili.com/12345",
         "https://space.bilibili.com/672328094",
         "https://t.bilibili.com/1043462527",
@@ -58,5 +81,5 @@ def test_bilibili_url_re_stops_before_sentence_punctuation() -> None:
     ],
 )
 def test_bilibili_url_re_rejects_non_video_and_lookalike_urls(url: str) -> None:
-    """Live rooms, spaces, bangumi, lookalike hosts and malformed ids never match."""
+    """Non-video surfaces, lookalike hosts and malformed ids never match."""
     assert BILIBILI_URL_RE.search(string=url) is None

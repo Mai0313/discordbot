@@ -1,4 +1,40 @@
-"""Tests for Threads URL parsing and media extraction."""
+"""Pins how `utils/threads.py` turns a pasted Threads link into a conversation, with no network.
+
+Two cogs read a post through this one module — `parse_threads` expands a link into embeds and
+`gen_reply` injects the same post as answer context — so a regression here surfaces in a channel
+before anything else notices it. Every fetch is stubbed (`_stub_html`, `_count_fetches`,
+`_stub_share_redirect`, or a fake `requests.get`) and the `downloader` fixture fakes
+`download_media`, so no test reaches Threads or writes outside `tmp_path`.
+
+The page fixtures carry as much weight as the assertions. `_thread_post_payload` is the single
+post builder, and `_quoted_payload` / `_quoted_tombstone` / `_section_header` are shapes built on
+top of it, so a fixture cannot drift from the payload the parser was written against; `_sjs_html`
+then assembles them into one `data-sjs` block the way a real post page serialises the target's
+chain, every reply branch, and the section header between them as siblings.
+
+What the assertions cover:
+
+- **The URL.** `THREADS_URL_RE` has to survive a link written mid-sentence in English or zh/ja
+  text and both shapes that name a post, while `post_code` stays EMPTY for a `share/<code>` link
+  (its code is not the post's and appears nowhere on the page) and `clean_url` aims at
+  `www.threads.com`, the one host that answers without a 301.
+- **Which threads on the page belong to the target.** One page carries the target's chain, its
+  comments, a sibling reply to the target's own parent, recommendations, and — past a `More
+  replies to <user>` header — replies to the post at the TOP of the chain. The header boundary and
+  the "who does this answer" test are separate tells, so each is pinned alone: on a target that is
+  its author's own follow-up, the filler answers the same username the target does.
+- **The quoted post.** It is the subject of a quote post, so the whole payload has to survive one
+  level deep, a gone one has to be reported rather than passed over in silence, and an unparsable
+  one may cost only itself — typing `quoted_post` as a whole `Post` pulls every model here into
+  the validation of the node that also holds the target.
+- **A page that did not answer.** The platform's soft throttle is a 200 carrying no post JSON and
+  is fetched again; a private or deleted post is a full payload that simply lacks the post and is
+  not. Both bounds on that retry loop are pinned separately.
+- **What is published and what is written.** Every post's url is rebuilt from its own author and
+  code, so neither a share code nor an `?xmt=` token — both minted per share — reaches the embeds
+  or the reply prompt; and `parse` downloads the target's video alone and removes it on exit,
+  which is what leaves it otherwise indistinguishable from `parse_metadata`.
+"""
 
 import json
 import shutil
@@ -22,10 +58,19 @@ from discordbot.utils.threads import (
 
 @pytest.fixture
 def downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ThreadsDownloader:
-    """Provides a ThreadsDownloader that fakes media downloads."""
+    """Provides a ThreadsDownloader writing into `tmp_path`, with the media download faked.
+
+    Returns:
+        A downloader whose `download_media` writes a stand-in file instead of fetching, so a test
+        can assert what `parse` wrote to disk without leaving the process.
+    """
 
     def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
-        """Writes fake media bytes and returns the expected output path."""
+        """Writes stand-in bytes where the real download would have.
+
+        Returns:
+            The path written, which is what `_build_output` records in `video_paths`.
+        """
         assert url, "download url should not be empty"
         filepath = Path(self.output_folder) / filename
         filepath.write_bytes(data=b"fake media")
@@ -36,7 +81,7 @@ def downloader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ThreadsDownlo
 
 
 def test_find_post_with_parents_returns_chain_in_order() -> None:
-    """Verifies that finding a post returns the correct chain of parent posts."""
+    """A found post comes back with every earlier item in its thread, ordered oldest first."""
     chain = ThreadData(
         thread_items=[
             ThreadItem(post=Post(code="ROOT")),
@@ -52,7 +97,7 @@ def test_find_post_with_parents_returns_chain_in_order() -> None:
 
 
 def test_find_post_with_parents_no_match() -> None:
-    """Verifies that finding a non-existent post returns None and empty parents."""
+    """A code no item in the thread carries yields neither a post nor any ancestors."""
     chain = ThreadData(thread_items=[ThreadItem(post=Post(code="A"))])
     post, parents = chain.find_post_with_parents(post_code="MISSING")
     assert post is None
@@ -60,7 +105,7 @@ def test_find_post_with_parents_no_match() -> None:
 
 
 def test_find_post_with_parents_root_has_no_parents() -> None:
-    """Verifies that the root post of a thread has no parents."""
+    """The first item of a thread is its root, so nothing precedes it to count as an ancestor."""
     chain = ThreadData(thread_items=[ThreadItem(post=Post(code="ROOT"))])
     post, parents = chain.find_post_with_parents(post_code="ROOT")
     assert post is not None
@@ -68,7 +113,7 @@ def test_find_post_with_parents_root_has_no_parents() -> None:
 
 
 def test_threads_output_mutable_defaults_are_isolated(tmp_path: Path) -> None:
-    """Threads output image and local video path defaults are isolated."""
+    """Filling one post's defaults leaves the next post's empty, media lists included."""
     first = ThreadsOutput()
     second = ThreadsOutput()
 
@@ -94,7 +139,7 @@ def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field
     root_post_username: str = "",
     quoted_attachment_unavailable: bool = False,
 ) -> dict[str, object]:
-    """Returns a minimal Threads post payload with parser-relevant fields.
+    """Builds a minimal Threads post payload carrying every field the parser reads.
 
     `is_reply`, `quotes` and `root_post_username` are the fields of the one real shape Threads
     serialises without a `reply_to_author`: a reply that is also a quote post.
@@ -103,6 +148,10 @@ def _thread_post_payload(  # noqa: PLR0913 -- one knob per parser-relevant field
     reply-admission tests need, since only presence is read there; a dict is a whole nested post
     payload, which is what Threads actually ships and what gets rendered. `_quoted_payload` builds
     one from this same function, so a quoted post cannot drift from a top-level one.
+
+    Returns:
+        The `{"post": {...}}` node a thread item holds, carrying one image rendition unless
+        `video_url` names a clip instead.
     """
     media: dict[str, object] = (
         {"video_versions": [{"url": video_url}]}
@@ -161,10 +210,13 @@ def _quoted_payload(  # noqa: PLR0913 -- passes the post builder's knobs straigh
     quotes: dict[str, object] | str = "",
     root_post_username: str = "",
 ) -> dict[str, object]:
-    """Returns the whole-post payload Threads nests under `share_info.quoted_post`.
+    """Builds the whole-post payload Threads nests under `share_info.quoted_post`.
 
     Built from `_thread_post_payload` on purpose: measured live, a quoted post is a full post
     payload of the same shape as any other, so the fixture should not be free to disagree.
+
+    Returns:
+        The post dict itself, unwrapped from the `{"post": ...}` node that builder returns.
     """
     payload = _thread_post_payload(
         code=code,
@@ -180,11 +232,14 @@ def _quoted_payload(  # noqa: PLR0913 -- passes the post builder's knobs straigh
 
 
 def _quoted_tombstone() -> dict[str, object]:
-    """Returns the placeholder Threads sends in place of a quoted post that is gone.
+    """Builds the placeholder Threads sends in place of a quoted post that is gone.
 
     Measured across 15 of 96 live quote relations: every field null bar `id`, `pk` and a
     `text_post_app_info` carrying only `is_post_unavailable`. No username and no shortcode, so
     there is not even a permalink to rebuild.
+
+    Returns:
+        The tombstone payload, as it sits under `share_info.quoted_post`.
     """
     return {
         "id": "0_0",
@@ -202,7 +257,11 @@ def _quoted_tombstone() -> dict[str, object]:
 
 
 def _section_header(label: str) -> dict[str, object]:
-    """Returns the node Threads inserts between a post's own replies and the filler below."""
+    """Builds the node Threads inserts between a post's own replies and the filler below.
+
+    Returns:
+        A thread node carrying a label and no items, which is what `is_section_header` reads.
+    """
     return {"header": label, "thread_items": [], "thread_type": "header", "id": "0"}
 
 
@@ -213,6 +272,10 @@ def _sjs_html(*threads: list[object] | dict[str, object]) -> str:
     branch under it, and any section header between them are sibling `edges[].node` entries in
     one script block. A plain list becomes a thread node; a dict rides through as-is, which is
     how `_section_header` gets in.
+
+    Returns:
+        One `<script data-sjs>` block wrapped in minimal HTML, which is all `_SJS_PATTERN` looks
+        for.
     """
     payload = {
         "require": [
@@ -244,7 +307,12 @@ def _sjs_html(*threads: list[object] | dict[str, object]) -> str:
 
 
 def _thread_html(post_code: str) -> str:
-    """Builds deterministic Threads SJS HTML for parser tests."""
+    """Builds the smallest page with a chain: a root post plus the target replying to it.
+
+    Returns:
+        Page HTML whose target carries `post_code`, one image and the root as the author it
+        answers.
+    """
     return _sjs_html([
         _thread_post_payload(code="ROOT", username="root_author", text="Root post"),
         _thread_post_payload(
@@ -270,7 +338,7 @@ def _thread_html(post_code: str) -> str:
     ],
 )
 def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies that parsing valid Threads URLs returns expected post data."""
+    """A pasted post URL parses into a target with content, fetched once at its normalised form."""
     threads_url = ThreadsURL(raw_url=url)
     fetched_urls: list[str] = []
 
@@ -351,7 +419,7 @@ def test_threads_url_re_matches_post_links(text: str, expected: str) -> None:
     ],
 )
 def test_threads_url_re_rejects_non_posts(text: str) -> None:
-    """Profile URLs, Instagram URLs, and plain text are not matched as posts."""
+    """Plain text, a profile, another platform and both share-shaped near misses match nothing."""
     assert THREADS_URL_RE.search(string=text) is None
 
 
@@ -414,7 +482,12 @@ def test_threads_url_clean_url_leaves_a_foreign_host_alone() -> None:
 
 
 def _thread_html_with_video(post_code: str) -> str:
-    """Builds Threads SJS HTML whose single target post carries a video rendition."""
+    """Builds a page whose single post is the target and carries a video rendition.
+
+    Returns:
+        Page HTML holding one post, so the video on it is the target's own and nothing else
+        competes for the download.
+    """
     return _sjs_html([
         _thread_post_payload(
             code=post_code,
@@ -428,7 +501,7 @@ def _thread_html_with_video(post_code: str) -> str:
 def test_parse_metadata_returns_chain_without_downloading(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """parse_metadata yields the ordered chain with video URLs but no local files or downloads."""
+    """parse_metadata returns the chain with its video URLs and writes nothing to disk."""
     url = "https://www.threads.com/@root_author/post/TARGET"
     threads_url = ThreadsURL(raw_url=url)
 
@@ -439,7 +512,11 @@ def test_parse_metadata_returns_chain_without_downloading(
         )
 
     def fail_download(self: ThreadsDownloader, url: str, filename: str) -> None:
-        """Fails loudly if the metadata path ever tries to download media."""
+        """Fails loudly if the metadata path ever tries to download media.
+
+        Raises:
+            AssertionError: Always, since reaching this stub is the failure being pinned.
+        """
         raise AssertionError("parse_metadata must not download media")
 
     monkeypatch.setattr(target=ThreadsDownloader, name="_fetch_page", value=fake_fetch_page)
@@ -462,6 +539,10 @@ def _thread_html_with_replies() -> str:
 
     A real post page serialises all of these into one block, so the parser has to tell them
     apart by who each thread's first post answers.
+
+    Returns:
+        Page HTML holding the target's chain, two comment branches, a sibling reply and a
+        recommendation, in that page order.
     """
     return _sjs_html(
         # The chain ending at the target.
@@ -614,6 +695,10 @@ def _quote_reply_html(
     Measured against the live page for `@chengweilai2/post/DZZImVsCWU-`: the branch holding
     `DZiDgrkCeNt` comes back `is_reply: true` with `reply_to_author: null`, a populated
     `share_info.quoted_post`, and `root_post_author` naming the thread's root author.
+
+    Returns:
+        Page HTML holding the target's chain and that one quote-post comment, with `extra`
+        appended after it when given.
     """
     threads: list[list[object] | dict[str, object]] = [
         [
@@ -657,7 +742,12 @@ def test_a_quote_post_reply_is_kept_despite_a_null_reply_to_author(
 def _quote_target_html(
     quoted: dict[str, object] | str, quoted_attachment_unavailable: bool = False
 ) -> str:
-    """Builds a page whose TARGET is a quote post, which is what both consumers actually read."""
+    """Builds a page whose TARGET is a quote post, which is what both consumers actually read.
+
+    Returns:
+        Page HTML holding one post, quoting whatever `quoted` describes: a whole nested payload,
+        a bare shortcode, or nothing at all.
+    """
     return _sjs_html([
         _thread_post_payload(
             code="TARGET",
@@ -1007,11 +1097,21 @@ def test_a_page_without_the_post_yields_an_empty_conversation(
 
 
 def _count_fetches(monkeypatch: pytest.MonkeyPatch, pages: list[str]) -> list[str]:
-    """Serves `pages` in order (the last one repeating) and records every fetched URL."""
+    """Serves `pages` in order (the last one repeating) and records every fetched URL.
+
+    Also zeroes the retry delay, so a test of the retry loop does not sleep through it.
+
+    Returns:
+        The list the stub appends to, which grows as the retry loop runs.
+    """
     fetched: list[str] = []
 
     def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
-        """Hands back the page for this attempt."""
+        """Hands back the page for this attempt, as a fetch that no redirect moved.
+
+        Returns:
+            The next page in `pages`, or the last one once they run out.
+        """
         fetched.append(url)
         return FetchedPage(html=pages[min(len(fetched) - 1, len(pages) - 1)], final_url=url)
 
@@ -1091,12 +1191,22 @@ def _stub_share_redirect(
 
     Mirrors the live shape measured on `/share/DfX81RWN8`: the share link answers 302 with the
     canonical post URL, so the fetch of it comes back from somewhere else than it asked for,
-    while a fetch of the canonical URL stays where it was.
+    while a fetch of the canonical URL stays where it was. The retry delay is zeroed too, so a
+    retry after the redirect does not sleep.
+
+    Returns:
+        The list the stub appends to, which is what shows whether a retry walked the share hop
+        again.
     """
     fetched: list[str] = []
 
     def fake_fetch_page(self: ThreadsDownloader, url: str) -> FetchedPage:
-        """Hands back the page for this attempt, moved only when the share URL was asked for."""
+        """Hands back the page for this attempt, moved only when the share URL was asked for.
+
+        Returns:
+            The next page in `pages`, landing on `final_url` for a share URL and where it asked
+            for otherwise.
+        """
         fetched.append(url)
         html = pages[min(len(fetched) - 1, len(pages) - 1)]
         return FetchedPage(html=html, final_url=final_url if "/share/" in url else url)
@@ -1131,7 +1241,11 @@ def test_fetch_page_reports_where_the_request_landed(
     requested: list[str] = []
 
     def fake_get(url: str, **kwargs: object) -> _Response:
-        """Records what was asked for and answers as the redirect chain's last hop."""
+        """Records what was asked for and answers as the redirect chain's last hop.
+
+        Returns:
+            A response reporting `landed` as its url, whatever was requested.
+        """
         del kwargs
         requested.append(url)
         return _Response()
@@ -1353,12 +1467,20 @@ def test_download_media_does_not_rebuild_a_removed_scratch_dir(
             """Accepts the transfer."""
 
         def iter_content(self, chunk_size: int) -> list[bytes]:
-            """Yields one chunk, which the test expects never to be written."""
+            """Hands back a body the test expects never to be written.
+
+            Returns:
+                One chunk, so a download that got this far would leave a file behind.
+            """
             del chunk_size
             return [b"clip"]
 
     def fake_get(**kwargs: object) -> _Response:
-        """Removes the scratch dir the way a cancelled caller's rmtree would."""
+        """Removes the scratch dir the way a cancelled caller's rmtree would.
+
+        Returns:
+            A response whose body is ready to stream into a directory that no longer exists.
+        """
         del kwargs
         shutil.rmtree(path=scratch)
         return _Response()

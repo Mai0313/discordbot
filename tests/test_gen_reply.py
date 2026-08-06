@@ -1,4 +1,50 @@
-"""Tests for AI reply routing, attachment handling, streaming, and regeneration."""
+"""Pins the `gen_reply` reply pipeline end to end: routing, context, streaming, and delivery.
+
+The cog registers no slash command, so every behaviour in it is reachable only through
+`on_message` and only from here. Nothing in this file talks to a provider or to Discord:
+`FakeClient` records what would have been posted to the Responses API, `FakeGeminiVideoClient` /
+`_FakeInteractionsClient` stand in for the direct-to-Google Interactions surface, and the `Fake*`
+Discord objects record replies, edits and reactions instead of calling the gateway. So what the
+assertions read is the REQUEST the pipeline assembled and the message it produced, which is where
+this feature's invariants actually live — an ordering, a gate or a block that is missing from the
+request is a behaviour change no type checker can see.
+
+Roughly in pipeline order:
+
+- **Instructions and routing**: the per-request time and location block wrapping the system prompt
+  (guild id only, never the owner-controlled guild name, since it rides developer authority),
+  `_route_classify`'s decision plus its URL-SUMMARY-to-QA reroute, and the parallel effort grade
+  falling back to `high` on error or grace timeout.
+- **Dispatch**: `on_message` sending each route to its handler, the speculative `ReplyContext`
+  that IMAGE/VIDEO consume rather than discard and SUMMARY rebuilds, the shield that stops a
+  cancelled prep taking the shared upload task with it, and one usage record per turn (named
+  `unrouted` when the failure preceded the router).
+- **Linked-post context**: the `LINK_CONTEXT_SOURCES` registry — which message a source may read
+  its URL from (Threads alone widens to the reply chain), that an unselected link costs no fetch,
+  the ONE shared post-route deadline every selected builder runs against, the timeout notice that
+  replaces a hallucinated "I cannot open this link", and the registry-order splice.
+- **Answer input**: the block order the answer model sees (capability reference first, then server
+  memory, user memory, tone note, history, reference message, current message last) and the
+  YouTube swap of that one turn onto the native Interactions API.
+- **Memory**: the whole read side — the deterministic author / reply-chain / mention set, the
+  optional public-alias selector that may never displace it, the compartment boundary
+  `resolve_user_memories` enforces, the footer crediting the owners actually read, the
+  server-memory read/write gating, and the `on_ready` resume sweep.
+- **Streaming and inline markers**: `ResponseStreamer`'s reasoning preview, throttled edits,
+  2000-character reply chain and deleted-source degradation, plus the `<generate-*>` markers —
+  every one is stripped even when its feature is off, all attachments ride ONE edit, and an
+  oversize clip becomes a hosted URL before it is ever dropped.
+- **Attachments**: the provider-aware handlers (Gemini Files API, OpenAI, Grok, inline), the
+  ACTIVE poll and the adopt-a-pending-upload path, the dead-source TTL, the shared media
+  semaphore, and the render cache's expiry and embed-URL-swap invalidation.
+- **Media routes**: IMAGE and VIDEO — the prompt director and its kill-switch, editing with raw
+  bytes, reference images that must carry a real mime, and the best-effort persona reply that can
+  never cost the delivered media.
+
+A handful of neighbours are pinned here too because gen_reply is their only real caller:
+`ReactionStatusChain`, `USAGE_FOOTER_RE`, `extract_friendly_error`, `music_filename`,
+`speechify_discord_markup`, and `RuntimeModelCatalog`'s peak/off-peak slow-model split.
+"""
 
 from __future__ import annotations
 
@@ -197,7 +243,11 @@ class FakeChannel:
         file: File | None = None,
         files: list[File] | None = None,
     ) -> FakeReply:
-        """Records an unparented channel send (the deleted-source fallback target)."""
+        """Records an unparented channel send (the deleted-source fallback target).
+
+        Returns:
+            The recorded send, which follow-ups then chain off exactly as a real reply would.
+        """
         sent = FakeReply()
         sent.content = content
         sent.embed = embed
@@ -263,7 +313,11 @@ class FakeReply:
                 self.file = files[0]
 
     async def reply(self, content: str, allowed_mentions: object | None = None) -> FakeReply:
-        """Creates and records a follow-up reply in the chain."""
+        """Creates and records a follow-up reply in the chain.
+
+        Returns:
+            The new child reply, so an overflow chain can keep growing off it.
+        """
         if self.reply_error is not None:
             raise self.reply_error
         self.allowed_mentions_seen.append(allowed_mentions)
@@ -328,7 +382,11 @@ class FakeMessage:
         files: list[File] | None = None,
         allowed_mentions: object | None = None,
     ) -> FakeReply:
-        """Creates and records a fake reply with the requested content."""
+        """Creates and records a fake reply with the requested content.
+
+        Returns:
+            The recorded reply, which the streamer then edits in place.
+        """
         del allowed_mentions
         if self.reply_error is not None:
             raise self.reply_error
@@ -435,7 +493,12 @@ class FakeResponses:
         stream: bool = False,
         tools: list[object] | None = None,
     ) -> object:
-        """Records the call; returns a streamed event iterator or non-stream output."""
+        """Records the call and answers it from the queue matching the requested mode.
+
+        Returns:
+            A streamed event iterator when `stream` is set, else a namespace carrying `.output`,
+            `.usage` and `.output_text` the way a non-streaming Response does.
+        """
         del service_tier, extra_headers, extra_body
         self.create_reasonings.append(reasoning)
         self.create_models.append(model)
@@ -475,7 +538,12 @@ class FakeResponses:
         extra_headers: dict[str, str],
         extra_body: dict[str, bool],
     ) -> SimpleNamespace:
-        """Records the model and returns the parsed output for the requested schema."""
+        """Records the model and picks the preset output for the requested schema.
+
+        Returns:
+            A namespace whose `output_parsed` is the effort grade for `EffortGrade` and the route
+            classification otherwise, since one `parse` serves both callers.
+        """
         self.parse_models.append(model)
         self.parse_inputs.append(input)
         if text_format is EffortGrade:
@@ -503,7 +571,11 @@ class FakeImages:
         size: str,
         extra_headers: dict[str, str],
     ) -> SimpleNamespace:
-        """Records an image generation call and returns a tiny PNG."""
+        """Records an image generation call.
+
+        Returns:
+            A response whose single datum carries a base64 one-pixel PNG.
+        """
         del model, n, response_format, quality, size, extra_headers
         self.generate_calls += 1
         self.generate_prompts.append(prompt)
@@ -520,7 +592,11 @@ class FakeImages:
         size: str,
         extra_headers: dict[str, str],
     ) -> SimpleNamespace:
-        """Records an image edit call and returns a tiny PNG."""
+        """Records an image edit call.
+
+        Returns:
+            A response whose single datum carries a base64 one-pixel PNG.
+        """
         del image, model, n, response_format, quality, size, extra_headers
         self.edit_calls += 1
         self.edit_prompts.append(prompt)
@@ -550,7 +626,11 @@ class FakeGeminiVideoClient:
         )
 
     async def _interactions_create(self, **body: object) -> SimpleNamespace:
-        """Records the request body and returns a completed interaction with one output video."""
+        """Records the request body of one omni video interaction.
+
+        Returns:
+            A completed interaction carrying one output video delivered as a Files uri.
+        """
         self.create_inputs.append(body.get("input"))
         self.create_response_formats.append(body.get("response_format"))
         self.create_configs.append(body.get("generation_config"))
@@ -604,7 +684,11 @@ class FakeGeminiFiles:
         self._remaining = 0
 
     def _file(self, name: str, state: FileState) -> SimpleNamespace:
-        """Builds a fake uploaded-file object with the URI the answer references."""
+        """Builds a fake uploaded-file object with the URI the answer references.
+
+        Returns:
+            The file as the Files API reports it, carrying name, uri, state and expiry.
+        """
         return SimpleNamespace(
             name=name,
             uri=f"https://files.test/{name}",
@@ -614,7 +698,11 @@ class FakeGeminiFiles:
         )
 
     async def upload(self, file: BytesIO, config: dict[str, str]) -> SimpleNamespace:
-        """Records an upload and returns a file keyed on its display name."""
+        """Records an upload and arms the processing-to-active schedule.
+
+        Returns:
+            The uploaded file, named after its display name and PROCESSING while rounds remain.
+        """
         del file
         display_name = config["display_name"]
         self.upload_calls.append((display_name, config["mime_type"]))
@@ -661,7 +749,11 @@ class FakeOpenAIFiles:
         expires_after: dict[str, object],
         extra_body: dict[str, object] | None = None,
     ) -> SimpleNamespace:
-        """Records an upload and returns a fake OpenAI file object."""
+        """Records an upload, including the bytes, purpose and expiry the uploader chose.
+
+        Returns:
+            A fake OpenAI file object carrying the preset id, status and expiry.
+        """
         filename, data, content_type = file
         self.create_calls.append((
             filename,
@@ -696,7 +788,11 @@ class FakeXAIFiles:
     async def create(
         self, file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
     ) -> SimpleNamespace:
-        """Records an upload and returns a fake xAI file object."""
+        """Records an upload, including the bytes, purpose and expiry the uploader chose.
+
+        Returns:
+            A fake xAI file object carrying the preset id and expiry.
+        """
         filename, data, content_type = file
         self.create_calls.append((filename, data.read(), content_type, purpose, expires_after))
         return SimpleNamespace(id=self.file_id, expires_at=self.expires_at, purpose=purpose)
@@ -744,10 +840,13 @@ def _png_b64() -> str:
 
 
 def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
-    """A GeminiFileUploader with its lazy Gemini client pre-seeded to a fake.
+    """Builds a GeminiFileUploader with its lazy Gemini client pre-seeded to a fake.
 
     `gemini_client` is a cached_property, so seeding `__dict__` bypasses the real
     factory and the upload path runs against the fake instead.
+
+    Returns:
+        The uploader, wired so no upload ever leaves the test.
     """
     uploader = GeminiFileUploader()
     uploader.__dict__["gemini_client"] = FakeGeminiClient(files=files)
@@ -755,21 +854,34 @@ def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
 
 
 def _fake_openai_uploader(files: FakeOpenAIFiles | None = None) -> OpenAIFileUploader:
-    """An OpenAIFileUploader with its lazy client pre-seeded to a fake."""
+    """Builds an OpenAIFileUploader with its lazy client pre-seeded to a fake.
+
+    Returns:
+        The uploader, wired so no upload ever leaves the test.
+    """
     uploader = OpenAIFileUploader(model_name=TEST_LLM_MODEL)
     uploader.__dict__["client"] = FakeOpenAIClient(files=files)
     return uploader
 
 
 def _fake_grok_uploader(files: FakeXAIFiles | None = None) -> GrokFileUploader:
-    """A GrokFileUploader with its lazy xAI client pre-seeded to a fake."""
+    """Builds a GrokFileUploader with its lazy xAI client pre-seeded to a fake.
+
+    Returns:
+        The uploader, wired so no upload ever leaves the test.
+    """
     uploader = GrokFileUploader()
     uploader.__dict__["xai_client"] = FakeXAIClient(files=files)
     return uploader
 
 
 def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
-    """Builds a ReplyGeneratorCogs instance with a fake client."""
+    """Builds a ReplyGeneratorCogs whose every provider handle is a recorder.
+
+    Returns:
+        The cog, with the Responses, omni and Files-API clients seeded onto their
+        cached_property slots so nothing it does reaches a network.
+    """
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
     cog.runtime_models = RuntimeModelCatalog()
@@ -786,17 +898,29 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
 
 
 def _recorded(cog: ReplyGeneratorCogs) -> FakeClient:
-    """Reads the recorder client back off the cog's typed openai_client slot."""
+    """Reads the recorder client back off the cog's typed openai_client slot.
+
+    Returns:
+        The same FakeClient `_cog` seeded, narrowed so its recorded calls can be asserted on.
+    """
     return cast("FakeClient", cog.openai_client)
 
 
 def _recorded_video(cog: ReplyGeneratorCogs) -> FakeGeminiVideoClient:
-    """Reads the recorder video client back off the cog's typed gemini_client slot."""
+    """Reads the recorder video client back off the cog's typed gemini_client slot.
+
+    Returns:
+        The same FakeGeminiVideoClient `_cog` seeded, narrowed for assertions on the omni body.
+    """
     return cast("FakeGeminiVideoClient", cog.gemini_client)
 
 
 def _config_stub(**flags: object) -> LLMConfig:
-    """Views a namespace carrying just the flags a test toggles as the cog's LLMConfig."""
+    """Views a namespace carrying just the flags a test toggles as the cog's LLMConfig.
+
+    Returns:
+        The namespace, so an unlisted flag raises rather than silently reading its real default.
+    """
     return cast("LLMConfig", SimpleNamespace(**flags))
 
 
@@ -840,14 +964,22 @@ def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test var
 def _att(
     filename: str = "file.txt", content_type: str | None = "text/plain", payload: bytes = b"hello"
 ) -> Attachment:
-    """Builds a FakeAttachment viewed as the nextcord Attachment a renderer expects."""
+    """Builds a FakeAttachment viewed as the nextcord Attachment a renderer expects.
+
+    Returns:
+        The stub, narrowed so a renderer takes it without a real Discord attachment.
+    """
     return cast(
         "Attachment", FakeAttachment(filename=filename, content_type=content_type, payload=payload)
     )
 
 
 async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteClassification:
-    """Classifies a message after building the shared text-only reference/current parts."""
+    """Classifies a message after building the shared text-only reference/current parts.
+
+    Returns:
+        The route the classifier chose for that message.
+    """
     msg = as_message(fake=message)
     reference_messages, current_message = await cog._get_reference_and_current(
         message=msg, text_only=True
@@ -858,7 +990,11 @@ async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteClassifi
 
 
 async def _grade(cog: ReplyGeneratorCogs, message: FakeMessage) -> EffortGrade:
-    """Grades a message's answer effort after building the shared text-only parts."""
+    """Grades a message's answer effort after building the shared text-only parts.
+
+    Returns:
+        The grade the effort model produced for that message.
+    """
     msg = as_message(fake=message)
     reference_messages, current_message = await cog._get_reference_and_current(
         message=msg, text_only=True
@@ -944,7 +1080,12 @@ def test_build_runtime_instructions_names_conversation_location() -> None:
 
 
 def _stream_events() -> AsyncIterator[ResponseStreamEvent]:
-    """Yields a minimal streaming completion with token usage."""
+    """Builds a minimal streaming completion with token usage.
+
+    Returns:
+        An event stream of one text delta plus a completed event, the shape most streamer
+        tests need before they care about anything else.
+    """
     return _stream_events_from(
         events=[
             SimpleNamespace(type="response.output_text.delta", delta="hello from stream"),
@@ -962,10 +1103,13 @@ def _stream_events() -> AsyncIterator[ResponseStreamEvent]:
 
 
 def _stream_events_from(events: list[SimpleNamespace]) -> AsyncIterator[ResponseStreamEvent]:
-    """Yields the provided fake streaming events in order.
+    """Wraps a list of fake streaming events as the stream the streamer consumes.
 
     Typed as the SDK stream union: production discriminates on the `.type` string, so
     fabricated SimpleNamespace events stand in for the real stream events.
+
+    Returns:
+        An async iterator yielding the events in order.
     """
 
     async def _iter() -> AsyncIterator[SimpleNamespace]:
@@ -976,12 +1120,20 @@ def _stream_events_from(events: list[SimpleNamespace]) -> AsyncIterator[Response
 
 
 def _text_event(delta: str) -> SimpleNamespace:
-    """Builds a fake text-delta streaming event."""
+    """Builds a fake text-delta streaming event.
+
+    Returns:
+        The event, discriminated by the `.type` string production reads.
+    """
     return SimpleNamespace(type="response.output_text.delta", delta=delta)
 
 
 def _completed_event(input_tokens: int, output_tokens: int) -> SimpleNamespace:
-    """Builds a fake response.completed event carrying token usage."""
+    """Builds a fake response.completed event carrying token usage.
+
+    Returns:
+        The event, which is what makes the usage footer render.
+    """
     return SimpleNamespace(
         type="response.completed",
         response=SimpleNamespace(
@@ -994,17 +1146,29 @@ def _completed_event(input_tokens: int, output_tokens: int) -> SimpleNamespace:
 def _function_call_item(
     call_id: str, arguments: str, name: str = "get_user_memory"
 ) -> SimpleNamespace:
-    """Builds a fake non-streaming `.output` function-call item for the selection phase."""
+    """Builds a fake non-streaming `.output` function-call item for the selection phase.
+
+    Returns:
+        The item, standing in for the selector asking to read a user's memory.
+    """
     return SimpleNamespace(type="function_call", name=name, call_id=call_id, arguments=arguments)
 
 
 def _default_turn_events() -> list[SimpleNamespace]:
-    """A minimal single-turn stream: one text delta and a completed event."""
+    """Builds a minimal single-turn stream: one text delta and a completed event.
+
+    Returns:
+        The event list `FakeResponses.create` falls back to when no stream was queued.
+    """
     return [_text_event(delta="done"), _completed_event(input_tokens=1, output_tokens=1)]
 
 
 async def _ready_reply_context() -> ReplyContext:
-    """An empty reply context for directly exercising `_handle_image_reply`."""
+    """Stands in for the speculative context task the media routes await.
+
+    Returns:
+        An empty ReplyContext, so a media test drives the handler without the memory path.
+    """
     return ReplyContext()
 
 
@@ -1065,7 +1229,11 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
 
 
 def _deleted_source_error() -> nextcord.HTTPException:
-    """Builds the Discord 400 50035 raised when replying to a since-deleted source."""
+    """Builds the Discord 400 50035 raised when replying to a since-deleted source.
+
+    Returns:
+        The exception, for a fake to raise out of `reply` or `edit`.
+    """
     return nextcord.HTTPException(
         cast("ClientResponse", SimpleNamespace(status=400, reason="Bad Request")),
         {"code": 50035, "message": "Invalid Form Body"},
@@ -1073,7 +1241,11 @@ def _deleted_source_error() -> nextcord.HTTPException:
 
 
 def _unknown_message_notfound() -> nextcord.NotFound:
-    """Builds the 404 10008 a deleted source can raise on some Discord paths."""
+    """Builds the 404 10008 a deleted source can raise on some Discord paths.
+
+    Returns:
+        The exception, for a fake to raise out of `reply` or `edit`.
+    """
     return nextcord.NotFound(
         cast("ClientResponse", SimpleNamespace(status=404, reason="Not Found")),
         {"code": 10008, "message": "Unknown Message"},
@@ -1196,13 +1368,21 @@ class _FakeVoiceGenerator:
         self.calls: list[dict[str, str]] = []
 
     async def generate(self, *, text: str, end_user_id: str) -> VoiceClip:
-        """Records the spoken-text request and returns the preset VoiceClip."""
+        """Records the spoken-text request.
+
+        Returns:
+            The preset clip, whose outcome decides which hint the streamer leaves.
+        """
         self.calls.append({"text": text, "end_user_id": end_user_id})
         return VoiceClip(audio=self.audio, outcome=self.outcome)
 
 
 def _voice_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply wraps one segment in <generate-voice> tags."""
+    """Builds a single-turn stream whose reply wraps one segment in <generate-voice> tags.
+
+    Returns:
+        The event list, with the tagged span deliberately between two untagged ones.
+    """
     return [
         _text_event(delta="閉嘴啦白痴 "),
         _text_event(delta="<generate-voice>嗆爆你</generate-voice>"),
@@ -1356,7 +1536,11 @@ async def test_voice_too_big_without_hosting_drops_with_hint(economy_isolated_db
 
 
 def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
-    """Builds a real media-hosting service writing into a temp serve dir for streamer tests."""
+    """Builds a real media-hosting service writing into a temp serve dir for streamer tests.
+
+    Returns:
+        The service, enabled and pointed at `serve_dir` so an oversize item is really hosted.
+    """
     return MediaHostingService(
         config=make_media_hosting_config(
             enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
@@ -1571,7 +1755,11 @@ def test_speechify_discord_markup_rewrites_and_drops() -> None:
 
 
 def _voice_marker_mention_events() -> list[SimpleNamespace]:
-    """A stream whose <generate-voice> segment contains a raw user mention."""
+    """Builds a stream whose <generate-voice> segment contains a raw user mention.
+
+    Returns:
+        The event list, so the spoken text and the visible text can be compared.
+    """
     return [
         _text_event(delta="<generate-voice>嗆爆 <@239270225441193986></generate-voice>"),
         _completed_event(input_tokens=3, output_tokens=4),
@@ -1633,14 +1821,22 @@ class _FakeImageGenerator:
     async def generate(
         self, *, user_prompt: str, end_user_id: str, image_bytes_list: list[bytes] | None = None
     ) -> bytes | None:
-        """Records the description request (and any edit source bytes) and returns the image."""
+        """Records the description request and any edit source bytes.
+
+        Returns:
+            The preset PNG bytes, or None to drive the failed-render hint.
+        """
         self.calls.append({"user_prompt": user_prompt, "end_user_id": end_user_id})
         self.image_bytes_lists.append(image_bytes_list)
         return self.image
 
 
 def _image_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply wraps an <generate-image> description."""
+    """Builds a single-turn stream whose reply wraps an <generate-image> description.
+
+    Returns:
+        The event list, with visible text before the block so the strip can be checked.
+    """
     return [
         _text_event(delta="這是你要的圖 "),
         _text_event(delta="<generate-image>a cute black cat</generate-image>"),
@@ -1683,7 +1879,11 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes(
     generator = _FakeImageGenerator()
 
     async def _load(*, message: object) -> list[tuple[bytes, str]]:
-        """Stands in for the input builder loading the message's uploaded image (bytes, mime)."""
+        """Stands in for the input builder loading the message's uploaded image.
+
+        Returns:
+            One (bytes, mime) pair, the shape both marker paths expect.
+        """
         del message
         return [(b"uploaded-bytes", "image/png")]
 
@@ -1825,13 +2025,21 @@ class _FakeMusicGenerator:
         self.calls: list[str] = []
 
     async def generate(self, *, user_prompt: str) -> MusicClip | None:
-        """Records the music description request and returns the preset clip."""
+        """Records the music description request.
+
+        Returns:
+            The preset clip, or None to drive the failed-render hint.
+        """
         self.calls.append(user_prompt)
         return self.clip
 
 
 def _music_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply wraps a <generate-music> description."""
+    """Builds a single-turn stream whose reply wraps a <generate-music> description.
+
+    Returns:
+        The event list, with visible text before the block so the strip can be checked.
+    """
     return [
         _text_event(delta="這首給你 "),
         _text_event(delta="<generate-music>upbeat anime J-pop, female vocals</generate-music>"),
@@ -1934,6 +2142,8 @@ async def test_music_generator_drops_clip_on_bad_audio_payload() -> None:
     """A non-decodable audio payload returns None instead of raising into the attach gather."""
 
     class _Interactions:
+        """Stands in for the Lyria Interactions resource."""
+
         async def create(self, **kwargs: object) -> SimpleNamespace:
             """Returns an interaction whose audio data cannot be base64-decoded."""
             del kwargs
@@ -1965,14 +2175,22 @@ class _FakeVideoGenerator:
     async def generate(
         self, *, user_prompt: str, reference_image_sources: list[tuple[bytes, str]] | None = None
     ) -> bytes | None:
-        """Records the description request (and any reference source images) and returns the clip."""
+        """Records the description request and any reference source images.
+
+        Returns:
+            The preset MP4 bytes, or None to drive the failed-render hint.
+        """
         self.calls.append(user_prompt)
         self.reference_sources.append(reference_image_sources)
         return self.video
 
 
 def _video_marker_events() -> list[SimpleNamespace]:
-    """A single-turn stream whose reply wraps a <generate-video> description."""
+    """Builds a single-turn stream whose reply wraps a <generate-video> description.
+
+    Returns:
+        The event list, with visible text before the block so the strip can be checked.
+    """
     return [
         _text_event(delta="幫你動起來 "),
         _text_event(delta="<generate-video>a wave crashing on rocks at sunset</generate-video>"),
@@ -2011,7 +2229,11 @@ async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db
     generator = _FakeVideoGenerator()
 
     async def _load(*, message: object) -> list[tuple[bytes, str]]:
-        """Stands in for the input builder loading the message's uploaded image (bytes, mime)."""
+        """Stands in for the input builder loading the message's uploaded image.
+
+        Returns:
+            One (bytes, mime) pair, the shape both marker paths expect.
+        """
         del message
         return [(b"uploaded-bytes", "image/png")]
 
@@ -2102,8 +2324,14 @@ async def test_video_generator_drops_clip_on_provider_error() -> None:
     """A provider error from render returns None instead of raising into the attach gather."""
 
     class _Interactions:
+        """Stands in for the omni Interactions resource."""
+
         async def create(self, **kwargs: object) -> object:
-            """Raises as if the omni Interactions call failed."""
+            """Fails the way an omni outage would.
+
+            Raises:
+                RuntimeError: Always, so `generate` has a provider error to swallow.
+            """
             del kwargs
             raise RuntimeError("omni unavailable")
 
@@ -2136,7 +2364,11 @@ class _FakeSpeech:
         self.calls: list[dict[str, Any]] = []
 
     async def create(self, **kwargs: object) -> _FakeSpeechResponse:
-        """Records the call and returns the preset response or raises the preset error."""
+        """Records the call, raising the preset error first when one was configured.
+
+        Returns:
+            A binary-response stand-in over the preset audio bytes.
+        """
         self.calls.append(kwargs)
         if self.error is not None:
             raise self.error
@@ -2144,7 +2376,11 @@ class _FakeSpeech:
 
 
 def _fake_audio_client(speech: _FakeSpeech) -> SimpleNamespace:
-    """A minimal AsyncOpenAI stand-in exposing client.audio.speech.create."""
+    """Builds a minimal AsyncOpenAI stand-in exposing client.audio.speech.create.
+
+    Returns:
+        The namespace VoiceGenerator calls straight through.
+    """
     return SimpleNamespace(audio=SimpleNamespace(speech=speech))
 
 
@@ -2328,7 +2564,11 @@ class _FakeInteractionsResource:
         tools: list[object],
         stream: bool,
     ) -> AsyncIterator[ResponseStreamEvent]:
-        """Records the call and returns the fake Interactions event stream."""
+        """Records the model, system instruction, input and generation config of one call.
+
+        Returns:
+            The fake Interactions event stream, so the adapter and streamer run unchanged.
+        """
         del environment, tools, stream
         self.calls.append(
             SimpleNamespace(
@@ -2351,7 +2591,11 @@ class _FakeInteractionsClient:
 
 
 def _interactions_turn_events() -> list[SimpleNamespace]:
-    """A minimal Interactions turn: created, one text delta, completed with usage."""
+    """Builds a minimal Interactions turn: created, one text delta, completed with usage.
+
+    Returns:
+        The event list, whose `event_type` names differ from the Responses stream's `type`.
+    """
     return [
         SimpleNamespace(
             event_type="interaction.created", interaction=SimpleNamespace(model=TEST_LLM_MODEL)
@@ -2592,7 +2836,11 @@ def test_find_youtube_url_skips_captioned_forward_embed(monkeypatch: pytest.Monk
 
 
 def _link_source(name: str) -> LinkContextSource:
-    """The live registry entry for one linked-content source, so the tests pin the real wiring."""
+    """Looks one linked-content source up in the live registry, so the tests pin real wiring.
+
+    Returns:
+        The `LinkContextSource` descriptor registered under that name.
+    """
     return next(source for source in LINK_CONTEXT_SOURCES if source.name == name)
 
 
@@ -2750,7 +2998,11 @@ def test_link_url_for_source_reads_a_forwarded_link_in_the_replied_to_message(
 
 
 def _media_builder() -> MessageInputBuilder:
-    """A MessageInputBuilder wired with a fake Gemini client for media-path tests."""
+    """Builds a MessageInputBuilder wired with a fake Gemini client for media-path tests.
+
+    Returns:
+        The builder, whose bot user id is 999 so the bot's own attachments can be spotted.
+    """
     return MessageInputBuilder(
         bot=SimpleNamespace(user=SimpleNamespace(id=999, name="bot")),
         runtime_models=RuntimeModelCatalog(),
@@ -3572,7 +3824,7 @@ async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
 
 
 async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies route, video, image, and slow-reply handlers using fake APIs."""
+    """Routing plus the video, image and slow-reply handlers each produce their own deliverable."""
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
@@ -3639,7 +3891,11 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             self.message = message
 
         async def stream(self, *, responses: object) -> str:
-            """Records the message and returns placeholder content."""
+            """Records the message the cog handed the streamer.
+
+            Returns:
+                Placeholder reply content.
+            """
             del responses
             streamed.append(self.message)
             return "done"
@@ -3722,7 +3978,11 @@ async def test_text_only_render_degrades_when_modality_lookup_fails(
     cog = _cog()
 
     def boom(model_name: str) -> set[str]:
-        """Simulates the LiteLLM model-info fetch failing on a cold cache."""
+        """Simulates the LiteLLM model-info fetch failing on a cold cache.
+
+        Raises:
+            RuntimeError: Always, standing in for an unreachable model-info endpoint.
+        """
         del model_name
         raise RuntimeError("model info unreachable")
 
@@ -3792,7 +4052,11 @@ async def test_prompt_generator_error_falls_back_to_raw() -> None:
     client = FakeClient()
 
     async def _boom(*args: object, **kwargs: object) -> object:
-        """Fails the director call."""
+        """Fails the director call.
+
+        Raises:
+            RuntimeError: Always, so `refine` has an error to fall back from.
+        """
         del args, kwargs
         raise RuntimeError("director boom")
 
@@ -3904,7 +4168,11 @@ async def test_handle_image_reply_injects_only_user_memory() -> None:
     )
 
     async def _ready() -> ReplyContext:
-        """Hands the prepared context to the handler."""
+        """Stands in for the speculative context task.
+
+        Returns:
+            The context built above, carrying the three marker blocks.
+        """
         return context
 
     await cog._handle_image_reply(
@@ -3938,7 +4206,11 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
             del kwargs
 
         async def stream(self, *, responses: object) -> str:
-            """Simulates a streaming failure after the image is already delivered."""
+            """Simulates a streaming failure after the image is already delivered.
+
+            Raises:
+                RuntimeError: Always, so the best-effort persona path is exercised.
+            """
             del responses
             raise RuntimeError("stream boom")
 
@@ -4005,7 +4277,11 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
             del kwargs
 
         async def stream(self, *, responses: object) -> str:
-            """Fails after the persona base has been created."""
+            """Fails after the persona base has been created.
+
+            Raises:
+                RuntimeError: Always, leaving a bare base message to be cleaned up.
+            """
             del responses
             raise RuntimeError("stream boom")
 
@@ -4201,7 +4477,14 @@ async def test_download_output_video_retries_until_ready(monkeypatch: pytest.Mon
     calls = {"n": 0}
 
     async def flaky_download(*, file: object) -> bytes:
-        """Fails the first download (file not yet servable), then succeeds."""
+        """Fails the first download (file not yet servable), then succeeds.
+
+        Returns:
+            The finished MP4 bytes, from the second attempt onward.
+
+        Raises:
+            RuntimeError: On the first call only, as a still-finalizing file does.
+        """
         del file
         calls["n"] += 1
         if calls["n"] == 1:
@@ -4387,7 +4670,11 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
-        """Records context requests while staying off the memory and history paths."""
+        """Records the history depth and memory flag each context request asked for.
+
+        Returns:
+            The one shared context object, so the dispatch can be asserted to pass it through.
+        """
         del message, parts_task, text_parts, route_done
         prep_requests.append((history_limit, memory_enabled))
         return prepared_context
@@ -4395,7 +4682,11 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     async def fake_reaction(
         message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
     ) -> str:
-        """Records reaction state transitions."""
+        """Records reaction state transitions.
+
+        Returns:
+            The emoji just set, which the chain carries forward as `previous`.
+        """
         calls.append(f"reaction:{emoji}")
         return emoji
 
@@ -4501,7 +4792,11 @@ async def test_prepare_reply_context_shields_shared_parts_task(
     release = asyncio.Event()
 
     async def slow_parts() -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
-        """Stands in for an upload still activating when the route is decided."""
+        """Stands in for an upload still activating when the route is decided.
+
+        Returns:
+            Empty reference and current parts, once the test releases it.
+        """
         await release.wait()
         return ([], [])
 
@@ -4539,7 +4834,7 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 async def test_gen_reply_on_message_early_returns_and_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verifies bot messages, unmentioned guild messages, empty prompts, and errors."""
+    """Each way on_message ends early: ignored, bare `?`, error embed, and an orphaned send."""
     cog = _cog()
     bot_authored = FakeMessage(content="<@999> hi", author=FakeAuthor(bot=True))
     await cog.on_message(message=as_message(fake=bot_authored))
@@ -4557,7 +4852,11 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     async def boom(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> str:
-        """Raises to exercise error handling."""
+        """Raises to exercise error handling.
+
+        Raises:
+            RuntimeError: Always, so the pipeline's outer failure path runs.
+        """
         del reference_messages, current_message
         raise RuntimeError("boom")
 
@@ -4569,7 +4868,11 @@ async def test_gen_reply_on_message_early_returns_and_errors(
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
+        """Keeps the speculative prep off the real memory and history paths.
+
+        Returns:
+            An empty context, so nothing the test asserts on comes from stored memory.
+        """
         del message, history_limit, memory_enabled, parts_task, text_parts, route_done
         return ReplyContext()
 
@@ -4596,7 +4899,11 @@ async def test_a_reply_records_the_route_it_took(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Routes every message to SUMMARY."""
+        """Routes every message to SUMMARY.
+
+        Returns:
+            The fixed SUMMARY classification.
+        """
         del message, reference_messages, current_message
         return RouteClassification(decision="SUMMARY")
 
@@ -4608,7 +4915,11 @@ async def test_a_reply_records_the_route_it_took(
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
+        """Keeps the speculative prep off the real memory and history paths.
+
+        Returns:
+            An empty context, so nothing the test asserts on comes from stored memory.
+        """
         del message, history_limit, memory_enabled, parts_task, text_parts, route_done
         return ReplyContext()
 
@@ -4647,7 +4958,11 @@ async def test_a_failed_reply_records_that_it_never_routed(
     async def boom(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Fails the way a router outage would."""
+        """Fails the way a router outage would.
+
+        Raises:
+            RuntimeError: Always, before any route was decided.
+        """
         del message, reference_messages, current_message
         raise RuntimeError("boom")
 
@@ -4659,7 +4974,11 @@ async def test_a_failed_reply_records_that_it_never_routed(
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
+        """Keeps the speculative prep off the real memory and history paths.
+
+        Returns:
+            An empty context, so nothing the test asserts on comes from stored memory.
+        """
         del message, history_limit, memory_enabled, parts_task, text_parts, route_done
         return ReplyContext()
 
@@ -4674,7 +4993,11 @@ async def test_a_failed_reply_records_that_it_never_routed(
 
 
 def _usage_records(directory: Path) -> list[dict[str, Any]]:
-    """Reads back every usage record written under a directory."""
+    """Reads back every usage record written under a directory.
+
+    Returns:
+        One decoded record per non-blank line, across every month file in name order.
+    """
     return [
         json.loads(line)
         for path in sorted(directory.glob("*.jsonl"))
@@ -4737,7 +5060,11 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
     async def fake_reaction(
         message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
     ) -> str:
-        """Records each scheduled reaction swap."""
+        """Records each scheduled reaction swap.
+
+        Returns:
+            The emoji just set, which the chain carries forward as `previous`.
+        """
         del message, bot_user
         events.append((emoji, previous))
         return emoji
@@ -4766,7 +5093,11 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Routes every message to IMAGE."""
+        """Routes every message to IMAGE.
+
+        Returns:
+            The fixed IMAGE classification, after a yield so the speculative prep task starts.
+        """
         del reference_messages, current_message
         # Yield like a real route I/O call so the speculative prep task starts.
         await asyncio.sleep(0)
@@ -4794,7 +5125,11 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     async def fake_reaction(
         message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
     ) -> str:
-        """Skips real reaction calls."""
+        """Skips real reaction calls.
+
+        Returns:
+            The requested emoji, unchanged.
+        """
         del message, bot_user, previous
         return emoji
 
@@ -4846,13 +5181,22 @@ class _ThreadsStreamer:
 async def _silent_reaction(
     message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
 ) -> str:
-    """Skips real reaction calls during pipeline integration tests."""
+    """Skips real reaction calls during pipeline integration tests.
+
+    Returns:
+        The requested emoji, unchanged.
+    """
     del message, bot_user, previous
     return emoji
 
 
 def _threads_block(body: str = "MOCK THREADS POST BODY") -> list[dict[str, object]]:
-    """Builds a builder-shaped Threads block: the real separator plus a user content message."""
+    """Builds a builder-shaped Threads block: the real separator plus a user content message.
+
+    Returns:
+        The two messages a real builder would return, using the production separator so the
+        block-spotting helpers match on what the pipeline actually splices.
+    """
     return [
         {"role": "system", "content": [{"type": "input_text", "text": THREADS_CONTEXT_SEPARATOR}]},
         {"role": "user", "content": [{"type": "input_text", "text": body}]},
@@ -4860,7 +5204,11 @@ def _threads_block(body: str = "MOCK THREADS POST BODY") -> list[dict[str, objec
 
 
 def _douyin_block(body: str = "MOCK DOUYIN POST BODY") -> list[dict[str, object]]:
-    """Builds a builder-shaped Douyin block: the real separator plus a user content message."""
+    """Builds a builder-shaped Douyin block: the real separator plus a user content message.
+
+    Returns:
+        The two messages a real builder would return, using the production separator.
+    """
     return [
         {"role": "system", "content": [{"type": "input_text", "text": DOUYIN_CONTEXT_SEPARATOR}]},
         {"role": "user", "content": [{"type": "input_text", "text": body}]},
@@ -4868,7 +5216,11 @@ def _douyin_block(body: str = "MOCK DOUYIN POST BODY") -> list[dict[str, object]
 
 
 def _bilibili_block(body: str = "MOCK BILIBILI VIDEO BODY") -> list[dict[str, object]]:
-    """Builds a builder-shaped Bilibili block: the real separator plus a user content message."""
+    """Builds a builder-shaped Bilibili block: the real separator plus a user content message.
+
+    Returns:
+        The two messages a real builder would return, using the production separator.
+    """
     return [
         {
             "role": "system",
@@ -4879,7 +5231,12 @@ def _bilibili_block(body: str = "MOCK BILIBILI VIDEO BODY") -> list[dict[str, ob
 
 
 def _link_config() -> LLMConfig:
-    """The config fields a QA reply carrying a linked post actually reads."""
+    """Builds the config a QA reply carrying a linked post actually reads.
+
+    Returns:
+        A stub carrying exactly those fields, so a link test that starts reading a new one
+        fails loudly instead of picking up a real default.
+    """
     return _config_stub(
         inline_voice_enabled=False,
         inline_image_enabled=False,
@@ -4935,7 +5292,11 @@ async def test_on_message_does_not_start_incidental_link_context(
         gemini_client: object,
         allow_media_ingest: bool | None = None,
     ) -> list[dict[str, object]]:
-        """Records any call so the test proves the network-capable builder never starts."""
+        """Records any call so the test proves the network-capable builder never starts.
+
+        Returns:
+            No messages, since reaching this at all is already the failure.
+        """
         del answer_model_is_gemini, gemini_client, allow_media_ingest
         called.append(url)
         return []
@@ -5017,7 +5378,11 @@ async def test_on_message_reads_a_linked_post_without_a_gemini_key(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records the client it was handed instead of contacting Douyin."""
+        """Records the client it was handed instead of contacting Douyin.
+
+        Returns:
+            The recognizable Douyin block.
+        """
         del url, answer_model_is_gemini, allow_media_ingest
         clients.append(gemini_client)
         return _douyin_block()
@@ -5053,7 +5418,11 @@ async def test_on_message_skips_a_non_post_douyin_link(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records that the builder was reached at all."""
+        """Records that the builder was reached at all.
+
+        Returns:
+            The source's recognizable block, though reaching this is already the failure.
+        """
         del answer_model_is_gemini, gemini_client, allow_media_ingest
         calls.append(url)
         return _douyin_block()
@@ -5091,7 +5460,11 @@ async def test_on_message_douyin_media_ingest_kill_switch(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records the ingestion flag the pipeline computed."""
+        """Records the ingestion flag the pipeline computed.
+
+        Returns:
+            The source's recognizable block, so the answer still carries its text.
+        """
         del url, answer_model_is_gemini, gemini_client
         seen.append(allow_media_ingest)
         return _douyin_block()
@@ -5122,7 +5495,11 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records any call so the test proves routing gates the builder first."""
+        """Records any call so the test proves routing gates the builder first.
+
+        Returns:
+            No messages, since reaching this at all is already the failure.
+        """
         del answer_model_is_gemini, gemini_client, allow_media_ingest
         called.append(url)
         return []
@@ -5130,7 +5507,11 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Selects Douyin while routing the request to the image handler."""
+        """Selects Douyin while routing the request to the image handler.
+
+        Returns:
+            An IMAGE classification that still names the source, so only the route can gate it.
+        """
         del reference_messages, current_message
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE", link_context_sources=["douyin"])
@@ -5171,7 +5552,11 @@ async def test_on_message_douyin_grace_timeout_injects_notice(
     async def slow_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Outlasts the grace so the gate drops it."""
+        """Outlasts the grace so the gate drops it.
+
+        Returns:
+            The source's block, long after the shared deadline stopped waiting for it.
+        """
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         await asyncio.sleep(5)
         return _douyin_block()
@@ -5214,7 +5599,11 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
     ) -> ReplyContext:
-        """Keeps preparation running until after the builder has missed its deadline."""
+        """Keeps preparation running until after the builder has missed its deadline.
+
+        Returns:
+            Whatever the real preparation builds, once the delay has elapsed.
+        """
         await route_done.wait()
         await asyncio.sleep(0.18)
         return await prepare(
@@ -5229,7 +5618,14 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     async def delayed_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Finishes after the shared grace but before the delayed resolver observes it."""
+        """Finishes after the shared grace but before the delayed resolver observes it.
+
+        Returns:
+            The Douyin block, on the path the deadline is expected never to reach.
+
+        Raises:
+            CancelledError: Re-raised after recording the deadline's cancellation.
+        """
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         try:
             await asyncio.sleep(0.14)
@@ -5276,7 +5672,11 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
     ) -> ReplyContext:
-        """Delays resolution beyond the builder deadline without delaying the builder itself."""
+        """Delays resolution beyond the builder deadline without delaying the builder itself.
+
+        Returns:
+            Whatever the real preparation builds, once the delay has elapsed.
+        """
         await route_done.wait()
         await asyncio.sleep(0.18)
         return await prepare(
@@ -5291,7 +5691,11 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     async def immediate_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Completes before preparation consumes the post-route grace."""
+        """Completes before preparation consumes the post-route grace.
+
+        Returns:
+            The Douyin block, which must survive the later resolution.
+        """
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         return _douyin_block()
 
@@ -5337,7 +5741,11 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
     ) -> ReplyContext:
-        """Lets the builder hit its deadline before the resolver starts awaiting it."""
+        """Lets the builder hit its deadline before the resolver starts awaiting it.
+
+        Returns:
+            Whatever the real preparation builds, once the delay has elapsed.
+        """
         await route_done.wait()
         await asyncio.sleep(0.1)
         return await prepare(
@@ -5352,7 +5760,17 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     async def cleanup_bound_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Waits for an explicit cleanup release after its first cancellation."""
+        """Waits for an explicit cleanup release after its first cancellation.
+
+        Holding cleanup open is what lets the test observe that nobody cancels it twice.
+
+        Returns:
+            The Douyin block, on the path the deadline is expected never to reach.
+
+        Raises:
+            CancelledError: Re-raised once the release arrives, or immediately if the wait
+                itself is cancelled (which is the regression this test rules out).
+        """
         nonlocal cancellation_count
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         try:
@@ -5419,7 +5837,11 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
     ) -> ReplyContext:
-        """Lets the builder reach cleanup before the resolver starts waiting on it."""
+        """Lets the builder reach cleanup before the resolver starts waiting on it.
+
+        Returns:
+            Whatever the real preparation builds, once the delay has elapsed.
+        """
         await route_done.wait()
         await asyncio.sleep(0.1)
         return await prepare(
@@ -5434,7 +5856,15 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
     async def cleanup_bound_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Requires one cleanup release after the deadline cancellation."""
+        """Requires one cleanup release after the deadline cancellation.
+
+        Returns:
+            The Douyin block, on the path the deadline is expected never to reach.
+
+        Raises:
+            CancelledError: Re-raised once the release arrives, or immediately if the wait
+                itself is cancelled (which is the regression this test rules out).
+        """
         nonlocal cancellation_count
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         try:
@@ -5485,7 +5915,11 @@ async def test_deadline_bound_task_outer_cancel_before_deadline_cancels_builder(
     builder_cancelled = asyncio.Event()
 
     async def pending_builder() -> None:
-        """Runs until the resolver cancellation owns it."""
+        """Runs until the resolver cancellation owns it.
+
+        Raises:
+            CancelledError: Re-raised after recording that the cancellation arrived.
+        """
         builder_started.set()
         try:
             await asyncio.Event().wait()
@@ -5536,7 +5970,11 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     async def delayed_threads_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object
     ) -> list[dict[str, object]]:
-        """Uses most of the shared budget before the first registry entry resolves."""
+        """Uses most of the shared budget before the first registry entry resolves.
+
+        Returns:
+            The Threads block, too late for the deadline the two builders share.
+        """
         del url, answer_model_is_gemini, gemini_client
         await asyncio.sleep(0.14)
         return _threads_block()
@@ -5544,7 +5982,11 @@ async def test_on_message_selected_link_contexts_share_one_post_route_grace(
     async def delayed_douyin_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Would finish under a second fresh timeout, but not the same shared deadline."""
+        """Would finish under a second fresh timeout, but not the same shared deadline.
+
+        Returns:
+            The Douyin block, which the shared deadline must already have given up on.
+        """
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         await asyncio.sleep(0.22)
         return _douyin_block()
@@ -5693,7 +6135,11 @@ async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records any call so the test can assert the chain never starts one."""
+        """Records any call so the test can assert the chain never starts one.
+
+        Returns:
+            The source's recognizable block, though reaching this is already the failure.
+        """
         del answer_model_is_gemini, gemini_client, allow_media_ingest
         called.append(url)
         return block()
@@ -5724,7 +6170,11 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object
     ) -> list[dict[str, object]]:
-        """Records any call so the test proves routing gates the builder first."""
+        """Records any call so the test proves routing gates the builder first.
+
+        Returns:
+            No messages, since reaching this at all is already the failure.
+        """
         del answer_model_is_gemini, gemini_client
         called.append(url)
         return []
@@ -5732,7 +6182,11 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Selects Threads while routing the request to the image handler."""
+        """Selects Threads while routing the request to the image handler.
+
+        Returns:
+            An IMAGE classification that still names the source, so only the route can gate it.
+        """
         del reference_messages, current_message
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE", link_context_sources=["threads"])
@@ -5770,7 +6224,11 @@ async def test_on_message_skips_threads_context_without_url(
     called: list[str] = []
 
     async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
-        """Records any call so the test can assert it never runs."""
+        """Records any call so the test can assert it never runs.
+
+        Returns:
+            The Threads block, though reaching this is already the failure.
+        """
         del answer_model_is_gemini
         called.append(url)
         return _threads_block()
@@ -5805,7 +6263,11 @@ async def test_on_message_threads_context_grace_timeout_injects_notice(
     async def slow_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object
     ) -> list[dict[str, object]]:
-        """Outlasts the grace so the gate drops it."""
+        """Outlasts the grace so the gate drops it.
+
+        Returns:
+            The source's block, long after the shared deadline stopped waiting for it.
+        """
         del url, answer_model_is_gemini, gemini_client
         await asyncio.sleep(5)
         return _threads_block()
@@ -5887,7 +6349,11 @@ async def test_on_message_skips_a_non_video_bilibili_link(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records that the builder was reached at all."""
+        """Records that the builder was reached at all.
+
+        Returns:
+            The source's recognizable block, though reaching this is already the failure.
+        """
         del answer_model_is_gemini, gemini_client, allow_media_ingest
         calls.append(url)
         return _bilibili_block()
@@ -5925,7 +6391,11 @@ async def test_on_message_bilibili_media_ingest_kill_switch(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records the ingestion flag the pipeline computed."""
+        """Records the ingestion flag the pipeline computed.
+
+        Returns:
+            The source's recognizable block, so the answer still carries its text.
+        """
         del url, answer_model_is_gemini, gemini_client
         seen.append(allow_media_ingest)
         return _bilibili_block()
@@ -5957,7 +6427,11 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records any call so the test proves routing gates the builder first."""
+        """Records any call so the test proves routing gates the builder first.
+
+        Returns:
+            No messages, since reaching this at all is already the failure.
+        """
         del answer_model_is_gemini, gemini_client, allow_media_ingest
         called.append(url)
         return []
@@ -5965,7 +6439,11 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Selects Bilibili while routing the request to the image handler."""
+        """Selects Bilibili while routing the request to the image handler.
+
+        Returns:
+            An IMAGE classification that still names the source, so only the route can gate it.
+        """
         del reference_messages, current_message
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE", link_context_sources=["bilibili"])
@@ -6012,7 +6490,11 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
     async def fake_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Records the client and flag the pipeline computed."""
+        """Records the client and flag the pipeline computed.
+
+        Returns:
+            The Bilibili block, so the answer still carries the video's text.
+        """
         del url, answer_model_is_gemini
         seen.append((gemini_client, allow_media_ingest))
         return _bilibili_block()
@@ -6044,7 +6526,14 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
     async def hanging_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Blocks until cancelled, recording the cancellation."""
+        """Blocks until cancelled, recording the cancellation.
+
+        Returns:
+            No messages, on the path the backstop is expected never to reach.
+
+        Raises:
+            CancelledError: Re-raised after recording that the backstop cancelled it.
+        """
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         try:
             await asyncio.sleep(30)
@@ -6056,7 +6545,11 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Selects Bilibili on QA so its builder starts after routing."""
+        """Selects Bilibili on QA so its builder starts after routing.
+
+        Returns:
+            The QA classification, after a yield so the builder is genuinely in flight.
+        """
         del reference_messages, current_message
         await asyncio.sleep(0)
         return RouteClassification(decision="QA", link_context_sources=["bilibili"])
@@ -6069,7 +6562,11 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
         text_parts: object,
         route_done: asyncio.Event,
     ) -> ReplyContext:
-        """Fails after routing and yields once so the selected builder is in flight."""
+        """Fails after routing and yields once so the selected builder is in flight.
+
+        Raises:
+            RuntimeError: Always, once the builder is genuinely running.
+        """
         del message, history_limit, memory_enabled, parts_task, text_parts
         await route_done.wait()
         await asyncio.sleep(0)
@@ -6106,7 +6603,17 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     async def cleanup_bound_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Waits in cleanup after the deadline sends its first cancellation."""
+        """Waits in cleanup after the deadline sends its first cancellation.
+
+        Holding cleanup open is what lets the test observe that nobody cancels it twice.
+
+        Returns:
+            No messages, on the path the deadline is expected never to reach.
+
+        Raises:
+            CancelledError: Re-raised once the release arrives, or immediately if the wait
+                itself is cancelled (which is the regression this test rules out).
+        """
         nonlocal cancellation_count
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         try:
@@ -6126,7 +6633,11 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Selects Bilibili so the deadline-owned builder starts."""
+        """Selects Bilibili so the deadline-owned builder starts.
+
+        Returns:
+            The QA classification naming that one source.
+        """
         del message, reference_messages, current_message
         return RouteClassification(decision="QA", link_context_sources=["bilibili"])
 
@@ -6138,7 +6649,11 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
         text_parts: object,
         route_done: asyncio.Event,
     ) -> ReplyContext:
-        """Fails while the selected builder still owns its deadline cancellation cleanup."""
+        """Fails while the selected builder still owns its deadline cancellation cleanup.
+
+        Raises:
+            RuntimeError: Always, at the moment the builder has entered cleanup.
+        """
         del message, history_limit, memory_enabled, parts_task, text_parts
         await route_done.wait()
         await cleanup_started.wait()
@@ -6183,7 +6698,11 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
     async def slow_builder(
         *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
     ) -> list[dict[str, object]]:
-        """Outlasts the grace so the gate drops it."""
+        """Outlasts the grace so the gate drops it.
+
+        Returns:
+            The source's block, long after the shared deadline stopped waiting for it.
+        """
         del url, answer_model_is_gemini, gemini_client, allow_media_ingest
         await asyncio.sleep(5)
         return _bilibili_block()
@@ -7476,7 +7995,11 @@ async def test_handle_message_reply_retains_author_memory_when_optional_selectio
     )
 
     async def boom(**kwargs: object) -> object:
-        """Simulates a selection-request failure."""
+        """Simulates a selection-request failure.
+
+        Raises:
+            RuntimeError: Always, so only the optional memory is at risk.
+        """
         del kwargs
         raise RuntimeError("selection provider error")
 
@@ -7837,7 +8360,11 @@ async def test_resolve_effort_defaults_high_on_error() -> None:
     route_done.set()
 
     async def boom() -> EffortGrade:
-        """Fails the grade to exercise the fallback."""
+        """Fails the grade to exercise the fallback.
+
+        Raises:
+            RuntimeError: Always, standing in for a grader outage.
+        """
         raise RuntimeError("boom")
 
     effort_task = asyncio.create_task(coro=boom())
@@ -7859,7 +8386,11 @@ async def test_resolve_effort_defaults_high_on_grace_timeout(
     route_done.set()
 
     async def slow() -> EffortGrade:
-        """Outlives the grace window."""
+        """Outlives the grace window.
+
+        Returns:
+            A non-default grade, on the path the grace is expected never to reach.
+        """
         await asyncio.sleep(30)
         return EffortGrade(effort="low")
 
@@ -7882,7 +8413,11 @@ async def test_on_message_cancels_effort_task_on_image_route(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Routes every message to IMAGE after yielding so the effort task starts."""
+        """Routes every message to IMAGE after yielding so the effort task starts.
+
+        Returns:
+            The fixed IMAGE classification.
+        """
         del reference_messages, current_message
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE")
@@ -7890,7 +8425,14 @@ async def test_on_message_cancels_effort_task_on_image_route(
     async def fake_grade(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> EffortGrade:
-        """Blocks until cancelled, recording the cancellation."""
+        """Blocks until cancelled, recording the cancellation.
+
+        Returns:
+            A grade, on the path the IMAGE route is expected never to reach.
+
+        Raises:
+            CancelledError: Re-raised after recording that the route cancelled it.
+        """
         del message, reference_messages, current_message
         try:
             await asyncio.sleep(30)
@@ -7907,7 +8449,11 @@ async def test_on_message_cancels_effort_task_on_image_route(
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
+        """Keeps the speculative prep off the real memory and history paths.
+
+        Returns:
+            An empty context, so nothing the test asserts on comes from stored memory.
+        """
         del message, history_limit, memory_enabled, parts_task, text_parts, route_done
         return ReplyContext()
 
@@ -7918,7 +8464,11 @@ async def test_on_message_cancels_effort_task_on_image_route(
     async def fake_reaction(
         message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
     ) -> str:
-        """Skips real reaction calls."""
+        """Skips real reaction calls.
+
+        Returns:
+            The requested emoji, unchanged.
+        """
         del message, bot_user, previous
         return emoji
 
@@ -8036,7 +8586,12 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     async def fake_render_image(
         self: object, source: object, cache_key: object, allow_dead_cache: bool = False
     ) -> tuple[dict[str, str], datetime]:
-        """Records each rendered source instead of hitting the network."""
+        """Records each rendered source instead of hitting the network.
+
+        Returns:
+            An image part echoing the source URL, plus a far-future expiry so only the
+            cache key, never expiry, can force a re-render.
+        """
         del self, cache_key, allow_dead_cache
         rendered_urls.append(str(source))
         return {"type": "input_image", "image_url": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
@@ -8047,7 +8602,11 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     )
 
     def _embed(url: str) -> SimpleNamespace:
-        """Builds a fake embed whose image carries a swappable proxy URL."""
+        """Builds a fake embed whose image carries a swappable proxy URL.
+
+        Returns:
+            The embed stub, with `proxy_url` and `url` both pointing at `url`.
+        """
         return SimpleNamespace(image=SimpleNamespace(proxy_url=url, url=url), thumbnail=None)
 
     message.embeds = [cast("Embed", _embed("https://media.test/a.png"))]
@@ -8065,7 +8624,14 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
 async def _prepare_context_with_hanging_selection(
     cog: ReplyGeneratorCogs, message: FakeMessage, monkeypatch: pytest.MonkeyPatch
 ) -> ReplyContext:
-    """Builds reply context where an optional alias selection exceeds its grace."""
+    """Builds reply context where an optional alias selection exceeds its grace.
+
+    Seeds a nickname-table member so an optional candidate exists at all, then hangs the
+    selector: the route is already done, so it gets only the shortened grace.
+
+    Returns:
+        The context, carrying whatever survived the selector timing out.
+    """
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.MEMORY_SELECT_GRACE_SECONDS", 0.01)
     _seed_fact(
         scope=server_scope(server_id=1),
@@ -8188,6 +8754,7 @@ async def test_deterministic_memory_lookup_skips_locked_author_memory(
 
 
 def test_can_launch_research_requires_guild_text_channel() -> None:
+    """Only a guild text channel can host a research thread, so only it may offer the marker."""
     text = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.TextChannel))
     assert _can_launch_research(message=as_message(fake=text)) is True
     thread = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.Thread))
@@ -8237,12 +8804,19 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     swept: list[str] = []
 
     async def fake_list() -> list[memory_db.MemoryJob]:
+        """Stands in for the persisted resumable-job read.
+
+        Returns:
+            The two seeded jobs, one per flavor.
+        """
         return jobs
 
     def fake_resume(**kwargs: object) -> None:
+        """Records the arguments each re-enqueued phase-1 job was resumed with."""
         resumed.append(kwargs)
 
     async def fake_consolidate(scope: str, extractor: object, identity: str) -> None:
+        """Records which scopes the startup sweep consolidated."""
         swept.append(scope)
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.safe_list_resumable", fake_list)
@@ -8283,6 +8857,7 @@ async def test_on_ready_resume_runs_once(
     calls = 0
 
     async def fake_resume_memory() -> None:
+        """Counts how many times the guarded resume actually ran."""
         nonlocal calls
         calls += 1
 

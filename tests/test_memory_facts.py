@@ -1,8 +1,37 @@
 """Tests for the compartment store, the fact file format, and delta application.
 
-These pin the mechanisms the directory boundary rests on: which directories a reading
-context may open, that a fact file round-trips, that a delta batch cannot widen a fact's
-reach or wipe a scope, and that aging is deterministic now that the dates are code-stamped.
+Four modules meet in this file, and the seam between them is the privacy boundary itself:
+`services/memory/facts.py` (the one-fact-per-file format, the code-minted id, the rendered
+Traditional Chinese document), `services/memory/store.py` (every read and write of that
+layout, plus scope discovery and the render cache), `services/memory/deltas.py`
+(partitioning a raw batch, applying a consolidation's deltas, aging what survives), and
+`cogs/gen_reply/memory_tool.py` (which directories a reading context may open, and the
+`## 成員稱呼` allowlist parsed back out of the rendered document).
+
+What it pins, and why each is worth a test:
+
+* **The boundary is a path join, so a wrong compartment list fails silently.** A guild read
+  opens `global/` plus that one guild, a group DM and a third party inside a DM get
+  `global/` alone, and the owner's own DM opens everything. Nothing filters content at read
+  time any more, so there is no second line of defence behind the directory list.
+* **Routing into those directories is deterministic code**, off the `- sharing:` and
+  `- source:` fields code itself stamped, and a `source_only` observation with no usable
+  source falls back to the owner's own DM rather than to `global`. Tone evidence is the
+  deliberate exception and has to keep seeing the whole batch.
+* **The file format round-trips and its provenance is code-owned.** The id is minted from
+  the compartment plus the summary and is also the filename, so conversation content must
+  never reach it; a body may carry colons and fences; and a file whose stored compartment
+  disagrees with its directory is refused rather than guessed at.
+* **A bad delta is dropped, never the batch.** Rejecting a batch on a deterministic content
+  check would freeze the scope permanently, so only a mass deletion refuses — and the
+  regeneration path is exempt, since replacing the whole set is what it exists for.
+* **Aging is arithmetic** now that `last_confirmed` is stamped: a `recent` fact expires on
+  its TTL, a `stable` one is displaced only by fresher facts in its own compartment, and the
+  `permanent` section never ages however its durability was filled in.
+
+Anything reaching the filesystem takes `memory_isolated_dir`, which also resets the render
+cache and the per-scope write counter it is keyed on (both otherwise live for the whole
+process); the format, id-minting and routing tests are pure and take nothing.
 """
 
 from typing import cast
@@ -74,7 +103,11 @@ def _fact(  # noqa: PLR0913 -- test helper mirrors the stored fact's own fields
     subject_id: int | None = None,
     keys: tuple[str, ...] = (),
 ) -> MemoryFact:
-    """Builds a stored fact with the boilerplate filled in."""
+    """Builds a stored fact with the boilerplate filled in.
+
+    Returns:
+        The fact, with `node_type` derived from `section` exactly as the store derives it.
+    """
     return MemoryFact(
         fact_id=fact_id,
         summary="回覆長度偏好",
@@ -103,7 +136,11 @@ def _delta(  # noqa: PLR0913 -- test helper mirrors the delta schema
     from_keys: tuple[str, ...] = (),
     subject_id: str = "",
 ) -> MemoryFactDelta:
-    """Builds a consolidation delta with the boilerplate filled in."""
+    """Builds a consolidation delta with the boilerplate filled in.
+
+    Returns:
+        The delta, with each string argument cast to the schema's own Literal alias.
+    """
     return MemoryFactDelta(
         action=cast("MemoryDeltaAction", action),
         fact_id=fact_id,
@@ -176,7 +213,7 @@ def test_compartment_dir_refuses_anything_but_the_three_shapes() -> None:
 
 
 def test_write_read_and_delete_one_fact(memory_isolated_dir: Path) -> None:
-    """A fact lands in its compartment directory and comes back out of it."""
+    """A fact lands in its compartment directory, comes back out, and deletes idempotently."""
     scope = user_scope(user_id=111)
     write_fact(scope=scope, fact=_fact())
     assert [fact.fact_id for fact in read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)] == [
@@ -360,6 +397,8 @@ def test_scope_owner_id_reads_both_flavors() -> None:
     assert scope_owner_id(scope=server_scope(server_id=500)) == 500
 
 
+# One entry carrying all three routing outcomes: cross-server, guild-confined, and DM-confined.
+# The first two share a source, so a partitioner reading `source` alone would fail this batch.
 _RAW_BATCH = """## 2026-07-01T00:00:00+00:00
 ### stable_preference
 - normalized_key: preference.a
@@ -393,7 +432,7 @@ def test_raw_entries_partition_by_sharing_and_source() -> None:
 
 
 def test_server_evidence_all_lands_in_the_single_compartment() -> None:
-    """Server observations carry no source, and a server scope has one compartment."""
+    """A server batch is never routed, so a `source_only` entry lands in its one compartment."""
     buckets = partition_raw_entries(raw_text=_RAW_BATCH, flavor="server")
     assert set(buckets) == {"global"}
 
@@ -606,7 +645,7 @@ def test_existing_facts_render_with_the_ids_the_model_must_echo(memory_isolated_
 
 
 def test_sections_are_flavor_scoped() -> None:
-    """A user scope has no member-alias table and a server scope has no permanent tier."""
+    """A user scope has no member-alias table and a server scope has no stable-preference tier."""
     assert "member_alias" in sections_for_flavor(flavor="server")
     assert "member_alias" not in sections_for_flavor(flavor="user")
     assert "preference" in sections_for_flavor(flavor="user")
@@ -663,9 +702,11 @@ def test_a_batch_reports_the_ids_it_wrote(memory_isolated_dir: Path) -> None:
 def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
     memory_isolated_dir: Path,
 ) -> None:
-    """Nothing couples `section` to `durability`, and `render_existing_facts` feeds a
-    mismatched pairing back on every later update, so one slip by the model would
-    otherwise displace an enforced standing directive out of memory for good.
+    """A fact in the `permanent` section never ages, even when its durability says `stable`.
+
+    Nothing couples `section` to `durability`, and `render_existing_facts` feeds a mismatched
+    pairing back on every later update, so one slip by the model would otherwise displace an
+    enforced standing directive out of memory for good.
     """
     scope = user_scope(user_id=111)
     write_fact(
@@ -687,10 +728,12 @@ def test_a_permanent_section_fact_never_ages_even_when_marked_stable(
 
 
 def test_a_scope_whose_only_evidence_is_detail_is_still_a_scope(memory_isolated_dir: Path) -> None:
-    """`detail.md` alone counts: it is what a rebuild reconstructs everything from, and a
-    scope that has gone quiet since its last consolidation holds nothing else — which is
-    the steady state for a server, not an edge case. Missing it made the migration skip
-    22 of the live store's scopes, half of them server memories.
+    """A scope holding nothing but `detail.md` is still found by the sweep.
+
+    `detail.md` alone counts: it is what a rebuild reconstructs everything from, and a scope
+    that has gone quiet since its last consolidation holds nothing else — which is the steady
+    state for a server, not an edge case. Missing it made the migration skip 22 of the live
+    store's scopes, half of them server memories.
     """
     scope = user_scope(user_id=111)
     (memory_isolated_dir / scope).mkdir(parents=True)
@@ -701,9 +744,11 @@ def test_a_scope_whose_only_evidence_is_detail_is_still_a_scope(memory_isolated_
 
 
 def test_an_alias_row_cannot_be_given_someone_elses_id(memory_isolated_dir: Path) -> None:
-    """The allowlist parser takes the FIRST `[id: N]` on a row, and an alias body is
-    distilled from messages anyone in the server can write. Every id token is stripped
-    from the body so only the code-stamped `subject_id` can ever survive.
+    """An `[id: N]` planted in an alias body never reaches the rendered nickname table.
+
+    The allowlist parser takes the FIRST `[id: N]` on a row, and an alias body is distilled
+    from messages anyone in the server can write. Every id token is stripped from the body so
+    only the code-stamped `subject_id` can ever survive.
     """
     scope = server_scope(server_id=500)
     write_fact(

@@ -1,4 +1,37 @@
-"""Tests for MapleStory Artale data models, embeds, views, and commands."""
+"""Pins the whole `/maplestory` Artale lookup, from the JSON shapes up to the slash commands.
+
+`cogs/maplestory/` splits into five pieces — `models.py` validates the scraped export,
+`service.py` searches it in memory, `embeds.py` renders a hit, `views.py` re-renders whichever
+hit the user picked and `cog.py` wires all of it to Discord — and every one of them is exercised
+here against a miniature data directory this file writes itself. The real `./data/maplestory` is
+maintained offline and is not in the repository, so a test reading it would pass or fail on
+whatever the operator last exported; `maple_data_dir` builds all eight category files plus
+`translations.json` under `tmp_path` instead, which is what lets the assertions name exact embed
+titles, result counts and Chinese labels.
+
+That fixture is shaped for the branches, not for volume. Two monsters both match `Slime` while
+only one matches `綠水靈`, so the same command answers with a select menu in one test and with a
+single embed in another; the drop table mixes all four kinds a monster can carry, since a drop
+entry has no Chinese name of its own and each kind has to be probed through its own translation
+table; and `translations.json` carries the enum tables (`region`, `eqType`, `job`, `npcType`,
+`modifiers`) that back no data file at all.
+
+Three groups of behavior are what make the file worth its length:
+
+- **Model defaults.** Six tests do nothing but build two instances and mutate one. Every list
+  and dict field in `models.py` defaults, because the exporter omits a key rather than writing an
+  empty value, so a field that ever regressed to a shared mutable default would leak one JSON
+  element's drops or steps onto every other record loaded out of the same file.
+- **Loading never raises.** `_load_json` runs inside the synchronous cog load, before the gateway
+  connects, so a missing, unparsable, off-schema or not-even-a-list file has to leave its
+  category empty instead of aborting boot.
+- **One message per command.** Each subcommand defers and then answers exactly once — a single
+  embed, a count plus a `MapleDropSearchView`, a 找不到 notice, or the data-unavailable error —
+  and each answer carries the shared embed spacer that pins the feature's width.
+
+The `_Fake*` doubles below record what a command or a select callback sent instead of reaching
+Discord, so the assertions read the payload straight back off them.
+"""
 
 from __future__ import annotations
 
@@ -66,7 +99,7 @@ type JsonValue = str | int | float | bool | list["JsonValue"] | dict[str, "JsonV
 
 
 class InteractionPayload(TypedDict, total=False):
-    """Payload captured from fake nextcord interaction sends."""
+    """Payload captured from fake nextcord interaction sends and edits."""
 
     content: str
     embed: Embed
@@ -133,9 +166,11 @@ class _FakeInteraction:
     """Minimal interaction stub for MapleStory command and view tests."""
 
     def __init__(self, message_id: int = 777) -> None:
-        """Initializes response, followup, and message identity fields."""
+        """Starts an interaction double owning fresh response and followup recorders."""
         self.response = _FakeResponse()
         self.followup = _FakeFollowup()
+        # No `attachments` on the message, so an edit uploads a fresh spacer rather than
+        # retaining one by id.
         self.message = SimpleNamespace(id=message_id)
 
 
@@ -145,7 +180,7 @@ def _write_json(path: Path, payload: JsonValue) -> None:
 
 
 def test_maplestory_region_recipe_defaults_are_isolated() -> None:
-    """Region and recipe defaults are not shared between instances."""
+    """`RegionMaps.maps` and `CraftingRecipe.materials` are per-instance, not shared."""
     first_region = RegionMaps(region="Victoria")
     second_region = RegionMaps(region="Ossyria")
     first_region.maps.append("Henesys")
@@ -158,7 +193,7 @@ def test_maplestory_region_recipe_defaults_are_isolated() -> None:
 
 
 def test_maplestory_acquisition_defaults_are_isolated() -> None:
-    """Acquisition list defaults are not shared between instances."""
+    """All four `Acquisition` lists are per-instance, not shared."""
     first_acquisition = Acquisition()
     second_acquisition = Acquisition()
     first_acquisition.monsters.append(AcquisitionMonster(name="Slime"))
@@ -172,7 +207,7 @@ def test_maplestory_acquisition_defaults_are_isolated() -> None:
 
 
 def test_maplestory_drop_monster_equipment_defaults_are_isolated() -> None:
-    """Drop, monster, and equipment list defaults are isolated."""
+    """The `DropItem`, `Monster` and `Equipment` list defaults are per-instance, not shared."""
     first_drop = DropItem(name="Sword")
     second_drop = DropItem(name="Shield")
     first_drop.jobs.append("Warrior")
@@ -192,7 +227,7 @@ def test_maplestory_drop_monster_equipment_defaults_are_isolated() -> None:
 
 
 def test_maplestory_scroll_npc_defaults_are_isolated() -> None:
-    """Scroll dict and NPC list defaults are isolated."""
+    """`Scroll.stats` and the two `NPC` lists are per-instance, not shared."""
     first_scroll = Scroll(name="Scroll")
     second_scroll = Scroll(name="Other Scroll")
     first_scroll.stats["atk"] = 1
@@ -207,7 +242,7 @@ def test_maplestory_scroll_npc_defaults_are_isolated() -> None:
 
 
 def test_maplestory_quest_reward_defaults_are_isolated() -> None:
-    """Quest reward and quest list defaults are isolated."""
+    """`QuestReward.items` and the two `Quest` lists are per-instance, not shared."""
     first_reward = QuestReward()
     second_reward = QuestReward()
     assert isinstance(first_reward.items, dict)
@@ -223,7 +258,7 @@ def test_maplestory_quest_reward_defaults_are_isolated() -> None:
 
 
 def test_maplestory_map_defaults_are_isolated() -> None:
-    """Map NPC and monster defaults are isolated."""
+    """`MapEntry.npcs` and `MapEntry.monsters` are per-instance, not shared."""
     first_map = MapEntry(name="Henesys")
     second_map = MapEntry(name="Kerning City")
     first_map.npcs.append(MapNPC(name="Guide"))
@@ -234,7 +269,17 @@ def test_maplestory_map_defaults_are_isolated() -> None:
 
 @pytest.fixture
 def maple_data_dir(tmp_path: Path) -> Path:
-    """Creates a complete MapleStory data directory for integration-style tests."""
+    """Writes a miniature but complete Artale export into a temporary directory.
+
+    Every category file the service reads is present, so `has_data` passes and no command falls
+    down the reload path. The contents are shaped for the branches the tests take rather than for
+    realism: two monsters whose names both contain `Slime` but whose Chinese names differ, drops
+    spanning all four kinds a drop table can carry, and a `translations.json` holding the enum
+    tables that have no data file behind them.
+
+    Returns:
+        The populated data directory.
+    """
     data_dir = tmp_path / "maplestory"
     data_dir.mkdir()
 
@@ -423,12 +468,16 @@ def maple_data_dir(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def service(maple_data_dir: Path) -> MapleStoryService:
-    """Returns a service loaded from the generated fixture data."""
+    """Loads a service over the fixture directory.
+
+    Returns:
+        A `MapleStoryService` holding every category the fixture wrote.
+    """
     return MapleStoryService.from_directory(data_dir=maple_data_dir)
 
 
 def test_maplestory_models_accept_aliases_and_helpers() -> None:
-    """Verifies model aliases and computed helper properties."""
+    """The camelCase aliases load, and the display-name, map, drop and stat helpers read them."""
     drops = MonsterDrops(
         equipmentItems=[DropItem(name="Sword")],
         useableItems=[DropItem(name="Potion")],
@@ -486,7 +535,7 @@ def test_maplestory_models_accept_aliases_and_helpers() -> None:
 
 
 def test_maplestory_service_loads_searches_and_caches(service: MapleStoryService) -> None:
-    """Verifies service loading, search helpers, translations, and stats caching."""
+    """Every service read answers off the loaded fixture; `get_stats` memoizes its result."""
     assert service.has_data()
     assert service.translate(category="monsters", name="Slime") == "綠水靈"
     assert service.translate(category="missing", name="Slime") == "Slime"
@@ -526,7 +575,7 @@ def test_maplestory_service_loads_searches_and_caches(service: MapleStoryService
 
 
 def test_maplestory_load_helpers_handle_missing_and_invalid_files(tmp_path: Path) -> None:
-    """Verifies that malformed or missing data files degrade to empty data."""
+    """A missing, unparsable, off-schema or non-list file degrades to an empty category."""
     assert _load_json(path=tmp_path / "missing.json", model=Monster) == []
     bad_json = tmp_path / "bad.json"
     bad_json.write_text(data="{bad", encoding="utf-8")
@@ -543,7 +592,7 @@ def test_maplestory_load_helpers_handle_missing_and_invalid_files(tmp_path: Path
 
 
 def test_maplestory_embeds_include_expected_sections(service: MapleStoryService) -> None:
-    """Verifies that every MapleStory embed exposes its expected sections."""
+    """Each builder titles its embed with the translated name and fills its own sections."""
     monster = service.get_monster(name="Slime")
     equip = service.get_equipment(name="Wooden Sword")
     scroll = service.search_scrolls_by_name(query="Gloves")[0]
@@ -583,6 +632,7 @@ def test_maplestory_embeds_include_expected_sections(service: MapleStoryService)
     assert any(field.name == "🗺️ 位置" for field in embeds[3].fields)
     assert any(field.name in {"步驟 1", "任務內容"} for field in embeds[4].fields)
     assert any(field.name == "🔐 隱藏地圖" for field in embeds[5].fields)
+    # The ellipsis is counted inside the limit, so a cut value can never overrun Discord's cap.
     assert _truncate(text="abcdef", limit=5) == "ab..."
 
 
@@ -590,12 +640,15 @@ def _select_result(view: MapleDropSearchView) -> StringSelect[Any]:
     """Views the decorated `select_result` callback as the StringSelect item it becomes at runtime.
 
     `View.__init__` setattr-replaces the decorated class attribute with the real component.
+
+    Returns:
+        The view's own select component, typed so its options and callback can be read.
     """
     return cast("StringSelect[Any]", view.select_result)
 
 
 async def test_maplestory_view_resolvers_and_selection(service: MapleStoryService) -> None:
-    """Verifies resolver dispatch and select option truncation."""
+    """Every `_RESOLVERS` entry renders an embed, and `set_options` cuts to Discord's 25."""
     for search_type, name in [
         ("monster", "Slime"),
         ("item", "Wooden Sword"),
@@ -619,10 +672,12 @@ async def test_maplestory_view_resolvers_and_selection(service: MapleStoryServic
 async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
     service: MapleStoryService,
 ) -> None:
-    """Verifies that the dropdown handles loading and valid selections."""
+    """A placeholder pick is refused, and a real one edits the message into the chosen embed."""
     view = MapleDropSearchView(service=service, search_type="monster", query="slime")
     select_result = _select_result(view=view)
     interaction = _FakeInteraction()
+    # `values` is read-only and normally filled from the gateway payload, so the pick has to be
+    # staged on the attribute behind it.
     select_result._selected_values = ["loading"]
     await select_result.callback(as_interaction(fake=interaction))
     assert interaction.response.deferred
@@ -643,12 +698,16 @@ async def test_maplestory_view_select_result_handles_loading_and_valid_choice(
 
 @pytest.fixture
 def maple_cog(maple_data_dir: Path) -> MapleStoryCogs:
-    """Returns a MapleStory cog backed by the generated fixture data."""
+    """Builds the cog over the fixture directory, behind a bot double nothing here reads.
+
+    Returns:
+        A `MapleStoryCogs` whose service is already loaded.
+    """
     return MapleStoryCogs(bot=as_bot(fake=SimpleNamespace()), data_dir=maple_data_dir)
 
 
 def test_maplestory_commands_are_grouped_under_maplestory() -> None:
-    """Verifies MapleStory lookups are registered as /maplestory subcommands."""
+    """The eight lookups hang off one `/maplestory` group, each carrying its zh_TW name."""
     assert MapleStoryCogs.maplestory.name == "maplestory"
     assert MapleStoryCogs.maplestory.name_localizations[Locale.zh_TW] == "楓之谷"
     assert set(MapleStoryCogs.maplestory.children) == {
@@ -686,7 +745,7 @@ def test_maplestory_commands_are_grouped_under_maplestory() -> None:
 async def test_maplestory_commands_send_single_result_embed(
     maple_cog: MapleStoryCogs, command_name: str, query: str, expected_title: str
 ) -> None:
-    """Verifies each single-result command sends the matching embed."""
+    """A query matching exactly one entry defers, then sends that entry's embed."""
     interaction = _FakeInteraction()
     command = getattr(MapleStoryCogs, command_name)
     await command.callback(maple_cog, interaction, name=query)
@@ -697,7 +756,7 @@ async def test_maplestory_commands_send_single_result_embed(
 
 
 async def test_maplestory_commands_send_multi_result_view(maple_cog: MapleStoryCogs) -> None:
-    """Verifies ambiguous monster search returns a selection view."""
+    """A query matching several monsters sends a count plus the select menu."""
     interaction = _FakeInteraction()
     await MapleStoryCogs.maple_monster.callback(maple_cog, interaction, name="Slime")
     payload = interaction.followup.sent[0]
@@ -710,7 +769,7 @@ async def test_maplestory_commands_send_multi_result_view(maple_cog: MapleStoryC
 
 
 async def test_maplestory_commands_send_not_found_and_stats(maple_cog: MapleStoryCogs) -> None:
-    """Verifies not-found and stats command responses."""
+    """A query matching nothing echoes itself back; `stats` answers with the summary embed."""
     missing_interaction = _FakeInteraction()
     await MapleStoryCogs.maple_equip.callback(maple_cog, missing_interaction, name="missing")
     missing_embed = missing_interaction.followup.sent[0]["embed"]
@@ -726,7 +785,7 @@ async def test_maplestory_commands_send_not_found_and_stats(maple_cog: MapleStor
 
 
 async def test_maplestory_command_error_path_when_data_missing(tmp_path: Path) -> None:
-    """Verifies commands send the generic error embed when data is unavailable."""
+    """An empty data directory answers with the error embed instead of a lookup."""
     cog = MapleStoryCogs(bot=as_bot(fake=SimpleNamespace()), data_dir=tmp_path / "empty")
     interaction = _FakeInteraction()
     await MapleStoryCogs.maple_stats.callback(cog, interaction)
@@ -736,7 +795,7 @@ async def test_maplestory_command_error_path_when_data_missing(tmp_path: Path) -
 
 
 def test_maplestory_setup_registers_cog(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies setup registers the MapleStory cog synchronously."""
+    """`setup` is synchronous and adds the cog with `override=True`."""
     added: list[tuple[MapleStoryCogs, bool | None]] = []
     monkeypatch.setattr(
         "discordbot.cogs.maplestory.cog.MapleStoryService.from_directory",

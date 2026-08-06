@@ -6,6 +6,12 @@ the literal substring `gemini-3`; the `*-latest` aliases this project dispatches
 carry it, so `none` falls through to the pre-3 branch and sends `thinkingBudget: 0`, which a
 Gemini 3.x model rejects. The failure is invisible in tests because it only shows up against
 the live API, which is why it is pinned here.
+
+Three assertions cover it. One sweeps every `ModelSettings` the catalog exposes, so a tier added
+later is guarded without anyone editing this file. One pins `ModelSettings.effort`'s own default,
+since a tier that names no effort inherits it. The third pins the sweep: it finds its tiers by
+walking `RuntimeModelCatalog`'s properties reflectively, so a catalog that stopped exposing them
+would leave the sweep asserting over an empty set and passing.
 """
 
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
@@ -16,7 +22,16 @@ _REFUSED_EFFORTS = frozenset({"none", "disable"})
 
 
 def _catalog_models() -> dict[str, ModelSettings]:
-    """Every ModelSettings the catalog exposes, keyed by its property name."""
+    """Collects every `ModelSettings` the catalog exposes, keyed by its property name.
+
+    Walks the class's properties instead of a hardcoded list, so a tier added to the catalog is
+    swept without editing this file; `is_peak` and anything else not returning a `ModelSettings`
+    is dropped. Each value is read off a live instance, so a tier that branches at read time
+    (`slow_model`, on `is_peak`) contributes only the branch in force when the test runs.
+
+    Returns:
+        Property name to the `ModelSettings` that property returns, one entry per tier.
+    """
     catalog = RuntimeModelCatalog()
     names = [
         name
@@ -41,7 +56,7 @@ def test_no_tier_asks_for_an_effort_gemini_cannot_honor() -> None:
 
 
 def test_the_default_effort_is_the_gemini_floor() -> None:
-    """A tier that names no effort still gets one the model can honor."""
+    """A tier that names no effort inherits `minimal`, the lowest level Gemini 3 can honor."""
     assert ModelSettings(name="gemini-flash-latest").effort == "minimal"
 
 

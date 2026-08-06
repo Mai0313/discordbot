@@ -1,4 +1,35 @@
-"""Tests for the yt-dlp downloader facade."""
+"""Pins the `/download_video` download path: the yt-dlp facade plus the plumbing around it.
+
+`utils/downloader.py::VideoDownloader` is most of this file, and every test that touches it runs
+against a stubbed `YoutubeDL` (`_install_youtube_dl_stub` / `_install_metadata_stub`), never a
+live site. That is the point rather than a limitation: what is worth pinning is what this project
+decided, not what yt-dlp or a platform decides, so the assertions are on the parameter dict handed
+to `YoutubeDL` and on the mapping of the info dict it hands back.
+
+What is pinned here:
+
+- The URL yt-dlp is finally handed, which is not the one the user pasted: a Facebook
+  `/watch?v=<id>` page is rewritten to `/reel/<id>`, and a `share/...` link is resolved through
+  its redirects first and its target re-enters that rewrite.
+- That the share resolution reads only where the request landed. Every other test stubs the
+  resolver out, so a regression that downloads a whole Facebook page to read one header has no
+  other test that could fail.
+- `parse_metadata`'s silent-probe shape and its mapping: typed defaults for whatever a site
+  omits, the first real entry of a playlist-shaped page, that page's OWN url kept over the
+  entry's (which is how `gen_reply`'s Bilibili builder tells a b23.tv link to a space from one to
+  a video), and a `RuntimeError` rather than an empty result when yt-dlp reports nothing.
+- The `stop_signal` progress hook, which is the only place yt-dlp lets a caller abort a download
+  that blocks its worker thread beyond the reach of asyncio cancellation.
+- The Bilibili `Referer`, attached on a host match so a lookalike host cannot collect it.
+- `utils/urls.py::extract_first_url` the way `/download_video` uses it, since a share blob rather
+  than a bare URL is the natural thing to paste into the command.
+- The `VideoQuality` preset set, answered by every table keyed on it and by the slash option's own
+  default — nextcord types `SlashOption(default=...)` as `Any`, so that default is the one preset
+  site `ty` cannot check.
+
+Douyin's own downloader is `tests/test_douyin.py`; only the shared preset vocabulary is asserted
+here.
+"""
 
 from types import TracebackType
 from typing import Any, Self, get_args
@@ -20,7 +51,15 @@ from tests.helpers.casting import as_bot
 def _install_youtube_dl_stub(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Installs a yt-dlp stub and returns captured params and calls."""
+    """Monkeypatches `YoutubeDL` with a stub that records each run and downloads nothing.
+
+    The stub names its file under `tmp_path`, so the `DownloadResult` a caller builds from it
+    points inside the test's own directory even though nothing was ever written.
+
+    Returns:
+        The params dict of every `YoutubeDL` construction, and the `url` / `download` of every
+        `extract_info` call. Both are the stub's live lists, so they fill as the downloader runs.
+    """
     captured_params: list[dict[str, Any]] = []
     captured_calls: list[dict[str, Any]] = []
 
@@ -45,12 +84,16 @@ def _install_youtube_dl_stub(
             """Matches yt-dlp's context-manager shape."""
 
         def extract_info(self, url: str, download: bool) -> dict[str, str]:
-            """Records the final URL and returns minimal media metadata."""
+            """Records the URL the downloader finally asked for, after its own rewrites.
+
+            Returns:
+                The smallest info dict `download` reads: an id, an extension and a title.
+            """
             captured_calls.append({"url": url, "download": download})
             return {"id": "video_id", "ext": "mp4", "title": "stub video"}
 
         def prepare_filename(self, info: dict[str, str]) -> str:
-            """Returns the filename yt-dlp would prepare for the result."""
+            """Returns the path yt-dlp would have written to, inside the test's own `tmp_path`."""
             return (tmp_path / f"{info['id']}.{info['ext']}").as_posix()
 
     monkeypatch.setattr("discordbot.utils.downloader.YoutubeDL", _YoutubeDLStub)
@@ -73,7 +116,7 @@ def _install_youtube_dl_stub(
 def test_download_dry_run_uses_ytdlp_params(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, url: str, expected_url: str
 ) -> None:
-    """Verifies dry-run download setup without depending on live site APIs."""
+    """A dry run simulates through the params alone, and yt-dlp is handed the rewritten URL."""
     captured_params, captured_calls = _install_youtube_dl_stub(
         monkeypatch=monkeypatch, tmp_path=tmp_path
     )
@@ -92,7 +135,7 @@ def test_download_dry_run_uses_ytdlp_params(
 def test_download_resolves_facebook_share_links(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Facebook share URLs are resolved before the yt-dlp call."""
+    """A share link is resolved first, and its watch target still reaches yt-dlp as a reel."""
     _captured_params, captured_calls = _install_youtube_dl_stub(
         monkeypatch=monkeypatch, tmp_path=tmp_path
     )
@@ -129,12 +172,12 @@ def test_facebook_share_resolution_never_downloads_the_page(
     requests_made: list[dict[str, object]] = []
 
     class _Response:
-        """A share link that answered from the post it points at."""
+        """A landed response carrying its final URL and nothing else, since no body may be read."""
 
         url = "https://www.facebook.com/watch?v=828357636228730"
 
         def close(self) -> None:
-            """Releases the connection without the body ever being read."""
+            """Absorbs the close the resolver makes on every attempt."""
 
     class _SessionStub:
         """Records how each attempt was made."""
@@ -152,12 +195,20 @@ def test_facebook_share_resolution_never_downloads_the_page(
             """Matches requests.Session's context-manager shape."""
 
         def head(self, url: str, **kwargs: object) -> _Response:
-            """Records a HEAD attempt."""
+            """Records a HEAD attempt, keeping the keyword arguments the assertions read.
+
+            Returns:
+                A response already landed on the watch page, so the resolver stops here.
+            """
             requests_made.append({"method": "head", "url": url, **kwargs})
             return _Response()
 
         def get(self, url: str, **kwargs: object) -> _Response:
-            """Records a GET attempt."""
+            """Records the GET fallback, which a landing HEAD means this test never reaches.
+
+            Returns:
+                The same landed response, so a resolver that did fall through still resolves.
+            """
             requests_made.append({"method": "get", "url": url, **kwargs})
             return _Response()
 
@@ -177,7 +228,16 @@ def test_facebook_share_resolution_never_downloads_the_page(
 def _install_metadata_stub(
     monkeypatch: pytest.MonkeyPatch, info: dict[str, Any] | None
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Installs a yt-dlp stub whose extract_info returns a canned metadata dict."""
+    """Monkeypatches `YoutubeDL` with a stub answering the probe with the caller's own info dict.
+
+    Separate from `_install_youtube_dl_stub` because the mapping is what is under test here: each
+    caller hands in the exact shape a site reported, `None` included. No `prepare_filename`
+    either, since a probe never names a file.
+
+    Returns:
+        The params dict of every `YoutubeDL` construction, and the `url` / `download` of every
+        `extract_info` call. Both are the stub's live lists, so they fill as the probe runs.
+    """
     captured_params: list[dict[str, Any]] = []
     captured_calls: list[dict[str, Any]] = []
 
@@ -202,7 +262,12 @@ def _install_metadata_stub(
             """Matches yt-dlp's context-manager shape."""
 
         def extract_info(self, url: str, download: bool) -> dict[str, Any] | None:
-            """Records the call and returns the canned info dict."""
+            """Records the call, including the `download` flag a probe must leave false.
+
+            Returns:
+                The canned info dict, `None` included, since that is a failed probe rather than
+                a video with no fields.
+            """
             captured_calls.append({"url": url, "download": download})
             return info
 

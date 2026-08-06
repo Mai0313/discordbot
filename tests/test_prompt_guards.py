@@ -39,7 +39,11 @@ _RETEST = (
 
 
 def _normalized(text: str) -> str:
-    """Collapses whitespace, so reflowing the prompt does not fail the test."""
+    """Collapses whitespace, so reflowing a prompt line does not read as a deleted rule.
+
+    Returns:
+        `text` with every run of whitespace replaced by a single space.
+    """
     return re.sub(pattern=r"\s+", repl=" ", string=text)
 
 

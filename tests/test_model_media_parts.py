@@ -8,6 +8,12 @@ path has no proxy at all and only resolves Files API uris and YouTube links. Upl
 `gen_reply/files_api.py` is the one shape both accept.
 
 Data URIs are exempt: the bytes are already in hand, so nothing is fetched.
+
+The scan is AST over every module under `src/`, so no cog has to be importable for the rule to
+hold. It matches a part by the constructor's bare name (attribute-qualified or not) and reads
+only the keyword it was built with, and the data-URI exemption is syntactic: an `image_url` is
+cleared solely by a direct call to one of `_DATA_URI_BUILDERS`, so a data URI bound to a local
+first is reported rather than slipped past.
 """
 
 import ast
@@ -23,7 +29,11 @@ _MEDIA_PART_CALLS = frozenset({"ResponseInputImageParam", "ResponseInputFilePara
 
 
 def _called_name(node: ast.expr) -> str:
-    """Returns the bare name of a call target, or an empty string for anything else."""
+    """Returns the bare name of a call target, or an empty string for anything else.
+
+    An attribute call yields its final attribute, so a module-qualified
+    `mod.ResponseInputFileParam(...)` and a directly imported one resolve alike.
+    """
     if isinstance(node, ast.Call):
         if isinstance(node.func, ast.Name):
             return node.func.id
@@ -33,7 +43,13 @@ def _called_name(node: ast.expr) -> str:
 
 
 def _offending_arguments(call: ast.Call) -> list[str]:
-    """Returns the media-source keywords of a part that are not a local data URI."""
+    """Returns the media-source keywords of a part that are not a local data URI.
+
+    `file_url` has no exemption at all, because `ResponseInputFileParam` carries in-hand bytes
+    in `file_data` instead, so a `file_url` is remote by definition. `image_url` is the one
+    field that also takes a `data:` URI, so it is cleared only when a `_DATA_URI_BUILDERS` call
+    is what built it.
+    """
     offenders: list[str] = []
     for keyword in call.keywords:
         if keyword.arg not in ("image_url", "file_url"):

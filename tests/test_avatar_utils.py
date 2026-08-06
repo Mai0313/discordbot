@@ -1,4 +1,25 @@
-"""Tests for guild-aware Discord avatar selection."""
+"""Pins the server-profile-before-global avatar ladder, and the write path that stores it.
+
+`utils/avatars.py::guild_avatar_url` is the single place that ladder is written down, and every
+caller caching `UserAccount.avatar_url` reads it rather than re-deriving the rule. Three tests
+drive the helper directly against a fake guild whose `fetch_count` is observable, because what
+is worth pinning is not only which URL comes back but what it cost: a cached member answers
+with no REST call, a cache miss spends exactly one `fetch_member`, and a member Discord will
+not hand over degrades to the global avatar instead of raising. The bot runs without the
+`members` intent, so the cache-miss path is the ordinary one rather than an edge case, and
+neither the fetch nor the `HTTPException` suppression it leans on fails loudly if it regresses:
+the caller gets a plausible URL, or loses a reward, and nothing anywhere reports an error.
+
+The last test pins the wiring instead of the ladder. `cli.DiscordBot.on_message` is the
+per-message reward, the highest-volume caller, and it is checked by capturing what reaches
+`credit_with_repayment`. A resolution that stopped being guild-aware there would quietly store
+the author's global avatar on every message with every other assertion in the suite still green.
+
+The doubles stay local instead of coming from `tests/helpers/discord_mocks.py`: the helper reads
+only `id` / `display_avatar` / `guild_avatar` plus `Guild.get_member` / `fetch_member`, and a
+guild that counts its own fetches is what the cost assertions need. They cross into production
+signatures through `tests/helpers/casting.py`'s pure casts.
+"""
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -19,10 +40,10 @@ if TYPE_CHECKING:
 
 
 class FakeUser:
-    """Minimal user-like object with a global avatar."""
+    """Minimal user-like object carrying only a global avatar, never a server profile."""
 
     def __init__(self, user_id: int = 1, avatar_url: str = "https://cdn.test/global.png") -> None:
-        """Initializes a fake user identity."""
+        """Initializes the identity and the global avatar the fallback resolves to."""
         self.id = user_id
         self.name = "tester"
         self.display_avatar = SimpleNamespace(url=avatar_url)
@@ -30,7 +51,7 @@ class FakeUser:
 
 
 class FakeMember(FakeUser):
-    """Minimal member-like object returned by fake guild lookups."""
+    """Minimal member-like object returned by fake guild lookups, with a server profile."""
 
     def __init__(
         self,
@@ -38,7 +59,7 @@ class FakeMember(FakeUser):
         avatar_url: str = "https://cdn.test/global.png",
         guild_avatar_url: str | None = "https://cdn.test/guild.png",
     ) -> None:
-        """Initializes global and optional guild avatars."""
+        """Initializes the global avatar plus the per-server override, absent when None."""
         super().__init__(user_id=user_id, avatar_url=avatar_url)
         self.guild_avatar = (
             SimpleNamespace(url=guild_avatar_url) if guild_avatar_url is not None else None
@@ -46,24 +67,28 @@ class FakeMember(FakeUser):
 
 
 class FakeGuild:
-    """Minimal guild that can return cached or fetched members."""
+    """Minimal guild resolving members from cache or REST, and counting the REST calls."""
 
     def __init__(
         self, cached_member: FakeMember | None, fetched_member: FakeMember | None
     ) -> None:
-        """Initializes member lookup fixtures."""
+        """Initializes the member each lookup path resolves to, either of which may be None."""
         self.cached_member = cached_member
         self.fetched_member = fetched_member
         self.fetch_count = 0
 
     def get_member(self, user_id: int) -> FakeMember | None:
-        """Returns a cached member when one is configured."""
+        """Returns the configured cached member when its id matches, standing in for the cache."""
         if self.cached_member is not None and self.cached_member.id == user_id:
             return self.cached_member
         return None
 
     async def fetch_member(self, user_id: int) -> FakeMember:
-        """Returns a fetched member when one is configured."""
+        """Returns the configured fetched member, recording that the REST call was spent.
+
+        Raises the `NotFound` Discord answers for a member who has left when none is
+        configured. That is an `HTTPException`, which is exactly what the helper suppresses.
+        """  # noqa: DOC501 -- ruff reads the raise as `make_not_found`, a builder, not a type
         self.fetch_count += 1
         if self.fetched_member is not None and self.fetched_member.id == user_id:
             return self.fetched_member
@@ -71,7 +96,7 @@ class FakeGuild:
 
 
 async def test_guild_avatar_url_prefers_cached_guild_avatar() -> None:
-    """Cached guild members provide the guild avatar without a REST fetch."""
+    """A cached member's server avatar wins, and costs no REST fetch."""
     guild = FakeGuild(
         cached_member=FakeMember(guild_avatar_url="https://cdn.test/cached.png"),
         fetched_member=None,
@@ -86,7 +111,7 @@ async def test_guild_avatar_url_prefers_cached_guild_avatar() -> None:
 
 
 async def test_guild_avatar_url_fetches_member_when_cache_misses() -> None:
-    """A fetch can recover the guild avatar when the event only has a user."""
+    """A cache miss spends exactly one fetch to recover the server avatar."""
     guild = FakeGuild(
         cached_member=None,
         fetched_member=FakeMember(guild_avatar_url="https://cdn.test/fetched.png"),
@@ -101,7 +126,7 @@ async def test_guild_avatar_url_fetches_member_when_cache_misses() -> None:
 
 
 async def test_guild_avatar_url_falls_back_to_global_avatar() -> None:
-    """Missing guild avatars and missing members fall back to the global avatar."""
+    """A member the fetch cannot resolve degrades to the global avatar instead of raising."""
     guild = FakeGuild(cached_member=None, fetched_member=None)
 
     avatar_url = await guild_avatar_url(
@@ -114,20 +139,24 @@ async def test_guild_avatar_url_falls_back_to_global_avatar() -> None:
 
 
 async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPatch") -> None:
-    """Base message rewards pass the guild avatar into the economy DB facade."""
+    """The per-message reward stores the author's server avatar, not their global one."""
     captured_avatar_url = ""
 
     async def fake_credit_with_repayment(
         user_id: int, name: str, avatar_url: str, amount: int
     ) -> SimpleNamespace:
-        """Records the avatar URL passed to the DB facade."""
+        """Captures the avatar URL the reward hands to the economy facade.
+
+        Returns:
+            A stand-in for `CreditResult`; `on_message` discards it.
+        """
         nonlocal captured_avatar_url
         del user_id, name, amount
         captured_avatar_url = avatar_url
         return SimpleNamespace(new_balance=0)
 
     async def noop_process_commands(message: SimpleNamespace) -> None:
-        """Ignores command processing during the reward test."""
+        """Absorbs the `process_commands` call `on_message` always makes at the end."""
         del message
 
     monkeypatch.setattr(cli, "credit_with_repayment", fake_credit_with_repayment)
@@ -144,6 +173,8 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
             fetched_member=None,
         ),
     )
+    # A bare sentinel for `bot.user`: it only has to compare unequal to the author, or
+    # `on_message` drops the message as the bot's own before any reward runs.
     bot = SimpleNamespace(
         user=object(), process_commands=noop_process_commands, _message_reward_at={}
     )

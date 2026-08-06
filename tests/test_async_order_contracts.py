@@ -5,6 +5,13 @@ it first. Comparing that recorder directly with an ordered sequence silently tur
 timing into a contract. Tests should compare a stable invariant instead, or document the real
 production ordering contract beside the assertion.
 
+A recorder here is a list bound in an async test's own scope and mutated from a callable nested
+inside it, which is the shape whose fill order the scheduler picks rather than the test.
+`test_async_test_double_recorders_do_not_assume_undocumented_order` runs the scan over every
+`tests/test_*.py`; everything else in this file hands one snippet of test source to
+`_find_undocumented_order_assertions` and pins what it says about it. The escape hatch is a
+`# order-contract: <reason>` comment on the line above the assertion or on any line it spans.
+
 Whether an assertion depends on that order is decided by trying to change it: two recorded
 positions are exchanged across the whole test, and an assertion that comes out unchanged never
 observed the ordering to begin with. Counting how many positions a test reads cannot answer that
@@ -87,7 +94,12 @@ class OrderAssertion(BaseModel):
 
 
 def _called_name(node: ast.expr) -> str:
-    """Returns the bare name of a call target, or an empty string for another expression."""
+    """Returns the bare name of a call target, or an empty string for another expression.
+
+    An attribute call collapses to its final attribute, so `uploaded.copy()` is matched against
+    the same vocabulary a bare `copy` would be. That is deliberate: the sets this feeds name
+    methods and builtins side by side rather than dotted paths.
+    """
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -96,7 +108,13 @@ def _called_name(node: ast.expr) -> str:
 
 
 def _is_list_initializer(node: ast.expr | None) -> bool:
-    """Whether an assignment creates a list that can record test-double calls."""
+    """Whether an assignment creates a list that can record test-double calls.
+
+    Returns:
+        True for a list literal, a list comprehension or a `list(...)` call, and for a
+        conditional whose branches are all of those, since either branch can be the one that
+        ends up recording.
+    """
     if isinstance(node, (ast.List, ast.ListComp)):
         return True
     if isinstance(node, ast.IfExp):
@@ -105,7 +123,12 @@ def _is_list_initializer(node: ast.expr | None) -> bool:
 
 
 def _list_assignment_names(target: ast.expr, value: ast.expr | None) -> set[str]:
-    """Returns names assigned list initializers, including unpacked assignments."""
+    """Returns names assigned list initializers, including unpacked assignments.
+
+    An unpacking is only read apart when both sides are literal sequences of the same length, so
+    `written, uploaded = build()` contributes nothing rather than a guess about what `build`
+    returns.
+    """
     if isinstance(target, ast.Name):
         return {target.id} if _is_list_initializer(value) else set()
     if not (
@@ -124,6 +147,7 @@ class _LocalListRecorderVisitor(ast.NodeVisitor):
     """Finds list initializers in a test body without entering nested scopes."""
 
     def __init__(self) -> None:
+        """Starts a scan with no candidate recorder names collected."""
         self.names: set[str] = set()
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
@@ -164,6 +188,7 @@ class _CallableScopeVisitor(ast.NodeVisitor):
     """Collects bindings and child scopes without entering nested callables."""
 
     def __init__(self) -> None:
+        """Starts an empty description of one callable scope."""
         self.bound_names: set[str] = set()
         self.global_names: set[str] = set()
         self.nonlocal_names: set[str] = set()
@@ -262,7 +287,16 @@ def _default_recorder_aliases(
     *,
     outer_environment: dict[str, str],
 ) -> dict[str, str]:
-    """Maps parameters whose defaults capture an outer recorder."""
+    """Maps parameters whose defaults capture an outer recorder.
+
+    A default is evaluated in the enclosing scope when the callable is defined, so
+    `async def record(alias=calls)` writes into the test's own list even though `alias` is a
+    local name that would otherwise shadow it.
+
+    Returns:
+        Parameter name to the test-scope recorder its default captured, empty when no default
+        names one.
+    """
     arguments = function.args
     positional = [*arguments.posonlyargs, *arguments.args]
     aliases: dict[str, str] = {}
@@ -282,11 +316,17 @@ class _RecorderWriteVisitor(ast.NodeVisitor):
     """Finds mutations that resolve to test-scope recorder bindings."""
 
     def __init__(self, *, environment: dict[str, str], nonlocal_names: set[str]) -> None:
+        """Starts a scan of one callable body against the names visible inside it.
+
+        `environment` maps each of those names to the test-scope recorder it resolves to, so a
+        parameter or a default capture under another name still reports the recorder it writes.
+        """
         self.environment = environment
         self.nonlocal_names = nonlocal_names
         self.found: set[str] = set()
 
     def _record_subscripts(self, target: ast.expr) -> None:
+        """Records a write through any subscription rooted at a captured recorder."""
         for child in ast.walk(target):
             if isinstance(child, ast.Subscript):
                 recorder = self.environment.get(_root_subscript_name(child))
@@ -347,6 +387,11 @@ class _RecorderWriteVisitor(ast.NodeVisitor):
         del node
 
     def _record_nonlocal_rebinding(self, target: ast.expr, value: ast.expr | None) -> None:
+        """Records a `nonlocal` rebinding that builds the recorder's new value out of itself.
+
+        `calls = [*calls, value]` appends by another spelling, while a rebinding that ignores the
+        old list replaces the recorder rather than recording into it and is left alone.
+        """
         if not (
             isinstance(target, ast.Name)
             and target.id in self.nonlocal_names
@@ -377,6 +422,7 @@ class _NestedRecorderWriteFinder:
     """Resolves recorder mutations through nested lexical scopes."""
 
     def __init__(self, *, recorders: set[str]) -> None:
+        """Starts a search for writes to one test's recorders, each still under its own name."""
         self.initial_environment = {recorder: recorder for recorder in recorders}
         self.found: set[str] = set()
 
@@ -385,7 +431,13 @@ class _NestedRecorderWriteFinder:
         function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
         outer_environment: dict[str, str],
     ) -> None:
-        """Records writes in one callable and recursively visits its children."""
+        """Records writes in one callable and recursively visits its children.
+
+        A recorder stops resolving here once the callable binds that name itself or declares it
+        `global`, since either makes the name a different list; a `nonlocal` declaration is not a
+        local binding and keeps it. Children inherit the environment this callable ended up with,
+        so a capture renamed on the way down is still followed.
+        """
         scope = _scope_details(function)
         local_names = scope.bound_names - scope.nonlocal_names
         environment = {
@@ -411,7 +463,11 @@ class _NestedRecorderWriteFinder:
             self.visit_class(child_class, environment)
 
     def visit_class(self, node: ast.ClassDef, outer_environment: dict[str, str]) -> None:
-        """Visits methods without treating a class namespace as a closure."""
+        """Visits methods without treating a class namespace as a closure.
+
+        A class body's own bindings are invisible to its methods, so they are handed the
+        environment the class was declared in rather than one narrowed by the class.
+        """
         scope = _CallableScopeVisitor()
         for statement in node.body:
             scope.visit(statement)
@@ -421,7 +477,11 @@ class _NestedRecorderWriteFinder:
             self.visit_class(child_class, outer_environment)
 
     def find(self, test: ast.AsyncFunctionDef) -> set[str]:
-        """Returns recorder mutations reachable below the async test scope."""
+        """Returns recorder mutations reachable below the async test scope.
+
+        The test's own body is skipped: a list it fills in a straight line is setup whose order
+        the test itself fixed, and only a write from a nested callable can reach a scheduler.
+        """
         test_scope = _scope_details(test)
         for function in test_scope.callables:
             self.visit_callable(function, self.initial_environment)
@@ -436,7 +496,7 @@ def _nested_function_writes(test: ast.AsyncFunctionDef, *, recorders: set[str]) 
 
 
 def _root_subscript_name(node: ast.Subscript) -> str:
-    """Returns the name at the root of a chained subscription."""
+    """Returns the name at the root of a chained subscription, or an empty string without one."""
     value: ast.expr = node
     while isinstance(value, ast.Subscript):
         value = value.value
@@ -453,7 +513,16 @@ def _referenced_recorders(node: ast.AST, *, recorders: set[str]) -> set[str]:
 
 
 def _normalizer_encodes_positions(node: ast.AST, *, recorders: set[str]) -> bool:
-    """Whether a nested transform preserves recorder positions as output values."""
+    """Whether a nested transform preserves recorder positions as output values.
+
+    `set(enumerate(calls))` is the shape this exists for: the call that normally erases order is
+    handed values that carry the index inside them, so it erases nothing. An explicit index has
+    the same effect, since `sorted([calls[0], calls[1]])` states the positions itself.
+
+    Returns:
+        True when an index into the recorder, or a call over one that neither vocabulary
+        recognises as order-erasing or order-preserving, sits below `node`.
+    """
     safe_nested_calls = _ORDER_INDEPENDENT_CALLS | _ORDER_PRESERVING_TRANSFORMS
     for child in ast.walk(node):
         if child is node:
@@ -473,6 +542,7 @@ class _OrderedRecorderVisitor(ast.NodeVisitor):
     """Finds recorder uses whose observed sequence remains part of an expression."""
 
     def __init__(self, *, recorders: set[str]) -> None:
+        """Starts a scan of one assertion for the recorders whose sequence it still reads."""
         self.recorders = recorders
         self.found: set[str] = set()
 
@@ -519,6 +589,7 @@ class _IndexedRecorderVisitor(ast.NodeVisitor):
     """Finds explicit positions read from a recorder inside one assertion."""
 
     def __init__(self, *, recorders: set[str]) -> None:
+        """Starts a scan of one assertion for the recorder slots it names outright."""
         self.recorders = recorders
         self.found: set[tuple[str, int]] = set()
 
@@ -549,6 +620,7 @@ class _TestAssertionVisitor(ast.NodeVisitor):
     """Collects assertions in a test body without entering its nested test doubles."""
 
     def __init__(self) -> None:
+        """Starts a collection with no assertion found yet."""
         self.found: list[ast.Assert] = []
 
     def visit_Assert(self, node: ast.Assert) -> None:
@@ -591,7 +663,13 @@ def _test_assertions(test: ast.AsyncFunctionDef) -> list[ast.Assert]:
 
 
 def _can_encode_multiple_positions(node: ast.expr) -> bool:
-    """Whether an expected expression can distinguish the order of two or more records."""
+    """Whether an expected expression can distinguish the order of two or more records.
+
+    Returns:
+        True for a literal holding two or more elements or an unpacking, and for the opaque
+        shapes a name, call, attribute or comprehension can take, since a value the scan cannot
+        read into is assumed to describe the whole sequence rather than one record.
+    """
     if isinstance(node, (ast.List, ast.Tuple)):
         return len(node.elts) >= 2 or any(
             isinstance(element, ast.Starred) for element in node.elts
@@ -631,7 +709,11 @@ def _comments_by_line(source: str) -> dict[int, list[str]]:
 
 
 def _contract_reason(comments: dict[int, list[str]], *, lineno: int, end_lineno: int) -> str:
-    """Returns an inline or immediately preceding order-contract reason."""
+    """Returns an inline or immediately preceding order-contract reason.
+
+    Empty when the marker is absent or carries no text after it, so a bare `# order-contract:`
+    suppresses nothing: the hatch is a rationale a reviewer can disagree with, not a token.
+    """
     for candidate_lineno in (lineno - 1, *range(lineno, end_lineno + 1)):
         for comment in comments.get(candidate_lineno, []):
             _before, marker, reason = comment.partition(_ORDER_CONTRACT_MARKER)
@@ -650,7 +732,12 @@ def _async_tests(nodes: list[ast.stmt]) -> Iterator[ast.AsyncFunctionDef]:
 
 
 def _sorted_by_dump(nodes: list[ast.expr]) -> list[ast.expr]:
-    """Orders the operands of a commutative construct so equal meanings dump equally."""
+    """Orders the operands of a commutative construct so equal meanings dump equally.
+
+    Returns:
+        The same nodes under a total order taken from their dumps, so an exchange that only moved
+        them past each other leaves the enclosing rewrite byte-identical.
+    """
     return sorted(nodes, key=ast.dump)
 
 
@@ -660,6 +747,9 @@ def _keyed_sort(node: ast.Call) -> bool:
     Python's sort is stable, so equal keys hand the output back in input order:
     `sorted([calls[0], calls[1]], key=len)` really does depend on which record arrived first.
     Every other member of `_ORDER_ERASING_CALLS` reduces to something a tie cannot leak through.
+
+    Returns:
+        True for a `sorted` carrying `key=`, and for one carrying `**kwargs` that could hold it.
     """
     return _called_name(node.func) == "sorted" and any(
         keyword.arg in (None, "key") for keyword in node.keywords
@@ -672,6 +762,10 @@ def _resolved_position(index: int, *, length: int | None) -> int:
     `calls[-1]` and `calls[1]` are the same slot of a two-record list and different slots of a
     three-record one, so they are only comparable once the test says how many records there are.
     Without that, the two families are kept apart rather than guessed at.
+
+    Returns:
+        The slot a negative index names once a length resolves it, otherwise the index unchanged
+        so it stays in a namespace of its own.
     """
     if index < 0 and length is not None and -index <= length:
         return length + index
@@ -708,13 +802,24 @@ class _PositionCanonicalizer(ast.NodeTransformer):
     def __init__(
         self, *, recorder: str, swap: dict[int, int], length: int | None, boolean_context: set[int]
     ) -> None:
+        """Starts one rewrite of an assertion.
+
+        `swap` maps each of the two exchanged positions onto the other, `length` resolves a
+        negative index onto the slot it names, and `boolean_context` holds the ids of the
+        sub-expressions whose own value is never read back out.
+        """
         self.recorder = recorder
         self.swap = swap
         self.length = length
         self.boolean_context = boolean_context
 
     def visit_BoolOp(self, node: ast.BoolOp) -> ast.expr:
-        """Normalizes `and` / `or` operands only where the result is read as a condition."""
+        """Normalizes `and` / `or` operands only where the result is read as a condition.
+
+        Returns:
+            The same node, its operands ordered canonically when nothing but its truth value is
+            read.
+        """
         in_boolean_context = id(node) in self.boolean_context
         self.generic_visit(node)
         if in_boolean_context:
@@ -722,7 +827,12 @@ class _PositionCanonicalizer(ast.NodeTransformer):
         return node
 
     def visit_Call(self, node: ast.Call) -> ast.expr:
-        """Normalizes a literal container handed to a call that discards its order."""
+        """Normalizes a literal container handed to a call that discards its order.
+
+        Returns:
+            The same node, the elements of any literal argument ordered canonically unless the
+            call is a keyed `sorted`, whose stable ties still hand arrival order back.
+        """
         self.generic_visit(node)
         if _called_name(node.func) in _ORDER_ERASING_CALLS and not _keyed_sort(node):
             for argument in node.args:
@@ -731,7 +841,12 @@ class _PositionCanonicalizer(ast.NodeTransformer):
         return node
 
     def visit_Compare(self, node: ast.Compare) -> ast.expr:
-        """Normalizes a symmetric comparison, including an all-`==` chain."""
+        """Normalizes a symmetric comparison, including an all-`==` chain.
+
+        Returns:
+            The same node, its operands ordered canonically when every operator holds either way
+            round, and untouched otherwise so `<` keeps telling the two records apart.
+        """
         self.generic_visit(node)
         symmetric = all(isinstance(operator, ast.Eq) for operator in node.ops) or (
             len(node.ops) == 1 and isinstance(node.ops[0], _COMMUTATIVE_COMPARISONS)
@@ -744,13 +859,22 @@ class _PositionCanonicalizer(ast.NodeTransformer):
         return node
 
     def visit_Set(self, node: ast.Set) -> ast.expr:
-        """Normalizes a set literal, which cannot expose the order of its elements."""
+        """Normalizes a set literal, which cannot expose the order of its elements.
+
+        Returns:
+            The same node with its elements ordered canonically.
+        """
         self.generic_visit(node)
         node.elts = _sorted_by_dump(node.elts)
         return node
 
     def visit_Subscript(self, node: ast.Subscript) -> ast.expr:
-        """Replaces one constant recorder position with its swapped placeholder."""
+        """Replaces one constant recorder position with its swapped placeholder.
+
+        Returns:
+            A placeholder name for the slot this index lands on after the exchange, or the node
+            unchanged when it is not a constant index into the recorder being permuted.
+        """
         self.generic_visit(node)
         if not (isinstance(node.value, ast.Name) and node.value.id == self.recorder):
             return node
@@ -769,7 +893,11 @@ class _PositionCanonicalizer(ast.NodeTransformer):
 def _swapped_assertion(
     assertion: ast.Assert, *, recorder: str, swap: dict[int, int], length: int | None
 ) -> str:
-    """Returns a canonical dump of one assertion under an exchange of two positions."""
+    """Returns a canonical dump of one assertion under an exchange of two positions.
+
+    Rewrites a copy, so the same assertion can be put through one exchange after another and an
+    empty `swap` still yields the baseline the swapped dumps are compared against.
+    """
     rewritten = deepcopy(assertion.test)
     canonicalizer = _PositionCanonicalizer(
         recorder=recorder,
@@ -783,7 +911,11 @@ def _swapped_assertion(
 def _pinned_recorder_lengths(
     assertions: list[ast.Assert], *, recorders: set[str]
 ) -> dict[str, int]:
-    """Returns the recorder lengths a test states outright, as `len(recorder) == <int>`."""
+    """Returns the recorder lengths a test states outright, as `len(recorder) == <int>`.
+
+    Read either way round, and only from a non-negative integer: a bool is rejected so
+    `len(calls) == True` is not taken as a one-record list.
+    """
     lengths: dict[str, int] = {}
     for assertion in assertions:
         for node in ast.walk(assertion.test):
@@ -831,6 +963,10 @@ def _position_sensitive_recorders(
     positions the test indexes are exchanged, so a recorder holding more records than the test
     reads is a known false negative -- the same trade the two gaps recorded in #425 accept, and
     the reason a negative index stays in its own family until a length makes it comparable.
+
+    Returns:
+        One set per assertion, in the order the assertions were given, holding the recorders that
+        assertion distinguishes the positions of.
     """
     sensitive: list[set[str]] = [set() for _ in assertions]
     reads = [_indexed_recorders(assertion.test, recorders=recorders) for assertion in assertions]
@@ -884,7 +1020,13 @@ def _position_sensitive_recorders(
 
 
 def _sequence_assertion_recorders(assertion: ast.Assert, *, recorders: set[str]) -> set[str]:
-    """Returns recorder names whose whole recorded sequence one assertion compares."""
+    """Returns recorder names whose whole recorded sequence one assertion compares.
+
+    Two shapes qualify. One is an expression that keeps positions through a transform, such as
+    `all(a == b for a, b in zip(calls, expected))`, where the pairing is the ordering. The other
+    is an `==` chain with an operand that could describe two or more records, which is what makes
+    `calls == [*expected]` a sequence comparison while `calls == []` is only a count.
+    """
     ordered: set[str] = set()
     comparison = assertion.test
     if _normalizer_encodes_positions(comparison, recorders=recorders):
@@ -907,7 +1049,16 @@ def _sequence_assertion_recorders(assertion: ast.Assert, *, recorders: set[str])
 
 
 def _find_undocumented_order_assertions(source: str) -> list[OrderAssertion]:
-    """Finds exact sequence assertions on nested test-double recorders in async tests."""
+    """Finds exact sequence assertions on nested test-double recorders in async tests.
+
+    A test whose lists are never written from a callable nested inside it is skipped outright,
+    since nothing there is filled by a scheduler, and an assertion carrying an order-contract
+    reason is left to the reviewer who wrote it.
+
+    Returns:
+        One `OrderAssertion` per offending assertion, in the order the tests and their assertions
+        appear in the source.
+    """
     tree = ast.parse(source=source)
     comments = _comments_by_line(source)
     findings: list[OrderAssertion] = []
@@ -935,7 +1086,7 @@ def _find_undocumented_order_assertions(source: str) -> list[OrderAssertion]:
 
 
 def test_the_original_issue_414_assertions_are_rejected() -> None:
-    """The old Threads recorder checks fail deterministically without scheduler timing."""
+    """Both recorder-order assertions issue #414 shipped are reported, one finding each."""
     source = """
 async def test_bad_order():
     written: list[str] = []
@@ -980,7 +1131,7 @@ async def test_stable_invariants():
 
 
 def test_set_and_mapping_projections_are_accepted() -> None:
-    """Comprehensions that discard sequence order are stable invariants."""
+    """A set or mapping over a recorder discards its order, by comprehension or through a copy."""
     source = """
 async def test_stable_projections():
     uploaded: list[tuple[str, bytes]] = []

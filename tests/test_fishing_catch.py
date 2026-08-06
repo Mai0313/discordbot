@@ -1,4 +1,33 @@
-"""Tests for the pure fishing roll engine."""
+"""Exact guards over the fishing roll engine and the tuning of the catalog it reads.
+
+Pins `cogs/games/fishing/catch.py`, the pure RNG-injected engine one cast runs through, together
+with the hand-written default catalog in `defaults.py` that feeds it. Two different things are
+held in place here and they need different kinds of assertion, so the file reads in two halves.
+
+The engine half covers what a cast produces and what a mis-tuned catalog must not be able to make
+it do. A seeded roll is reproducible and observed grade frequencies match the base weights;
+`compose_grade_weights` compounds the combined rod-and-bait luck shift once per rarity step, with
+the exponent read off a grade's POSITION in `order_index` order rather than the raw value, so gaps
+and ties in a hand-written catalog rank the grades without multiplying the step; the step itself
+is clamped at both ends; a grade an operator zeroed out stays disabled, keeps its place in the
+ladder, and is never resurrected by the empty-grade fallback; and a catalog with nothing left to
+award raises rather than quietly handing back the first grade in the list. The size assertions pin
+the band a roll stays inside plus `size_rank_bps`, the position within the species' own band that
+the 大物 marker reads and that a fixed-size species has to report as 0.
+
+The tuning half pins #351's design over the default catalog, which is data an operator retunes by
+hand and seeds offline, so a retuning that breaks the design fails here instead of in a deployed
+bot. Fishing is not a sink: every rod-and-bait pairing returns at least its own per-cast cost and
+at most `_FAUCET_CEILING` of it, upgrading either axis never lowers the return and always raises
+the rare-catch rate, the whole ladder at least doubles that rate, and on any one bait each grade's
+payout band sits entirely above the grade below it.
+
+Those figures are computed exactly rather than sampled, because adjacent rungs of the gear ladder
+differ by as little as one point of return and Monte Carlo noise at any affordable sample size
+would swamp that. The `_expected_*`, `_return_ratio` and `_rare_catch_rate` helpers below are
+therefore a second, closed-form model of the same arithmetic `roll_catch` performs, and
+`test_analytic_expected_value_matches_a_seeded_simulation` is what stops the two drifting apart.
+"""
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
@@ -25,12 +54,23 @@ from discordbot.cogs.games.fishing.defaults import build_default_catalog
 
 @pytest.fixture
 def catalog() -> object:
-    """Returns the default catalog views."""
+    """Hands a test the default catalog without touching games.db.
+
+    Returns:
+        The default grades, species and gear bundled as one `FishingCatalog`.
+    """
     return build_default_catalog()
 
 
 def _rod(rarity_shift_bps: int = 0) -> GearView:
-    """Builds a test rod with a given luck shift."""
+    """Builds a test rod carrying a given luck shift.
+
+    That shift is all `roll_catch` reads off a rod, so the price and durability here are
+    placeholders; the return-ratio helpers, which do read them, take the catalog's own rods.
+
+    Returns:
+        A rod view for a direct `roll_catch` call.
+    """
     return GearView(
         gear_id="rod",
         gear_type=GearType.ROD,
@@ -44,7 +84,14 @@ def _rod(rarity_shift_bps: int = 0) -> GearView:
 
 
 def _bait(rarity_shift_bps: int = 0, value_bonus_bps: int = 0) -> GearView:
-    """Builds a test bait with given luck and value bonuses."""
+    """Builds a test bait carrying a given luck shift and value bonus.
+
+    Those two are all `roll_catch` reads off a bait; its price is a placeholder for the same
+    reason a rod's is.
+
+    Returns:
+        A bait view for a direct `roll_catch` call.
+    """
     return GearView(
         gear_id="bait",
         gear_type=GearType.BAIT,
@@ -69,7 +116,12 @@ _RARE_GRADES = (FishGrade.SR, FishGrade.SSR, FishGrade.UR)
 
 
 def _payout_band(species: FishSpeciesView) -> tuple[int, int]:
-    """Returns the smallest and largest pre-bait-bonus payout this species can roll."""
+    """Prices a species' size band at both ends, before any bait bonus.
+
+    Returns:
+        The payout at `size_min_bps` and at `size_max_bps`, under the same integer division
+        `roll_catch` applies, so the two agree on the rounding.
+    """
     return (
         species.base_value * species.size_min_bps // FISHING_BPS_DENOMINATOR,
         species.base_value * species.size_max_bps // FISHING_BPS_DENOMINATOR,
@@ -78,11 +130,16 @@ def _payout_band(species: FishSpeciesView) -> tuple[int, int]:
 
 @cache
 def _expected_species_value(species: FishSpeciesView, bait: GearView) -> float:
-    """Returns the exact mean payout of one species, over every size in its band.
+    """Averages one species' payout over every size in its band, exactly.
 
     Enumerated rather than sampled: the tuning guards compare rungs of the gear
     ladder that differ by as little as one point of return, which Monte Carlo
-    noise at any affordable sample size would swamp.
+    noise at any affordable sample size would swamp. A band runs to 20001 sizes
+    and every combo re-prices the whole species table, hence the cache, which the
+    frozen views make possible by being hashable.
+
+    Returns:
+        The mean payout after the bait bonus and the single-catch cap.
     """
     total = 0
     for size_bps in range(species.size_min_bps, species.size_max_bps + 1):
@@ -93,7 +150,11 @@ def _expected_species_value(species: FishSpeciesView, bait: GearView) -> float:
 
 
 def _grade_rates(catalog: FishingCatalog, rod: GearView, bait: GearView) -> dict[FishGrade, float]:
-    """Returns the probability of rolling each grade with this rod and bait."""
+    """Normalizes the luck-adjusted grade weights into probabilities.
+
+    Returns:
+        One probability per grade in the catalog, summing to 1.
+    """
     weights = compose_grade_weights(
         grade_configs=catalog.grades,
         rod_rarity_shift_bps=rod.rarity_shift_bps,
@@ -104,7 +165,16 @@ def _grade_rates(catalog: FishingCatalog, rod: GearView, bait: GearView) -> dict
 
 
 def _expected_catch_value(catalog: FishingCatalog, rod: GearView, bait: GearView) -> float:
-    """Returns the exact expected payout of one cast with this rod and bait."""
+    """Prices one cast: each grade's rate against the mean value of that grade's species.
+
+    Mirrors `roll_catch`'s arithmetic rather than calling it, which is what the closed form buys
+    and also its one risk; the seeded cross-check test is what holds the two models together. A
+    grade with no species fails the assertion here instead of pricing as zero, since the engine
+    would fall back to another grade and the figure would then be wrong rather than missing.
+
+    Returns:
+        The expected payout of one cast.
+    """
     expected = 0.0
     for grade, rate in _grade_rates(catalog=catalog, rod=rod, bait=bait).items():
         in_grade = [item for item in catalog.species if item.grade == grade]
@@ -122,19 +192,35 @@ def _expected_catch_value(catalog: FishingCatalog, rod: GearView, bait: GearView
 
 
 def _return_ratio(catalog: FishingCatalog, rod: GearView, bait: GearView) -> float:
-    """Returns expected payout over per-cast cost: the amortized rod plus the bait."""
+    """Divides a cast's expected payout by what that cast costs to make.
+
+    A rod is bought once and spent over its durability, so its cost is amortized per cast and
+    added to the bait's full price. That additive cost against a multiplicative payout is the
+    shape the gear ladder has to be priced around.
+
+    Returns:
+        Expected payout as a multiple of per-cast cost, where 1.0 is break-even.
+    """
     cost = bait.price + rod.price / rod.durability
     return _expected_catch_value(catalog=catalog, rod=rod, bait=bait) / cost
 
 
 def _rare_catch_rate(catalog: FishingCatalog, rod: GearView, bait: GearView) -> float:
-    """Returns the chance of landing 史詩 or better with this rod and bait."""
+    """Sums the grade rates a player would call a rare catch.
+
+    Returns:
+        The chance one cast lands 史詩 or better.
+    """
     rates = _grade_rates(catalog=catalog, rod=rod, bait=bait)
     return sum(rates[grade] for grade in _RARE_GRADES)
 
 
 def _default_gear_ladders(catalog: FishingCatalog) -> tuple[list[GearView], list[GearView]]:
-    """Returns the default rods and baits, each ordered cheapest tier first."""
+    """Splits the catalog's gear into the two upgrade ladders a player climbs.
+
+    Returns:
+        The rods and the baits, each sorted by `tier`, so list order is upgrade order.
+    """
     rods = sorted(
         (gear for gear in catalog.gear if gear.gear_type is GearType.ROD),
         key=lambda gear: gear.tier,
@@ -147,7 +233,15 @@ def _default_gear_ladders(catalog: FishingCatalog) -> tuple[list[GearView], list
 
 
 def _default_combos(catalog: FishingCatalog) -> list[tuple[GearView, GearView]]:
-    """Returns every rod and bait pairing a player can actually cast with."""
+    """Enumerates every rod and bait pairing a player can actually cast with.
+
+    The per-combo guards have to hold on the mismatched pairings too, not only on matched tiers:
+    the top rod with the cheapest bait is what caps rod amortization, and the cheapest rod with
+    the top bait is what caps that bait's price.
+
+    Returns:
+        Every (rod, bait) pair, rods outermost.
+    """
     rods, baits = _default_gear_ladders(catalog=catalog)
     return [(rod, bait) for rod in rods for bait in baits]
 
@@ -230,7 +324,14 @@ def test_compose_grade_weights_clamps_extreme_negative_shift() -> None:
 
 
 def _ladder(order_indices: tuple[int, ...]) -> tuple[FishGradeConfigView, ...]:
-    """Builds the default grade weights under a given set of order_index values."""
+    """Rebuilds the default grade weights under a chosen set of `order_index` values.
+
+    The weights are the default catalog's, so a test can vary the ranking on its own and compare
+    the result against the contiguous 0..4 spelling of the same ladder.
+
+    Returns:
+        One config per grade, in the fixed N/R/SR/SSR/UR order the weights are written in.
+    """
     weights = (6_000, 3_000, 800, 180, 20)
     grades = (FishGrade.N, FishGrade.R, FishGrade.SR, FishGrade.SSR, FishGrade.UR)
     return tuple(
@@ -386,7 +487,7 @@ def test_every_default_combo_returns_at_least_its_cost() -> None:
 
 
 def test_no_default_combo_prints_past_the_faucet_ceiling() -> None:
-    """The stated ceiling on how much fishing may mint per cast still holds."""
+    """No combo returns more than `_FAUCET_CEILING` times what its cast cost."""
     catalog = build_default_catalog()
     for rod, bait in _default_combos(catalog=catalog):
         ratio = _return_ratio(catalog=catalog, rod=rod, bait=bait)
@@ -463,7 +564,7 @@ def test_each_grade_pays_more_than_every_grade_below_it() -> None:
 
 
 def test_a_rare_catch_never_surfaces_below_its_promised_multiplier() -> None:
-    """A 傳說 always reads 2.00x or better and a 史詩 1.50x or better."""
+    """A 史詩 always reads 1.50x or better, a 傳說 2.00x, and a 神話 3.00x."""
     catalog = build_default_catalog()
     floors = {FishGrade.SR: 15_000, FishGrade.SSR: 20_000, FishGrade.UR: 30_000}
     for species in catalog.species:
@@ -679,7 +780,14 @@ def test_empty_catalog_raises() -> None:
 
 
 def _fish(species_id: str, grade: FishGrade) -> FishSpeciesView:
-    """Builds a fixed-size, fixed-value test species in a grade."""
+    """Builds a fixed-size, fixed-value species for a hand-written catalog.
+
+    A single-point size band and a base value of 1 keep the value arithmetic out of the way, so a
+    test about grade selection or the empty-grade fallback asserts on nothing else.
+
+    Returns:
+        A species row whose only interesting field is its grade.
+    """
     return FishSpeciesView(
         species_id=species_id,
         name=species_id,

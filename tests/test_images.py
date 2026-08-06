@@ -1,3 +1,30 @@
+"""Pins `utils.images.shrink_image_bytes`, the one downscale-and-re-encode policy for ingestion.
+
+Every image that reaches a model crosses this single helper (a Discord attachment or sticker via
+`gen_reply/attachment/loaders.py`, and the linked-post image builders that arrive through the same
+`load_image_bytes`), so what it decides per format is what the model actually sees and there is no
+second policy to fall back on. The cases below are its branch table, and each one is a decision
+rather than an implementation detail: an alpha (`RGBA`) or palette (`P`) image downscales but stays
+PNG, since JPEG would drop transparency and put visible artifacts on flat-color graphics; anything
+else opaque becomes JPEG even when it is already in bounds, because quality-95 JPEG is
+near-lossless at a fraction of PNG's photo bytes; a GIF is handed back untouched so animation
+reaches the model at all; and bytes PIL cannot decode come back unchanged instead of raising, so a
+corrupt attachment degrades to whatever the provider makes of it rather than failing the reply
+around it.
+
+The two byte-identical passthroughs are the assertions with teeth. An in-bounds JPEG and an
+in-bounds transparent PNG are the commonest attachment shapes, so a future re-encode that
+"normalises everything" would quietly rewrite most uploads; comparing against the exact input bytes
+is what stops that landing unnoticed. The `3072` here is `_MAX_IMAGE_DIMENSION` spelled out, and it
+is a transfer-cost bound rather than a quality one: Gemini scales anything larger down server-side
+anyway.
+
+The oversized fixtures are 4000x20 because only the longest edge has to cross the cap, which keeps
+every encode and decode in this file cheap. The rest of `utils/images.py` is deliberately not
+pinned here: `get_pil_image` and `get_image_data` reach the network, and
+`convert_base64_to_data_uri` serves the generation paths rather than this ingestion cap.
+"""
+
 from io import BytesIO
 
 from PIL import Image
@@ -6,7 +33,14 @@ from discordbot.utils.images import shrink_image_bytes
 
 
 def _encoded_bytes(size: tuple[int, int], mode: str, image_format: str) -> bytes:
-    """Encodes a solid-color test image of the given size, mode, and format."""
+    """Encodes a solid-color test image of the given size, mode, and format.
+
+    `mode` is what selects the branch under test: `RGBA` carries alpha and `P` is a palette image,
+    both of which `shrink_image_bytes` refuses to turn into JPEG.
+
+    Returns:
+        The encoded image bytes.
+    """
     buffer = BytesIO()
     Image.new(mode=mode, size=size, color=0).save(fp=buffer, format=image_format)
     return buffer.getvalue()

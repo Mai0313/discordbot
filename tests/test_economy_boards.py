@@ -1,4 +1,29 @@
-"""Tests for economy ranking board images."""
+"""Pins the two economy ranking boards and the render cache that now bounds itself.
+
+`cogs/economy/boards.py` draws `/leaderboard` and `/loss_leaderboard` as PNG tables, and the two
+rendering tests here assert shape rather than pixels: the PNG magic, the fixed `_BOARD_WIDTH`, and
+a height past the header block. That is deliberate. `load_font` degrades silently to a Latin-only
+face and then to Pillow's own default when the host carries no CJK font, so anything measured off
+glyphs would read differently in CI than on a developer's machine, while the layout arithmetic
+this file actually owns holds either way: the canvas width is a constant whatever the name, and
+the height follows the row count. The values fed in are the ones that pushed these tables out of
+an embed in the first place, an overlong CJK name and an amount that only reads in scale units.
+
+The `_ranking_amount_text` pair pins the cell both shipped boards ask for: `amount_label` empty,
+so a row shows the compact amount alone rather than repeating the column caption into every line.
+
+The last three are the point of the file. No ledger write path clears this cache and none may,
+since keeping that import direction one-way is what keeps Pillow out of the ledger, so expiry
+carries the whole job and each half of it is pinned here: an identical spec is served from memory
+instead of re-rendered, the TTL is what forces a re-render, and a superseded entry is evicted
+rather than left to accumulate. Staleness is not among the failure modes, because the rows travel
+inside the cache key and a balance change therefore strands an entry instead of poisoning one;
+growth is, and it is what the ledger's dropped invalidation call used to hold back.
+
+The cache is a module-level dict living for the whole process, so the autouse fixture empties it
+on both sides of every test and `_age_cached_boards_past_the_ttl` backdates entries instead of
+sleeping out a real TTL.
+"""
 
 from io import BytesIO
 from time import monotonic
@@ -23,9 +48,8 @@ from discordbot.cogs.economy.boards import (
 def _empty_board_cache() -> Iterator[None]:
     """Starts every test from an empty process-local board cache.
 
-    Nothing clears it in production any more, so a leftover entry from a previous
-    test would otherwise be indistinguishable from one this test's own eviction
-    was supposed to remove.
+    Nothing clears it in production any more, so a leftover entry from a previous test would
+    otherwise be indistinguishable from one this test's own eviction was supposed to remove.
     """
     _board_image_cache.clear()
     yield
@@ -33,7 +57,7 @@ def _empty_board_cache() -> Iterator[None]:
 
 
 def test_balance_leaderboard_board_handles_large_balances_and_long_names() -> None:
-    """Balance leaderboard rendering stays image-backed for long table values."""
+    """An overlong CJK name beside a 兆-scale balance still renders to a fixed-width PNG."""
     image = build_balance_leaderboard_board_image(
         rows=(
             LeaderboardEntry(
@@ -49,7 +73,7 @@ def test_balance_leaderboard_board_handles_large_balances_and_long_names() -> No
 
 
 def test_loss_leaderboard_board_handles_large_losses() -> None:
-    """Loss leaderboard rendering stays image-backed for large daily loss values."""
+    """A daily loss well past the digits an embed row could align still renders to a PNG."""
     image = build_loss_leaderboard_board_image(
         rows=(LossLeaderboardEntry(user_id=1, name="alice", loss_amount=987_654_321_000),)
     )
@@ -128,12 +152,7 @@ def test_an_expired_board_renders_again(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_a_superseded_board_is_evicted_without_a_write_path() -> None:
-    """Nothing outside this module reaps the cache, so expiry has to be the size bound.
-
-    A balance change never poisons a cached board: the rows are part of the key, so
-    it mints a new entry and abandons the old one. Growth is the only failure mode
-    left, and it is what the ledger's invalidation call used to hold back.
-    """
+    """An expired entry a later render superseded is dropped rather than accumulated."""
     build_balance_leaderboard_board_image(
         rows=(LeaderboardEntry(user_id=1, name="alice", balance=100),)
     )
@@ -146,7 +165,11 @@ def test_a_superseded_board_is_evicted_without_a_write_path() -> None:
 
 
 def _age_cached_boards_past_the_ttl() -> None:
-    """Backdates every cached board so the next lookup treats it as expired."""
+    """Backdates every cached board so the next lookup treats it as expired.
+
+    Rewriting the stored timestamp rather than sleeping, so an expiry test costs nothing instead
+    of a whole TTL.
+    """
     aged = monotonic() - _BOARD_IMAGE_CACHE_TTL_SECONDS - 1
     for spec, (_, image) in list(_board_image_cache.items()):
         _board_image_cache[spec] = (aged, image)

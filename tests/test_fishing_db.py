@@ -1,4 +1,40 @@
-"""Tests for the fishing database and settlement layer."""
+"""Pins the fishing store and the two settlement paths that cross into the economy database.
+
+`cogs/games/fishing/database.py` is the mini-game's whole storage half — three tunable catalog
+tables, two per-user ones, and the append-only catch log — and it is also the only place fishing
+touches money, spending and collecting through `services/economy/database.py`. So every test here
+runs against both files at once. The pure roll arithmetic that module feeds catalog rows to is
+`tests/test_fishing_catch.py`'s subject and the rendering is `tests/test_fishing_views.py`'s; a
+seeded `Random` is injected below only to make a cast reproducible, never to assert what it caught.
+
+What is pinned here, and why each is worth pinning:
+
+- The purchase ordering. The wallet is burned before the gear is granted, so the only outcome that
+  ordering permits on a failure is charging for nothing, and the refund is what closes it. Nothing
+  else can reach that path, so `_grant_gear_in_session` is monkeypatched into raising.
+- Quantity semantics at the service layer. `purchase_gear` rejects a non-positive quantity and one
+  over `MAX_BAIT_PER_PURCHASE` itself, so the economy invariant never rests on the view's option
+  parser staying the only caller.
+- Buying a rod replaces the equipped rod and resets durability to the new rod's, forfeiting the
+  casts left on the old one; bait stacks onto whatever is already held.
+- The cast's bookkeeping: exactly one bait and one durability point spent, exactly one catch row
+  written, and the payout credited on top of the balance the cast started from.
+- A broken rod keeps its slot. The break is reported on the cast that caused it, and the next cast
+  is refused as `BROKEN_ROD` rather than `NO_ROD`, which is what lets the panel still name what
+  broke.
+- The guards return before the first write, so a cast with no rod or no bait costs neither bait,
+  durability, nor money.
+- Numeric ordering over the decimal-text `value` column. `StoredInteger` sorts lexicographically in
+  SQL, where 5 outranks 100000 and 99999 outranks 100000, so the store's SQL-side ORDER BY is the
+  only thing standing between the top-catch board and a wrong ranking.
+- The reset clears anglers, bait and catches while leaving the catalog, so it needs no re-seed.
+  Nothing under `src/` calls `reset_all_fishing` any more, which leaves this file its only caller.
+
+`pytestmark` puts every test on `fishing_isolated_db`, which layers on `economy_isolated_db`
+because both halves of a settlement have to land somewhere throwaway. That fixture creates the
+schema and nothing else, so `_seed_catalog` carries `defaults.py` in for whatever needs gear to
+sell.
+"""
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
 
@@ -61,7 +97,7 @@ async def test_buy_bait_debits_and_stacks() -> None:
 
 
 async def test_insufficient_purchase_is_rejected() -> None:
-    """A purchase the user cannot afford is rejected with no gear granted."""
+    """A purchase the user cannot afford leaves the wallet untouched and grants no gear."""
     await _seed_catalog()
     await _give(user_id=1, amount=100)
     result = await purchase_gear(user_id=1, name="angler", gear_id="rod_carbon", quantity=1)
@@ -167,7 +203,7 @@ async def test_rod_breaks_then_blocks_next_cast() -> None:
 
 
 async def test_cast_guards() -> None:
-    """Casting without a rod or without the bait returns typed failures."""
+    """Casting without a rod or without the bait returns a typed failure and costs nothing."""
     await _seed_catalog()
     await _give(user_id=1, amount=100_000)
     no_rod = await settle_cast(user_id=1, name="angler", bait_id="bait_worm", rng=Random(1))

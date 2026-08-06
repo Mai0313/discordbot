@@ -1,4 +1,36 @@
-"""Tests for the economy persistence layer."""
+"""Pins the economy ledger and the Blackjack table that settles through it.
+
+Two layers share one file because they settle together. `services/economy/database.py` is the
+ledger — wallets, check-in and VIP state, the casino ledger row, the shared jackpot pools and the
+two leaderboards — while `cogs/games/settlement.py` and `cogs/games/blackjack_views.py` sit on top
+of it, so a round is exercised from the button callback down to the committed row.
+
+What is pinned here, and why each is worth pinning:
+
+- The accounting identity. There is no transaction table, so `balance == total_earned -
+  total_spent` is the ledger's only self-check: a path that moves the balance without bumping the
+  matching lifetime total leaves nothing else to catch it. Those checks go through
+  `tests/helpers/economy_invariants.py` instead of each test re-summing the numbers by hand.
+- Concurrency. Every money path is meant to be atomic at the SQLite transaction level, so the
+  double-spend, lost-update, first-sight INSERT and jackpot double-claim races each get an
+  `asyncio.gather` of their own. These are the failures that silently mint or destroy points.
+- Decimal-text money columns. Wallets, casino counters and jackpot pools are `StoredInteger` text
+  to escape SQLite's 64-bit ceiling, so the schema tests assert TEXT affinity and the 10**20
+  round-trips assert `typeof()` never drifted to REAL under a large value.
+- Clamping. A debit that runs out of balance stops at zero and the house side is credited with
+  what was actually collected, never with what was asked for.
+- The house-versus-player split. The casino ledger is its own row rather than the bot's wallet;
+  the system-funded 過五關 bonus and any VIP share computed from it stay off `/casino`; and
+  `/loss_leaderboard` reads gross daily loss, so a later win cannot erase it.
+- The Blackjack view's ordering. Settlement is latched so it pays once, a late Hit cannot mutate a
+  hand that is already finalizing, a stale interaction cannot act on the next seat, and the dealer
+  plays H17 deterministically.
+
+`pytestmark` puts every test on `economy_isolated_db`, so the module runs against a throwaway
+`economy.db` that carries the schema but none of the seed rows until a call bootstraps them. The
+autouse `_no_blackjack_history` fixture stubs the off-critical-path round-history write, which
+targets `games.db` and is therefore outside that fixture's isolation.
+"""
 
 from random import Random, SystemRandom
 from typing import Any, cast
@@ -110,7 +142,7 @@ class _MessageStub:
     """Minimal message stub that records edit calls."""
 
     def __init__(self) -> None:
-        """Initializes the message edit counter."""
+        """Initializes the stub message identity and its edit recorders."""
         self.id = 999
         self.guild = None
         self.edit_calls = 0
@@ -162,7 +194,7 @@ class _InteractionStub:
     """Minimal button interaction stub."""
 
     def __init__(self, message: _MessageStub, user_id: int = 1) -> None:
-        """Initializes an interaction with a message and response stub."""
+        """Initializes the interaction over a message stub, with response, followup and user."""
         self.message = message
         self.response = _ResponseStub()
         self.followup = _FollowupStub()
@@ -176,7 +208,11 @@ def _participant(
     bet: int = 50,
     balance_at_start: int = 100,
 ) -> GameParticipant:
-    """Builds a prepared Blackjack participant for view tests."""
+    """Builds a seated Blackjack participant whose bet is already placed.
+
+    Returns:
+        The participant, never marked all-in, so a settlement clamp is the test's own to arrange.
+    """
     return GameParticipant(
         user_id=user_id,
         account_name=account_name,
@@ -193,7 +229,14 @@ def _round_from_cards(
     participant: GameParticipant,
     finished: bool,
 ) -> BlackjackRound:
-    """Builds the production Blackjack round shape used by views and settlement."""
+    """Builds the production Blackjack round shape used by views and settlement.
+
+    The round is dealt for real and then overwritten with the given cards, so the shape stays the
+    one production builds while the hand itself is deterministic.
+
+    Returns:
+        A single-seat round, settled or mid-action according to `finished`.
+    """
     round_state = BlackjackRound.from_participants(rng=SystemRandom(), participants=[participant])
     round_state.players[0].hands[0].cards = list(player_cards)
     round_state.players[0].hands[0].finished = finished
@@ -205,7 +248,11 @@ def _round_from_cards(
 
 
 async def _stored_avatar_url(user_id: int) -> str:
-    """Reads the cached avatar URL for one account."""
+    """Reads the last-seen avatar URL cached on one account row.
+
+    Returns:
+        The stored URL; a caller whose account row is missing fails here rather than reading "".
+    """
     async with open_session() as session:
         result = await session.execute(
             statement=select(UserAccount.avatar_url).where(UserAccount.user_id == user_id)
@@ -214,7 +261,11 @@ async def _stored_avatar_url(user_id: int) -> str:
 
 
 async def _stored_wallet_name(user_id: int) -> str:
-    """Reads the denormalized wallet name for one account."""
+    """Reads the name denormalized onto one wallet row.
+
+    Returns:
+        The stored name; a caller whose wallet row is missing fails here rather than reading "".
+    """
     async with open_session() as session:
         result = await session.execute(
             statement=select(UserWallet.name).where(UserWallet.user_id == user_id)
@@ -223,7 +274,12 @@ async def _stored_wallet_name(user_id: int) -> str:
 
 
 async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | None]:
-    """Reads daily casino `(loss, win, net, day_started_at)` counters."""
+    """Reads one user's daily casino counters straight off `casino_account`.
+
+    Returns:
+        `(loss, win, net, day_started_at)`, all zero and None when the user has no counter row,
+        which is how a caller distinguishes "never settled" from "settled to zero".
+    """
     async with open_session() as session:
         result = await session.execute(
             statement=select(
@@ -247,7 +303,13 @@ async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | N
 async def _economy_schema_details() -> tuple[
     set[str], set[str], set[str], dict[str, set[str]], dict[str, dict[str, str]]
 ]:
-    """Reads current economy schema metadata."""
+    """Reads the economy schema back out of SQLite's own catalog.
+
+    Returns:
+        `(table names, user_wallet index names, casino_account index names, columns per table,
+        column types per table)`, the last two covering only the five tables the schema tests
+        assert on.
+    """
     async with open_session() as session:
         result = await session.execute(
             statement=text(
@@ -283,7 +345,12 @@ async def _economy_schema_details() -> tuple[
 
 
 async def _jackpot_schema_details() -> tuple[tuple[int, int, int, int, int], dict[str, str]]:
-    """Reads the seeded jackpot row and its column types from the economy DB."""
+    """Reads the seeded dragon_gate jackpot row and the jackpot table's column types.
+
+    Returns:
+        `((pool_balance, total_contributed, total_claimed, seeded_amount, generation), column
+        types)`.
+    """
     async with open_session() as session:
         result = await session.execute(
             statement=select(
@@ -303,7 +370,11 @@ async def _jackpot_schema_details() -> tuple[tuple[int, int, int, int, int], dic
 def _assert_money_columns_are_text(
     table_column_types: dict[str, dict[str, str]], jackpot_column_types: dict[str, str]
 ) -> None:
-    """Checks all decimal-string money columns use SQLite TEXT affinity."""
+    """Checks every decimal-string money column still carries SQLite TEXT affinity.
+
+    A column that drifted to INTEGER or REAL would keep passing the ordinary tests and only lose
+    precision once a balance climbs past what a 64-bit integer holds.
+    """
     economy_money_columns = {
         "user_wallet": ("balance", "total_earned", "total_spent"),
         "loan_proposal": ("amount", "escrow_amount"),
@@ -324,7 +395,14 @@ def _assert_money_columns_are_text(
 
 
 async def _add_balance(user_id: int, name: str, amount: int, avatar_url: str = "") -> int:
-    """Seeds a positive balance without loan or casino side effects."""
+    """Seeds a starting balance without loan repayment or casino counter side effects.
+
+    Goes through `adjust_balance`, the one unclamped maintenance write, so seeding never pollutes
+    the daily counters a loss-leaderboard test then reads.
+
+    Returns:
+        The balance after the credit, or the current balance when `amount` is not positive.
+    """
     if amount <= 0:
         return await get_balance(user_id=user_id)
     result = await adjust_balance(user_id=user_id, name=name, delta=amount, avatar_url=avatar_url)
@@ -470,7 +548,7 @@ async def test_write_timestamps_use_taiwan_local_time() -> None:
 async def test_ensure_schema_bootstraps_current_databases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A clean startup creates only the current economy tables."""
+    """A clean startup creates exactly the current tables, indexes, text money columns and seed."""
     db_path = tmp_path / "current-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
@@ -556,11 +634,7 @@ async def test_get_balance_unknown_user_returns_zero() -> None:
     argnames=("sender_start", "amount"), argvalues=[(200, 80), (1_000, 1_000), (10_000, 2_500)]
 )
 async def test_transfer_taxes_and_preserves_invariant(sender_start: int, amount: int) -> None:
-    """A transfer debits the sender in full, burns the tax, and credits the taxed net.
-
-    The burned tax is derived from TRANSFER_TAX_BPS rather than hardcoded, and both wallets keep
-    the balance == total_earned - total_spent identity, so the burn truly leaves circulation.
-    """
+    """A transfer debits the sender in full, burns the tax, and credits only the taxed net."""
     await _add_balance(user_id=1, name="alice", amount=sender_start)
     result = await transfer(
         sender_id=1, sender_name="alice", receiver_id=2, receiver_name="bob", amount=amount
@@ -718,6 +792,7 @@ async def test_top_n_db_order_handles_large_zero_and_negative_balances() -> None
 
     rows = await top_n(limit=None)
 
+    # A zero delta is a pure read, so user 3 never gets a wallet row and only five are listed.
     assert [(row.user_id, row.balance) for row in rows] == [
         (1, 10**30),
         (2, 999),
@@ -1053,7 +1128,11 @@ async def test_blackjack_view_locks_actions_while_finalizing(
         cleanup_messages.append(message)
 
     async def delayed_settle_blackjack_player(**_kwargs: Any) -> BlackjackPlayerSettlement:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Blocks settlement until the test releases the finalization lock."""
+        """Blocks settlement until the test releases the finalization lock.
+
+        Returns:
+            A fixed winning settlement, so the delay is the only thing this double changes.
+        """
         settlement_started.set()
         await continue_settlement.wait()
         return BlackjackPlayerSettlement(
@@ -1173,7 +1252,11 @@ async def test_blackjack_view_rejects_stale_hit_without_drawing_for_next_player(
     """A stale Hit interaction cannot draw a card for the next active player."""
 
     def fail_draw(rng: Random) -> Card:
-        """Fails the test if stale Hit reaches card draw."""
+        """Fails the test if a stale Hit reaches the card draw.
+
+        Raises:
+            AssertionError: Always, since reaching a draw is the defect under test.
+        """
         raise AssertionError("stale hit should not draw")
 
     monkeypatch.setattr("discordbot.cogs.games.blackjack.draw_card", fail_draw)
@@ -1263,14 +1346,14 @@ async def test_blackjack_view_hit_draws_for_active_split_hand(
 
 
 async def test_add_balance_concurrent_credits_accumulate() -> None:
-    """Verifies that concurrent credits on the same user do not lose updates."""
+    """Concurrent credits on the same user do not lose updates."""
     await _add_balance(user_id=42, name="alice", amount=100)
     await asyncio.gather(*[_add_balance(user_id=42, name="alice", amount=10) for _ in range(20)])
     assert await get_balance(user_id=42) == 300
 
 
 async def test_add_balance_concurrent_first_sight_does_not_raise() -> None:
-    """Verifies that concurrent first-sight credits merge instead of racing."""
+    """Concurrent first-sight credits merge into one row instead of racing on the INSERT."""
     results = await asyncio.gather(*[
         _add_balance(user_id=42, name="alice", amount=10) for _ in range(8)
     ])
@@ -1291,7 +1374,7 @@ async def test_apply_round_settlement_concurrent_credits_accumulate() -> None:
 
 
 async def test_apply_round_settlement_concurrent_casino_updates_accumulate() -> None:
-    """Verifies that concurrent casino ledger settlements accumulate."""
+    """Concurrent casino ledger settlements accumulate instead of overwriting each other."""
     for user_id in range(10):
         await _add_balance(user_id=user_id, name=f"player{user_id}", amount=10)
     await asyncio.gather(*[
@@ -1782,7 +1865,11 @@ async def test_settle_wager_keeps_loss_unchanged_for_vip() -> None:
 
 
 async def _settle_player(round_state: BlackjackRound) -> BlackjackPlayerSettlement:
-    """Helper that runs settle_blackjack_player against the only player."""
+    """Settles a single-seat round through the production Blackjack settlement path.
+
+    Returns:
+        The seat's aggregate settlement, split hands, five-card bonus and insurance included.
+    """
     player = round_state.players[0]
     return await settle_blackjack_player(
         round_state=round_state,
@@ -1932,13 +2019,7 @@ async def test_settle_blackjack_player_five_card(
     is_vip: bool,
     expect_outcome: str,
 ) -> None:
-    """Five-card settlement: a non-21 hand wins regardless of dealer, a 21 follows the comparison.
-
-    Every expected delta is derived from the rules -- the bet, the five-card bonus, and the VIP
-    perk -- rather than hardcoded. The house ledger and daily counters are checked through the
-    invariant helpers, proving the system-funded five-card and VIP-from-bonus payouts never move
-    /casino while the dealer-funded portion does.
-    """
+    """A five-card non-21 hand wins regardless of the dealer; a five-card 21 is compared."""
     bet = 10_000
     starting = 100_000
     seed = (VIP_PURCHASE_COST + starting) if is_vip else starting
@@ -2331,7 +2412,14 @@ async def test_apply_jackpot_settlement_batch_rolls_back_on_failure(
     async def flaky_apply_jackpot_delta_in_session(
         **kwargs: Any,  # noqa: ANN401 -- test double accepts heterogeneous kwargs
     ) -> tuple[JackpotSnapshot, bool]:
-        """Fails on the second jackpot write to test batch rollback."""
+        """Fails on the second jackpot write so the batch has to roll back a committed-looking one.
+
+        Returns:
+            What the real helper returns, for every call but the second.
+
+        Raises:
+            RuntimeError: On the second call, standing in for a mid-batch write failure.
+        """
         nonlocal calls
         calls += 1
         if calls == 2:

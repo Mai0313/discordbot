@@ -44,7 +44,11 @@ type Function = ast.FunctionDef | ast.AsyncFunctionDef
 
 
 def _modules() -> list[Path]:
-    """Every Python module in scope, skipping bytecode caches and the empty `__init__.py`."""
+    """Every Python module in scope, skipping bytecode caches and the empty `__init__.py`.
+
+    Returns:
+        Each module's path, `src/` before `tests/` and sorted within each.
+    """
     found: list[Path] = []
     for root in _SCANNED_ROOTS:
         for path in sorted(root.rglob("*.py")):
@@ -57,17 +61,29 @@ def _modules() -> list[Path]:
 
 
 def _parse(path: Path) -> ast.Module:
-    """The parsed module at a path."""
+    """Parses the module at a path.
+
+    Returns:
+        Its syntax tree.
+    """
     return ast.parse(path.read_text(encoding="utf-8"))
 
 
 def _rel(path: Path) -> str:
-    """The repository-relative path, for offender messages and the `Args:` scope test."""
+    """Renders a path for offender messages and for the `Args:` scope test.
+
+    Returns:
+        The path relative to the repository root, with forward slashes.
+    """
     return path.relative_to(_ROOT).as_posix()
 
 
 def _owes_typed_args(path: Path) -> bool:
-    """Whether this file's functions owe a complete typed `Args:` block."""
+    """Decides whether this file's functions owe a complete typed `Args:` block.
+
+    Returns:
+        True for everything under `src/`, plus `tests/helpers/` and `tests/conftest.py`.
+    """
     return _rel(path).startswith(_ARGS_REQUIRED)
 
 
@@ -98,6 +114,9 @@ def _parameters(node: Function) -> list[tuple[str, str | None]]:
     Ordered the way `Args:` has to list them, which is the signature's own order:
     positional-only, positional-or-keyword, `*args`, keyword-only, then `**kwargs`. `self` and
     `cls` are dropped; the annotation is None where the signature carries none.
+
+    Returns:
+        One `(display_name, annotation)` pair per documentable parameter.
     """
     arguments = node.args
     found: list[tuple[str, str | None]] = []
@@ -123,6 +142,10 @@ def _args_entries(docstring: str) -> list[tuple[str, str | None]] | None:
     column 0 and its entries one level in. A line indented further is a wrapped description
     and is skipped, which is what keeps a continuation containing a colon from being read as
     another parameter.
+
+    Returns:
+        One `(name, declared_type)` pair per entry, `declared_type` None where the entry carries
+        no type, or None when the docstring has no `Args:` section at all.
     """
     lines = docstring.splitlines()
     header = next((i for i, line in enumerate(lines) if line.strip() == "Args:"), None)
@@ -150,6 +173,10 @@ def _normalised(annotation: str) -> str:
     `ast.unparse` re-spells the signature's source: it single-quotes a string annotation and
     normalises the spacing inside a union. Neither is a difference the convention is about, so
     quote style and whitespace are flattened and a whole-annotation string form is unwrapped.
+
+    Returns:
+        The annotation with quotes normalised, an outer string form unwrapped, and whitespace
+        removed.
     """
     text = annotation.strip().replace("'", '"')
     if len(text) >= 2 and text[0] == '"' and text[-1] == '"':
@@ -158,7 +185,11 @@ def _normalised(annotation: str) -> str:
 
 
 def _report(offenders: list[str], *, limit: int = 25) -> str:
-    """A failure message listing offenders, stating the real total when it truncates."""
+    """Builds a failure message listing offenders, stating the real total when it truncates.
+
+    Returns:
+        The offender lines, capped at `limit`, with the dropped count named rather than hidden.
+    """
     shown = "\n".join(f"  {line}" for line in offenders[:limit])
     if len(offenders) <= limit:
         return f"{len(offenders)} found:\n{shown}"

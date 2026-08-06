@@ -1,8 +1,22 @@
-"""Tests for the Douyin share-page parser and downloader.
+"""Tests for `utils/douyin.py` and for `/download_video`'s Douyin branch.
 
 Every HTTP call is stubbed. Besides the usual reason (tests must not depend on a live site),
 Douyin bans a share path for tens of minutes once it is hit hard, so a test suite that reached
 the real endpoint would take the whole deployment down with it.
+
+The file falls into two halves. The first pins `utils/douyin.py`: the detection vocabulary
+(`DOUYIN_URL_RE`, `is_douyin_url`, `is_douyin_post_url`), the share-page parse (which
+`loaderData` key is read, keying the photo branch on `aweme_type` rather than `play_addr`,
+picking the watermark-free image URL), the request-volume machinery that keeps the WAF quiet
+(both caches and the Location-only redirect probe), and what a download leaves on disk when it
+stalls, overflows its cap or fails to write. The second half drives `VideoCogs.download_video`
+through `_StubDouyinDownloader`: routing away from yt-dlp, the gallery cap and its omitted
+count, hosted-URL delivery, and one user-facing message per failure kind.
+
+The error taxonomy is what most of the assertions are really about. `DouyinBlockedError` (a bot
+wall, retryable) and `DouyinUnavailableError` (the post is gone) must stay distinguishable at
+every layer, because reporting a block as a deleted post sends someone off to re-check a link
+that is perfectly fine.
 """
 
 import json
@@ -88,7 +102,11 @@ _PHOTO_ITEM: dict[str, Any] = {
 
 
 def _router_html(page_key: str, video_info: dict[str, Any]) -> str:
-    """Builds a share page whose loaderData key follows the fetched URL path."""
+    """Builds a share page whose loaderData key follows the fetched URL path.
+
+    Returns:
+        The page HTML, with the payload inlined as a `_ROUTER_DATA` assignment.
+    """
     payload = {
         "loaderData": {
             f"{page_key}_layout": {"ua": "stub"},
@@ -102,7 +120,11 @@ def _router_html(page_key: str, video_info: dict[str, Any]) -> str:
 
 
 def _ok_page(item: dict[str, Any], page_key: str = "note") -> str:
-    """A share page carrying exactly one post."""
+    """Builds a share page carrying exactly one post.
+
+    Returns:
+        The page HTML, with `item_list` holding `item` and nothing filtered out.
+    """
     return _router_html(page_key=page_key, video_info={"item_list": [item], "filter_list": []})
 
 
@@ -125,15 +147,25 @@ class _FakeResponse:
         self._stall_mid_stream = stall_mid_stream
 
     def raise_for_status(self) -> None:
-        """Mimics requests' status check."""
+        """Mimics requests' status check.
+
+        Raises:
+            RequestException: The canned status is 400 or above.
+        """
         if self.status_code >= 400:
             raise douyin_module.RequestException(f"status {self.status_code}")
 
     def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-        """Yields the canned body, optionally dying part-way through.
+        """Streams the canned body, optionally dying part-way through.
 
         Stalling mid-stream is the failure the CDN actually produces, and it is the only shape
         that leaves a partial file on disk, so it is what the cleanup assertions need.
+
+        Yields:
+            The whole canned body as a single chunk.
+
+        Raises:
+            RequestException: `stall_mid_stream` is set, after the body has been handed over.
         """
         if self._stall_mid_stream:
             yield self._body
@@ -141,16 +173,20 @@ class _FakeResponse:
         yield self._body
 
     def close(self) -> None:
-        """Matches the Response API used by the redirect probe."""
+        """Matches the Response API the redirect probe and the oversize-header guard both call."""
 
 
 def _install_session(
     monkeypatch: pytest.MonkeyPatch, handler: Callable[[str, dict[str, object]], _FakeResponse]
 ) -> list[dict[str, Any]]:
-    """Replaces requests.Session with a stub driven by `handler`; returns the captured calls.
+    """Replaces requests.Session with a stub driven by `handler`.
 
-    A captured call is the request kwargs bag, so `Any` is what lets an assertion reach into a
-    nested value such as `calls[0]["headers"]["User-Agent"]`.
+    A captured call is the request kwargs bag plus its url, so `Any` is what lets an assertion
+    reach into a nested value such as `calls[0]["headers"]["User-Agent"]`.
+
+    Returns:
+        The capture list, appended to as the stub is used, so a caller reads it after the code
+        under test has run.
     """
     calls: list[dict[str, Any]] = []
 
@@ -537,7 +573,11 @@ def test_oversize_content_length_writes_nothing(
 
     class _CountingResponse(_FakeResponse):
         def iter_content(self, chunk_size: int) -> Iterator[bytes]:
-            """Records that the body was read at all."""
+            """Records that the body was read at all.
+
+            Yields:
+                Whatever the base stub yields, unchanged.
+            """
             read_bodies["count"] += 1
             yield from super().iter_content(chunk_size=chunk_size)
 
@@ -608,7 +648,11 @@ def test_download_reuses_a_caller_supplied_post(
     original_parse = DouyinDownloader.parse_metadata
 
     def counting_parse(self: DouyinDownloader, url: str) -> object:
-        """Counts every metadata parse the downloader performs."""
+        """Counts every metadata parse the downloader performs.
+
+        Returns:
+            Whatever the real `parse_metadata` returned.
+        """
         parses["count"] += 1
         return original_parse(self, url=url)
 
@@ -750,6 +794,9 @@ def test_local_write_failure_leaves_no_partial_file(
         """Writes a partial file and then fails, as a full disk would.
 
         The downloader only ever opens with a positional mode, so the stub mirrors that shape.
+
+        Returns:
+            The real file handle, with its `write` rigged to raise after the bytes have landed.
         """
         handle: IO[bytes] = real_open(self, mode)
         original_write = handle.write
@@ -781,7 +828,11 @@ class _StubDouyinDownloader:
         self.calls: list[dict[str, Any]] = []
 
     def download(self, url: str, quality: str, max_images: int | None = None) -> DouyinDownload:
-        """Records the request and returns the canned result, or raises."""
+        """Records the request and hands back the canned outcome, raising it when it is an error.
+
+        Returns:
+            The canned download result.
+        """
         self.calls.append({"url": url, "quality": quality, "max_images": max_images})
         if isinstance(self.outcome, BaseException):
             raise self.outcome
@@ -791,7 +842,14 @@ class _StubDouyinDownloader:
 def _install_cog(
     monkeypatch: pytest.MonkeyPatch, outcome: DouyinDownload | BaseException
 ) -> tuple[VideoCogs, _StubDouyinDownloader]:
-    """Builds a VideoCogs wired to a stub Douyin downloader."""
+    """Builds a VideoCogs wired to a stub Douyin downloader.
+
+    Patches the name the cog resolves at call time, so the real downloader is never constructed
+    and no request leaves the test.
+
+    Returns:
+        The cog and the stub, the latter carrying the arguments the cog passed down.
+    """
     cog = VideoCogs(bot=as_bot(fake=object()))
     stub = _StubDouyinDownloader(outcome=outcome)
     monkeypatch.setattr(video, "DouyinDownloader", lambda output_folder: stub)

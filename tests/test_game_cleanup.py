@@ -1,4 +1,32 @@
-"""Tests for public response cleanup helpers."""
+"""Pins both halves of the public-message TTL: the in-process delete and the restart sweep.
+
+`utils/message_cleanup.py` promises that a public response with a lifetime (a settled Blackjack
+table, a Dragon Gate round, an economy embed, a stock or fishing panel) leaves the channel even
+when the process that posted it does not live long enough to delete it. That takes two mechanisms
+agreeing on one `pending_game_message` row, and it is that row's lifecycle these tests hold still:
+scheduling a delete writes the row, a delete that succeeds drops it, and a sweep that cannot reach
+the message KEEPS it so a later process gets another try. A row dropped one step too eagerly
+leaves the sweep nothing to act on, and a message on screen with no row is one nothing will ever
+clean up.
+
+Which of those the sweep lands on is decided entirely by how it resolves the recorded channel, so
+that is pinned in three shapes: an empty cache falls through to the REST fetch, a cached channel
+that is not `Messageable` is re-fetched rather than trusted (a `PartialMessageable` cannot fetch a
+message by id), and a channel still unusable after the fetch leaves the record alone rather than
+counting as cleaned up. `_FetchMessageChannelStub` subclasses `Messageable` for the same reason
+the middle case exists: production narrows with `isinstance`, so a merely duck-typed stub would
+send the sweep down the wrong branch and pass a test that proves nothing.
+
+Two `utils/interaction_responses.py` tests guard the decision one step upstream, since a message
+never handed to the scheduler is cleaned up by neither half: `send_expiring_followup` must send
+with `wait=True` (the one overload declared to hand back a message rather than None) and put that
+message into the scheduler, while `send_private_followup` must stay out of it.
+
+The file name and the `pending_game_message` table are historical — the games cog still owns the
+single `on_ready` sweep, but economy, stock and fishing schedule through the same helpers. The
+autouse `isolated_cleanup_db` fixture repoints the module-level DB path at a `tmp_path`, so
+nothing here touches the real `data/database/games.db`.
+"""
 
 import asyncio
 from pathlib import Path
@@ -23,7 +51,7 @@ from tests.helpers.casting import as_bot, as_message, as_interaction, make_not_f
 
 
 class _DeletableMessageStub:
-    """Minimal message stub that records deletion."""
+    """Message stub carrying the identity a cleanup record stores, counting its deletions."""
 
     def __init__(
         self,
@@ -32,7 +60,7 @@ class _DeletableMessageStub:
         guild_name: str | None = None,
         channel_name: str | None = None,
     ) -> None:
-        """Initializes message and channel IDs for cleanup tracking."""
+        """Builds the message identity, attaching a guild only when one is named."""
         self.id = message_id
         guild = _GuildStub(name=guild_name) if guild_name is not None else None
         self.guild = guild
@@ -40,20 +68,23 @@ class _DeletableMessageStub:
         self.delete_calls = 0
 
     async def delete(self) -> None:
-        """Records a Discord message deletion."""
+        """Counts one deletion instead of calling Discord."""
         self.delete_calls += 1
 
 
 class _AlreadyDeletedMessageStub:
-    """Message stub that behaves like Discord already removed it."""
+    """Message stub standing in for a message Discord no longer has."""
 
     def __init__(self) -> None:
-        """Initializes a message identity that will fail deletion."""
+        """Builds the identity of a message whose deletion will 404."""
         self.id = 789
         self.channel = _ChannelStub(channel_id=456)
 
     async def delete(self) -> None:
-        """Raises the same exception nextcord raises for missing messages."""
+        """Raises the exception nextcord raises for a message Discord no longer has.
+
+        Built through `make_not_found` because `NotFound` needs an aiohttp response to construct.
+        """  # noqa: DOC501 -- ruff reads the raise as `make_not_found`, a builder, not a type
         raise make_not_found()
 
 
@@ -70,7 +101,7 @@ class _ChannelStub:
 
 
 class _GuildStub:
-    """Minimal guild shape for persistent cleanup readability."""
+    """Minimal guild shape for the readable name a cleanup record keeps for its logs."""
 
     def __init__(self, name: str) -> None:
         """Stores the Discord guild name."""
@@ -78,16 +109,16 @@ class _GuildStub:
 
 
 class _FetchedMessageStub:
-    """Fetched message returned by a fake channel for startup cleanup."""
+    """Message the fake channel hands back to the restart sweep."""
 
     def __init__(self, channel_id: int, message_id: int, deleted: list[tuple[int, int]]) -> None:
-        """Initializes a fetched message with shared deletion recording."""
+        """Stores the identity to report and the list shared with the bot stub."""
         self.channel_id = channel_id
         self.message_id = message_id
         self.deleted = deleted
 
     async def delete(self) -> None:
-        """Records deletion by channel/message pair."""
+        """Records the deletion as a channel/message pair on the shared list."""
         self.deleted.append((self.channel_id, self.message_id))
 
 
@@ -99,12 +130,16 @@ class _FetchMessageChannelStub(Messageable):
     """
 
     def __init__(self, channel_id: int, deleted: list[tuple[int, int]]) -> None:
-        """Stores channel identity and the shared deletion recorder."""
+        """Stores channel identity and the deletion list shared with the bot stub."""
         self.channel_id = channel_id
         self.deleted = deleted
 
     async def fetch_message(self, message_id: int, /) -> Message:
-        """Returns a fetched message stub typed as the Message the base declares."""
+        """Answers with a message for whatever id the sweep asks about.
+
+        Returns:
+            A `_FetchedMessageStub` typed as the `Message` the `Messageable` base declares.
+        """
         return as_message(
             fake=_FetchedMessageStub(
                 channel_id=self.channel_id, message_id=message_id, deleted=self.deleted
@@ -113,18 +148,18 @@ class _FetchMessageChannelStub(Messageable):
 
 
 class _NonMessageableChannelStub:
-    """Channel shape without `fetch_message` used to exercise fallback paths."""
+    """A channel that is not `Messageable`, so production's isinstance narrowing rejects it."""
 
     pass
 
 
 class _BotStub:
-    """Minimal bot shape for startup cleanup."""
+    """Bot whose channels always resolve, recording which ids cost a REST fetch."""
 
     def __init__(
         self, cached_channel: _FetchMessageChannelStub | _NonMessageableChannelStub | None = None
     ) -> None:
-        """Initializes cached-channel behavior and cleanup call records."""
+        """Initializes cached-channel behavior and the records the sweep is asserted on."""
         self.deleted: list[tuple[int, int]] = []
         self.cached_channel = cached_channel
         self.fetch_calls: list[int] = []
@@ -132,38 +167,50 @@ class _BotStub:
     def get_channel(
         self, channel_id: int, /
     ) -> _FetchMessageChannelStub | _NonMessageableChannelStub | None:
-        """Returns the configured cached channel."""
+        """Serves the cache, ignoring the id.
+
+        Returns:
+            Whatever cached channel the test configured, None by default.
+        """
         return self.cached_channel
 
     async def fetch_channel(self, channel_id: int, /) -> _FetchMessageChannelStub:
-        """Returns a concrete message channel stub."""
+        """Records that the REST fetch was spent.
+
+        Returns:
+            A channel that can fetch messages, whatever the cache answered.
+        """
         self.fetch_calls.append(channel_id)
         return _FetchMessageChannelStub(channel_id=channel_id, deleted=self.deleted)
 
 
 class _UnfetchableBotStub:
-    """Bot stub that resolves a channel object that cannot fetch messages."""
+    """Bot whose channels can fetch no message, from the cache or over REST."""
 
     def get_channel(self, channel_id: int, /) -> None:
-        """Returns no cached channel."""
+        """Answers with no cached channel, forcing the REST fetch."""
         return
 
     async def fetch_channel(self, channel_id: int, /) -> _NonMessageableChannelStub:
-        """Returns a non-messageable channel shape."""
+        """Answers the fetch with a channel the sweep still cannot use.
+
+        Returns:
+            A `_NonMessageableChannelStub`, which fails production's `Messageable` check.
+        """
         return _NonMessageableChannelStub()
 
 
 class _SentFollowupMessageStub:
-    """Message shape returned by fake followup sends."""
+    """The message object a fake followup send hands back, compared by identity."""
 
     pass
 
 
 class _FollowupStub:
-    """Minimal followup stub that records send arguments."""
+    """Followup that records every send argument instead of calling Discord."""
 
     def __init__(self) -> None:
-        """Initializes followup send records."""
+        """Initializes the one message object and the empty send records."""
         self.message = _SentFollowupMessageStub()
         self.sent_wait: bool | None = None
         self.sent_ephemeral: bool | None = None
@@ -179,7 +226,11 @@ class _FollowupStub:
         view: nextcord.ui.View | None = None,
         files: list[nextcord.File] | None = None,
     ) -> _SentFollowupMessageStub:
-        """Records the embed send and returns the message object."""
+        """Records the send arguments the two followup helpers are asserted on.
+
+        Returns:
+            The single `_SentFollowupMessageStub`, so a test can assert on its identity.
+        """
         self.sent_embed = embed
         self.sent_wait = wait
         self.sent_ephemeral = ephemeral
@@ -189,16 +240,16 @@ class _FollowupStub:
 
 
 class _InteractionStub:
-    """Minimal interaction shape for expiring economy followups."""
+    """Minimal interaction shape for the two followup helpers."""
 
     def __init__(self) -> None:
-        """Initializes the followup stub used by the helper under test."""
+        """Builds the followup recorder and the user whose name rides into the cleanup record."""
         self.user = _UserStub(name="alice")
         self.followup = _FollowupStub()
 
 
 class _UserStub:
-    """Minimal interaction user shape for cleanup readability."""
+    """Minimal interaction user, the source of the name a cleanup record logs."""
 
     def __init__(self, name: str) -> None:
         """Stores the Discord account name."""
@@ -207,7 +258,12 @@ class _UserStub:
 
 @pytest.fixture(autouse=True)
 def isolated_cleanup_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keeps cleanup DB writes out of the real data directory."""
+    """Points the cleanup DB at a throwaway file so nothing here writes to the real games.db.
+
+    Autouse because every test in this file reaches the table, directly or through a helper.
+    Patching the module constant is enough: `_pending_db_engine` re-reads it on every call and
+    disposes the previous engine when the path changed.
+    """
     monkeypatch.setattr(
         "discordbot.utils.message_cleanup._PENDING_PUBLIC_MESSAGE_DB_PATH",
         tmp_path / "game_cleanup.db",
@@ -215,7 +271,7 @@ def isolated_cleanup_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
 
 async def test_delete_public_message_after_waits_then_deletes() -> None:
-    """Public response cleanup deletes the message after the configured delay."""
+    """The TTL task deletes the message once its delay elapses."""
     message = _DeletableMessageStub()
 
     await delete_public_message_after(message=as_message(fake=message), delay=0)
@@ -224,7 +280,7 @@ async def test_delete_public_message_after_waits_then_deletes() -> None:
 
 
 async def test_track_public_message_persists_message_identity() -> None:
-    """Public response tracking stores IDs plus readable guild/channel names."""
+    """Tracking stores the ids plus the readable names, and re-tracking never drops the name."""
     message = _DeletableMessageStub(
         message_id=10, channel_id=20, guild_name="Mai Server", channel_name="casino"
     )
@@ -256,7 +312,7 @@ async def test_delete_public_message_after_forgets_successful_cleanup() -> None:
 
 
 async def test_delete_tracked_public_messages_deletes_stale_restart_records() -> None:
-    """Startup cleanup deletes persisted Discord messages and clears the records."""
+    """The restart sweep deletes each persisted message and clears its record."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
     await track_public_message(message=as_message(fake=message))
     bot = _BotStub()
@@ -269,7 +325,7 @@ async def test_delete_tracked_public_messages_deletes_stale_restart_records() ->
 
 
 async def test_delete_tracked_public_messages_skips_non_messageable_cached_channel() -> None:
-    """Cached PartialMessageable-like channels should be resolved via fetch_channel first."""
+    """A cached channel that cannot fetch messages is re-resolved through `fetch_channel`."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
     await track_public_message(message=as_message(fake=message))
     bot = _BotStub(cached_channel=_NonMessageableChannelStub())
@@ -282,7 +338,7 @@ async def test_delete_tracked_public_messages_skips_non_messageable_cached_chann
 
 
 async def test_delete_tracked_public_messages_keeps_unresolved_channel_records() -> None:
-    """Startup cleanup keeps records when it cannot resolve a message-fetchable channel."""
+    """The sweep keeps a record when no resolution yields a message-fetchable channel."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
     await track_public_message(message=as_message(fake=message))
 
@@ -296,14 +352,14 @@ async def test_delete_tracked_public_messages_keeps_unresolved_channel_records()
 async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Public economy embeds must retrieve their message before cleanup."""
+    """A public followup is sent with `wait=True` and its message enters the scheduler."""
     scheduled_messages: list[_SentFollowupMessageStub] = []
     scheduled_user_names: list[str | None] = []
 
     def fake_schedule_public_message_delete(
         message: _SentFollowupMessageStub, delay: float = 180, user_name: str | None = None
     ) -> None:
-        """Records the message scheduled for later deletion."""
+        """Records the message and user name handed to the scheduler."""
         scheduled_messages.append(message)
         scheduled_user_names.append(user_name)
 
@@ -329,7 +385,7 @@ async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(
 async def test_send_private_followup_is_ephemeral_and_not_scheduled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Personal economy embeds should not enter the public cleanup scheduler."""
+    """A private followup is ephemeral and never enters the public cleanup scheduler."""
     scheduled_messages: list[_SentFollowupMessageStub] = []
 
     def fake_schedule_public_message_delete(
@@ -356,7 +412,7 @@ async def test_send_private_followup_is_ephemeral_and_not_scheduled(
 
 
 async def test_delete_public_message_after_ignores_already_deleted_message() -> None:
-    """Manual deletion before cleanup should not surface as a task failure."""
+    """A message deleted before the TTL fires does not surface as a task failure."""
     await delete_public_message_after(
         message=as_message(fake=_AlreadyDeletedMessageStub()), delay=0
     )
@@ -365,7 +421,7 @@ async def test_delete_public_message_after_ignores_already_deleted_message() -> 
 async def test_schedule_public_message_delete_uses_default_ttl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Scheduling uses the shared three-minute TTL by default."""
+    """Scheduling with no delay uses the shared `PUBLIC_MESSAGE_TTL_SECONDS`."""
     scheduled_delay: float | None = None
 
     async def fake_delete_public_message_after(

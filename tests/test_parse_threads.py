@@ -1,4 +1,37 @@
-"""Tests for the Threads-context builder that feeds linked posts to the answer model."""
+"""Pins what the Threads link-context builder hands the answer model, and what it claims to hold.
+
+`gen_reply/link_sources/threads.py` turns one linked post into the input blocks the answer turn
+reads. Almost nothing here is about rendering: the block is the only thing standing between the
+model and a confident sentence about media it never received, so the assertions are written
+against the wording the model actually sees rather than against the builder's internal state.
+
+Four properties carry the weight.
+
+**Media reaches the model by upload, never by URL.** A remote `file_url` / `image_url` is rewritten
+into base64 by the proxy and is unresolvable on the native Interactions path, so the parts have to
+be `input_file` entries carrying a Files API uri: images through `load_image_bytes` (which
+downscales), clips streamed from a scratch dir and unlinked again, filenames keeping a real
+extension because the Interactions bridge classifies by it.
+
+**The three caps are separate axes and none may squeeze another out**: the chain above the target,
+the comments below it, and the media parts. A trim is only correct if it also SAYS what it dropped,
+so each cap test has a partner asserting the block names the URLs the budget withheld, states the
+true size of a URL list it shortened, and never lets a full image budget drop a video in silence.
+
+**A quote post puts two posts' media in one block.** That is the shape the feature exists for, a
+line of commentary over someone else's carousel, so the target keeps first claim on the budget, the
+quoted post spends the leftovers, each post's files carry their own filename prefix (they share one
+scratch dir, and a reused name swaps two posts' bytes under a confident attribution), and the block
+names which adjacent opaque part belongs to whom.
+
+**Everything a stranger wrote is untrusted data.** Comment and quoted-post bodies go through
+`_defuse_markers`, so a `<generate-video>` planted in a comment cannot become a real render once
+the model quotes it back, and the fence closes past the attachments rather than before them.
+
+Nothing here touches the network or an SDK: `_stub_parse` cans the parse, `_stub_media` cans the
+image fetch, the clip download and the Files API upload, and `make_stub_gemini_client` hands over a
+client that raises `AttributeError` if a path does reach for the real one.
+"""
 
 import asyncio
 from pathlib import Path
@@ -36,7 +69,12 @@ def _post(  # noqa: PLR0913 -- one knob per ThreadsOutput field the builder rend
     quoted: ThreadsOutput | None = None,
     quoted_unavailable: bool = False,
 ) -> ThreadsOutput:
-    """Builds a ThreadsOutput with the engagement fields the builder renders."""
+    """Builds a ThreadsOutput with the engagement fields the builder renders.
+
+    Returns:
+        The post, on the target's own permalink and with each counter set to a distinct
+        non-zero value.
+    """
     return ThreadsOutput(
         text=text,
         url=_URL,
@@ -60,7 +98,12 @@ def _quoted(
     videos: list[str] | None = None,
     author: str = "bob",
 ) -> ThreadsOutput:
-    """Builds the post a quote post quotes, on its own permalink rather than the target's."""
+    """Builds the post a quote post quotes, on its own permalink rather than the target's.
+
+    Returns:
+        The quoted post, carrying `.../@<author>/post/QUOTED`, so a render that echoed the
+        target's permalink instead is visible.
+    """
     post = _post(text=text, images=images, videos=videos, author=author)
     post.url = f"https://www.threads.com/@{author}/post/QUOTED"
     return post
@@ -71,7 +114,11 @@ def _stub_parse(
     results: list[ThreadsOutput],
     branches: list[list[ThreadsOutput]] | None = None,
 ) -> None:
-    """Replaces ThreadsDownloader.parse_metadata with a canned conversation (no network)."""
+    """Replaces ThreadsDownloader.parse_metadata with a canned conversation (no network).
+
+    `results` is the chain the parse would have returned, oldest first, so its last entry is the
+    linked post; `branches` are the comment branches under it, each direct comment first.
+    """
     conversation = ThreadsConversation(chain=results, reply_branches=branches or [])
 
     def fake_parse_metadata(self: ThreadsDownloader, *, url: str) -> ThreadsConversation:
@@ -99,7 +146,12 @@ class _Uploads:
         filename: str,
         timeout_seconds: float,
     ) -> dict[str, str] | None:
-        """Stands in for `upload_as_input_file`, returning a Files-API-shaped part."""
+        """Stands in for `upload_as_input_file`, recording what the builder handed over.
+
+        Returns:
+            A part shaped like a real Files API upload, or None when this recorder was built to
+            fail, which is the "fetch worked, upload did not" case.
+        """
         del client, timeout_seconds
         self.calls.append((source, mime_type, filename))
         if self.fail:
@@ -114,16 +166,33 @@ class _Uploads:
 def _stub_media(
     monkeypatch: pytest.MonkeyPatch, *, uploads: _Uploads, image_fetch_fails: bool = False
 ) -> None:
-    """Stubs the image fetch and the Files API upload so no network or SDK is touched."""
+    """Stubs the image fetch, the clip download and the Files API upload, so nothing leaves here.
+
+    `image_fetch_fails` reproduces the ordinary Threads failure rather than an exotic one: its
+    CDN urls are signed, so one can expire between the page fetch and the upload.
+    """
 
     async def fake_load_image_bytes(source: str) -> tuple[bytes, str]:
-        """Returns canned downscaled image bytes for a URL source."""
+        """Stands in for the fetch-and-downscale step.
+
+        Returns:
+            Canned bytes plus their mime type, which is what proves the builder passed bytes
+            rather than the URL.
+
+        Raises:
+            RuntimeError: This stub was built with `image_fetch_fails`, standing in for an
+                expired signed CDN url.
+        """
         if image_fetch_fails:
             raise RuntimeError(f"cdn url expired: {source}")
         return b"image-bytes", "image/jpeg"
 
     def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
-        """Writes a stand-in clip into the builder's scratch directory."""
+        """Writes a stand-in clip into the builder's scratch directory.
+
+        Returns:
+            The path written, which the builder then uploads from and unlinks.
+        """
         del url
         path = Path(self.output_folder) / filename
         path.write_bytes(b"clip-bytes")
@@ -208,7 +277,7 @@ async def test_video_is_uploaded_from_disk_and_cleaned_up(monkeypatch: pytest.Mo
 
 
 async def test_only_the_target_posts_media_is_ingested(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ancestors contribute text only; each media part now costs a fetch plus an upload."""
+    """Ancestors contribute text only; each media part costs a fetch plus an upload."""
     ancestor = _post(text="ancestor", images=["https://cdn.test/ancestor.jpg"])
     target = _post(text="target", images=["https://cdn.test/target.jpg"])
     _stub_parse(monkeypatch, [ancestor, target])  # chain is [root, ..., target]
@@ -303,7 +372,6 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     text = step_dicts(steps=blocks[1]["content"])[0]["text"]
-    # The target and the nearest ancestors are kept; the oldest posts are dropped.
     assert "TARGET" in text
     assert f"post {MAX_THREADS_POSTS + 3}" in text  # the target (last) survives
     assert "post 0" not in text  # the oldest ancestor is trimmed
@@ -762,7 +830,12 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
     written: list[str] = []
 
     def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
-        """Records the on-disk name each clip claims, then writes bytes naming its source."""
+        """Records the on-disk name each clip claims, then writes bytes naming its source.
+
+        Returns:
+            The path written, whose bytes are the source url, so the pairing survives the
+            upload.
+        """
         path = Path(self.output_folder) / filename
         path.write_bytes(url.encode())
         written.append(filename)
@@ -773,7 +846,11 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
     async def record_upload(
         *, client: object, source: object, mime_type: str, filename: str, timeout_seconds: float
     ) -> dict[str, str]:
-        """Reads the bytes the builder hands over, before it deletes the file again."""
+        """Reads the bytes the builder hands over, before it deletes the file again.
+
+        Returns:
+            A part shaped like a real Files API upload, so the builder carries on normally.
+        """
         del client, mime_type, timeout_seconds
         # A local read of a temp file the test itself wrote, so blocking here is the point:
         # awaiting a thread would let the builder unlink it first.
@@ -803,7 +880,7 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
 async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The degrade has to report BOTH posts' media, or the quoted post's vanishes without a word."""
+    """The timeout degrade reports BOTH posts' media, or the quoted post's vanishes silently."""
     _stub_parse(
         monkeypatch,
         [
@@ -818,7 +895,12 @@ async def test_a_timed_out_ingest_still_names_the_quoted_posts_media(
     monkeypatch.setattr(threads_builder, "LINK_MEDIA_TIMEOUT_SECONDS", 0.01)
 
     async def never_returns(source: str) -> tuple[bytes, str]:
-        """Outlasts the bound, so the whole ingest degrades."""
+        """Outlasts the bound, so the whole ingest degrades.
+
+        Raises:
+            AssertionError: The bound never fired, which is the test's own failure rather than
+                the builder's.
+        """
         del source
         await asyncio.sleep(delay=5)
         raise AssertionError("the bound should have fired first")
@@ -914,7 +996,7 @@ async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_mi
 
 
 async def test_comment_media_is_noted_but_never_ingested(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only the target's media is fetched, so a picture-only comment says so instead of reading blank."""
+    """A picture-only comment says it carries media, since only the target's is ever fetched."""
     _stub_parse(
         monkeypatch,
         [_post(text="target", images=["https://cdn.test/target.jpg"])],
@@ -964,7 +1046,7 @@ async def test_a_post_with_no_replies_at_all_renders_no_comment_section(
 async def test_the_quoted_block_is_closed_by_a_trailing_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With thousands of characters of stranger-written text quoted, the opening guard is far away."""
+    """The block ends with the trailing guard, thousands of characters past the opening one."""
     _stub_parse(
         monkeypatch,
         [_post(text="target")],
@@ -1165,7 +1247,12 @@ async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.Mon
     """A parse error degrades to the unavailable notice instead of raising into the pipeline."""
 
     def boom(self: ThreadsDownloader, *, url: str) -> list[ThreadsOutput]:
-        """Simulates an HTTP/parse failure."""
+        """Stands in for an HTTP or parse failure inside `parse_metadata`.
+
+        Raises:
+            RuntimeError: Always, since the builder promises to swallow whatever the parse
+                throws.
+        """
         raise RuntimeError("fetch failed")
 
     monkeypatch.setattr(target=ThreadsDownloader, name="parse_metadata", value=boom)

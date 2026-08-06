@@ -1,9 +1,28 @@
-"""Button-state matrix and dealer / bot turn tests for `BlackjackView`.
+"""Pins `BlackjackView`'s control surface, its H17 dealer phase, and its deterministic bot turn.
 
-Each test instantiates the view with a deterministic `BlackjackRound`, then
-asserts which action / insurance buttons are attached across the round
-lifecycle. Dealer play is deterministic (H17), so dealer tests cover the rule
-path; bot-turn tests cover the deterministic bot player decisions.
+`cogs/games/blackjack_views.py` keeps a dealt table inside one view for the whole round, so what
+a player may press, what the dealer draws, and when the round hands its state back are decided
+there rather than in the pure rules next door. Three things are held still here:
+
+- Which controls are attached. `sync_buttons` is presence-based: it removes what is not
+  actionable instead of disabling it, so every case below asserts the set of attached custom_ids
+  and the row each sits on, never a `disabled` flag. Each case is one `blackjack.py` predicate
+  read from the view's side, and the two halves can drift apart: a control the round would refuse
+  turns a click into a stale-action notice, and a missing one silently drops a legal play.
+- The dealer phase. The view forces `auto_play_dealer` off and runs H17 itself, recording every
+  draw as a `BlackjackDealerStep` for the settled embed, so the tests read that recorded path and
+  not only the dealer's final total.
+- The bot turn loop. The seated bot is deterministic and never an LLM, so what is worth pinning
+  are the loop's guards: it leaves a human seat alone, stops once a dispatch fails to move
+  `_state_revision` instead of re-deciding forever, and pauses between consecutive bot moves so
+  the table does not jump in one edit.
+
+Rounds are hand-built rather than dealt, since `from_participants` seats a table without dealing:
+a test assigns the exact player and dealer cards it needs, and only a test about drawing touches
+the shoe. The rest of the file covers what settlement leans on: the shared spacer payload every
+table edit goes through, the ephemeral notice a click earns once the round is settled, the
+remaining shoe handed back to the channel store before any money moves, and the dealer snapshot
+the off-critical-path history task is scheduled with.
 """
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
@@ -33,7 +52,11 @@ from tests.helpers.casting import as_message
 
 
 def _participant(user_id: int, display_name: str, bet: int = 100) -> GameParticipant:
-    """Builds a participant with a 1k starting balance for affordability tests."""
+    """Returns one seated participant for a hand-built round.
+
+    The 1,000-point balance is what leaves room for the Double / Split extra wager, so those
+    controls stay affordable unless a test seats a poorer player itself.
+    """
     return GameParticipant(
         user_id=user_id,
         account_name=display_name.lower(),
@@ -47,7 +70,13 @@ def _participant(user_id: int, display_name: str, bet: int = 100) -> GamePartici
 def _round_with_two_cards(
     player_cards: list[Card], dealer_cards: list[Card], bet: int = 100
 ) -> BlackjackRound:
-    """Builds a single-player round with deterministic cards and dealer hand."""
+    """Returns a one-seat round holding exactly the given player and dealer cards.
+
+    `from_participants` seats the table without dealing, so the cards are assigned rather than
+    drawn and the round keeps its full freshly built shoe: a test that wants a monkeypatched
+    `draw_card` empties `shoe` first. The round opens in `player_actions`, and the dealer's
+    up-card is the second card, the first being the hole.
+    """
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[_participant(user_id=1, display_name="Alice", bet=bet)],
@@ -59,7 +88,12 @@ def _round_with_two_cards(
 
 
 def _make_view(round_state: BlackjackRound) -> BlackjackView:
-    """Builds a BlackjackView for button inspection."""
+    """Returns a table view over an already-built round.
+
+    Wires neither a shoe store nor a seated bot, so a test that needs one sets `bot_user_id` or
+    builds its own view. Construction already runs `sync_buttons` once and forces
+    `auto_play_dealer` off, which is what leaves the dealer phase for the view to run.
+    """
     return BlackjackView(
         round_state=round_state,
         starter_id=1,
@@ -70,7 +104,11 @@ def _make_view(round_state: BlackjackRound) -> BlackjackView:
 
 
 def _button_states(view: BlackjackView) -> dict[str, bool]:
-    """Returns `{custom_id: disabled}` for every button in the view."""
+    """Returns `{custom_id: disabled}` for every button attached to the view.
+
+    Presence is the real control, so the flags are here to catch a button re-added with a
+    `disabled` left over from an earlier phase.
+    """
     states: dict[str, bool] = {}
     for child in view.children:
         cid = getattr(child, "custom_id", None)
@@ -80,7 +118,7 @@ def _button_states(view: BlackjackView) -> dict[str, bool]:
 
 
 def _button_ids(view: BlackjackView) -> set[str]:
-    """Returns the set of button custom_ids currently attached to the view."""
+    """Returns every custom_id currently attached to the view."""
     ids: set[str] = set()
     for child in view.children:
         cid = getattr(child, "custom_id", None)
@@ -100,7 +138,7 @@ def _button_rows(view: BlackjackView) -> dict[str, int | None]:
 
 
 async def test_player_actions_same_rank_pair_enables_every_action_button() -> None:
-    """Initial deal with [8, 8] vs dealer up 6 enables all five action buttons."""
+    """A fresh [8, 8] against a dealer 6 attaches all five action buttons, on their two rows."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -138,7 +176,7 @@ async def test_player_actions_ten_value_pair_shows_split() -> None:
 
 
 async def test_player_actions_ace_ten_hides_split() -> None:
-    """A + 10 is not a same-value pair."""
+    """A + 10 is not a same-value pair, so Split is the only action button missing."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="A", suit="♠"), Card(rank="10", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -155,7 +193,7 @@ async def test_player_actions_ace_ten_hides_split() -> None:
 
 
 async def test_player_actions_after_hit_disables_double_split_surrender() -> None:
-    """After a Hit, `actions_taken` > 0 locks the first-action-only buttons."""
+    """A hand that has already acted keeps only Hit and Stand."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -184,7 +222,7 @@ async def test_player_actions_is_split_hand_disables_double_split_surrender() ->
 
 
 async def test_split_aces_subhand_disables_hit_and_stand() -> None:
-    """Split Aces forces finished + is_split_aces, blocking Hit and Stand."""
+    """A split-Aces sub-hand may take no action at all, so the view attaches no control."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[_participant(user_id=1, display_name="Alice")],
@@ -207,7 +245,7 @@ async def test_split_aces_subhand_disables_hit_and_stand() -> None:
 
 
 async def test_player_actions_low_balance_disables_double_and_split() -> None:
-    """Insufficient balance for the extra wager hides Double and Split affordances."""
+    """A balance too thin for the second wager drops Double and Split but keeps the rest."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[
@@ -249,7 +287,7 @@ async def test_player_actions_peeked_blackjack_disables_surrender() -> None:
 
 
 async def test_insurance_phase_hides_action_buttons_and_shows_insurance() -> None:
-    """During insurance only insure_yes / insure_no are interactive."""
+    """The insurance phase swaps every action button for the two insurance ones."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="5", suit="♥")],
         dealer_cards=[Card(rank="A", suit="♣"), Card(rank="9", suit="♦")],
@@ -281,7 +319,7 @@ async def test_settled_phase_removes_every_button() -> None:
 
 
 async def test_sync_buttons_drops_insurance_controls_outside_insurance() -> None:
-    """Insurance buttons leave the view entirely when phase is not insurance."""
+    """Insurance buttons come and go with the phase rather than staying on disabled."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -321,7 +359,7 @@ async def test_build_in_progress_embeds_force_show_hole_reveals_dealer_total() -
 
 
 def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
-    """Blackjack table edits attach one transparent spacer and reference it from every embed."""
+    """A table edit with no spacer uploaded yet sends one and points every embed at it."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="K", suit="♣"), Card(rank="9", suit="♦")],
@@ -381,6 +419,7 @@ async def test_play_dealer_hits_below_17_then_stands_on_hard_17(
     )
     round_state.players[0].hands[0].finished = True
     round_state.phase = "dealer"
+    # Emptying the shoe is what routes every draw through the monkeypatched `draw_card` fallback.
     round_state.shoe = []
     view = _make_view(round_state=round_state)
 
@@ -491,7 +530,7 @@ async def test_bot_dispatcher_skips_when_active_player_is_human() -> None:
 async def test_bot_dispatcher_breaks_when_action_does_not_advance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A no-op bot dispatch exits instead of spinning on the same turn."""
+    """A dispatch that leaves `_state_revision` untouched ends the loop instead of re-deciding."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -512,7 +551,7 @@ async def test_bot_dispatcher_breaks_when_action_does_not_advance(
 
 
 async def test_bot_dispatcher_paces_consecutive_actions(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Consecutive bot-owned decisions wait briefly between message edits."""
+    """Consecutive bot moves are paced by one sleep, and the move that ends the turn adds none."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -565,7 +604,7 @@ async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 async def test_apply_bot_action_routes_known_actions() -> None:
-    """`_apply_bot_action` calls the matching BlackjackRound API for each known action."""
+    """An allowed stand routes through `BlackjackRound.stand` and reports success."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],

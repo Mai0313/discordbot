@@ -1,4 +1,27 @@
-"""Tests for long-term lending and central bank lending."""
+"""Tests for the long-term lending half of `services/economy/database.py`.
+
+Personal loans and central-bank loans share one proposal -> contract -> payment path, and what
+separates them is where the principal comes from: a personal loan DEBITS the lender at acceptance,
+a central-bank loan MINTS with no lender side at all. That asymmetry is why the central-bank cases
+dominate this file. The capacity read taken under the acceptance lock is the only thing between an
+approval and unbounded minting, so the tests pin that a minted balance never comes back as fresh
+capacity, that two concurrent approvals cannot both spend the same free credit, and that a banker
+approving their own request stays refused unless the caller explicitly opts in.
+
+The rest pins the arithmetic a borrower feels: acceptance prepays `MIN_INTEREST_DAYS` of interest
+so an instant repayment still costs something, a payment clears interest before principal, and a
+forced collection with no amount named takes principal plus everything owed in interest, clamped
+at the borrower's balance instead of driving it negative. Interest is charged lazily against
+wall-clock time and only for whole elapsed days, so `_backdate_contract` ages a contract in place
+rather than the suite waiting a month, and `_backdate_proposal` does the same for the
+`LOAN_PROPOSAL_TIMEOUT_SECONDS` decision window.
+
+One test reaches past the ORM and asks SQLite for `typeof()` on the raw loan columns: loan money is
+`StoredInteger` decimal text, and only a `text` typeof proves a 10**20 principal is not silently
+riding SQLite's 64-bit INTEGER ceiling. Everything here runs against the throwaway ledger the
+`economy_isolated_db` fixture installs; `tests/test_loan.py` covers the income and settlement
+helpers that deliberately leave these contracts alone.
+"""
 
 import asyncio
 from datetime import timedelta
@@ -32,13 +55,22 @@ pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 
 
 async def _add_balance(user_id: int, name: str, amount: int) -> int:
-    """Seeds spendable balance through the public adjustment path."""
+    """Seeds spendable balance through the public adjustment path.
+
+    Returns:
+        The wallet balance after the credit.
+    """
     result = await adjust_balance(user_id=user_id, name=name, delta=amount)
     return result.new_balance
 
 
 async def _backdate_contract(contract_id: int, days: int) -> None:
-    """Ages a loan contract by `days`, keeping the MIN_INTEREST_DAYS prepaid window aligned."""
+    """Ages a loan contract by `days`, keeping the MIN_INTEREST_DAYS prepaid window aligned.
+
+    Interest accrues from wall-clock time, so a test cannot wait for it. Anchoring last accrual to
+    the end of the prepaid window leaves a 30-day backdate owing exactly what acceptance prepaid;
+    only the days past `MIN_INTEREST_DAYS` accrue on top of it.
+    """
     now = _database_now()
     opened_at = now - timedelta(days=days)
     last_accrued_at = opened_at + timedelta(days=MIN_INTEREST_DAYS)
@@ -52,7 +84,11 @@ async def _backdate_contract(contract_id: int, days: int) -> None:
 
 
 async def _backdate_proposal(proposal_id: int, seconds: int) -> None:
-    """Moves a loan proposal's creation timestamp into the past."""
+    """Moves a loan proposal's creation timestamp into the past.
+
+    Expiry is evaluated lazily off `created_at` whenever a proposal is touched, so this is how a
+    test crosses the decision window without sleeping out `LOAN_PROPOSAL_TIMEOUT_SECONDS`.
+    """
     async with open_session() as session:
         await session.execute(
             statement=update(LoanProposal)
@@ -101,7 +137,7 @@ async def test_personal_loan_request_accepts_and_repay_allocates_interest_first(
 
 
 async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
-    """Loan proposal and contract money columns can exceed SQLite's INTEGER range."""
+    """Loan money columns hold a principal past SQLite's INTEGER range as decimal text."""
     large_amount = 10**20
     await _add_balance(user_id=10, name="lender", amount=large_amount)
     proposal = await create_personal_loan_request(
@@ -158,7 +194,7 @@ async def test_personal_loan_money_columns_store_large_values_as_text() -> None:
 
 
 async def test_expired_loan_request_rejects_without_debiting_lender() -> None:
-    """Expired pending requests become rejected and cannot be accepted later."""
+    """An expired request rejects, refuses a later acceptance, and never debits the lender."""
     await _add_balance(user_id=2, name="bob", amount=1_000)
     proposal = await create_personal_loan_request(
         borrower_id=1, borrower_name="alice", lender_id=2, lender_name="bob", amount=500
@@ -239,7 +275,7 @@ async def test_central_bank_capacity_decreases_after_approval() -> None:
 
 
 async def test_central_bank_concurrent_approvals_do_not_exceed_capacity() -> None:
-    """Concurrent central-bank approvals serialize capacity consumption."""
+    """Two concurrent central-bank approvals cannot both spend the same free credit."""
     await _add_balance(user_id=10, name="capital", amount=1_000)
     first = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=800
@@ -297,7 +333,7 @@ async def test_central_bank_self_approval_requires_explicit_flag() -> None:
 
 
 async def test_forced_collection_without_amount_includes_accrued_interest() -> None:
-    """Calling all owed accrues interest before deciding the collection amount."""
+    """Collecting with no amount takes principal plus interest owed and closes the contract."""
     await _add_balance(user_id=10, name="capital", amount=1_000)
     proposal = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300

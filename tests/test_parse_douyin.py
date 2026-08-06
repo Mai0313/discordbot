@@ -1,4 +1,35 @@
-"""Tests for the Douyin-context builder that feeds linked posts to the answer model."""
+"""Pins how a Douyin post the user linked reaches the answer model, and how each failure degrades.
+
+The subject is `cogs/gen_reply/link_sources/douyin.py`, the builder `gen_reply` starts once the
+router selects `douyin` for a QA reply. It never raises, so what it injects IS its contract, and
+none of that is visible from its signature.
+
+Media rides as a Files API `input_file` uri, never as a URL. On this path that is not the tidier
+shape but the only working one: the answer turn goes through the proxy, which fetches a remote
+URL and base64-inlines it under its own size cap instead of forwarding it, so the bytes cross
+the wire either way and only the uri escapes that cap.
+
+The caption is injected unconditionally, and the separator above it states how much was really
+fetched: `DOUYIN_CONTEXT_SEPARATOR` only when media is attached, `DOUYIN_TEXT_ONLY_SEPARATOR`
+for every degradation there is (a refused download, an oversize clip, a failed upload, the
+kill-switch, a missing key, a non-Gemini answer model). Both halves are asserted together, since
+the model must neither claim it cannot open the link nor describe footage it never received.
+
+A failed metadata read returns one notice instead, and which notice it is carries the weight: a
+WAF block is retryable and the link is fine, a filtered post is genuinely gone, and every other
+failure says nothing about the post at all. Reporting a block or an unreadable link as a deleted
+post is the worst thing this feature can produce, so the three notices are pinned apart.
+
+The concurrency half runs at capacity 1, where "the bound is still held" means "the next link
+cannot start". `asyncio.Semaphore` is not reentrant, so the metadata read and the download,
+which take it on separate steps, must never nest, and the upload, which talks to Google rather
+than Douyin, must sit outside it.
+
+`_stub_douyin` replaces `DouyinDownloader.parse_metadata`, `DouyinDownloader.download` and the
+builder's `upload_as_input_file`, so nothing here needs the network, the Files API or a Gemini
+key. The canned download writes real files into the builder's own scratch dir, which is what
+lets the temp-dir lifetime be asserted from outside the builder.
+"""
 
 from typing import Any
 import asyncio
@@ -33,7 +64,11 @@ _URL = "https://v.douyin.com/abc123"
 
 
 def _post(is_photo: bool = False, images: int = 0) -> DouyinPost:
-    """Builds the parsed metadata the builder renders into its text block."""
+    """Builds the parsed metadata the builder renders into its text block.
+
+    Returns:
+        A `DouyinPost` whose caption, author and post type the text assertions read back.
+    """
     return DouyinPost(
         aweme_id="777",
         title="一段影片的說明",
@@ -61,7 +96,12 @@ class _Uploads:
         filename: str,
         timeout_seconds: float,
     ) -> dict[str, str] | None:
-        """Stands in for `upload_as_input_file`, returning a Files-API-shaped part."""
+        """Stands in for `upload_as_input_file`, returning a Files-API-shaped part.
+
+        Returns:
+            The `input_file` part the builder splices in, or None when built to fail, which is
+            what drives the caption-only degradation.
+        """
         del client, timeout_seconds
         self.calls.append((source, mime_type, filename))
         if self.fail:
@@ -82,7 +122,14 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
     download_error: Exception | None = None,
     uploads: _Uploads | None = None,
 ) -> tuple[_Uploads, dict[str, object]]:
-    """Stubs the downloader and the Files API upload so no network or SDK is touched."""
+    """Stubs the downloader and the Files API upload so no network or SDK is touched.
+
+    The canned download writes real bytes into the scratch dir the builder itself created, which
+    is what lets a test assert from the outside that the dir did not outlive the build.
+
+    Returns:
+        The upload recorder in force, and the arguments the builder handed to `download`.
+    """
     resolved_post = post or _post()
     recorded: dict[str, object] = {}
 
@@ -101,7 +148,11 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
         max_bytes: int | None = None,
         post: DouyinPost | None = None,
     ) -> DouyinDownload:
-        """Writes canned files into the builder's scratch dir, or raises."""
+        """Writes canned files into the builder's scratch dir, or raises the canned failure.
+
+        Returns:
+            A `DouyinDownload` naming the files just written, trimmed to `max_images`.
+        """
         del url, quality
         recorded["max_images"] = max_images
         recorded["max_bytes"] = max_bytes
@@ -130,6 +181,9 @@ async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any
 
     The blocks are `EasyInputMessageParam`s, whose `content` is a union the assertions below
     index into part by part; `step_dicts` is what lets them read as plain JSON.
+
+    Returns:
+        The injected blocks as plain dicts, in the order the builder emitted them.
     """
     blocks = await build_douyin_context_messages(
         url=_URL,
@@ -145,8 +199,10 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
 ) -> None:
     """The video rides as an input_file holding a Files API uri, never a Douyin URL.
 
-    A Douyin CDN url is unusable to both backends anyway (the play endpoint needs a mobile
-    User-Agent), so the upload is the only shape that works, not merely the tidier one.
+    Handing the play URL over is not the cheaper shape it looks like: the answer turn goes
+    through the proxy, which fetches a remote URL and base64-inlines it under its own size cap
+    rather than forwarding it, so the bytes cross the wire either way and only the uri escapes
+    that cap.
     """
     uploads, recorded = _stub_douyin(monkeypatch)
 
@@ -168,7 +224,8 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
     assert isinstance(source, Path)
     assert mime_type == "video/mp4"
     assert filename.endswith(".mp4")
-    # Only the provider's own ceiling is applied; a full-resolution clip is the point.
+    # The only cap is the provider's own ceiling: `max_bytes` fails fast on a file the Files API
+    # would reject anyway, and is never a quality lever, since `AI_INGEST_QUALITY` settles that.
     assert recorded["max_bytes"] == douyin_builder.FILES_API_MAX_BYTES
 
 
@@ -360,6 +417,8 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     release = asyncio.Event()
 
     class _SlowUploads(_Uploads):
+        """Upload recorder that parks inside the upload until the test releases it."""
+
         async def __call__(
             self,
             *,
@@ -369,7 +428,11 @@ async def test_the_fetch_bound_is_released_before_the_upload(
             filename: str,
             timeout_seconds: float,
         ) -> dict[str, str] | None:
-            """Blocks inside the upload until the test lets it finish."""
+            """Blocks inside the upload until the test lets it finish.
+
+            Returns:
+                Whatever the base recorder would have returned, once released.
+            """
             started.set()
             await release.wait()
             return await super().__call__(

@@ -1,4 +1,31 @@
-"""Smoke tests for cogs, setup hooks, and high-level Discord command branches."""
+"""Smoke tests for the cog layer: its commands, listeners, views, and setup hooks.
+
+The cogs whose Discord surface is small enough to drive end to end share this one file instead of
+one file each: `template` (`/ping` plus the message-trigger reactions), `video` (`/download_video`
+and its delivery branches), `parse_threads` (the whole embed allocation), `auto_unmute`, `economy`
+(all eighteen slash commands plus the two loan-decision views), `games` (the lobby entry points),
+and `cli` itself (cog discovery, the per-message reward and its cooldown, and the shared
+command-error handler). `parse_douyin` appears only in the setup sweep, since
+`tests/test_parse_douyin_cog.py` owns its behavior. One non-cog check rides along with the `cli`
+block, holding `LOG_LEVEL` against logfire's own level table.
+
+Nothing here reaches Discord, a model, or the network. A slash command is invoked through its
+registered callback (`EconomyCogs.balance.callback(cog, interaction, ...)`), because the decorator
+leaves an `ApplicationCommand` object where the function was; the doubles in
+`tests/helpers/discord_mocks.py` record what the cog sent so an assertion can read it back, and
+`tests/helpers/casting.py` is what hands those doubles to the real nextcord signatures. The stubs
+defined below cover only what those helpers do not: the video and Threads downloaders, an
+audit-log page, and one non-streaming Responses result.
+
+The Threads block is the largest, and its cases are separate measured failures rather than
+variations on one: a chain, the post it quotes and their galleries all have to fit Discord's
+10-embed and message-wide 6000-character budgets at once, so the tests pin which of them gives up
+a slot, that an overflow is trimmed and its permalinks reported instead of drawing a 400, and that
+neither a failed follow-up notice nor a failed scratch cleanup may relabel an expansion already on
+screen. The economy block pins the other boundary that is expensive to get wrong: a command
+reaches `services/economy` only through the facade names monkeypatched here, and a malformed
+amount, a missing admin flag or an unauthorized button press is refused before any mutation runs.
+"""
 
 from __future__ import annotations
 
@@ -125,7 +152,11 @@ class DownloaderStub:
         self.calls: list[dict[str, str | bool]] = []
 
     def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
-        """Records the download request and returns the next queued result."""
+        """Records the download request and returns the next queued result.
+
+        Returns:
+            The next queued result, popped so a second download cannot reuse it.
+        """
         kwargs: dict[str, str | bool] = {"url": url, "quality": quality, "dry_run": dry_run}
         self.calls.append(kwargs)
         return self.results.pop(0)
@@ -240,7 +271,11 @@ def _thread_output(  # noqa: PLR0913 -- one knob per ThreadsOutput field the emb
     quoted: ThreadsOutput | None = None,
     quoted_unavailable: bool = False,
 ) -> ThreadsOutput:
-    """Builds a parsed Threads output fixture."""
+    """Builds a parsed Threads output fixture.
+
+    Returns:
+        One post carrying the fixed counters, avatar and timestamp the embeds render.
+    """
     return ThreadsOutput(
         text=text,
         url=f"https://www.threads.net/@{author_name}/post/abc",
@@ -261,7 +296,11 @@ def _thread_output(  # noqa: PLR0913 -- one knob per ThreadsOutput field the emb
 
 
 def _long_threads_chain() -> list[ThreadsOutput]:
-    """Builds the measured worst-case chain that crosses the message-wide embed limit."""
+    """Builds the measured worst-case chain that crosses the message-wide embed limit.
+
+    Returns:
+        Ten long posts whose rendered embeds total past Discord's 6000-character budget.
+    """
     chain: list[ThreadsOutput] = []
     for index in range(10):
         prefix = f"post-{index}-"
@@ -379,7 +418,11 @@ class _RaiseDownloader:
     """Downloader stub that always fails."""
 
     def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
-        """Raises a deterministic download failure."""
+        """Raises a deterministic download failure.
+
+        Raises:
+            RuntimeError: Always, so `/download_video` takes its download-error branch.
+        """
         raise RuntimeError("download failed")
 
 
@@ -1238,16 +1281,28 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
     captured_cancel_kwargs: dict[str, int] = {}
 
     async def fake_get_central_banker_for_button(user_id: int) -> bool:
-        """Only user 1 is a central banker."""
+        """Only user 1 is a central banker.
+
+        Returns:
+            True for user 1 alone, so the button's gate is driven from both sides.
+        """
         return user_id == 1
 
     async def fake_accept_for_button(**kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
-        """Records approval arguments and returns a fake accepted proposal."""
+        """Records approval arguments and returns a fake accepted proposal.
+
+        Returns:
+            The shared fake accept result; the assertions read the recorded kwargs instead.
+        """
         captured_accept_kwargs.update(kwargs)
         return await fake_accept_loan_proposal()
 
     async def fake_cancel_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
-        """Records cancellation arguments and returns a fake canceled proposal."""
+        """Records cancellation arguments and returns a fake canceled proposal.
+
+        Returns:
+            The canceled proposal the view renders into its closing embed.
+        """
         captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
         return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
 
@@ -1308,17 +1363,29 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     captured_cancel_kwargs: dict[str, int] = {}
 
     async def fake_accept_for_button(**kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
-        """Records approval arguments and returns a fake accepted proposal."""
+        """Records approval arguments and returns a fake accepted proposal.
+
+        Returns:
+            The shared fake accept result; the assertions read the recorded kwargs instead.
+        """
         captured_accept_kwargs.update(kwargs)
         return await fake_accept_loan_proposal()
 
     async def fake_reject_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
-        """Records rejection arguments and returns a fake rejected proposal."""
+        """Records rejection arguments and returns a fake rejected proposal.
+
+        Returns:
+            The rejected proposal the view renders into its closing embed.
+        """
         captured_reject_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
         return await fake_reject_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
 
     async def fake_cancel_for_button(proposal_id: int, actor_id: int) -> LoanProposalView:
-        """Records cancellation arguments and returns a fake canceled proposal."""
+        """Records cancellation arguments and returns a fake canceled proposal.
+
+        Returns:
+            The canceled proposal the view renders into its closing embed.
+        """
         captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
         return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
 
@@ -1382,7 +1449,11 @@ async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
     rejected: list[int] = []
 
     async def fake_reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView:
-        """Records the expired proposal rejection."""
+        """Records the expired proposal rejection.
+
+        Returns:
+            The proposal marked REJECTED, which the timeout embed reports.
+        """
         rejected.append(proposal_id)
         return _fake_loan_proposal(kind=LoanProposalKind.PERSONAL_REQUEST).model_copy(
             update={"proposal_id": proposal_id, "status": LoanProposalStatus.REJECTED}
@@ -1435,7 +1506,11 @@ async def test_economy_admin_rejects_non_admin(monkeypatch: pytest.MonkeyPatch) 
         return False
 
     async def fake_adjust_balance_guard(**_kwargs: Any) -> BalanceAdjustmentResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Fails the test if a non-admin reaches the mutation path."""
+        """Fails the test if a non-admin reaches the mutation path.
+
+        Returns:
+            An empty adjustment, never reached while the admin gate holds.
+        """
         nonlocal called
         called = True
         return BalanceAdjustmentResult(new_balance=0, applied_delta=0)
@@ -1477,7 +1552,11 @@ async def test_economy_admin_tax_accepts_string_amounts(monkeypatch: pytest.Monk
     async def record_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
     ) -> BalanceAdjustmentResult:
-        """Records parsed adjustment deltas."""
+        """Records parsed adjustment deltas.
+
+        Returns:
+            The adjustment the command renders, over a fixed 150 starting balance.
+        """
         captured_deltas.append(delta)
         return BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
 
@@ -1509,7 +1588,11 @@ async def test_economy_admin_tax_allows_bot_target(monkeypatch: pytest.MonkeyPat
     async def record_adjust_balance(
         user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
     ) -> BalanceAdjustmentResult:
-        """Records target accounts and parsed adjustment deltas."""
+        """Records target accounts and parsed adjustment deltas.
+
+        Returns:
+            The adjustment the command renders, over a fixed 150 starting balance.
+        """
         del allow_negative, avatar_url
         captured_targets.append((user_id, name, delta))
         return BalanceAdjustmentResult(new_balance=150 + delta, applied_delta=delta)
@@ -1543,7 +1626,11 @@ async def test_economy_admin_tax_rejects_invalid_amount_text(
     async def fake_adjust_balance_guard(
         user_id: int, name: str, delta: int, allow_negative: bool = False, avatar_url: str = ""
     ) -> BalanceAdjustmentResult:
-        """Fails the test if invalid amount text reaches the mutation path."""
+        """Fails the test if invalid amount text reaches the mutation path.
+
+        Returns:
+            An empty adjustment, never reached while the amount guard holds.
+        """
         nonlocal called
         called = True
         return BalanceAdjustmentResult(new_balance=0, applied_delta=0)
@@ -1581,7 +1668,11 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
         sender_avatar_url: str = "",
         receiver_avatar_url: str = "",
     ) -> TransferResult:
-        """Records transfer identity payloads."""
+        """Records transfer identity payloads.
+
+        Returns:
+            A settled transfer, so `/give` carries on to its confirmation embed.
+        """
         nonlocal captured_sender_avatar_url, captured_receiver_avatar_url
         del sender_id, sender_name, receiver_id, receiver_name, amount
         captured_sender_avatar_url = sender_avatar_url
@@ -1603,7 +1694,11 @@ async def test_give_passes_guild_avatar_urls_to_database(monkeypatch: pytest.Mon
     members = {cached_sender.id: cached_sender, cached_receiver.id: cached_receiver}
 
     async def fail_fetch_member(user_id: int) -> FakeUser:
-        """Fails if the helper ignores the cached member path."""
+        """Fails if the helper ignores the cached member path.
+
+        Raises:
+            AssertionError: Always; a member the guild cache already holds must not be fetched.
+        """
         raise AssertionError(f"unexpected fetch_member({user_id})")
 
     guild = SimpleNamespace(get_member=members.get, fetch_member=fail_fetch_member)
@@ -1636,7 +1731,11 @@ async def test_give_allows_bot_receiver(monkeypatch: pytest.MonkeyPatch) -> None
         sender_avatar_url: str = "",
         receiver_avatar_url: str = "",
     ) -> TransferResult:
-        """Records bot-recipient transfer identity payloads."""
+        """Records bot-recipient transfer identity payloads.
+
+        Returns:
+            A settled transfer, so `/give` carries on to its confirmation embed.
+        """
         del sender_avatar_url, receiver_avatar_url
         captured_transfer.update({
             "sender_id": sender_id,
@@ -2022,7 +2121,12 @@ async def fake_adjust_balance(
 
 
 def _fake_loan_proposal(kind: LoanProposalKind) -> LoanProposalView:
-    """Builds a fake loan proposal view."""
+    """Builds a fake loan proposal view.
+
+    Returns:
+        A pending proposal whose lender side follows `kind`: the central bank with no lender
+        id, or user 2 as the personal lender.
+    """
     return LoanProposalView(
         proposal_id=1,
         kind=kind,
@@ -2650,7 +2754,11 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         processed.append(message)
 
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
-        """Records base reward arguments and returns a fake credit result."""
+        """Records base reward arguments and returns a fake credit result.
+
+        Returns:
+            A stand-in for `CreditResult`; `on_message` discards it.
+        """
         rewards.append(kwargs)
         return CreditResult(
             new_balance=5_000, credited_amount=5_000, principal_repaid=0, remaining_debt=0
