@@ -356,6 +356,14 @@ select = [
     "PERF",  # Perflint
     # "FURB",  # refurb
     "DOC",  # pydoclint
+    # pydoclint's sections rules are preview, and `explicit-preview-rules` above means the
+    # `DOC` prefix alone does not reach them. Listed by code so `Returns:` / `Yields:` /
+    # `Raises:` are enforced rather than left to review, per the docstring convention in
+    # `.github/CONTRIBUTING.md`. Its other half, which pydoclint has no rule for, is pinned by
+    # `tests/test_docstrings.py`.
+    "DOC201", "DOC202",  # returns documented, and only when something is returned
+    "DOC402", "DOC403",  # yields documented, and only by a generator
+    "DOC501", "DOC502",  # raises documented, and only what is actually raised
     "RUF",  # Ruff Specific Rules
 ]
 

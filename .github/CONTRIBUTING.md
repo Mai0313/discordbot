@@ -99,7 +99,78 @@ def setup(bot: commands.Bot) -> None:
 - Accept normal positional-only idioms such as `len(value)`, `str(value)`, `Path("file")`, exception constructors, variadic collectors, and `logfire.info("message")`.
 - Avoid intermediate one-level aliases when directly using the original object is clearer.
 - Do not blanket `# noqa`. Use the narrowest rule-specific ignore with a short reason.
-- Keep comments focused on non-obvious behavior. Do not narrate the code or reference PR numbers in comments.
+- Keep comments focused on non-obvious behavior. Do not narrate the code or reference PR numbers in comments. [Docstrings And Comments](#docstrings-and-comments) has the rest.
+
+## Docstrings And Comments
+
+Google style, which ruff already enforces the shape of (`convention = "google"`). The file most people read first is one they have never opened before, so the first read is what this section is for.
+
+### Every file carries a module docstring
+
+This is the deliberate exception to "concise". A reader should finish it knowing what the file is for, what lives in it, and how it fits with its neighbours. Do not compress one into a single vague line. What it owes depends on the layer:
+
+| Layer | What the module docstring owes its reader |
+| --- | --- |
+| `cogs/<name>/cog.py` | The Discord surface: the commands and listeners it registers, what the user sees, and which kill-switch or permission gates it. |
+| the rest of `cogs/<name>/` | That cog's own half of the feature, and why it is a separate file rather than part of `cog.py`. |
+| `services/` | The engine: its invariants, what settles atomically, which storage it owns, and who is allowed to call it. |
+| `utils/` | The contract: what the helper promises, what it deliberately does not, and why it sits below the cogs instead of inside one. |
+| `typings/` | The vocabulary: what the types describe and which code keys off them. |
+| `tests/` | What the file pins, and why that behavior is worth pinning. |
+
+An empty `__init__.py` stays empty. A package `__init__.py` that carries code is a module like any other.
+
+### Every function and method carries a docstring
+
+One line saying what it does, then only what the signature cannot show: side effects, failure behavior, ordering or locking requirements, why the odd bit is odd. If a sentence restates the signature or narrates the implementation, cut it.
+
+A closure inside a function body is exempt. It is implementation of its enclosing function and the contract belongs in that function's docstring. Document one anyway where it is not obvious.
+
+### `Args:` is complete and typed
+
+One entry per parameter, `self` and `cls` skipped, in the signature's own order, written `name (Type): description`. The type is **transcribed from the signature**, not paraphrased: no simplifying `Sequence[bytes | str]` to `list`, no dropping `| None`. `*args` and `**kwargs` keep their stars. Where a parameter carries no annotation, describe it and leave the type out rather than inventing one.
+
+This is a deliberate departure from upstream Google style, which lets the type be omitted when the signature carries an annotation. Keeping it is what makes the block answerable without scrolling back to the signature.
+
+`tests/` is the exception, apart from `tests/helpers/` and `tests/conftest.py`. A test's parameters are pytest fixtures resolved by name, so there is no caller to document for; a test gets the one-line docstring naming the behavior it verifies instead. The two exempted paths are the ones a test file calls into, so they follow the rule above.
+
+### `Returns:`, `Yields:` and `Raises:`
+
+`Returns:` whenever the function returns anything but `None`. `Yields:` instead of it for a generator, never both. `Raises:` for exceptions a caller has to be ready for, and only for ones actually raised.
+
+```python
+async def upload_attachment(
+    *, source: AttachmentSource, client: genai.Client, timeout: float = 15.0
+) -> str | None:
+    """Uploads one attachment to the Files API and returns its reusable uri.
+
+    Polls until the file reports ACTIVE, because a uri referenced before then is rejected
+    with a 400 rather than queued. A source whose CDN url has expired is skipped rather
+    than retried, so scrollback does not re-warn on every reply.
+
+    Args:
+        source (AttachmentSource): The message attachment to upload.
+        client (genai.Client): Client for the Gemini Files API.
+        timeout (float): Seconds to wait for the file to reach ACTIVE.
+
+    Returns:
+        The full `https://.../files/<id>` uri, or None when the source could not be fetched.
+
+    Raises:
+        TimeoutError: The upload did not reach ACTIVE within `timeout`.
+    """
+```
+
+### Inline comments
+
+Short, and about the why. Drop the ones that echo the line below them. A comment that explains a decision, a measured result, or a constraint the code cannot state is worth keeping; one that translates the next line into English is not.
+
+### What enforces this
+
+- **ruff** owns the section rules: `convention = "google"`, plus `DOC201` / `DOC202` / `DOC402` / `DOC403` / `DOC501` / `DOC502` selected by code in `pyproject.toml`. They ship as preview rules, so the `DOC` prefix alone does not reach them.
+- **`tests/test_docstrings.py`** owns what ruff has no rule for: module docstring presence, function docstring presence, and an `Args:` block naming exactly the signature's parameters, in order, each carrying its annotation. `D417` only fires once a docstring already has an `Args:` section, so it never sees a function that simply never grew one.
+
+Do not write an interpreter prompt in a docstring under `tests/`. The suite runs with `--doctest-modules` over `tests/`, so the snippet is collected and executed as a real doctest. Show example calls without the prompt.
 
 ## Logging
 
