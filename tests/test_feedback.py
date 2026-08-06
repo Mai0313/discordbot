@@ -8,6 +8,8 @@ survive all of them.
 
 from typing import Any, cast
 import asyncio
+from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 from openai import AsyncOpenAI
 import pytest
@@ -20,6 +22,7 @@ from discordbot.typings.config import FeedbackConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.utils.timezone import database_now
 from discordbot.cogs.feedback.cog import FeedbackCogs
+from discordbot.cogs.feedback.auth import AppCredentials, GitHubAuthError, TokenCredentials
 from discordbot.cogs.feedback.views import (
     PanelRows,
     TicketRow,
@@ -122,7 +125,12 @@ def _config(**overrides: object) -> FeedbackConfig:
     values: dict[str, object] = {
         "FEEDBACK_ENABLED": True,
         "FEEDBACK_GITHUB_TOKEN": "fake-credential",
+        "FEEDBACK_GITHUB_APP_ID": "",
+        "FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH": "",
         "FEEDBACK_GITHUB_REPOSITORY": "owner/name",
+        "FEEDBACK_CONTACT": "",
+        "FEEDBACK_MAX_OPEN_REPORTS": 3,
+        "FEEDBACK_SUBMIT_COOLDOWN_SECONDS": 300,
     }
     values.update(overrides)
     return FeedbackConfig.model_validate(values)
@@ -819,7 +827,7 @@ class _ScriptedIssues(GitHubIssues):
 
 async def test_a_missing_label_never_costs_the_report() -> None:
     """A label the repository does not carry must not take the whole issue down with it."""
-    client = _ScriptedIssues(token=_FAKE_TOKEN, repository="owner/name", fail_status=422)
+    client = _scripted(fail_status=422)
     number = await client.create_issue(title="t", body="b", labels=["user-report"])
     assert number == 460
     assert len(client.calls) == 2
@@ -828,7 +836,7 @@ async def test_a_missing_label_never_costs_the_report() -> None:
 
 async def test_a_real_create_failure_is_not_swallowed() -> None:
     """Anything other than a rejected label is the caller's problem to handle."""
-    client = _ScriptedIssues(token=_FAKE_TOKEN, repository="owner/name", fail_status=503)
+    client = _scripted(fail_status=503)
     with pytest.raises(GitHubIssuesError):
         await client.create_issue(title="t", body="b", labels=["user-report"])
     assert len(client.calls) == 1
@@ -836,11 +844,20 @@ async def test_a_real_create_failure_is_not_swallowed() -> None:
 
 async def test_the_snapshot_carries_why_an_issue_was_closed() -> None:
     """A closed issue cannot tell finished from not-doing-it, so the reason rides along."""
-    client = _ScriptedIssues(token=_FAKE_TOKEN, repository="owner/name")
+    client = _scripted()
     snapshot = await client.read_issue(number=460)
     assert snapshot.state == "closed"
     assert snapshot.state_reason == "not_planned"
     assert snapshot.comment_count == 3
+
+
+def _scripted(*, fail_status: int = 0) -> "_ScriptedIssues":
+    """Builds a scripted client authorized by a placeholder token."""
+    return _ScriptedIssues(
+        credentials=TokenCredentials(token=_FAKE_TOKEN),
+        repository="owner/name",
+        fail_status=fail_status,
+    )
 
 
 class _PagingIssues(GitHubIssues):
@@ -1095,7 +1112,9 @@ async def test_nobody_can_read_someone_elses_report(feedback_isolated_db: None) 
 
 async def test_every_comment_page_is_read() -> None:
     """The newest reply is the one being looked for, and it is on the last page."""
-    client = _PagingIssues(token=_FAKE_TOKEN, repository="owner/name")
+    client = _PagingIssues(
+        credentials=TokenCredentials(token=_FAKE_TOKEN), repository="owner/name"
+    )
     conversation = await client.read_conversation(number=460)
     assert len(conversation) == 120
     assert conversation[-1].body == "第 119 則"
@@ -1239,3 +1258,149 @@ def test_a_half_written_draft_is_not_used() -> None:
     assert stored_draft(ticket=_ticket()) is None
     assert stored_draft(ticket=_ticket(draft_title="t")) is None
     assert stored_draft(ticket=_ticket(draft_title="t", draft_body="b")) == ("t", "b")
+
+
+# ------------------------------------------------------------------ how it authorizes
+
+
+def test_a_token_authorizes_directly() -> None:
+    """The account path has nothing to exchange; the token is the credential."""
+    assert (
+        asyncio.run(TokenCredentials(token=_FAKE_TOKEN).authorization()) == f"Bearer {_FAKE_TOKEN}"
+    )
+
+
+def test_a_missing_private_key_is_reported_as_an_auth_failure(tmp_path: Path) -> None:
+    """Every credential failure arrives as one type, so callers catch one thing."""
+    credentials = AppCredentials(
+        app_id="Iv23li", private_key_path=tmp_path / "absent.pem", repository="owner/name"
+    )
+    with pytest.raises(GitHubAuthError):
+        asyncio.run(credentials.authorization())
+
+
+def test_an_unusable_private_key_is_reported_as_an_auth_failure(tmp_path: Path) -> None:
+    """A file that is not a key fails at signing rather than somewhere further in."""
+    key = tmp_path / "not-a-key.pem"
+    key.write_text("hello", encoding="utf-8")
+    credentials = AppCredentials(app_id="Iv23li", private_key_path=key, repository="owner/name")
+    with pytest.raises(GitHubAuthError):
+        asyncio.run(credentials.authorization())
+
+
+async def test_an_installation_token_is_reused_until_it_nearly_expires(tmp_path: Path) -> None:
+    """One exchange per hour, not one per request: the panel makes several calls a time."""
+    minted: list[str] = []
+
+    class _Exchanging(AppCredentials):
+        """An app credential whose GitHub side is scripted."""
+
+        def _signed_jwt(self) -> str:
+            return "jwt"
+
+        async def _call(self, *, method: str, path: str, authorization: str) -> Any:  # noqa: ANN401 -- mirrors the signature it overrides
+            minted.append(path)
+            if path.endswith("/installation"):
+                return {"id": 42}
+            return {
+                "token": "ghs_installation",
+                "expires_at": (datetime.now(tz=UTC) + timedelta(hours=1)).isoformat(),
+            }
+
+    credentials = _Exchanging(
+        app_id="Iv23li", private_key_path=tmp_path / "key.pem", repository="owner/name"
+    )
+    assert await credentials.authorization() == "Bearer ghs_installation"
+    assert await credentials.authorization() == "Bearer ghs_installation"
+    # Two calls the first time (find the installation, mint a token), nothing the second; a
+    # token cannot be asked for before the installation it belongs to is known.
+    # order-contract: one coroutine awaits the lookup and only then mints.
+    assert minted == ["/repos/owner/name/installation", "/app/installations/42/access_tokens"]
+
+
+async def test_an_expired_installation_token_is_replaced(tmp_path: Path) -> None:
+    """A token near its end is exchanged again rather than sent and refused."""
+    exchanges = 0
+
+    class _Expiring(AppCredentials):
+        """An app credential whose tokens are already at their expiry."""
+
+        def _signed_jwt(self) -> str:
+            return "jwt"
+
+        async def _call(self, *, method: str, path: str, authorization: str) -> Any:  # noqa: ANN401 -- mirrors the signature it overrides
+            nonlocal exchanges
+            if path.endswith("/installation"):
+                return {"id": 42}
+            exchanges += 1
+            return {"token": f"ghs_{exchanges}", "expires_at": datetime.now(tz=UTC).isoformat()}
+
+    credentials = _Expiring(
+        app_id="Iv23li", private_key_path=tmp_path / "key.pem", repository="owner/name"
+    )
+    assert await credentials.authorization() == "Bearer ghs_1"
+    assert await credentials.authorization() == "Bearer ghs_2"
+
+
+def test_the_app_is_preferred_over_a_token() -> None:
+    """Both configured means the app wins: it files under its own name and rotates itself."""
+    cog = _cog(issues=FakeIssues())
+    cog.config = _config(
+        FEEDBACK_GITHUB_APP_ID="Iv23li", FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH="feedback-app.pem"
+    )
+    del cog.__dict__["issues"]
+    assert isinstance(cog.issues.credentials, AppCredentials)
+
+
+def test_an_app_alone_is_enough_to_be_ready() -> None:
+    """The app is a credential in its own right; no token needs to be set beside it."""
+    assert _config(
+        FEEDBACK_GITHUB_TOKEN="",
+        FEEDBACK_GITHUB_APP_ID="Iv23li",
+        FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH="feedback-app.pem",
+    ).github_ready
+    # Half of an app is not an app.
+    assert not _config(FEEDBACK_GITHUB_TOKEN="", FEEDBACK_GITHUB_APP_ID="Iv23li").github_ready
+
+
+def test_a_relayed_reply_survives_being_posted_by_an_app() -> None:
+    """An app comments as a Bot, and the reporter's own words must not be filtered as noise.
+
+    This is the one thing switching credentials would have broken silently: the bot
+    filter used to run before the marker check, so every line a reporter added through
+    the panel would have vanished from their own view of the report.
+    """
+    conversation = select_conversation(
+        comments=[
+            {
+                "user": {"login": "pocat-feedback-bot[bot]", "type": "Bot"},
+                "author_association": "NONE",
+                "body": f"{REPORTER_COMMENT_MARKER}\n**Alice** wrote from Discord:\n\n補充一下",
+                "created_at": "2026-02-05T09:00:00Z",
+            },
+            {
+                "user": {"login": "dependabot[bot]", "type": "Bot"},
+                "author_association": "NONE",
+                "body": "Bumps httpx",
+                "created_at": "2026-02-05T10:00:00Z",
+            },
+        ]
+    )
+    assert len(conversation) == 1
+    assert conversation[0].from_reporter is True
+    assert "補充一下" in conversation[0].body
+
+
+def test_a_stranger_cannot_forge_a_reporter_reply() -> None:
+    """The marker is plumbing, not authentication; who posted it is what decides."""
+    conversation = select_conversation(
+        comments=[
+            {
+                "user": {"login": "stranger", "type": "User"},
+                "author_association": "NONE",
+                "body": f"{REPORTER_COMMENT_MARKER}\n**Alice** wrote from Discord:\n\n我不是 Alice",
+                "created_at": "2026-02-05T09:00:00Z",
+            }
+        ]
+    )
+    assert conversation == []

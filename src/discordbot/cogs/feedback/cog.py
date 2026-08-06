@@ -24,6 +24,7 @@ also where the panel reads status from, so the developer keeps one inbox instead
 
 from typing import Any
 import asyncio
+from pathlib import Path
 from functools import cached_property
 from collections.abc import Coroutine
 
@@ -38,6 +39,7 @@ from discordbot.typings.colors import NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLO
 from discordbot.typings.config import FeedbackConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import as_taipei, database_now
+from discordbot.cogs.feedback.auth import AppCredentials, TokenCredentials, GitHubCredentials
 from discordbot.cogs.feedback.views import (
     MAX_PANEL_TICKETS,
     PanelRows,
@@ -135,8 +137,21 @@ class FeedbackCogs(commands.Cog):
 
     @cached_property
     def issues(self) -> GitHubIssues:
-        """The cached GitHub issues client for the configured repository."""
-        return GitHubIssues(token=self.config.github_token, repository=self.config.repository_slug)
+        """The cached GitHub issues client for the configured repository.
+
+        The app is preferred when both are configured: it files issues under its own
+        name instead of a person's, and its token expires on its own.
+        """
+        credentials: GitHubCredentials = (
+            AppCredentials(
+                app_id=self.config.github_app_id,
+                private_key_path=Path(self.config.github_app_private_key_path),
+                repository=self.config.repository_slug,
+            )
+            if self.config.app_configured
+            else TokenCredentials(token=self.config.github_token)
+        )
+        return GitHubIssues(credentials=credentials, repository=self.config.repository_slug)
 
     def _spawn(self, coro: Coroutine[Any, Any, None]) -> None:
         """Runs a coroutine in the background, keeping a reference until it finishes."""

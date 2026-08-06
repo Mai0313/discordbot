@@ -133,7 +133,7 @@ GEMINI_API_KEY=your_google_ai_studio_key
 
 `OPENAI_BASE_URL` 可以直接指向 OpenAI，也可以指向 LiteLLM 這類 OpenAI-compatible gateway。`GEMINI_API_KEY` 是 Google AI Studio key，用於直連 Google（不經 gateway）的功能：影片生成、Gemini Files API 附件上傳、YouTube 影片回答與深度研究；未設定即停用這些功能。
 
-`/feedback` 要開單需要 `FEEDBACK_GITHUB_TOKEN` 與 `FEEDBACK_GITHUB_REPOSITORY`，token 只需要那一個 repository 的 issue 讀寫權限。在設定好之前，指令照樣收回報並存在本地，等憑證補上之後的第一次重試就會把積著的單全部開出來。`FEEDBACK_ENABLED=false` 才是關閉開關，也只有那個情況會顯示 `FEEDBACK_CONTACT` 而不是面板。名稱刻意加上前綴，因為 shell 若已經 export `GITHUB_TOKEN` 或 `GITHUB_REPOSITORY`，會蓋過 `.env` 裡的值。
+`/feedback` 要開單需要 `FEEDBACK_GITHUB_REPOSITORY` 加上一組憑證。建議用 GitHub App (`FEEDBACK_GITHUB_APP_ID` 與 `FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH`)，權限只給 Issues: Read and write：它會用自己的名義開單而不是用你的，而且 GitHub 不會通知你自己開的 issue。不想建 App 的話，`FEEDBACK_GITHUB_TOKEN` 是比較簡單的替代方案。在設定好之前，指令照樣收回報並存在本地，等憑證補上之後的第一次重試就會把積著的單全部開出來。`FEEDBACK_ENABLED=false` 才是關閉開關，也只有那個情況會顯示 `FEEDBACK_CONTACT` 而不是面板。名稱刻意加上前綴，因為 shell 若已經 export `GITHUB_TOKEN` 或 `GITHUB_REPOSITORY`，會蓋過 `.env` 裡的值。
 
 本機測試央行批准流程時，可以設定 `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`。正式環境請保持未設定或 `false`。
 

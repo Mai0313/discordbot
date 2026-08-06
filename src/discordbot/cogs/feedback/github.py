@@ -19,6 +19,8 @@ import httpx
 import logfire
 from pydantic import Field, BaseModel, ValidationError
 
+from discordbot.cogs.feedback.auth import GitHubAuthError, GitHubCredentials
+
 _API_ROOT: Final[str] = "https://api.github.com"
 _API_VERSION: Final[str] = "2022-11-28"
 
@@ -96,8 +98,17 @@ def select_conversation(*, comments: list[dict[str, Any]]) -> list[IssueComment]
             continue
         author = comment.get("user") or {}
         body = str(comment.get("body") or "")
-        from_reporter = body.lstrip().startswith(REPORTER_COMMENT_MARKER)
-        if author.get("type") == "Bot":
+        # "Ours" covers both credentials: a GitHub App comments as a Bot, a token comments
+        # as the account that owns it. Checking it is what keeps the marker from being a
+        # thing any passer-by could paste to have their words shown back to the reporter
+        # as the reporter's own — and checking it BEFORE the bot filter is what stops an
+        # App's relayed replies from being dropped as bot noise.
+        ours = (
+            author.get("type") == "Bot"
+            or comment.get("author_association") in MAINTAINER_ASSOCIATIONS
+        )
+        from_reporter = ours and body.lstrip().startswith(REPORTER_COMMENT_MARKER)
+        if not from_reporter and author.get("type") == "Bot":
             continue
         if not from_reporter and comment.get("author_association") not in MAINTAINER_ASSOCIATIONS:
             continue
@@ -116,22 +127,32 @@ class GitHubIssues(BaseModel):
     """Opens, edits, and reads the issues that user reports become.
 
     Attributes:
-        token: Credential with issue read/write on `repository`.
+        credentials: How the bot proves it may act on `repository`; see `auth.py`.
         repository: The `owner/name` slug reports are filed against.
         timeout_seconds: Per-request ceiling. Short on purpose: every caller is either
             on the submit path or on a panel someone is waiting for.
     """
 
-    token: str = Field(..., description="Token with issue read/write on the repository.")
+    credentials: GitHubCredentials = Field(..., description="How the bot authorizes a call.")
     repository: str = Field(..., description="The owner/name slug reports are filed against.")
     timeout_seconds: float = Field(default=15.0, description="Per-request timeout in seconds.")
 
-    @property
-    def _headers(self) -> dict[str, str]:
-        """Auth and version headers sent on every request."""
+    async def _authorized_headers(self) -> dict[str, str]:
+        """Auth and version headers sent on every request.
+
+        Asynchronous because a GitHub App mints its token on demand; a failure to do so
+        arrives as this module's own error, so callers still catch exactly one type.
+
+        Raises:
+            GitHubIssuesError: The bot could not authorize the call.
+        """
+        try:
+            authorization = await self.credentials.authorization()
+        except GitHubAuthError as exc:
+            raise GitHubIssuesError(f"Could not authorize a GitHub call: {exc}") from exc
         return {
             "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {self.token}",
+            "Authorization": authorization,
             "X-GitHub-Api-Version": _API_VERSION,
         }
 
@@ -150,10 +171,11 @@ class GitHubIssues(BaseModel):
                 non-2xx status, or the answer was not decodable JSON.
         """
         url = f"{_API_ROOT}/repos/{self.repository}{path}"
+        headers = await self._authorized_headers()
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 response = await client.request(
-                    method=method, url=url, headers=self._headers, json=payload
+                    method=method, url=url, headers=headers, json=payload
                 )
         except httpx.HTTPError as exc:
             raise GitHubIssuesError(f"{method} {path} could not reach GitHub: {exc}") from exc

@@ -118,6 +118,30 @@ def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     return usage_dir
 
 
+@pytest.fixture(autouse=True)
+def feedback_env_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keeps a real deployment's reporting credentials out of every test.
+
+    Autouse because `FeedbackConfig` reads the environment and `.env` is loaded at import,
+    which in a git worktree is the *parent* checkout's file. Without this a machine with a
+    configured GitHub App quietly turns "no credentials" tests into "credentials present"
+    ones — and `model_validate` does not save you: it skips the settings sources only for
+    the keys it is handed, so any field a test does not name still comes from the process
+    environment.
+    """
+    for name in (
+        "FEEDBACK_ENABLED",
+        "FEEDBACK_GITHUB_TOKEN",
+        "FEEDBACK_GITHUB_APP_ID",
+        "FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH",
+        "FEEDBACK_GITHUB_REPOSITORY",
+        "FEEDBACK_CONTACT",
+        "FEEDBACK_MAX_OPEN_REPORTS",
+        "FEEDBACK_SUBMIT_COOLDOWN_SECONDS",
+    ):
+        monkeypatch.delenv(name=name, raising=False)
+
+
 @pytest.fixture
 async def fishing_isolated_db(
     economy_isolated_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

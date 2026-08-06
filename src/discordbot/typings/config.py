@@ -38,7 +38,13 @@ class FeedbackConfig(BaseSettings):
 
     Attributes:
         enabled: Kill-switch for the whole `/feedback` command.
-        github_token: Token used to open and read this repository's issues.
+        github_token: Token used to open and read this repository's issues, when the
+            bot authenticates as an account rather than as an app.
+        github_app_id: The reporting GitHub App's id. Either the numeric App ID or the
+            Client ID works; GitHub now recommends the latter, and both are just the
+            issuer of the JWT this exchanges for an installation token.
+        github_app_private_key_path: PEM the app signs that JWT with. A path because a
+            PEM is multi-line and escaping it into the environment is a trap.
         github_repository: The `owner/name` the reports are filed against.
         contact: Where to send people when reports cannot be filed at all.
         max_open_reports: How many unresolved reports one person may hold at once.
@@ -60,6 +66,18 @@ class FeedbackConfig(BaseSettings):
         # does not override an existing variable, so the bare names would silently lose
         # to whatever the surrounding shell happened to have set.
         validation_alias=AliasChoices("FEEDBACK_GITHUB_TOKEN"),
+    )
+    github_app_id: str = Field(
+        default="",
+        description="The reporting GitHub App's App ID or Client ID.",
+        examples=["Iv23li..."],
+        validation_alias=AliasChoices("FEEDBACK_GITHUB_APP_ID"),
+    )
+    github_app_private_key_path: str = Field(
+        default="",
+        description="Path to the reporting GitHub App's private key PEM.",
+        examples=["/app/data/feedback-app.pem"],
+        validation_alias=AliasChoices("FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH"),
     )
     github_repository: str = Field(
         default="",
@@ -87,14 +105,21 @@ class FeedbackConfig(BaseSettings):
     )
 
     @property
+    def app_configured(self) -> bool:
+        """Whether a GitHub App is set up to file the issues."""
+        return bool(self.github_app_id.strip()) and bool(self.github_app_private_key_path.strip())
+
+    @property
     def github_ready(self) -> bool:
         """Whether an issue can be opened right now.
 
         Not the same question as whether the feature is on, which is what `enabled`
-        answers. A missing token is an operational state, not a switch: reports are
-        still taken and stored, and the retry sweep files them once one is configured.
+        answers. Missing credentials are an operational state, not a switch: reports are
+        still taken, stored and written up, and the retry sweep files them once either an
+        app or a token is configured.
         """
-        return self.enabled and bool(self.github_token.strip()) and bool(self.repository_slug)
+        has_credential = self.app_configured or bool(self.github_token.strip())
+        return self.enabled and has_credential and bool(self.repository_slug)
 
     @property
     def repository_slug(self) -> str:
