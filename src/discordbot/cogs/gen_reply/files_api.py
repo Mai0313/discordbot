@@ -12,6 +12,12 @@ The upload itself goes DIRECT to Google (never through the proxy) because only t
 client can poll a file to ACTIVE: the proxy's file resource reports a deprecated `uploaded`
 status, and referencing a not-yet-ACTIVE file intermittently 400s the whole answer request.
 
+`upload_to_files_api` is that upload; `upload_as_input_file` wraps its uri into the
+`input_file` part the link-context builders actually hand the model. The module-level bounds
+are shared with those builders rather than restated per source: the provider's own size
+ceiling, the deadline for one source's whole fetch-plus-upload step, and a small semaphore
+holding back concurrent link-media uploads.
+
 Distinct from `attachment/gemini_file_api.py`, which owns the same upload for Discord
 attachments plus a per-source render cache and a pending-upload re-poll keyed on the message
 that carried them. A file this module uploads has no such later reference to adopt, so it
@@ -71,11 +77,13 @@ async def upload_to_files_api(
     file is streamed from disk rather than read whole into memory.
 
     Args:
-        client: A Gemini client built with the Files API key (direct, never the proxy).
-        source: The media bytes, or the path to the media file on disk.
-        mime_type: The media's real MIME type; the upload needs it, the part does not carry one.
-        display_name: Cosmetic name recorded on the uploaded file.
-        timeout_seconds: Bound on the whole transfer, not just the activation poll.
+        client (genai.Client): A Gemini client built with the Files API key (direct, never
+            the proxy).
+        source (Path | bytes): The media bytes, or the path to the media file on disk.
+        mime_type (str): The media's real MIME type; the upload needs it, the part does not
+            carry one.
+        display_name (str): Cosmetic name recorded on the uploaded file.
+        timeout_seconds (float): Bound on the whole transfer, not just the activation poll.
 
     Returns:
         The full `https://.../files/<id>` uri, or None when the upload failed or never
@@ -147,6 +155,19 @@ async def upload_as_input_file(
     `filename` must carry the real extension: it is cosmetic on the proxied Responses path
     (the bridge drops it) but load-bearing on the native Interactions path, which classifies
     a part as video / audio / image / document purely by that extension.
+
+    Args:
+        client (genai.Client): A Gemini client built with the Files API key (direct, never
+            the proxy).
+        source (Path | bytes): The media bytes, or the path to the media file on disk.
+        mime_type (str): The media's real MIME type; the upload needs it, the part does not
+            carry one.
+        filename (str): Extension-bearing name, doubling as the upload's display name.
+        timeout_seconds (float): Bound on the whole transfer, not just the activation poll.
+
+    Returns:
+        The `input_file` part referencing the Files uri, or None when the upload failed, so
+        the caller degrades to text rather than sending an unresolvable reference.
     """
     file_uri = await upload_to_files_api(
         client=client,

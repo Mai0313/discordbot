@@ -1,4 +1,31 @@
-"""Streams a Responses API reply onto a Discord message."""
+"""Renders one streaming answer turn onto Discord: live preview, usage footer, generated media.
+
+`gen_reply/cog.py` builds the request and hands the resulting event stream to
+`ResponseStreamer.stream`; everything a user actually sees of an answer is written from here.
+Consuming and rendering run on two separate schedules: `_consume` only accumulates text and usage
+onto the instance, while a snapshot editor task edits the reply on a fixed cadence, so a slow
+Discord write never stalls the token loop and a burst of deltas costs one edit instead of many.
+The reasoning summary is previewed as windowed `-#` subtext until the first content delta replaces
+it, and the finished reply carries a `model · tokens · cost` footer whose shape
+`input.USAGE_FOOTER_RE` has to keep matching, since history rendering strips it back off the bot's
+own messages before they are fed to the model again.
+
+This is also where the inline markers become artifacts. `markers.py` parses `<generate-voice>` /
+`<generate-image>` / `<generate-music>` / `<generate-video>` / `<deep-research>` out of the
+finished text; this file drives the first four through the generators in `generation.py` and hands
+the attach-vs-host-vs-drop decision to `utils/media_delivery.py`, so an oversize clip becomes a
+posted URL rather than a silent drop. They all ride ONE `reply.edit(files=...)`, because `edit`
+replaces the attachment list and a second edit would drop the first one's files. The
+`<deep-research>` brief is only surfaced on the instance; the cog launches it after `stream`
+returns, so it never lands inside that single edit.
+
+Every media path is best-effort: a failure leaves the text reply exactly as it was and marks the
+user's own message with a ⏱️/⚠️ reaction instead of raising into the pipeline or posting a status
+message. This half is split out of `cog.py` because it is reused unchanged — the QA answer turn,
+the YouTube Interactions turn (whose adapted stream is duck-typed, hence the `type`-literal
+dispatch in `_consume`) and the IMAGE/VIDEO persona replies all stream through one streamer,
+differing only in which generators they hand it.
+"""
 
 import re
 import time
@@ -185,7 +212,22 @@ class ResponseStreamer(BaseModel):
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
-        """Splits a completed reply into one parent message plus follow-up chunks."""
+        """Splits a completed reply into one parent message plus follow-up chunks.
+
+        The footer always rides the LAST chunk, so `input.USAGE_FOOTER_RE` still finds it at
+        end-of-message when history renders the reply back; that is why a final chunk which cannot
+        hold body and footer together is split once more instead of overflowing.
+
+        Args:
+            content (str): The finished reply text, footer excluded.
+            footer (str): The usage footer to append after the last chunk.
+
+        Returns:
+            The parent message's content plus the ordered follow-up chunks, empty when it all fit.
+
+        Raises:
+            ValueError: The footer alone fills a Discord message, leaving no room for any text.
+        """
         if len(f"{content}{footer}") <= DISCORD_MESSAGE_LIMIT:
             return f"{content}{footer}", []
 
@@ -217,6 +259,9 @@ class ResponseStreamer(BaseModel):
         `REASONING_PREVIEW_MAX_LINES` / `REASONING_PREVIEW_MAX_CHARS`, so a long think stays a
         few rendered lines tall instead of filling the message. A single paragraph wider than the
         budget keeps its own tail behind an ellipsis, so the newest thought always shows.
+
+        Returns:
+            The text to write next, or "" while neither content nor reasoning has arrived.
         """
         if self.content_started:
             return scrub_markers_for_preview(text=self.stored_content)[:DISCORD_MESSAGE_LIMIT]
@@ -245,6 +290,15 @@ class ResponseStreamer(BaseModel):
         Deleting the source before the reply lands makes Discord 400 with code 50035
         (unknown message_reference); we log it and send into the same channel instead of
         wasting the whole pipeline. Other HTTP errors still propagate to the caller.
+
+        Args:
+            content (str): The message content to post.
+
+        Returns:
+            The created message, whether it is parented to the source or a plain channel send.
+
+        Raises:
+            HTTPException: Discord refused the send for anything other than a deleted source.
         """
         try:
             return await self.message.reply(content=content)
@@ -258,7 +312,12 @@ class ResponseStreamer(BaseModel):
             return await self.message.channel.send(content=content)
 
     async def _write_preview_snapshot(self) -> None:
-        """Writes the latest preview snapshot to the Discord reply, skipping no-ops."""
+        """Writes the latest preview snapshot to the Discord reply, skipping no-ops.
+
+        Creates the reply on the first non-empty snapshot, so a turn that never renders one leaves
+        no message behind. `displayed_content` advances only once Discord accepted the write, which
+        is what makes a failed edit retry on the next tick instead of being skipped as a no-op.
+        """
         preview = self._render_preview()
         if not preview or preview == self.displayed_content:
             return
@@ -338,6 +397,10 @@ class ResponseStreamer(BaseModel):
         404 with code 10008. That is a normal end, not a failure: the answer is complete and the
         message it belonged to is gone on purpose, so the handle is dropped and nothing is
         re-sent, since re-sending would resurrect exactly what someone just removed.
+
+        Args:
+            content (str): The finished reply text, footer excluded.
+            footer (str): The usage footer, appended after the last chunk.
         """
         parent_content, follow_up_chunks = self._split_reply_for_discord(
             content=content, footer=footer
@@ -363,7 +426,13 @@ class ResponseStreamer(BaseModel):
             previous = await previous.reply(content=chunk)
 
     def _on_reasoning_delta(self, delta: str) -> None:
-        """Accumulates one reasoning-summary delta, logging the first one's latency."""
+        """Accumulates one reasoning-summary delta, logging the first one's latency.
+
+        Starts the snapshot editor, so a turn that only ever thinks still shows the preview.
+
+        Args:
+            delta (str): One reasoning-summary delta off the stream.
+        """
         if not self.reasoning_content:
             # Gemini may prepend newlines to the first reasoning delta too.
             delta = delta.lstrip("\n")
@@ -379,7 +448,16 @@ class ResponseStreamer(BaseModel):
         self._ensure_editor_started()
 
     def _on_content_delta(self, delta: str) -> None:
-        """Accumulates one content delta, logging the first one's latency."""
+        """Accumulates one content delta, logging the first one's latency.
+
+        Gemini prepends newlines to its first content delta, so those are dropped rather than
+        opening the reply with a blank line. That same first real delta flips `content_started`,
+        which swaps the preview from the thought summary to the answer and is what the cog reads to
+        tell a persona reply that produced nothing from one that did.
+
+        Args:
+            delta (str): One output-text delta off the stream.
+        """
         if not self.content_started:
             delta = delta.lstrip("\n")
             if not delta:
@@ -399,6 +477,9 @@ class ResponseStreamer(BaseModel):
 
         Only accumulates state; the snapshot editor task renders it to Discord, so this
         loop never blocks on a Discord edit between deltas.
+
+        Args:
+            responses (AsyncIterator[ResponseStreamEvent]): The answer turn's event stream.
         """
         # Discriminate on the `type` literal, never isinstance against the SDK event classes:
         # the YouTube path's `adapt_interactions_stream` yields duck-typed namespaces that carry
@@ -421,15 +502,26 @@ class ResponseStreamer(BaseModel):
                 self._on_content_delta(delta=response.delta)
 
     async def _finalize_reply(self) -> str:
-        """Writes the usage footer and final reply once the stream is consumed."""
+        """Writes the final reply and its usage footer, then attaches whatever media it asked for.
+
+        Runs once, after the stream is consumed. Order matters: the inline markers are pulled out
+        of the finished text first (so nothing generated leaks into what is written, and
+        `research_brief` is on the instance before `stream` returns), the footer is built from the
+        summed usage of this call plus whatever the caller seeded, and the media edit only follows
+        the text, so it costs the answer no latency.
+
+        Returns:
+            The visible reply text with any hosted-media link line and the usage footer appended.
+        """
         input_rate, output_rate = get_token_rates(model_name=self.model_name)
         cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
-        # The answer model may wrap a <generate-voice> segment (spoken aloud, kept in the reply) and an
-        # <generate-image> block (a generation request, removed from the reply). Extract both before the
-        # footer is built or anything is written. The <generate-voice> segment stays in the visible text;
-        # only it (not the whole reply) feeds the spoken clip so the audio matches what is read.
+        # The answer model may wrap a <generate-voice> segment (spoken aloud, KEPT in the reply)
+        # plus <generate-image> / <generate-music> / <generate-video> / <deep-research> blocks
+        # (requests, removed from the reply). Extract them all before the footer is built or
+        # anything is written, so no generation prompt ever reaches the screen. Only the wrapped
+        # segment, not the whole reply, feeds the spoken clip so the audio matches what is read.
         markers = extract_inline_markers(text=self.stored_content)
         self.stored_content = markers.cleaned_text
         self.voice_requested = markers.voice_requested
@@ -464,7 +556,6 @@ class ResponseStreamer(BaseModel):
         )
         usage_footer = f"\n\n-# {model_label} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f}{memory_line}"
 
-        # Final update to ensure complete message is displayed.
         await self._write_final_message(content=self.stored_content, footer=usage_footer)
         reply_chars = len(self.stored_content)
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
@@ -491,7 +582,17 @@ class ResponseStreamer(BaseModel):
         return self.stored_content
 
     def _resolve_mention_name(self, *, target_id: int) -> str | None:
-        """Looks up a member/role/channel display name for the spoken-clip mention rewrite."""
+        """Looks up a member/role/channel display name for the spoken-clip mention rewrite.
+
+        Cache reads only, never a fetch, so synthesis is never delayed on a lookup; an id the
+        cache does not know is simply dropped from the spoken text by `speechify_discord_markup`.
+
+        Args:
+            target_id (int): The snowflake inside the `<@id>` / `<@&id>` / `<#id>` markup.
+
+        Returns:
+            The display name, or None in a DM and for any id the guild cache cannot resolve.
+        """
         guild = self.message.guild
         if guild is None:
             return None
@@ -505,12 +606,15 @@ class ResponseStreamer(BaseModel):
         return getattr(channel, "name", None) if channel is not None else None
 
     async def _hint_media_unavailable(self, *, emoji: str) -> None:
-        """Marks the source message so dropped media (voice clip or inline image) is not silent.
+        """Marks the source message so dropped media (voice, music, video, image) is not silent.
 
         The reply stays without the attachment and the user gets no message; this best-effort
         reaction is the only signal. It rides on the source message as an independent reaction
         (no `previous`), so the pipeline's status chain never removes it. Failures are suppressed
         inside `update_reaction`.
+
+        Args:
+            emoji (str): The hint to add, ⏱️ for a timeout and ⚠️ for anything else.
         """
         await update_reaction(message=self.message, bot_user=None, emoji=emoji)
 
@@ -519,6 +623,9 @@ class ResponseStreamer(BaseModel):
 
         A boosted guild's 50/100MB is honored via nextcord's `filesize_limit`; a DM has no guild
         to query, so it falls back to Discord's non-Nitro base of 10MB (shared helper).
+
+        Returns:
+            The ceiling in bytes, for the planner to decide attach-vs-host against.
         """
         return upload_limit_for(guild=self.message.guild)
 
@@ -529,6 +636,9 @@ class ResponseStreamer(BaseModel):
         requested-but-failed clip (timeout / refusal) hints the source message and returns None.
         The upload-limit decision (attach vs host vs drop) is made by `_attach_generated_media`,
         so an oversized clip is no longer dropped here (there is deliberately no spoken-length cap).
+
+        Returns:
+            The WAV candidate to deliver, or None when nothing was requested or produced.
         """
         if not self.voice_requested:
             # The expected common path: the answer model wrapped no <generate-voice> segment.
@@ -555,11 +665,11 @@ class ResponseStreamer(BaseModel):
             # Nothing to say (the segment was empty after stripping): no hint.
             return None
         if clip.outcome is VoiceOutcome.TIMEOUT:
-            # synthesize() logged the timeout; cue the user that the clip ran out of time.
+            # generate() logged the timeout; cue the user that the clip ran out of time.
             await self._hint_media_unavailable(emoji="⏱️")
             return None
         if clip.audio is None:
-            # Any other synthesis failure (most often a policy refusal); synthesize() logged it.
+            # Any other synthesis failure (most often a policy refusal); generate() logged it.
             await self._hint_media_unavailable(emoji="⚠️")
             return None
         return MediaItem(source=clip.audio, filename=VOICE_REPLY_FILENAME)
@@ -571,6 +681,10 @@ class ResponseStreamer(BaseModel):
         `<generate-video>` reference path (which needs the mime, since omni rejects an image content
         block with an empty mime). Best-effort: no builder or a load failure simply yields no
         sources, so the marker falls back to fresh generation.
+
+        Returns:
+            The current message's image sources followed by the replied-to message's, empty when
+            there is no builder, no image, or the load failed.
         """
         if self.input_builder is None:
             return []
@@ -605,6 +719,13 @@ class ResponseStreamer(BaseModel):
         source images (for editing) are awaited from the shared `source_images_task` so an inline
         `<generate-image>` and `<generate-video>` in the same reply load them only once; only the raw
         bytes are used here (the edit path needs no mime).
+
+        Args:
+            source_images_task (asyncio.Task[list[tuple[bytes, str]]] | None): The shared
+                uploaded-image load, or None when no visual marker asked for one.
+
+        Returns:
+            The PNG candidates in request order, empty when none was requested or delivered.
         """
         prompts = self.image_prompts[:MAX_INLINE_IMAGES]
         if not prompts:
@@ -667,6 +788,9 @@ class ResponseStreamer(BaseModel):
         a requested-but-failed clip hints the source message and returns None. The filename suffix
         follows the returned audio mime type so Discord (or the hosted link) renders a player; the
         upload-limit decision (attach vs host) is left to `_attach_generated_media`.
+
+        Returns:
+            The audio candidate to deliver, or None when nothing was requested or produced.
         """
         if self.music_prompt is None:
             # The expected common path: the answer model wrapped no <generate-music> block.
@@ -700,6 +824,13 @@ class ResponseStreamer(BaseModel):
         `(bytes, mime)` reference pairs so omni infers the task; otherwise it is plain text-to-video.
         The upload-limit decision (attach vs host) is left to `_attach_generated_media`, so a large
         clip is hosted as a URL rather than dropped for size.
+
+        Args:
+            source_images_task (asyncio.Task[list[tuple[bytes, str]]] | None): The shared
+                uploaded-image load, or None when no visual marker asked for one.
+
+        Returns:
+            The MP4 candidate to deliver, or None when nothing was requested or produced.
         """
         if self.video_prompt is None:
             # The expected common path: the answer model wrapped no <generate-video> block.
@@ -801,8 +932,15 @@ class ResponseStreamer(BaseModel):
         """Runs the single media edit: native files plus any hosted-URL line on the reply.
 
         Hosted URLs are appended to the reply content when they fit Discord's 2000-char limit,
-        else posted as a follow-up reply so a long answer never overflows. There is nothing to do
-        when neither files nor URLs were produced.
+        else posted as a follow-up reply so a long answer never overflows. A spliced link line is
+        written back onto `stored_content`, so what `_finalize_reply` returns matches what is on
+        screen. There is nothing to do when neither files nor URLs were produced.
+
+        Args:
+            reply (Message): The reply to edit, taken as an argument so the caller's own None
+                check narrows it.
+            files (list[File]): Single-use attachment handles, so this edit gets exactly one try.
+            hosted_urls (list[str]): Public URLs of the items too big to attach.
         """
         if not files and not hosted_urls:
             return
@@ -860,7 +998,19 @@ class ResponseStreamer(BaseModel):
                 await self._hint_media_unavailable(emoji="⚠️")
 
     async def stream(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> str:
-        """Streams the reply onto the message and writes the usage footer; returns the full text."""
+        """Streams the reply onto the message and writes the usage footer; returns the full text.
+
+        The single entry point, called once per answer turn. The snapshot editor is stopped in a
+        `finally`, so a stream that raises leaves no editor task behind — but finalization (markers,
+        footer, media) is skipped, and the last preview stays on screen for the caller's own error
+        path to deal with.
+
+        Args:
+            responses (AsyncIterator[ResponseStreamEvent]): The answer turn's event stream.
+
+        Returns:
+            The visible reply text with any hosted-media link line and the usage footer appended.
+        """
         try:
             await self._consume(responses=responses)
         finally:

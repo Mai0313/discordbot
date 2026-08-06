@@ -68,12 +68,17 @@ class ResearchProgressStreamer(BaseModel):
     _displayed: str = PrivateAttr(default="")
 
     def _feed(self, *, event: "InteractionSSEEvent") -> None:
-        """Accumulates one event's thought-summary text; ignores every other event/delta.
+        """Accumulates one event's thought-summary text, ignoring every other event and delta.
 
-        Branch on `event.event_type` (then `delta.type`) directly so the discriminated unions
-        narrow for the checker, exactly like `adapt_interactions_stream`. Only a `step.delta` carrying a
-        `thought_summary` contributes to the live view; unknown deltas/events are skipped per the
-        API's forward-compatibility guidance.
+        Branches on `event.event_type` (then `delta.type`) directly so the discriminated unions
+        narrow for the checker, exactly like `adapt_interactions_stream`. Everything else the
+        stream carries is either the report body `delivery.py` posts once the run settles or a
+        lifecycle event `agent.py`'s driver owns, so only a `step.delta` carrying a
+        `thought_summary` reaches the live view. The first text also starts the cadence editor,
+        which is a no-op once `stream` has started it.
+
+        Args:
+            event (InteractionSSEEvent): One event off the already-opened Interactions stream.
         """
         if event.event_type != "step.delta":
             return
@@ -89,8 +94,13 @@ class ResearchProgressStreamer(BaseModel):
         """Builds the header plus the newest `-#` reasoning lines that fit one Discord message.
 
         The header carries an elapsed timer so the message reads as alive even before the first
-        thought. Reasoning is agent text that may quote a mention, so it is `escape_mentions`-wrapped
-        (a second guard on top of the edit's `AllowedMentions.none()`): the thinking must never ping.
+        thought. Reasoning is agent text that may quote a mention, so it is
+        `escape_mentions`-wrapped (a second guard on top of the edit's `AllowedMentions.none()`):
+        the thinking must never ping. Lines are kept newest-first until the message budget runs
+        out, so what falls off the preview is always the oldest thinking.
+
+        Returns:
+            The content to write, the header alone until the first thought arrives.
         """
         elapsed = int(time.monotonic() - self.started_at)
         mins, secs = divmod(elapsed, 60)
@@ -123,7 +133,10 @@ class ResearchProgressStreamer(BaseModel):
         """Edits the status message with the latest snapshot on a fixed cadence until stopped.
 
         Stops via the event rather than task cancellation so an in-flight Discord write always
-        lands before `deliver_report` reuses the same status message (a cancel could orphan it).
+        lands before the cog reuses this same message for the delivered report: a cancelled write
+        could otherwise arrive afterwards and paint reasoning back over it. A failing edit is
+        suppressed and retried on the next tick, since the preview is best-effort and must never
+        break the run it is only narrating.
         """
         while True:
             try:
@@ -168,7 +181,14 @@ class ResearchProgressStreamer(BaseModel):
 
         Starts the editor up front so the elapsed timer ticks from t=0 even before the first
         thought, then feeds every event; the editor is always stopped in `finally` so the last
-        snapshot lands before the caller delivers the report on the same message.
+        snapshot lands before the caller delivers the report on the same message. A dropped stream
+        never surfaces here (the driver re-attaches behind this iterator); what does propagate is
+        a driver that gave up, and `agent.py::_drive` turns that into either a re-raise or a poll
+        for the terminal result. The editor is stopped on that path too.
+
+        Args:
+            events (AsyncIterator["InteractionSSEEvent"]): The driver's reconnect-spanning event
+                stream, already opened.
         """
         self._ensure_editor_started()
         try:

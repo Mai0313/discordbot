@@ -7,6 +7,10 @@ interactions transform. Every call uses `background=True` + `store=True` + `stre
 agent's reasoning streams live to the thread (`_StreamDriver` + `ResearchProgressStreamer`) while
 it works.
 
+Nothing here touches Discord: this half owns the SDK call, the reconnect loop and the terminal
+read, and hands the cog one `ResearchResult`; the thread, the status message and the report
+delivery are `cog.py` / `streaming.py` / `delivery.py`.
+
 Both call shapes share `_StreamDriver` / `_drive` (SSE consume + reconnect + terminal extract):
 - `stream_antigravity`: streams the one-shot agent in a remote sandbox environment.
 - `resume_research_stream`: re-attaches a live stream to an already-running interaction (restart resume).
@@ -83,7 +87,11 @@ class ResearchResult(BaseModel):
 
     @property
     def ok(self) -> bool:
-        """Whether the research finished cleanly."""
+        """Whether the research finished cleanly.
+
+        Returns:
+            True when the terminal status is `completed`, otherwise False.
+        """
         return self.status == "completed"
 
 
@@ -91,7 +99,16 @@ def _latest_thought(*, interaction: object) -> str | None:
     """Returns the most recent thought-summary text from an interaction's steps, if any.
 
     A materialized `thought` step carries its text in `step.summary[].text` (verified by spike
-    dump), not in `step.content`; the older content-based shape is kept as a fallback.
+    dump), not in `step.content`; the older content-based shape is kept as a fallback. Every
+    field is read with `getattr`, so an interaction shaped differently yields None rather than
+    raising into the poll loop. Only `_poll_until_terminal`'s progress branch calls this, and its
+    one caller passes no callback, so it is unreached at runtime today.
+
+    Args:
+        interaction (object): A fetched interaction; both step shapes are tolerated.
+
+    Returns:
+        The last summary seen while walking the steps in order, or None when there is none.
     """
     latest: str | None = None
     for step in getattr(interaction, "steps", None) or []:
@@ -109,7 +126,14 @@ def _latest_thought(*, interaction: object) -> str | None:
 
 
 def _extract_image(*, interaction: object) -> bytes | None:
-    """Returns the first generated image (decoded) from an interaction's model_output steps."""
+    """Returns the first generated image (decoded) from an interaction's model_output steps.
+
+    Args:
+        interaction (object): The terminal interaction to scan.
+
+    Returns:
+        The decoded image bytes, or None when no model_output step carried a decodable image.
+    """
     for step in getattr(interaction, "steps", None) or []:
         if getattr(step, "type", None) != "model_output":
             continue
@@ -118,12 +142,25 @@ def _extract_image(*, interaction: object) -> bytes | None:
                 try:
                     return base64.b64decode(item.data)
                 except Exception:
+                    # Broad: a payload that will not decode is simply "no chart"; the report is
+                    # the deliverable and a malformed image must not fail the run.
                     return None
     return None
 
 
 def _extract_usage(*, interaction: object) -> tuple[int, int]:
-    """Returns `(input_tokens, output_tokens)` from an interaction, defaulting to zero."""
+    """Returns `(input_tokens, output_tokens)` from an interaction, defaulting to zero.
+
+    Either the `total_input_tokens` / `total_output_tokens` or the bare `input_tokens` /
+    `output_tokens` spelling is accepted, so the footer still prices a run whichever one the
+    usage block carries.
+
+    Args:
+        interaction (object): The terminal interaction to read usage off.
+
+    Returns:
+        `(input_tokens, output_tokens)`, both zero when the interaction reports no usage.
+    """
     usage = getattr(interaction, "usage", None)
     if usage is None:
         return 0, 0
@@ -133,7 +170,17 @@ def _extract_usage(*, interaction: object) -> tuple[int, int]:
 
 
 def _to_result(*, interaction: object) -> ResearchResult:
-    """Maps a terminal interaction to a `ResearchResult`."""
+    """Maps a terminal interaction to a `ResearchResult`.
+
+    Every field is read with `getattr`, so a payload missing one degrades to that field's default
+    (an absent status reads as `failed`) instead of raising into the cog's failure path.
+
+    Args:
+        interaction (object): The terminal interaction `_poll_until_terminal` returned.
+
+    Returns:
+        The mapped result; `ok` is False for any status but `completed`.
+    """
     input_tokens, output_tokens = _extract_usage(interaction=interaction)
     return ResearchResult(
         interaction_id=str(getattr(interaction, "id", "")),
@@ -157,6 +204,19 @@ async def _poll_until_terminal(
     No wall-clock timeout (the SDK bounds each request; the agent settles server-side). A
     transient get() error mid-research is retried so one 504 does not kill a long run; it gives
     up only after `MAX_CONSECUTIVE_POLL_ERRORS` consecutive failures (re-raising the last error).
+    The error counter resets on any successful poll, so the cap is on a dead endpoint rather than
+    on the run's total bad luck. `_drive` is the only caller and passes `on_progress=None` (the
+    SSE deltas are the live view), so the progress branch is unreached at runtime today.
+
+    Args:
+        client (genai.Client): Direct-to-Google client the interaction lives on.
+        interaction_id (str): Id of the interaction to poll.
+        on_progress (ProgressCallback | None): Called after each non-terminal poll with the latest
+            thought summary and the seconds since polling started; None reports nothing.
+        poll_interval_seconds (float): Sleep between polls, and between retries after an error.
+
+    Returns:
+        The first interaction whose status is not `in_progress`.
     """
     started = time.monotonic()
     consecutive_errors = 0
@@ -196,7 +256,11 @@ type CreatedCallback = Callable[[str], Awaitable[None]]
 
 
 async def _noop_created(_interaction_id: str) -> None:
-    """A `CreatedCallback` that persists nothing (a resume does not re-store the id)."""
+    """A `CreatedCallback` that persists nothing (a resume does not re-store the id).
+
+    Args:
+        _interaction_id (str): The captured id, deliberately ignored.
+    """
     return
 
 
@@ -206,6 +270,14 @@ def _is_terminal_event(*, event: "InteractionSSEEvent") -> bool:
     `interaction.completed` and `error` are terminal; a `status_update` is terminal once it leaves
     the two non-final states. Any other status (`failed` / `cancelled` / `budget_exceeded` /
     `incomplete`) is a real terminal outcome the terminal `get(id)` then maps to a friendly result.
+    `requires_action` stays non-terminal: it is a generic Interactions status, so treating it as
+    settled would end a live stream early.
+
+    Args:
+        event (InteractionSSEEvent): One event off the interaction's SSE stream.
+
+    Returns:
+        True once the run has settled, otherwise False.
     """
     if event.event_type in ("interaction.completed", "error"):
         return True
@@ -229,14 +301,18 @@ class _StreamDriver(BaseModel):
         ..., description="Direct-to-Google Gemini client the stream is opened on."
     )
     interaction_id: str = Field(
-        default="", description="Captured on interaction.created; empty until the first event."
+        default="", description="Captured on interaction.created, or seeded up front by a resume."
     )
     last_event_id: str | None = Field(
         default=None, description="Resume token of the last received event for a re-attach."
     )
 
     async def _reopen(self) -> "AsyncIterator[InteractionSSEEvent]":
-        """Re-attaches a live stream to the running interaction from the last resume token."""
+        """Re-attaches a live stream to the running interaction from the last resume token.
+
+        Returns:
+            The re-opened SSE stream, resuming after `last_event_id` rather than replaying.
+        """
         responses = await self.client.aio.interactions.get(
             id=self.interaction_id, stream=True, last_event_id=self.last_event_id
         )
@@ -245,7 +321,15 @@ class _StreamDriver(BaseModel):
     async def _persist_created(
         self, *, interaction_id: str, on_created: "CreatedCallback"
     ) -> None:
-        """Records the captured interaction id and hands it to the caller's persist callback."""
+        """Records the captured interaction id and hands it to the caller's persist callback.
+
+        The callback failing is logged and swallowed, so the live view survives; the cost is that
+        a restart cannot resume that run.
+
+        Args:
+            interaction_id (str): Id read off the `interaction.created` event.
+            on_created (CreatedCallback): Caller-supplied persist hook, run once per stream.
+        """
         self.interaction_id = interaction_id
         try:
             await on_created(interaction_id)
@@ -266,7 +350,26 @@ class _StreamDriver(BaseModel):
         open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
         on_created: "CreatedCallback",
     ) -> "AsyncIterator[InteractionSSEEvent]":
-        """Yields events across reconnects until the interaction reaches a terminal event."""
+        """Yields events across reconnects until the interaction reaches a terminal event.
+
+        Captures the interaction id off the first `interaction.created` and persists it before the
+        minutes-long wait, and tracks `last_event_id` so a re-attach resumes instead of replaying.
+        A stream that ends or drops without a terminal event is re-opened; only a reconnect that
+        yields nothing counts against `MAX_STREAM_RECONNECTS`, so a healthy long run that merely
+        needs periodic re-attaching never trips it.
+
+        Args:
+            open_initial (Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]): Opens the
+                first stream (a streaming `create` for a new run, a streaming `get` for a resume).
+            on_created (CreatedCallback): Persist hook for the captured id.
+
+        Yields:
+            Every event off the stream in arrival order, the terminal one included.
+
+        Raises:
+            RuntimeError: The first stream ended before `interaction.created`, so there is no id
+                to re-attach to, or the re-attaches gave up without progress.
+        """  # noqa: DOC201 -- the quoted AsyncIterator annotation hides the generator from ruff
         stream = await open_initial()
         empty_reconnects = 0
         while True:
@@ -326,6 +429,17 @@ async def _drive(
     via `store=True`). A streaming failure BEFORE any id (the create itself failed) re-raises so the
     cog hits its normal failure path; once an id exists, streaming errors are swallowed and the poll
     settles the run.
+
+    Args:
+        client (genai.Client): Direct-to-Google client for the terminal read.
+        driver (_StreamDriver): Driver whose events feed the streamer and whose id the poll uses.
+        streamer (ResearchProgressStreamer): Live reasoning view on the thread's status message.
+        open_initial (Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]): Opens the
+            first stream (a streaming `create` for a new run, a streaming `get` for a resume).
+        on_created (CreatedCallback): Persist hook for the captured interaction id.
+
+    Returns:
+        The authoritative terminal interaction, for `_to_result` to map.
     """
     try:
         await streamer.stream(
@@ -356,7 +470,26 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
     streamer: "ResearchProgressStreamer",
     on_created: "CreatedCallback",
 ) -> ResearchResult:
-    """Streams the Antigravity research (reasoning live); returns the terminal result."""
+    """Streams the Antigravity research (reasoning live); returns the terminal result.
+
+    The create rides `background=True` + `store=True`, so the run keeps going server-side and
+    survives both a dropped stream and a bot restart. The remote sandbox opens with an
+    allow-everything network policy because fetching the open web is the whole job, and
+    `RESEARCH_TOOLS` is passed explicitly rather than left to the agent default. No `agent_config`
+    is sent: it carried the removed tiers' `collaborative_planning` and nothing may put it back.
+
+    Args:
+        client (genai.Client): Direct-to-Google Gemini client (no proxy).
+        agent (str): Managed-agent name; the cog passes `antigravity_model.name`.
+        brief (str): The research request, sent as the interaction input.
+        system_instruction (str): The agent system instruction the cog builds per run.
+        streamer (ResearchProgressStreamer): Live reasoning view on the thread's status message.
+        on_created (CreatedCallback): Persists the interaction id the moment it is captured, so a
+            restart can resume this run.
+
+    Returns:
+        The terminal result; `ok` is False when the run did not complete.
+    """
     environment = EnvironmentParam(
         type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
     )
@@ -385,7 +518,20 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
 async def resume_research_stream(
     *, client: genai.Client, interaction_id: str, streamer: "ResearchProgressStreamer"
 ) -> ResearchResult:
-    """Re-attaches a live stream to an already-running research (restart resume); returns the result."""
+    """Re-attaches a live stream to an already-running research (restart resume); returns the result.
+
+    Never calls `create`: `store=True` kept the interaction alive server-side, so the driver starts
+    with the id already known and `on_created` is a no-op. A run that settled while the bot was
+    down still resolves, because the terminal read is a plain `get(id)`.
+
+    Args:
+        client (genai.Client): Direct-to-Google Gemini client (no proxy).
+        interaction_id (str): Id persisted before the restart.
+        streamer (ResearchProgressStreamer): Live reasoning view on the thread's status message.
+
+    Returns:
+        The terminal result; `ok` is False when the run did not complete.
+    """
     driver = _StreamDriver(client=client, interaction_id=interaction_id)
 
     async def _open() -> "AsyncIterator[InteractionSSEEvent]":

@@ -102,7 +102,19 @@ class GrokFileUploader(AttachmentRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
-        """Renders an image inline, since xAI resolves no file id for image input."""
+        """Renders an image inline, since xAI resolves no file id for image input.
+
+        Args:
+            source (Attachment | StickerItem | str): The image, sticker, or URL to inline.
+            cache_key (int | str): Dead-source cache key; ignored, since the inline renderer is
+                stateless.
+            allow_dead_cache (bool): Whether stale-source skipping applies; ignored for the same
+                reason.
+
+        Returns:
+            The inlined image part plus its cache expiry, or None when the source could not be
+            loaded.
+        """
         return await self.image_renderer.render_image(
             source=source, cache_key=cache_key, allow_dead_cache=allow_dead_cache
         )
@@ -110,6 +122,22 @@ class GrokFileUploader(AttachmentRenderer):
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
     ) -> tuple[RenderedPart, datetime] | None:
+        """Uploads a file attachment and cites it as an `input_file` carrying its xAI file id.
+
+        An attachment with no resolvable MIME type is dropped before the fetch, since the
+        multipart upload carries that type and xAI's accepted set is narrow.
+
+        Args:
+            attachment (Attachment): The non-image file attachment to upload.
+            cache_key (int | str): Key a failed byte fetch is recorded under, so scrollback does
+                not re-fetch an expired CDN url on every reply.
+            allow_dead_cache (bool): Whether that dead-source cache is consulted and updated; set
+                for history scrollback only.
+
+        Returns:
+            The `input_file` part plus the file's expiry, or None when the MIME type is unknown
+            or the fetch or upload failed.
+        """
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -139,7 +167,22 @@ class GrokFileUploader(AttachmentRenderer):
         load_data: "FileBytesLoader",
         allow_dead_cache: bool = False,
     ) -> tuple[str, datetime] | None:
-        """Returns an uploaded xAI file id and its expiry."""
+        """Loads an attachment's bytes and uploads them, returning the file id and its expiry.
+
+        Holds the shared media semaphore across both the fetch and the upload, so concurrent
+        pipelines cannot launch dozens of simultaneous uploads. A byte-fetch failure drops this
+        one attachment and, under `allow_dead_cache`, marks the source dead so scrollback stops
+        re-fetching it for `DEAD_SOURCE_TTL`.
+
+        Args:
+            cache_key (int | str): Key the dead-source cache is read and recorded under.
+            filename (str): Name sent with the upload and reported in the failure logs.
+            load_data (FileBytesLoader): Fetches the bytes plus their content type.
+            allow_dead_cache (bool): Whether the dead-source cache is consulted and updated.
+
+        Returns:
+            The xAI file id and its expiry, or None when the fetch or the upload failed.
+        """
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
         async with self._media_semaphore:
@@ -170,6 +213,15 @@ class GrokFileUploader(AttachmentRenderer):
         keeps OpenAI's `{anchor, seconds}` shape, which xAI documents alongside a bare number of
         seconds; either way the SDK sends it as a form field ahead of the file part, the order
         xAI requires and rejects with a 400 when it is reversed.
+
+        Args:
+            filename (str): Name sent with the multipart file part.
+            data (bytes): The attachment's bytes.
+            content_type (str): MIME type sent alongside those bytes.
+
+        Returns:
+            The xAI file id and its expiry, synthesized from the TTL when the response omits one,
+            or None when the API key is missing, the upload failed, or no id came back.
         """
         started = time.monotonic()
         logfire.debug(

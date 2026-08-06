@@ -93,6 +93,23 @@ class AnthropicFileUploader(AttachmentRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
+        """Uploads an image source and cites the resulting file id as an `input_image` part.
+
+        A URL or embed image carries no filename, so the upload is named `image.jpg`; a
+        filename-only classifier downstream then reads it as an image rather than a document.
+        A source that could not be fetched or uploaded is dropped rather than raised, so the
+        rest of the message still renders.
+
+        Args:
+            source (Attachment | StickerItem | str): The image attachment, sticker, or image url.
+            cache_key (int | str): Identifies this source in the shared dead-source cache.
+            allow_dead_cache (bool): Whether a recently failed source may be skipped without
+                re-fetching; set for history scrollback only.
+
+        Returns:
+            The `input_image` part plus its synthetic cache expiry, or None when the source
+            was dropped.
+        """
         source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,
@@ -109,6 +126,23 @@ class AnthropicFileUploader(AttachmentRenderer):
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
     ) -> tuple[RenderedPart, datetime] | None:
+        """Uploads a file attachment and cites the resulting file id as an `input_file` part.
+
+        An attachment whose MIME type cannot be guessed is dropped before any upload, since that
+        same guess is what types the Files API entry and the reference path needs a real format
+        rather than a bare id (see the module docstring). A fetch or upload failure drops the
+        attachment the same way.
+
+        Args:
+            attachment (Attachment): The non-image attachment to upload.
+            cache_key (int | str): Identifies this source in the shared dead-source cache.
+            allow_dead_cache (bool): Whether a recently failed source may be skipped without
+                re-fetching; set for history scrollback only.
+
+        Returns:
+            The `input_file` part plus its synthetic cache expiry, or None when the attachment
+            was dropped.
+        """
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -138,7 +172,25 @@ class AnthropicFileUploader(AttachmentRenderer):
         load_data: "FileBytesLoader",
         allow_dead_cache: bool = False,
     ) -> tuple[str, datetime] | None:
-        """Returns an uploaded Anthropic file id and its synthetic cache expiry."""
+        """Fetches a source's bytes and uploads them, under the shared media slot.
+
+        One media slot spans the whole fetch + upload, so concurrent pipelines cannot launch
+        dozens of CDN downloads and buffer all their bytes at once. `load_data` is awaited
+        inside that slot, and a failure there drops this one attachment; with
+        `allow_dead_cache` set it also marks the source dead, so an expired CDN url sitting in
+        scrollback is not re-fetched and re-warned on every reply.
+
+        Args:
+            cache_key (int | str): Identifies this source in the shared dead-source cache.
+            filename (str): The upload's filename, also carried into the failure logs.
+            load_data (FileBytesLoader): Lazily fetches the source bytes and their MIME type.
+            allow_dead_cache (bool): Whether the dead-source cache may be read and written for
+                this source; set for history scrollback only.
+
+        Returns:
+            `(file_id, expires_at)`, or None when the bytes could not be loaded or the upload
+            failed.
+        """
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
         async with self._media_semaphore:
@@ -163,12 +215,25 @@ class AnthropicFileUploader(AttachmentRenderer):
     async def _upload_file(
         self, filename: str, data: bytes, content_type: str
     ) -> tuple[str, datetime] | None:
-        """Uploads bytes to the Anthropic Files API and returns `(file_id, expires_at)`.
+        """Uploads bytes to the Anthropic Files API, direct to Anthropic rather than the proxy.
 
         The SDK sets `files-api-2025-04-14` for this upload call automatically; the separate
         answer request that later references the file must send that beta header itself (see
-        the module docstring). Anthropic files have no provider expiry, so the cache window is
-        a fixed synthetic TTL.
+        the module docstring). Anthropic files have no provider expiry to report back, so the
+        cache window handed to the caller is a fixed synthetic TTL instead.
+
+        Best-effort: an SDK, network or auth failure (including a missing key, which the lazy
+        client build defers to here) drops this one attachment and the text reply still goes
+        out.
+
+        Args:
+            filename (str): The name the Files API entry is created under.
+            data (bytes): The attachment payload to upload.
+            content_type (str): The payload's MIME type, sent as the upload's content type.
+
+        Returns:
+            `(file_id, expires_at)` where `expires_at` is the synthetic local cache expiry, or
+            None when the upload failed or returned no id.
         """
         started = time.monotonic()
         logfire.debug(

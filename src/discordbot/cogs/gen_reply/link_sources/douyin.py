@@ -15,6 +15,22 @@ The text block is injected unconditionally, even when the media cannot be fetche
 model never falls back to "I cannot open this link" and never invents what the post contained.
 Every failure mode gets its own wording, because they are not the same problem: a WAF block is
 retryable and the link is fine, while a deleted post never will be.
+
+`gen_reply/cog.py` wires this in as one `LinkContextSource`, filtered by `is_douyin_post_url`
+so a profile or live-room link never spends a Douyin request, and started only once the router
+selects `douyin` for a QA reply, so an incidental link costs no fetch at all. Media ingestion
+is gated by `douyin_video_enabled` plus a configured Gemini key; with either missing the
+caption still rides, under wording that does not claim the clip was watched. The media step is
+bounded inside this module rather than by the pipeline's post-route grace, so a slow fetch
+degrades to that caption instead of being cancelled with nothing to inject;
+`douyin_timeout_context_messages` covers the build that outran the grace anyway.
+
+Separate from `parse_douyin/cog.py`, which expands the same link for a human to watch in
+Discord: the two never fire on one message (an addressed message is skipped there), they ask
+for different resolutions, and a cog may not import from a peer cog. What both need sits in
+`utils/douyin.py`, whose module state is what keeps their combined request volume under
+Douyin's WAF: the URL regex, the error taxonomy, the payload cache, the per-URL lock, and the
+fetch semaphore this builder takes twice on separate steps.
 """
 
 import asyncio
@@ -116,19 +132,44 @@ DOUYIN_TIMEOUT_NOTICE = (
 
 
 def _system_block(text: str) -> EasyInputMessageParam:
-    """Wraps one separator/notice string as a low-authority system block."""
+    """Wraps one separator/notice string as a low-authority system block.
+
+    `role="system"` rather than `developer`, which is the role both Gemini and Claude accept
+    through LiteLLM.
+
+    Args:
+        text (str): The separator or notice wording to inject.
+
+    Returns:
+        The wrapped block, ready to splice into the answer input.
+    """
     return EasyInputMessageParam(
         role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
     )
 
 
 def douyin_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Douyin build exceeds gen_reply's post-route grace."""
+    """Blocks injected when the Douyin build exceeds gen_reply's post-route grace.
+
+    Registered as this source's `on_timeout`, so a build the pipeline gave up waiting on still
+    leaves deterministic context behind instead of an unexplained gap.
+
+    Returns:
+        The single notice block naming the timeout.
+    """
     return [_system_block(text=DOUYIN_TIMEOUT_NOTICE)]
 
 
 def _render_post_text(post: DouyinPost, url: str) -> str:
-    """Renders the post's caption, author and source link as compact text."""
+    """Renders the post's caption, author and source link as compact text.
+
+    Args:
+        post (DouyinPost): The parsed post metadata.
+        url (str): The URL as it appeared in the user's message.
+
+    Returns:
+        One line per field the post actually carries, the URL last.
+    """
     lines = [f"[Douyin post the user linked] @{post.author_name}".rstrip()]
     if post.title:
         lines.append(post.title)
@@ -140,7 +181,19 @@ def _render_post_text(post: DouyinPost, url: str) -> str:
 async def _upload_media(
     *, download: DouyinDownload, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
-    """Uploads the downloaded files concurrently, keeping the parts that succeeded."""
+    """Uploads the downloaded files concurrently, keeping the parts that succeeded.
+
+    Per item best-effort: one image of a gallery that fails to upload costs its own part and
+    nothing else, and a batch where every upload failed comes back empty for the caller to
+    render as the caption-only block.
+
+    Args:
+        download (DouyinDownload): The files just written into the scratch dir.
+        gemini_client (genai.Client): Direct-to-Google client for the Files API upload.
+
+    Returns:
+        One `input_file` part per file that uploaded, in `download.filenames` order.
+    """
     results = await asyncio.gather(
         *(
             upload_as_input_file(
@@ -167,11 +220,25 @@ async def _upload_media(
 async def _fetch_and_upload(
     *, url: str, post: DouyinPost, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
-    """Downloads the post's media into a scratch dir and uploads it; [] on any failure.
+    """Downloads the post's media into a scratch dir and uploads whatever arrived.
 
-    The cap handed to `download` is the Files API's own 2 GB ceiling, so an impossible file is
-    refused from its `Content-Length` in seconds instead of consuming the whole media budget.
-    Nothing below that is refused: a full-resolution clip is exactly what the model should see.
+    The cap handed to `download` is the Files API's own 2 GB ceiling, so a file the provider
+    would reject anyway is refused from its `Content-Length` in seconds instead of consuming
+    the whole media budget. It is a fail-fast guard rather than a quality lever: the resolution
+    is already settled by `AI_INGEST_QUALITY`, and nothing under the ceiling is worth refusing.
+
+    A download failure propagates rather than degrading here, as `DouyinError` or one of its
+    subclasses from Douyin's side and as a plain OSError from a local one; `_media_parts` is
+    what turns either into the caption-only answer.
+
+    Args:
+        url (str): The Douyin URL to download.
+        post (DouyinPost): The already-parsed post, handed on so the download does not resolve
+            the link a second time.
+        gemini_client (genai.Client): Direct-to-Google client for the Files API upload.
+
+    Returns:
+        The uploaded `input_file` parts, empty when every upload failed.
     """
     with tempfile.TemporaryDirectory(prefix="douyin-ai-") as download_dir:
         downloader = DouyinDownloader(output_folder=download_dir)
@@ -198,6 +265,14 @@ async def _media_parts(
 
     Bounded here rather than left to the caller's grace so a slow download still produces the
     honest caption-only block instead of being cancelled with nothing to inject.
+
+    Args:
+        url (str): The Douyin URL to download, also recorded on the degradation logs.
+        post (DouyinPost): The already-parsed post handed to the download.
+        gemini_client (genai.Client): Direct-to-Google client for the Files API upload.
+
+    Returns:
+        The uploaded `input_file` parts, or an empty list on any failure.
     """
     try:
         async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
@@ -244,11 +319,13 @@ async def build_douyin_context_messages(
     so the reply pipeline is never broken by it.
 
     Args:
-        url: The Douyin URL found in the current message.
-        answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
-        gemini_client: Direct-to-Google client used for the media upload, or None when no key
-            is configured, which reads the caption just like a non-Gemini answer model.
-        allow_media_ingest: Kill-switch plus key check; when false only the caption is read.
+        url (str): The Douyin URL found in the current message.
+        answer_model_is_gemini (bool): Whether the answer model can resolve a Files API uri.
+        gemini_client (genai.Client | None): Direct-to-Google client used for the media upload,
+            or None when no key is configured, which reads the caption just like a non-Gemini
+            answer model.
+        allow_media_ingest (bool): Kill-switch plus key check; when false only the caption is
+            read.
 
     Returns:
         Input blocks ready to splice into the answer input before the current message.

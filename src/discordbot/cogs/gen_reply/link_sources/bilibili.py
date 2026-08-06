@@ -4,6 +4,15 @@ When the current message carries a Bilibili video URL, `gen_reply` reads the vid
 injects the result as input blocks, so the answer model watches the clip instead of guessing
 from the link. Only the first Bilibili URL in the message is used.
 
+`build_bilibili_context_messages` is the whole surface, reached through the `bilibili` entry in
+`gen_reply/cog.py`'s `LINK_CONTEXT_SOURCES`, so a build starts only once the router has selected
+this source for a QA turn and an incidental link costs nothing. It never raises: every failure
+becomes one of the notices below, so a bad read can only shrink what the model is told. The media
+half bounds itself with `LINK_MEDIA_TIMEOUT_SECONDS` rather than leaning on the pipeline's grace,
+which is what lets a slow download still deliver the text block, and
+`bilibili_timeout_context_messages` is the deterministic fallback the pipeline injects itself
+once even that grace is gone.
+
 Unlike YouTube (fetched server-side by Gemini via the Interactions API), a Bilibili page is
 not resolvable by the model, so the clip is downloaded with yt-dlp and uploaded to the Gemini
 Files API — never handed over as a URL (see `gen_reply/files_api.py`).
@@ -131,19 +140,48 @@ BILIBILI_TIMEOUT_NOTICE = (
 
 
 def _system_block(text: str) -> EasyInputMessageParam:
-    """Wraps one separator/notice string as a low-authority system block."""
+    """Wraps one separator/notice string as a low-authority system block.
+
+    `system` rather than `developer`: that is the role LiteLLM translates cleanly for Gemini
+    and Claude alike, and the framing has to stay below the prompt's own authority anyway.
+
+    Args:
+        text (str): The separator or notice this block carries.
+
+    Returns:
+        The block, ready to splice into the answer input.
+    """
     return EasyInputMessageParam(
         role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
     )
 
 
 def bilibili_timeout_context_messages() -> list[EasyInputMessageParam]:
-    """Blocks injected when the Bilibili build exceeds gen_reply's post-route grace."""
+    """Blocks injected when the Bilibili build exceeds gen_reply's post-route grace.
+
+    Wired into the registry as `on_timeout` and called by the pipeline once it has given up on
+    the build, so it fetches nothing and its wording admits the read never finished.
+
+    Returns:
+        The single neutral notice block, spliced in place of the context that never arrived.
+    """
     return [_system_block(text=BILIBILI_TIMEOUT_NOTICE)]
 
 
 def _render_video_text(metadata: VideoMetadata, url: str) -> str:
-    """Renders the video's title, uploader, duration and description as compact text."""
+    """Renders the video's title, uploader, duration and description as compact text.
+
+    The description is trimmed to `MAX_BILIBILI_DESCRIPTION_CHARS`, and the canonical URL is
+    listed alongside the pasted one only when they differ, so a `b23.tv` link shows both forms
+    while an already-canonical link is not repeated.
+
+    Args:
+        metadata (VideoMetadata): What the yt-dlp probe reported about the video.
+        url (str): The URL exactly as the user pasted it.
+
+    Returns:
+        The text handed to the model as the video's own content.
+    """
     lines = [f"[Bilibili video the user linked] {metadata.uploader}".rstrip()]
     if metadata.title:
         lines.append(metadata.title)
@@ -159,7 +197,14 @@ def _render_video_text(metadata: VideoMetadata, url: str) -> str:
 
 
 def _retrieve_quietly(task: "asyncio.Task[DownloadResult]") -> None:
-    """Retrieves an abandoned task's outcome so asyncio never logs it as never-retrieved."""
+    """Retrieves an abandoned task's outcome so asyncio never logs it as never-retrieved.
+
+    Runs as the shielded download's done callback: the awaiting side may already have gone away
+    with the exception unread, and a cancelled task has no exception to retrieve at all.
+
+    Args:
+        task (asyncio.Task[DownloadResult]): The finished download task.
+    """
     if not task.cancelled():
         task.exception()
 
@@ -173,6 +218,16 @@ async def _download_with_stop_signal(*, downloader: VideoDownloader, url: str) -
     (yt-dlp re-makes the output dir before each DASH format). On any interruption the signal
     makes the worker abort at its next progress tick, and the bounded join keeps the scratch
     dir alive until the worker has really stopped, so its removal never races a live writer.
+
+    Whatever interrupted is re-raised once the join returns, and a worker still running at
+    `DOWNLOAD_STOP_JOIN_SECONDS` is logged and left behind rather than waited on forever.
+
+    Args:
+        downloader (VideoDownloader): Downloader already pointed at the scratch dir.
+        url (str): The Bilibili URL to fetch.
+
+    Returns:
+        The finished download, whose file sits in the downloader's output folder.
     """
     stop_signal = threading.Event()
     download_task = asyncio.create_task(
@@ -206,6 +261,14 @@ async def _fetch_and_upload(
     yt-dlp offers no byte cap, so unlike Douyin the Files API ceiling is enforced on the
     finished file: an over-ceiling clip is simply not uploaded and the caller degrades to the
     text-only block.
+
+    Args:
+        url (str): The Bilibili URL to download.
+        gemini_client (genai.Client): Direct-to-Google client for the Files API upload.
+
+    Returns:
+        The one `input_file` part referencing the uploaded clip, or [] when the file was over
+        the ceiling or the upload did not come back with a uri.
     """
     with tempfile.TemporaryDirectory(prefix="bilibili-ai-") as download_dir:
         downloader = VideoDownloader(output_folder=download_dir)
@@ -238,6 +301,14 @@ async def _media_parts(*, url: str, gemini_client: genai.Client) -> list[Respons
 
     Bounded here rather than left to the caller's grace so a slow download still produces the
     honest text-only block instead of being cancelled with nothing to inject.
+
+    Args:
+        url (str): The Bilibili URL to download.
+        gemini_client (genai.Client): Direct-to-Google client for the Files API upload.
+
+    Returns:
+        The uploaded clip's `input_file` part, or [] on any failure, which the caller reads as
+        "answer from the text".
     """
     try:
         async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
@@ -276,11 +347,13 @@ async def build_bilibili_context_messages(
     deterministic notice so the reply pipeline is never broken by it.
 
     Args:
-        url: The Bilibili URL found in the current message.
-        answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
-        gemini_client: Direct-to-Google client used for the media upload, or None when no key
-            is configured, which reads the metadata just like a non-Gemini answer model.
-        allow_media_ingest: Kill-switch plus key check; when false only the metadata is read.
+        url (str): The Bilibili URL found in the current message.
+        answer_model_is_gemini (bool): Whether the answer model can resolve a Files API uri.
+        gemini_client (genai.Client | None): Direct-to-Google client used for the media upload,
+            or None when no key is configured, which reads the metadata just like a non-Gemini
+            answer model.
+        allow_media_ingest (bool): Kill-switch plus key check; when false only the metadata is
+            read.
 
     Returns:
         Input blocks ready to splice into the answer input before the current message.

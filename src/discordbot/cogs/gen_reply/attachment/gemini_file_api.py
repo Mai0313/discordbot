@@ -1,9 +1,21 @@
 """Gemini Files API attachment renderer: direct-SDK upload, activation poll, re-poll cache.
 
 Owns the mechanical side-channel that turns attachment bytes into an ACTIVE Gemini file URI
-referenced as an `input_file` part: the direct-SDK upload, the activation poll, the pending
-re-poll, and the per-source dead-source / pending / concurrency caches. Kept separate from
-`input.py` so the upload state machine does not tangle with source-to-part rendering.
+referenced as an `input_file` part: the direct-SDK upload, the activation poll, and the re-poll
+that adopts a slow upload on a later reference instead of paying for it twice. Kept separate
+from `input.py` so the upload state machine does not tangle with source-to-part rendering.
+
+`build_attachment_handler` (`select.py`) picks this renderer whenever the answer model is a
+Gemini one, because only Gemini resolves a Files uri; every other provider inlines instead
+(`inline.py`). The upload goes direct to Google rather than through the LiteLLM proxy, and so
+forgoes proxy-side cost tracking, because only the direct SDK exposes the `state` this module
+has to poll before the uri is referenced.
+
+Two contracts hold across everything below. Only an ACTIVE uri is ever handed back, since the
+answer request has no per-attachment retry and a not-yet-ready uri 400s the whole reply. And
+every failure (missing key, dead CDN url, rejected upload, a file that never activates)
+degrades to None, dropping that one attachment: `input.py` gathers the renders without
+`return_exceptions`, so an escaping error would blank the entire message instead.
 """
 
 import io
@@ -68,6 +80,12 @@ class PendingUpload(BaseModel):
 class GeminiFileUploader(AttachmentRenderer):
     """Uploads attachments to the Gemini Files API and references them by URI.
 
+    Built once by `build_attachment_handler` and held by the cog's cached input builder, so its
+    state spans every in-flight pipeline: the pending re-poll cache below, plus the dead-source
+    cache and the media semaphore inherited from `AttachmentRenderer`. Both render methods go
+    through `_resolve_file_upload`, which is what makes the ACTIVE-only and degrade-to-None
+    contracts in the module docstring hold for either entry point.
+
     Attributes:
         config: Runtime LLM config supplying the Gemini Files API key for the lazily
             built upload client.
@@ -107,6 +125,23 @@ class GeminiFileUploader(AttachmentRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
+        """Uploads an image source and references the resulting file uri as an `input_file` part.
+
+        A URL or sticker carries no filename, so one is synthesized; the bytes are fetched and
+        downscaled by `load_image_bytes` only if a fresh upload turns out to be needed.
+
+        Args:
+            source (Attachment | StickerItem | str): The image attachment, sticker, or embed
+                image URL to upload.
+            cache_key (int | str): Identifies this source across replies (attachment / sticker
+                id, or the embed url), keying both the pending re-poll and dead-source caches.
+            allow_dead_cache (bool): Whether a recent fetch failure for this source may skip the
+                fetch outright; opt-in for history scrollback only.
+
+        Returns:
+            The `input_file` part plus the uri's provider-reported expiry, or None when the
+            source was dropped (fetch failed, or the upload has not reached ACTIVE yet).
+        """
         source_name = resolve_source_filename(source=source, url_fallback="image.png")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,
@@ -125,6 +160,22 @@ class GeminiFileUploader(AttachmentRenderer):
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
     ) -> tuple[RenderedPart, datetime] | None:
+        """Uploads a non-image attachment and references its file uri as an `input_file` part.
+
+        An attachment whose MIME type cannot be resolved is dropped before any fetch, since the
+        upload has to declare one.
+
+        Args:
+            attachment (Attachment): The non-image attachment to upload.
+            cache_key (int | str): Identifies this source across replies (the attachment id),
+                keying both the pending re-poll and dead-source caches.
+            allow_dead_cache (bool): Whether a recent fetch failure for this source may skip the
+                fetch outright; opt-in for history scrollback only.
+
+        Returns:
+            The `input_file` part plus the uri's provider-reported expiry, or None when the
+            attachment was dropped (unknown MIME type, fetch failed, or not yet ACTIVE).
+        """
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -152,9 +203,17 @@ class GeminiFileUploader(AttachmentRenderer):
     ) -> tuple[bool, tuple[str, datetime] | None]:
         """Re-polls a prior pending upload once, without re-downloading the source.
 
-        Returns `(handled, result)`: `handled=True` means stop and use `result` (an ACTIVE
-        `(uri, expiry)`, or `None` if it is still PROCESSING); `handled=False` means there is
-        no usable pending entry, so the caller should fall through to a fresh upload.
+        Exactly one poll per reference: a file still PROCESSING keeps its cache entry (moved to
+        the LRU tail) for the next one. An expired entry, a poll failure, or any terminal
+        non-ACTIVE state drops the entry so the caller re-uploads from scratch.
+
+        Args:
+            cache_key (int | str): The source whose pending upload to re-poll.
+
+        Returns:
+            `(handled, result)`: `handled=True` means stop and use `result` (an ACTIVE
+            `(uri, expiry)`, or None if it is still PROCESSING); `handled=False` means there is
+            no usable pending entry, so the caller should fall through to a fresh upload.
         """
         pending = self._pending_uploads.get(cache_key)
         if pending is None:
@@ -215,6 +274,22 @@ class GeminiFileUploader(AttachmentRenderer):
         dropping one still PROCESSING, never re-downloads the source. So a borderline file
         keeps being adopted even after its Discord CDN url has expired and a re-download
         would fail.
+
+        The download, the upload and the activation poll all run inside one media-semaphore
+        slot, and a `load_data` failure is swallowed (marking the source dead only when
+        `allow_dead_cache` is set) rather than raised.
+
+        Args:
+            cache_key (int | str): Identifies this source across replies, keying both the
+                pending re-poll and dead-source caches.
+            filename (str): Display name sent with the upload, and the name logged on failure.
+            load_data (FileBytesLoader): Lazily fetches the source's bytes and MIME type.
+            allow_dead_cache (bool): Whether a recent fetch failure for this source may skip the
+                fetch outright, and whether a fresh failure records one.
+
+        Returns:
+            The ACTIVE file's `(uri, expiry)`, or None when the source was dropped or its
+            upload is still PROCESSING (cached for the next reference).
         """
         handled, adopted = await self._repoll_pending_upload(cache_key=cache_key)
         if handled:
@@ -278,13 +353,19 @@ class GeminiFileUploader(AttachmentRenderer):
         part, while the bare `files/<id>` name fails its mime-type lookup. The upload +
         activation poll runs in the background while the route and memory selection calls
         resolve, so small files (instant ACTIVE) add no latency and only large / video
-        uploads spend any of that overlap window waiting. A file still PROCESSING at the
-        bound returns a `PendingUpload` (the caller caches it to re-poll on the next
-        reference); a terminal non-active state or any failure returns None.
+        uploads spend any of that overlap window waiting.
 
-        Returns the provider-reported `expiration_time` alongside the URI so the cache
-        can reuse the handle until it actually expires (Gemini files live ~48h) instead
-        of guessing a fixed TTL.
+        Args:
+            filename (str): Display name sent with the upload, and the name logged on failure.
+            data (bytes): The already-fetched source bytes to upload.
+            content_type (str): The MIME type declared to the Files API.
+
+        Returns:
+            The ACTIVE file's `(uri, expiry)`; a `PendingUpload` for one still PROCESSING at
+            the bound, which the caller caches to re-poll on the next reference; or None on a
+            terminal non-active state or any failure. The expiry is the provider's own
+            `expiration_time` (Gemini files live ~48h), so the caches reuse the handle until it
+            really expires instead of guessing a fixed TTL.
         """
         activation_timeout_seconds = 15.0
         poll_interval_seconds = 0.5

@@ -12,6 +12,11 @@ calls Gemini DIRECT (the cog's `gemini_client` uses `gemini_api_key`, no proxy):
 Interactions API is inherently Gemini and the swap only fires on a Gemini answer model, so
 this is the one runtime answer turn that does not ride the LiteLLM proxy. Importing the
 google-genai Interactions types here is the documented carve-out for video ingestion.
+
+`gen_reply/cog.py` calls two entry points here, `to_interactions_input` and
+`create_interactions_answer_stream`; everything else is translation detail. Nothing is
+re-uploaded on the way across: an attachment part is forwarded by the URI the answer input
+already carries, and the video is forwarded as the bare YouTube link.
 """
 
 from types import SimpleNamespace
@@ -55,6 +60,12 @@ def _kind_from_filename(filename: str) -> Literal["image", "video", "audio", "do
     Gemini-path attachments arrive as `input_file` parts carrying a Files API URI (no MIME),
     so the content-param type is picked from the original filename; an unknown extension falls
     back to document (best effort, never raises).
+
+    Args:
+        filename (str): The attachment's original name, which may carry no extension at all.
+
+    Returns:
+        The content kind the URI should be sent as.
     """
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if suffix in {"mp4", "mov", "webm", "avi", "mpeg", "mpg", "flv", "wmv", "3gp", "3gpp", "mkv"}:
@@ -72,8 +83,14 @@ def _translate_part(  # noqa: PLR0911 -- one return per OpenAI input content typ
     """Translates one OpenAI input content part into an Interactions content param.
 
     Media is referenced by its existing URI (Files API `file_id` or a raw `file_url`); the
-    Gemini answer model already holds those URIs, so nothing is re-uploaded. Returns None for
-    an empty or unmappable part so the caller drops it instead of breaking the request.
+    Gemini answer model already holds those URIs, so nothing is re-uploaded.
+
+    Args:
+        part (ResponseInputContentParam): One content part of an assembled answer-input message.
+
+    Returns:
+        The content param, or None for an empty or unmappable part so the caller drops it
+        instead of breaking the request.
     """
     part_type = part["type"]
     if part_type == "input_text":
@@ -100,7 +117,15 @@ def _translate_part(  # noqa: PLR0911 -- one return per OpenAI input content typ
 
 
 def _translate_content(*, content: "str | object") -> list[ContentParam]:
-    """Translates an OpenAI message's content (string shorthand or part list) into params."""
+    """Translates an OpenAI message's content (string shorthand or part list) into params.
+
+    Args:
+        content (str | object): The message's `content` field: either the string shorthand or
+            the list of input content parts.
+
+    Returns:
+        The translated parts, empty or unmappable ones dropped.
+    """
     if isinstance(content, str):
         return [TextContentParam(type="text", text=content)] if content else []
     parts: list[ContentParam] = []
@@ -123,6 +148,14 @@ def to_interactions_input(
     how Gemini merges same-role turns. The YouTube video is appended as a `VideoContentParam`
     to the last user step, which is the current message (kept last by the caller), so the video
     sits with the question it is about.
+
+    Args:
+        answer_input (ResponseInputParam): The answer input already assembled for the Responses
+            path, current message last.
+        youtube_url (str): The video Gemini is to watch, forwarded as a bare uri.
+
+    Returns:
+        The steps for `interactions.create`, always ending with the user step carrying the video.
     """
     entries: list[tuple[str, list[ContentParam]]] = []
     for raw in answer_input:
@@ -161,6 +194,18 @@ async def adapt_interactions_stream(
     minimal namespace with the OpenAI-Responses field names. Usage is emitted exactly once on
     `interaction.completed` because `_consume` accumulates it with `+=` over a token seed from
     the earlier selection call; a per-step emit would double-count.
+
+    Args:
+        stream (AsyncIterator[InteractionSSEEvent]): The live Interactions event stream.
+
+    Yields:
+        Namespaces carrying only the OpenAI-Responses field names `_consume` reads, which is
+        why that loop has to discriminate on `type` rather than isinstance against the SDK
+        event classes.
+
+    Raises:
+        RuntimeError: The stream carried an `error` event, which fails the turn through the
+            pipeline's outer error path.
     """
     model_name = ""
     # Branch on `event.event_type` directly (not a copied local) so the discriminated
@@ -229,7 +274,20 @@ async def create_interactions_answer_stream(
     tools, effort-as-thinking-level) but lets Gemini watch the linked video, then yields the
     adapted stream so the shared `ResponseStreamer` consumes it unchanged. `extra_body` is
     intentionally omitted (the interactions client does not support it). The call goes direct
-    to Google, so no LiteLLM end-user header is sent.
+    to Google, so no LiteLLM end-user header is sent. Being a generator, it issues no request
+    until the first event is pulled.
+
+    Args:
+        client (genai.Client): Client built on `gemini_api_key`, since this path does not ride
+            the proxy.
+        model (str): The answer model, which the caller has already checked is a Gemini one.
+        system_instruction (str): What the Responses path passes as `instructions`.
+        steps (list[StepParam]): The translated input from `to_interactions_input`.
+        effort (ReasoningEffort): The route's graded effort, passed through as the thinking
+            level.
+
+    Yields:
+        The adapted Responses-shaped events, in stream order.
     """
     responses = await client.aio.interactions.create(
         model=model,

@@ -18,6 +18,12 @@ message also links a YouTube video) has no proxy in the loop and forwards the UR
 Gemini untouched, which only resolves Files uris and YouTube links. Uploading is the
 one shape both paths accept; `files_api` has the details.
 
+`build_threads_context_messages` is the builder the registry wires up and
+`threads_timeout_context_messages` its `on_timeout` counterpart; everything else here renders the
+block that builder returns, or accounts for what did not fit in it. Three separate caps bound what
+the block may spend — the chain above the target, the comments below it, and the media parts —
+because they are three different things and no one of them may squeeze out another.
+
 This is the rebuild of the reverted #294: the old design waited on the `parse_threads`
 cog to download + post an expansion and read it back through a relay, which raced the
 route gate. Here the parse is independent, and the media fetch is bounded internally so
@@ -205,7 +211,17 @@ THREADS_TIMEOUT_NOTICE = (
 
 
 def _system_block(text: str) -> EasyInputMessageParam:
-    """Wraps one separator/notice string as a low-authority system block."""
+    """Wraps one separator/notice string as a low-authority system block.
+
+    `role=system` rather than `developer`, the repo-wide rule for separators: it is what both
+    Gemini and Claude accept through LiteLLM.
+
+    Args:
+        text (str): The separator or notice to carry.
+
+    Returns:
+        An input message holding that one text part.
+    """
     return EasyInputMessageParam(
         role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
     )
@@ -217,6 +233,10 @@ def threads_timeout_context_messages() -> list[EasyInputMessageParam]:
     A timed-out parse otherwise leaves the answer with only the raw URL, which can re-expose
     the "I cannot open this link" fallback; this keeps a deterministic "could not read it in
     time" notice instead.
+
+    Returns:
+        The timeout notice as a single block, ready to splice in where the parse's blocks
+        would have gone.
     """
     return [_system_block(text=THREADS_TIMEOUT_NOTICE)]
 
@@ -229,12 +249,30 @@ def _defuse_markers(text: str) -> str:
     back — which is exactly what "what does this comment say" asks it to do. Extraction runs
     regardless of the kill-switches, so the tag has to stop being a tag here. Cheap to write and
     cheap to abuse otherwise: a comment on a viral post costs an attacker nothing.
+
+    Args:
+        text (str): A post or comment body, as Threads served it.
+
+    Returns:
+        The same text with every marker tag rewritten into parentheses, so quoting it back
+        extracts nothing.
     """
     return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
 
 
 def _render_post_text(post: ThreadsOutput, label: str) -> str:
-    """Renders one post's metadata (author, time, body, engagement, url) as compact text."""
+    """Renders one post's metadata (author, time, body, engagement, url) as compact text.
+
+    The body goes through `_defuse_markers`, so every caller gets that for free; a post's own
+    permalink is kept, unlike a comment's.
+
+    Args:
+        post (ThreadsOutput): The chain post, or the post it quotes, to render.
+        label (str): The bracketed prefix naming what this post is to the linked one.
+
+    Returns:
+        The rendered lines joined with newlines, omitting whatever the payload did not carry.
+    """
     lines = [f"[{label}] @{post.author_name}".rstrip()]
     if post.taken_at is not None:
         lines.append(f"Posted: {post.taken_at.isoformat(timespec='seconds')}")
@@ -286,10 +324,20 @@ def _renderable_branch(*, branch: list[ThreadsOutput]) -> list[ThreadsOutput]:
     A comment with neither text nor media has nothing to render, but dropping it wherever it
     sits would orphan the replies underneath that name it as who they answer. Only the trailing
     ones are safe to drop, so that is all this drops.
+
+    Args:
+        branch (list[ThreadsOutput]): One reply branch, direct comment first.
+
+    Returns:
+        The branch cut back to its last comment carrying text or media.
     """
 
     def has_content(post: ThreadsOutput) -> bool:
-        """Whether the comment has anything worth a section."""
+        """Whether the comment has anything worth a section.
+
+        Returns:
+            True when it carries text, an image or a video.
+        """
         return bool(post.text or post.image_urls or post.video_urls)
 
     end = len(branch)
@@ -304,6 +352,14 @@ def _select_replies(*, branches: list[list[ThreadsOutput]], limit: int) -> list[
     Filling depth by depth rather than branch by branch is what stops one deep argument from
     eating the whole budget: every branch gets its direct comment before any branch gets its
     second, so the comments Threads itself ranked highest survive a trim.
+
+    Args:
+        branches (list[list[ThreadsOutput]]): The parse's reply branches, each direct comment
+            first.
+        limit (int): How many comments may be rendered in total, across every branch.
+
+    Returns:
+        One entry per branch that kept at least one comment, in the branches' own order.
     """
     renderable = [_renderable_branch(branch=branch) for branch in branches]
     kept = [0] * len(renderable)
@@ -336,6 +392,15 @@ def _reply_label(*, post: ThreadsOutput, depth: int, target_author: str) -> str:
     The self-reply case is not an edge case: an author answering under their own post is one of
     the first things a page ships, so a blanket "these are other people" would be a falsehood
     the model repeats.
+
+    Args:
+        post (ThreadsOutput): The comment being labelled.
+        depth (int): Its index in the branch, so 0 is a direct comment on the linked post.
+        target_author (str): The linked post's author username, for the self-reply case.
+
+    Returns:
+        The bracket label naming the comment's depth, its author's relation to the post, and
+        whom it answers when the payload says.
     """
     who = "the linked post's own author" if post.author_name == target_author else "a reader"
     if depth == 0:
@@ -352,6 +417,12 @@ def _reply_media_note(*, post: ThreadsOutput) -> str:
     rather than as one whose content the model simply did not receive. Never inverted into a
     "this comment has no media" claim: a comment the page serialises without media URLs is not
     the same thing as a comment that had none.
+
+    Args:
+        post (ThreadsOutput): The comment whose media is being counted.
+
+    Returns:
+        The parenthesised count line, or an empty string when the page listed no media for it.
     """
     counts = [
         f"{len(urls)} {noun}"
@@ -370,6 +441,15 @@ def _render_reply(*, post: ThreadsOutput, depth: int, target_author: str) -> str
     posts: at this volume its timestamp, four extra counters and permalink would be most of the
     injected text. The permalink also goes because QA answers with `urlContext` enabled, and a
     comment section is no place to hand the model a page of stranger-supplied fetch targets.
+
+    Args:
+        post (ThreadsOutput): The comment to render.
+        depth (int): Its index in the branch, passed through to the label.
+        target_author (str): The linked post's author username, passed through to the label.
+
+    Returns:
+        The rendered lines joined with newlines; a comment with neither text nor media says so
+        rather than rendering blank.
     """
     lines = [f"[{_reply_label(post=post, depth=depth, target_author=target_author)}]"]
     lines[0] += f" @{post.author_name} (❤️ {post.like_count:,})"
@@ -393,6 +473,15 @@ def _render_reply_sections(
     (breadth-first spends it on the direct comments first), so a bare number would tell the model
     the discussion ended where the trim did — the same falsehood as the "11 shown, 5 in total"
     contradiction this header was written to avoid, one count over.
+
+    Args:
+        selected (list[BranchSelection]): The branches to render, in page order.
+        target (ThreadsOutput): The linked post, for its author name and its own reply count.
+        carried (int): Comments the page shipped under the target, renderable or not.
+
+    Returns:
+        The header plus one section per rendered comment; a lone notice when the page carried
+        comments but none of them renderable; nothing at all only when the post reports none.
     """
     if not selected:
         # The page ships only a sample of the replies, and a throttled fetch can carry none at
@@ -551,13 +640,30 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
     `filename_prefix` keeps two posts' items apart on disk as well as in the request: clips are
     written to the shared scratch dir before upload, so a quoted post reusing the target's names
     would truncate the target's file mid-upload.
+
+    Args:
+        post (ThreadsOutput): The post whose media is fetched, images before videos.
+        owner (str): How the block names this post, repeated in every line about its media.
+        budget (int): How many of its items may be attempted; the rest are reported missing.
+        filename_prefix (str): Prefix keeping this post's scratch files and upload names apart.
+        gemini_client (genai.Client): Direct-to-Google client for the Files API upload.
+        download_dir (str): Scratch directory clips are written to before upload; each one is
+            unlinked again as soon as its upload returns.
+
+    Returns:
+        The parts that arrived, in page order, plus every URL that did not become one.
     """
     image_urls = post.image_urls[:budget]
     remaining = budget - len(image_urls)
     video_urls = post.video_urls[:remaining] if remaining > 0 else []
 
     async def image_part(index: int, image_url: str) -> ResponseInputFileParam | None:
-        """Fetches, downscales and uploads one image."""
+        """Fetches, downscales and uploads one image.
+
+        Returns:
+            The `input_file` part, or None when the upload failed; a failed fetch raises into
+            the gather instead.
+        """
         data, mime_type = await load_image_bytes(source=image_url)
         return await upload_as_input_file(
             client=gemini_client,
@@ -568,7 +674,14 @@ async def _upload_post_media(  # noqa: PLR0913 -- owner, budget and prefix all v
         )
 
     async def video_part(index: int, video_url: str) -> ResponseInputFileParam | None:
-        """Downloads one clip to the caller's scratch dir and uploads it from disk."""
+        """Downloads one clip to the caller's scratch dir and uploads it from disk.
+
+        The clip is unlinked as soon as the upload returns, rather than being left to the
+        scratch dir's teardown, which a timeout can reach while a download is still running.
+
+        Returns:
+            The `input_file` part, or None when the download or the upload failed.
+        """
         downloader = ThreadsDownloader(output_folder=download_dir)
         filename = f"{filename_prefix}video_{index}.mp4"
         path = await asyncio.to_thread(downloader.download_media, url=video_url, filename=filename)
@@ -635,6 +748,9 @@ def _media_plan(*, target: ThreadsOutput) -> list[tuple[ThreadsOutput, str, int,
     would leave the block claiming to hold the post's media while silently holding none of the
     quoted post's, the one thing this accounting exists to prevent.
 
+    Args:
+        target (ThreadsOutput): The linked post; only it and its `quoted` post are candidates.
+
     Returns:
         One `(post, owner, budget, filename_prefix)` tuple per post that carries media at all,
         target first, which is also the order the parts ride in.
@@ -665,6 +781,14 @@ async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -
     computed from URL counts before any fetch starts, so nothing downstream waits on the target,
     and a slow target would otherwise eat the whole window and leave the quoted post — often the
     post that actually carries the subject — with nothing.
+
+    Args:
+        target (ThreadsOutput): The linked post, handed on to `_media_plan`.
+        gemini_client (genai.Client): Direct-to-Google client for the Files API upload.
+
+    Returns:
+        The groups in attachment order, or no groups at all when the bound expired or anything
+        else failed.
     """
     plan = _media_plan(target=target)
     if not plan:
@@ -719,10 +843,22 @@ def _media_url_lines(*, owner: str, image_urls: list[str], video_urls: list[str]
     many there were: the whole point of these lines is that the model can tell what it is
     missing, and a silently shortened list is the same lie in a smaller font. `owner` names whose
     media it is, since a quote post puts two posts' URLs in the same block.
+
+    Args:
+        owner (str): How the block names the post this media belongs to.
+        image_urls (list[str]): Image URLs the model was not given.
+        video_urls (list[str]): Video URLs the model was not given.
+
+    Returns:
+        One line per media kind that has anything missing, so nothing at all when none does.
     """
 
     def line(*, noun: str, urls: list[str]) -> str:
-        """Renders one line, naming what the trim itself left out."""
+        """Renders one line, naming what the trim itself left out.
+
+        Returns:
+            The line, carrying the true count and how many URLs it stopped short of listing.
+        """
         shown = urls[:MAX_THREADS_MEDIA_PARTS]
         rendered = f"{noun} of {owner} NOT attached ({len(urls):,}), URLs only: " + ", ".join(
             shown
@@ -746,6 +882,14 @@ def _attachment_order_notice(*, groups: list[PostMedia]) -> str:
     so without this the model reads a photo attached for the post being argued with as the linked
     post's own — and "the linked post shows a document" is a falsehood when the document belongs
     to the post it is disagreeing with.
+
+    Args:
+        groups (list[PostMedia]): The groups that contributed a part, in attachment order; the
+            caller passes `attached_groups`, since listing a group with none would name items
+            the model cannot see.
+
+    Returns:
+        The notice line naming each owner and how many items it contributed.
     """
     listed = ", then ".join(
         f"{len(group.parts):,} item(s) belonging to {group.owner}" for group in groups
@@ -758,7 +902,15 @@ def _attachment_order_notice(*, groups: list[PostMedia]) -> str:
 
 
 def _missing_media_notice(*, attached: int, media: IngestedMedia) -> str:
-    """States how much of the posts' media is attached, ahead of the URLs of the rest."""
+    """States how much of the posts' media is attached, ahead of the URLs of the rest.
+
+    Args:
+        attached (int): Items that actually reached the model, counted across every post.
+        media (IngestedMedia): The ingestion result, for how many items did not.
+
+    Returns:
+        The notice line to place ahead of the missing-URL lines.
+    """
     missing = sum(
         len(group.missing_image_urls) + len(group.missing_video_urls) for group in media.groups
     )
@@ -775,6 +927,13 @@ def _quoted_post_header(*, target: ThreadsOutput, quoted: ThreadsOutput) -> str:
 
     An unnamed author yields no claim at all rather than the "different author" default: guessing
     two parties where there may be one is the same falsehood in the other direction.
+
+    Args:
+        target (ThreadsOutput): The linked post, for the author comparison.
+        quoted (ThreadsOutput): The post it quotes, already known to be readable.
+
+    Returns:
+        The header line leading the quoted post's section.
     """
     sentences = [THREADS_QUOTED_POST_LEAD]
     if quoted.author_name:
@@ -800,8 +959,9 @@ def _render_conversation_sections(
     stranger-supplied fetch targets a comment's permalink would be.
 
     Args:
-        chain: The already-trimmed chain `[root, ..., direct_parent, target]`.
-        conversation: The parse the chain came from, for its reply branches.
+        chain (list[ThreadsOutput]): The trimmed chain `[root, ..., direct_parent, target]`.
+        conversation (ThreadsConversation): The parse the chain came from, for its reply
+            branches.
 
     Returns:
         The text sections, in the order they are joined into the block.
@@ -855,10 +1015,11 @@ async def build_threads_context_messages(
     URLs ride as text, since a Files uri is Gemini-only.
 
     Args:
-        url: The Threads post URL gen_reply picked out of the conversation.
-        answer_model_is_gemini: Whether the answer model can resolve a Files API uri.
-        gemini_client: Direct-to-Google client used for the media upload, or None when no key
-            is configured, which reads the post as text just like a non-Gemini answer model.
+        url (str): The Threads post URL gen_reply picked out of the conversation.
+        answer_model_is_gemini (bool): Whether the answer model can resolve a Files API uri.
+        gemini_client (genai.Client | None): Direct-to-Google client used for the media upload,
+            or None when no key is configured, which reads the post as text just like a
+            non-Gemini answer model.
 
     Returns:
         Input blocks ready to splice into the answer input before the current message.

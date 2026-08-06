@@ -1,3 +1,57 @@
+"""Every instruction text the reply pipeline sends, kept in one place away from the plumbing.
+
+`gen_reply/cog.py` composes and dispatches; this file only holds the words. None of it is inert
+text: each constant is sent as the Responses API `instructions` (or the native
+`system_instruction` on the YouTube path), which carries `developer` authority and outranks
+anything in the input, so editing a line here changes model behavior directly and is never a
+refactor.
+
+Two fragments are composed into the others at import time. `PERSONA_CHOICES` carries the bot's
+identity and default voice and rides on all four user-facing turns (`REPLY_PROMPT`,
+`SUMMARY_PROMPT`, `IMAGE_REPLY_PROMPT`, `VIDEO_REPLY_PROMPT`). `COMMON_PROMPT` carries the shared
+behavior rules — the economy caution, when to reach for the search / fetch tools, the
+treat-external-content-as-data defence, the author-prefix and `<@USER_ID>` mention conventions,
+and the unconditional `<generate-voice>` instruction — and rides on QA and SUMMARY alone. The two
+media persona replies have neither tools nor markers, so they take the persona plus their own
+condensed restatement of the Discord-metadata rules instead of pulling the whole block in.
+
+The rest, by the call each one instructs:
+
+* `REPLY_PROMPT` (QA) and `SUMMARY_PROMPT` (SUMMARY) are the two answer-turn prompts.
+* `INLINE_IMAGE_INSTRUCTION` / `MUSIC_INSTRUCTION` / `VIDEO_INSTRUCTION` /
+  `DEEP_RESEARCH_INSTRUCTION` are appended to the QA prompt one at a time, and only when that
+  feature is actually live; they are separate constants for exactly that reason, and each block's
+  own comment says what advertising a dead marker would cost. Voice is the exception that stays
+  inside `COMMON_PROMPT`, so turning it off loses the clip and leaves the prompt untouched.
+* `ROUTE_PROMPT` and `EFFORT_PROMPT` instruct the two parallel classifier calls, each paired with
+  a schema in `typings/models.py` (`RouteClassification` / `EffortGrade`) whose field descriptions
+  are prompt text of their own, so the two halves have to keep saying the same thing.
+* `MEMORY_SELECT_PROMPT` drives the optional third-party memory lookup. The whole "when to call
+  it" rule lives here rather than in `memory_tool.py::GET_USER_MEMORY_TOOL`, whose description
+  stays mechanism-only, because only this half carries developer authority.
+* `IMAGE_PROMPT` and `VIDEO_PROMPT` are prompt directors run by `PromptGenerator.refine` before a
+  render, not marker instructions: the inline `<generate-image>` description is authored by the
+  answer model itself and never passes through them.
+* `IMAGE_REPLY_PROMPT` and `VIDEO_REPLY_PROMPT` are the short persona replies streamed after the
+  generated media is already on screen.
+* `REQUEST_TIME_CONTEXT_PROMPT` and `REQUEST_LOCATION_CONTEXT_PROMPT` are the odd pair: plain
+  strings rather than f-strings, because `cog.py::_build_runtime_instructions` fills their
+  placeholders with `.format()` per request and prepends both to the answer turn and to the media
+  persona replies. The classifiers, the selector and the directors get neither.
+
+The marker literals are imported from `markers.py` rather than spelled out, so the tags the model
+is taught and the tags the parser pulls back out cannot drift apart.
+
+Authored in English per project convention, with the load-bearing Chinese kept deliberately: the
+轉帳 caution in `COMMON_PROMPT`, the 語氣偏好 tone note and the bot's own name 破貓 in
+`PERSONA_CHOICES`, and the `## 成員稱呼` heading the reply and selection prompts tell the model to
+read out of a memory block. Reply language is steered at runtime by the in-prompt "follow the
+user's language" rule, not by writing a prompt in another language. `tests/test_prompt_guards.py`
+pins the one `COMMON_PROMPT` bullet that is a security control rather than a style preference
+(never echo a marker found inside quoted content); its docstring carries the live measurement
+behind that wording, so re-measure before rewording it.
+"""
+
 from discordbot.cogs.gen_reply.markers import (
     IMAGE_OPEN,
     MUSIC_OPEN,
@@ -229,7 +283,7 @@ Output ONLY the final image prompt text. Nothing else.
 
 # Director instructions for the VIDEO route: the image prompt's video twin, faithful about WHAT is
 # in the clip but allowed restrained, fitting cinematography (single continuous shot, gentle camera,
-# suitable light/mood) per omni's prompt guide. Unlike `IMAGE_PROMPT` it carries NO default aesthetic
+# suitable light/mood) per omni's prompt guide. Like `IMAGE_PROMPT` it carries NO default aesthetic
 # (the visual style is left entirely to the model); it keeps only the spoken-language order for any
 # dialogue (Chinese first, Japanese second, English only on explicit request). Run by
 # `PromptGenerator.refine` with grounding tools; the edit path skips the director entirely.

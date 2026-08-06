@@ -1,4 +1,4 @@
-"""The `get_user_memory` function tool for oblique third-party memory lookups.
+"""The `get_user_memory` function tool and the rest of the reply's memory read path.
 
 Code directly resolves the current author, reply-chain authors, and users explicitly
 mentioned in the current message. The selector only decides whether the latest message
@@ -12,6 +12,16 @@ opened. A secret told in one server cannot surface in another because it was nev
 directory this reply reads. The always-read tone note (`render_tone_block`) is the
 deliberate exception — persona-independent delivery preferences are cross-server safe by
 construction, so they live outside the tree.
+
+Everything that boundary needs is in this one file: the tool schema the selection request
+offers plus the parser for its raw arguments, the allowlist construction (conversation
+participants, widened with the ids and aliases parsed out of a server memory's
+`## 成員稱呼` table), the compartment resolution and the reads behind it, and the
+renderers that turn each result into one `EasyInputMessageParam` block for the request.
+`cog.py` keeps only the orchestration — when the optional selection call runs, what it
+costs, how its failure degrades — so the permission rule reads in one place instead of
+being spread across the pipeline. Nothing here writes: the store and the two-phase write
+pipeline are `services/memory/`'s.
 """
 
 import re
@@ -71,6 +81,10 @@ class MemoryReadContext(BaseModel):
     reads a user's stored memory (deterministic participants and optional selection),
     so `compartments_for_reading` can name the directories this conversation is allowed
     to open.
+
+    Attributes:
+        guild_id: Current guild id; None outside guilds.
+        dm_partner_id: The human user in a 1:1 DM; None in guilds and group DMs.
     """
 
     guild_id: int | None = Field(..., description="Current guild id; None outside guilds.")
@@ -84,7 +98,18 @@ class MemoryReadContext(BaseModel):
 
 
 def memory_read_context(*, message: Message) -> MemoryReadContext:
-    """Builds the read context for one incoming message."""
+    """Builds the read context for one incoming message.
+
+    A group DM is neither a guild nor a `DMChannel`, so both fields stay None there and it
+    reads the cross-server compartment alone. Only a 1:1 DM names its partner, which is what
+    later lets that one owner read their whole tree.
+
+    Args:
+        message (Message): The message being replied to.
+
+    Returns:
+        The guild / DM-partner pair every user-memory read in this reply is scoped by.
+    """
     is_direct_message = message.guild is None and isinstance(message.channel, DMChannel)
     return MemoryReadContext(
         guild_id=message.guild.id if message.guild else None,
@@ -130,6 +155,12 @@ def _user_label(user: Member | User) -> str:
     Mirrors `render_author_identity` minus the `[id: ...]` suffix (the id is the
     allowlist key) and collapses whitespace so the callable-users block stays
     one line per user.
+
+    Args:
+        user (Member | User): The user to label.
+
+    Returns:
+        The sanitized, mention-escaped `display (username)` label.
     """
     safe_display = " ".join(sanitize_identity(value=user.display_name).split())
     safe_username = " ".join(sanitize_identity(value=user.name).split())
@@ -143,6 +174,14 @@ def build_memory_allowlist(*, users: list[Member | User], bot_user_id: int) -> d
 
     The caller chooses the exact participant roles that are eligible. This helper only
     deduplicates them, excludes the bot, and renders sanitized labels.
+
+    Args:
+        users (list[Member | User]): Trusted participants, in the order they should be offered;
+            duplicates are collapsed onto their first appearance.
+        bot_user_id (int): The bot's own id, dropped so it never looks itself up.
+
+    Returns:
+        Allowed user id to display label, in first-seen order.
     """
     allowed: dict[int, str] = {}
     for user in users:
@@ -167,7 +206,13 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
     member's `[id: USER_ID]`. These ids widen the lookup allowlist so a member can be
     asked about by nickname even when absent from the conversation. The row minus its
     id token becomes the label, escaped so a stored name can never inject a ping.
-    Returns an empty map when the section is absent.
+
+    Args:
+        memory (str): A rendered server memory document.
+
+    Returns:
+        Member id to label, empty when the section is absent or holds no id token; a row
+        whose label is empty after stripping falls back to the id itself.
     """
     section = _MEMBER_ALIAS_SECTION_RE.search(memory)
     if section is None:
@@ -199,6 +244,12 @@ def widen_allowlist_with_aliases(
     callable ids. That does grant access to an absent member's personal memory, so it must
     stay public-channel only: the nickname table is public content, but the personal memory
     it would unlock is not, so widening in a private channel would leak it.
+
+    Args:
+        allowed (dict[int, str]): The allowlist to enrich, mutated in place.
+        memory (str): A rendered server memory document.
+        include_absent (bool): Whether table members absent from the conversation become new
+            callable ids; the caller passes True only for a public channel.
     """
     for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
         if user_id in allowed:
@@ -208,7 +259,18 @@ def widen_allowlist_with_aliases(
 
 
 def render_callable_users_block(*, allowed: dict[int, str]) -> EasyInputMessageParam:
-    """Renders optional oblique-reference candidates as a system separator block."""
+    """Renders optional oblique-reference candidates as a system separator block.
+
+    `role=system` rather than `developer`, like every separator in this pipeline, because
+    that is the role LiteLLM translates for Gemini and Claude alike.
+
+    Args:
+        allowed (dict[int, str]): Candidate id to label, one line each in mapping order.
+
+    Returns:
+        The separator block, which the caller appends last so the model reads the candidates
+        immediately before deciding.
+    """
     lines = "\n".join(f"[id: {user_id}] {label}" for user_id, label in allowed.items())
     text = f"==== Additional members eligible for oblique-reference memory lookup ====\n{lines}"
     return EasyInputMessageParam(
@@ -224,6 +286,12 @@ def render_memory_context_block(*, memories: list[UserMemory]) -> EasyInputMessa
     stays separate from the answer phase (latency / cost / provider-neutral). Rendered as
     `role=assistant` (the bot's own note, the lowest authority tier) so a stored operating
     preference cannot outrank the developer prompt or the user's current message.
+
+    Args:
+        memories (list[UserMemory]): The resolved memories, rendered in the order given.
+
+    Returns:
+        The assistant-role context block.
     """
     sections = "\n\n".join(
         f"[id: {memory.user_id}] {memory.username}:\n{memory.memory}" for memory in memories
@@ -243,6 +311,12 @@ def render_server_memory_block(*, memory: str) -> EasyInputMessageParam:
     background context. Rendered as `role=assistant` (the bot's own note, the lowest
     authority tier) so a remembered server norm cannot outrank the developer prompt or
     the user's current message.
+
+    Args:
+        memory (str): The guild's rendered server memory document.
+
+    Returns:
+        The assistant-role context block.
     """
     text = (
         "(My long-term memory about this server's community. Background reference only, NOT "
@@ -261,6 +335,12 @@ def render_tone_block(*, tone: str) -> EasyInputMessageParam:
     `role=assistant` (the bot's own note, the lowest authority tier) so a remembered
     tone can never outrank the developer prompt or the user's current message, and it
     governs delivery only, never the content of the answer.
+
+    Args:
+        tone (str): The author's stored tone note.
+
+    Returns:
+        The assistant-role context block.
     """
     text = (
         "(My note on how this user likes me to sound. Tone and delivery reference only, NOT "
@@ -275,6 +355,12 @@ def parse_user_id_list(*, arguments: str) -> list[str]:
 
     A malformed or unexpected payload yields an empty list so a bad tool call
     degrades into an empty lookup instead of crashing the reply.
+
+    Args:
+        arguments (str): The raw `arguments` JSON of one `get_user_memory` function call.
+
+    Returns:
+        The requested ids as strings (a numeric id is coerced), or an empty list.
     """
     try:
         raw = json.loads(arguments)["user_id_list"]
@@ -296,6 +382,14 @@ def compartments_for_reading(owner_id: int, context: MemoryReadContext) -> list[
     The old per-bullet filter had the same four cases, but had to be trusted to apply
     them to text a model had tagged. Here an unreadable compartment is a directory that
     was never opened, so there is nothing to get wrong and nothing to fail closed on.
+
+    Args:
+        owner_id (int): The user whose memory is about to be read.
+        context (MemoryReadContext): Where this reply is happening.
+
+    Returns:
+        The compartment keys to hand `read_memory_document`, deduped and never empty; a
+        named guild compartment need not exist on disk.
     """
     scope = user_scope(user_id=owner_id)
     if context.dm_partner_id == owner_id:
@@ -314,10 +408,20 @@ def resolve_user_memories(
     """Resolves requested ids to stored memory, enforcing the allowlist and the compartments.
 
     Ids outside `allowed` are dropped (the permission boundary), non-numeric ids
-    are skipped, and duplicates collapse to one entry. Each surviving read opens only
-    the compartments this conversation may see; an allowed id with no stored memory —
-    or none in the compartments open here — returns an explicit no-memory signal rather
-    than being dropped.
+    are skipped, and duplicates collapse to one entry. An id handed back wrapped as a
+    `<@123>` / `<@!123>` mention is unwrapped rather than skipped. Each surviving read
+    opens only the compartments this conversation may see; an allowed id with no stored
+    memory — or none in the compartments open here — returns an explicit no-memory signal
+    rather than being dropped.
+
+    Args:
+        user_id_list (list[str]): Requested ids, as the model wrote them.
+        allowed (dict[int, str]): The caller's allowlist; its label is what the reply shows.
+        context (MemoryReadContext): Where this reply is happening, scoping every read.
+
+    Returns:
+        One entry per surviving id, in request order, its `memory` set to `NO_STORED_MEMORY`
+        where nothing readable was found.
     """
     results: list[UserMemory] = []
     seen: set[int] = set()
@@ -348,5 +452,11 @@ def memory_lookup_labels(*, memories: list[UserMemory]) -> list[str]:
 
     Users that were queried but had no stored memory are omitted: they did not
     contribute anything to the reply, so surfacing them would be misleading.
+
+    Args:
+        memories (list[UserMemory]): The resolved memories of one reply.
+
+    Returns:
+        The labels of the entries that carry real memory, in the order given.
     """
     return [memory.username for memory in memories if memory.memory != NO_STORED_MEMORY]

@@ -1,4 +1,24 @@
-"""Inline attachment renderer for answer models that cannot resolve Gemini Files URIs."""
+"""Inline attachment renderer for answer models that cannot resolve Gemini Files URIs.
+
+The non-Gemini half of the provider-aware attachment path: `select.py` picks between this and
+`GeminiFileUploader` off the answer model's name. A Gemini Files uri is resolvable only by
+Gemini (the LiteLLM proxy mistranslates it for anyone else), so an OpenAI / Anthropic / Grok
+answer model gets its attachments embedded straight into the request instead — images as base64
+`input_image`, PDFs as base64 `input_file`, UTF-8-decodable files as `input_text` under a
+filename header, and everything else dropped.
+
+Making that last drop decision here rather than in the source collector is deliberate.
+`input.py::_attachment_kind` denylists only the types known to 400 and proxies everything else
+as `image` / `input_file`, because MIME cannot reliably tell an unlisted binary apart from
+unlisted code; the final narrowing therefore belongs where the provider's real inline capability
+is known. The set that survives is smaller than what the Gemini uploader ingests (no video, no
+audio, no unknown binary), which is the price of having no upload side-channel.
+
+Kept apart from `gemini_file_api.py` because it is entirely stateless: no upload handle, no
+activation poll, no pending / dead-source bookkeeping, and no `GEMINI_API_KEY`. It inherits
+`AttachmentRenderer`'s caches for interface parity and never touches them, so the per-message
+render cache in `input.py` is the only thing keeping a source from being re-fetched every reply.
+"""
 
 import base64
 from datetime import UTC, datetime, timedelta
@@ -23,7 +43,18 @@ from discordbot.cogs.gen_reply.attachment.loaders import (
 
 
 def _data_uri(data: bytes, mime_type: str) -> str:
-    """Builds a base64 data URI for inlining bytes into a content part."""
+    """Builds a base64 data URI for inlining bytes into a content part.
+
+    `tests/test_model_media_parts.py` allowlists this helper by name: a media part whose source
+    is anything but a local data URI fails that guard, so keep media parts built through here.
+
+    Args:
+        data (bytes): The raw bytes to embed.
+        mime_type (str): The MIME type the part declares for those bytes.
+
+    Returns:
+        A `data:<mime_type>;base64,<payload>` URI.
+    """
     return f"data:{mime_type};base64,{base64.b64encode(data).decode()}"
 
 
@@ -32,6 +63,9 @@ def _inline_expiry() -> datetime:
 
     Inlined bytes never expire, but the cache key cannot see a Discord CDN re-host of the
     same source, so the render is refreshed periodically as a cheap safety net.
+
+    Returns:
+        Twelve hours out; `input.py`'s render cache reuses the part until shortly before that.
     """
     return datetime.now(tz=UTC) + timedelta(hours=12)
 
@@ -51,6 +85,22 @@ class InlineRenderer(AttachmentRenderer):
         cache_key: int | str,
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
+        """Fetches and downscales an image source, then inlines it as base64 `input_image`.
+
+        A fetch or decode failure drops this one source instead of raising: the caller gathers
+        the renders without `return_exceptions`, so an escaping error would cost the whole
+        message its attachments. `cache_key` only labels the failure log and `allow_dead_cache`
+        is ignored, since a stateless renderer keeps no dead-source cache to consult.
+
+        Args:
+            source (Attachment | StickerItem | str): The image attachment, sticker, or URL.
+            cache_key (int | str): The source's cache key; logged, never stored.
+            allow_dead_cache (bool): Accepted for interface parity and ignored.
+
+        Returns:
+            The `input_image` part plus its cache expiry, or None when the source could not be
+            loaded.
+        """
         try:
             file_bytes, content_type = await load_image_bytes(source=source)
         except Exception as exc:
@@ -74,6 +124,21 @@ class InlineRenderer(AttachmentRenderer):
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
     ) -> tuple[RenderedPart, datetime] | None:
+        """Downloads a non-image attachment and inlines it per type, or drops it.
+
+        An unguessable MIME type is dropped before the download, since the part shape is chosen
+        entirely from that type. A download failure drops this one attachment for the same
+        reason `render_image` does. Neither cache argument is read: this renderer is stateless.
+
+        Args:
+            attachment (Attachment): The non-image attachment to inline.
+            cache_key (int | str): Accepted for interface parity and unused.
+            allow_dead_cache (bool): Accepted for interface parity and unused.
+
+        Returns:
+            The inlined content part plus its cache expiry, or None when the attachment was
+            dropped.
+        """
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -106,7 +171,19 @@ class InlineRenderer(AttachmentRenderer):
 
         PDFs inline as base64 `input_file` (the one document type OpenAI / Anthropic accept
         inline); UTF-8-decodable files inline as `input_text` with a filename header; anything
-        else (non-text binaries the Gemini Files path would have uploaded) is dropped.
+        else (non-text binaries the Gemini Files path would have uploaded) is dropped. The
+        decode attempt, not the declared MIME, is what settles text-vs-binary, because
+        `input.py` deliberately forwards every unlisted type here rather than guessing.
+
+        Args:
+            filename (str): The attachment's filename, kept in the `input_text` header so the
+                model can name the file it is reading.
+            data (bytes): The downloaded file bytes.
+            mime_type (str): The attachment's resolved MIME type, which selects the part shape.
+
+        Returns:
+            The `input_file` or `input_text` part plus its cache expiry, or None when the file
+            is neither a PDF nor UTF-8 text.
         """
         if mime_type == "application/pdf":
             pdf_part = ResponseInputFileParam(

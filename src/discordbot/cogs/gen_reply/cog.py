@@ -1,4 +1,40 @@
-"""Cog that routes Discord messages through the AI reply pipeline."""
+"""Discord surface of the AI reply pipeline: `ReplyGeneratorCogs` and the orchestration behind it.
+
+The cog registers no slash command; the whole feature hangs off two listeners.
+
+`on_message` is what a user actually touches. It answers a DM, or a guild message whose raw
+content carries an explicit `<@bot>` mention (a reply notification alone is not one, so replying
+to the bot's own functional posts does not trigger it), ignores other bots, and steps aside for a
+message typed inside a research thread `cogs/research` is still driving. A message with no
+prompt, no attachment and no forward gets ❓ plus a bare "?" and nothing else runs. Otherwise
+`_run_reply_pipeline` classifies it into QA / SUMMARY / IMAGE / VIDEO and dispatches the matching
+handler. Progress is reactions on the user's own message (`ReactionStatusChain`) rather than
+status messages, the answer streams into one reply edited in place, and a pipeline failure lands
+as a red embed reply plus ❌. One usage record per triggering message is written from the
+pipeline's `finally`, under the route it reached or `unrouted`.
+
+`on_ready` starts the memory git worker and, once per process, re-enqueues the persisted phase-1
+memory jobs and sweeps every scope whose raw backlog is over threshold.
+
+What lives in this file is the orchestration, not the machinery: the route call and the
+concurrent effort grade sharing one `route_done` gate, the speculative `ReplyContext` build that
+overlaps routing, the `LINK_CONTEXT_SOURCES` registry plus the per-source URL scan
+(`_link_url_for_source`), the YouTube scan that swaps the answer turn onto the native Interactions
+API, the IMAGE / VIDEO routes with their best-effort persona replies, and the memory read/write
+scheduling. The machinery are neighbours in this package: `input.py` renders Discord messages into
+Responses input, `streaming.py` owns the streamed reply and the inline markers, `generation.py`
+the voice / image / music / video engines, `link_sources/` the per-platform context builders,
+`capabilities.py` the feature reference injected on QA, `context.py` the `ReplyContext` model.
+
+Every capability gate is a runtime `LLMConfig` flag read here rather than baked in:
+`inline_voice_enabled`, `inline_image_enabled`, `music_available`, `video_available`,
+`youtube_video_enabled`, `deep_research_available`, `image_refine_prompt_enabled` /
+`video_refine_prompt_enabled`, and the per-source media-ingest predicates over
+`douyin_video_enabled` / `bilibili_video_enabled`. A disabled feature is never advertised to the
+answer model, because the streamer would strip its marker and silently produce nothing. Permission
+gating is Discord's own: only a channel `@everyone` can view feeds the server-wide memory, and
+only a guild text channel may host a research thread.
+"""
 
 import re
 import time
@@ -199,8 +235,16 @@ def _message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]
     link the answer model was not shown, e.g. a captioned forwarded link card whose URL lives only
     in the embed. A forward puts its payload in `message.snapshots`, scanned via `snapshot_text`.
 
-    `strip_usage_footer` removes the bot-authored footer from every span when a caller scans a
-    reply-reference chain. The triggering message keeps its complete author-controlled text.
+    Args:
+        message (Message): The message whose rendered spans are scanned.
+        strip_usage_footer (bool): Removes the bot-authored usage footer from every span. Set
+            when scanning a reply-reference chain, so a user-controlled memory label inside the
+            bot's own footer cannot select the link; the triggering message keeps its complete
+            author-controlled text.
+
+    Returns:
+        The rendered spans, content first, then an embed render only when content was empty,
+        then one per forwarded snapshot.
     """
     content = message.content or ""
     content_present = bool(content.strip())
@@ -230,13 +274,27 @@ def _authored_link_texts(message: Message) -> list[str]:
     forwarded), so nothing human-written is lost. The bot's own replies pass through here too,
     so every span gets the `get_cleaned_content` / `snapshot_text` usage-footer strip: the
     footer carries the memory labels, which are display names their owners choose.
+
+    Args:
+        message (Message): A message one hop out in the reply-reference chain.
+
+    Returns:
+        The author-written spans: the message's own content, then each forwarded snapshot's.
     """
     spans = [message.content or "", *(snapshot.content for snapshot in message.snapshots)]
     return [USAGE_FOOTER_RE.sub("", span).strip() for span in spans]
 
 
 def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str] | None:
-    """First match of a URL pattern across one message's already-rendered text spans."""
+    """First match of a URL pattern across one message's already-rendered text spans.
+
+    Args:
+        pattern (re.Pattern[str]): The URL pattern to search for.
+        texts (list[str]): Rendered spans in scan order; the first hit wins.
+
+    Returns:
+        The match, or None when no span carries the pattern.
+    """
     for text in texts:
         match = pattern.search(string=text)
         if match:
@@ -258,6 +316,14 @@ def _link_url_for_source(source: LinkContextSource, message: Message) -> str | N
     live room, whose regex matches the host, not the path), which would only spend a
     rate-limited request to say so. It applies to the chosen match alone: a rejected link
     drops the source rather than sending the scan hunting for a second URL.
+
+    Args:
+        source (LinkContextSource): The registry entry whose pattern, chain opt-in and filter
+            decide what counts.
+        message (Message): The triggering message.
+
+    Returns:
+        The URL this source should read, or None when there is none it will accept.
     """
     match = _first_url_match(
         pattern=source.url_pattern,
@@ -287,6 +353,12 @@ def _source_channel_is_public(message: Message) -> bool:
     guild channel uses its own. A non-guild message, or any channel whose permissions
     cannot be resolved, counts as non-public — so content from channels members cannot
     see never enters the server-wide memory any member can read via `/memory server show`.
+
+    Args:
+        message (Message): The message whose channel is being judged.
+
+    Returns:
+        True only when `@everyone` can view the channel the message was sent in.
     """
     guild = message.guild
     if guild is None:
@@ -308,6 +380,13 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
     The location line names the current guild (or DM) with developer authority so the
     model can reason about where it is speaking; the memory rules lean on it as the
     anchor for never attributing a remembered fact to another server.
+
+    Args:
+        system_prompt (str): The route's own prompt, appended last.
+        message (Message): The triggering message, read for its creation time and guild.
+
+    Returns:
+        Time context, location context, then the route prompt, blank-line separated.
     """
     message_created_at_asia_taipei = message.created_at.astimezone(tz=TAIWAN_TIMEZONE)
     request_time_context = REQUEST_TIME_CONTEXT_PROMPT.format(
@@ -328,7 +407,16 @@ def _build_runtime_instructions(system_prompt: str, message: Message) -> str:
 
 
 def _youtube_url_in_message(message: Message, strip_usage_footer: bool) -> str | None:
-    """Returns the first YouTube URL in a message's text, embeds, or forwarded snapshots, if any."""
+    """Returns the first YouTube URL in a message's text, embeds, or forwarded snapshots, if any.
+
+    Args:
+        message (Message): The message to scan.
+        strip_usage_footer (bool): Drops the bot's usage footer before scanning, for a
+            reply-reference message rather than the triggering one.
+
+    Returns:
+        The matched URL, or None when the message carries none.
+    """
     match = _first_url_match(
         pattern=YOUTUBE_URL_RE,
         texts=_message_link_texts(message=message, strip_usage_footer=strip_usage_footer),
@@ -346,6 +434,13 @@ def _find_youtube_url(message: Message) -> str | None:
     not, since their value is the clip rather than a discussion and both are rate-limit
     sensitive. This one keeps scanning embeds out there — a YouTube link card is the link
     itself, not a rendering of some other post the way a Threads expansion is.
+
+    Args:
+        message (Message): The triggering message.
+
+    Returns:
+        The URL the answer turn should watch, or None when neither the message nor its
+        reference chain carries one.
     """
     found = _youtube_url_in_message(message=message, strip_usage_footer=False)
     if found is not None:
@@ -358,7 +453,17 @@ def _find_youtube_url(message: Message) -> str | None:
 
 
 def _walk_reference_chain(message: Message) -> list[Message]:
-    """Walks the reply-reference chain up to depth 3, oldest link last."""
+    """Walks the reply-reference chain up to depth 3, nearest link first.
+
+    Only an already-resolved reference is followed (nothing is fetched here), and a visited-id
+    set stops a self-referential chain from looping.
+
+    Args:
+        message (Message): The message to walk outward from; it is never in the result.
+
+    Returns:
+        The ancestor messages, nearest first, empty when the message is not a reply.
+    """
     chain: list[Message] = []
     visited: set[int] = {message.id}
     current = message
@@ -378,9 +483,17 @@ def _walk_reference_chain(message: Message) -> list[Message]:
 def _reference_header(ref: Message, is_direct: bool) -> EasyInputMessageParam:
     """Builds the system separator that precedes one reference-chain message.
 
-    `is_direct` marks the message the user is actually replying to (the immediate parent);
-    older ancestors in the chain are labelled as thread context so only the real reply
-    target reads as the primary context.
+    Older ancestors are labelled as thread context so only the real reply target reads as the
+    primary context. Both names go through `sanitize_identity`, since a display name is
+    user-chosen text landing inside a separator the model treats as structure.
+
+    Args:
+        ref (Message): The reference-chain message this header introduces.
+        is_direct (bool): True for the immediate parent, the one the user is actually replying
+            to.
+
+    Returns:
+        A `role=system` separator block naming the author and the relation.
     """
     relation = (
         "The user is directly replying to this message; it is the primary context for the "
@@ -407,6 +520,13 @@ def _current_header(message: Message, has_reference: bool) -> EasyInputMessagePa
 
     When the message is a reply, the header points back to the Reference Message block
     (rendered just above) so the model reads the reply pair as one unit.
+
+    Args:
+        message (Message): The message that needs answering.
+        has_reference (bool): Whether a reference block was rendered just above this one.
+
+    Returns:
+        A `role=system` separator block naming the author of the current message.
     """
     reply_note = " It is the user's reply to the Reference Message above." if has_reference else ""
     return EasyInputMessageParam(
@@ -427,8 +547,13 @@ async def _discard_task[TaskResultT](
 
     The except is deliberately broad: this drains unrelated subsystems (prep, effort, parts,
     threads, douyin, memory selection), so anything they can raise must be swallowed here rather
-    than surfacing on a route that already decided it does not need the result. `label` names
-    which one failed, since the tasks are otherwise indistinguishable at this point.
+    than surfacing on a route that already decided it does not need the result.
+
+    Args:
+        task (asyncio.Task[TaskResultT]): The speculative task to cancel and drain.
+        label (str): Names which subsystem failed; the tasks are otherwise indistinguishable
+            once they reach this point.
+        message_id (int | None): Correlation key for the warn log.
     """
     task.cancel()
     try:
@@ -453,7 +578,19 @@ async def _await_gated[GatedT](
     A task started before routing completes overlaps it without consuming the grace. A task
     started after routing receives the grace immediately. The task is always cancelled on exit
     so it never orphans.
-    """
+
+    Args:
+        task (asyncio.Task[GatedT]): The side task to resolve.
+        label (str): Subsystem name used when a timed-out task is drained.
+        route_done (asyncio.Event): Set by the pipeline the moment routing returns.
+        grace_seconds (float): How long the task may still run once `route_done` is set.
+
+    Returns:
+        The task's result.
+
+    Raises:
+        TimeoutError: The task was still running `grace_seconds` after routing finished.
+    """  # noqa: DOC502 -- propagated from `asyncio.wait_for`; both callers branch on it
     route_wait = asyncio.create_task(coro=route_done.wait())
     try:
         await asyncio.wait({task, route_wait}, return_when=asyncio.FIRST_COMPLETED)
@@ -472,7 +609,25 @@ async def _await_gated[GatedT](
 async def _await_deadline_bound_task[DeadlineT](
     *, task: asyncio.Task[DeadlineT], deadline: float, label: str
 ) -> DeadlineT:
-    """Awaits a self-deadline-bound task while preserving its cancellation cleanup ownership."""
+    """Awaits a self-deadline-bound task while preserving its cancellation cleanup ownership.
+
+    The shield is what keeps the boundary single-owner: cancelling this awaiter must not cut the
+    builder off mid-cleanup, so on cancellation the task is drained first and only then does the
+    cancellation propagate.
+
+    Args:
+        task (asyncio.Task[DeadlineT]): The task already bounded by its own deadline.
+        deadline (float): That same event-loop deadline, so the drain can tell "cancel it now"
+            from "let its own expiry finish".
+        label (str): Subsystem name for the drain's warn log.
+
+    Returns:
+        The task's result.
+
+    Raises:
+        asyncio.CancelledError: This awaiter was cancelled; re-raised after the drain.
+        TimeoutError: The task hit its own deadline.
+    """  # noqa: DOC502 -- TimeoutError comes from the awaited task's own deadline wrapper
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
@@ -483,7 +638,20 @@ async def _await_deadline_bound_task[DeadlineT](
 async def _drain_deadline_bound_task[DeadlineT](
     *, task: asyncio.Task[DeadlineT], deadline: float, label: str, message_id: int | None = None
 ) -> None:
-    """Cancels before a task's deadline or preserves its in-progress deadline cleanup."""
+    """Cancels before a task's deadline or preserves its in-progress deadline cleanup.
+
+    Past the deadline the task is already unwinding under its own timeout, so cancelling again
+    would interrupt that cleanup; it is only shield-awaited to completion instead. The loop
+    re-shields because this drain itself can be cancelled repeatedly, and the final `result()`
+    exists to retrieve the exception so nothing is reported as never-retrieved. Never raises: a
+    drained task belongs to a route that no longer wants its result.
+
+    Args:
+        task (asyncio.Task[DeadlineT]): The deadline-bound task to drain.
+        deadline (float): The task's own event-loop deadline.
+        label (str): Subsystem name recorded in the warn log.
+        message_id (int | None): Correlation key for the warn log.
+    """
     if not task.done() and asyncio.get_running_loop().time() < deadline:
         task.cancel()
     while not task.done():
@@ -516,7 +684,19 @@ async def _run_until_deadline[DeadlineT](
     Registered builders all propagate `CancelledError`, so `wait_for` alone owns the boundary.
     A clock check after this await would reject a pre-deadline result when a busy event loop only
     resumes this wrapper after the deadline.
-    """
+
+    Args:
+        awaitable (Awaitable[DeadlineT]): The builder call to bound.
+        deadline (float): Absolute event-loop time the build must finish by; the remaining
+            budget is computed from it, so every builder sharing one route deadline expires
+            together.
+
+    Returns:
+        Whatever the builder returned.
+
+    Raises:
+        TimeoutError: The deadline passed before the builder finished.
+    """  # noqa: DOC502 -- propagated from `asyncio.wait_for`, which owns this boundary
     event_loop = asyncio.get_running_loop()
     remaining_seconds = max(0.0, deadline - event_loop.time())
     return await asyncio.wait_for(fut=awaitable, timeout=remaining_seconds)
@@ -534,6 +714,17 @@ async def _build_threads_link_context(
     Threads media ingestion has no kill-switch, so the flag is accepted and dropped. The
     builder name resolves from this module's globals at call time, which is what keeps a test
     monkeypatching `discordbot.cogs.gen_reply.cog.build_threads_context_messages` effective.
+
+    Args:
+        url (str): The Threads post URL to read.
+        answer_model_is_gemini (bool): Whether the answer model can consume uploaded media
+            parts at all; a non-Gemini model gets text plus URLs.
+        gemini_client (genai.Client | None): Direct-to-Google client for the Files API upload,
+            None when no key is configured.
+        allow_media_ingest (bool): Accepted for the registry signature and dropped.
+
+    Returns:
+        The Threads context blocks, or this builder's own failure notice.
     """
     del allow_media_ingest
     return await build_threads_context_messages(
@@ -548,7 +739,19 @@ async def _build_douyin_link_context(
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Douyin builder to the registry signature (a straight pass-through)."""
+    """Adapts the Douyin builder to the registry signature (a straight pass-through).
+
+    Args:
+        url (str): The Douyin post URL to read.
+        answer_model_is_gemini (bool): Whether the answer model can consume uploaded media
+            parts at all; a non-Gemini model gets text plus URLs.
+        gemini_client (genai.Client | None): Direct-to-Google client for the Files API upload,
+            None when no key is configured.
+        allow_media_ingest (bool): False leaves the post's text but fetches no clip.
+
+    Returns:
+        The Douyin context blocks, or this builder's own failure notice.
+    """
     return await build_douyin_context_messages(
         url=url,
         answer_model_is_gemini=answer_model_is_gemini,
@@ -564,7 +767,19 @@ async def _build_bilibili_link_context(
     gemini_client: genai.Client | None,
     allow_media_ingest: bool,
 ) -> list[EasyInputMessageParam]:
-    """Adapts the Bilibili builder to the registry signature (a straight pass-through)."""
+    """Adapts the Bilibili builder to the registry signature (a straight pass-through).
+
+    Args:
+        url (str): The Bilibili video URL to read.
+        answer_model_is_gemini (bool): Whether the answer model can consume uploaded media
+            parts at all; a non-Gemini model gets text plus URLs.
+        gemini_client (genai.Client | None): Direct-to-Google client for the Files API upload,
+            None when no key is configured.
+        allow_media_ingest (bool): False leaves the video's text but downloads nothing.
+
+    Returns:
+        The Bilibili context blocks, or this builder's own failure notice.
+    """
     return await build_bilibili_context_messages(
         url=url,
         answer_model_is_gemini=answer_model_is_gemini,
@@ -574,18 +789,39 @@ async def _build_bilibili_link_context(
 
 
 def _threads_media_ingest_allowed(config: LLMConfig) -> bool:
-    """Threads media ingestion has no kill-switch; the Gemini checks alone gate it."""
+    """Threads media ingestion has no kill-switch; the Gemini checks alone gate it.
+
+    Args:
+        config (LLMConfig): Accepted for the registry signature and dropped.
+
+    Returns:
+        Always True.
+    """
     del config
     return True
 
 
 def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:
-    """The Douyin kill-switch plus the direct-Gemini key its Files API upload needs."""
+    """The Douyin kill-switch plus the direct-Gemini key its Files API upload needs.
+
+    Args:
+        config (LLMConfig): Runtime configuration carrying both gates.
+
+    Returns:
+        True when the clip may be downloaded and uploaded.
+    """
     return config.douyin_video_enabled and bool(config.gemini_api_key.strip())
 
 
 def _bilibili_media_ingest_allowed(config: LLMConfig) -> bool:
-    """The Bilibili kill-switch plus the direct-Gemini key its Files API upload needs."""
+    """The Bilibili kill-switch plus the direct-Gemini key its Files API upload needs.
+
+    Args:
+        config (LLMConfig): Runtime configuration carrying both gates.
+
+    Returns:
+        True when the video may be downloaded and uploaded.
+    """
     return config.bilibili_video_enabled and bool(config.gemini_api_key.strip())
 
 
@@ -632,7 +868,21 @@ async def _discard_link_tasks(
     deadline: float | None,
     message_id: int,
 ) -> None:
-    """Drains link builds without stealing cancellation from their shared deadline."""
+    """Drains link builds without stealing cancellation from their shared deadline.
+
+    The pipeline's `finally` backstop: anything still in `link_tasks` belongs to a route that
+    will not consume it. `link_tasks` is emptied so a second call is a no-op.
+
+    Args:
+        link_tasks (dict[str, "asyncio.Task[list[EasyInputMessageParam]]"]): Source name to its
+            in-flight build; drained in insertion order and cleared.
+        deadline (float | None): The shared route deadline every build was started against.
+        message_id (int): Correlation key for the drain's warn logs.
+
+    Raises:
+        RuntimeError: Tasks exist with no deadline, which means a build was started outside the
+            route path that fixes one.
+    """
     if link_tasks and deadline is None:
         raise RuntimeError("Selected link tasks have no route deadline")
     if deadline is None:
@@ -645,7 +895,12 @@ async def _discard_link_tasks(
 
 
 def _log_pre_answer_latency(started: float, decision: str) -> None:
-    """Logs total time from pipeline start to answer dispatch (the user's 'router stage')."""
+    """Logs total time from pipeline start to answer dispatch (the user's 'router stage').
+
+    Args:
+        started (float): The `time.monotonic()` reading taken when the pipeline span opened.
+        decision (str): The route this reply took, so the latency is comparable per route.
+    """
     logfire.info(
         "gen_reply pre-answer latency",
         elapsed_seconds=time.monotonic() - started,
@@ -675,6 +930,12 @@ def _message_log_fields(message: Message) -> _MessageLogFields:
     `message_id` as the correlation key, so a whole turn reconstructs by grepping it.
     `user_name` is the stable handle, `display_name` the per-guild nickname;
     `guild_id` / `guild_name` are None in a DM.
+
+    Args:
+        message (Message): The message being handled.
+
+    Returns:
+        The field mapping, ready to `**`-spread into a logfire call.
     """
     guild = message.guild
     return {
@@ -689,18 +950,25 @@ def _message_log_fields(message: Message) -> _MessageLogFields:
 
 
 class ReplyGeneratorCogs(commands.Cog):
-    """Generates AI replies for Discord messages.
+    """Generates AI replies for Discord messages, and resumes memory work after a restart.
+
+    The two listeners are `on_message` (the reply pipeline) and `on_ready` (the one-shot memory
+    resume). Every LLM engine hangs off a `cached_property` so an unused feature never builds a
+    client, and the direct-to-Google ones raise on a missing key rather than degrading silently
+    (`gemini_client_if_configured` is the variant for paths that stay useful without one).
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
-        config: The LLM client configuration loaded for reply generation.
+        config: The LLM client configuration and every runtime kill-switch.
+        runtime_models: The model strings and per-tier effort settings each phase dispatches on.
+        usage_recorder: Writes the one usage record per triggering message.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
         """Initializes the ReplyGeneratorCogs instance.
 
         Args:
-            bot: The Discord bot instance.
+            bot (commands.Bot): The Discord bot instance.
         """
         self.bot = bot
         self.config = LLMConfig()
@@ -711,7 +979,15 @@ class ReplyGeneratorCogs(commands.Cog):
         self._resume_started = False
 
     def _spawn(self, coro: "Coroutine[Any, Any, None]") -> None:
-        """Runs `coro` as a tracked background task so the gateway never blocks on it."""
+        """Runs a coroutine as a tracked background task so the gateway never blocks on it.
+
+        The task is held in `self._tasks` until it finishes, which is the only thing keeping the
+        event loop from garbage-collecting a running task mid-flight.
+
+        Args:
+            coro (Coroutine[Any, Any, None]): The background work to start; its result and any
+                exception are never retrieved here.
+        """
         task: asyncio.Task[None] = asyncio.create_task(coro)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
@@ -892,6 +1168,13 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Returned raw so both the optional selector's text-only render and the answer's
         uploaded render derive from one fetch, without a second history round-trip.
+
+        Args:
+            message (Message): The triggering message; history is read before it.
+            limit (int): How many earlier messages to read (30 for QA, 200 for SUMMARY).
+
+        Returns:
+            The messages oldest first, so they read as a transcript.
         """
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
@@ -908,6 +1191,16 @@ class ReplyGeneratorCogs(commands.Cog):
         Files API; the full render uploads attachment parts for the answer. History is the only
         render that opts into the dead-source skip: an expired CDN attachment here re-fails every
         turn (current / reference do not; see GeminiFileUploader._resolve_file_upload).
+
+        Args:
+            hist_messages (list[Message]): The fetched history, oldest first.
+            text_only (bool): True renders attachment markers and uploads nothing; False uploads
+                every attachment and logs the render latency, since only that mode is on the
+                answer's critical path.
+
+        Returns:
+            A history separator block followed by one block per message, empty when there is no
+            history.
         """
         if not hist_messages:
             return []
@@ -941,8 +1234,16 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> list[EasyInputMessageParam]:
         """Walks the reference chain up to depth 3 and renders each link as context.
 
-        `text_only` emits attachment markers instead of uploaded file parts, for the
-        route and memory-selection calls that must not wait on the Files API.
+        Emitted oldest first, so the direct parent ends up adjacent to the current message and
+        the reply pair reads as one unit.
+
+        Args:
+            message (Message): The triggering message.
+            text_only (bool): Emits attachment markers instead of uploaded file parts, for the
+                route and memory-selection calls that must not wait on the Files API.
+
+        Returns:
+            Alternating separator and rendered message blocks, empty when this is not a reply.
         """
         chain = _walk_reference_chain(message=message)
         if not chain:
@@ -965,7 +1266,16 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_current_message(
         self, message: Message, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
-        """Processes the current message that needs to be answered."""
+        """Renders the message that needs answering, behind its own separator.
+
+        Args:
+            message (Message): The triggering message.
+            text_only (bool): Emits attachment markers instead of uploaded file parts, for the
+                route and memory-selection calls that must not wait on the Files API.
+
+        Returns:
+            The separator block followed by the rendered message.
+        """
         has_reference = bool(_walk_reference_chain(message=message))
         messages: list[EasyInputMessageParam] = [
             _current_header(message=message, has_reference=has_reference)
@@ -990,6 +1300,15 @@ class ReplyGeneratorCogs(commands.Cog):
         proceeds, so the hosted-URL message is never clobbered and no stray persona-base is left if
         the persona reply bails. If hosting is unavailable the native attach is attempted anyway,
         raising on oversize so the route stays on its existing hard-fail error path.
+
+        Args:
+            message (Message): The message being replied to; its guild sets the upload limit and
+                its author is pinged exactly once.
+            data (bytes): The generated media.
+            filename (str): Name carrying the suffix both Discord and the media host key off.
+
+        Returns:
+            The delivered media message, or None when the bytes went out as a hosted URL.
         """
         item = MediaItem(source=data, filename=filename)
         plan = await self.media_delivery.plan(
@@ -1015,6 +1334,13 @@ class ReplyGeneratorCogs(commands.Cog):
         keep the attachment). When the media was hosted as a separate URL (`reply is None`), a fresh
         non-pinging reply is created here, lazily, only when the persona reply actually proceeds —
         so the hosted-URL message keeps the sole author ping and no empty message is ever orphaned.
+
+        Args:
+            message (Message): The user's message, replied to when a fresh base is needed.
+            reply (Message | None): The delivered media message, or None when it was hosted.
+
+        Returns:
+            The message the persona stream will edit.
         """
         if reply is not None:
             return reply
@@ -1036,6 +1362,16 @@ class ReplyGeneratorCogs(commands.Cog):
         persona reply onto the same message, mirroring `_handle_image_reply` and consuming the
         speculative `ReplyContext` (history + the requester's memory) only after the video is on
         screen so its build overlaps generation.
+
+        A generation failure re-raises onto the pipeline's error path, discarding `context_task`
+        on the way out so the speculative build never orphans.
+
+        Args:
+            message (Message): The message that asked for a video.
+            user_prompt (str): The raw request, used verbatim as the edit instruction or fed to
+                the prompt director.
+            context_task (asyncio.Task[ReplyContext]): The speculative context build; consumed
+                by the persona reply, discarded when generation fails.
         """
         started = time.monotonic()
         logfire.info("gen_reply video generation start", message_id=message.id)
@@ -1113,6 +1449,12 @@ class ReplyGeneratorCogs(commands.Cog):
         The bound is generous because video processing is slower than an image's. The reply
         then references the full `uri` through the proxy; see `files_api` for why a uri and
         not the clip's own URL.
+
+        Args:
+            data (bytes): The generated MP4.
+
+        Returns:
+            The full `https://.../files/<id>` uri, or None when the upload never reached ACTIVE.
         """
         return await upload_to_files_api(
             client=self.gemini_client,
@@ -1136,6 +1478,13 @@ class ReplyGeneratorCogs(commands.Cog):
         the clip was hosted as a URL; the persona-base message is only created once the Files API
         upload succeeds, so a failed upload leaves no orphaned message. Any failure leaves the
         delivered video untouched.
+
+        Args:
+            message (Message): The message that asked for the video.
+            reply (Message | None): The delivered clip's message, or None when it was hosted.
+            video_bytes (bytes): The clip to upload and watch.
+            context_task (asyncio.Task[ReplyContext]): The speculative context; discarded here
+                when the upload fails, otherwise consumed by the streamer.
         """
         file_uri = await self._upload_video_for_reply(data=video_bytes)
         if file_uri is None:
@@ -1171,13 +1520,22 @@ class ReplyGeneratorCogs(commands.Cog):
         persona-base message is built from it INSIDE the protected flow (`_persona_base_reply`), so a
         base-creation or streaming failure is swallowed here instead of surfacing to the outer error
         path, and a fresh hosted-case base that never received content is deleted (never an orphan).
-        Builds the answer-path input (history, selected user memory, tone note, reference, current),
-        appends the just-made media as the focus, and streams onto the base (its content edits keep an
-        attached media). Injects only the selected user memory (already source-filtered) plus the
-        author's tone note, never the server memory block, and seeds the
-        selection-call usage / memory labels so the footer matches the QA path. Consumes the
-        speculative `context_task` (awaited here so its build overlaps generation); any failure
-        leaves the delivered media untouched.
+        The input mirrors the answer path's order (history, user memory, tone note, reference,
+        current) with the just-made media appended last as the focus, but never carries the server
+        memory block. The streamer is seeded with the selection call's usage and memory labels so
+        the footer matches the QA path. `context_task` is awaited here rather than earlier, so its
+        build overlaps generation; any failure leaves the delivered media untouched.
+
+        Args:
+            message (Message): The message that asked for the media.
+            reply (Message | None): The delivered media message, or None when it was hosted.
+            context_task (asyncio.Task[ReplyContext]): The speculative context, consumed here.
+            model (ModelSettings): The media-reply model and its effort / reasoning settings.
+            system_prompt (str): The route's persona prompt.
+            focus_part (ResponseInputFileParam | ResponseInputImageParam): The generated media as
+                the model sees it — a Files API handle for video, inline base64 for an image.
+            media_noun (str): The word the focus text uses ("image" / "video").
+            span_name (str): Logfire span name for this route's reply.
         """
         base: Message | None = None
         streamer: ResponseStreamer | None = None
@@ -1262,6 +1620,15 @@ class ReplyGeneratorCogs(commands.Cog):
         `context_task` that built in parallel with the route, awaited only after
         the image is on screen so the context build overlaps generation. Once the image is
         delivered the reply is best-effort: any failure leaves the delivered image untouched.
+
+        A generation failure re-raises onto the pipeline's error path, discarding `context_task`
+        on the way out so the speculative build never orphans.
+
+        Args:
+            message (Message): The message that asked for an image.
+            user_prompt (str): The raw request, expanded by the prompt director before rendering.
+            context_task (asyncio.Task[ReplyContext]): The speculative context build; consumed
+                by the persona reply, discarded when generation fails.
         """
         started = time.monotonic()
         logfire.info(
@@ -1341,6 +1708,13 @@ class ReplyGeneratorCogs(commands.Cog):
         selection; otherwise this is the answer-path render (uploads + activation poll to ACTIVE)
         that runs in the background so only the answer awaits the Files API. The render-timing log
         fires only for the upload-bearing render, the latency-critical one.
+
+        Args:
+            message (Message): The triggering message.
+            text_only (bool): Renders attachment markers instead of uploading.
+
+        Returns:
+            The reference-chain blocks and the current-message blocks, in that order.
         """
         started = time.monotonic()
         reference_messages, current_message = await asyncio.gather(
@@ -1369,6 +1743,20 @@ class ReplyGeneratorCogs(commands.Cog):
         classification on the critical path. The reference + current parts arrive already
         text-only (attachment markers, no file ids), so the route classifies on the text
         without reading or waiting on uploads.
+
+        An unparsable or safety-filtered response falls back to QA, the one route that can
+        answer anything; only `ValidationError` is caught, so a genuine provider failure still
+        reaches the pipeline's error path.
+
+        Args:
+            message (Message): The triggering message, read for the SUMMARY-to-QA URL guard and
+                the per-user proxy header.
+            reference_messages (list[EasyInputMessageParam]): Text-only reference-chain blocks.
+            current_message (list[EasyInputMessageParam]): Text-only current-message blocks.
+
+        Returns:
+            The route, with a URL-bearing SUMMARY rewritten to QA while keeping both
+            content-read decisions.
         """
         message_list = [*reference_messages, *current_message]
 
@@ -1438,7 +1826,16 @@ class ReplyGeneratorCogs(commands.Cog):
         Runs in parallel with the route under the shared `route_done` gate (`_await_gated`);
         the grade is consumed only on the QA and SUMMARY paths, while IMAGE and VIDEO cancel
         this task. The parts arrive already text-only, so grading never waits on uploads.
-        Raises on any provider/parse failure so the caller (`_resolve_effort`) can fall back.
+        Any provider or validation failure is left to propagate, so `_resolve_effort` owns the
+        single fallback rather than this splitting it in two.
+
+        Args:
+            message (Message): The triggering message, read for the per-user proxy header.
+            reference_messages (list[EasyInputMessageParam]): Text-only reference-chain blocks.
+            current_message (list[EasyInputMessageParam]): Text-only current-message blocks.
+
+        Returns:
+            The graded effort, defaulting to "high" when the response carried no parsed grade.
         """
         message_list = [*reference_messages, *current_message]
 
@@ -1476,6 +1873,14 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Falls back to "high" on the post-route grace timeout or any grading error, so a slow
         or failed effort call never stalls or silently degrades the reply.
+
+        Args:
+            message (Message): The triggering message, for log correlation.
+            effort_task (asyncio.Task[EffortGrade]): The grading task started alongside routing.
+            route_done (asyncio.Event): Set when routing returns; starts the grace.
+
+        Returns:
+            The effort the answer model should run at.
         """
         try:
             grade = await _await_gated(
@@ -1518,6 +1923,18 @@ class ReplyGeneratorCogs(commands.Cog):
         second timeout. On expiry it injects a short "could not read it in time" notice instead
         of nothing; on any other unexpected error it returns [] (cancellation propagates). The
         builders themselves never raise (they degrade to their own notices).
+
+        Args:
+            message (Message): The triggering message, for log correlation.
+            source (str): The registry name of the source, for logs and the drain label.
+            link_task (asyncio.Task[list[EasyInputMessageParam]]): The in-flight build.
+            deadline (float): The shared event-loop deadline fixed when routing returned.
+            on_timeout (Callable[[], list[EasyInputMessageParam]]): Builds the deterministic
+                "could not read it in time" notice.
+
+        Returns:
+            The source's context blocks, its timeout notice, or [] when the build failed
+            unexpectedly.
         """
         started = time.monotonic()
         try:
@@ -1569,8 +1986,22 @@ class ReplyGeneratorCogs(commands.Cog):
         Runs an isolated request offering only the get_user_memory tool, then resolves the
         chosen ids server-side against an allowlist containing only absent members from a
         public server nickname table. The server memory rides in front as background context
-        so a spoken or misspelled nickname can be mapped to its id. Returns the memories plus
-        this request's token usage so the reply footer and chat reward account for the call.
+        so a spoken or misspelled nickname can be mapped to its id. Duplicate ids across
+        repeated tool calls collapse to one memory, in first-seen order.
+
+        Args:
+            message (Message): The triggering message, read for the per-user proxy header.
+            message_list (list[EasyInputMessageParam]): The already text-only transcript, so
+                this request neither re-reads uploaded payloads nor waits on them.
+            allowed (dict[int, str]): The only ids resolvable here, mapped to their labels.
+            read_context (MemoryReadContext): Where the reply is happening, which decides the
+                compartments each allowed user's memory may be read from.
+            server_memory_block (EasyInputMessageParam | None): Rendered server memory, led with
+                as background so a spoken alias maps to an id.
+
+        Returns:
+            The selected memories plus this request's token usage, so the reply footer and chat
+            reward account for the call.
         """
         tool_model = self.runtime_models.tool_model
         # The optional-candidates block stays last so the model reads it right before deciding;
@@ -1619,8 +2050,14 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Unlike user memory there is exactly one server memory per guild, so it needs no
         selection phase, allowlist, or function tool: it is read directly with zero extra
-        LLM latency. Returns "" for DMs (no guild), the SUMMARY route, or an empty memory.
-        Read once per reply and shared by the selection and answer phases.
+        LLM latency. Read once per reply and shared by the selection and answer phases.
+
+        Args:
+            message (Message): The triggering message; a DM has no server memory.
+            memory_enabled (bool): False on the SUMMARY route, which reads no memory at all.
+
+        Returns:
+            The rendered server memory document, or "" when there is none to read.
         """
         if not memory_enabled or message.guild is None:
             return ""
@@ -1633,7 +2070,23 @@ class ReplyGeneratorCogs(commands.Cog):
     def _resolve_reply_memory_candidates(
         self, *, message: Message, server_memory: str, read_context: MemoryReadContext
     ) -> tuple[list[UserMemory], dict[int, str], int]:
-        """Resolves deterministic memories and derives disjoint optional alias candidates."""
+        """Resolves deterministic memories and derives disjoint optional alias candidates.
+
+        The deterministic set is code-resolved (author, reply-chain authors, current-message
+        mentions) and always wins; the optional set is what a selector call may additionally ask
+        for, so the two are kept disjoint and the bot itself is in neither. Everything empties
+        before the gateway supplies `bot.user`, since the bot cannot be excluded without its id.
+
+        Args:
+            message (Message): The triggering message.
+            server_memory (str): The rendered server memory whose `## 成員稱呼` table supplies
+                the aliases and the optional candidates.
+            read_context (MemoryReadContext): The compartment boundary every read passes.
+
+        Returns:
+            The deterministic memories (empty ones dropped), the optional alias candidates, and
+            how many deterministic users were allowed regardless of whether they had memory.
+        """
         bot_user = self.bot.user
         if bot_user is None:
             return [], {}, 0
@@ -1680,6 +2133,11 @@ class ReplyGeneratorCogs(commands.Cog):
         target-centering, since every message is server context). Skipped for DMs and
         for channels not visible to `@everyone`, so private / restricted-channel content
         never enters the server-wide memory any member can read.
+
+        Args:
+            message (Message): The triggering message; its guild is the memory scope.
+            message_list (list[EasyInputMessageParam]): The whole rendered conversation.
+            full_reply (str): The bot's own delivered reply text.
         """
         if message.guild is None:
             return
@@ -1699,7 +2157,17 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _await_optional_memory_selection(
         self, *, task: asyncio.Task[MemorySelection], message: Message, route_done: asyncio.Event
     ) -> tuple[MemorySelection, float] | None:
-        """Awaits the optional selector without letting its failure affect direct memories."""
+        """Awaits the optional selector without letting its failure affect direct memories.
+
+        Args:
+            task (asyncio.Task[MemorySelection]): The in-flight selection request.
+            message (Message): The triggering message, for log correlation.
+            route_done (asyncio.Event): Set when routing returns; starts the selector's grace.
+
+        Returns:
+            The selection and how long it took, or None on timeout or failure — in which case
+            the deterministic memories stand alone.
+        """
         started = time.monotonic()
         try:
             with logfire.span("gen_reply memory selection"):
@@ -1739,9 +2207,24 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Runs speculatively as its own task concurrent with routing: everything here only
         reads (channel history, memory files, the selection request), so a non-QA route
-        can discard it safely. `parts_task` carries the answer-path reference/current
-        renders (uploaded files); `text_parts` carries their text-only twins so the memory
-        selection call never re-reads or waits on the uploads.
+        can discard it safely. `parts_task` is awaited through `asyncio.shield`, so discarding
+        this prep leaves the shared upload running for a SUMMARY rebuild to reuse; the `finally`
+        still cancels any in-flight selection so it cannot orphan.
+
+        Args:
+            message (Message): The triggering message.
+            history_limit (int): How much channel history to read (30 for QA, 200 for SUMMARY).
+            memory_enabled (bool): False skips every user-memory read and the selector, and with
+                it the server memory read.
+            parts_task (asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]]): The
+                shared answer-path reference/current render, uploads included.
+            text_parts (tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]): Their
+                text-only twins, so the selection call never re-reads or waits on the uploads.
+            route_done (asyncio.Event): Set when routing returns; bounds the selector.
+
+        Returns:
+            The context every downstream phase reads, with `link_blocks` still empty — the
+            pipeline splices those in after resolving the selected builders.
         """
         text_reference, text_current = text_parts
         build_started = time.monotonic()
@@ -1913,15 +2396,31 @@ class ReplyGeneratorCogs(commands.Cog):
 
         The per-user update is gated by `memory_enabled`; the per-server update always runs
         (subject to its own guild / public-channel guards), so the SUMMARY route still records
-        community memory even though it carries `memory_enabled=False`. `allow_voice` enables a
-        spoken clip, `allow_image` an inline generated image, `allow_music` an inline generated
-        music clip, and `allow_video` an inline generated video clip when the answer model marks
-        the reply for it (image / music / video are QA only; voice also rides SUMMARY, which
-        otherwise stays text). `describe_capabilities` injects the feature reference that replaced
-        `/help`, QA only since SUMMARY is recapping a channel rather than fielding a question about
-        the bot. `yt_url`, set only when the router asked
-        to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
-        (which can ingest the video) while reusing the same streamer / footer / memory path.
+        community memory even though it carries `memory_enabled=False`.
+
+        Each `allow_*` flag is ANDed with its runtime kill-switch before the matching marker is
+        appended to the prompt, so a disabled deployment is never told about a marker the
+        streamer would strip without producing anything.
+
+        Args:
+            message (Message): The message being answered.
+            system_prompt (str): The route's prompt, before the marker instructions are appended.
+            context (ReplyContext): Everything the answer input is assembled from.
+            memory_enabled (bool): Whether to schedule the per-user memory update.
+            effort (Literal["low", "medium", "high"]): Overrides the slow model's own effort and
+                shows in the reply footer.
+            allow_voice (bool): Permits a spoken clip; the one marker SUMMARY also carries.
+            allow_image (bool): Permits inline `<generate-image>` attachments (QA only).
+            allow_music (bool): Permits one inline `<generate-music>` clip (QA only).
+            allow_video (bool): Permits one inline `<generate-video>` clip (QA only).
+            allow_research (bool): Permits the `<deep-research>` marker, and launches the run
+                after the stream when the model emits a brief.
+            describe_capabilities (bool): Injects the feature reference that replaced `/help`,
+                QA only since SUMMARY is recapping a channel rather than fielding a question
+                about the bot.
+            yt_url (str | None): Set only when the router asked to watch a linked YouTube video;
+                swaps the answer turn onto the Gemini Interactions API (the only surface that
+                can ingest it) while reusing the same streamer / footer / memory path.
         """
         voice_generator = (
             self.voice_generator if allow_voice and self.config.inline_voice_enabled else None
@@ -1935,24 +2434,16 @@ class ReplyGeneratorCogs(commands.Cog):
         video_generator = (
             self.video_generator if allow_video and self.config.video_available else None
         )
-        # Only advertise the inline `<generate-image>` marker when the renderer is actually active; with
-        # it disabled the streamer would strip the block and produce nothing, silently dropping
-        # the visual request from the reply, so a disabled deployment must not be told about it.
+        # Only advertise the inline `<generate-image>` marker when the renderer is actually
+        # active; with it disabled the streamer would strip the block and produce nothing,
+        # silently dropping the visual request from the reply.
         if image_generator is not None:
             system_prompt = f"{system_prompt}\n{INLINE_IMAGE_INSTRUCTION}"
-        # Advertise the inline `<generate-music>` marker only when the generator is actually active, same
-        # reasoning as the image marker: a disabled deployment (kill-switch off or no Gemini key)
-        # must not be told about a marker the streamer would strip without producing anything.
+        # Same reasoning for the remaining three markers.
         if music_generator is not None:
             system_prompt = f"{system_prompt}\n{MUSIC_INSTRUCTION}"
-        # Advertise the inline `<generate-video>` marker only when the generator is actually active, same
-        # reasoning as the image/music markers: a disabled deployment (kill-switch off or no Gemini
-        # key) must not be told about a marker the streamer would strip without producing anything.
         if video_generator is not None:
             system_prompt = f"{system_prompt}\n{VIDEO_INSTRUCTION}"
-        # Advertise the <deep-research> marker only when the feature is on, same reasoning as the
-        # image marker: a disabled deployment must not be told about a marker the streamer would
-        # strip without producing anything.
         if allow_research and self.config.deep_research_available:
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
@@ -2150,12 +2641,18 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
-        """Listens for messages and handles AI reply generation.
+        """Answers a message addressed to the bot, or leaves it alone.
+
+        The gate is three tests in order: never another bot, never a guild message without an
+        explicit `<@bot>` in its raw content, and never one typed inside a research thread the
+        research cog is still driving. Past those, an empty request (no prompt, no attachment,
+        no forward) gets ❓ and a bare "?" instead of a model call. Everything else runs the
+        pipeline; a failure is reported as a red embed reply plus ❌ and never propagates, and
+        the reaction chain is flushed either way.
 
         Args:
-            message: The message that was sent.
-        """
-        # Ignore messages from bots.
+            message (Message): The message that was sent.
+        """  # noqa: DOC501 -- the HTTP re-raise is caught by this method's own outer except
         if message.author.bot:
             return
 
@@ -2253,9 +2750,30 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _run_reply_pipeline(  # noqa: PLR0915, C901, PLR0912 -- orchestrates route, speculative prep, threads context, and per-route dispatch in sequence
         self, message: Message, user_prompt: str, reactions: ReactionStatusChain
     ) -> None:
-        """Routes the message and dispatches the matching handler with speculative QA context."""
-        # Named in the usage record below, which is written from this method's `finally`
-        # because this is the one scope that has both outcomes and the route in hand.
+        """Routes the message and dispatches the matching handler with speculative QA context.
+
+        Three tasks run concurrently with the route call — the shared attachment upload, the
+        speculative `ReplyContext`, and the effort grade — so the dominant QA path pays for none
+        of them serially. Whichever the chosen route does not consume is handed to
+        `_discard_task`; every local task handle is set to
+        None the moment a route takes ownership of it, so the `finally` backstop drains exactly
+        what is left over. Link builders are the exception: they start only AFTER routing, so an
+        incidental URL never begins a fetch, and they share one deadline fixed at that moment.
+
+        The usage record is written from the `finally` because this is the only scope holding
+        both the outcome and the route.
+
+        Args:
+            message (Message): The message being answered.
+            user_prompt (str): The mention-stripped request, forwarded text merged in.
+            reactions (ReactionStatusChain): Progress indicator on the user's own message; each
+                route advances it to its own emoji.
+
+        Raises:
+            RuntimeError: A link source was selected without a deadline having been fixed, which
+                would mean a build could outlive the reply.
+        """
+        # Named in the usage record written from this method's `finally`.
         route_decision: str | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: (
@@ -2379,10 +2897,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     # A digest recaps channel history, not one linked post, so intent-gated link
                     # builders never start here. A URL-bearing SUMMARY is already rerouted to QA.
                     reactions.advance(emoji="<:stacks:1517562531365912607>")
-                    # so it neither biases the digest nor floods extraction, but the
-                    # per-server memory is still recorded since the digest is rich
-                    # community signal. Cancelling the speculative prep leaves `parts_task`
-                    # running (prep awaits it through asyncio.shield), so the shared
+                    # The rebuild runs with user memory off so it neither biases the digest nor
+                    # floods extraction, but the per-server memory is still recorded since the
+                    # digest is rich community signal. Cancelling the speculative prep leaves
+                    # `parts_task` running (prep awaits it through asyncio.shield), so the shared
                     # reference/current parts are still reused here.
                     context = await self._prepare_reply_context(
                         message=message,
@@ -2489,12 +3007,29 @@ def _can_launch_research(*, message: Message) -> bool:
     Only a guild text channel can host a nested thread; in a DM or inside an existing thread the
     `<deep-research>` marker is suppressed so the answer model never promises a run that cannot
     actually start (the launch would otherwise return the no-thread path and contradict itself).
+
+    Args:
+        message (Message): The message that might carry the marker.
+
+    Returns:
+        True when a research thread could actually be opened here.
     """
     return message.guild is not None and isinstance(message.channel, TextChannel)
 
 
 def _in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:
-    """Whether a channel id is a research thread the ResearchCogs cog is actively driving."""
+    """Whether a channel id is a research thread the ResearchCogs cog is actively driving.
+
+    Reached by `getattr` rather than an import, because `cogs/gen_reply/` may not import from a
+    peer cog; an unloaded or renamed research cog answers False instead of raising.
+
+    Args:
+        bot (commands.Bot): The bot instance the research cog is registered on.
+        channel_id (int): The channel the message was typed in.
+
+    Returns:
+        True only while that thread's report is still being written.
+    """
     get_cog = getattr(bot, "get_cog", None)
     cog = get_cog("ResearchCogs") if callable(get_cog) else None
     checker = getattr(cog, "is_research_thread", None)
@@ -2506,8 +3041,15 @@ async def _maybe_launch_research(
 ) -> None:
     """Hands a QA-emitted research brief to the ResearchCogs cog when it is loaded and enabled.
 
-    `anchor` is the bot's own reply message; the research thread hangs off it (more intuitive than
-    the user's message), falling back to the user's message inside the cog when it is None.
+    Reached by `getattr` rather than an import, because `cogs/gen_reply/` may not import from a
+    peer cog; an unloaded research cog makes this a no-op.
+
+    Args:
+        bot (commands.Bot): The bot instance the research cog is registered on.
+        message (Message): The message that produced the brief.
+        anchor (Message | None): The bot's own reply, which the thread hangs off (more intuitive
+            than the user's message); the cog falls back to `message` when this is None.
+        brief (str): The research brief the answer model emitted.
     """
     get_cog = getattr(bot, "get_cog", None)
     cog = get_cog("ResearchCogs") if callable(get_cog) else None
@@ -2534,6 +3076,6 @@ def setup(bot: commands.Bot) -> None:
     """Adds the ReplyGeneratorCogs to the bot.
 
     Args:
-        bot: The Discord bot instance.
+        bot (commands.Bot): The Discord bot instance.
     """
     bot.add_cog(ReplyGeneratorCogs(bot), override=True)

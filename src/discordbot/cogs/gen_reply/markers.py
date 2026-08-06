@@ -1,16 +1,26 @@
-"""Inline reply markers: the answer model self-selects spoken segments, images, music, and video.
+"""Inline reply markers: what the answer model asked for inside its own output, parsed back out.
 
 The answer model wraps the parts of its reply it wants read aloud in `<generate-voice>...
 </generate-voice>`: only those segments are synthesized (concatenated into a single voice clip),
 but they STAY in the visible reply (only the tags are stripped). It may also wrap short
 descriptions in `<generate-image>...</generate-image>` to have images generated and attached, one
-`<generate-music>...</generate-music>` description to have a music clip generated and attached, or
-one `<generate-video>...</generate-video>` description to have a short video generated and attached;
-each such block (tags AND content) is REMOVED from the visible reply so the generation prompt never
-leaks into chat. `ResponseStreamer` extracts them at finalize time via `extract_inline_markers` and
-scrubs partial/complete tags from the live preview via `scrub_markers_for_preview`, so none flickers
+`<generate-music>...</generate-music>` description to have a music clip generated and attached, one
+`<generate-video>...</generate-video>` description to have a short video generated and attached, or
+one `<deep-research>...</deep-research>` brief to launch a research thread; each such block (tags
+AND content) is REMOVED from the visible reply so the generation prompt never leaks into chat.
+`ResponseStreamer` extracts them at finalize time via `extract_inline_markers` and scrubs
+partial/complete tags from the live preview via `scrub_markers_for_preview`, so none flickers
 mid-stream. The asymmetry is deliberate: voice content is meant to stay visible, image / music /
-video content are meant to be pulled.
+video / research content are meant to be pulled.
+
+This file is the parser half alone — text in, text out, no Discord and no LLM. `prompts.py` is the
+half that teaches the model the tags exist and imports the literals below, so the instructions and
+the parser cannot drift apart; `streaming.py` is the half that turns each pulled request into an
+attachment. Extraction is UNCONDITIONAL, deliberately: it runs whatever the `LLMConfig`
+kill-switches say, so a deployment with a feature turned off still cannot leak a raw
+`<generate-image>` tag into a message. That is also why `link_sources/threads.py::_defuse_markers`
+has to break these tags inside quoted stranger text — a tag the model echoes back is a tag this
+parser fires on.
 
 The tags are deliberately hyphenated (`generate-*`, like `<deep-research>`) so none collides with a
 real single-word HTML / SVG / SSML element — `<video>` is HTML5, `<image>` is SVG, `<voice>` is
@@ -38,8 +48,8 @@ DEEP_RESEARCH_CLOSE = "</deep-research>"
 # 10-attachment ceiling. The prompt tells the model this limit; the streamer enforces it by
 # dropping any extra blocks so a confused model never blows past the attachment cap. A reply
 # may also carry one music clip and one video clip (each single per reply by design), so a rare
-# voice + music + video + 9 images would be 12 attachments; the streamer's
-# `[:DISCORD_ATTACHMENT_LIMIT]` clamp is the backstop.
+# voice + music + video + 9 images would be 12 attachments; `MediaDeliveryPlanner.plan`'s
+# attachment-count clamp is the backstop.
 MAX_INLINE_IMAGES = 9
 
 # Complete blocks: non-greedy, DOTALL so a multi-line segment is captured, IGNORECASE so a
@@ -81,11 +91,15 @@ _ALL_TAGS = (
 
 
 class InlineMarkers(BaseModel):
-    """Markers extracted from a finished reply: the visible text plus its media requests."""
+    """What one finished reply asked for: the text a user sees plus the requests pulled out of it.
+
+    A parse result, never an LLM output schema — the model writes the tags inline in its prose —
+    so these descriptions are documentation rather than prompt text.
+    """
 
     cleaned_text: str = Field(
         ...,
-        description="Reply text with image blocks removed and voice tags stripped (voice content kept).",
+        description="Reply text with pulled blocks removed and voice tags stripped (voice content kept).",
     )
     voice_text: str = Field(
         default="",
@@ -113,16 +127,24 @@ class InlineMarkers(BaseModel):
 
 
 def extract_inline_markers(*, text: str) -> InlineMarkers:
-    """Splits a finished reply into visible text plus its voice / image / music / video requests.
+    """Splits a finished reply into the visible text plus every request it carries.
 
     Image blocks (tags AND content) are removed entirely so the generation prompt never shows
-    in chat; every non-empty one becomes an image request, in order. A `<generate-music>` and a
-    `<generate-video>` block are pulled the same way, but only the first non-empty one of each is
-    kept (one clip per reply by design). Voice tags are stripped but their inner content STAYS in
-    the visible reply, and every wrapped segment is concatenated as the spoken-clip input. An
-    unclosed trailing `<generate-image>` / `<generate-music>` / `<generate-video>` (the model forgot
-    to close it) is still pulled so its raw description never leaks, and any stray unpaired tag is
-    scrubbed.
+    in chat; every non-empty one becomes an image request, in order. A `<generate-music>`, a
+    `<generate-video>` and a `<deep-research>` block are pulled the same way, but only the first
+    non-empty one of each is kept (one clip / one research run per reply by design). Voice tags are
+    stripped but their inner content STAYS in the visible reply, and every wrapped segment is
+    concatenated as the spoken-clip input. An unclosed trailing open tag (the model forgot to close
+    it) is still pulled so its raw description never leaks, and any stray unpaired tag is scrubbed.
+
+    A reply that carried no marker at all comes back byte-for-byte, whitespace included; only a
+    reply the markers actually changed is re-tidied.
+
+    Args:
+        text (str): The finished reply, exactly as the answer model wrote it.
+
+    Returns:
+        The visible text plus each voice / image / music / video / research request found in it.
     """
     image_prompts = [
         group for m in _IMAGE_BLOCK_RE.finditer(text) if (group := m.group(1).strip())
@@ -206,11 +228,17 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
 def scrub_markers_for_preview(*, text: str) -> str:
     """Hides complete or still-streaming markers from a live preview snapshot.
 
-    Complete image / music / video blocks and an unclosed trailing `<generate-image>` /
-    `<generate-music>` / `<generate-video>` open are removed whole (the block is going to be pulled
-    from the reply, so it must never flash in). Complete voice tags are stripped but their content
-    stays visible. A trailing fragment that is a prefix of any marker tag (`<generate-imag`,
-    `</generate-voic`, ...) is trimmed so a half-streamed tag never flickers.
+    Complete image / music / video / deep-research blocks and an unclosed trailing open of any of
+    them are removed whole (the block is going to be pulled from the reply, so it must never flash
+    in). Complete voice tags are stripped but their content stays visible. A trailing fragment that
+    is a prefix of any marker tag (`<generate-imag`, `</generate-voic`, ...) is trimmed so a
+    half-streamed tag never flickers.
+
+    Args:
+        text (str): The reply text accumulated so far, mid-stream.
+
+    Returns:
+        The preview-safe text, with trailing whitespace removed.
     """
     cleaned = _IMAGE_BLOCK_RE.sub("", text)
     cleaned = _TRAILING_IMAGE_OPEN_RE.sub("", cleaned)
