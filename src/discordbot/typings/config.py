@@ -33,6 +33,102 @@ class EconomyConfig(BaseSettings):
     )
 
 
+class FeedbackConfig(BaseSettings):
+    """User-report settings loaded from environment variables.
+
+    Attributes:
+        enabled: Kill-switch for the whole `/feedback` command.
+        github_token: Token used to open and read this repository's issues, when the
+            bot authenticates as an account rather than as an app.
+        github_app_id: The reporting GitHub App's id. Either the numeric App ID or the
+            Client ID works; GitHub now recommends the latter, and both are just the
+            issuer of the JWT this exchanges for an installation token.
+        github_app_private_key_path: PEM the app signs that JWT with. A path because a
+            PEM is multi-line and escaping it into the environment is a trap.
+        github_repository: The `owner/name` the reports are filed against.
+        contact: Where to send people when reports cannot be filed at all.
+        max_open_reports: How many unresolved reports one person may hold at once.
+        submit_cooldown_seconds: Minimum gap between one person's submissions.
+    """
+
+    enabled: bool = Field(
+        default=True,
+        description="Whether the /feedback command accepts and shows user reports.",
+        examples=[True],
+        validation_alias=AliasChoices("FEEDBACK_ENABLED"),
+    )
+    github_token: str = Field(
+        default="",
+        description="Token with issue read/write on the reporting repository.",
+        examples=["github_pat_..."],
+        # Prefixed, unlike a provider credential: GitHub Actions always exports
+        # GITHUB_REPOSITORY and `gh` users often export GITHUB_TOKEN, and `load_dotenv`
+        # does not override an existing variable, so the bare names would silently lose
+        # to whatever the surrounding shell happened to have set.
+        validation_alias=AliasChoices("FEEDBACK_GITHUB_TOKEN"),
+    )
+    github_app_id: str = Field(
+        default="",
+        description="The reporting GitHub App's App ID or Client ID.",
+        examples=["Iv23li..."],
+        validation_alias=AliasChoices("FEEDBACK_GITHUB_APP_ID"),
+    )
+    github_app_private_key_path: str = Field(
+        default="",
+        description="Path to the reporting GitHub App's private key PEM.",
+        examples=["/app/data/feedback-app.pem"],
+        validation_alias=AliasChoices("FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH"),
+    )
+    github_repository: str = Field(
+        default="",
+        description="The owner/name repository that user reports become issues on.",
+        examples=["Mai0313/discordbot"],
+        validation_alias=AliasChoices("FEEDBACK_GITHUB_REPOSITORY"),
+    )
+    contact: str = Field(
+        default="",
+        description="Contact shown when reports cannot be filed, e.g. a Discord handle.",
+        examples=["mai9999"],
+        validation_alias=AliasChoices("FEEDBACK_CONTACT"),
+    )
+    max_open_reports: int = Field(
+        default=3,
+        description="How many still-open reports one person may hold before being asked to wait.",
+        examples=[3],
+        validation_alias=AliasChoices("FEEDBACK_MAX_OPEN_REPORTS"),
+    )
+    submit_cooldown_seconds: int = Field(
+        default=300,
+        description="Minimum seconds between two submissions from the same person.",
+        examples=[300],
+        validation_alias=AliasChoices("FEEDBACK_SUBMIT_COOLDOWN_SECONDS"),
+    )
+
+    @property
+    def app_configured(self) -> bool:
+        """Whether a GitHub App is set up to file the issues."""
+        return bool(self.github_app_id.strip()) and bool(self.github_app_private_key_path.strip())
+
+    @property
+    def github_ready(self) -> bool:
+        """Whether an issue can be opened right now.
+
+        Not the same question as whether the feature is on, which is what `enabled`
+        answers. Missing credentials are an operational state, not a switch: reports are
+        still taken, stored and written up, and the retry sweep files them once either an
+        app or a token is configured.
+        """
+        has_credential = self.app_configured or bool(self.github_token.strip())
+        return self.enabled and has_credential and bool(self.repository_slug)
+
+    @property
+    def repository_slug(self) -> str:
+        """The trimmed `owner/name` slug, empty when it is not a usable pair."""
+        slug = self.github_repository.strip().strip("/")
+        owner, _, name = slug.partition("/")
+        return slug if owner and name else ""
+
+
 class LoggingConfig(BaseSettings):
     """Console and log-file verbosity, loaded from environment variables."""
 
@@ -46,4 +142,4 @@ class LoggingConfig(BaseSettings):
     )
 
 
-__all__ = ["DiscordConfig", "EconomyConfig", "LoggingConfig"]
+__all__ = ["DiscordConfig", "EconomyConfig", "FeedbackConfig", "LoggingConfig"]

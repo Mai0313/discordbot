@@ -46,6 +46,7 @@
 - **虚拟欢乐豆与金融系统**：用户可从消息获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
 - **模拟股市**：`/stock` 开启一则公开 market message，内含 DB-managed virtual companies；选股、受 float supply、borrow cap 与单人 49% long holding cap 限制的交易、仓位摘要、近期交易记录、liquidity-based slippage、定期刷新新闻与 7 日图表都在同一则公开 message 内 edit 切换，只有发起 `/stock` 的 user 可以操作 controls。
 - **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身会以玩家身份入桌并由独立的确定性策略 (fractional-Kelly 下注与 EV 决策) 决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。单人 `/games fishing` 则是买钓具抛竿的小游戏，鱼分 N 到 UR 稀有度并有最大单笔渔获排行榜，装备越好，稀有鱼的概率与价值都明显提高。
+- **问题反馈**：`/feedback` 打开只有本人看得到的面板，用单号列出自己反馈过的问题，并提供表单把新的反馈开成配置好的 repository 上的 GitHub issue（后台会由 LLM 整理成好读的内容）。开发者在该 issue 上的回复会出现在同一个面板里，也有按钮可以再补一句，让反馈是双向的对话而不是单向信箱。
 - **MapleStory Artale 数据库**：`/maplestory` 子命令可查询怪物、装备、卷轴、NPC、任务、地图、掉落来源与数据库统计。
 - **本地化指令**：slash command metadata 支持英文、繁体中文、日文。AI 回复会跟随用户语言。没有 help 指令：直接问 bot 会做什么，它会读一份英文的功能说明并用你提问的语言回答。
 
@@ -58,6 +59,7 @@
 | _抖音 URL_                                                       | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                      |
 | _Bilibili URL + tag_                                             | 看过链接的视频后回答（单独贴链接不会自动展开）。                                       |
 | `/download_video <url> [quality]`                                | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                     |
+| `/feedback`                                                      | 打开只有你看得到的反馈面板：用单号列出你的反馈、开发者的回复，以及开新反馈的表单。     |
 | `/balance [member]`                                              | 私密显示成员的虚拟欢乐豆余额、债务、stock holdings、净资产与 VIP 状态。                |
 | `/checkin`                                                       | 领取每日签到奖励。                                                                     |
 | `/vip`                                                           | 购买永久 VIP 权益。                                                                    |
@@ -131,6 +133,8 @@ GEMINI_API_KEY=your_google_ai_studio_key
 
 `OPENAI_BASE_URL` 可以直接指向 OpenAI，也可以指向 LiteLLM 这类 OpenAI-compatible gateway。`GEMINI_API_KEY` 是 Google AI Studio key，用于直连 Google（不经 gateway）的功能：视频生成、Gemini Files API 附件上传、YouTube 视频回答与深度研究；未设置即停用这些功能。
 
+`/feedback` 要开单需要 `FEEDBACK_GITHUB_REPOSITORY` 加上一组凭证。建议用 GitHub App (`FEEDBACK_GITHUB_APP_ID` 与 `FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH`)，权限只给 Issues: Read and write：它会用自己的名义开单而不是用你的，而且 GitHub 不会通知你自己开的 issue。不想建 App 的话，`FEEDBACK_GITHUB_TOKEN` 是比较简单的替代方案。在配置好之前，指令照样收反馈并存在本地，等凭证补上之后的第一次重试就会把积着的单全部开出来。`FEEDBACK_ENABLED=false` 才是关闭开关，也只有那个情况会显示 `FEEDBACK_CONTACT` 而不是面板。名称刻意加上前缀，因为 shell 若已经 export `GITHUB_TOKEN` 或 `GITHUB_REPOSITORY`，会盖过 `.env` 里的值。
+
 本地测试央行批准流程时，可以设置 `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`。正式环境请保持未设置或 `false`。
 
 个人长期记忆永远开启；用户可以用 `/memory show`、`/memory regenerate` 与 `/memory clear` 管理自己的记忆。每条记忆都标记学到它的来源，私密内容只会留在该服务器或 DM 使用。
@@ -144,10 +148,11 @@ GEMINI_API_KEY=your_google_ai_studio_key
 - `database/stock.db`：DB-managed 模拟 stock profile、float supply、price tick、position、trade operation、ordered trade leg 与 AI-or-fallback stock news。
 - `database/games.db`：每位玩家的 Blackjack 对局历史、钓鱼目录与每位用户的装备、鱼饵与渔获记录，以及公开 expiring response 的清理追踪（guild/channel 名称、user name、channel ID 与 message ID），用于 bot 重启后的清理。
 - 临时 media 下载使用项目根目录的 `tmp/` scratch folder（不在 `data/` 底下），发送完成后即删除。
+- `database/feedback.db`：通过 `/feedback` 送出的问题反馈，包含原封不动的内容、反馈者是谁与从哪里送出、对应的 issue 编号，以及后台整理过的版本。
 - `database/reply.db`：后台 AI 的作业状态，包含某位用户或服务器目前排定的记忆抽取工作（在处理完成前会保留那段对话的文字），以及 deep research session，两者都是为了在重启后还能接着跑。
 - `memories/`：每个 Discord user id 一个文件夹的纯文本 markdown 个人长期记忆，由你的对话在后台积累，并在后续 AI 回复时注入。`/memory clear` 可以清掉自己的记忆，包含排定中的抽取工作。bot 自己对每个服务器的社群记忆则放在旁边的 `memories/bot_memories/<server id>`。
 
-当 bot 需要用 AI 回复时，当前上下文中的相关文字、支持的附件、embedded media 与参与者身份会送到你配置的 LLM endpoint。本项目不会把这些资料送到其他服务。
+当 bot 需要用 AI 回复时，当前上下文中的相关文字、支持的附件、embedded media 与参与者身份会送到你配置的 LLM endpoint。唯一的例外是 `/feedback`：送出反馈时，写的内容连同反馈者的 Discord 显示名称、用户名、id 与来源服务器，会以公开 issue 的形式送到配置好的 GitHub repository。除此之外，本项目不会把资料送到 LLM endpoint 以外的地方；没有配置 token 时 `/feedback` 不会启用。
 
 ## 故障排除
 

@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from discordbot.cogs.feedback.database import Base as FeedbackBase
 from discordbot.cogs.research.database import Base as ResearchBase
 from discordbot.services.economy.database import Base
 from discordbot.cogs.games.fishing.database import Base as FishingBase
@@ -42,6 +43,21 @@ async def research_isolated_db(
         await conn.run_sync(ResearchBase.metadata.create_all)
     monkeypatch.setattr("discordbot.cogs.research.database._engine", engine)
     monkeypatch.setattr("discordbot.cogs.research.database._schema_ready_for", None)
+    yield
+    await engine.dispose()
+
+
+@pytest.fixture
+async def feedback_isolated_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[None]:
+    """Per-test SQLite file with the user-report schema (feedback.db)."""
+    feedback_db_path = tmp_path / "feedback.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{feedback_db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(FeedbackBase.metadata.create_all)
+    monkeypatch.setattr("discordbot.cogs.feedback.database._engine", engine)
+    monkeypatch.setattr("discordbot.cogs.feedback.database._schema_ready_for", None)
     yield
     await engine.dispose()
 
@@ -100,6 +116,30 @@ def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
     monkeypatch.setenv(name="USAGE_LOG_DIR", value=str(usage_dir))
     monkeypatch.setenv(name="USAGE_LOG_ENABLED", value="true")
     return usage_dir
+
+
+@pytest.fixture(autouse=True)
+def feedback_env_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keeps a real deployment's reporting credentials out of every test.
+
+    Autouse because `FeedbackConfig` reads the environment and `.env` is loaded at import,
+    which in a git worktree is the *parent* checkout's file. Without this a machine with a
+    configured GitHub App quietly turns "no credentials" tests into "credentials present"
+    ones — and `model_validate` does not save you: it skips the settings sources only for
+    the keys it is handed, so any field a test does not name still comes from the process
+    environment.
+    """
+    for name in (
+        "FEEDBACK_ENABLED",
+        "FEEDBACK_GITHUB_TOKEN",
+        "FEEDBACK_GITHUB_APP_ID",
+        "FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH",
+        "FEEDBACK_GITHUB_REPOSITORY",
+        "FEEDBACK_CONTACT",
+        "FEEDBACK_MAX_OPEN_REPORTS",
+        "FEEDBACK_SUBMIT_COOLDOWN_SECONDS",
+    ):
+        monkeypatch.delenv(name=name, raising=False)
 
 
 @pytest.fixture

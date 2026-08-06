@@ -46,6 +46,7 @@ Ask it to animate that same picture and it returns a short video.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
 - **Simulated stock market**: `/stock` opens one public market message with DB-managed virtual companies; selecting a stock, trading with float-supply, borrow, and per-user 49% long holding caps, position summaries, recent trades, liquidity-based slippage, periodically refreshed news, and the 7D chart all update that same public message. Only the opener can operate its controls.
 - **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (deterministic H17), the bot itself joins each round as a player driven by its own deterministic strategy (fractional-Kelly betting and EV-based play), and `/casino` / `/pocat` surface the casino ledger and the bot's wallet. Solo `/games fishing` adds a gear-and-cast mini-game with an N to UR rarity ladder and a biggest-catch leaderboard, where better gear visibly raises both the odds and the value of a rare catch.
+- **User reports**: `/feedback` opens a private panel listing that person's own reports by ticket number, with a form that files a new one as a GitHub issue on the configured repository (an LLM tidies the text into it in the background). The maintainer's replies on that issue are readable from the same panel, and a button sends one more line back, so a report is a conversation rather than a write-only mailbox.
 - **MapleStory Artale database**: `/maplestory` subcommands search monsters, equipment, scrolls, NPCs, quests, maps, item drops, and database stats.
 - **Localized commands**: slash command metadata is localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language. There is no help command: ask the bot what it can do and it answers from a single English capability reference, translated into whatever language you asked in.
 
@@ -58,6 +59,7 @@ Ask it to animate that same picture and it returns a short video.
 | _Douyin URL_                                                     | Automatically posts the video or photos, unless the bot is mentioned (then it answers about it).                                                 |
 | _Bilibili URL + mention_                                         | Watches the linked video and answers about it (a bare link is not auto-expanded).                                                                |
 | `/download_video <url> [quality]`                                | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                                                        |
+| `/feedback`                                                      | Opens your own private report panel: your reports by ticket number, the developer's replies, and a form to file a new one.                       |
 | `/balance [member]`                                              | Privately shows a member's 虛擬歡樂豆 balance, debt, stock holdings, net worth, and VIP status.                                                  |
 | `/checkin`                                                       | Claims the daily check-in reward.                                                                                                                |
 | `/vip`                                                           | Buys permanent VIP perks.                                                                                                                        |
@@ -131,6 +133,8 @@ GEMINI_API_KEY=your_google_ai_studio_key
 
 `OPENAI_BASE_URL` may point at OpenAI directly or at an OpenAI-compatible gateway such as LiteLLM. `GEMINI_API_KEY` is a Google AI Studio key used directly (not through the gateway) for video generation, Gemini Files API attachment uploads, YouTube video answers, and deep research; leave it unset to disable those features.
 
+`/feedback` needs `FEEDBACK_GITHUB_REPOSITORY` plus a credential to file anything. Prefer a GitHub App (`FEEDBACK_GITHUB_APP_ID` and `FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH`) granted only Issues: Read and write: it files reports under its own name rather than yours, and GitHub does not notify you about issues you opened yourself. `FEEDBACK_GITHUB_TOKEN` is the simpler alternative for a setup that would rather not create one. Until they are set the command still takes reports and stores them locally, and the retry sweep opens every queued one on its first pass after the credentials land. `FEEDBACK_ENABLED=false` is the off switch, and only that shows `FEEDBACK_CONTACT` instead of the panel. The names are prefixed because a shell that already exports `GITHUB_TOKEN` or `GITHUB_REPOSITORY` would otherwise win over `.env`.
+
 For local central-bank approval testing, set `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`. Keep it unset or `false` in production.
 
 Per-user long-term memory is always on; users manage their own memory with `/memory show`, `/memory regenerate`, and `/memory clear`. Every remembered fact is tagged with where it was learned, and anything private stays confined to that server or DM.
@@ -144,10 +148,11 @@ This bot stores runtime data locally under `data/`; SQLite databases live in `da
 - `database/stock.db`: DB-managed simulated stock profiles, float supply, price ticks, positions, trade operations, ordered trade legs, and AI-or-fallback stock news.
 - `database/games.db`: per-player Blackjack round history, the fishing catalog plus per-user gear, bait, and catch history, and cleanup tracking (guild/channel names, user names, channel IDs, and message IDs) for public expiring responses that should be removed after restart.
 - Temporary media downloads use the project-root `tmp/` scratch folder (not under `data/`) and are deleted after sending.
+- `database/feedback.db`: user reports filed through `/feedback` — the verbatim text, who filed it and from where, the issue number it became, and the background write-up.
 - `database/reply.db`: background AI bookkeeping — the memory-extraction turn currently staged for a user or server (holding that conversation's rendered text until it has been processed) and deep research sessions, both so they survive a restart.
 - `memories/`: per-user long-term memory as plaintext markdown files in one folder per Discord user id, built in the background from your conversations and injected into future AI replies. `/memory clear` erases your own, staged extraction turn included. The bot's own per-server community memory sits next to them under `memories/bot_memories/<server id>`.
 
-When the bot responds with AI, relevant text, supported attachments, embedded media, and participant identity from the active context are sent to the configured LLM endpoint. Data is not sent to any other service by this project.
+When the bot responds with AI, relevant text, supported attachments, embedded media, and participant identity from the active context are sent to the configured LLM endpoint. The one other destination is `/feedback`: submitting a report sends what was written, plus the reporter's Discord display name, username, id and the server it came from, to the configured GitHub repository as a public issue. Nothing else in this project leaves the LLM endpoint. `/feedback` is off unless a token is configured.
 
 ## Troubleshooting
 

@@ -80,6 +80,7 @@ class FakeResponse:
         self.deferred_ephemeral = False
         self.sent: list[DiscordPayload] = []
         self.edited: list[DiscordPayload] = []
+        self.modals: list[object] = []
 
     async def defer(self, ephemeral: bool = False) -> None:
         """Records that the interaction response was deferred."""
@@ -93,6 +94,10 @@ class FakeResponse:
     async def edit_message(self, **kwargs: Unpack[DiscordPayload]) -> None:
         """Records an interaction response edit."""
         self.edited.append(kwargs)
+
+    async def send_modal(self, modal: object) -> None:
+        """Records a modal opened in response to the interaction."""
+        self.modals.append(modal)
 
     def is_done(self) -> bool:
         """Returns whether the fake response has already been used."""
@@ -157,16 +162,27 @@ class FakeDiscordMessage:
 class FakeInteraction:
     """Interaction stub shared by cog command and view tests."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- optional knobs for the strictest consumer
         self,
         user: FakeUser | None = None,
         message: FakeDiscordMessage | object | None = None,
         filesize_limit: int = 25 * 1024 * 1024,
+        in_guild: bool = True,
+        guild_id: int = 100,
+        guild_name: str = "test guild",
+        channel_id: int = 200,
+        locale: str = "zh-TW",
     ) -> None:
-        """Initializes user, guild upload limit, response, followup, message, and edit records."""
+        """Initializes user, origin, guild upload limit, response, followup, and edit records."""
         self.user = user or FakeUser()
         self.message = message
-        self.guild = SimpleNamespace(filesize_limit=filesize_limit)
+        self.guild = (
+            SimpleNamespace(filesize_limit=filesize_limit, id=guild_id, name=guild_name)
+            if in_guild
+            else None
+        )
+        self.channel_id = channel_id
+        self.locale = locale
         self.response = FakeResponse()
         self.followup = FakeFollowup()
         self.edits: list[OriginalEditPayload] = []

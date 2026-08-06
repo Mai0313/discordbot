@@ -84,6 +84,15 @@ Discord role: being a server admin grants neither, and no command hands one out.
 
 - `/stock` — open the market panel: prices, news, your positions, and charts. Buying, shorting, selling, and covering all happen from the panel itself.
 
+## Telling the developer something
+
+- `/feedback` — report a problem or ask for a feature, and read what the developer replied
+
+The panel is private to whoever opens it and lists their own reports by ticket number. A new
+report goes to the developer as a public ticket carrying the reporter's Discord name, so they
+can be found and answered; the developer's replies show up in the same panel, and there is a
+button to write back. Only the person who filed a report can see it here.
+
 ## Tools
 
 - `/download_video` — download a video from a supported platform, a Douyin link included; a Douyin photo post comes back as images

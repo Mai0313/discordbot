@@ -229,7 +229,9 @@ class RuntimeModelCatalog(BaseModel):
         """The model settings for full text replies and strategic reasoning.
 
         Callers: `_handle_message_reply` (which overrides `effort` with the
-        route-decided level), attachment modality gating, and dev scripts.
+        route-decided level), attachment modality gating, `write_up_report` (the
+        background rewrite of a `/feedback` report into an issue, which nobody waits on),
+        and dev scripts.
 
         Returns:
             Slow-path model settings for reply generation and summaries.
