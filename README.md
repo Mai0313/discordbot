@@ -133,7 +133,7 @@ GEMINI_API_KEY=your_google_ai_studio_key
 
 `OPENAI_BASE_URL` may point at OpenAI directly or at an OpenAI-compatible gateway such as LiteLLM. `GEMINI_API_KEY` is a Google AI Studio key used directly (not through the gateway) for video generation, Gemini Files API attachment uploads, YouTube video answers, and deep research; leave it unset to disable those features.
 
-`/feedback` is off until `FEEDBACK_GITHUB_TOKEN` and `FEEDBACK_GITHUB_REPOSITORY` are set; the token only needs issue read/write on that one repository. Until then the command shows `FEEDBACK_CONTACT` instead of accepting a report nobody could read. The names are prefixed because a shell that already exports `GITHUB_TOKEN` or `GITHUB_REPOSITORY` would otherwise win over `.env`.
+`/feedback` needs `FEEDBACK_GITHUB_TOKEN` and `FEEDBACK_GITHUB_REPOSITORY` to file anything; the token only needs issue read/write on that one repository. Until they are set the command still takes reports and stores them locally, and the retry sweep opens every queued one on its first pass after the credentials land. `FEEDBACK_ENABLED=false` is the off switch, and only that shows `FEEDBACK_CONTACT` instead of the panel. The names are prefixed because a shell that already exports `GITHUB_TOKEN` or `GITHUB_REPOSITORY` would otherwise win over `.env`.
 
 For local central-bank approval testing, set `ECONOMY_ALLOW_CENTRAL_BANK_SELF_APPROVAL=true`. Keep it unset or `false` in production.
 

@@ -87,11 +87,12 @@ class FeedbackConfig(BaseSettings):
     )
 
     @property
-    def available(self) -> bool:
-        """Whether a submitted report can actually reach the developer.
+    def github_ready(self) -> bool:
+        """Whether an issue can be opened right now.
 
-        Without a token and a repository nothing would ever read the report, so the
-        command offers the contact line instead of accepting one into a void.
+        Not the same question as whether the feature is on, which is what `enabled`
+        answers. A missing token is an operational state, not a switch: reports are
+        still taken and stored, and the retry sweep files them once one is configured.
         """
         return self.enabled and bool(self.github_token.strip()) and bool(self.repository_slug)
 

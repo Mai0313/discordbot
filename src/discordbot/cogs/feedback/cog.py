@@ -5,6 +5,11 @@ write nothing outside this process can lose the report: a failed create leaves a
 retry loop finishes later, and the reporter is told their report is stored even when the
 number is not there yet.
 
+A deployment with no token yet rides that same queue rather than turning the command off.
+The token is an operational state, not a switch — `FEEDBACK_ENABLED` is the switch — so
+reports are taken and stored from the first day, and the first sweep after the credentials
+land files all of them.
+
 The issue is opened from the reporter's raw words, and the LLM write-up rewrites it
 afterwards in the background. Nobody is waiting on that call, so it takes as long as it
 takes, and a failure needs no fallback text — the issue already reads as the reporter
@@ -202,16 +207,26 @@ class FeedbackCogs(commands.Cog):
         return TicketDetail(row=TicketRow(ticket=ticket, snapshot=snapshot), comments=comments)
 
     async def _open_issue(self, *, ticket: FeedbackTicket) -> int | None:
-        """Opens the issue for a stored report, returning None when GitHub refuses.
+        """Opens the issue for a stored report, returning None when it cannot be opened.
 
         Returning None is safe precisely because the report is already stored: the sweep
         picks the row up again, and the reporter was told their words were kept.
+
+        An unconfigured token takes the same path as a GitHub outage, and deliberately:
+        both mean "not now", the report is already durable either way, and the sweep does
+        not care which one it was. It just does not spend a request finding that out.
 
         Failing to record the number afterwards is the one case that is not safe, because
         the row goes back into the sweep with an issue already open against it and gets a
         second one. It cannot be undone from here — the issue exists — so it is reported
         at `error` with the number in it, which is what a human needs to reconcile it.
         """
+        if not self.config.github_ready:
+            logfire.info(
+                "No GitHub credentials yet; the report waits in the queue",
+                ticket_id=ticket.ticket_id,
+            )
+            return None
         try:
             number = await self.issues.create_issue(
                 title=initial_issue_title(ticket=ticket),
@@ -510,15 +525,19 @@ class FeedbackCogs(commands.Cog):
             ephemeral=True,
         )
 
-    def _unavailable_embed(self) -> Embed:
-        """The answer when reports cannot be filed at all.
+    def _disabled_embed(self) -> Embed:
+        """The answer when the whole feature is switched off.
 
-        Naming someone to talk to beats naming a switch: the person wanted to reach the
-        developer, and a report accepted here would be one nobody could ever read.
+        Only the kill-switch reaches this. A missing token does not: the report is taken
+        and queued, because the operator who has not finished setting up is a different
+        situation from the one who decided not to run this at all.
+
+        Naming someone to talk to beats naming a switch, since the person came here to
+        reach the developer rather than to learn about the deployment.
         """
         if self.config.contact:
             description = (
-                "這台 bot 還沒接上回報系統，我沒辦法幫你開單。\n"
+                "回報功能目前沒有開，我沒辦法幫你開單。\n"
                 f"有問題的話直接找 **{self.config.contact}**，他就是做這隻 bot 的人。"
             )
         else:
@@ -539,10 +558,11 @@ class FeedbackCogs(commands.Cog):
         """Opens the caller's own report panel."""
         if interaction.user is None:
             return
-        if not self.config.available:
-            await interaction.response.send_message(
-                embed=self._unavailable_embed(), ephemeral=True
-            )
+        # The kill-switch, not the credentials. Without a token the panel still opens and
+        # still takes reports; they wait in the queue until one is configured, which is
+        # the same queue an outage uses.
+        if not self.config.enabled:
+            await interaction.response.send_message(embed=self._disabled_embed(), ephemeral=True)
             return
         # Deferred because the panel reads every listed report from GitHub; the edit
         # below turns the placeholder into the panel itself.
@@ -560,7 +580,9 @@ class FeedbackCogs(commands.Cog):
 
         This is the other half of writing locally first. Without it a report filed during
         a GitHub outage would sit in the store forever, which is indistinguishable from
-        losing it as far as the reporter can tell.
+        losing it as far as the reporter can tell. The same loop is what makes a
+        deployment that has not been given a token yet work at all: reports accumulate,
+        and the first pass after the credentials land files every one of them.
 
         Wrapped whole, because an exception escaping a `tasks.loop` stops it for the rest
         of the process (nextcord only retries a short list of connection errors), and this
@@ -576,11 +598,11 @@ class FeedbackCogs(commands.Cog):
             )
             if not pending:
                 return
-            if not self.config.available:
+            if not self.config.github_ready:
                 # Worth saying: reports are queueing up behind a switch or a missing
                 # token, and the reporters were told they would be filed.
                 logfire.info(
-                    "Reports are waiting for an issue but reporting is not configured",
+                    "Reports are waiting for an issue but GitHub is not configured yet",
                     pending=len(pending),
                 )
                 return

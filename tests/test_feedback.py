@@ -140,6 +140,11 @@ def _cog(*, issues: FakeIssues, config: FeedbackConfig | None = None) -> Feedbac
     return cog
 
 
+async def _no_cooldown(*, user_id: int) -> float | None:
+    """Stands in for the submission cooldown when a test files several in a row."""
+    return None
+
+
 def _ticket(**overrides: object) -> FeedbackTicket:
     """Builds a stored report with sensible defaults."""
     values: dict[str, Any] = {
@@ -711,10 +716,10 @@ async def test_a_raising_write_up_never_escapes_the_background_task(
 # ----------------------------------------------------------------------- the command
 
 
-async def test_the_command_offers_a_contact_when_reports_cannot_be_filed() -> None:
-    """Without a token the command names someone to talk to instead of accepting a report."""
+async def test_the_command_offers_a_contact_when_the_feature_is_switched_off() -> None:
+    """The kill-switch names someone to talk to instead of a setting."""
     cog = _cog(issues=FakeIssues())
-    cog.config = _config(FEEDBACK_GITHUB_TOKEN="", FEEDBACK_CONTACT="mai9999")
+    cog.config = _config(FEEDBACK_ENABLED=False, FEEDBACK_CONTACT="mai9999")
     interaction = FakeInteraction(user=FakeUser(user_id=7))
     await cog.feedback(cast("Any", interaction))
     description = str(interaction.response.sent[0]["embed"].description)
@@ -744,14 +749,14 @@ async def test_the_command_shows_the_panel(feedback_isolated_db: None) -> None:
     assert "下載長影片會卡住" in embed.fields[0].value
 
 
-def test_the_config_is_unavailable_without_both_halves() -> None:
-    """A token with no repository, or a repository with no token, files nothing."""
-    assert not _config(FEEDBACK_GITHUB_REPOSITORY="").available
-    assert not _config(FEEDBACK_GITHUB_TOKEN="").available
-    assert not _config(FEEDBACK_ENABLED=False).available
-    assert _config().available
+def test_github_is_not_ready_without_both_halves() -> None:
+    """A token with no repository, or a repository with no token, opens nothing."""
+    assert not _config(FEEDBACK_GITHUB_REPOSITORY="").github_ready
+    assert not _config(FEEDBACK_GITHUB_TOKEN="").github_ready
+    assert not _config(FEEDBACK_ENABLED=False).github_ready
+    assert _config().github_ready
     # A slug missing its owner is not a repository, however non-empty it looks.
-    assert not _config(FEEDBACK_GITHUB_REPOSITORY="discordbot").available
+    assert not _config(FEEDBACK_GITHUB_REPOSITORY="discordbot").github_ready
 
 
 # ------------------------------------------------------------------------ REST logic
@@ -1076,3 +1081,85 @@ async def test_every_comment_page_is_read() -> None:
     conversation = await client.read_conversation(number=460)
     assert len(conversation) == 120
     assert conversation[-1].body == "第 119 則"
+
+
+# ------------------------------------------------------------- before a token exists
+
+
+async def test_a_report_is_taken_before_any_token_is_configured(
+    feedback_isolated_db: None,
+) -> None:
+    """A deployment mid-setup still collects reports; they wait rather than being refused.
+
+    The token is an operational state, not a switch. Refusing here would throw away the
+    reports filed between the bot going live and the credentials landing, and those are
+    exactly the ones a new deployment gets most of.
+    """
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    cog.config = _config(FEEDBACK_GITHUB_TOKEN="")
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", interaction), text="壞掉了", outstanding=0)
+    stored = await list_user_tickets(user_id=7, limit=10)
+    assert len(stored) == 1
+    assert stored[0].issue_number is None
+    assert stored[0].raw_text == "壞掉了"
+    # Nothing was sent anywhere: there is nowhere to send it to yet.
+    assert issues.created == []
+    assert "存下來了" in str(interaction.followup.sent[0]["embed"].title)
+
+
+async def test_the_panel_opens_before_any_token_is_configured(feedback_isolated_db: None) -> None:
+    """The queued reports are still the reporter's own list, and still readable."""
+    cog = _cog(issues=FakeIssues())
+    cog.config = _config(FEEDBACK_GITHUB_TOKEN="")
+    await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="下載長影片會卡住",
+    )
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.feedback(cast("Any", interaction))
+    embed = interaction.edits[0]["embed"]
+    assert "建立中" in str(embed.fields[0].name)
+
+
+async def test_the_queue_drains_once_a_token_arrives(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Everything filed during the setup gap is opened by the first sweep afterwards."""
+    cog = _cog(issues=FakeIssues())
+    cog.config = _config(FEEDBACK_GITHUB_TOKEN="")
+    for text in ("第一張", "第二張"):
+        interaction = FakeInteraction(user=FakeUser(user_id=7))
+        await cog.submit_report(interaction=cast("Any", interaction), text=text, outstanding=0)
+        monkeypatch.setattr("discordbot.cogs.feedback.cog.seconds_since_last_ticket", _no_cooldown)
+    assert len(await tickets_awaiting_issue(limit=10, min_age_seconds=0)) == 2
+
+    configured = FakeIssues()
+    cog.issues = cast("Any", configured)
+    cog.config = _config()
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.RETRY_MIN_AGE_SECONDS", 0)
+    await cog.retry_unfiled_reports()
+    assert len(configured.created) == 2
+    assert await tickets_awaiting_issue(limit=10, min_age_seconds=0) == []
+
+
+async def test_the_sweep_waits_while_the_token_is_still_missing(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unconfigured sweep leaves the queue alone rather than burning attempts on it."""
+    issues = FakeIssues()
+    cog = _cog(issues=issues)
+    cog.config = _config(FEEDBACK_GITHUB_TOKEN="")
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", interaction), text="壞掉了", outstanding=0)
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.RETRY_MIN_AGE_SECONDS", 0)
+    await cog.retry_unfiled_reports()
+    assert issues.created == []
+    assert len(await tickets_awaiting_issue(limit=10, min_age_seconds=0)) == 1
