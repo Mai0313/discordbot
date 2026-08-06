@@ -12,6 +12,13 @@ is written at the one point that sees an invocation before its outcome exists (s
 `cogs/usage/cog.py`). Only numeric ids are stored — no names, no message content, no
 command arguments — since every question this file exists to answer needs a stable
 identifier and nothing else, names drift, and nothing prunes these files.
+
+Held here rather than inside a cog because the two writers are different cogs — the slash
+listener in `cogs/usage/cog.py` and the reply turn in `gen_reply/cog.py` — and one cog may
+not import from another. `UsageLogConfig` is the kill-switch and destination, `UsageRecord`
+the line shape, `UsageRecorder` the writer; the append runs off the event loop and `record`
+swallows its failures, so recording can never cost the feature being recorded. Nothing here
+reads the records back: they are written for an operator or an agent to sweep later.
 """
 
 from typing import Literal
@@ -88,7 +95,13 @@ def _append_sync(directory: Path, record: UsageRecord) -> None:
 
     The handle is opened and closed per record instead of being held: a month rollover
     then needs no bookkeeping, and a file moved out from under a long-running bot cannot
-    take further writes into an unlinked inode.
+    take further writes into an unlinked inode. Runs on a worker thread, so it takes
+    `_WRITE_LOCK` for the whole mkdir-open-append-close. Nothing is swallowed here: an
+    `OSError` propagates, and `UsageRecorder.record` is what turns it into a log line.
+
+    Args:
+        directory (Path): Directory the monthly files live in.
+        record (UsageRecord): The use to append.
     """
     with _WRITE_LOCK:
         directory.mkdir(parents=True, exist_ok=True)
@@ -123,7 +136,15 @@ class UsageRecorder(BaseModel):
         """Records one use, off the event loop and best-effort.
 
         Recording must never cost the thing it records, so a failure to write is logged
-        and swallowed rather than raised into the command or the reply pipeline.
+        and swallowed rather than raised into the command or the reply pipeline. A
+        disabled recorder returns before the timestamp is taken and creates no directory.
+
+        Args:
+            kind (UsageKind): Whether this is a slash invocation or an AI reply turn.
+            name (str): The full command path, or the route the reply took.
+            user_id (int): Discord user ID that used the feature.
+            guild_id (int | None): Discord guild ID, or None in a DM.
+            channel_id (int | None): Discord channel ID, or None when the interaction carries none.
         """
         if not self.config.enabled:
             return

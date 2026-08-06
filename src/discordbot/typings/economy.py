@@ -1,3 +1,46 @@
+"""Vocabulary of the virtual point economy: its tunable constants and the shapes it hands back.
+
+`services/economy/database.py` is the only writer of `data/database/economy.db`, and no ORM
+row ever escapes it: every structured value it hands back is one of the frozen models below.
+Nothing here holds state or reaches a database, which is what lets the games cogs read the same
+wager cap and the stock and fishing engines describe the same wallet legs without this module
+dragging in an engine.
+
+The constants are the tuning surface, and three of them are the anti-inflation levers the economy
+is balanced around: `MAX_SINGLE_BET` bounds one wager, `TRANSFER_TAX_BPS` burns a slice of every
+`/give`, and `MESSAGE_REWARD_COOLDOWN_SECONDS` rate-limits the only per-message faucet. Their
+comments record what each one is holding back; re-measure before retuning one.
+
+Every model is `frozen=True`: the results are projections of already-committed state, and the two
+request shapes (`WalletDeltaLeg`, `JackpotSettlementRequest`) are immutable descriptions of a
+mutation to apply. Money fields are plain `int` with no ceiling, because the ledger persists them
+as `StoredInteger` decimal text to dodge SQLite's 64-bit limit; nothing here may narrow one to a
+bounded type.
+
+Four families live here:
+
+- Account reads. `AccountSnapshot` (`/pocat` and the games cog's bot-player seat), `AdminAccount`,
+  `LeaderboardEntry` / `LossLeaderboardEntry` (the `/leaderboard` and `/loss_leaderboard` rows,
+  which `cogs/economy/boards.py` also renders into a PNG board), and `PortfolioView` (`/balance`,
+  wallet minus debt).
+- Wallet mutations. `CreditResult` from the single income facade, `BalanceAdjustmentResult` from
+  an admin tweak, plus `TransferResult`, `CheckinResult` and `VipPurchaseResult`.
+  `WalletDeltaLeg` / `OrderedWalletDeltaResult` are the pair another domain service (stock,
+  fishing) uses when it needs gross per-leg accounting instead of one netted delta.
+- Casino and jackpot settlement. `RoundSettlementResult` and the `CasinoLedgerSnapshot` that
+  `/casino` reads, `CasinoDailyStats` for the per-user daily counters, and the
+  `JackpotSettlementRequest` / `JackpotSettlementBatchResult` / `JackpotSettlementResult` /
+  `JackpotSnapshot` set for a pool shared by a whole table.
+- Lending. The four `StrEnum`s, plus `LoanProposalView`, `LoanContractView`,
+  `LoanProposalAcceptResult`, `LoanPaymentResult` and `CentralBankStatus`.
+
+The `StrEnum` members are persisted as their bare string values in `loan_proposal` and
+`loan_contract`, and the service rebuilds them with `LoanProposalKind(row.kind)` and friends.
+There is no migration mechanism, so changing a member's VALUE is a data migration and an unknown
+one raises `ValueError` on the next read of an existing row; renaming the Python attribute alone
+costs nothing.
+"""
+
 from enum import StrEnum
 from typing import Final
 from datetime import datetime
@@ -150,7 +193,12 @@ class BalanceAdjustmentResult(BaseModel):
 
 
 class WalletDeltaLeg(BaseModel):
-    """One ordered wallet delta requested by another domain service."""
+    """One ordered wallet delta requested by another domain service.
+
+    Legs apply in the order given and are never netted, so a debit-then-credit pair moves both
+    `total_earned` and `total_spent` by their gross amounts. Unlike a casino settlement, a debit
+    the balance cannot cover in full rolls the whole batch back instead of clamping at zero.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -249,7 +297,12 @@ class JackpotSettlementBatchResult(BaseModel):
 
 
 class JackpotSnapshot(BaseModel):
-    """Read-only snapshot of a shared jackpot pool."""
+    """Read-only snapshot of a shared jackpot pool.
+
+    `generation` bumps each time a drained seeded pool is topped back up, which is what makes a
+    stale payout refusable: a settlement carrying `expected_jackpot_generation` claims nothing
+    once the pool it observed has been reseeded underneath it.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -376,19 +429,28 @@ class CheckinResult(BaseModel):
 class VipPurchaseResult(BaseModel):
     """Outcome of a successful VIP purchase.
 
+    `buy_vip` answers None rather than this whenever the purchase did not go through: no account
+    row, already VIP, a balance short of the price, or an exhausted conditional-UPDATE retry
+    budget. A value here always means the debit landed and the flag flipped.
+
     Attributes:
-        new_balance: User balance after the 10M debit.
-        cost: Points deducted for the purchase.
+        new_balance: User balance after the `VIP_PURCHASE_COST` debit.
+        cost: Points deducted for the purchase, always `VIP_PURCHASE_COST`.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    new_balance: int = Field(..., description="User balance after the 10M debit.")
+    new_balance: int = Field(..., description="User balance after the `VIP_PURCHASE_COST` debit.")
     cost: int = Field(..., description="Points deducted for the purchase.")
 
 
 class LoanProposalView(BaseModel):
-    """Read-only loan proposal projected for command responses."""
+    """Read-only loan proposal projected for command responses.
+
+    Both proposal creators write `escrow_amount=0` today, since a personal loan debits the lender
+    at acceptance rather than at proposal time, so the refund a reject / cancel / expire runs
+    against it is a no-op in practice.
+    """
 
     model_config = ConfigDict(frozen=True)
 

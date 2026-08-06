@@ -8,6 +8,31 @@ a video (never a photo post) and tops out at 720p on the samples tested.
 This module instead reads the server-rendered share page, which needs no cookie and no request
 signature, exposes the source-resolution video, and carries photo posts in the same payload.
 The non-obvious constraints are documented on `DouyinDownloader`.
+
+It sits in `utils/` because three callers share it and none of them owns it: `parse_douyin`'s
+auto-expansion, `gen_reply`'s Douyin link-context builder, and `/download_video`. What it hands
+them is one detection vocabulary (`DOUYIN_URL_RE`, `is_douyin_url`, `is_douyin_post_url`), one
+error taxonomy (`DouyinError` and its three subclasses) plus the single user-facing mapping for
+it (`douyin_failure_message`), and `DouyinDownloader`'s parse-then-download pair, split so a
+caller can pay for the caption without paying for the bytes.
+
+Living in one module is what makes the throttling shared, which is the point: request volume,
+not correctness, is what constrains this whole feature, because Douyin's WAF bans a share path
+for tens of minutes once it is hit hard. The payload and short-link caches and `douyin_url_locks`
+are module state because a per-cog copy would let two cogs fetch the same post twice.
+`douyin_fetch_semaphore` is shared for its own separate reason: a per-cog copy would not
+duplicate a fetch, it would double the concurrency ceiling this module holds against Douyin. The
+caches serve all three callers; the lock and the semaphore are taken only by the two paths a link
+arrives on unasked, since `/download_video` has somebody waiting on it.
+
+What this module deliberately does NOT do: it makes no delivery, size-cap or retry decision on
+its callers' behalf. It never picks a size cap (`max_bytes` is a fail-fast guard its caller
+supplies), never sends or attaches anything itself, and never retries or backs off after a
+`DouyinBlockedError`. Reacting to a bot wall is the caller's decision; all this layer promises
+is that a bot wall and a dead post arrive as different types. Its own request policy is a
+separate thing and is set right here: the fetch concurrency, both cache caps and the payload
+TTL, and the per-download retry and timeout defaults, as is the exact user-facing wording
+`douyin_failure_message` hands back as Discord subtext.
 """
 
 import re
@@ -74,7 +99,7 @@ def is_douyin_url(url: str) -> bool:
     the whole string as a path with no hostname.
 
     Args:
-        url: The URL to test.
+        url (str): The URL to test.
 
     Returns:
         True when the URL's host is douyin.com or iesdouyin.com, or a subdomain of either.
@@ -90,10 +115,19 @@ def is_douyin_url(url: str) -> bool:
 
 
 def _extract_post_id(url: str) -> str:
-    """Reads the aweme id straight out of a URL, or returns an empty string."""
+    """Reads the aweme id straight out of a URL, without contacting Douyin.
+
+    A `modal_id` query parameter is read before the path, because a
+    `/user/<sec_uid>?modal_id=<id>` link carries both and its path names the profile rather than
+    the post.
+
+    Args:
+        url (str): The URL to read, with or without a scheme.
+
+    Returns:
+        The numeric aweme id, or an empty string when the URL carries none.
+    """
     parsed = urlparse(url if "://" in url else f"//{url}")
-    # `modal_id` wins over the path: a `/user/<sec_uid>?modal_id=<id>` link carries both and
-    # the path would give the profile id.
     modal_ids = parse_qs(parsed.query).get("modal_id")
     if modal_ids and modal_ids[0].isdigit():
         return modal_ids[0]
@@ -114,7 +148,7 @@ def is_douyin_post_url(url: str) -> bool:
     link, and those never live on the live-streaming host.
 
     Args:
-        url: A URL already known to be a Douyin URL.
+        url (str): A URL already known to be a Douyin URL.
 
     Returns:
         True when the URL carries a post id or looks like a short link.
@@ -226,12 +260,12 @@ class DouyinDownload(BaseModel):
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ):
-        """Exits the context manager and deletes the downloaded files.
+        """Deletes the downloaded files on the way out, whether or not the body raised.
 
         Args:
-            exc_type: Exception type raised inside the context, if any.
-            exc_val: Exception value raised inside the context, if any.
-            exc_tb: Traceback raised inside the context, if any.
+            exc_type (type[BaseException] | None): Exception type raised inside the context.
+            exc_val (BaseException | None): Exception value raised inside the context.
+            exc_tb (types.TracebackType | None): Traceback raised inside the context.
         """
         self.unlink()
 
@@ -262,7 +296,14 @@ _PAYLOAD_CACHE_LOCK = threading.Lock()
 
 
 def _cached_link_id(url: str) -> str:
-    """Returns the cached post id for a URL, or an empty string on a miss."""
+    """Looks a URL up in the short-link cache, marking the entry most recently used on a hit.
+
+    Args:
+        url (str): The URL exactly as it was pasted, which is the cache key.
+
+    Returns:
+        The resolved aweme id, or an empty string on a miss.
+    """
     with _PAYLOAD_CACHE_LOCK:
         aweme_id = _LINK_ID_CACHE.get(url)
         if aweme_id is not None:
@@ -272,7 +313,12 @@ def _cached_link_id(url: str) -> str:
 
 
 def _remember_link_id(url: str, aweme_id: str) -> None:
-    """Records a URL's resolved post id, evicting the least recently used entry past the cap."""
+    """Records a URL's resolved post id, evicting the least recently used entry past the cap.
+
+    Args:
+        url (str): The URL exactly as it was pasted, which is the cache key.
+        aweme_id (str): The numeric post id it resolved to.
+    """
     with _PAYLOAD_CACHE_LOCK:
         _LINK_ID_CACHE[url] = aweme_id
         _LINK_ID_CACHE.move_to_end(url)
@@ -308,6 +354,13 @@ def douyin_failure_message(error: Exception) -> str:
     Reporting any of them as a deleted post is the single worst outcome this feature can
     produce: it sends someone off to re-check a link that is perfectly fine. Only
     `DouyinUnavailableError` — Douyin explicitly filtering the post out — earns that wording.
+
+    Args:
+        error (Exception): The failure to describe. Anything unrecognised gets the generic
+            wording rather than a guess.
+
+    Returns:
+        A Traditional Chinese subtext line ready to post as message content.
     """
     if isinstance(error, DouyinUnavailableError):
         return "-# 這則貼文已被刪除或設為私人"
@@ -391,13 +444,15 @@ class DouyinDownloader(BaseModel):
         blindly taking the last path segment would turn those into a bogus lookup.
 
         Args:
-            url: The raw Douyin URL.
+            url (str): The raw Douyin URL.
 
         Returns:
             The numeric aweme id.
 
         Raises:
-            DouyinError: If the URL is not a Douyin post link or cannot be resolved.
+            DouyinError: The URL is not a Douyin post link, either as pasted or after a hop that
+                left Douyin; a redirect probe failed at the transport level; or the hops ran out
+                without a post id turning up.
         """
         cached = _cached_link_id(url=url)
         if cached:
@@ -427,17 +482,30 @@ class DouyinDownloader(BaseModel):
 
     @staticmethod
     def _extract_id(url: str) -> str:
-        """Reads the aweme id straight out of a URL, or returns an empty string."""
+        """Reads the aweme id straight out of a URL, without contacting Douyin.
+
+        Args:
+            url (str): The URL to read.
+
+        Returns:
+            The numeric aweme id, or an empty string when the URL carries none.
+        """
         return _extract_post_id(url=url)
 
     def _redirect_target(self, url: str) -> str:
         """Returns the Location of a single redirect hop, without fetching the body.
 
+        Streamed and closed unread, so probing a short link never pulls the page behind it and
+        never spends WAF quota on a path this class does not read.
+
         Args:
-            url: The URL to probe.
+            url (str): The URL to probe.
 
         Returns:
             The absolute redirect target, or an empty string when the URL does not redirect.
+
+        Raises:
+            DouyinError: The probe itself failed at the transport level.
         """
         try:
             with requests.Session() as session:
@@ -460,17 +528,22 @@ class DouyinDownloader(BaseModel):
         return urljoin(url, location)
 
     def _fetch_share_payload(self, aweme_id: str) -> dict[str, Any]:
-        """Fetches and parses the share page for a post id.
+        """Fetches and parses the share page for a post id, caching the parsed payload.
+
+        A hit inside `_PAYLOAD_CACHE_TTL_SECONDS` skips the request entirely. Nothing above this
+        deduplicates a fetch on its own, so two simultaneous readers of one post both miss and
+        both fetch; `douyin_url_locks` is what the unasked-for callers use to collapse that.
 
         Args:
-            aweme_id: The numeric post id.
+            aweme_id (str): The numeric post id.
 
         Returns:
             The `videoInfoRes` object from the page's `_ROUTER_DATA`.
 
         Raises:
-            DouyinBlockedError: If a bot wall answered instead of the post.
-            DouyinError: If the page could not be fetched or its structure changed.
+            DouyinBlockedError: A bot wall answered instead of the post, so this is worth
+                retrying later and the post itself is fine.
+            DouyinError: The page could not be fetched, or its structure changed.
         """
         with _PAYLOAD_CACHE_LOCK:
             cached = _PAYLOAD_CACHE.get(aweme_id)
@@ -525,7 +598,7 @@ class DouyinDownloader(BaseModel):
         across both.
 
         Args:
-            router_data: The parsed `_ROUTER_DATA` object.
+            router_data (dict[str, Any]): The parsed `_ROUTER_DATA` object.
 
         Returns:
             The `videoInfoRes` object, or None when the payload has no such entry.
@@ -548,14 +621,14 @@ class DouyinDownloader(BaseModel):
         empty post instead of a real error.
 
         Args:
-            info: The `videoInfoRes` object.
-            aweme_id: The numeric post id, used in the error message.
+            info (dict[str, Any]): The `videoInfoRes` object.
+            aweme_id (str): The numeric post id, used in the error message.
 
         Returns:
             The first entry of `item_list`.
 
         Raises:
-            DouyinUnavailableError: If Douyin filtered the post out.
+            DouyinUnavailableError: Douyin filtered the post out, or served no post at all.
         """
         item_list = info.get("item_list") or []
         if item_list:
@@ -571,18 +644,20 @@ class DouyinDownloader(BaseModel):
     def parse_metadata(self, url: str) -> DouyinPost:
         """Parses a Douyin URL into post metadata WITHOUT downloading any media.
 
-        The planned auto-expand path needs the caption and media URLs but no local files, so the
-        parse is kept separate from the download the same way `ThreadsDownloader.parse_metadata`
-        is split from `parse`.
+        Split from `download` the way `ThreadsDownloader.parse_metadata` is split from `parse`,
+        because both auto-expanding callers want the caption before they commit to the bytes: a
+        refused or oversize download still gets a card instead of a bare warning. The share
+        payload is cached, so running this ahead of `download` costs no extra request.
+
+        Every failure surfaces as `DouyinError` or one of its subclasses, raised by the resolve,
+        fetch and item-selection steps, which is what lets a caller tell a bot wall from a dead
+        post; `douyin_failure_message` turns those into user-facing wording.
 
         Args:
-            url: The raw Douyin URL.
+            url (str): The raw Douyin URL.
 
         Returns:
             The parsed post metadata.
-
-        Raises:
-            DouyinError: If the URL cannot be resolved or the post cannot be read.
         """
         aweme_id = self._resolve_aweme_id(url=url)
         info = self._fetch_share_payload(aweme_id=aweme_id)
@@ -605,7 +680,14 @@ class DouyinDownloader(BaseModel):
 
     @staticmethod
     def _video_id(item: dict[str, Any]) -> str:
-        """Reads the internal video id used to build a play URL."""
+        """Reads the internal video id used to build a play URL.
+
+        Args:
+            item (dict[str, Any]): One entry of the payload's `item_list`.
+
+        Returns:
+            The `play_addr` uri, or an empty string when the post carries no playable video.
+        """
         return ((item.get("video") or {}).get("play_addr") or {}).get("uri") or ""
 
     @staticmethod
@@ -617,7 +699,7 @@ class DouyinDownloader(BaseModel):
         WebP, which Discord renders less consistently.
 
         Args:
-            images: The post's `images` array.
+            images (list[Any]): The post's `images` array, entries unvalidated.
 
         Returns:
             One URL per image, skipping malformed entries.
@@ -639,8 +721,9 @@ class DouyinDownloader(BaseModel):
         because of the appended outro. The `play` endpoint serves the same clip clean.
 
         Args:
-            video_id: Douyin's internal video id.
-            quality: The requested quality preset.
+            video_id (str): Douyin's internal video id.
+            quality (VideoQuality): The requested quality preset, indexed without a default so
+                an unmapped preset fails instead of silently downgrading.
 
         Returns:
             The play endpoint URL.
@@ -664,16 +747,16 @@ class DouyinDownloader(BaseModel):
         raised past the retry loop rather than through it.
 
         Args:
-            url: The media URL.
-            filename: The name to save the file as.
-            max_bytes: Refuse media larger than this; None accepts any size.
+            url (str): The media URL.
+            filename (str): The name to save the file as, under `output_folder`.
+            max_bytes (int | None): Refuse media larger than this; None accepts any size.
 
         Returns:
             The path of the written file.
 
         Raises:
-            DouyinTooLargeError: If the media exceeds `max_bytes`.
-            DouyinError: If every attempt fails.
+            DouyinTooLargeError: The media exceeds `max_bytes`, by declared or streamed length.
+            DouyinError: Every attempt failed at the transport level.
         """
         # Deliberately does NOT create the output folder: `download` makes it once, up front.
         # A caller that cancels mid-download cannot stop the worker thread (`asyncio.to_thread`
@@ -735,10 +818,16 @@ class DouyinDownloader(BaseModel):
         """Refuses an oversize transfer from its `Content-Length`, before a byte is written.
 
         Closing the response here is the whole point of the guard: the body is never read, so
-        no file is opened and nothing lands on disk.
+        no file is opened and nothing lands on disk. A missing or non-numeric `Content-Length`
+        passes, since the streamed re-check in `_download_to` is what actually enforces the cap.
+
+        Args:
+            response (requests.Response): The open streamed response, closed on refusal.
+            url (str): The media URL, used in the error message.
+            max_bytes (int | None): Refuse media larger than this; None skips the check.
 
         Raises:
-            DouyinTooLargeError: If the declared length exceeds `max_bytes`.
+            DouyinTooLargeError: The declared length exceeds `max_bytes`.
         """
         if max_bytes is None:
             return
@@ -758,23 +847,35 @@ class DouyinDownloader(BaseModel):
         max_bytes: int | None = None,
         post: DouyinPost | None = None,
     ) -> DouyinDownload:
-        """Downloads a Douyin post's media.
+        """Downloads a Douyin post's media into `output_folder`, creating it if needed.
+
+        The post type decides the branch, so `quality` is meaningless for a gallery and
+        `max_images` is meaningless for a video; both are accepted either way so one call site
+        can serve both. The result owns the files it wrote — close it as a context manager, or
+        call `unlink`, unless the caller's own scratch dir already covers that.
+
+        A Douyin-side failure arrives as `DouyinError` or one of its subclasses, the
+        distinguishable cases being `DouyinUnavailableError` (dead, private or region-locked
+        post), `DouyinBlockedError` (a bot wall) and `DouyinTooLargeError` (over `max_bytes`).
+        A LOCAL failure is not wrapped: `_download_to` re-raises anything that is not a transport
+        error unchanged, so a full disk, or the scratch dir being removed underneath the worker
+        thread, reaches the caller as a plain OSError. Catch broadly, not just `DouyinError`.
 
         Args:
-            url: The raw Douyin URL.
-            quality: The requested quality preset. Ignored for a photo post.
-            max_images: Cap on images fetched from a photo post. None fetches all of them.
-            max_bytes: Per-file size cap; None accepts any size. See `_download_to`.
-            post: An already-parsed post, so a caller that needs the metadata regardless (to
-                report a caption when the download is refused) does not parse it twice. The
-                share payload is cached, so passing it saves bookkeeping rather than a request.
+            url (str): The raw Douyin URL.
+            quality (VideoQuality): The requested quality preset. Ignored for a photo post.
+            max_images (int | None): Cap on images fetched from a photo post. None fetches all
+                of them.
+            max_bytes (int | None): Per-file size cap; None accepts any size. See
+                `_download_to`.
+            post (DouyinPost | None): An already-parsed post, so a caller that needs the
+                metadata regardless (to report a caption when the download is refused) does not
+                parse it twice. The share payload is cached, so passing it saves bookkeeping
+                rather than a request.
 
         Returns:
             The downloaded files, with `total_images` recording the post's real image count so
             the caller can report what a cap left out.
-
-        Raises:
-            DouyinError: If the post cannot be resolved, read, or downloaded.
         """
         resolved = post if post is not None else self.parse_metadata(url=url)
         Path(self.output_folder).mkdir(parents=True, exist_ok=True)
@@ -785,7 +886,19 @@ class DouyinDownloader(BaseModel):
     def _download_video(
         self, post: DouyinPost, quality: VideoQuality, max_bytes: int | None = None
     ) -> DouyinDownload:
-        """Downloads the watermark-free video for a post."""
+        """Downloads the watermark-free video for a post.
+
+        Args:
+            post (DouyinPost): The already-parsed post, whose `video_id` names the clip.
+            quality (VideoQuality): The requested quality preset.
+            max_bytes (int | None): Per-file size cap; None accepts any size.
+
+        Returns:
+            The single downloaded file. `total_images` stays 0, since a video post has none.
+
+        Raises:
+            DouyinError: The post carries no playable video, or the download failed.
+        """
         if not post.video_id:
             raise DouyinError(f"Douyin post {post.aweme_id} carries no playable video")
 
@@ -799,7 +912,23 @@ class DouyinDownloader(BaseModel):
     def _download_images(
         self, post: DouyinPost, max_images: int | None, max_bytes: int | None = None
     ) -> DouyinDownload:
-        """Downloads a photo post's images, honouring the caller's cap."""
+        """Downloads a photo post's images, honouring the caller's cap.
+
+        All or nothing: a gallery that dies part way removes what it already wrote rather than
+        leaving a partial set behind, since a failure hands the caller no result to clean up with.
+
+        Args:
+            post (DouyinPost): The already-parsed post, whose `image_urls` name the images.
+            max_images (int | None): Cap on images fetched. None fetches all of them.
+            max_bytes (int | None): Per-file size cap; None accepts any size.
+
+        Returns:
+            The downloaded files, with `total_images` set to the post's real image count so the
+            caller can report what the cap left out.
+
+        Raises:
+            DouyinError: The post carries no images, or a download failed.
+        """
         if not post.image_urls:
             raise DouyinError(f"Douyin post {post.aweme_id} carries no images")
 

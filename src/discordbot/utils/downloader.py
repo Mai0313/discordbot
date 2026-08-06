@@ -1,4 +1,38 @@
-"""yt-dlp wrapper utilities used by the video download command."""
+"""The yt-dlp facade behind `/download_video` and `gen_reply`'s Bilibili link builder.
+
+`VideoDownloader` wraps one `YoutubeDL` run in this project's defaults: a `VideoQuality` preset
+becomes a yt-dlp format string (`quality_formats`), the file is named after the site's own id
+inside the caller's `output_folder`, and separate video+audio streams are merged into mp4 where
+the site allows it. Two entry points ride those defaults — `download` fetches the media and hands
+back a `DownloadResult` that deletes the file when its context closes, and `parse_metadata` reads
+what the page reports (title, uploader, duration, canonical URL, whether it is a live stream, and
+whether the fields came from unwrapping a playlist-shaped page) without fetching any media.
+
+What it deliberately does not do:
+
+- Douyin. `cogs/video/cog.py` routes those links to `utils/douyin.py` before reaching here,
+  because yt-dlp's extractor there needs cookies, never yields a photo post, and caps below the
+  source resolution (that module's docstring has the detail).
+- Choose where files land. `output_folder` is required with no default, so the directory is the
+  caller's decision rather than a hidden default's; nothing here constrains which one. Keeping
+  downloads out of `data/` is a caller convention: both production sites pass
+  `tempfile.gettempdir()` or a `TemporaryDirectory`, while the `__main__` demo at the bottom of
+  this module writes to `./data`.
+- Cap bytes or leave the event loop. Both entry points block, so callers run them under
+  `asyncio.to_thread`, and `download`'s `stop_signal` exists because that worker cannot be
+  cancelled. Size is the caller's policy: the `/download_video` cog hosts an oversize file as a
+  URL, and the Bilibili builder enforces the Files API ceiling on the finished file.
+
+It sits in `utils/` because two cogs that may not import each other both download through it: the
+`/download_video` command, and `gen_reply`'s Bilibili link builder, which probes the metadata
+first and only then downloads at `AI_INGEST_QUALITY`.
+
+Two sites are shaped specially here. Facebook is the one whose URL is rewritten before yt-dlp
+sees it: a `facebook.com/share/...` link is resolved by following its redirects, and a
+`/watch?v=<id>` page is rewritten to the `/reel/<id>` form. Bilibili is the one that gets an extra
+request header, a `Referer` that `get_params` attaches on an exact host match rather than a
+substring one, so a lookalike host cannot collect it.
+"""
 
 import types
 from typing import Any, ClassVar
@@ -19,11 +53,15 @@ SHARE_RESOLVE_TIMEOUT_SECONDS = 10
 
 
 class DownloadStoppedError(Exception):
-    """Raised inside yt-dlp when the caller's stop signal is set mid-download."""
+    """Raised inside yt-dlp when the caller's stop signal is set mid-download.
+
+    Nothing in yt-dlp's own error handling catches it, so it escapes `download` to whoever set
+    the signal.
+    """
 
 
 class DownloadResult(BaseModel):
-    """Represents a downloaded video file.
+    """A downloaded video file, usable as a context manager that deletes it on the way out.
 
     Attributes:
         title: Video title reported by yt-dlp.
@@ -34,11 +72,15 @@ class DownloadResult(BaseModel):
     filename: Path = Field(..., description="Local path of the downloaded file.")
 
     def unlink(self) -> None:
-        """Deletes the downloaded file."""
+        """Deletes the downloaded file, tolerating one that is already gone.
+
+        A caller may have moved the file out from under this result — hosting an oversize
+        download does exactly that — and the closing context still has to clean up either way.
+        """
         self.filename.unlink(missing_ok=True)
 
     def __enter__(self):
-        """Enters the context manager.
+        """Enters the context that deletes the file on the way out.
 
         Returns:
             This download result.
@@ -51,12 +93,14 @@ class DownloadResult(BaseModel):
         exc_val: BaseException | None,
         exc_tb: types.TracebackType | None,
     ):
-        """Exits the context manager and deletes the downloaded file.
+        """Deletes the downloaded file, whether or not the body raised.
+
+        Nothing is suppressed: an exception from the body propagates once the file is gone.
 
         Args:
-            exc_type: Exception type raised inside the context, if any.
-            exc_val: Exception value raised inside the context, if any.
-            exc_tb: Traceback raised inside the context, if any.
+            exc_type (type[BaseException] | None): Exception type raised in the body, if any.
+            exc_val (BaseException | None): Exception value raised in the body, if any.
+            exc_tb (types.TracebackType | None): Traceback raised in the body, if any.
         """
         self.unlink()
 
@@ -104,8 +148,11 @@ class VideoDownloader(BaseModel):
 
     output_folder: str = Field(..., description="Download folder")
 
-    # Static map of quality presets to yt-dlp format strings; prefers separate
-    # video+audio with safe fallbacks to muxed or video-only streams.
+    # Every preset asks for separate video+audio first, so a site offering no split rendition
+    # still downloads something. The fallbacks are muxed, not video-only: a bare `best` selector
+    # requires both codecs. high/medium spend their last rung on that same muxed selector with
+    # the fps cap dropped, low never sets one so its last two rungs match, and only "best" ends
+    # on a video-only rung.
     quality_formats: ClassVar[dict[VideoQuality, str]] = {
         "best": "bestvideo*+bestaudio/best/bestvideo*",
         "high": "bestvideo[height<=1080][fps<=60]+bestaudio/best[height<=1080][fps<=60]/best[height<=1080]",
@@ -114,19 +161,32 @@ class VideoDownloader(BaseModel):
     }
 
     def _default_http_headers(self) -> dict[str, str]:
-        """Returns default HTTP headers for requests."""
+        """Builds the browser-shaped headers every request here starts from.
+
+        A fresh dict per call, since `get_params` adds a site-specific `Referer` to what it gets.
+
+        Returns:
+            Headers for one yt-dlp run or one share-link resolution.
+        """
         return {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept-Language": "en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7",
         }
 
     def _resolve_facebook_share_url(self, url: str) -> str:
-        """Follows redirects for facebook.com/share/... links to obtain the real target.
+        """Follows redirects for a `facebook.com/share/...` link to obtain the real target.
 
         Only where the request landed is wanted, never the page itself, so the GET fallback
         streams: requests still follows the whole redirect chain and reports `response.url`,
         but the final page's body is left on the wire instead of being downloaded and thrown
-        away. The HEAD attempt above it never had a body to begin with.
+        away. The HEAD attempt above it never had a body to begin with. A transport failure is
+        not an error here: both attempts failing leaves the share link to be tried as-is.
+
+        Args:
+            url (str): The share link to resolve.
+
+        Returns:
+            The URL the redirects landed on, or `url` unchanged when nothing resolved it.
         """
         headers = self._default_http_headers()
         with Session() as session:
@@ -151,7 +211,22 @@ class VideoDownloader(BaseModel):
         return url
 
     def _convert_facebook_url(self, url: str) -> str:
-        """Converts Facebook watch URL to reel URL format.
+        """Normalizes a Facebook URL into the form yt-dlp is handed.
+
+        A `/share/...` link is resolved first and its target re-enters here, so a share link that
+        lands on a watch page still ends up as a reel URL. What reaches either rewrite is decided
+        by a substring test for `facebook.com` on the parsed netloc, which is neither a host match
+        nor tolerant of a missing scheme: a lookalike host (`notfacebook.com`,
+        `facebook.com.attacker.com`) is rewritten like the real thing, while a scheme-less paste
+        (`www.facebook.com/watch?v=1`) parses with an empty netloc and is returned untouched.
+        Everything else is returned untouched too.
+
+        Args:
+            url (str): The URL to normalize, rewritten only when its parsed netloc contains
+                `facebook.com`.
+
+        Returns:
+            The rewritten URL, or `url` unchanged when nothing applied.
 
         Example:
             https://www.facebook.com/watch?v=828357636228730
@@ -168,7 +243,6 @@ class VideoDownloader(BaseModel):
                 return self._convert_facebook_url(resolved_url)
             return url
 
-        # Check if it's a Facebook watch URL
         if parsed.path == "/watch":
             query_params = parse_qs(parsed.query)
             video_id = query_params.get("v", [None])[0]
@@ -181,26 +255,29 @@ class VideoDownloader(BaseModel):
     def get_params(
         self, quality: VideoQuality, dry_run: bool, url: str | None = None
     ) -> dict[str, Any]:
-        """Returns the yt-dlp configuration parameters.
+        """Builds the yt-dlp parameters for one run, creating `output_folder` on the way.
+
+        `dry_run` is yt-dlp's CLI-probe shape rather than a quiet simulation: it turns `quiet`
+        off and dumps the whole info dict to stdout, which is why `parse_metadata` sets
+        `simulate` itself instead of asking for it here.
 
         Args:
-            quality: The requested quality preset.
-            dry_run: If True, enables simulation mode.
-            url: Optional URL to determine site-specific headers (e.g., bilibili).
+            quality (VideoQuality): Preset selecting the format string.
+            dry_run (bool): Whether to simulate instead of writing a file.
+            url (str | None): The URL about to be fetched, read only to decide site-specific
+                headers.
 
         Returns:
-            A dictionary of yt-dlp parameters.
+            The parameter dict to hand `YoutubeDL`.
         """
         output_path = Path(self.output_folder)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Base headers safe for most sites; site-specific headers added conditionally below.
-        # Match the real host (not a raw substring) so a URL like `evil.com/?x=bilibili.com`
-        # or `bilibili.com.attacker.com` never gets the bilibili Referer.
         http_headers = self._default_http_headers()
-        # A user-pasted URL may be scheme-less (e.g. `www.bilibili.com/video/...`), which urlparse
-        # reads as a path with no hostname; prepend `//` so the host is parsed either way. The
-        # exact-host match still rejects `evil.com/?x=bilibili.com` and `bilibili.com.attacker.com`.
+        # A pasted URL may be scheme-less (`www.bilibili.com/video/...`), which urlparse reads as
+        # a path with no hostname; prepend `//` so the host parses either way. Matching the whole
+        # host rather than a substring is what keeps `evil.com/?x=bilibili.com` and
+        # `bilibili.com.attacker.com` from being handed the bilibili Referer.
         host = ""
         if url:
             normalized = url if "://" in url else f"//{url}"
@@ -246,20 +323,28 @@ class VideoDownloader(BaseModel):
         dry_run: bool = False,
         stop_signal: threading.Event | None = None,
     ) -> DownloadResult:
-        """Downloads a video from the given URL.
+        """Downloads one video and hands back a handle that deletes the file when closed.
+
+        Blocks its thread, so callers run it under `asyncio.to_thread` — which is exactly why
+        `stop_signal` exists, since cancellation cannot reach a worker thread. The signal is read
+        at every yt-dlp progress tick and aborts the run with `DownloadStoppedError`, so an
+        abandoned download stops within a tick instead of running to completion against a scratch
+        dir the caller is already removing.
 
         Args:
-            url: The URL of the video to download.
-            quality: The requested quality preset.
-            dry_run: If True, simulates the download.
-            stop_signal: Optional event a caller sets to abort the download. This method
-                blocks its thread, so asyncio cancellation cannot stop it; the signal is
-                checked at every yt-dlp progress tick and aborts with DownloadStoppedError.
+            url (str): The video URL, before any Facebook normalization.
+            quality (VideoQuality): Preset selecting the format string.
+            dry_run (bool): Whether to run yt-dlp in its simulating CLI-probe shape.
+            stop_signal (threading.Event | None): Set by the caller to abort mid-download.
 
         Returns:
-            A DownloadResult instance containing the title and filename.
-        """
-        # Convert Facebook watch URLs to reel format
+            The title yt-dlp reported plus the path it wrote, as a context manager over the file.
+            Under `dry_run` nothing is written, so the path is the name yt-dlp would have used
+            and does not exist.
+
+        Raises:
+            DownloadStoppedError: When the caller's stop signal is set at a progress tick.
+        """  # noqa: DOC502 -- raised by the progress hook, which yt-dlp calls inside this frame
         url = self._convert_facebook_url(url)
 
         params = self.get_params(quality=quality, dry_run=dry_run, url=url)
@@ -284,7 +369,7 @@ class VideoDownloader(BaseModel):
         `extract_info(download=False)` under `simulate` fetches the same metadata silently.
 
         Args:
-            url: The URL of the video to inspect.
+            url (str): The URL of the video to inspect.
 
         Returns:
             The parsed metadata; absent string fields fall back to empty, duration to 0.0.

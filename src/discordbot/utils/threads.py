@@ -1,4 +1,42 @@
-"""Threads URL parsing, API models, and media download helpers."""
+"""Reading a Threads post: URL detection, the page's JSON schema, and the fetch-and-parse walk.
+
+This sits in `utils/` because two cogs need the same read and may not import each other:
+`parse_threads` expands a pasted link into Discord embeds, and `gen_reply` injects the same post
+as answer context. Everything Discord-shaped (embeds, attachment budgets, reaction status) stays
+in those cogs; this file only turns a URL into a `ThreadsConversation`.
+
+Three layers live here:
+
+- **The URL.** `THREADS_URL_RE` is the single detector both cogs scan messages with, and
+  `ThreadsURL` normalises what it finds onto the one origin Threads answers without a redirect.
+  Only the canonical `@user/post/<code>` shape names its own post, so `post_code` is empty for a
+  `share/<code>` link, and that emptiness is the signal to read the code off where the fetch
+  landed instead.
+- **The payload.** Threads serialises a whole post page into `data-sjs` script tags, and the
+  models from `User` down to `ThreadData` are the subset of that JSON worth reading. They are
+  deliberately permissive: unknown keys are ignored, an explicit null on a `str` field is coerced
+  by `_ThreadsModel`, and a node that still fails validation is dropped on its own rather than
+  costing the page (`_collect_threads`, `ShareInfo._isolate_quoted_post`).
+- **The walk.** `ThreadsDownloader.parse` (a context manager that downloads the target's videos
+  into `output_folder` and removes them on exit) and `parse_metadata` (no disk writes) are the two
+  public entry points over one shared implementation, whose only difference is that download. Both
+  return the chain `[root, ..., parent, target]` plus one list per reply branch under the target,
+  each post carrying its text, media URLs, counters and the post it quotes. Every call in here is
+  blocking `requests` plus a blocking retry sleep, so both cogs drive it through
+  `asyncio.to_thread`.
+
+What it deliberately does not do. It holds no session and no API key, so every read is the
+logged-out HTML a browser would get; that is why the platform's soft per-fingerprint throttle is
+handled here (`THREADS_EMPTY_PAGE_RETRIES`) while a page that DID answer without the post is never
+retried. It caps nothing: the whole chain and every reply branch come back, and each caller
+applies its own budget (the expansion's 10-embed cap, the reply pipeline's `MAX_THREADS_POSTS` /
+`MAX_THREADS_REPLIES`). It downloads only the target's videos, never an ancestor's, a comment's or
+a quoted post's, so the two entry points differ only in the target's `video_paths`. And it avoids
+handing back the URL it was given: every post's `url` is rebuilt from that post's own author and
+code, with the caller's URL surviving only as the target's fallback and only with its query
+stripped, because both pasted shapes are minted per share and publishing one names whoever shared
+the post.
+"""
 
 import re
 import json
@@ -71,7 +109,15 @@ class _ThreadsModel(BaseModel):
     @field_validator("*", mode="before")
     @classmethod
     def _coerce_null_string(cls, value: object, info: ValidationInfo) -> object:
-        """Maps a null value to an empty string for str-typed fields."""
+        """Maps a null value to an empty string for str-typed fields.
+
+        Args:
+            value (object): The raw value pydantic is about to validate.
+            info (ValidationInfo): Validation context, read only for the field's name.
+
+        Returns:
+            The empty string in place of a null on a `str` field, the value unchanged otherwise.
+        """
         field_name = info.field_name
         if value is None and field_name and cls.model_fields[field_name].annotation is str:
             return ""
@@ -334,6 +380,13 @@ class ShareInfo(_ThreadsModel):
         This is the same isolation `_collect_threads` gives a reply branch, one level lower: the
         quote is the most disposable thing in the payload, and losing only it degrades to exactly
         the pre-quote-post behaviour.
+
+        Args:
+            value (object): The raw `quoted_post` payload from the page JSON.
+            handler (ValidatorFunctionWrapHandler): The inner validator that builds the `Post`.
+
+        Returns:
+            The validated quoted post, or None when its payload no longer matches the schema.
         """
         try:
             return handler(value)
@@ -654,7 +707,7 @@ class ThreadData(_ThreadsModel):
         therefore an ancestor of it.
 
         Args:
-            post_code: The short code of the target post.
+            post_code (str): The short code of the target post.
 
         Returns:
             A tuple containing:
@@ -889,6 +942,15 @@ class ThreadsDownloader(BaseModel):
 
         Redirects are followed, as they always were, but where they land is now part of the
         result: a `share/<code>` link names its post only there. See `FetchedPage`.
+
+        Args:
+            url (str): The page to fetch, already normalised onto the canonical origin.
+
+        Returns:
+            The page body and the URL the request ended on.
+
+        Raises:
+            RuntimeError: The request failed or answered with an error status.
         """
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
         try:
@@ -909,6 +971,13 @@ class ThreadsDownloader(BaseModel):
         that header is the only signal separating the target's own replies from the unrelated
         posts Threads pads the page with. Document order is the page's own ordering, which is
         what makes the section boundary meaningful.
+
+        Args:
+            obj (dict[str, Any] | list[Any] | str | float | None): Any node of the decoded SJS
+                payload; anything that is not a container is a leaf and yields nothing.
+
+        Returns:
+            The enclosing node of every `thread_items` list found, in document order.
         """
         results: list[dict[str, Any]] = []
         if isinstance(obj, dict):
@@ -930,6 +999,13 @@ class ThreadsDownloader(BaseModel):
 
         Each node is validated on its own so a single malformed branch costs only that branch;
         validating them together would let one unexpected reply payload discard the target too.
+
+        Args:
+            data (dict[str, Any] | list[Any]): One decoded SJS script block.
+            post_code (str): The target's short code, logged with a skipped thread.
+
+        Returns:
+            Every thread node that validated, in page order.
         """
         threads: list[ThreadData] = []
         for node in ThreadsDownloader._find_thread_nodes(obj=data):
@@ -958,9 +1034,10 @@ class ThreadsDownloader(BaseModel):
         and a thread from elsewhere on the page names a different root.
 
         Args:
-            head: The branch's first post.
-            target_author: Username of the target post's author.
-            root_author: Username of the author of the post at the top of the target's chain.
+            head (Post): The branch's first post.
+            target_author (str): Username of the target post's author.
+            root_author (str): Username of the author of the post at the top of the target's
+                chain.
 
         Returns:
             True when the branch hangs off the target.
@@ -995,10 +1072,12 @@ class ThreadsDownloader(BaseModel):
           serialises without naming the author it answers.
 
         Args:
-            threads: Every thread parsed out of the SJS block holding the target, in page order.
-            chain_index: Index of the thread holding the target's own chain.
-            target_author: Username of the target post's author.
-            root_author: Username of the author of the post at the top of the target's chain.
+            threads (list[ThreadData]): Every thread parsed out of the SJS block holding the
+                target, in page order.
+            chain_index (int): Index of the thread holding the target's own chain.
+            target_author (str): Username of the target post's author.
+            root_author (str): Username of the author of the post at the top of the target's
+                chain.
 
         Returns:
             One list per reply branch, each ordered from the direct reply outward.
@@ -1021,7 +1100,20 @@ class ThreadsDownloader(BaseModel):
         return branches
 
     def _parse_page_from_html(self, html: str, post_code: str) -> ParsedPage:
-        """Parses the target post, its ancestors, and its replies from the SJS script tags."""
+        """Parses the target post, its ancestors, and its replies from the SJS script tags.
+
+        A page carries several SJS blocks and only one holds the post, so an unreadable or
+        post-free block is skipped and the scan continues rather than failing the page.
+
+        Args:
+            html (str): The fetched page body.
+            post_code (str): The short code identifying the post to find.
+
+        Returns:
+            The chain and reply branches of the first thread found holding the post, plus whether
+            any block parsed at all — the second is what tells a throttled page apart from an
+            answer that simply does not hold the post.
+        """
         carried_post_json = False
         for match in _SJS_PATTERN.finditer(string=html):
             text = match.group(1)
@@ -1070,7 +1162,18 @@ class ThreadsDownloader(BaseModel):
 
     @staticmethod
     def _determine_extension(media_url: str) -> str:
-        """Determines the file extension from a media URL."""
+        """Determines the file extension from a media URL.
+
+        Only the mp4-or-not answer is load-bearing: `_build_output` splits videos from images on
+        it. The suffix is read off the path so a query parameter cannot vote, and a path naming
+        none falls back to whether the URL as a whole mentions video at all.
+
+        Args:
+            media_url (str): The CDN URL of the media.
+
+        Returns:
+            One of `jpg`, `webp`, `png` or `mp4`.
+        """
         path_lower = urlparse(media_url).path.lower()
         if ".jpg" in path_lower or ".jpeg" in path_lower:
             return "jpg"
@@ -1087,15 +1190,21 @@ class ThreadsDownloader(BaseModel):
     def download_media(self, url: str, filename: str) -> Path | None:
         """Downloads media from the given URL to the output folder.
 
+        Streams to disk, so a partially written file is left behind when the connection dies
+        mid-transfer, and nothing here removes it: `output_folder` has to be a directory the
+        caller can discard. gen_reply's direct call hands it a per-call `TemporaryDirectory`;
+        `parse_threads` points at the system temp dir, and a partial file never reaches
+        `video_paths`, so `ThreadsConversation.unlink` does not clean it up either.
+
         Args:
-            url: The URL of the media to download.
-            filename: The name to save the file as.
+            url (str): The URL of the media to download.
+            filename (str): The name to save the file as, relative to `output_folder`.
 
         Returns:
-            The Path to the downloaded file.
+            The path the file was written to.
 
         Raises:
-            RuntimeError: If the download fails.
+            RuntimeError: The request failed or answered with an error status.
         """
         # Created before the request, never after: a caller that cancels mid-download cannot stop
         # the worker thread (`asyncio.to_thread` abandons it), so it may remove the scratch dir
@@ -1132,14 +1241,19 @@ class ThreadsDownloader(BaseModel):
         `THREADS_EMPTY_PAGE_RETRIES` and `THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS`: that shape
         is the platform throttling this fingerprint, and a second attempt usually clears it. A
         page that answered without holding the post is returned as-is, so a private or deleted
-        post still fails on the first attempt.
+        post still fails on the first attempt. A fetch that fails outright propagates as the
+        `RuntimeError` `_fetch_page` raises, so an unreadable post and an unreachable host stay
+        distinguishable to the caller.
 
         Args:
-            url: The raw Threads post URL, canonical or share form.
+            url (str): The raw Threads post URL, canonical or share form.
 
         Returns:
             The parsed page; its `target` is None when the post could not be found.
-        """
+
+        Raises:
+            RuntimeError: The page could not be fetched.
+        """  # noqa: DOC502 -- propagated from `_fetch_page`; the callers wrap this for it
         threads_url = ThreadsURL(raw_url=url)
         fetch_url = threads_url.clean_url
         post_code = threads_url.post_code
@@ -1182,7 +1296,15 @@ class ThreadsDownloader(BaseModel):
 
     @staticmethod
     def _post_url(post: Post) -> str:
-        """Reconstructs a canonical Threads URL from a post's author handle and code."""
+        """Reconstructs a canonical Threads URL from a post's author handle and code.
+
+        Args:
+            post (Post): The post to name.
+
+        Returns:
+            The canonical permalink, or an empty string when the payload carries no author or no
+            code (a tombstone carries neither).
+        """
         username = post.author_name
         code = post.code
         if username and code:
@@ -1201,6 +1323,17 @@ class ThreadsDownloader(BaseModel):
         page, so the degradation is a serialisation-depth artifact. Threads does supply a
         `quoted_post_caption` preview string ("<username>: <text>") exactly where that stub
         appears, if a second level is ever worth rendering.
+
+        Args:
+            post (Post): The parsed post to convert.
+            url (str): The permalink to publish for it.
+            download (bool): Whether to write this post's videos into `output_folder`. A quoted
+                post is always built with this off.
+            include_quoted (bool): Whether to build the post this one quotes.
+
+        Returns:
+            The post as the callers consume it, with an unreadable quote reported through
+            `quoted_unavailable` instead of a `quoted` entry.
         """
         post_code = post.code or "unknown"
         image_urls: list[str] = []
@@ -1262,8 +1395,8 @@ class ThreadsDownloader(BaseModel):
         metadata-only in both modes: their media is never part of what the callers deliver.
 
         Args:
-            url: The Threads post URL.
-            download: Whether to write the target post's videos to `output_folder`.
+            url (str): The Threads post URL.
+            download (bool): Whether to write the target post's videos to `output_folder`.
 
         Returns:
             The parsed conversation; empty when the post could not be found.
@@ -1304,11 +1437,15 @@ class ThreadsDownloader(BaseModel):
         context manager exits.
 
         Args:
-            url: The Threads post URL.
+            url (str): The Threads post URL.
 
         Yields:
             The parsed conversation. Its `chain` is empty when no post is found.
-        """
+
+        Raises:
+            RuntimeError: The page could not be fetched, or one of the target's videos could not
+                be downloaded.
+        """  # noqa: DOC502 -- propagated from the fetch and the media download below it
         conversation = self._build_conversation(url=url, download=True)
         try:
             yield conversation
@@ -1323,11 +1460,14 @@ class ThreadsDownloader(BaseModel):
         the target's media itself, straight to the answer model.
 
         Args:
-            url: The Threads post URL.
+            url (str): The Threads post URL.
 
         Returns:
             The parsed conversation; empty when no post is found.
-        """
+
+        Raises:
+            RuntimeError: The page could not be fetched.
+        """  # noqa: DOC502 -- propagated from `extract_post_data`, and through it `_fetch_page`
         return self._build_conversation(url=url, download=False)
 
 

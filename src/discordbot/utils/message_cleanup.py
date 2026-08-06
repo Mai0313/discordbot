@@ -1,4 +1,27 @@
-"""Timed cleanup helpers for public Discord messages."""
+"""Timed deletion of public Discord messages, with a record that outlives the process.
+
+A public response with a TTL (a settled Blackjack table, a Dragon Gate round, an economy embed,
+a stock or fishing panel) is removed from the channel once it stops being useful.
+In-process that is either `schedule_public_message_delete`, a fire-and-forget task that sleeps
+then deletes, or a view that owns its message and calls `delete_public_message` off its own idle
+timeout. The second half exists because neither survives a restart, so every tracked message is
+also written to the `pending_game_message` table in `games.db` and
+`delete_tracked_public_messages` sweeps the leftovers at the next startup (the games cog owns
+that one call, from its `on_ready`). A row is dropped by whichever cleanup path deletes the
+message; one removed out of band (a moderator, its author, another bot) keeps its row until the
+next sweep finds the message gone and clears it.
+
+Bookkeeping here is best-effort by design: a DB failure is logged and swallowed, because the
+worst it can cost is one stale message, while raising would break the command that produced it.
+`list_pending_public_messages` is the one call logged as an error, since its empty-list degrade
+disables the whole sweep for that process rather than losing a single row.
+
+Lives in `utils/` because economy, games, stock and `owned_message_views` all schedule cleanup
+and none of them may import a peer cog to reach it. It keeps its own engine on the shared
+`games.db` (the games and fishing engines are separate ones, deliberately) and creates its table
+on every access, since nothing bootstraps that schema. It deliberately covers neither
+ephemeral responses (Discord expires those itself) nor anything about the message's content.
+"""
 
 from typing import Any, Final
 import asyncio
@@ -58,12 +81,29 @@ class PendingPublicMessage(BaseModel):
 
 
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Sets WAL mode and a tolerant busy timeout for cleanup persistence."""
+    """Applies the project's shared SQLite PRAGMA setup to a new cleanup connection.
+
+    Registered as SQLAlchemy's `connect` listener, so both parameters are positional and the
+    second is never read. The `StoredInteger` UDFs are skipped: this table holds plain Discord
+    ids, not the decimal text the economy tables store.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+        _connection_record (Any): SQLAlchemy's pool record, unused here.
+    """
     configure_sqlite_connection(dbapi_connection=dbapi_connection, register_stored_integer=False)
 
 
 def _pending_db_engine() -> Engine:
-    """Returns the cleanup DB engine for the current DB path."""
+    """Returns the cleanup engine, rebuilding it when the configured DB path has changed.
+
+    The path is re-read on every call and the previous engine disposed on a change, which is what
+    lets a test point `_PENDING_PUBLIC_MESSAGE_DB_PATH` at a `tmp_path` without leaking the old
+    pool. Creates the parent directory, so a fresh checkout needs no setup step.
+
+    Returns:
+        The process-wide engine for the current `_PENDING_PUBLIC_MESSAGE_DB_PATH`.
+    """
     global _pending_engine, _pending_engine_path  # noqa: PLW0603 -- testable singleton by DB path
 
     db_path = Path(_PENDING_PUBLIC_MESSAGE_DB_PATH)
@@ -80,12 +120,34 @@ def _pending_db_engine() -> Engine:
 
 
 def _ensure_pending_table(conn: Connection) -> None:
-    """Ensures the cleanup table exists before a read or write."""
+    """Creates the pending-cleanup table when it is not there yet.
+
+    Run before every read and write rather than once at import: nothing bootstraps this schema at
+    import or startup, and `_pending_db_engine` can be rebuilt onto a different path mid-process
+    (a test pointing the DB at a `tmp_path`), so the table has to be created against whichever
+    file the engine of the moment opened.
+
+    Args:
+        conn (Connection): Open connection inside the caller's transaction.
+    """
     conn.execute(statement=text(text=_CREATE_PENDING_PUBLIC_MESSAGES_SQL))
 
 
 def _message_record(message: Message, user_name: str | None = None) -> PendingPublicMessage | None:
-    """Extracts the persistent cleanup identity from a Discord message."""
+    """Extracts the persistent cleanup identity from a Discord message.
+
+    Reads through `getattr` because callers hand over whatever their send returned, and returns
+    None on a missing channel/message id pair instead of raising: those two are the only fields
+    the sweep can act on, and failing to track must never break the command that just posted.
+    The guild and channel names are decoration for the cleanup logs, taken where available.
+
+    Args:
+        message (Message): The public message just posted.
+        user_name (str | None): Discord account name of the triggering user, for cleanup logs.
+
+    Returns:
+        The record to persist, or None when the message carries no usable ids.
+    """
     channel = getattr(message, "channel", None)
     channel_id = getattr(channel, "id", None)
     message_id = getattr(message, "id", None)
@@ -104,7 +166,14 @@ def _message_record(message: Message, user_name: str | None = None) -> PendingPu
 
 
 def _track_public_message_sync(record: PendingPublicMessage) -> None:
-    """Persists a pending cleanup record."""
+    """Upserts one pending-cleanup row.
+
+    Blocking; `track_public_message` runs it off the loop. Re-tracking the same message
+    `COALESCE`s `user_name`, so a later call without a name keeps the one already stored.
+
+    Args:
+        record (PendingPublicMessage): Identity of the message awaiting deletion.
+    """
     with _pending_db_engine().begin() as conn:
         _ensure_pending_table(conn=conn)
         conn.execute(
@@ -120,7 +189,14 @@ def _track_public_message_sync(record: PendingPublicMessage) -> None:
 
 
 def _forget_public_message_sync(message_id: int) -> None:
-    """Removes a pending cleanup record."""
+    """Deletes one pending-cleanup row.
+
+    Blocking; `forget_public_message` runs it off the loop. An id with no row is a no-op, which
+    is what lets the TTL path and the restart sweep both forget the same message.
+
+    Args:
+        message_id (int): Discord id of the message no longer needing cleanup.
+    """
     with _pending_db_engine().begin() as conn:
         _ensure_pending_table(conn=conn)
         conn.execute(
@@ -130,7 +206,14 @@ def _forget_public_message_sync(message_id: int) -> None:
 
 
 def _list_pending_public_messages_sync() -> list[PendingPublicMessage]:
-    """Lists all messages still waiting for cleanup."""
+    """Reads every row still waiting for cleanup, oldest first.
+
+    Blocking; `list_pending_public_messages` runs it off the loop. Ordered by `created_at` with
+    the message id as tiebreak, so the restart sweep deletes in the order things were posted.
+
+    Returns:
+        Every pending record, oldest first.
+    """
     with _pending_db_engine().begin() as conn:
         _ensure_pending_table(conn=conn)
         rows = conn.execute(statement=text(text=_LIST_PENDING_PUBLIC_MESSAGES_SQL)).fetchall()
@@ -151,13 +234,16 @@ async def track_public_message(
 ) -> PendingPublicMessage | None:
     """Records a public response so a restart can delete it later.
 
+    The write runs in a worker thread and is best-effort: on failure the record still comes back,
+    so the caller's in-process deletion is unaffected and only restart survival is lost.
+
     Args:
-        message: Discord message created for an expiring public response.
-        user_name: Optional Discord account name of the user who triggered the response.
+        message (Message): Discord message created for an expiring public response.
+        user_name (str | None): Optional Discord account name of the user who triggered the
+            response.
 
     Returns:
-        The persisted record, or `None` when the message object has no usable
-        `channel.id` / `id` pair.
+        The record, or `None` when the message object has no usable `channel.id` / `id` pair.
     """
     record = _message_record(message=message, user_name=user_name)
     if record is None:
@@ -178,7 +264,14 @@ async def track_public_message(
 
 
 async def forget_public_message(message_id: int) -> None:
-    """Deletes a public message cleanup record."""
+    """Stops tracking a message that no longer needs cleaning up.
+
+    Best-effort, in a worker thread; the caller is always a path that has just deleted the
+    message or found it already gone, so a failure costs only a stale row.
+
+    Args:
+        message_id (int): Discord id of the message to stop tracking.
+    """
     try:
         await asyncio.to_thread(_forget_public_message_sync, message_id=message_id)
     # Stays broad for the same reason as tracking; the stale row self-heals on the next
@@ -193,7 +286,13 @@ async def forget_public_message(message_id: int) -> None:
 
 
 async def list_pending_public_messages() -> list[PendingPublicMessage]:
-    """Returns public messages left over from a previous process."""
+    """Returns public messages left over from a previous process.
+
+    Reads in a worker thread and degrades to an empty list rather than raising into `on_ready`.
+
+    Returns:
+        Every message still tracked, oldest first, or an empty list when the read failed.
+    """
     try:
         return await asyncio.to_thread(_list_pending_public_messages_sync)
     # The one error of the trio: unlike a single lost bookkeeping row, an empty list disables
@@ -208,7 +307,22 @@ async def list_pending_public_messages() -> list[PendingPublicMessage]:
 
 
 async def _fetch_tracked_message(bot: commands.Bot, record: PendingPublicMessage) -> Message:
-    """Fetches a tracked message from a concrete Discord channel."""
+    """Resolves a tracked message, via the channel cache when it can serve one.
+
+    A cached channel that is not `Messageable` is re-fetched rather than trusted, since only a
+    concrete channel can fetch a message by id. Discord errors from the two fetches propagate;
+    `delete_tracked_public_messages` decides per kind whether the record survives.
+
+    Args:
+        bot (commands.Bot): Bot whose channel cache and REST client resolve the channel.
+        record (PendingPublicMessage): The tracked message to resolve.
+
+    Returns:
+        The live message, ready to delete.
+
+    Raises:
+        TypeError: The channel resolved but still cannot fetch messages.
+    """
     channel = bot.get_channel(record.channel_id)
     if channel is None or not isinstance(channel, Messageable):
         channel = await bot.fetch_channel(record.channel_id)
@@ -219,7 +333,20 @@ async def _fetch_tracked_message(bot: commands.Bot, record: PendingPublicMessage
 
 
 async def delete_public_message(message: Message, message_id: int | None = None) -> bool:
-    """Deletes a public message and removes its persisted cleanup record."""
+    """Deletes a public message and drops its persisted cleanup record.
+
+    A message Discord no longer has counts as success: someone removed it first, and the record
+    goes with it. A permission or transport failure keeps the record instead, so the next restart
+    sweep gets another try. `message_id` is for callers that already know it (the sweep) or hold
+    a message object that may not expose one; otherwise it comes off the message.
+
+    Args:
+        message (Message): The message to delete.
+        message_id (int | None): Id to forget, when the caller already knows it.
+
+    Returns:
+        True when the message is gone from the channel, False when the delete failed.
+    """
     resolved_message_id = message_id if message_id is not None else getattr(message, "id", None)
     try:
         await message.delete()
@@ -239,7 +366,18 @@ async def delete_public_message(message: Message, message_id: int | None = None)
 
 
 async def delete_tracked_public_messages(bot: commands.Bot) -> None:
-    """Deletes persisted public responses left by an earlier bot process."""
+    """Deletes persisted public responses left by an earlier bot process.
+
+    The restart half of the TTL, called once per process from the games cog's `on_ready`. A
+    `NotFound` is forgotten and counted as cleaned up, which covers both a message Discord no
+    longer has and a recorded channel id that `fetch_channel` itself 404s on. The record is KEPT
+    on a `TypeError` (the channel resolved but cannot fetch messages), on a `Forbidden`, and on
+    every other `HTTPException`, so a transient outage or a temporarily missing permission does
+    not throw away the only trace of a message still sitting in the channel.
+
+    Args:
+        bot (commands.Bot): Bot used to resolve the recorded channels.
+    """
     records = await list_pending_public_messages()
     deleted_count = 0
     for record in records:
@@ -280,10 +418,14 @@ async def delete_public_message_after(
 ) -> None:
     """Deletes a public response after a delay.
 
+    Tracking happens before the sleep, not after it, so a process that dies mid-TTL still leaves
+    a record for the next startup sweep.
+
     Args:
-        message: Discord message to delete.
-        delay: Seconds to wait before deletion.
-        user_name: Optional Discord account name of the user who triggered the response.
+        message (Message): Discord message to delete.
+        delay (float): Seconds to wait before deletion.
+        user_name (str | None): Optional Discord account name of the user who triggered the
+            response.
     """
     await track_public_message(message=message, user_name=user_name)
     await asyncio.sleep(delay=delay)
@@ -293,7 +435,20 @@ async def delete_public_message_after(
 def schedule_public_message_delete(
     message: Message, delay: float = PUBLIC_MESSAGE_TTL_SECONDS, user_name: str | None = None
 ) -> None:
-    """Schedules delayed deletion for a public response."""
+    """Schedules delayed deletion for a public response without awaiting it.
+
+    Creates the task without awaiting it, so the command that sent the message returns
+    immediately. Nothing keeps a reference to it either, which is the risk the RUF006 noqa
+    suppresses: a task garbage-collected before it fires costs the same as one the process does
+    not live to finish, and both are covered by the record `delete_public_message_after` writes
+    before it sleeps.
+
+    Args:
+        message (Message): Discord message to delete once the delay elapses.
+        delay (float): Seconds to wait before deletion.
+        user_name (str | None): Optional Discord account name of the user who triggered the
+            response.
+    """
     asyncio.create_task(  # noqa: RUF006 -- fire-and-forget cleanup cannot block commands.
         coro=delete_public_message_after(message=message, delay=delay, user_name=user_name),
         name="delete-public-response",

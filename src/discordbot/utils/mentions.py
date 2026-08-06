@@ -24,8 +24,8 @@ def has_bot_mention(*, content: str, bot_user: ClientUser | None) -> bool:
     functional posts (a Threads embed, a downloaded video) would otherwise read as a mention.
 
     Args:
-        content: The raw message content.
-        bot_user: The bot's own user, or None before the gateway connects.
+        content (str): The raw message content.
+        bot_user (ClientUser | None): The bot's own user, or None before the gateway connects.
 
     Returns:
         True when the content mentions the bot.
@@ -42,8 +42,8 @@ def is_addressed_to_bot(*, message: Message, bot_user: ClientUser | None) -> boo
     A DM needs no mention (every DM reaches `gen_reply`), so it counts as addressed.
 
     Args:
-        message: The incoming message.
-        bot_user: The bot's own user, or None before the gateway connects.
+        message (Message): The incoming message.
+        bot_user (ClientUser | None): The bot's own user, or None before the gateway connects.
 
     Returns:
         True for a DM, or for a guild message that mentions the bot.

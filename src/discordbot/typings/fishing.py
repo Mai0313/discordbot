@@ -1,7 +1,34 @@
-"""Shared types, enums, and constants for the fishing mini-game.
+"""Shared vocabulary for the fishing mini-game: rarity grades, catalog rows, and cast outcomes.
 
-These are pure data types with no cog or util dependencies so the database,
-roll engine, views, and maintenance scripts can all share one vocabulary.
+Pure pydantic models, enums, and tuning constants with no cog or util dependency, which is what
+lets the store (`cogs/games/fishing/database.py`), the RNG-injected roll engine (`catch.py`), the
+panel views, and the offline seeding script all key off one set of names.
+
+Four families live here:
+
+- The enums are the persisted vocabulary. `FishGrade` is the rarity ladder as stored; a grade's
+  emoji, color, label and rank live in its catalog row instead, so retuning the ladder is a data
+  edit rather than a code change. `GearType` splits the single gear table into rods and bait.
+  `CastStatus` names every way one cast can end.
+- The `*View` models are frozen read models the store builds out of its own ORM rows and hands
+  upward. They carry no field bounds, because the row they mirror is already the source of
+  truth, and they are what lets the views and the pure engine work without importing ORM models.
+  `FishingCatalog` bundles a whole set of them as one value, which is how `defaults.py` hands
+  the default catalog to a caller that wants the rows without a database.
+- The outcome models are what the engine and the store hand back. `CatchRoll` is one pure roll
+  before any persistence; `PurchaseResult` and `CastResult` are settled outcomes carrying the
+  wallet, durability and inventory state the caller has to show; `FishingPanelData` is the one
+  aggregate, bundling the per-user views a panel render reads.
+- The `*Upsert` models are the write half, reached only offline (`defaults.py` ->
+  `scripts/seed_fishing.py` -> the store's `upsert_*` calls). Every field bound and both
+  cross-field validators sit there because a hand-written catalog is the only way a row gets
+  into the tables; runtime never seeds.
+
+The constants are shared tuning, pinned here because a constant more than one module keys off
+belongs under `typings/`. The engine reads the luck clamp and the basis-point denominator; the
+store reads the per-catch cap it hands `roll_catch` and the per-purchase bait cap it enforces;
+the Discord surface reads the panel idle timeout, the same denominator, and the bait cap for an
+up-front check that never replaces the store's.
 """
 
 from enum import StrEnum
@@ -49,7 +76,13 @@ class GearType(StrEnum):
 
 
 class CastStatus(StrEnum):
-    """Outcome status of one cast attempt."""
+    """Outcome status of one cast attempt.
+
+    `PAYOUT_DEFERRED` is the cross-database seam rather than a rules outcome: the catch is
+    already committed to games.db and only the economy credit failed, so the cast counts and
+    the payout is owed. Nothing retries it, which is why `settle_cast` reports it instead of
+    rolling the catch back.
+    """
 
     SUCCESS = "success"
     NO_ROD = "no_rod"
@@ -59,7 +92,16 @@ class CastStatus(StrEnum):
 
 
 class FishGradeConfigView(BaseModel):
-    """Read-only grade roll weight and display metadata."""
+    """Read-only grade roll weight and display metadata.
+
+    `order_index` is read two different ways, both of them inside the engine: `roll_catch` sorts
+    the grade choices by the raw value and `_fallback_species` compares it as a rarity rank,
+    while `compose_grade_weights` compounds luck over a grade's POSITION in `order_index` order,
+    never over the raw value. That is what lets an operator leave gaps in it, and a grade whose
+    weight is zero is disabled but keeps its position, so removing one never re-spaces the rest.
+    The store lists grades in `order_index` order too, but that ordering reaches nothing:
+    `get_grade_config_map` collapses it into a dict before any embed builder sees it.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -155,7 +197,12 @@ class AnglerStateView(BaseModel):
 
 
 class CatchRoll(BaseModel):
-    """Pure result of one fish roll before any persistence."""
+    """Pure result of one fish roll before any persistence.
+
+    `size_bps` and `size_rank_bps` answer different questions and are both kept. Size bands are
+    per grade, so the raw multiplier does not say whether a catch was a big one for its kind;
+    the rank inside the species' own band does, and it is what the 大物 marker reads.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -294,7 +341,17 @@ class FishSpeciesUpsert(BaseModel):
 
     @model_validator(mode="after")
     def validate_size_range(self) -> Self:
-        """Ensures the size multiplier range is well-ordered."""
+        """Ensures the size multiplier range is well-ordered.
+
+        The roll engine draws a size uniformly across this band, so an inverted one would raise
+        from `random.randint` mid-cast; rejecting it here keeps it out of the table instead.
+
+        Returns:
+            The validated payload.
+
+        Raises:
+            ValueError: `size_min_bps` is greater than `size_max_bps`.
+        """
         if self.size_min_bps > self.size_max_bps:
             msg = "size_min_bps cannot exceed size_max_bps"
             raise ValueError(msg)
@@ -324,7 +381,19 @@ class GearUpsert(BaseModel):
 
     @model_validator(mode="after")
     def validate_type_fields(self) -> Self:
-        """Ensures durability is rod-only and bait carries no durability."""
+        """Ensures durability is rod-only and bait carries no durability.
+
+        A rod is granted with its catalog durability as its remaining casts, so a zero would
+        sell a rod that answers `BROKEN_ROD` on its very first cast. Bait is consumed one per
+        cast and its durability is never read, so a non-zero one is rejected rather than kept
+        as dead data that reads like a rod's.
+
+        Returns:
+            The validated payload.
+
+        Raises:
+            ValueError: A rod carries durability below 1, or a bait carries non-zero durability.
+        """
         if self.gear_type == GearType.ROD and self.durability < 1:
             msg = "rod gear must have durability of at least 1"
             raise ValueError(msg)
@@ -335,7 +404,12 @@ class GearUpsert(BaseModel):
 
 
 class FishingCatalog(BaseModel):
-    """Default catalog of grades, species, and gear for seeding and simulation."""
+    """Default catalog of grades, species, and gear bundled as one value.
+
+    `build_default_catalog` is its only producer and tests are its only consumers; nothing under
+    `src/` outside `defaults.py` touches it. The seed script takes the same rows through the
+    `*Upsert` payloads instead, since those are what carry the field bounds.
+    """
 
     model_config = ConfigDict(frozen=True)
 

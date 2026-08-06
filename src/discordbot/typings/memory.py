@@ -6,12 +6,26 @@ shared vocabulary between them: it is an ASCII key, never the rendered heading, 
 structured LLM schema stays English while the injected document stays Traditional
 Chinese (the heading tables live in ``services/memory/facts.py``).
 
+Nothing here carries behavior: every alias is a field on a structured LLM schema or on the
+stored fact, and the rule keyed off it lives a layer up. ``services/memory/extraction.py``
+declares the phase-1 ``MemoryObservation`` and the phase-2 ``MemoryFactDelta``, and runs the
+deterministic gates over observations (over a delta it only scrubs secret-shaped strings);
+``services/memory/deltas.py`` owns every delta gate, in ``_resolve_delta`` and
+``apply_deltas``, routes a raw batch into compartments off the code-stamped ``- sharing:``
+and ``- source:`` fields, and ages stored facts off ``section`` plus ``durability``;
+``services/memory/facts.py`` defines the one-fact-per-file format and renders a compartment
+set back into the document the reply prompts are given, while ``services/memory/store.py``
+is what touches the filesystem.
+
 A fact's fields split into two ownership zones. The model authors ``summary``,
 ``section``, ``durability`` and the body; everything else is stamped by code and is
 never shown to it, which is the whole point of the redesign — provenance the model
 cannot copy wrong. ``compartment`` is the exception that proves it: it is stored only
 so a hand-edited or half-migrated tree can be *detected*, and the containing directory
 always wins (see ``store.read_facts``).
+
+``MemoryConfig`` rides along because it is deployment state about how the store is kept on
+disk rather than about a model call, which is why it is not a field on ``LLMConfig``.
 """
 
 from typing import Literal
@@ -20,9 +34,17 @@ from datetime import datetime
 from pydantic import Field, BaseModel, ConfigDict, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Which kind of memory an observation is aiming at, and the `### <category>` header its
+# raw entry is filed under. `recent_context` is the odd one: code demotes it to
+# unpromotable, `source_only` and TTL-bound whatever the model said. `interaction_style`
+# and `stable_preference` are additionally what the tone note is fed from.
 type MemoryCategory = Literal[
     "stable_preference", "stable_fact", "interaction_style", "recurring_pattern", "recent_context"
 ]
+
+# The shape of the evidence behind an observation, and the phase-1 gate's main lever: the
+# last five are rejected outright, `ongoing_situation` is accepted but locked to its source
+# conversation, and the rest are what a stable fact is allowed to rest on.
 type MemoryEvidenceKind = Literal[
     "explicit_preference",
     "repeated_behavior",
@@ -37,8 +59,25 @@ type MemoryEvidenceKind = Literal[
     "other_user_context",
     "unknown",
 ]
+
+# How sure phase 1 is. A stable observation needs `high` and a recent-context one at least
+# `medium`, so `low` never reaches the store.
 type MemoryConfidence = Literal["low", "medium", "high"]
+
+# How long a memory is meant to survive, shortest first. `volatile` and `session` exist so
+# the model can say "not worth keeping" and the gate can drop it deterministically; nothing
+# below `recent` is ever staged. On a stored fact the freshness sweep reads this for two of
+# its rules: `stable` falls out of a per-compartment window and `permanent` never ages. The
+# TTL is keyed on the `recent` SECTION instead, not on this durability, and the `permanent`
+# section and a `member_alias` node are exempt as well (`deltas.sweep_stale_facts`).
 type MemoryDurability = Literal["volatile", "session", "recent", "stable", "permanent"]
+
+# Whether an observation may leave the conversation it was learned in. It is half of what
+# `partition_raw_entries` buckets a user batch on: this field picks global-vs-confined and
+# the code-stamped `- source:` field then picks `dm` or `g/<guild_id>`, so between them they
+# decide which compartment the fact distilled from it can be written into (a server batch
+# carries neither and lands in that scope's single compartment). Code may only tighten this
+# to `source_only`, never loosen a `source_only` call back to `global`.
 type MemorySharing = Literal["global", "source_only"]
 
 # Which section of the rendered document a fact belongs to. One vocabulary for both
@@ -58,7 +97,7 @@ type MemorySection = Literal[
 
 # What a stored file holds. Derived from `section` by code so it can never disagree
 # with it; kept as its own field so a reader can select alias rows without knowing the
-# section vocabulary (`allowlist_ids_from_server_memory`'s successor).
+# section vocabulary, which is how the freshness sweep exempts them from aging.
 type MemoryNodeType = Literal["memory", "member_alias"]
 
 # What one consolidation delta asks for. `create` mints a fresh id, `update` and
@@ -68,6 +107,11 @@ type MemoryDeltaAction = Literal["create", "update", "delete"]
 
 class MemoryOwner(BaseModel):
     """Who a scope's memory belongs to, stamped into every fact for human inspection.
+
+    Nothing is authorized off this pair: the compartment directory is the privacy boundary,
+    and the scope key already says whose memory is being read. It travels through the
+    `memory_job` round-trip as one identity line, so `facts.parse_identity` and
+    `facts.render_owner_identity` are the two ends of the same format.
 
     Attributes:
         owner_id: Discord id of the user or server.
@@ -83,8 +127,17 @@ class MemoryOwner(BaseModel):
 class MemoryFact(BaseModel):
     """One distilled memory, stored as a single file inside one compartment.
 
-    Attributes carry their zone in the description: the model authors the first four,
-    code stamps the rest.
+    Attributes carry their zone in the description: the model authors `summary`, `section`,
+    `durability` and `text`, and code stamps the rest. `fact_id` is the filename stem, which
+    is why it is minted from a hash of the compartment and the summary rather than chosen by
+    the model; conversation content that reached it would put path traversal one injection
+    away.
+
+    Instances are frozen, so a consolidation delta replaces the whole file rather than
+    editing one in place (`facts.render_fact_file` renders the text and `store.write_fact`
+    writes it, tmp file then `os.replace`; `facts.parse_fact_file` reads it back and
+    `store.read_facts` a compartment at a time). The freshness sweep writes nothing: it
+    deletes the file outright through `store.delete_fact`.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -138,7 +191,9 @@ class MemoryConfig(BaseSettings):
     """Deployment switches for long-term memory, read from environment variables.
 
     Kept apart from `LLMConfig` because memory itself has no kill-switch — it is always
-    on — and this is about how the store is kept on disk, not about a model call.
+    on — and this is about how the store is kept on disk, not about a model call. Read
+    once at import, where `services/memory/git_history.py` builds the single service the
+    process commits through, so a change to it takes effect on the next restart.
 
     Attributes:
         git_history_enabled: Whether a successful consolidation commits the scope it

@@ -1,7 +1,27 @@
-"""Image helpers previously sourced from autogen.agentchat.contrib.img_utils.
+"""Image normalisation on the way to an LLM provider: fetch, downscale, re-encode, wrap.
 
-Inlined to drop the autogen/ag2 runtime dependency. Trimmed to the input forms
-the bot actually uses: `http(s)://` URLs and `data:image/...;base64,...` URIs.
+Inlined from `autogen.agentchat.contrib.img_utils` to drop the autogen/ag2 runtime dependency,
+then trimmed to the two input forms the bot actually passes around: an `http(s)://` URL and a
+`data:image/...;base64,...` URI. Anything else is refused rather than guessed at.
+
+`get_pil_image` resolves one of those two forms into a PIL image; `get_image_data` returns the
+bytes behind either form, handing a data URI's payload straight back and flattening to JPEG only
+on the URL branch; `shrink_image_bytes` is the attachment-side one that downscales bytes already
+in hand while keeping the format where the format carries something; `convert_base64_to_data_uri`
+goes the other way, wrapping raw base64 into the URI a Responses `input_image` part expects.
+
+It sits below the cogs because it is deliberately Discord-free: a caller reads an `Attachment`
+and hands over plain bytes, so the attachment ingestion path (`gen_reply/attachment/loaders.py`)
+and the linked-post image builders, which reach it through that same `load_image_bytes`, share
+one downscale policy instead of growing two. That policy is the single `_MAX_IMAGE_DIMENSION`
+cap below. The remaining importers (the generated-image persona replies, the prompt director's
+grounding images, `scripts/image_dev.py`) take `convert_base64_to_data_uri` alone and never reach
+the cap.
+
+What it deliberately does not do: no caching, no download size limit, no retry, and nothing
+async — `get_pil_image`, `get_image_data` and `shrink_image_bytes` block on network I/O or a PIL
+decode, so async callers run those through `asyncio.to_thread`. `convert_base64_to_data_uri` does
+neither and is called straight from the event loop.
 """
 
 from io import BytesIO
@@ -17,15 +37,20 @@ _DATA_URI_RE = re.compile(pattern=r"^data:image/(?:jpg|jpeg|png|gif|bmp|webp);ba
 def get_pil_image(image_file: str) -> Image.Image:
     """Loads an image from an `http(s)://` URL or a base64 data URI.
 
+    The result is flattened to RGB, so alpha does not survive this path; a caller that needs
+    transparency intact works from the encoded bytes through `shrink_image_bytes` instead. The
+    response status is not checked, so an error page surfaces as a PIL decode failure rather than
+    an HTTP one; that and any `requests` transport failure propagate untouched.
+
     Args:
-        image_file: `http(s)://...` URL or `data:image/<mime>;base64,...` URI.
+        image_file (str): An `http://` or `https://` URL, or a `data:image/<mime>;base64,...`
+            URI.
 
     Returns:
         The decoded image, converted to RGB.
 
     Raises:
-        ValueError: `image_file` is neither an `http(s)://` URL nor a
-            recognised image data URI.
+        ValueError: `image_file` is neither an `http(s)://` URL nor a recognised image data URI.
     """
     if image_file.startswith(("http://", "https://")):
         # 10s caps the history-render I/O tail: a URL taking longer is almost always a
@@ -50,18 +75,27 @@ _MAX_IMAGE_DIMENSION = 3072
 def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
     """Downscales an image to the provider's effective resolution and re-encodes it.
 
-    Photos re-encode as JPEG quality 95 (near-lossless, a fraction of PNG photo
-    bytes); images with transparency or an indexed palette stay PNG (alpha must
-    survive, and JPEG artifacts are visible on flat-color palette graphics);
-    GIFs and other animated images pass through untouched so motion context
-    survives. Anything PIL cannot decode passes through unchanged.
+    Transparent and palette images are never converted to JPEG (alpha has to survive, and JPEG
+    artifacts are visible on flat-color palette graphics); only the ones that actually downscale
+    are rewritten, as PNG, while an in-bounds one is handed back under the caller's own
+    `content_type`, so an in-bounds transparent WebP stays labelled `image/webp` and is never PNG
+    at any point. Everything else becomes JPEG at quality 95, near-lossless and a fraction of
+    PNG's photo bytes — so an already in-bounds opaque PNG is still re-encoded, which is the point
+    rather than an oversight. Five shapes skip the re-encode and come back byte-identical under
+    the MIME type they arrived with: a GIF and any other animated image (so motion context reaches
+    the model at all), an in-bounds JPEG, an in-bounds transparent or palette image, and a payload
+    PIL cannot round-trip. The two in-bounds ones are the commonest attachment shapes, so most
+    images pass straight through despite the re-encode rule above. The last one is wider than a
+    corrupt file: an exotic mode PIL reads but cannot write back (`PA`) also lands there, and
+    since it is caught after the resize the oversized original is what gets returned.
 
     Args:
-        payload: The original encoded image bytes.
-        content_type: The image's MIME type, used to pick passthrough cases.
+        payload (bytes): The original encoded image bytes.
+        content_type (str): The image's MIME type, which selects the GIF and JPEG passthroughs
+            and labels every passthrough result.
 
     Returns:
-        The (possibly re-encoded) image bytes and their MIME type.
+        The (possibly re-encoded) image bytes and the MIME type that now describes them.
     """
     if content_type == "image/gif":
         return payload, content_type
@@ -89,23 +123,23 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
 
 
 def get_image_data(image_file: str) -> bytes:
-    """Returns the underlying bytes of an image.
+    """Returns the underlying bytes of an image named by a URL or a data URI.
 
-    Fast path: when `image_file` is already a `data:image/<mime>;base64,...`
-    URI, the embedded payload is decoded and returned as-is — no PIL
-    decode/encode round trip, no format change. JPEG stays JPEG, PNG stays PNG.
+    A data URI short-circuits: the embedded payload is decoded and handed back as it was written,
+    with no PIL round trip, so the format is preserved and the dimension cap is never applied.
+    Everything else goes through `get_pil_image`, then downscales and re-encodes as JPEG, which is
+    why `load_image_bytes` labels a URL source `image/jpeg` without inspecting the result.
 
-    Slow path: anything else is fetched / decoded via :func:`get_pil_image`,
-    downscaled to the provider's effective resolution, and re-encoded as JPEG.
+    A source that is neither form therefore reaches `get_pil_image`'s `else` branch and leaves
+    here as `ValueError`, uncaught: an unsupported source is a live caller-visible failure, not a
+    silent empty result. It gets no `Raises:` section only because DOC502 reserves that for an
+    exception raised in this body.
 
     Args:
-        image_file: URL or data URI.
+        image_file (str): URL or data URI.
 
     Returns:
-        Raw image bytes.
-
-    Raises:
-        ValueError: `image_file` is not a supported URL or image data URI.
+        The image bytes: JPEG for a fetched URL, the original encoding for a data URI.
     """
     if match := _DATA_URI_RE.match(string=image_file):
         payload = image_file[match.end() :]
@@ -123,14 +157,16 @@ def get_image_data(image_file: str) -> bytes:
 def convert_base64_to_data_uri(base64_image: str) -> str:
     """Wraps a base64 image string in a `data:image/<mime>;base64,...` URI.
 
-    Sniffs the MIME type from the first 12 decoded bytes (enough for every
-    format we recognise). Falls back to `image/jpeg` for unknown payloads.
+    The MIME type is sniffed from the first 12 decoded bytes (16 base64 characters, which is as
+    far as the magic numbers below reach) rather than taken from a caller, since the generation
+    paths hand over whatever the image model returned. An unrecognised payload is labelled
+    `image/jpeg` and nothing rechecks that guess.
 
     Args:
-        base64_image: Base64-encoded image payload without a data URI prefix.
+        base64_image (str): Base64-encoded image payload without a data URI prefix.
 
     Returns:
-        A data URI containing the detected image MIME type and original payload.
+        A data URI carrying the sniffed MIME type and the payload unchanged.
     """
     header = base64.b64decode(s=base64_image[:16])
     if header.startswith(b"\xff\xd8\xff"):

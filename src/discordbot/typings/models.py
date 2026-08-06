@@ -1,3 +1,33 @@
+"""Which model every runtime LLM path dispatches on, and the structured outputs of the router.
+
+`ModelSettings` is one tier's dispatch pair — the model string plus the reasoning effort sent
+with it — and derives from those two fields the payloads a call site needs: `reasoning` for the
+Responses API and `tools` for the provider's built-in search / url grounding. That name is the
+LiteLLM model string on the proxied tiers, but a bare Google model name on the three
+direct-to-Google ones (`video_model`, `music_model`, `antigravity_model`), which dispatch on
+`interactions.create` and read `name` alone.
+`RuntimeModelCatalog` is the tier table itself, one property per runtime purpose. It reads no
+configuration, so a tier moves by editing this file rather than the environment, and every cog
+that needs one builds its own `RuntimeModelCatalog()` (`gen_reply`, `research`, `stock`, `memory`,
+`auto_unmute`). The dev scripts under `scripts/` are the exception and mostly hardcode their own
+`ModelSettings` copies, so a tier change here has to be mirrored into them by hand or they go on
+exercising a model production no longer runs.
+
+Two constraints cut across the whole table. `minimal` is the effort floor and `none` is never
+used: Gemini 3 cannot switch thinking off, and LiteLLM only recognises a model as Gemini 3 by the
+literal `gemini-3` substring, which the `*-latest` aliases dispatched here do not carry, so `none`
+falls through to the pre-3 branch and sends a `thinkingBudget: 0` a 3.x model rejects
+(`tests/test_runtime_models.py` pins it, because the breakage shows only against the live API).
+And an alias is suspect wherever a capability gate might key on the model string — `*-latest` has
+already cost both an effort level and native built-in-plus-function tool combination — so prefer a
+concrete snapshot on any tier whose capabilities matter.
+
+`RouteClassification` and `EffortGrade` are the parsed outputs of the two parallel classification
+calls (`_route_classify` / `_grade_effort` hand them to `responses.parse` as `text_format`). Their
+field descriptions are the schema the route model actually reads, so editing that wording is
+prompt work, not documentation.
+"""
+
 from typing import Literal, cast
 from datetime import UTC, datetime
 
@@ -8,7 +38,12 @@ from openai.types.shared_params.reasoning import Reasoning
 
 
 class ModelSettings(BaseModel):
-    """Model name and reasoning effort that should be used together.
+    """One tier's dispatch pair: the model string and the reasoning effort sent with it.
+
+    `reasoning` and `tools` are derived from these two fields, so a call site holding a
+    `ModelSettings` never re-derives the provider payloads. Override the effort for a single call
+    with `model_copy(update={"effort": ...})`, as the answer turn does with the route-decided
+    grade, rather than adding a tier.
 
     Attributes:
         name: LiteLLM model string dispatched on the Responses API.
@@ -20,14 +55,11 @@ class ModelSettings(BaseModel):
         description="LiteLLM model string dispatched on the Responses API.",
         examples=["gemini-flash-latest", "gemini-3.1-flash-image"],
     )
-    # `minimal`, never `none`. Gemini 3 cannot switch thinking off at all, so the API's own
-    # vocabulary starts at `minimal` (`thinking_level` accepts minimal / low / medium / high).
-    # LiteLLM does map `none`, but only after recognising the model as Gemini 3 by the literal
-    # substring `gemini-3` in the model string, which the `*-latest` aliases this project
-    # dispatches on do not contain. It therefore falls through to the pre-3 branch and sends
-    # `thinkingBudget: 0`, which a Gemini 3.x model rejects — so `none` silently stopped working
-    # the moment `gemini-flash-latest` began resolving to a 3.x snapshot. `minimal` maps to a
-    # small positive budget on that same branch and is accepted.
+    # `minimal`, never `none`: Gemini 3 cannot switch thinking off, so its own vocabulary starts
+    # there (`thinking_level` accepts minimal / low / medium / high). On the pre-3 LiteLLM branch
+    # the `*-latest` aliases fall through to, `minimal` maps to a small positive budget a 3.x
+    # model accepts, while `none` maps to the `thinkingBudget: 0` it rejects — which is how
+    # `none` stopped working the moment `gemini-flash-latest` began resolving to a 3.x snapshot.
     effort: ReasoningEffort = Field(
         default="minimal",
         description="Reasoning effort passed to the Responses API for this model.",
@@ -37,25 +69,34 @@ class ModelSettings(BaseModel):
     def reasoning(self) -> Reasoning:
         """Responses API reasoning options for this model.
 
+        `summary="auto"` is load-bearing rather than cosmetic: the streamer paints the returned
+        thought summary as `-#` subtext until the first content delta, so dropping it would take
+        the whole reasoning preview with it.
+
         Returns:
-            Reasoning options using this model's configured effort and an
-            automatic reasoning summary.
+            Reasoning options carrying this model's configured effort and an automatic summary.
         """
         return Reasoning(effort=self.effort, summary="auto")
 
     @property
     def tools(self) -> list[ToolParam]:
-        """Built-in tool payloads for this model's provider.
+        """The provider's built-in search / url grounding tools, selected by the model string.
 
-        Code execution is intentionally omitted: Gemini and Claude validate every
-        uploaded file part against code execution's narrow MIME allowlist and 400 the
-        whole request on video / audio / GIF-as-video attachments, so it cannot coexist
-        with the attachment ingestion path. Search / url grounding have no such limit.
+        Code execution is intentionally omitted: Gemini and Claude validate every uploaded file
+        part against code execution's narrow MIME allowlist and 400 the whole request on
+        video / audio / GIF-as-video attachments, so it cannot coexist with the attachment
+        ingestion path. Search / url grounding have no such limit.
+
+        These are server-side tools only, and mixing a custom function tool in with them is a
+        Gemini-branch question: there, that turn takes `include_server_side_tool_invocations:
+        true` in its `extra_body`, or LiteLLM's Gemini transform strips the search tools before
+        dispatch and grounding drops to zero silently, with no 400. No call site sets the flag
+        today because none mixes one in. The flag is not the mechanism on the Claude, Grok and
+        OpenAI branches, where that failure mode is simply unmeasured.
 
         Returns:
-            Gemini models receive googleSearch and urlContext tools. Claude models
-            receive web_search and web_fetch tools. Other models receive the OpenAI
-            web_search tool.
+            googleSearch + urlContext for a Gemini model, web_search + web_fetch for Claude,
+            web_search + x_search for Grok, and the OpenAI web_search tool for anything else.
         """
         if "gemini" in self.name:
             return cast("list[ToolParam]", [{"googleSearch": {}}, {"urlContext": {}}])
@@ -73,15 +114,21 @@ class ModelSettings(BaseModel):
 
 
 class RuntimeModelCatalog(BaseModel):
-    """Runtime model settings used by Discord bot LLM paths.
+    """The runtime tier table: one property per LLM purpose the bot dispatches on.
 
-    Keep caller lists in sync when moving runtime model usage.
+    Fieldless and configuration-free, so every cog builds its own instance instead of sharing
+    one. Each property below names its callers and the reason it sits at the tier it does; keep
+    those lists in sync when runtime model usage moves.
     """
 
     @computed_field
     @property
     def is_peak(self) -> bool:
         """Whether runtime model selection is in the peak-hour window.
+
+        Evaluated per read rather than cached, so a long-running process crosses the boundary
+        without a restart. A `computed_field` so a serialized catalog states which branch
+        `slow_model` was taken from, which is the only tier it decides.
 
         Returns:
             True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
@@ -185,8 +232,9 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `VoiceGenerator` (via `ReplyGeneratorCogs.voice_generator`).
 
         Returns:
-            Model settings whose name is dispatched on the `audio.speech` endpoint to
-            render a fierce QA reply to a voice clip. `effort` is unused for TTS.
+            Model settings whose name is dispatched on the `audio.speech` endpoint to render the
+            reply's `<generate-voice>` spans into one clip. Only `name` is read: that endpoint
+            takes no reasoning options, so `effort` is unused here.
         """
         return ModelSettings(name="gemini-3.1-flash-tts-preview")
 
@@ -202,7 +250,8 @@ class RuntimeModelCatalog(BaseModel):
         picks the reply mode and the effort grade decides how hard the answer model should
         think; both follow simple rules, so flash-lite is enough and the QA critical path
         stays short (the grade runs in parallel with the route under the same `route_done`
-        gate, so its latency hides behind the route entirely).
+        gate, so it costs nothing when it beats the route and at most the post-route
+        `EFFORT_GRACE_SECONDS` grace when it does not).
 
         Returns:
             Fast minimal-thinking settings.
@@ -231,17 +280,23 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `_handle_message_reply` (which overrides `effort` with the
         route-decided level), attachment modality gating, and dev scripts.
 
+        Its NAME is read as a capability signal well beyond the answer turn: whether it contains
+        `gemini` picks the attachment handler (Files API upload vs per-type inlining) and decides
+        whether a linked post's media is ingested at all, and `get_supported_modalities` gates
+        which attachments survive. Moving this tier off Gemini therefore changes what the bot can
+        read, not just how it writes.
+
         Returns:
-            Slow-path model settings for reply generation and summaries.
+            Slow-path model settings for reply generation and summaries, split peak / off-peak.
         """
-        # Pinned to the explicit gemini-3.1-pro-preview snapshot, not the gemini-pro-latest
-        # alias: the alias is silently downgraded to the gemini-3-pro generation on Google's
-        # side (its Interactions `thinking_level` enum rejects `medium`, allowing only
-        # low / high), while the explicit 3.1 snapshot supports `medium`.
-        # Both branches dispatch the same model today.
-        # the peak/off-peak split is kept on purpose because Gemini Pro has historically slowed
-        # down during peak hours and may be needed again.
-        # 2026/08/05 update: Testing if there is still an issue for Gemini 3.1 Pro will be routed to Gemini 3 Pro.
+        # Off-peak dispatches the `gemini-pro-latest` alias in full knowledge of the trap: Google
+        # silently downgrades that alias to the gemini-3-pro generation, whose Interactions
+        # `thinking_level` enum allows only low / high and rejects `medium`, where the explicit
+        # gemini-3.1-pro-preview snapshot this used to pin accepts it. 2026-08-05: deliberately
+        # back on the alias to re-measure whether that downgrade still happens; pin the snapshot
+        # again if it does.
+        # The peak / off-peak split is kept on purpose because Gemini Pro has historically slowed
+        # down during peak hours, which is why peak takes flash instead.
         if self.is_peak:
             return ModelSettings(name="gemini-flash-latest", effort="high")
         return ModelSettings(name="gemini-pro-latest", effort="high")
@@ -282,6 +337,11 @@ class RuntimeModelCatalog(BaseModel):
 class RouteClassification(BaseModel):
     """Structured reply-mode classification returned by the route model.
 
+    The only critical-path classification: dispatch waits on it. An unparsable or empty output
+    defaults to `QA`, and a `SUMMARY` carrying a URL is steered back to QA with both content-read
+    fields preserved, so the corrected route still ingests what the user asked about. Those two
+    fields are read on the QA route alone; every other route ignores them.
+
     Attributes:
         decision: The reply mode selected for the incoming Discord message.
         watch_video: Whether the QA answer should ingest a linked YouTube video.
@@ -312,8 +372,12 @@ class RouteClassification(BaseModel):
 class EffortGrade(BaseModel):
     """Structured answer-effort grade returned by the effort model.
 
-    Graded by a call that runs in parallel with the route; the answer model's effort is
-    overridden with it on the QA and SUMMARY paths.
+    Graded by a call that runs in parallel with the route, so it costs nothing when it finishes
+    first; when it does not, `_resolve_effort` waits for it on the QA / SUMMARY critical path
+    ahead of the answer turn, adding up to the post-route `EFFORT_GRACE_SECONDS` grace. The
+    answer model's effort is overridden with it on the QA and SUMMARY paths, while IMAGE and
+    VIDEO cancel the grading task. A timeout or failure falls back to `high`, this field's own
+    default, so a lost grade degrades to the most expensive setting, never the cheapest.
 
     Attributes:
         effort: Reasoning effort the answer model should spend on this message.

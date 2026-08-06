@@ -1,10 +1,22 @@
-"""LiteLLM model info lookup, replacing the runtime dependency on `litellm`.
+"""Per-token prices and accepted input modalities for a model name, read from LiteLLM's table.
 
-Fetches the LiteLLM upstream price table
-(https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json)
-on first use and memoizes it for the rest of the process. Returns
-`(0.0, 0.0)` for unknown models, and the reply footer then shows
-`$0.00000000` instead of an estimate.
+The runtime backend is LiteLLM Proxy, but nothing under `src/` imports the `litellm` package;
+the only thing this bot wants from that project is its published price table. So the table is
+fetched straight from the upstream repository on first use and memoized for the rest of the
+process, and rates are never hardcoded anywhere else.
+
+Two unrelated consumers read it. The usage footer prices a finished reply, and the attachment
+gate asks which modalities the answer model accepts before anything is uploaded
+(`gen_reply/input.py`). The footer is priced from two different cogs (`gen_reply/streaming.py`
+and `research/cog.py`), and no cog may import another, which is why the lookup sits in `utils/`
+rather than inside one of them.
+
+What it promises is an estimate that degrades quietly on a *missing* model: an entry the table
+does not carry answers `(0.0, 0.0)`, so the footer shows `$0.00000000` instead of a price
+borrowed from some other model, and an entry with no `supported_modalities` answers a baseline
+set. What it deliberately does not do is hide a broken fetch. The first lookup in a process is a
+blocking HTTP call whose failure reaches the caller, which is why `cli.py` warms the cache off
+the event loop at startup and `gen_reply/input.py` handles a cold-start failure of its own.
 """
 
 from typing import Any
@@ -19,7 +31,14 @@ MODEL_INFO_URL = (
 
 
 class ModelPriceEntry(BaseModel):
-    """Subset of one LiteLLM price table entry used by this bot."""
+    """The prices and accepted modalities this bot reads out of one LiteLLM price table entry.
+
+    `extra="ignore"` is already pydantic's default; it is pinned here so that a later switch to
+    `extra="forbid"` has to be a deliberate decision rather than a tidy-up, because an upstream
+    entry carries dozens of other fields and grows new ones, and none of them should be able to
+    fail a load. Every field defaults, so a bare `ModelPriceEntry()` doubles as the answer for a
+    model the table does not list.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -37,7 +56,23 @@ class ModelPriceEntry(BaseModel):
 
 @cache
 def load_model_info() -> dict[str, ModelPriceEntry]:
-    """Returns the validated LiteLLM model info table, fetched once per process."""
+    """Fetches and validates the whole LiteLLM price table, once per process.
+
+    A blocking HTTP call on the calling thread, so `cli.py` warms it through
+    `asyncio.to_thread` at startup rather than letting the first AI reply pay for it on the
+    event loop. `@cache` memoizes only a successful load, so an unreachable table (or one entry
+    that will not validate, which loses the whole load) is retried by the next caller instead
+    of the failure being memoized for the life of the process.
+
+    Both failures leave here uncaught: a table that cannot be fetched, answers a non-2xx status
+    or does not decode as JSON surfaces as a `requests.RequestException` (a `Timeout` at the 5s
+    bound being the routine one), and an entry this model cannot parse as a
+    `pydantic.ValidationError`. Neither gets a `Raises:` section only because DOC502 reserves
+    that for an exception raised in this body.
+
+    Returns:
+        Every model name in the table mapped to its parsed entry.
+    """
     prices: dict[str, ModelPriceEntry] = {}
     response = requests.get(url=MODEL_INFO_URL, timeout=5)
     response.raise_for_status()
@@ -49,16 +84,17 @@ def load_model_info() -> dict[str, ModelPriceEntry]:
 
 
 def get_token_rates(model_name: str) -> tuple[float, float]:
-    """Returns `(input_cost_per_token, output_cost_per_token)` for `model_name`.
+    """Looks up the per-token input and output prices for one model.
 
-    Returns `(0.0, 0.0)` for unknown models so the reply footer shows
-    `$0.00000000` instead of an estimate.
+    A model the table does not list answers `(0.0, 0.0)`, so the reply footer shows
+    `$0.00000000` rather than a price borrowed from another entry. The first call in a process
+    pays for the table fetch and propagates its failure; see `load_model_info`.
 
     Args:
-        model_name: Model identifier to look up in the cached price table.
+        model_name (str): Model identifier as LiteLLM spells it in the table.
 
     Returns:
-        Input and output token rates for the model.
+        `(input_cost_per_token, output_cost_per_token)`, in USD.
     """
     model_info = load_model_info()
     info = model_info.get(model_name, ModelPriceEntry())
@@ -66,18 +102,21 @@ def get_token_rates(model_name: str) -> tuple[float, float]:
 
 
 def get_supported_modalities(model_name: str) -> set[str]:
-    """Returns the input modalities accepted by `model_name`.
+    """Looks up the input modalities one model accepts.
 
-    Reads `supported_modalities` from the cached LiteLLM price table. The
-    field is unevenly populated upstream (Claude entries omit it entirely),
-    so missing entries default to `{"text", "image"}`, the safe baseline
-    that virtually every modern multimodal LLM accepts.
+    Upstream populates `supported_modalities` unevenly (Claude entries omit it entirely), so an
+    absent field and an unlisted model both answer `{"text", "image"}`, the baseline virtually
+    every modern multimodal LLM accepts. The fallback has to be that set rather than an empty
+    one because `gen_reply/input.py` drops an attachment whose modality is missing from it, and
+    an empty answer would silently drop every attachment for a model the table has not caught
+    up with. The first call in a process pays for the table fetch and propagates its failure;
+    see `load_model_info`.
 
     Args:
-        model_name: Model identifier to look up in the cached price table.
+        model_name (str): Model identifier as LiteLLM spells it in the table.
 
     Returns:
-        Set of modality strings (e.g. `{"text", "image", "audio", "video"}`).
+        Modality strings such as `{"text", "image", "audio", "video"}`.
     """
     model_info = load_model_info()
     info = model_info.get(model_name, ModelPriceEntry())
