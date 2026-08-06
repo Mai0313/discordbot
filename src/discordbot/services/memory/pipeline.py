@@ -1,9 +1,44 @@
 """Background orchestration for the two-phase memory pipeline.
 
-The pipeline is keyed by an opaque scope (see ``store``), so the same
-orchestration drives both per-user and per-server (bot self) memory. The
-flavor-specific bits are injected: ``subject`` names the extraction target and
-``extractor`` carries the flavor's prompts.
+The scheduler half of ``services/memory/``: ``store.py`` owns the files, ``extraction.py`` owns
+the LLM calls, ``deltas.py`` owns what a delta batch may do, and this module decides when any of
+it runs. It is keyed by an opaque scope (see ``store``), so the same orchestration drives both
+per-user and per-server (bot self) memory. The flavor-specific bits are injected: ``subject``
+names the extraction target and ``extractor`` carries the flavor's prompts.
+
+Phase 1 (``schedule_memory_update`` -> ``_run_memory_update``) runs one extraction per reply and
+appends the surviving observations to ``raw.md``. Phase 2 (``_consolidate_locked``) fires once
+that backlog passes ``RAW_CONSOLIDATION_THRESHOLD`` and the cooldown has elapsed, fanning the
+batch out over the scope's compartments and applying each call's deltas. Both are
+fire-and-forget and must never add reply-path latency, so an LLM failure silently keeps the
+previous state; ``raw.md`` is phase 2's durable, re-entrant queue, which is why consolidation
+needs no job row of its own while phase 1 stages one in ``reply.db`` (see ``database.py``).
+
+The invariants this file is responsible for:
+
+* Every file write sits under ``store.scope_lock`` and immediately after a ``cleared_since``
+  guard with no ``await`` in between. That, not a drain, is what lets ``clear_scope_memory``
+  erase a scope without waiting minutes for a running consolidation to release the lock.
+* ``global`` consolidates first, and each compartment call is handed ONLY the evidence routed
+  to it, which is what makes "a guild-locked observation cannot reach ``global/``" structural
+  rather than a rule the prompt asks the model to follow. The tone note is the one genuinely
+  cross-compartment tier, so it gets its own call whose deltas code discards.
+* The raw batch retires only when every compartment applied. Replaying a partly applied
+  fan-out is safe because a delta is an id-keyed upsert.
+* Consolidation and regeneration run under the scope lock plus a permit from the process-wide
+  ``MEMORY_GLOBAL_CONCURRENCY`` semaphore, and their compartment fan-out is bounded as a
+  WHOLE by one timeout (each individual call carries the shorter one, in ``extraction.py``),
+  so the worst-case lock hold does not multiply by the number of compartments.
+
+Module-level state (in-flight tasks, the deferred replay, the per-scope cooldown stamps) is
+process-local and deliberately so: it is scheduling bookkeeping, not memory content. The
+loop-bound helpers rebuild themselves on a loop change and the rest is reset by the
+``memory_isolated_dir`` fixture.
+
+Callers: ``cogs/gen_reply/cog.py`` schedules a turn after each QA / SUMMARY reply and drives the
+restart sweep from ``on_ready``; ``cogs/memory/`` runs the user-facing rebuild and clear; and
+``scripts/regen_memories.py`` / ``scripts/migrate_memories.py`` reuse ``regenerate_main_memory``
+offline.
 """
 
 import time
@@ -76,7 +111,7 @@ from discordbot.services.memory.extraction import (
 )
 from discordbot.services.memory.git_history import memory_git
 
-# Outcome of a from-scratch main-file rebuild. Aliased so the background
+# Outcome of a from-scratch rebuild of every compartment. Aliased so the background
 # scheduler's task dict shares the exact type (asyncio.Task is invariant in its
 # result type, so a Literal cannot stand in for a bare str).
 _RegenerationResult = Literal["regenerated", "no_evidence", "failed", "cooldown"]
@@ -90,8 +125,8 @@ class _PendingMemoryUpdate(BaseModel):
         transcript: The rendered phase-1 input captured for the skipped turn
             (already folds in the reply), so the replay needs no re-render.
         extractor: The extraction service to run the replayed update with.
-        identity: Single-line target identity stamped into the main memory
-            file as human-inspection metadata.
+        identity: Single-line owner identity (`<name> [id: N]`), parsed by
+            `facts.parse_identity` and stamped onto every fact this turn writes.
         captured_at: `time.monotonic()` when the turn was captured, so a clear
             that lands before the replay can abort it via `cleared_since`.
         token: Process-local logical token persisted with the deferred turn's DB
@@ -110,11 +145,7 @@ class _PendingMemoryUpdate(BaseModel):
         ..., description="The extraction service to run the replayed update with."
     )
     identity: str = Field(
-        ...,
-        description=(
-            "Single-line target identity stamped into the main memory file as "
-            "human-inspection metadata."
-        ),
+        ..., description="Single-line owner identity stamped onto every fact this turn writes."
     )
     captured_at: float = Field(
         ...,
@@ -140,15 +171,15 @@ _inflight_loop: asyncio.AbstractEventLoop | None = None
 # not need a loop-change reset. Tests clear it through the conftest fixture.
 _last_consolidation: dict[str, float] = {}
 
-# Consecutive refused consolidation batches per scope. A refusal keeps the raw batch
-# for retry, which is right for a transient LLM failure and wrong for a mass-delete the
-# model reproduces verbatim: that retries every cooldown forever while the scope's memory
-# silently stops updating. Past the threshold the log escalates from warn to error, since
-# CONTRIBUTING puts "an unexpected failure that lost a deliverable" at error.
 # The exact header a tone note must lead with; the tier is injected on every reply,
 # so anything else is a rewrite that did not land and must not be written.
 _TONE_HEADER = "## 語氣偏好"
 
+# Consecutive refused consolidation batches per (scope, compartment). A refusal keeps the
+# raw batch for retry, which is right for a transient LLM failure and wrong for a mass-delete
+# the model reproduces verbatim: that retries every cooldown forever while the scope's memory
+# silently stops updating. Past the threshold the log escalates from warn to error, since
+# CONTRIBUTING puts "an unexpected failure that lost a deliverable" at error.
 _consecutive_rejections: dict[tuple[str, str], int] = {}
 _MAX_QUIET_REJECTIONS = 3
 
@@ -172,12 +203,19 @@ _memory_semaphore_holder = LoopLocalSemaphore(capacity_provider=lambda: MEMORY_G
 
 
 def _memory_semaphore() -> asyncio.Semaphore:
-    """Returns the process-wide semaphore, rebuilt when the event loop changes."""
+    """Returns the process-wide background-memory semaphore.
+
+    Taken through this accessor at each use rather than cached: one held across an event-loop
+    change is bound to the dead loop and raises there.
+
+    Returns:
+        The semaphore for the running loop, rebuilt (at full permits) when the loop changed.
+    """
     return _memory_semaphore_holder.get()
 
 
-# Detached best-effort reply.db writes (the deferred-turn persist), held so the
-# event loop keeps a strong reference until they finish; rebuilt per loop.
+# Detached best-effort reply.db writes (the deferred-turn persist), held so the event loop
+# keeps a strong reference until they finish; each task discards itself when it is done.
 _db_tasks: set[asyncio.Task[None]] = set()
 
 # A clear and the short reply.db staging transaction must not pass each other:
@@ -188,7 +226,17 @@ _staging_locks = KeyedLockManager[str]()
 
 
 def flavor_of(scope: str) -> memory_db.MemoryJobFlavor:
-    """Maps a scope to its persisted memory flavor (`server_scope` carries a '/')."""
+    """Maps a scope to its memory flavor, read off the scope key alone.
+
+    The key IS the discriminator: `server_scope` builds `bot_memories/<server_id>` and a user
+    scope is a bare id, so no lookup or stored column is needed to tell them apart.
+
+    Args:
+        scope (str): The opaque memory scope (see `store`).
+
+    Returns:
+        `"server"` for a bot-per-server scope, `"user"` otherwise.
+    """
     return "server" if "/" in scope else "user"
 
 
@@ -197,7 +245,11 @@ async def _safe(coro: Awaitable[None]) -> None:
 
     Persistence is an augmentation layer (the opposite of `cogs/research/cog.py`,
     which lets DB errors raise into its run loop): a reply.db failure must never
-    break the in-memory fire-and-forget memory pipeline.
+    break the in-memory fire-and-forget memory pipeline. `clear_job` is the one
+    memory DB call deliberately NOT routed through here.
+
+    Args:
+        coro (Awaitable[None]): The DB write to await.
     """
     try:
         await coro
@@ -206,7 +258,15 @@ async def _safe(coro: Awaitable[None]) -> None:
 
 
 def _spawn_db(coro: Awaitable[None]) -> None:
-    """Runs a detached best-effort DB write, tracked so it is not GC'd mid-flight."""
+    """Runs a detached best-effort DB write, without awaiting it.
+
+    The task is held in `_db_tasks` until it finishes, because the event loop keeps only a weak
+    reference to a running task and would otherwise be free to collect it mid-write. Tests drain
+    that set rather than awaiting anything returned from here.
+
+    Args:
+        coro (Awaitable[None]): The DB write to run detached.
+    """
     task = asyncio.ensure_future(_safe(coro=coro))
     _db_tasks.add(task)
     task.add_done_callback(_db_tasks.discard)
@@ -217,10 +277,19 @@ async def _stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's cap
 ) -> None:
     """Stages one turn only in the memory lifetime that captured it.
 
-    The short per-scope lock serializes staging with the clear's tombstone write.
-    A row committed before a clear is scrubbed by that newer logical token. A row
-    waiting while a clear is in progress sees its closing stamp before it can
-    write, so it cannot leave a during-clear transcript for restart to resume.
+    The short per-scope staging lock serializes this with the clear's tombstone write. A row
+    committed before a clear is scrubbed by that newer logical token; a row waiting while a
+    clear is in progress sees its closing stamp before it can write, so it cannot leave a
+    during-clear transcript for the restart sweep to resume. That lock never spans extraction
+    or consolidation, so it stays microseconds rather than minutes.
+
+    Args:
+        scope (str): The opaque memory scope this turn belongs to.
+        subject (str): The phase-1 directive naming the extraction target.
+        transcript (str): The rendered phase-1 input for this turn.
+        identity (str): Single-line owner identity persisted with the row.
+        token (int): Logical version token; the row is newest-wins on it.
+        captured_at (float): `time.monotonic()` at enqueue, checked against `cleared_since`.
     """
     async with _staging_locks.hold(key=scope):
         if cleared_since(scope=scope, started_at=captured_at):
@@ -236,7 +305,25 @@ async def _stage_turn(  # noqa: PLR0913 -- one row's columns plus the turn's cap
 
 
 async def _clear_scope_critical(scope: str) -> tuple[bool, bool]:
-    """Completes the non-interruptible durable portion of one memory clear."""
+    """Completes the non-interruptible durable portion of one memory clear.
+
+    Split out of `clear_scope_memory` so it can run as a shielded task: the tombstone must be
+    durable before any file is removed, and the closing `mark_cleared` must land whatever the
+    file pass did, so this stretch cannot be interrupted part way. It runs under the staging
+    lock, never the minutes-long scope lock.
+
+    Both halves can fail into the caller: `clear_job` refuses a scope whose row is already
+    newer than this clear (nothing has been deleted at that point), and the file pass walks
+    the tiers one at a time and so can stop part way. `mark_cleared` runs in a `finally`
+    either way, because the next memory lifetime must not begin until the pass is over.
+
+    Args:
+        scope (str): The opaque memory scope being erased.
+
+    Returns:
+        `(removed_files, removed_job)` — whether the file tiers held anything, and whether a
+        non-cleared reply.db row was scrubbed.
+    """
     async with _staging_locks.hold(key=scope):
         removed_job = await memory_db.clear_job(
             scope=scope, flavor=flavor_of(scope=scope), token=memory_db.new_token()
@@ -253,7 +340,20 @@ async def _clear_scope_critical(scope: str) -> tuple[bool, bool]:
 async def _await_clear_critical(
     task: asyncio.Task[tuple[bool, bool]],
 ) -> tuple[tuple[bool, bool], bool]:
-    """Drains the clear task and reports whether its caller requested cancellation."""
+    """Drains the clear task and reports whether its caller requested cancellation.
+
+    Loops on `asyncio.shield` rather than awaiting once: a shield only detaches THIS await, so
+    a second cancellation while the first is being absorbed would otherwise escape with the
+    durable work still running. Cancellation is recorded and re-raised by the caller, after the
+    erase has been recorded, instead of propagating from here.
+
+    Args:
+        task (asyncio.Task[tuple[bool, bool]]): The running `_clear_scope_critical` task.
+
+    Returns:
+        The task's `(removed_files, removed_job)` result, paired with whether the caller
+        cancelled while it ran.
+    """
     caller_cancelled = False
     while not task.done():
         try:
@@ -287,29 +387,28 @@ async def clear_scope_memory(scope: str) -> bool:
     an earlier INSERT is scrubbed by the newer tombstone, and a turn captured
     during the clear waits for the closing stamp then writes nothing.
 
+    Two failures reach the caller. The `memory_job` tombstone write is the one memory DB call
+    that is not best-effort — swallowing it would leave a resumable row that resurrects the
+    memory on the next restart — and it runs before any deletion, so that failure alone leaves
+    every tier in place, the unwritable-tombstone case (`clear_job` refusing a newer row)
+    included. The file deletion walks the tiers one at a time and can therefore stop part way.
+    A clear is idempotent, so the caller recovers by retrying rather than by claiming either
+    outcome. Neither failure rolls back the stamp or the dropped replay: a failed clear still
+    aborts the turns that were in flight for this scope. That is deliberate — the alternative
+    is letting a turn the user tried to erase survive because the erase failed — but it is why
+    the caller must not report a failure as "nothing happened".
+
+    Args:
+        scope (str): The opaque memory scope to erase.
+
+    Returns:
+        True when anything was actually removed.
+
     Raises:
-        Exception: From the `memory_job` tombstone write, the one memory DB call that is
-            not best-effort: swallowing it would leave a resumable row that
-            resurrects the memory on the next restart. It runs before the file
-            deletion, so that failure alone leaves every tier in place — including
-            the case where a row newer than this clear makes the tombstone
-            unwritable, which `clear_job` refuses rather than erasing behind it.
-        OSError: From the file deletion, which walks the tiers one at a time and
-            can therefore stop part way. A clear is idempotent, so the caller
-            recovers by retrying rather than by claiming either outcome.
         asyncio.CancelledError: Re-raised for a caller that cancelled, after the
             durable work has drained AND after the erase has been recorded. What
             was erased does not shrink because the caller went away, so neither
             does the record of it.
-
-    Note that neither failure rolls back the stamp or the dropped replay: a
-    failed clear still aborts the turns that were in flight for this scope. That
-    is deliberate — the alternative is letting a turn the user tried to erase
-    survive because the erase failed — but it is why the caller must not report a
-    failure as "nothing happened".
-
-    Returns:
-        True when anything was actually removed.
     """
     # Stamped before anything else so a row write already in flight sees the
     # clear on its own re-check. Ordering the stamp first is what makes the
@@ -360,9 +459,23 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
 ) -> None:
     """Starts a background memory update without delaying the reply path.
 
+    The reply-path entry point, called after the reply is on screen. It returns as soon as the
+    task is created; every failure past that point is logged, never raised at the caller.
+
     The transcript is rendered eagerly here (pure, sub-ms, already past the reply)
     so the persisted job and the in-memory replay both carry a plain string and
     `_run_memory_update` re-renders nothing.
+
+    Args:
+        scope (str): The opaque memory scope to update.
+        subject (str): The phase-1 directive naming the extraction target.
+        message_list (list[EasyInputMessageParam]): The turn's history, rendered into the
+            transcript. The user flavor passes a memory-free, target-centered list
+            (`target_centered_memory_messages`); the server flavor passes it whole, since
+            every message is community context.
+        full_reply (str): The bot's own reply, appended to the transcript as secondary evidence.
+        extractor (MemoryExtractorAI): The flavor's extraction service, carrying its prompts.
+        identity (str): Single-line owner identity stamped onto the facts this turn writes.
     """
     transcript = transcript_from_messages(message_list=message_list, full_reply=full_reply)
     _enqueue_memory_update(
@@ -384,7 +497,20 @@ def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
     identity: str,
     token: int,
 ) -> None:
-    """Re-enqueues a persisted phase-1 turn on restart, reusing its stored token."""
+    """Re-enqueues a persisted phase-1 turn on restart, reusing its stored token.
+
+    The restart sweep's entry point, fed straight from a `memory_job` row. The stored token
+    is reused rather than minted so the terminal write still guards on the id the row carries;
+    a fresh one would make this look like a newer turn than the row it is resuming.
+
+    Args:
+        scope (str): The opaque memory scope the row belongs to.
+        subject (str): The phase-1 directive read back from the row.
+        transcript (str): The rendered phase-1 input the row kept.
+        extractor (MemoryExtractorAI): The extraction service matching the row's flavor.
+        identity (str): Single-line owner identity read back from the row.
+        token (int): The row's logical version token, reused for the terminal write.
+    """
     _enqueue_memory_update(
         scope=scope,
         subject=subject,
@@ -403,7 +529,21 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     identity: str,
     token: int,
 ) -> None:
-    """Schedules (or defers) one rendered-transcript update, backed by a reply.db row."""
+    """Schedules (or defers) one rendered-transcript update, backed by a reply.db row.
+
+    One extraction per scope at a time. While one runs, only the NEWEST skipped turn is kept
+    and replayed afterwards: its history window already contains the earlier skipped turns, so
+    one replay recovers the dropped signal without a real queue. A deferred turn is persisted
+    immediately so a redeploy before it runs still resumes it.
+
+    Args:
+        scope (str): The opaque memory scope to update.
+        subject (str): The phase-1 directive naming the extraction target.
+        transcript (str): The already-rendered phase-1 input.
+        extractor (MemoryExtractorAI): The flavor's extraction service.
+        identity (str): Single-line owner identity for this turn's writes.
+        token (int): Logical version token, minted per turn or reused from a resumed row.
+    """
     global _inflight_loop  # noqa: PLW0603 -- process task de-dupe
     loop = asyncio.get_running_loop()
     if _inflight_loop is not loop:
@@ -455,7 +595,16 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
 
 
 def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
-    """Clears the in-flight slot, logs failures, and replays a pending update."""
+    """Clears the in-flight slot, logs failures, and replays a pending update.
+
+    A done-callback, so it runs on the event loop with no caller to raise into and must swallow
+    whatever the turn raised. A replay is skipped (and the row marked done) when the scope was
+    cleared after the deferred turn was captured, so a wipe cannot be undone by a queued turn.
+
+    Args:
+        scope (str): The scope whose in-flight slot this task occupied.
+        task (asyncio.Task[None]): The finished `_run_memory_update` task.
+    """
     if _inflight_tasks.get(scope) is task:
         _inflight_tasks.pop(scope, None)
     if task.cancelled():
@@ -513,6 +662,15 @@ async def _run_memory_update(  # noqa: PLR0913, PLR0911 -- schedule_memory_updat
     `captured_at` is when the turn was scheduled, and every clear check runs
     against it rather than a worker-local clock, so a clear that lands while this
     turn is still queued aborts it too.
+
+    Args:
+        scope (str): The opaque memory scope to update.
+        subject (str): The phase-1 directive naming the extraction target.
+        transcript (str): The rendered phase-1 input for this turn.
+        extractor (MemoryExtractorAI): The flavor's extraction service.
+        identity (str): Single-line owner identity stamped onto this turn's writes.
+        token (int): Logical version token guarding every write for this turn's row.
+        captured_at (float): `time.monotonic()` at enqueue, the reference for every clear check.
     """
     if cleared_since(scope=scope, started_at=captured_at):
         # Cleared between capture and start: staging the row would hand the
@@ -601,6 +759,9 @@ async def safe_list_resumable() -> list[memory_db.MemoryJob]:
 
     Wrapped so a reply.db read failure degrades to "nothing to resume" instead of
     breaking `on_ready`; the in-memory pipeline keeps working regardless.
+
+    Returns:
+        The `pending` and `failed` rows, or an empty list when the read failed.
     """
     try:
         return await memory_db.list_resumable()
@@ -615,6 +776,12 @@ def needs_consolidation(scope: str) -> bool:
     A cheap file read (no lock), used to avoid queuing a per-scope task on the
     global semaphore just to discover it is under threshold; `consolidate_if_needed`
     re-checks under the lock, which stays the authority.
+
+    Args:
+        scope (str): The opaque memory scope to test.
+
+    Returns:
+        True when the scope's raw backlog is over threshold right now.
     """
     return _should_consolidate(scope=scope)
 
@@ -626,6 +793,11 @@ async def consolidate_if_needed(scope: str, extractor: MemoryExtractorAI, identi
     private and assume the scope lock + semaphore are held, so this wrapper takes
     both and re-checks the threshold under the lock. It swallows its own errors
     (a background digest must never surface), so the caller just spawns it.
+
+    Args:
+        scope (str): The opaque memory scope to consolidate.
+        extractor (MemoryExtractorAI): The extraction service matching the scope's flavor.
+        identity (str): Single-line owner identity stamped onto the facts this run writes.
     """
     try:
         async with scope_lock(scope=scope), _memory_semaphore():
@@ -640,7 +812,18 @@ async def consolidate_if_needed(scope: str, extractor: MemoryExtractorAI, identi
 
 
 def _should_consolidate(scope: str) -> bool:
-    """Whether the raw backlog warrants a consolidation right now."""
+    """Whether the raw backlog warrants a consolidation right now.
+
+    Two triggers: a byte size that bypasses the cooldown, and an entry count that does not.
+    Assumes the caller holds the scope lock when the answer is about to be acted on, since the
+    backlog is read straight off disk.
+
+    Args:
+        scope (str): The opaque memory scope to test.
+
+    Returns:
+        True when a consolidation should run for this scope now.
+    """
     if raw_file_bytes(scope=scope) >= RAW_CONSOLIDATION_MAX_BYTES:
         # A verbose burst consolidates regardless of the cooldown so the raw
         # file cannot sit large until the timer expires.
@@ -676,6 +859,16 @@ async def _consolidate_locked(
     The raw batch is retired only when every compartment applied. A retry re-runs the
     ones that already landed, which is safe because a delta is an upsert keyed by an id
     the model echoes back and, failing that, by the evidence keys the fact carries.
+
+    The caller MUST already hold `scope_lock` and a semaphore permit; nothing here takes
+    either. Every write is guarded on `started_at`, so a clear that lands mid-fan-out aborts
+    the rest instead of overtaking it.
+
+    Args:
+        scope (str): The opaque memory scope being consolidated.
+        started_at (float): `time.monotonic()` this run is dated from, for the clear checks.
+        extractor (MemoryExtractorAI): The extraction service matching the scope's flavor.
+        identity (str): Single-line owner identity stamped onto the facts this run writes.
     """
     flavor = flavor_of(scope=scope)
     owner = parse_identity(identity=identity, fallback_owner_id=scope_owner_id(scope=scope))
@@ -784,12 +977,28 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
     extractor: MemoryExtractorAI,
     request_parts: _CompartmentInput,
 ) -> DeltaOutcome | None:
-    """Runs and applies one compartment's consolidation; None means the LLM path failed.
+    """Runs and applies one compartment's consolidation, writing its facts.
 
     This call only ever sees the evidence routed to the compartment it is writing, which
     is what makes "a guild-locked observation cannot reach `global/`" structural rather
     than a rule the prompt asks the model to follow. The tone note, which is genuinely
     cross-compartment, is therefore NOT written here — see `_update_tone_note`.
+
+    Nothing is written on either failure, and both stop the caller's fan-out with the raw
+    batch intact; they are told apart only so the refusal can be counted and escalated.
+
+    Args:
+        scope (str): The opaque memory scope being consolidated.
+        compartment (str): The compartment directory this call writes (`global`, `dm`, `g/<id>`).
+        flavor (MemoryFlavor): Which section vocabulary and prompts apply.
+        owner (MemoryOwner): Provenance stamped onto every fact written here.
+        started_at (float): `time.monotonic()` the run is dated from, for the clear check.
+        extractor (MemoryExtractorAI): The extraction service running the consolidation call.
+        request_parts (_CompartmentInput): The per-compartment half of the request.
+
+    Returns:
+        What the delta batch did (`applied` False when it was refused whole), or None when
+        the LLM path failed or a clear landed before the first write.
     """
     existing = read_facts(scope=scope, compartment=compartment)
     rendered = render_existing_facts(facts=existing)
@@ -856,6 +1065,12 @@ def _record_rejection(scope: str, compartment: str, outcome: DeltaOutcome, store
     would; a mass deletion the model re-derives from the same unchanged inputs would not,
     and that scope then burns a consolidation call every cooldown while its memory quietly
     stops moving. The count is what tells an operator which of the two they are looking at.
+
+    Args:
+        scope (str): The opaque memory scope whose batch was refused.
+        compartment (str): The compartment the refused batch was aimed at.
+        outcome (DeltaOutcome): The refusal, carrying `rejected` as the reason.
+        stored (int): Facts the compartment held before the batch, for the log line.
     """
     # Keyed on the compartment as well: a scope with several compartments would
     # otherwise have one compartment's success reset another's stuck counter, and the
@@ -897,7 +1112,18 @@ async def _update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the b
     returns — so the unpartitioned input is safe by the same structural argument.
 
     Best-effort throughout: the note is a small always-read tier and the next
-    consolidation repairs a bad write, so a failure never touches the raw batch.
+    consolidation repairs a bad write, so a failure never touches the raw batch. A batch with
+    no tone signal is the normal case and is skipped without a call, and an empty output never
+    deletes the note — only `_rebuild_tone_note`, which saw all the evidence, may do that.
+    Server scopes have no tone tier at all and return immediately.
+
+    Args:
+        scope (str): The opaque memory scope whose note is being rewritten.
+        flavor (MemoryFlavor): Only `"user"` carries a tone note.
+        started_at (float): `time.monotonic()` the run is dated from, for the clear check.
+        extractor (MemoryExtractorAI): The extraction service running the tone call.
+        raw_entries (str): The WHOLE unpartitioned raw batch to draw tone evidence from.
+        today (str): ISO date passed to the consolidation request.
     """
     if flavor != "user":
         return
@@ -932,6 +1158,15 @@ def _compartments_to_run(scope: str, buckets: dict[str, str]) -> list[str]:
     Only compartments the batch actually routed evidence to: a call with an empty bucket
     has nothing to consolidate. `global` leads because every later compartment is handed
     its facts as read-only reference, so it must be up to date before they run.
+
+    Args:
+        scope (str): The opaque memory scope being consolidated. Not read: the answer comes
+            from the buckets alone, unlike its rebuild twin `_compartments_to_rebuild`, which
+            also lists what is already on disk.
+        buckets (dict[str, str]): The raw batch already partitioned by compartment.
+
+    Returns:
+        The compartments to consolidate, `global` first and the rest sorted.
     """
     ordered = [GLOBAL_COMPARTMENT] if buckets.get(GLOBAL_COMPARTMENT) else []
     ordered.extend(
@@ -946,6 +1181,13 @@ def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:
     Handed to the consolidation prompt so the model's own sense of what belongs here
     matches the directory it is writing into. It is guidance, not enforcement: the
     partition above already decided what evidence this call can see.
+
+    Args:
+        compartment (str): The compartment directory being written.
+        flavor (MemoryFlavor): A server scope has one compartment and its own wording.
+
+    Returns:
+        A one-line English description of who may read the compartment.
     """
     if flavor == "server":
         return "this server's own community memory; every member of this server can read it"
@@ -963,6 +1205,10 @@ def _report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
     cap, so this exists to tell the operator that the prompt-side sizing stopped
     working. Nothing is deleted here, which is what keeps the cap from fighting the
     next consolidation over facts it would immediately write back.
+
+    Args:
+        scope (str): The opaque memory scope just written.
+        flavor (MemoryFlavor): Which section headings the document renders with.
     """
     compartments = list_compartments(scope=scope)
     if not compartments:
@@ -994,14 +1240,18 @@ def _report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
 
 
 def _write_tone_result(scope: str, tone_markdown: str) -> None:
-    """Persists a consolidation's tone note when it is acceptable for this scope.
+    """Persists a tone-call result when it is acceptable for this scope.
 
-    Sits on the tone-consuming paths (accepted rewrite AND genuine no-op, both of
-    which retire the raw batch — a main no-op can still carry fresh tone signal
-    that would otherwise be consumed without landing). User scopes only, and only
-    a note starting with the exact `## 語氣偏好` header; an empty or malformed
-    output never deletes the existing note — the tier is best-effort and the next
-    consolidation repairs it.
+    The single write gate both tone callers pass through. User scopes only, and only a note
+    starting with the exact `## 語氣偏好` header, because that header is what the injected tier
+    is contracted to and anything else is a rewrite that did not land. An empty or malformed
+    output is dropped rather than written, so it never deletes the existing note; the tier is
+    best-effort and the next consolidation repairs it. Deleting is `_rebuild_tone_note`'s job,
+    and it calls `clear_tone` itself instead of coming through here.
+
+    Args:
+        scope (str): The opaque memory scope whose note is being written.
+        tone_markdown (str): The candidate note, as the model returned it.
     """
     if flavor_of(scope=scope) != "user":
         return
@@ -1011,7 +1261,14 @@ def _write_tone_result(scope: str, tone_markdown: str) -> None:
 
 
 def _tone_is_well_formed(tone_markdown: str) -> bool:
-    """Whether a tone note carries the exact header the injected tier is contracted to."""
+    """Whether a tone note carries the exact header the injected tier is contracted to.
+
+    Args:
+        tone_markdown (str): The candidate note.
+
+    Returns:
+        True when the note leads with `## 語氣偏好`.
+    """
     return tone_markdown.startswith(_TONE_HEADER)
 
 
@@ -1021,12 +1278,29 @@ def regeneration_has_evidence(scope: str) -> bool:
     Mirrors the evidence guard inside `regenerate_main_memory` cheaply (no full
     window read), so the command can surface "no observations yet" up front
     instead of scheduling a background rebuild that would silently do nothing.
+
+    Args:
+        scope (str): The opaque memory scope to test.
+
+    Returns:
+        True when unconsumed raw entries or a non-empty detail file exist.
     """
     return bool(read_raw_entries(scope=scope)) or detail_file_bytes(scope=scope) > 0
 
 
 def regeneration_on_cooldown(scope: str) -> bool:
-    """Whether a recent regeneration attempt blocks another one right now."""
+    """Whether a recent regeneration attempt blocks another one right now.
+
+    Read twice: once by the command for its up-front reply, and again under the scope lock,
+    which is the authority (queued invocations all pass the first check before the winner
+    stamps the attempt).
+
+    Args:
+        scope (str): The opaque memory scope to test.
+
+    Returns:
+        True when the last attempt is inside `MEMORY_REGENERATION_COOLDOWN_SECONDS`.
+    """
     last_attempt = _last_regeneration.get(scope)
     if last_attempt is None or cleared_since(scope=scope, started_at=last_attempt):
         # A clear since the last attempt wiped the memory that cooldown
@@ -1036,11 +1310,19 @@ def regeneration_on_cooldown(scope: str) -> bool:
 
 
 def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, identity: str) -> bool:
-    """Starts a background main-memory rebuild without blocking the command.
+    """Starts a background rebuild without blocking the command.
 
-    Returns False when a rebuild is already in flight for this scope (so the
-    caller can report "still rebuilding" instead of double-scheduling the
-    rebuild); True when a fresh background task was started.
+    A rebuild takes minutes, so `/memory regenerate` schedules it and replies immediately;
+    the outcome only ever reaches the log.
+
+    Args:
+        scope (str): The opaque memory scope to rebuild.
+        extractor (MemoryExtractorAI): The extraction service matching the scope's flavor.
+        identity (str): Single-line owner identity stamped onto the rebuilt facts.
+
+    Returns:
+        False when a rebuild is already in flight for this scope (so the caller can report
+        "still rebuilding" instead of double-scheduling it); True when a task was started.
     """
     running = _regeneration_tasks.get(key=scope)
     if running is not None and not running.done():
@@ -1056,7 +1338,16 @@ def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, ident
 
 
 def _finish_memory_regeneration(scope: str, task: asyncio.Task[_RegenerationResult]) -> None:
-    """Clears the in-flight slot and logs failures of a background rebuild."""
+    """Clears the in-flight slot and logs failures of a background rebuild.
+
+    A done-callback with no caller to raise into. Logged at `error` rather than the update
+    path's `warn` because a user asked for this rebuild and was told it was running, so a
+    crash lost a deliverable.
+
+    Args:
+        scope (str): The scope whose regeneration slot this task occupied.
+        task (asyncio.Task[_RegenerationResult]): The finished rebuild task.
+    """
     if _regeneration_tasks.get(key=scope) is task:
         _regeneration_tasks.pop(key=scope)
     if task.cancelled():
@@ -1091,6 +1382,20 @@ async def regenerate_main_memory(
 
     On an LLM failure the compartment is left exactly as it was, and the raw batch is
     retired only when every compartment rebuilt.
+
+    Unlike `_consolidate_locked` this takes the scope lock and a semaphore permit itself, since
+    its callers are a slash command and two offline scripts rather than a pipeline stage that
+    already holds both.
+
+    Args:
+        scope (str): The opaque memory scope to rebuild.
+        extractor (MemoryExtractorAI): The extraction service matching the scope's flavor.
+        identity (str): Single-line owner identity stamped onto the rebuilt facts.
+
+    Returns:
+        `"regenerated"` on success, `"no_evidence"` when the cold tiers are empty,
+        `"cooldown"` when the under-lock re-check refused, and `"failed"` on an LLM failure,
+        a timeout, or a clear landing mid-rebuild.
     """
     started_at = time.monotonic()
     async with scope_lock(scope=scope), _memory_semaphore():
@@ -1196,6 +1501,17 @@ async def _rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the 
     signal in this batch" — this pass saw everything, so no signal anywhere means a
     surviving note is stale and would keep injecting a preference the evidence no longer
     supports. This is the only path allowed to delete the note.
+
+    A failed LLM call reaches that same branch, so it clears the note as an empty result
+    would; `_update_tone_note` instead leaves the note alone when its call fails.
+
+    Args:
+        scope (str): The opaque memory scope whose note is being rebuilt.
+        flavor (MemoryFlavor): Only `"user"` carries a tone note.
+        started_at (float): `time.monotonic()` the rebuild is dated from, for the clear check.
+        extractor (MemoryExtractorAI): The extraction service running the tone call.
+        evidence (str): The whole rebuild corpus (detail tail plus unconsumed raw).
+        today (str): ISO date passed to the consolidation request.
     """
     if flavor != "user":
         return
@@ -1234,7 +1550,15 @@ def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
 
     Compartments that still hold files but have no surviving evidence are included so
     the rebuild empties them; leaving them alone would keep pre-rebuild facts visible
-    alongside the new ones with no evidence behind them.
+    alongside the new ones with no evidence behind them. `global` is always in the list for
+    the same reason, even when the corpus routed nothing to it.
+
+    Args:
+        scope (str): The opaque memory scope being rebuilt; its on-disk compartments are read.
+        buckets (dict[str, str]): The rebuild corpus already partitioned by compartment.
+
+    Returns:
+        The compartments to rebuild, `global` first and the rest sorted.
     """
     ordered = [GLOBAL_COMPARTMENT]
     ordered.extend(
@@ -1262,6 +1586,13 @@ def _replace_compartment(
 
     The mass-delete guard is off here for the reason it was skipped by the old whole-file
     rebuild: replacing the entire set is what this path is for.
+
+    Args:
+        scope (str): The opaque memory scope being rebuilt.
+        compartment (str): The compartment directory being replaced.
+        flavor (MemoryFlavor): Which section vocabulary the deltas are validated against.
+        owner (MemoryOwner): Provenance stamped onto every fact written here.
+        result (ConsolidatedMemory): The rebuild's deltas for this compartment.
     """
     before = {fact.fact_id for fact in read_facts(scope=scope, compartment=compartment)}
     outcome = apply_deltas(

@@ -19,6 +19,12 @@ that):
   prose in the consolidation prompt are a sweep here. Stable facts age by displacement
   against the freshest fact *in the same compartment*, so an active guild cannot evict
   the memory of one the user visits less often.
+
+Nothing here opens a file itself: `store.py` owns the layout and every read, write and
+delete goes through it, and the rest is pure. The callers are `pipeline.py` — the
+incremental fan-out and the `/memory regenerate` rebuild, the one path that passes
+`allow_mass_delete` — and `scripts/migrate_memories.py`, which reuses the partitioner to
+bucket a legacy scope's evidence.
 """
 
 import re
@@ -64,12 +70,18 @@ _GUILD_SOURCE_RE = re.compile(r"^guild (?P<guild_id>\d+)$")
 class DeltaOutcome(BaseModel):
     """What one compartment's delta batch did.
 
+    A rejected batch never touched the store, so every count on it except `dropped` is
+    zero and the caller may retry the same batch unchanged.
+
     Attributes:
         created: Facts written that did not exist before.
         updated: Existing facts rewritten in place.
         deleted: Facts removed.
-        dropped: Deltas refused individually (unknown section, empty body, bad id).
+        dropped: Deltas refused individually (unknown section, empty body, unusable id,
+            an alias row with no member id).
         rejected: Why the whole batch was refused, or "" when it was applied.
+        written: Ids this batch created or updated, which is what a rebuild diffs
+            against to drop the facts it did not re-emit.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -86,7 +98,11 @@ class DeltaOutcome(BaseModel):
 
     @property
     def applied(self) -> bool:
-        """Whether the batch landed (a batch that changed nothing still counts)."""
+        """Whether the batch landed (a batch that changed nothing still counts).
+
+        Returns:
+            True unless the whole batch was refused.
+        """
         return not self.rejected
 
 
@@ -100,6 +116,14 @@ def partition_raw_entries(raw_text: str, flavor: MemoryFlavor) -> dict[str, str]
 
     Each observation keeps the `## <timestamp>` header of the entry it came from, so
     the consolidation prompt still sees dated, oldest-first evidence.
+
+    Args:
+        raw_text (str): A whole `raw.md`, or a detail tail, in the same stored format.
+        flavor (MemoryFlavor): Which flavor wrote the batch; `server` skips routing.
+
+    Returns:
+        Compartment to that compartment's share of the text. A compartment the batch
+        routed nothing to is absent, which is how the caller skips consolidating it.
     """
     buckets: dict[str, list[tuple[str, str]]] = {}
     for timestamp, block in _iter_observations(text=raw_text):
@@ -117,6 +141,13 @@ def tone_evidence_from_raw(raw_text: str) -> str:
     partitioned: nearly half of all observations are `source_only`, and a bucket-gated
     tone note would simply stop updating for those conversations. Only the summary line
     is carried over, and the prompt is explicit that this block feeds the note alone.
+
+    Args:
+        raw_text (str): A whole `raw.md`, or a detail tail, in the same stored format.
+
+    Returns:
+        One `* <summary>` line per tone-bearing observation, or "" when the batch has
+        none — which is the normal case, and what lets the caller skip the tone call.
     """
     lines: list[str] = []
     for _, block in _iter_observations(text=raw_text):
@@ -135,7 +166,14 @@ def render_existing_facts(facts: list[MemoryFact]) -> str:
 
     The id leads each entry because it is the only handle an `update` or `delete` delta
     has; everything else is what the model needs to decide whether this batch changes
-    the fact at all.
+    the fact at all. Entries come out ordered by section then id, so an unchanged
+    compartment renders the same way on every run.
+
+    Args:
+        facts (list[MemoryFact]): One compartment's stored facts, in any order.
+
+    Returns:
+        The entries separated by blank lines, or "" for an empty compartment.
     """
     blocks: list[str] = []
     for fact in sorted(facts, key=lambda item: (item.section, item.fact_id)):
@@ -163,7 +201,26 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
 
     Deletes run before writes so a fact narrowed from one compartment to another can
     only ever be temporarily missing (it re-forms from evidence) instead of temporarily
-    present in both — the one ordering that cannot widen a fact's reach.
+    present in both — the one ordering that cannot widen a fact's reach. Within the
+    batch, a write of an id an earlier delta asked to delete cancels that delete, so one
+    fact dropped and re-stated in the same batch ends up rewritten rather than removed.
+
+    A shape error drops that one delta; only a mass deletion refuses the batch, and a
+    refused batch leaves the store untouched.
+
+    Args:
+        scope (str): Store subdirectory holding the compartment.
+        compartment (str): Compartment to write; also stamped onto every fact and mixed
+            into the ids this batch mints.
+        flavor (MemoryFlavor): Decides which sections a delta may name.
+        deltas (tuple[MemoryFactDelta, ...]): The changes consolidation asked for.
+        owner (MemoryOwner): Identity stamped onto every fact written here.
+        allow_mass_delete (bool): Whether to skip the net-deletion ceiling. Only the
+            regeneration path passes True, because replacing the whole set is what it
+            exists for.
+
+    Returns:
+        What the batch did, including the ids it wrote and why it was refused.
     """
     existing = {fact.fact_id: fact for fact in read_facts(scope=scope, compartment=compartment)}
     allowed = sections_for_flavor(flavor=flavor)
@@ -239,6 +296,20 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
     already back an existing fact becomes an `update` of that fact. The second rule is
     what makes a retried batch idempotent: ids are minted from the summary, so a model
     that rewords slightly on the retry would otherwise file a duplicate.
+
+    A `delete` naming an id this compartment does not hold is dropped rather than
+    re-aimed; there is nothing to remove and guessing a target would remove the wrong
+    fact.
+
+    Args:
+        delta (MemoryFactDelta): The change to resolve.
+        compartment (str): Compartment being written, mixed into any id minted here.
+        existing (dict[str, MemoryFact]): This compartment's stored facts by id.
+        allowed (frozenset[MemorySection]): Sections this flavor accepts.
+
+    Returns:
+        The id to act on paired with whether it is a delete, or None when the delta
+        must be dropped.
     """
     if delta.section not in allowed:
         logfire.warn("Memory delta names an unknown section; dropping", section=delta.section)
@@ -262,13 +333,34 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
 
 
 def _merged_keys(delta: MemoryFactDelta, previous: MemoryFact | None) -> tuple[str, ...]:
-    """Unions a delta's evidence keys with whatever the fact already carried."""
+    """Unions a delta's evidence keys with whatever the fact already carried.
+
+    Args:
+        delta (MemoryFactDelta): The change being applied.
+        previous (MemoryFact | None): The fact being rewritten, or None for a create.
+
+    Returns:
+        The merged keys, sorted and deduplicated, with empty ones dropped.
+    """
     existing_keys = previous.keys if previous is not None else ()
     return tuple(sorted({*existing_keys, *(key for key in delta.from_keys if key)}))
 
 
 def _fact_sharing_keys(delta: MemoryFactDelta, existing: dict[str, MemoryFact]) -> str | None:
-    """Returns an existing fact id whose evidence keys overlap this delta's."""
+    """Returns an existing fact id whose evidence keys overlap this delta's.
+
+    The first overlap wins: a key backing two facts is a consolidation the model has yet
+    to make, and picking one of them is what turns the retry into an update of it rather
+    than a third copy.
+
+    Args:
+        delta (MemoryFactDelta): The change looking for a fact to land on.
+        existing (dict[str, MemoryFact]): This compartment's stored facts by id.
+
+    Returns:
+        The matching fact id, or None when the delta cites no keys or none of them are
+        already stored.
+    """
     if not delta.from_keys:
         return None
     wanted = set(delta.from_keys)
@@ -291,6 +383,19 @@ def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
 
     `permanent` facts, anything filed in the `permanent` section, and member-alias
     rows never age.
+
+    The first rule keys on the SECTION rather than the durability, and the two never
+    overlap: a fact filed under `recent` is judged by its TTL alone, whatever durability
+    it carries.
+
+    Args:
+        scope (str): Store subdirectory holding the compartment.
+        compartment (str): Compartment to sweep; the stable window anchors inside it.
+        today (datetime): Day boundary the `recent` TTL is measured against, normally
+            `today_utc`.
+
+    Returns:
+        How many fact files were deleted.
     """
     facts = read_facts(scope=scope, compartment=compartment)
     stable = [fact.last_confirmed for fact in facts if fact.durability == "stable"]
@@ -320,7 +425,15 @@ def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
 
 
 def _compartment_for_block(block: str) -> str:
-    """Routes one observation block to its compartment from its stamped fields."""
+    """Routes one observation block to its compartment from its stamped fields.
+
+    Args:
+        block (str): One `### <category>` observation, fields included.
+
+    Returns:
+        The compartment name; a `source_only` block with no usable source falls back to
+        the owner's own DMs rather than to `global`.
+    """
     fields = _fields_of(block=block)
     if fields.get("sharing") != "source_only":
         # `global`, and anything predating the stamped fields, is cross-server safe.
@@ -338,7 +451,14 @@ def _compartment_for_block(block: str) -> str:
 
 
 def _fields_of(block: str) -> dict[str, str]:
-    """Extracts one observation block's `- name: value` fields."""
+    """Extracts one observation block's `- name: value` fields.
+
+    Args:
+        block (str): One `### <category>` observation, fields included.
+
+    Returns:
+        The fields by name; a block written before a field existed simply lacks it.
+    """
     fields: dict[str, str] = {}
     for line in block.splitlines():
         match = _FIELD_RE.match(line)
@@ -348,7 +468,18 @@ def _fields_of(block: str) -> dict[str, str]:
 
 
 def _iter_observations(text: str) -> list[tuple[str, str]]:
-    """Splits a raw or detail file into `(entry timestamp, observation block)` pairs."""
+    """Splits a raw or detail file into `(entry timestamp, observation block)` pairs.
+
+    Both files share one format, which is what lets a rebuild feed the detail tail
+    through the same partitioner as a live batch. Anything before the first entry header
+    keeps an empty timestamp, and `_render_entries` emits no header for one.
+
+    Args:
+        text (str): A whole `raw.md` or detail tail.
+
+    Returns:
+        One pair per observation, in file order, with blank blocks skipped.
+    """
     pairs: list[tuple[str, str]] = []
     timestamp = ""
     current: list[str] = []
@@ -373,7 +504,20 @@ def _iter_observations(text: str) -> list[tuple[str, str]]:
 
 
 def _render_entries(blocks: list[tuple[str, str]]) -> str:
-    """Re-renders bucketed observation blocks under their original entry headers."""
+    """Re-renders bucketed observation blocks under their original entry headers.
+
+    A header is emitted only when the timestamp changes, so observations that shared an
+    entry and survived the same bucket still share one, and a bucket that took only the
+    middle of an entry still opens with that entry's date.
+
+    Args:
+        blocks (list[tuple[str, str]]): One compartment's `(timestamp, block)` pairs, in
+            file order.
+
+    Returns:
+        The compartment's share of the batch, in the raw-entry format the consolidation
+        prompt reads.
+    """
     rendered: list[str] = []
     previous = ""
     for timestamp, block in blocks:
@@ -385,5 +529,12 @@ def _render_entries(blocks: list[tuple[str, str]]) -> str:
 
 
 def today_utc() -> datetime:
-    """Returns the current UTC day boundary used by the freshness sweep."""
+    """Returns the current UTC day boundary used by the freshness sweep.
+
+    Truncated to midnight so the TTL cutoff moves once a day rather than with the clock:
+    the same facts expire whatever time of day the sweep happens to run.
+
+    Returns:
+        Today's midnight, tz-aware in UTC.
+    """
     return datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)

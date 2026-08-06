@@ -1,4 +1,33 @@
-"""Prompts for per-user memory extraction, consolidation, and prompt injection."""
+"""Instruction texts for the per-user long-term memory LLM calls.
+
+`MemoryExtractorAI` (`extraction.py`) holds these as fields defaulting to the constants here and
+sends each as the Responses API `instructions` of one call: phase 1 (`PHASE1_PROMPT`) extracts
+`RawMemoryDraft` observations about ONE target user from a rendered transcript, the optional
+phase-1.5 review (`PHASE1_EVALUATOR_PROMPT`) re-judges those candidates under the same schema, and
+phase 2 (`PHASE2_PROMPT`) turns one compartment's share of the raw batch into `ConsolidatedMemory`
+deltas. `PHASE2_COMPACTION_BLOCK` is appended to the phase-2 text only when the rendered
+compartment has outgrown `COMPACTION_TRIGGER_CHARS`; its target figure is interpolated from
+`COMPACTION_TARGET_CHARS` so the number the model is given cannot drift from the trigger's
+constant. The per-server flavor (`server_prompts.py`) overrides the first three and reuses the
+compaction block, which is flavor agnostic.
+
+These are guidance, not enforcement, and that split is what to keep in mind when editing them.
+Code owns every boundary the design actually guarantees: which compartment a raw entry can reach
+(`deltas.py::partition_raw_entries`), the tighten-only sharing gate and the attribution
+rejections (`extraction.py::_sanitize_observation` / `_validated_draft`), fact ids and every
+provenance stamp (`facts.py`), and aging (`deltas.py::sweep_stale_facts`). That is why phase 2
+can tell the model "aging is applied for you" and forbid it writing a date at all. Loosening a
+rule here changes what the model attempts, never what the store accepts.
+
+Two phase-2 contracts are read back by code rather than merely obeyed, so a rewrite has to keep
+both: the tone-note call (`pipeline.py::_update_tone_note`) sends `<tone_evidence>` with no raw
+entries and no existing facts and keeps only `tone_markdown`, its deltas discarded whatever they
+say; and `create` / `update` / `delete` deltas are applied by `fact_id`, which code mints and the
+model may only echo back. The instructions stay English while `summary`, `text` and the tone
+bullets are required to be Traditional Chinese, because the structured schema is code's vocabulary
+and the rendered document is what a reply injects. `tests/test_memory.py` pins the load-bearing
+lines verbatim.
+"""
 
 from discordbot.services.memory.constants import COMPACTION_TARGET_CHARS
 

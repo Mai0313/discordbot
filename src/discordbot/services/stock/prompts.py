@@ -1,4 +1,39 @@
-"""Prompts and copy templates for simulated stock news."""
+"""Prompt and deterministic copy for the simulated stock market's news feed.
+
+`services/stock/database.py::ensure_due_stock_news` refreshes a symbol's news row on its own
+cadence through one of two interchangeable producers, and the text of both starts here.
+`cogs/stock/news.py::StockNewsAI` sends `STOCK_NEWS_PROMPT` as the Responses `instructions`
+alongside the rendered market context. When no provider is configured, or the call raises or comes
+back empty, `_fallback_generated_news` picks a tuple via `_fallback_templates_for_context`, indexes
+it with a seed built from the symbol, the cadence bucket and the order-flow figures, and formats
+the chosen line with `{name}` / `{symbol}` / `{category}`. The templates sit in `services/` beside
+the engine rather than next to the AI producer for exactly that reason: news generation may never
+make a market tick depend on an LLM call, so the deterministic half has to be reachable from the
+engine, which is not allowed to import a cog.
+
+Both producers are handed the same context and their output is stored in the same `stock_news`
+row, so the copy has to stay comparable across them:
+
+- Sentiment is basis points and every value here stays inside -180..180. The prompt states the
+  range, `StockNewsDraft` enforces it on the model output, and `tests/test_stock.py` asserts it
+  over every template. The market's own clamp is looser (`NEWS_SENTIMENT_LIMIT_BPS`, 300), so this
+  is a copy-side budget rather than a safety net: the value lands on the price as a one-shot
+  impulse at its tick boundary, so a template written past the range would move the price harder
+  than any AI headline can.
+- The sign is what `_fallback_templates_for_context` selects on: a positive value belongs in the
+  bullish tuple and a negative one in the bearish tuple, or the fallback contradicts the market
+  reading that chose it.
+- Every template carries `{name}` or `{symbol}`, else the headline never names the company it
+  moved. `{category}` is optional and only some lines use it.
+
+Headlines are Traditional Chinese and land verbatim in a Discord embed, hence no markdown. The
+prompt itself is English like every other runtime prompt here and asks for the Chinese headline in
+its body. Its safety lines (fictional, virtual company, no real people or brands) are pinned by
+`tests/test_stock.py`, since they are what keeps a joke market readable as a joke.
+
+`STOCK_NEWS_FALLBACK_TEMPLATES` is the flat union of the three tuples and exists for whole-set
+assertions in the tests; the generator always selects one of the three directly.
+"""
 
 from typing import Final
 

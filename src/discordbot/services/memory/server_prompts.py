@@ -1,11 +1,31 @@
-"""Prompts for the bot's per-server (community) long-term memory.
+"""Prompt text for the bot's per-server (community) long-term memory.
 
-These mirror the per-user prompts in ``prompts.py`` but reframe the target from
-one individual to the server / community as a whole. The structured schema,
-validation gates, redaction, and the `v1` consolidation contract are shared
-unchanged; only the framing and the consolidated section headings differ. The
-compaction block is reused from the per-user prompts because it is flavor
-agnostic.
+Three constants (phase-1 extraction, the phase-1.5 evaluator, phase-2 consolidation) which
+``gen_reply/cog.py`` hands to ``MemoryExtractorAI`` as ``server_memory_extractor``. Swapping them
+is the whole of the server flavor: the structured schema, the deterministic validation gates,
+secret redaction, and the create/update/delete delta contract keyed on ``fact_id`` are the
+per-user engine unchanged, and ``PHASE2_COMPACTION_BLOCK`` is inherited by simply not overriding
+``MemoryExtractorAI.compaction_block``, since asking for fewer, denser facts says nothing about
+whose memory it is. These live beside ``prompts.py`` to keep one prompt vocabulary in one place,
+even though ``gen_reply`` is their only caller.
+
+What the reframing changes, and why:
+
+* The subject is the server. Phase 1 is handed ``target_server_id: <id>`` rather than
+  ``target_user_id: <id>``, and a personal fact about one member is refused here so it can only
+  ever land in that member's own memory.
+* Member nicknames are the one carve-out, because how a community addresses someone is shared
+  vocabulary rather than a private detail. Both phases pin them to ``durability="permanent"`` so
+  the aging sweep never drops them, and the member id may come only from a block's column-0 author
+  prefix: code stamps it as ``subject_id`` and the renderer appends it to the ``## 成員稱呼`` row
+  that ``allowlist_ids_from_server_memory`` reads back, so a guessed id would widen that lookup
+  allowlist to the wrong member.
+* The consolidated sections are the server set (``profile`` / ``culture`` / ``topic`` / ``fact`` /
+  ``member_alias`` / ``recent``, with their headings in ``facts.py``), not the per-user set.
+* A server memory is a single compartment by construction, so ``sharing`` has nothing to route and
+  phase 1 pins it to ``global``; ``partition_raw_entries`` ignores the field for this flavor.
+* The tone note is a per-user tier, so phase 2 is told to leave ``tone_markdown`` empty. Code
+  already guarantees it: ``_update_tone_note`` returns before the call on any non-user flavor.
 """
 
 SERVER_PHASE1_PROMPT = """

@@ -1,45 +1,71 @@
-"""Persistent point-balance store for the economy cog.
+"""The ledger every money-moving feature writes through, over `data/database/economy.db`.
 
-The engine is a module-level `AsyncEngine` singleton. Putting
-`create_async_engine()` on a per-instance `cached_property` would leak the
-connection pool, dialect cache, and inspector cache for every Discord
-interaction (the same lesson `cogs/log_msg/cog.py` captures for the sync engine
+It is the only writer of that file, and it owns seven tables: identity, VIP, admin and check-in
+state on `user_account`; spendable money and lifetime gross totals on `user_wallet`; per-day
+casino counters on `casino_account`; long-term lending on `loan_proposal` / `loan_contract`; and
+the two house-side rows, `jackpot_pool` and `casino_ledger`. No ORM row escapes the module: every
+structured value handed back is one of the frozen models in `typings/economy.py`, so a caller sees
+plain ints and never a mapped instance it could mutate behind the engine's back.
+
+Callers come from both layers above. `cli.py`'s per-message reward and `cogs/economy/` (the
+`/pocat`, `/balance`, `/give`, `/checkin`, `/vip`, `/leaderboard`, `/loss_leaderboard`, `/casino`
+and lending surface) sit directly on top; `cogs/games/` settles Blackjack, Dragon Gate and fishing
+here; and two sibling engines, `services/stock/database.py` and `cogs/games/fishing/database.py`,
+spend and collect wallet cash through this module rather than keeping money of their own. Nothing
+here imports a cog or touches a Discord object. `scripts/modify_balance.py` is the offline path,
+and it goes through `adjust_balance` like everything else.
+
+The engine is a module-level `AsyncEngine` singleton. Putting `create_async_engine()` on a
+per-instance `cached_property` would leak the connection pool, dialect cache, and inspector cache
+for every Discord interaction (the same lesson `cogs/log_msg/cog.py` captures for the sync engine
 it still uses for pandas `to_sql`).
 
-Every balance-mutating write path is atomic at the SQLite transaction level.
-Most paths are a single UPSERT (`INSERT ... ON CONFLICT DO UPDATE`) or a
-conditional `UPDATE ... WHERE ... RETURNING`; multi-row finance paths still roll
-back as one unit when a conditional write loses a race. The previous
-implementation read the row in Python, mutated `account.balance`, and
-committed; two coroutines racing on the same user would lose updates, and two
-coroutines racing on a brand-new user would both `INSERT` and one would raise
-`IntegrityError`.
+Every balance-mutating write path is atomic at the SQLite transaction level. Most paths are a
+single UPSERT (`INSERT ... ON CONFLICT DO UPDATE`) or a conditional
+`UPDATE ... WHERE ... RETURNING`; multi-row finance paths still roll back as one unit when a
+conditional write loses a race. The previous implementation read the row in Python, mutated
+`account.balance`, and committed; two coroutines racing on the same user would lose updates, and
+two coroutines racing on a brand-new user would both `INSERT` and one would raise `IntegrityError`.
+Where a value cannot be pinned in the predicate the loop reads, computes, and writes conditionally
+against the observed value, retrying a small fixed number of times; those budgets exist to turn a
+degenerate hot-row livelock into a raised `RuntimeError` rather than an endless spin.
 
-PRAGMA setup at connect-time enables WAL (so reads don't block on writes),
-sets a tolerant `busy_timeout`, and picks `synchronous=NORMAL` (the right
-durability trade-off in WAL: every commit fsyncs the WAL frame, and the
-main file is fsynced on checkpoint).
+The accounting invariant every write path preserves is `total_earned - total_spent == balance` per
+wallet: an applied positive delta bumps `total_earned`, an applied negative one bumps
+`total_spent`, and the APPLIED amount is what is recorded rather than the requested one, since a
+clamped debit may collect less than it asked for. There is no transaction table, so those two
+lifetime totals are the only history a wallet keeps. Every money column is a `StoredInteger`
+(canonical decimal text on disk, unbounded `int` in Python) to escape SQLite's 64-bit ceiling,
+which is why sums and comparisons go through the UDFs `utils/stored_integer.py` registers, and why
+`top_n` has to build an explicit numeric ORDER BY instead of sorting the column directly.
 
-We use `aiosqlite` so every DB call stays on the event loop: no
-`asyncio.to_thread` shim, no separate `_*_sync` helpers. Each operation
-opens an `AsyncSession` bound to the current `_engine`, so tests can
-monkeypatch `_engine` per-test and every subsequent call sees the swap.
+PRAGMA setup at connect-time enables WAL (so reads don't block on writes), sets a tolerant
+`busy_timeout`, and picks `synchronous=NORMAL` (the right durability trade-off in WAL: every commit
+fsyncs the WAL frame, and the main file is fsynced on checkpoint).
 
-VIP, admin status, and leaderboard visibility are boolean columns on
-`user_account`. VIP bumps daily check-in rewards and the player's winning
-payout from games. The flag is permanent once set. Admin and central-banker
-status gate maintenance-only economy commands and are managed out-of-band by
-scripts. Daily casino counters live on `casino_account` so
-`/loss_leaderboard` can read current-day gross losses without scanning an audit
-log.
+We use `aiosqlite` so every DB call stays on the event loop: no `asyncio.to_thread` shim, no
+separate `_*_sync` helpers. Each operation opens an `AsyncSession` bound to the current `_engine`,
+so tests can monkeypatch `_engine` per-test and every subsequent call sees the swap.
 
-Long-term lending lives in `loan_proposal` and `loan_contract`. Personal
-loan requests debit the lender on acceptance, and central-bank loans mint
-borrower balance on approval.
+VIP, admin status, and leaderboard visibility are boolean columns on `user_account`. VIP bumps
+daily check-in rewards and the player's winning payout from games. The flag is permanent once set.
+Admin and central-banker status gate maintenance-only economy commands and are managed out-of-band
+by scripts. Daily casino counters live on `casino_account` so `/loss_leaderboard` can read
+current-day gross losses without scanning an audit log.
 
-Shared jackpot pools and the casino ledger live in the same `economy.db` file
-as the per-user rows, so runtime casino and jackpot settlement applies the
-player delta and the house-side mirror in one atomic SQLite transaction.
+Long-term lending lives in `loan_proposal` and `loan_contract`. Personal loan requests debit the
+lender on acceptance, and central-bank loans mint borrower balance on approval.
+
+Shared jackpot pools and the casino ledger live in the same `economy.db` file as the per-user rows,
+so runtime casino and jackpot settlement applies the player delta and the house-side mirror in one
+atomic SQLite transaction.
+
+Two shapes recur through the file and are worth reading once. A `*_in_session` helper takes the
+caller's `AsyncSession`, writes without committing, and leaves the commit / rollback decision to
+the public entry point that opened it, which is what lets a settlement touch a wallet, a daily
+counter and a pool as one unit. And every public call that touches the database opens with
+`await _ensure_schema()`, directly or through the one it delegates to, since the schema is created
+lazily on first use rather than by a migration step.
 """
 
 from time import monotonic
@@ -135,7 +161,17 @@ _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/databas
 
 
 def _taipei_midnight(now: datetime) -> datetime:
-    """Returns the most recent Asia/Taipei 00:00 boundary at or before `now`."""
+    """Returns the most recent Asia/Taipei 00:00 boundary at or before `now`.
+
+    Every daily reset in the economy is keyed on this one boundary, so a check-in streak and a
+    casino counter always roll over together regardless of the caller's own timezone.
+
+    Args:
+        now (datetime): The instant to snap back to midnight.
+
+    Returns:
+        Taipei-local midnight of the day containing `now`.
+    """
     local = _as_taipei(dt=now)
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -143,21 +179,42 @@ def _taipei_midnight(now: datetime) -> datetime:
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
     """Configures a newly opened economy SQLite connection.
 
-    Foreign keys are enabled defensively for any future FK constraint.
+    Foreign keys are enabled defensively for any future FK constraint; no table here declares one
+    today. This is the economy's only deviation from the shared PRAGMA setup.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
     """
     configure_sqlite_connection(dbapi_connection=dbapi_connection, enable_foreign_keys=True)
 
 
 @event.listens_for(_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures a newly opened SQLite connection."""
+    """SQLAlchemy `connect` listener: configures each connection the pool opens.
+
+    Registered at import time against the engine that existed then, which is why
+    `ensure_sqlite_hooks` re-installs it on whatever `_engine` currently is.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+        _connection_record (Any): SQLAlchemy's pool record, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _configure_sqlite_on_checkout(
     dbapi_connection: object, _connection_record: object, _connection_proxy: object
 ) -> None:
-    """Configures pooled connections from test-swapped engines."""
+    """SQLAlchemy `checkout` listener: configures a pooled connection on its way out.
+
+    The `connect` hook alone misses connections a test-swapped engine had already pooled before
+    the listener was installed; `ensure_sqlite_hooks`'s docstring has the full reasoning.
+
+    Args:
+        dbapi_connection (object): The pooled DBAPI connection being handed out.
+        _connection_record (object): SQLAlchemy's pool record, unused.
+        _connection_proxy (object): SQLAlchemy's connection proxy, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
@@ -186,6 +243,8 @@ class UserAccount(Base):
         checkin_streak: Consecutive-day streak (1..`CHECKIN_STREAK_CYCLE`),
             persisted after the latest `/checkin`. 0 means never checked in.
         is_admin: Whether the user can run Discord-side economy admin commands.
+        is_central_banker: Whether the user may approve central-bank loans. Set
+            offline by direct DB write, and separate from Discord admin.
         hide_from_leaderboard: Whether the account is omitted from public balance
             and daily casino loss leaderboards.
     """
@@ -212,7 +271,13 @@ class UserAccount(Base):
 
 
 class UserWallet(Base):
-    """Spendable balance and lifetime gross totals for a Discord user."""
+    """Spendable balance and lifetime gross totals for a Discord user.
+
+    Split from `user_account` so a money write never has to touch identity or flags. All three
+    amounts are `StoredInteger` and `balance == total_earned - total_spent` holds per row. `name`
+    is a denormalized last-seen username every write path refreshes; nothing reads it today, since
+    the leaderboards join `user_account` for the display name.
+    """
 
     __tablename__ = "user_wallet"
     __table_args__ = (
@@ -235,20 +300,28 @@ class UserWallet(Base):
 class CasinoAccount(Base):
     """Daily per-user casino counters for loss leaderboard queries.
 
+    One row per user, rewritten rather than appended: `day_started_at` is the day the counters
+    belong to, and a settlement arriving after Taipei midnight resets them instead of adding.
+    So this table is today's tally, never a history, which is why `/loss_leaderboard` needs no
+    audit log to scan.
+
     Attributes:
         user_id: Discord user ID; primary key.
         name: Last-seen Discord username for quick inspection.
         day_started_at: Asia/Taipei midnight for the stored counters.
-        daily_loss: Current-day gross loss from player-side casino settlements, stored as a decimal string.
-        daily_win: Current-day gross win from player-side casino settlements, stored as a decimal string.
+        daily_loss: Current-day gross loss from player-side casino settlements,
+            stored as a decimal string.
+        daily_win: Current-day gross win from player-side casino settlements,
+            stored as a decimal string.
         daily_net: Current-day signed net casino result, stored as a decimal string.
         updated_at: Taiwan-local timestamp of the last casino counter write.
     """
 
     __tablename__ = "casino_account"
     __table_args__ = (
-        # /loss_leaderboard filters to one Taipei day and orders by gross loss.
-        # SQLite can read the daily loss suffix backwards for DESC ordering.
+        # The day prefix is what /loss_leaderboard's equality filter rides on. The suffix cannot
+        # supply the ordering: decimal text sorts by length first, so the query orders on
+        # length(daily_loss) and SQLite has to sort the day's rows itself.
         Index("ix_casino_account_day_loss", "day_started_at", "daily_loss"),
     )
 
@@ -269,6 +342,11 @@ class LoanProposal(Base):
     Personal loan requests wait for the target lender to accept. Central-bank
     requests wait for a central banker approval and do not escrow a user
     balance.
+
+    A proposal is terminal once `status` leaves `pending`; there is no un-reject. Both creators
+    write `escrow_amount=0` today, because a personal loan debits the lender at acceptance rather
+    than at proposal time, so the refund a reject / cancel / expire runs against it is a no-op in
+    practice. The row is kept after the decision as the audit trail for the contract it opened.
     """
 
     __tablename__ = "loan_proposal"
@@ -303,7 +381,14 @@ class LoanProposal(Base):
 
 
 class LoanContract(Base):
-    """Active or closed long-term loan contract."""
+    """Active or closed long-term loan contract.
+
+    Interest is simple and accrued lazily: `last_interest_accrued_at` marks the point interest has
+    already been charged up to, and every read or payment path advances it a whole day at a time
+    (`_loan_interest_delta`). Acceptance prepays `MIN_INTEREST_DAYS` and parks that timestamp in
+    the FUTURE, which is what makes borrow-then-instantly-repay still cost the borrower; do not
+    read it as "last touched". A contract closes only when principal and interest both reach zero.
+    """
 
     __tablename__ = "loan_contract"
     __table_args__ = (
@@ -408,15 +493,25 @@ class CasinoLedger(Base):
 CASINO_LEDGER_ID: Final[str] = "casino"
 
 
-# On-the-house seed amount for each registered jackpot pool. The seed is
-# bookkeeping only — the bot's user_account row is never decremented to fund
-# it, so /casino P&L stays unaffected by the donation. Seeded pools are also
-# topped back up to this amount whenever they are drained.
+# On-the-house seed amount for each registered jackpot pool. The seed is bookkeeping only:
+# nothing is decremented to fund it, neither a wallet nor the casino ledger, so /casino P&L stays
+# unaffected by the donation. Seeded pools are also topped back up to this amount whenever they
+# are drained.
 _JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 1_000),)
 
 
 def _jackpot_seed_amount(game_id: str) -> int:
-    """Returns the configured seed amount for a jackpot game."""
+    """Returns the configured seed amount for a jackpot game.
+
+    A zero answer is also the test for "this pool is not seeded", which is what keeps the
+    replenish path from inventing money for a game that never asked for a seed.
+
+    Args:
+        game_id (str): Game identifier (jackpot row primary key).
+
+    Returns:
+        The configured seed, or 0 for a game with no seed entry.
+    """
     for seed_game_id, seed_amount in _JACKPOT_SEEDS:
         if seed_game_id == game_id:
             return seed_amount
@@ -451,7 +546,17 @@ def invalidate_economy_leaderboard_cache() -> None:
 
 
 def _cached_top_n_rows(cache_key: _TopNCacheKey) -> list[LeaderboardEntry] | None:
-    """Returns cached balance leaderboard rows when the short TTL is still valid."""
+    """Returns cached balance leaderboard rows when the short TTL is still valid.
+
+    Evicts the entry on the way out when it has aged past the TTL, so a key nobody asks for again
+    does not sit in the dict forever.
+
+    Args:
+        cache_key (_TopNCacheKey): Engine identity plus the query's own arguments.
+
+    Returns:
+        A fresh copy of the cached rows, or None when there is no live entry.
+    """
     cached = _top_n_cache.get(cache_key)
     if cached is None:
         return None
@@ -463,7 +568,17 @@ def _cached_top_n_rows(cache_key: _TopNCacheKey) -> list[LeaderboardEntry] | Non
 
 
 def _cached_top_loser_rows(cache_key: _TopLosersCacheKey) -> list[LossLeaderboardEntry] | None:
-    """Returns cached loss leaderboard rows when the short TTL is still valid."""
+    """Returns cached loss leaderboard rows when the short TTL is still valid.
+
+    The Taipei day is part of the key, so a rollover cannot serve yesterday's losers even inside
+    the TTL window.
+
+    Args:
+        cache_key (_TopLosersCacheKey): Engine identity, the query's arguments, and the Taipei day.
+
+    Returns:
+        A fresh copy of the cached rows, or None when there is no live entry.
+    """
     cached = _top_losers_cache.get(cache_key)
     if cached is None:
         return None
@@ -475,7 +590,20 @@ def _cached_top_loser_rows(cache_key: _TopLosersCacheKey) -> list[LossLeaderboar
 
 
 def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 -- SQLAlchemy columns are generic expressions
-    """Returns ORDER BY terms for descending numeric order over decimal text."""
+    """Returns ORDER BY terms for descending numeric order over decimal text.
+
+    A `StoredInteger` column sorts lexicographically in SQL, where "9" beats "10", and the
+    registered UDF only yields a sign for a pair of values. So the numeric order is rebuilt out of
+    five terms: sign first, then for positives longer text (more digits) before shorter and
+    lexicographic within a length, and for negatives the mirror image. Doing it in SQL rather than
+    in Python is what lets the caller apply `LIMIT` before any row is materialized.
+
+    Args:
+        column (Any): The `StoredInteger` column to order by.
+
+    Returns:
+        ORDER BY terms to splat into `order_by`, highest value first.
+    """
     sign = func.discordbot_int_compare_text(column, _stored_int_to_text(value=0))
     positive_length = case((sign > 0, func.length(column)), else_=0)
     negative_length = case((sign < 0, func.length(column)), else_=0)
@@ -491,17 +619,35 @@ def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 
 
 
 def _current_schema_lock() -> asyncio.Lock:
-    """Returns the schema bootstrap lock bound to the current event loop."""
+    """Returns the schema bootstrap lock bound to the current event loop.
+
+    Returns:
+        The `asyncio.Lock` guarding `create_all` for the loop now running.
+    """
     return _schema_lock.get()
 
 
 def _current_loan_accept_lock() -> asyncio.Lock:
-    """Serializes loan approval so central-bank capacity is consumed once."""
+    """Returns the loan-approval lock bound to the current event loop.
+
+    Approval reads central-bank capacity and then spends it, so two approvals must not interleave
+    or both would see the same free credit and mint past it.
+
+    Returns:
+        The `asyncio.Lock` guarding loan acceptance for the loop now running.
+    """
     return _loan_accept_lock.get()
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps the economy schema, jackpot seeds, and casino ledger once per engine."""
+    """Bootstraps the economy schema, jackpot seeds, and casino ledger once per engine.
+
+    Every public database call awaits this first, so there is no separate migration step and a
+    fresh `data/database/economy.db` is created on first use. The connection listeners are
+    re-installed on each call, since a test that swapped `_engine` produced one the import-time
+    listener never reached. The seed inserts are `ON CONFLICT DO NOTHING`, which is what makes the
+    whole body idempotent against an existing file.
+    """
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     ensure_sqlite_hooks(
         engine=_engine,
@@ -546,6 +692,11 @@ async def _ensure_schema() -> None:
 def open_session() -> AsyncSession:
     """Creates an async session bound to the current economy database engine.
 
+    Reads `_engine` at call time rather than through a cached factory, so a test that monkeypatches
+    it onto a `tmp_path` is picked up by the very next call. `expire_on_commit=False` keeps ORM
+    attributes readable after the commit, which the loan paths rely on when they project a row into
+    a view. The schema is NOT ensured here; the public entry points do that.
+
     Returns:
         An `AsyncSession` using the current module-level `_engine`.
     """
@@ -564,9 +715,12 @@ def checkin_reward(streak: int, is_vip: bool) -> int:
     is the 1..`CHECKIN_STREAK_CYCLE` day in the cycle. VIP doubles the base
     before the streak bonus.
 
+    Pure arithmetic with no database access, so `cogs/economy/embeds.py` calls it to show what a
+    streak day or the VIP perk is worth before anyone commits to either.
+
     Args:
-        streak: Streak counter for this check-in (1..`CHECKIN_STREAK_CYCLE`).
-        is_vip: VIP status of the account at check-in time.
+        streak (int): Streak counter for this check-in (1..`CHECKIN_STREAK_CYCLE`).
+        is_vip (bool): VIP status of the account at check-in time.
 
     Returns:
         Integer reward amount.
@@ -577,7 +731,17 @@ def checkin_reward(streak: int, is_vip: bool) -> int:
 
 
 def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
-    """Converts a user-facing monthly percent into basis points."""
+    """Converts a user-facing monthly percent into basis points.
+
+    Clamps into the allowed band rather than rejecting, so an out-of-range slash option becomes the
+    nearest legal rate instead of a failed command.
+
+    Args:
+        monthly_rate_percent (float): Rate as the user typed it, in percent.
+
+    Returns:
+        The rate in basis points, within `MIN_LOAN_MONTHLY_RATE_BPS`..`MAX_LOAN_MONTHLY_RATE_BPS`.
+    """
     return max(
         MIN_LOAN_MONTHLY_RATE_BPS,
         min(MAX_LOAN_MONTHLY_RATE_BPS, round(monthly_rate_percent * 100)),
@@ -585,7 +749,14 @@ def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
 
 
 def monthly_rate_bps_to_percent(monthly_rate_bps: int) -> float:
-    """Converts stored monthly basis points into a display percent."""
+    """Converts stored monthly basis points into a display percent.
+
+    Args:
+        monthly_rate_bps (int): Rate in basis points as persisted on the proposal or contract.
+
+    Returns:
+        The same rate in percent, for display only.
+    """
     return monthly_rate_bps / 100
 
 
@@ -595,9 +766,14 @@ def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
     The bonus only fires on positive deltas (wins). Pushes and losses pass
     through unchanged so VIP never softens a loss.
 
+    Integer arithmetic, floored, so the perk never mints a fraction. It lives here rather than in
+    the games cog because `cogs/economy/embeds.py` also uses it to show a prospective VIP what the
+    perk is worth; `cogs/games/settlement.py` is what decides how much of the boost the casino
+    ledger absorbs.
+
     Args:
-        delta: Pre-bonus player delta for the round.
-        is_vip: VIP status of the account at settlement time.
+        delta (int): Pre-bonus player delta for the round.
+        is_vip (bool): VIP status of the account at settlement time.
 
     Returns:
         Post-bonus player delta.
@@ -610,7 +786,20 @@ def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
 async def _upsert_user_metadata_in_session(
     session: AsyncSession, user_id: int, name: str, avatar_url: str, now: datetime
 ) -> None:
-    """Creates or refreshes the user identity row without touching wallet state."""
+    """Creates or refreshes the user identity row without touching wallet state.
+
+    An empty `name` or `avatar_url` is treated as "unknown", not as a value: the UPSERT's update
+    branch omits the column entirely so a caller with no Discord objects in hand cannot wipe a
+    known name or avatar. On insert the name falls back to the numeric id so the row is never
+    blank.
+
+    Args:
+        session (AsyncSession): Active session; the write is left uncommitted.
+        user_id (int): Discord user ID to create or refresh.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        avatar_url (str): Last-seen Discord avatar URL, or empty to leave the stored one.
+        now (datetime): `_database_now()` value pinned for this transaction.
+    """
     effective_name = name or str(user_id)
     stmt = insert(UserAccount).values(
         user_id=user_id,
@@ -637,10 +826,18 @@ async def _upsert_user_metadata_in_session(
 def _build_credit_upsert(
     user_id: int, name: str, amount: int, now: datetime
 ) -> ReturningInsert[tuple[int]]:
-    """UPSERT that credits `amount` points into `user_wallet`.
+    """Builds the UPSERT that credits `amount` points into `user_wallet`.
 
-    Caller guarantees `amount > 0` and refreshes `user_account` metadata
-    separately.
+    Builds only; the caller executes it inside its own transaction. Because the increment is
+    expressed in SQL (`balance + amount`) rather than read into Python first, two concurrent
+    credits cannot lose each other's update and no retry loop is needed. Caller guarantees
+    `amount > 0` and refreshes `user_account` metadata separately.
+
+    Args:
+        user_id (int): Discord user ID to credit.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        amount (int): Points to add; also added to `total_earned`.
+        now (datetime): `_database_now()` value pinned for this transaction.
 
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
@@ -669,12 +866,18 @@ def _build_credit_upsert(
 def _build_signed_delta_upsert(
     user_id: int, name: str, delta: int, now: datetime
 ) -> ReturningInsert[tuple[int]]:
-    """UPSERT applying a signed `delta` with NO clamp on wallet balance.
+    """Builds the UPSERT applying a signed `delta` with NO clamp on wallet balance.
 
-    Used for the dealer's house-ledger row, which is allowed to go negative
-    when the casino has paid out more than it took in. `total_earned` /
-    `total_spent` still accumulate gross flows so `/house` can show the
-    direction of the volume, not just the net.
+    The one wallet write allowed to leave a balance below zero, reached only through
+    `adjust_balance(allow_negative=True)`; every gameplay debit goes through the clamped path
+    instead. `total_earned` / `total_spent` still take the gross halves of the delta, so the
+    `balance == total_earned - total_spent` invariant survives a negative balance.
+
+    Args:
+        user_id (int): Discord user ID whose wallet the delta applies to.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        delta (int): Signed amount to apply, with no floor at zero.
+        now (datetime): `_database_now()` value pinned for this transaction.
 
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
@@ -706,7 +909,22 @@ def _build_signed_delta_upsert(
 async def _apply_daily_casino_delta_in_session(
     session: AsyncSession, user_id: int, name: str, delta: int, now: datetime
 ) -> None:
-    """Accumulates current-day gross casino counters in `casino_account`."""
+    """Accumulates current-day gross casino counters in `casino_account`.
+
+    Loss and win are tracked separately and both as POSITIVE magnitudes, so `/loss_leaderboard`
+    reads gross losses that a later win never offsets. The day rollover is lazy and happens inside
+    the same UPSERT: a stored `day_started_at` that is not today makes each counter take the new
+    delta outright instead of adding to it, so a stale row resets itself at the first settlement
+    after Taipei midnight and no scheduled job is needed. A zero delta is skipped entirely, which
+    is what keeps a push off the loss board.
+
+    Args:
+        session (AsyncSession): Active session; the write is left uncommitted.
+        user_id (int): Discord user ID the counters belong to.
+        name (str): Last-seen Discord username, falling back to the numeric id.
+        delta (int): Signed player-side casino delta actually applied.
+        now (datetime): `_database_now()` value pinned for this transaction.
+    """
     if delta == 0:
         return
     today_midnight = _taipei_midnight(now=now)
@@ -766,6 +984,17 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
     not auto-repay debt. The public function name is preserved because message
     and chat reward callers are intentionally routed through one income facade.
     Caller must guarantee `amount > 0`.
+
+    Args:
+        session (AsyncSession): Active session; the write is left uncommitted.
+        user_id (int): Discord user ID receiving the credit.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        avatar_url (str): Last-seen Discord avatar URL, or empty to leave the stored one.
+        amount (int): Gross income amount; must be positive.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        The post-credit balance, with both repayment fields zero.
     """
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
@@ -785,10 +1014,27 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
 ) -> tuple[int, int]:
     """Applies a clamped signed delta and returns the balance plus applied delta.
 
-    The observed balance is pinned in the UPDATE predicate, so concurrent
-    clamped debits cannot both compute their applied delta from the same stale
-    balance. A negative delta against a missing row is a no-op so manual clamp
+    The clamp has to be computed in Python (the new balance depends on the old one), so this is a
+    read-then-conditional-write loop: the observed balance is pinned in the UPDATE predicate, and a
+    writer that loses the race matches zero rows and retries against the fresh value. Without that
+    pin two concurrent clamped debits would both compute their applied delta from the same stale
+    balance and over-collect. A negative delta against a missing row is a no-op so manual clamp
     operations do not create zero-balance accounts.
+
+    Args:
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        user_id (int): Discord user ID whose wallet the delta applies to.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        avatar_url (str): Last-seen Discord avatar URL, or empty to leave the stored one.
+        delta (int): Signed amount to apply; a debit stops at a zero balance.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        `(new_balance, applied_delta)`, where the applied delta is smaller in magnitude than
+        `delta` whenever a debit hit the zero floor.
+
+    Raises:
+        RuntimeError: `_CLAMPED_DELTA_MAX_RETRIES` conditional writes all lost their race.
     """
     if delta == 0:
         read_result = await session.execute(
@@ -835,7 +1081,22 @@ async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper ne
 async def _try_insert_clamped_positive_delta_in_session(
     session: AsyncSession, user_id: int, name: str, delta: int, now: datetime
 ) -> tuple[int, int] | None:
-    """Attempts to create a missing account for a positive clamped delta."""
+    """Attempts to create a missing wallet row for a positive clamped delta.
+
+    `ON CONFLICT DO NOTHING` is what makes this safe to lose: another coroutine that inserted the
+    row first leaves this one with no returned balance, and the caller retries against the row now
+    visible instead of raising `IntegrityError`.
+
+    Args:
+        session (AsyncSession): Active session; the write is left uncommitted.
+        user_id (int): Discord user ID to create the wallet for.
+        name (str): Last-seen Discord username, falling back to the numeric id.
+        delta (int): Positive amount to seed the wallet with.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        `(new_balance, delta)` when this call created the row, or None when it lost the race.
+    """
     insert_stmt = (
         insert(UserWallet)
         .values(
@@ -860,7 +1121,26 @@ async def _try_insert_clamped_positive_delta_in_session(
 async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional write needs observed row state
     session: AsyncSession, user_id: int, name: str, current_balance: int, delta: int, now: datetime
 ) -> tuple[int, int] | None:
-    """Attempts one conditional clamped update against an existing account."""
+    """Attempts one conditional clamped update against an existing wallet row.
+
+    `current_balance` is both the input to the clamp and the WHERE predicate, so the write lands
+    only if nothing moved the balance in between. An already-negative balance (an admin adjustment
+    left it there) absorbs no further debit rather than being driven deeper. Only the ACTUALLY
+    applied amount reaches `total_earned` / `total_spent`, which is what keeps the accounting
+    invariant true through a clamp.
+
+    Args:
+        session (AsyncSession): Active session; the write is left uncommitted.
+        user_id (int): Discord user ID whose wallet the delta applies to.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        current_balance (int): Balance observed by the caller's SELECT, pinned in the predicate.
+        delta (int): Signed amount to apply; a debit stops at a zero balance.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        `(new_balance, applied_delta)`, or None when the predicate matched no row and the caller
+        should re-read and retry.
+    """
     if delta < 0 and current_balance <= 0:
         new_balance = current_balance
     elif delta < 0:
@@ -892,10 +1172,22 @@ async def _try_update_clamped_delta_in_session(  # noqa: PLR0913 -- conditional 
 async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper needs identity and signed delta
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> int:
-    """Applies a signed delta without clamping.
+    """Applies a signed delta to a wallet without clamping.
 
-    Used for casino-mirror or other ledger rows that may run cumulative
-    negative P&L. Player-side losses use the clamped path instead.
+    Reached only from `adjust_balance(allow_negative=True)`, the admin escape hatch that is allowed
+    to leave a balance below zero. Player-side losses use the clamped path instead. Needs no retry
+    loop: the whole delta is expressed in SQL, so there is no observed value to lose a race on.
+
+    Args:
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        user_id (int): Discord user ID whose wallet the delta applies to.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        avatar_url (str): Last-seen Discord avatar URL, or empty to leave the stored one.
+        delta (int): Signed amount to apply, with no floor at zero.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        Wallet balance after the write.
     """
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
@@ -916,10 +1208,14 @@ async def _apply_casino_ledger_delta_in_session(
     The casino is allowed to run cumulative negative P&L when payouts exceed
     take-in. `total_earned` / `total_spent` accumulate gross flows.
 
+    This is the house side of a settlement and it is NOT the bot's wallet: the bot plays as an
+    ordinary user, so `/pocat` and `/casino` read different rows. The write is a pure SQL
+    increment, so it rides the caller's player transaction with no retry loop of its own.
+
     Args:
-        session: Active SQLAlchemy session bound to `_engine`.
-        delta: Signed change to apply to the casino balance.
-        now: `_database_now()` value pinned for this transaction.
+        session (AsyncSession): Active session; the write is left uncommitted.
+        delta (int): Signed change to apply to the casino balance.
+        now (datetime): `_database_now()` value pinned for this transaction.
 
     Returns:
         Casino ledger balance after the write.
@@ -951,7 +1247,18 @@ async def _apply_casino_ledger_delta_in_session(
 
 
 async def _read_casino_ledger_balance_in_session(session: AsyncSession) -> int:
-    """Reads the current casino ledger balance, returning 0 when missing."""
+    """Reads the current casino ledger balance, returning 0 when missing.
+
+    `_ensure_schema` seeds the row, so a miss only happens against a database created outside this
+    module; 0 is returned rather than raising so a settlement that moved no house money still
+    answers with a balance.
+
+    Args:
+        session (AsyncSession): Active session to read through.
+
+    Returns:
+        The casino ledger balance, or 0 when the row does not exist.
+    """
     result = await session.execute(
         statement=select(CasinoLedger.balance).where(CasinoLedger.ledger_id == CASINO_LEDGER_ID)
     )
@@ -959,7 +1266,15 @@ async def _read_casino_ledger_balance_in_session(session: AsyncSession) -> int:
 
 
 async def _rollback_sessions(*sessions: AsyncSession) -> None:
-    """Rolls back sessions without masking the original settlement exception."""
+    """Rolls back sessions without masking the original settlement exception.
+
+    Called from an `except` block that is about to re-raise, so a rollback that itself fails is
+    logged and swallowed: losing the real settlement error to a cleanup error would leave nothing
+    to debug from.
+
+    Args:
+        *sessions (AsyncSession): Sessions to roll back, each independently.
+    """
     for session in sessions:
         try:
             await session.rollback()
@@ -968,7 +1283,14 @@ async def _rollback_sessions(*sessions: AsyncSession) -> None:
 
 
 async def get_casino_ledger() -> CasinoLedgerSnapshot:
-    """Returns the cumulative casino system ledger snapshot."""
+    """Returns the cumulative casino system ledger snapshot.
+
+    What `/casino` shows. A missing row answers as all-zero stamped with the current time rather
+    than None, so the command has nothing to special-case before the first settlement.
+
+    Returns:
+        The house-side P&L: signed balance plus the two lifetime gross flows.
+    """
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
@@ -995,6 +1317,15 @@ async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
 
     Returns all-zero when no row exists or when the stored counters are from a
     previous Taipei day (the next casino settlement will reset them anyway).
+
+    Read-only: it does not perform the day rollover it detects, so a stale row stays on disk until
+    the user's next settlement rewrites it.
+
+    Args:
+        user_id (int): Discord user ID to look up.
+
+    Returns:
+        Today's gross loss, gross win and signed net for the user.
     """
     await _ensure_schema()
     today_midnight = _taipei_midnight(now=_database_now())
@@ -1019,7 +1350,24 @@ async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> tuple[int, int]:
-    """Applies a casino player delta and returns the balance plus actual delta."""
+    """Applies a casino player delta and returns the balance plus actual delta.
+
+    A win goes through the shared income facade; a loss goes through the clamped path so it can
+    never drive a player negative. Either way the daily `casino_account` counters take the amount
+    that was ACTUALLY applied, so a partially collected loss is reported at its collected size. A
+    zero delta (a push) only reads the balance and is deliberately kept off the loss board.
+
+    Args:
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        user_id (int): Discord user ID for the player.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        avatar_url (str): Last-seen Discord avatar URL, or empty to leave the stored one.
+        delta (int): Signed player-side change for the round.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        `(new_balance, applied_delta)` after the wallet and counter writes.
+    """
     if delta > 0:
         credit_result = await _credit_with_repayment_in_session(
             session=session,
@@ -1060,6 +1408,21 @@ async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot se
     Positive deltas keep the existing casino payout path and count as fully
     applied. Negative deltas clamp at zero so Dragon Gate losses cannot drive
     the player account negative; the returned delta is the actual debit.
+
+    The body is identical to `_apply_player_delta_in_session` today; the difference is in who
+    calls it, since the jackpot batch is the caller that compares the applied delta against what it
+    asked for and rejects the batch when a required full debit fell short.
+
+    Args:
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        user_id (int): Discord user ID for the player.
+        name (str): Last-seen Discord username, or empty to leave the stored one.
+        avatar_url (str): Last-seen Discord avatar URL, or empty to leave the stored one.
+        delta (int): Signed player-side change, already capped to the pool by the caller.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        `(new_balance, applied_delta)` after the wallet and counter writes.
     """
     if delta > 0:
         credit_result = await _credit_with_repayment_in_session(
@@ -1102,12 +1465,16 @@ async def credit_with_repayment(
     commands. Message, chat, and casino payout income therefore lands fully in
     balance and only increases `total_earned`.
 
+    This is the single income facade: the per-message reward, `/checkin`, casino payouts and
+    fishing payouts all land here, which is what makes "how does money enter a wallet" one
+    question with one answer. A non-positive amount is a no-op that still reports the balance.
+
     Args:
-        user_id: Discord user ID receiving the credit.
-        name: Last-seen Discord username to store on the account.
-        amount: Gross income amount; must be positive for the repayment
+        user_id (int): Discord user ID receiving the credit.
+        name (str): Last-seen Discord username to store on the account.
+        amount (int): Gross income amount; must be positive for the repayment
             path to run.
-        avatar_url: Last-seen Discord avatar URL to store when available.
+        avatar_url (str): Last-seen Discord avatar URL to store when available.
 
     Returns:
         Outcome capturing post-credit balance. Repayment fields are zero
@@ -1142,15 +1509,18 @@ async def adjust_balance(
     """Applies an explicit manual balance adjustment.
 
     This is the public maintenance API for scripts and admin tooling. It does
-    does not touch loan contracts or daily casino counters, so leaderboards and
+    not touch loan contracts or daily casino counters, so leaderboards and
     house P&L remain clean.
 
+    It is the only route to an unclamped wallet write, and a settlement helper must never be
+    borrowed for an admin tweak: those move the casino ledger and the daily counters too.
+
     Args:
-        user_id: Discord user ID whose balance should be adjusted.
-        name: Last-seen Discord username to store on the account.
-        delta: Signed amount to apply.
-        allow_negative: Whether the resulting balance may go below zero.
-        avatar_url: Last-seen Discord avatar URL to store when available.
+        user_id (int): Discord user ID whose balance should be adjusted.
+        name (str): Last-seen Discord username to store on the account.
+        delta (int): Signed amount to apply.
+        allow_negative (bool): Whether the resulting balance may go below zero.
+        avatar_url (str): Last-seen Discord avatar URL to store when available.
 
     Returns:
         The post-adjustment balance and the applied delta after any clamp.
@@ -1199,11 +1569,16 @@ async def apply_ordered_wallet_deltas(
     the order supplied by the caller. The transaction rolls back if any debit
     cannot be applied in full.
 
+    Order matters and the legs are never netted: a debit-then-credit pair moves both lifetime
+    totals by their gross amounts, which is what lets stock and fishing show a real spend and a
+    real payout rather than one difference. Because the legs run in sequence, an ordering that
+    debits before it credits can fail on funds the same call was about to add.
+
     Args:
-        user_id: Discord user ID whose wallet should be updated.
-        name: Last-seen Discord username to store on the wallet row.
-        deltas: Ordered signed wallet legs.
-        avatar_url: Last-seen Discord avatar URL to store when available.
+        user_id (int): Discord user ID whose wallet should be updated.
+        name (str): Last-seen Discord username to store on the wallet row.
+        deltas (Sequence[WalletDeltaLeg]): Ordered signed wallet legs.
+        avatar_url (str): Last-seen Discord avatar URL to store when available.
 
     Returns:
         The post-leg balance and applied deltas, or `None` when a full debit
@@ -1235,7 +1610,25 @@ async def _apply_ordered_wallet_deltas_in_session(  # noqa: PLR0913 -- session h
     now: datetime,
     applied: list[int],
 ) -> int | None:
-    """Applies ordered wallet legs inside the caller's economy transaction."""
+    """Applies ordered wallet legs inside the caller's economy transaction.
+
+    Each debit is one conditional `UPDATE ... WHERE balance >= debit`, so an insufficient balance
+    is detected by the write itself rather than by a prior read that could go stale. Returning None
+    abandons the run partway through; the caller's rollback is what makes the batch all-or-nothing.
+    `applied` is an output parameter, filled in leg order including explicit zeros, so a caller
+    can line the result up with the legs it passed.
+
+    Args:
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        user_id (int): Discord user ID whose wallet the legs apply to.
+        name (str): Last-seen Discord username, falling back to the numeric id.
+        deltas (Sequence[WalletDeltaLeg]): Ordered signed wallet legs.
+        now (datetime): `_database_now()` value pinned for this transaction.
+        applied (list[int]): Accumulator the applied delta of each leg is appended to.
+
+    Returns:
+        The balance after the last leg, or None when a debit could not be covered in full.
+    """
     balance_result = await session.execute(
         statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
     )
@@ -1292,13 +1685,18 @@ async def apply_round_settlement(
     casino mirror live in the same `data/database/economy.db` file and commit
     as one atomic transaction.
 
+    A loss the player could not fully cover shrinks the house side to match: the caller asks for
+    the full mirror, and this narrows `casino_delta` to what was actually collected so the ledger
+    never books income nobody paid. The two halves are one transaction, so a failure anywhere
+    leaves neither written.
+
     Args:
-        player_id: Discord user ID for the player account.
-        player_account_name: Account name to store for the player.
-        player_avatar_url: Last-seen Discord avatar URL for the player.
-        player_delta: Signed net change for the player. Losses are clamped at
+        player_id (int): Discord user ID for the player account.
+        player_account_name (str): Account name to store for the player.
+        player_delta (int): Signed net change for the player. Losses are clamped at
             zero and may apply less than the requested debit.
-        casino_delta: Signed change to apply to the casino ledger balance.
+        casino_delta (int): Signed change to apply to the casino ledger balance.
+        player_avatar_url (str): Last-seen Discord avatar URL for the player.
 
     Returns:
         A `RoundSettlementResult` with the post-write player and casino balances.
@@ -1347,6 +1745,20 @@ async def apply_blackjack_settlement(
     the player and count as casino payout but must not move the `/casino`
     ledger. The caller passes `casino_delta` explicitly so the bonus stays
     excluded.
+
+    A named alias over `apply_round_settlement` with no behavior of its own; it exists so the
+    Blackjack call site reads as what it is and so the reason the two deltas disagree has somewhere
+    to live.
+
+    Args:
+        player_id (int): Discord user ID for the player account.
+        player_account_name (str): Account name to store for the player.
+        player_delta (int): Signed net change for the player, bonuses included.
+        casino_delta (int): Signed change to apply to the casino ledger, bonuses excluded.
+        player_avatar_url (str): Last-seen Discord avatar URL for the player.
+
+    Returns:
+        A `RoundSettlementResult` with the post-write player and casino balances.
     """
     return await apply_round_settlement(
         player_id=player_id,
@@ -1367,7 +1779,7 @@ async def get_jackpot_pool(game_id: str) -> int:
     game can short-circuit cleanly.
 
     Args:
-        game_id: Game identifier (e.g. `"dragon_gate"`).
+        game_id (str): Game identifier (e.g. `"dragon_gate"`).
 
     Returns:
         The current pool balance in points.
@@ -1377,7 +1789,19 @@ async def get_jackpot_pool(game_id: str) -> int:
 
 
 async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
-    """Returns the current jackpot balance and generation for a shared pool."""
+    """Returns the current jackpot balance and generation for a shared pool.
+
+    A read that can WRITE: a seeded pool sitting at or below zero is replenished here and the
+    commit is this call's, which is why a view refresh is enough to bring a drained pool back.
+    The generation is the guard a view carries into its next settlement, so a stale button press
+    cannot spend a pool that has since been reseeded.
+
+    Args:
+        game_id (str): Game identifier (e.g. `"dragon_gate"`).
+
+    Returns:
+        The pool balance and generation after any replenishment, all-zero for an unseeded game.
+    """
     await _ensure_schema()
     async with open_session() as session:
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
@@ -1390,7 +1814,25 @@ async def get_jackpot_snapshot(game_id: str) -> JackpotSnapshot:
 async def _replenish_jackpot_if_depleted_in_session(
     session: AsyncSession, game_id: str, balance: int, generation: int, now: datetime
 ) -> JackpotSnapshot:
-    """Tops a seeded jackpot back up when the stored balance is drained."""
+    """Tops a seeded jackpot back up when the stored balance is drained.
+
+    Only a game with a configured seed is ever topped up, so an unseeded pool at zero stays at
+    zero. `seeded_amount` takes the whole restoration including any overdraft, since it is the
+    running total of on-the-house money and must stay comparable with what players contributed.
+    Bumping `generation` is what retires every snapshot a table was still holding. The UPDATE is
+    guarded on `pool_balance <= 0`, so two concurrent refreshes cannot seed the pool twice: the
+    loser matches no row and reports the balance it came in with.
+
+    Args:
+        session (AsyncSession): Active session; the write is left uncommitted.
+        game_id (str): Game identifier (jackpot row primary key).
+        balance (int): Pool balance observed by the caller.
+        generation (int): Pool generation observed by the caller.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        The snapshot after any reseed, or the caller's observed values unchanged.
+    """
     seed_amount = _jackpot_seed_amount(game_id=game_id)
     if seed_amount <= 0 or balance > 0:
         return JackpotSnapshot(balance=balance, generation=generation)
@@ -1425,11 +1867,16 @@ async def _apply_jackpot_delta_in_session(
     out). Seeded pools are topped back up automatically after a drain, so
     the returned balance is always ready for the next table.
 
+    The depletion flag is read BEFORE the replenishment, so the caller can tell a player their
+    win emptied the pool even though the returned balance already shows it refilled. The negative
+    branch is unused today: the one caller only feeds contributions in, because a payout has to go
+    through `_claim_jackpot_payout_in_session`, which caps the claim at what the pool holds.
+
     Args:
-        session: Active SQLAlchemy session bound to `_engine`.
-        game_id: Game identifier (jackpot row primary key).
-        delta: Signed point adjustment to apply to `pool_balance`.
-        now: `_database_now()` value pinned for this transaction.
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        game_id (str): Game identifier (jackpot row primary key).
+        delta (int): Signed point adjustment to apply to `pool_balance`.
+        now (datetime): `_database_now()` value pinned for this transaction.
 
     Returns:
         A tuple containing the pool balance after the write and any automatic
@@ -1474,6 +1921,16 @@ async def _read_jackpot_snapshot_or_replenish_in_session(
     """Reads the jackpot balance, replenishing the seed if depleted.
 
     Returns a zero snapshot if no pool row exists for the game.
+
+    The read every jackpot path funnels through, so nobody ever observes a drained seeded pool.
+
+    Args:
+        session (AsyncSession): Active session; any reseed is left uncommitted.
+        game_id (str): Game identifier (jackpot row primary key).
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        The pool balance and generation after any reseed.
     """
     result = await session.execute(
         statement=select(JackpotPool.pool_balance, JackpotPool.generation).where(
@@ -1496,7 +1953,29 @@ async def _claim_jackpot_payout_in_session(
     expected_generation: int | None,
     now: datetime,
 ) -> tuple[int, JackpotSnapshot, bool]:
-    """Atomically claims up to `amount` from the requested jackpot generation."""
+    """Atomically claims up to `amount` from the requested jackpot generation.
+
+    A payout is capped at what the pool holds, so a win larger than the pool pays out the pool and
+    the caller settles the player at that reduced figure. The conditional UPDATE pins both the
+    observed balance and the observed generation, which is what stops two winners claiming the same
+    points; a lost race re-reads and retries. `expected_generation` is the caller's own staleness
+    guard: a view that saw the pool before a reseed claims nothing at all rather than spending the
+    fresh seed on an action taken against the old one.
+
+    Args:
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        game_id (str): Game identifier (jackpot row primary key).
+        amount (int): Requested payout; a non-positive amount claims nothing.
+        expected_generation (int | None): Pool generation the caller observed, or None to accept
+            whatever generation is current.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        `(claimed_amount, snapshot_after_any_reseed, depleted_by_this_claim)`.
+
+    Raises:
+        RuntimeError: `_JACKPOT_CLAIM_MAX_RETRIES` conditional writes all lost their race.
+    """
     if amount <= 0:
         snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
             session=session, game_id=game_id, now=now
@@ -1554,13 +2033,13 @@ async def apply_jackpot_settlement(  # noqa: PLR0913 -- public jackpot facade mi
     This is a convenience wrapper around `apply_jackpot_settlement_batch`.
 
     Args:
-        player_id: Discord user ID for the player.
-        player_account_name: Account name to store on the player row.
-        player_delta: Signed net change for the player. Losses are written
+        player_id (int): Discord user ID for the player.
+        player_account_name (str): Account name to store on the player row.
+        player_delta (int): Signed net change for the player. Losses are written
             as a negative delta and the absolute value flows into the pool.
-        game_id: Jackpot game identifier (e.g. `"dragon_gate"`).
-        player_avatar_url: Last-seen Discord avatar URL for the player.
-        expected_jackpot_generation: Optional pool generation observed by the
+        game_id (str): Jackpot game identifier (e.g. `"dragon_gate"`).
+        player_avatar_url (str): Last-seen Discord avatar URL for the player.
+        expected_jackpot_generation (int | None): Optional pool generation observed by the
             caller. Positive payouts only claim from this generation.
 
     Returns:
@@ -1591,7 +2070,20 @@ async def apply_jackpot_settlement(  # noqa: PLR0913 -- public jackpot facade mi
 async def _full_debit_rejections_in_session(
     session: AsyncSession, settlements: Sequence[JackpotSettlementRequest]
 ) -> tuple[int, ...]:
-    """Returns required-full-debit player IDs that cannot cover their debits."""
+    """Returns required-full-debit player IDs that cannot cover their debits.
+
+    A pre-flight check so a table ante can be refused before a single write happens, rather than
+    written and rolled back. Debits for one player are summed across the batch, since two antes
+    from the same seat have to be affordable together. It is advisory only: the batch still
+    verifies each applied debit as it goes, which is what covers a balance that moves in between.
+
+    Args:
+        session (AsyncSession): Active session to read balances through.
+        settlements (Sequence[JackpotSettlementRequest]): The batch about to be applied.
+
+    Returns:
+        Player IDs whose required debits exceed their balance, empty when the batch can proceed.
+    """
     required_debits: dict[int, int] = {}
     for settlement in settlements:
         if settlement.require_full_debit and settlement.player_delta < 0:
@@ -1627,9 +2119,15 @@ async def apply_jackpot_settlement_batch(
     Player and jackpot rows live in the same `data/database/economy.db` file,
     so the whole batch commits as one atomic transaction.
 
+    Rejection is all-or-nothing and reports itself through `rejected_player_ids` with empty balance
+    maps rather than by raising: a table ante one seat cannot afford leaves the pool and every
+    other seat untouched. The rollback mid-loop is safe because nothing has been committed yet, so
+    one call discards every player and pool write the batch had made.
+
     Args:
-        game_id: Jackpot game identifier (e.g. `"dragon_gate"`).
-        settlements: Player-side settlements to apply in order.
+        game_id (str): Jackpot game identifier (e.g. `"dragon_gate"`).
+        settlements (Sequence[JackpotSettlementRequest]): Player-side settlements, applied in
+            order.
 
     Returns:
         The latest balance for each touched player, the actual applied deltas,
@@ -1748,12 +2246,16 @@ def _next_checkin_streak(
 
     Returns `None` when the user has already checked in today.
 
+    A streak advances only from yesterday: any longer gap, and a full cycle already completed,
+    both restart at 1. Pure and database-free, so the three day boundaries are passed in rather
+    than derived here and the whole rule can be exercised without a clock.
+
     Args:
-        last_checkin_at: Stored `last_checkin_at` (Taipei-naive) or `None`.
-        current_streak: Currently-persisted streak counter.
-        today_midnight: 00:00 Asia/Taipei for the request day.
-        yesterday_midnight: 00:00 Asia/Taipei for the prior day.
-        tomorrow_midnight: 00:00 Asia/Taipei for the next day.
+        last_checkin_at (datetime | None): Stored `last_checkin_at` (Taipei-naive) or `None`.
+        current_streak (int): Currently-persisted streak counter.
+        today_midnight (datetime): 00:00 Asia/Taipei for the request day.
+        yesterday_midnight (datetime): 00:00 Asia/Taipei for the prior day.
+        tomorrow_midnight (datetime): 00:00 Asia/Taipei for the next day.
 
     Returns:
         The streak number to persist, or `None` if today is already done.
@@ -1779,12 +2281,15 @@ async def _insert_first_checkin_in_session(
     Returns `None` when another coroutine already inserted the row so
     the caller retries on the next loop iteration.
 
+    A brand-new account cannot be VIP, so the reward is computed at day 1 with `is_vip=False`
+    without reading anything back.
+
     Args:
-        session: Active SQLAlchemy session.
-        user_id: Discord user ID checking in.
-        name: Last-seen Discord username to store on the account.
-        avatar_url: Last-seen Discord avatar URL to store when available.
-        now: `_database_now()` value pinned for this transaction.
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        user_id (int): Discord user ID checking in.
+        name (str): Last-seen Discord username to store on the account.
+        avatar_url (str): Last-seen Discord avatar URL to store when available.
+        now (datetime): `_database_now()` value pinned for this transaction.
 
     Returns:
         `(reward, balance_after, streak_after, vip_after)` on success or
@@ -1833,14 +2338,18 @@ async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper car
     The WHERE clause pins `last_checkin_at` to the observed value so
     concurrent check-ins cannot double-credit.
 
+    The VIP flag comes from the row this call already read, so a VIP bought moments earlier is
+    honored on this very check-in rather than the next one. The credit only runs after the
+    conditional UPDATE has claimed the day, which is the ordering that makes the pin worth having.
+
     Args:
-        session: Active SQLAlchemy session.
-        user_id: Discord user ID checking in.
-        name: Last-seen Discord username to refresh on the account.
-        avatar_url: Last-seen Discord avatar URL to refresh when set.
-        now: `_database_now()` value pinned for this transaction.
-        new_streak: Streak counter chosen by `_next_checkin_streak`.
-        row: Tuple returned by the prior SELECT.
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        user_id (int): Discord user ID checking in.
+        name (str): Last-seen Discord username to refresh on the account.
+        avatar_url (str): Last-seen Discord avatar URL to refresh when set.
+        now (datetime): `_database_now()` value pinned for this transaction.
+        new_streak (int): Streak counter chosen by `_next_checkin_streak`.
+        row (tuple[datetime | None, int, bool, str]): Tuple returned by the prior SELECT.
 
     Returns:
         `(reward, balance_after, streak_after, vip_after)` on success or
@@ -1903,13 +2412,14 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
     through to the next retry with the freshly-visible row.
 
     Args:
-        user_id: Discord user ID checking in.
-        name: Last-seen Discord username to store on the account.
-        avatar_url: Last-seen Discord avatar URL to store when available.
+        user_id (int): Discord user ID checking in.
+        name (str): Last-seen Discord username to store on the account.
+        avatar_url (str): Last-seen Discord avatar URL to store when available.
 
     Returns:
         `CheckinResult` describing the credit, or `None` when the user
-        already checked in today.
+        already checked in today. `None` also covers the exhausted retry budget,
+        so the caller cannot tell the two apart.
     """
     await _ensure_schema()
     now = _database_now()
@@ -1973,10 +2483,16 @@ async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseR
     Returns `None` when the user is already VIP, has insufficient balance,
     or the retry budget for the conditional UPDATE was exhausted.
 
+    Also `None` for a user with no wallet row: the join finds nothing, and someone who has never
+    earned a point cannot afford `VIP_PURCHASE_COST` anyway. The debit and the flag are two
+    conditional writes in one transaction, each pinned on what was observed (balance unchanged,
+    `is_vip` still false), so a race can charge nobody twice and cannot grant the flag for free.
+    VIP is permanent, so there is no revoke path here.
+
     Args:
-        user_id: Discord user ID purchasing VIP.
-        name: Last-seen Discord username to store on the account.
-        avatar_url: Last-seen Discord avatar URL to store when available.
+        user_id (int): Discord user ID purchasing VIP.
+        name (str): Last-seen Discord username to store on the account.
+        avatar_url (str): Last-seen Discord avatar URL to store when available.
 
     Returns:
         `VipPurchaseResult` describing the post-purchase balance, or
@@ -2051,7 +2567,7 @@ async def get_balance(user_id: int) -> int:
     """Returns the current balance for a user.
 
     Args:
-        user_id: Discord user ID to look up.
+        user_id (int): Discord user ID to look up.
 
     Returns:
         The current balance, or 0 if the user has never been seen.
@@ -2067,8 +2583,11 @@ async def get_balance(user_id: int) -> int:
 async def get_vip(user_id: int) -> bool:
     """Returns whether the user owns the VIP perk.
 
+    The flag is permanent once set, so a caller may read it outside the settlement transaction it
+    affects: the worst a race costs is the bonus on one in-flight round.
+
     Args:
-        user_id: Discord user ID to look up.
+        user_id (int): Discord user ID to look up.
 
     Returns:
         `True` when the account has `is_vip` set, else `False`.
@@ -2084,8 +2603,11 @@ async def get_vip(user_id: int) -> bool:
 async def get_admin(user_id: int) -> bool:
     """Returns whether the user can run economy admin commands.
 
+    Independent of Discord's own permissions: an economy admin is a flag on this table, and a
+    guild administrator without it has no economy powers.
+
     Args:
-        user_id: Discord user ID to look up.
+        user_id (int): Discord user ID to look up.
 
     Returns:
         `True` when the account has `is_admin` set, else `False`.
@@ -2107,10 +2629,10 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
     account rows.
 
     Args:
-        user_id: Discord user ID to modify.
-        name: Last-seen Discord username to store when available.
-        is_admin: Desired admin flag value.
-        avatar_url: Last-seen Discord avatar URL to store when available.
+        user_id (int): Discord user ID to modify.
+        name (str): Last-seen Discord username to store when available.
+        is_admin (bool): Desired admin flag value.
+        avatar_url (str): Last-seen Discord avatar URL to store when available.
 
     Returns:
         `True` when a row was created or updated; `False` when revoking a
@@ -2160,7 +2682,13 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
 
 
 async def list_admins() -> list[AdminAccount]:
-    """Returns all economy admins ordered by user ID."""
+    """Returns all economy admins ordered by user ID.
+
+    Unfiltered and unpaged; the flag is set by hand, so the set stays small enough for one query.
+
+    Returns:
+        One entry per account with `is_admin` set, ordered by user ID.
+    """
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
@@ -2172,7 +2700,17 @@ async def list_admins() -> list[AdminAccount]:
 
 
 async def get_central_banker(user_id: int) -> bool:
-    """Returns whether the user can operate central-bank lending commands."""
+    """Returns whether the user can operate central-bank lending commands.
+
+    A third flag, separate from both Discord admin and `is_admin`, set offline by direct DB write.
+    Approving a central-bank loan mints money, so nothing in the Discord surface grants it.
+
+    Args:
+        user_id (int): Discord user ID to look up.
+
+    Returns:
+        `True` when the account has `is_central_banker` set, else `False`.
+    """
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
@@ -2184,7 +2722,20 @@ async def get_central_banker(user_id: int) -> bool:
 async def set_central_banker(
     user_id: int, name: str, is_central_banker: bool, avatar_url: str = ""
 ) -> bool:
-    """Sets the central banker flag for a Discord user."""
+    """Sets the central banker flag for a Discord user.
+
+    Mirrors `set_admin`: granting creates the account row when it is missing, revoking updates an
+    existing row only, so a revoke never leaves an empty account behind.
+
+    Args:
+        user_id (int): Discord user ID to modify.
+        name (str): Last-seen Discord username to store when available.
+        is_central_banker (bool): Desired central-banker flag value.
+        avatar_url (str): Last-seen Discord avatar URL to store when available.
+
+    Returns:
+        `True` when a row was created or updated; `False` when revoking a missing user.
+    """
     await _ensure_schema()
     now = _database_now()
     effective_name = name or str(user_id)
@@ -2232,8 +2783,11 @@ async def set_central_banker(
 async def get_account(user_id: int) -> AccountSnapshot | None:
     """Returns the stored account snapshot for a user.
 
+    Keyed on `user_account`, with the wallet outer-joined: someone who has an identity row but has
+    never held money reads back as all-zero rather than as missing.
+
     Args:
-        user_id: Discord user ID to look up.
+        user_id (int): Discord user ID to look up.
 
     Returns:
         An account snapshot, or `None` if the user has never been seen.
@@ -2285,13 +2839,13 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
     `total_earned += net`).
 
     Args:
-        sender_id: Discord user ID to debit.
-        sender_name: Last-seen Discord username to store on the sender account.
-        receiver_id: Discord user ID to credit.
-        receiver_name: Last-seen Discord username to store on the receiver account.
-        amount: Number of points to transfer.
-        sender_avatar_url: Last-seen Discord avatar URL for the sender.
-        receiver_avatar_url: Last-seen Discord avatar URL for the receiver.
+        sender_id (int): Discord user ID to debit.
+        sender_name (str): Last-seen Discord username to store on the sender account.
+        receiver_id (int): Discord user ID to credit.
+        receiver_name (str): Last-seen Discord username to store on the receiver account.
+        amount (int): Number of points to transfer.
+        sender_avatar_url (str): Last-seen Discord avatar URL for the sender.
+        receiver_avatar_url (str): Last-seen Discord avatar URL for the receiver.
 
     Returns:
         The post-transfer balances when the transfer committed, or `None`
@@ -2367,11 +2921,17 @@ async def top_n(
     explicit decimal-text aware order terms so the query can still apply
     `LIMIT` before rows reach Python.
 
+    Rows are cached process-locally for `_ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS` on the query's own
+    arguments, so a burst of `/leaderboard` calls costs one query. Every write path calls
+    `invalidate_economy_leaderboard_cache`, so the TTL is a backstop rather than the correctness
+    story; the engine's identity is part of the key so a test that swaps `_engine` cannot read
+    another database's rows.
+
     Args:
-        limit: Maximum number of accounts to return, or `None` to return all
+        limit (int | None): Maximum number of accounts to return, or `None` to return all
             matching accounts.
-        exclude_user_ids: User IDs to filter out before applying the limit.
-        include_hidden: Whether to include accounts marked as hidden from
+        exclude_user_ids (tuple[int, ...]): User IDs to filter out before applying the limit.
+        include_hidden (bool): Whether to include accounts marked as hidden from
             public leaderboards.
 
     Returns:
@@ -2416,10 +2976,14 @@ async def top_losers(
     query filters by today's `day_started_at` so yesterday's counters
     never leak into a new day.
 
+    Losses are gross, so a later win does not offset one and the board answers "who lost the most
+    today", not "who is down the most". Ordering is by text length then text because every stored
+    loss is non-negative, which makes the `_stored_integer_desc_order` machinery unnecessary here.
+
     Args:
-        limit: Maximum number of accounts to return.
-        exclude_user_ids: User IDs to filter out before applying the limit.
-        include_hidden: Whether to include accounts marked as hidden from
+        limit (int): Maximum number of accounts to return.
+        exclude_user_ids (tuple[int, ...]): User IDs to filter out before applying the limit.
+        include_hidden (bool): Whether to include accounts marked as hidden from
             public leaderboards.
 
     Returns:
@@ -2480,7 +3044,18 @@ async def top_losers(
 
 
 def _loan_proposal_view(proposal: LoanProposal) -> LoanProposalView:
-    """Projects an ORM loan proposal into an immutable API view."""
+    """Projects an ORM loan proposal into an immutable API view.
+
+    The boundary that keeps a mapped row from escaping the module, so a caller cannot mutate one
+    and cannot hold a handle that expires with the session. The string columns are rebuilt into
+    their enums here, which is where an unrecognised persisted value surfaces as a `ValueError`.
+
+    Args:
+        proposal (LoanProposal): The mapped row to project.
+
+    Returns:
+        A frozen view of the proposal.
+    """
     return LoanProposalView(
         proposal_id=proposal.id,
         kind=LoanProposalKind(proposal.kind),
@@ -2498,7 +3073,18 @@ def _loan_proposal_view(proposal: LoanProposal) -> LoanProposalView:
 
 
 def _loan_contract_view(contract: LoanContract) -> LoanContractView:
-    """Projects an ORM loan contract into an immutable API view."""
+    """Projects an ORM loan contract into an immutable API view.
+
+    Carries only what a caller displays or decides on; the lifetime paid totals and the avatar URLs
+    stay on the row. Interest is whatever was last accrued onto it, so the caller has to have run
+    the accrual first for the figure to be current.
+
+    Args:
+        contract (LoanContract): The mapped row to project.
+
+    Returns:
+        A frozen view of the contract.
+    """
     return LoanContractView(
         contract_id=contract.id,
         lender_type=LoanLenderType(contract.lender_type),
@@ -2516,7 +3102,19 @@ def _loan_contract_view(contract: LoanContract) -> LoanContractView:
 
 
 def _loan_proposal_is_expired(proposal: LoanProposal, now: datetime) -> bool:
-    """Returns whether a pending loan proposal has passed its decision window."""
+    """Returns whether a pending loan proposal has passed its decision window.
+
+    Expiry is evaluated lazily whenever a proposal is touched, so there is no sweeper task and a
+    proposal nobody looks at again simply stays `pending` on disk. Only a `pending` proposal can
+    expire; anything already decided answers False.
+
+    Args:
+        proposal (LoanProposal): The mapped proposal row.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        True when the proposal is pending and older than `LOAN_PROPOSAL_TIMEOUT_SECONDS`.
+    """
     if proposal.status != LoanProposalStatus.PENDING:
         return False
     elapsed_seconds = (_as_taipei(dt=now) - _as_taipei(dt=proposal.created_at)).total_seconds()
@@ -2526,7 +3124,22 @@ def _loan_proposal_is_expired(proposal: LoanProposal, now: datetime) -> bool:
 async def _reject_expired_loan_proposal_in_session(
     session: AsyncSession, proposal: LoanProposal, now: datetime
 ) -> LoanProposalView | None:
-    """Marks an expired pending proposal as rejected inside the caller's session."""
+    """Marks an expired pending proposal as rejected inside the caller's session.
+
+    Every decision path (accept, reject, cancel, the explicit expiry call) runs this first, so a
+    decision arriving after the window closes rejects the proposal instead of acting on it. The
+    UPDATE is pinned on `status = pending`, and the in-memory row is patched to match so the
+    caller can project it without re-reading. A non-expired or already-decided proposal returns
+    None and is left untouched.
+
+    Args:
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        proposal (LoanProposal): The mapped proposal row.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        The rejected proposal's view when this call expired it, else None.
+    """
     if not _loan_proposal_is_expired(proposal=proposal, now=now):
         return None
     status_result = await session.execute(
@@ -2546,7 +3159,23 @@ async def _reject_expired_loan_proposal_in_session(
 def _loan_interest_delta(
     principal_remaining: int, monthly_rate_bps: int, last_accrued_at: datetime, now: datetime
 ) -> tuple[int, datetime]:
-    """Returns simple-interest delta and the timestamp covered by accrual."""
+    """Returns simple-interest delta and the timestamp covered by accrual.
+
+    Accrual is per WHOLE elapsed day on a 30-day month, and the returned timestamp advances only
+    by the days actually charged, so the leftover hours are carried forward rather than lost.
+    Interest is simple, computed on `principal_remaining` alone: it never compounds onto interest
+    already owed. Pure and database-free.
+
+    Args:
+        principal_remaining (int): Outstanding principal to charge interest on.
+        monthly_rate_bps (int): Monthly simple-interest rate in basis points.
+        last_accrued_at (datetime): The point interest has already been charged up to.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        `(interest, accrued_until)`, degrading to `(0, last_accrued_at)` when less than a whole
+        day has passed or the contract owes no principal.
+    """
     if principal_remaining <= 0 or monthly_rate_bps <= 0:
         return 0, last_accrued_at
     elapsed_seconds = (_as_taipei(dt=now) - _as_taipei(dt=last_accrued_at)).total_seconds()
@@ -2560,7 +3189,18 @@ def _loan_interest_delta(
 async def _accrue_contract_interest_in_session(
     session: AsyncSession, contract: LoanContract, now: datetime
 ) -> None:
-    """Persists lazy simple-interest accrual for one active contract."""
+    """Persists lazy simple-interest accrual for one active contract.
+
+    Mutates the mapped row and flushes, leaving the commit to the caller. Because interest is only
+    charged when someone looks, every read path that shows a debt figure (`get_portfolio`,
+    `list_loan_contracts`) is a WRITE path too. Idempotent within a day: a second call in the same
+    24 hours accrues nothing, so running it on every read costs no extra interest.
+
+    Args:
+        session (AsyncSession): Active session; the flush is left uncommitted.
+        contract (LoanContract): The mapped contract row, updated in place.
+        now (datetime): `_database_now()` value pinned for this transaction.
+    """
     if contract.status != LoanContractStatus.ACTIVE:
         return
     interest, accrued_until = _loan_interest_delta(
@@ -2580,7 +3220,21 @@ async def _accrue_contract_interest_in_session(
 async def _central_bank_status_in_session(
     session: AsyncSession, exclude_user_ids: tuple[int, ...] = ()
 ) -> CentralBankStatus:
-    """Computes central-bank lending capacity from positive user balances."""
+    """Computes central-bank lending capacity from positive user balances.
+
+    Capacity is anchored to money that actually exists: the sum of positive wallet balances, with
+    negative ones ignored so an overdrawn admin adjustment cannot shrink everyone's credit. A
+    central-bank loan MINTS, so its principal is subtracted twice (see the inline comment) and the
+    result is floored at zero. `exclude_user_ids` is how the caller keeps the bot's own wallet out
+    of the pool it lends against.
+
+    Args:
+        session (AsyncSession): Active session to read through.
+        exclude_user_ids (tuple[int, ...]): Wallets to leave out of the lending pool.
+
+    Returns:
+        The total pool, the outstanding minted principal, and what is still lendable.
+    """
     balance_stmt = select(UserWallet.balance)
     if exclude_user_ids:
         balance_stmt = balance_stmt.where(UserWallet.user_id.notin_(other=exclude_user_ids))
@@ -2608,7 +3262,17 @@ async def _central_bank_status_in_session(
 
 
 async def get_central_bank_status(exclude_user_ids: tuple[int, ...] = ()) -> CentralBankStatus:
-    """Returns current central-bank lending capacity."""
+    """Returns current central-bank lending capacity.
+
+    A snapshot with no lock behind it, so it is an estimate for display; the acceptance path
+    re-reads capacity under `_current_loan_accept_lock` before it mints anything.
+
+    Args:
+        exclude_user_ids (tuple[int, ...]): Wallets to leave out of the lending pool.
+
+    Returns:
+        The total pool, the outstanding minted principal, and what is still lendable.
+    """
     await _ensure_schema()
     async with open_session() as session:
         return await _central_bank_status_in_session(
@@ -2626,7 +3290,25 @@ async def create_personal_loan_request(  # noqa: PLR0913 -- proposal needs both 
     borrower_avatar_url: str = "",
     lender_avatar_url: str = "",
 ) -> LoanProposalView | None:
-    """Creates a borrower-initiated personal loan request."""
+    """Creates a borrower-initiated personal loan request.
+
+    Nothing moves yet: no escrow is taken and no balance changes, because a personal loan debits
+    the lender at acceptance. The rate is clamped into the allowed band rather than rejected. The
+    proposal expires on its own `LOAN_PROPOSAL_TIMEOUT_SECONDS` window, evaluated lazily.
+
+    Args:
+        borrower_id (int): Discord user ID asking to borrow.
+        borrower_name (str): Last-seen borrower username, falling back to the numeric id.
+        lender_id (int): Discord user ID being asked to lend.
+        lender_name (str): Last-seen lender username, falling back to the numeric id.
+        amount (int): Principal being requested.
+        monthly_rate_bps (int): Monthly simple-interest rate in basis points.
+        borrower_avatar_url (str): Last-seen Discord avatar URL for the borrower.
+        lender_avatar_url (str): Last-seen Discord avatar URL for the lender.
+
+    Returns:
+        The pending proposal, or None for a non-positive amount or a self-directed request.
+    """
     await _ensure_schema()
     if amount <= 0 or borrower_id == lender_id:
         return None
@@ -2663,7 +3345,22 @@ async def create_central_bank_loan_request(
     monthly_rate_bps: int = DEFAULT_LOAN_MONTHLY_RATE_BPS,
     borrower_avatar_url: str = "",
 ) -> LoanProposalView | None:
-    """Creates a borrower-initiated central-bank loan request."""
+    """Creates a borrower-initiated central-bank loan request.
+
+    There is no lender user, so `lender_id` is NULL and the display name is a fixed literal. The
+    requested amount is not checked against lending capacity here; that happens under the
+    acceptance lock, where the capacity read and the mint are one unit.
+
+    Args:
+        borrower_id (int): Discord user ID asking to borrow.
+        borrower_name (str): Last-seen borrower username, falling back to the numeric id.
+        amount (int): Principal being requested.
+        monthly_rate_bps (int): Monthly simple-interest rate in basis points.
+        borrower_avatar_url (str): Last-seen Discord avatar URL for the borrower.
+
+    Returns:
+        The pending proposal, or None for a non-positive amount.
+    """
     await _ensure_schema()
     if amount <= 0:
         return None
@@ -2696,7 +3393,20 @@ async def create_central_bank_loan_request(
 async def _refund_proposal_escrow_in_session(
     session: AsyncSession, proposal: LoanProposal, now: datetime
 ) -> int | None:
-    """Refunds escrowed proposal funds and returns lender balance."""
+    """Refunds escrowed proposal funds and returns the lender's balance.
+
+    A no-op in practice: both creators write `escrow_amount=0`, since a personal loan debits the
+    lender at acceptance rather than at proposal time. It stays on every reject / cancel / expire
+    path so re-introducing escrow does not have to re-find them all.
+
+    Args:
+        session (AsyncSession): Active session; the write is left uncommitted.
+        proposal (LoanProposal): The proposal whose escrow is being released.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        The lender's post-refund balance, or None when there was nothing to refund.
+    """
     if proposal.escrow_amount <= 0 or proposal.lender_id is None:
         return None
     await _upsert_user_metadata_in_session(
@@ -2718,7 +3428,18 @@ async def _refund_proposal_escrow_in_session(
 
 
 async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | None:
-    """Rejects a pending loan proposal if its decision window has expired."""
+    """Rejects a pending loan proposal if its decision window has expired.
+
+    The explicit sweep a view calls when its timeout fires, so the stored proposal and the message
+    the user is looking at agree. Idempotent: a proposal already decided, or not yet expired,
+    leaves the transaction rolled back and answers None.
+
+    Args:
+        proposal_id (int): Row ID of the proposal to expire.
+
+    Returns:
+        The rejected proposal's view when this call expired it, else None.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -2741,7 +3462,21 @@ async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | N
 
 
 async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalView | None:
-    """Cancels a pending proposal created by `actor_id`."""
+    """Cancels a pending proposal created by `actor_id`.
+
+    Only the creator may cancel, enforced in the SELECT's own predicate, so a proposal belonging to
+    someone else is indistinguishable from a missing one. A proposal that turns out to have expired
+    is committed as REJECTED and reported as None, so the caller never sees a cancel succeed on
+    something the timeout already took.
+
+    Args:
+        proposal_id (int): Row ID of the proposal to cancel.
+        actor_id (int): Discord user ID attempting the cancel; must be the creator.
+
+    Returns:
+        The canceled proposal's view, or None when it was missing, not the actor's, already
+        decided, or expired instead.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -2781,7 +3516,21 @@ async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalV
 async def reject_loan_proposal(
     proposal_id: int, actor_id: int, is_central_banker: bool = False
 ) -> LoanProposalView | None:
-    """Rejects a pending proposal when `actor_id` is allowed to decide it."""
+    """Rejects a pending proposal when `actor_id` is allowed to decide it.
+
+    Who may decide depends on the kind: the named lender for a personal request, any central banker
+    for a central-bank one. The caller supplies `is_central_banker` because the flag is read from
+    the same table this transaction writes; a wrong actor is answered None with nothing written.
+
+    Args:
+        proposal_id (int): Row ID of the proposal to reject.
+        actor_id (int): Discord user ID attempting the rejection.
+        is_central_banker (bool): Whether the actor holds the central-banker flag.
+
+    Returns:
+        The rejected proposal's view, or None when it was missing, not the actor's to decide,
+        already decided, or expired instead.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -2832,7 +3581,27 @@ async def accept_loan_proposal(  # noqa: PLR0913 -- approval needs proposal, act
     central_bank_exclude_user_ids: tuple[int, ...] = (),
     allow_central_bank_self_approval: bool = False,
 ) -> LoanProposalAcceptResult | None:
-    """Accepts a pending loan proposal and opens the loan contract."""
+    """Accepts a pending loan proposal and opens the loan contract.
+
+    The lock is the whole reason this wrapper exists: central-bank capacity is read and then spent,
+    so two approvals running concurrently would both see the same free credit and mint past it.
+    It is process-wide and loop-local, which bounds only this process; a second bot against the
+    same file is not covered.
+
+    Args:
+        proposal_id (int): Row ID of the proposal to accept.
+        actor_id (int): Discord user ID approving it.
+        actor_name (str): Last-seen username to store for the approving lender.
+        actor_avatar_url (str): Last-seen Discord avatar URL for the approver.
+        is_central_banker (bool): Whether the actor holds the central-banker flag.
+        central_bank_exclude_user_ids (tuple[int, ...]): Wallets to leave out of the lending pool.
+        allow_central_bank_self_approval (bool): Whether a central banker may approve their own
+            borrow request; keep this false in production.
+
+    Returns:
+        The opened contract with the post-write balances, or None when the proposal was missing,
+        expired, not the actor's to decide, unaffordable, or beat by a concurrent decision.
+    """
     await _ensure_schema()
     async with _current_loan_accept_lock():
         return await _accept_loan_proposal_locked(
@@ -2855,7 +3624,30 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
     central_bank_exclude_user_ids: tuple[int, ...] = (),
     allow_central_bank_self_approval: bool = False,
 ) -> LoanProposalAcceptResult | None:
-    """Accepts a loan proposal while the caller holds the acceptance lock."""
+    """Accepts a loan proposal while the caller holds the acceptance lock.
+
+    Opens with `BEGIN IMMEDIATE` so SQLite's write lock is held from the first read: the capacity
+    and proposal state this decides on must not be re-readable by another writer before the mint
+    lands. The two kinds settle differently and deliberately: a personal loan DEBITS the lender
+    (a failed debit aborts the whole acceptance), while a central-bank loan MINTS with no lender
+    side at all, which is why its capacity check is the only thing standing between it and
+    inflation. Acceptance then prepays `MIN_INTEREST_DAYS` of interest and parks
+    `last_interest_accrued_at` past that window, so an instant repayment still costs the borrower.
+    Every rejection path returns None rather than raising, so the caller shows one refusal.
+
+    Args:
+        proposal_id (int): Row ID of the proposal to accept.
+        actor_id (int): Discord user ID approving it.
+        actor_name (str): Last-seen username to store for the approving lender.
+        actor_avatar_url (str): Last-seen Discord avatar URL for the approver.
+        is_central_banker (bool): Whether the actor holds the central-banker flag.
+        central_bank_exclude_user_ids (tuple[int, ...]): Wallets to leave out of the lending pool.
+        allow_central_bank_self_approval (bool): Whether a central banker may approve their own
+            borrow request; keep this false in production.
+
+    Returns:
+        The opened contract with the post-write balances, or None on any refusal.
+    """
     now = _database_now()
     async with open_session() as session:
         # Acquire SQLite's write lock before reading capacity or proposal state.
@@ -2998,7 +3790,21 @@ async def _loan_contracts_for_payment_in_session(
     lender_type: LoanLenderType,
     lender_id: int | None = None,
 ) -> list[LoanContract]:
-    """Returns active contracts in repayment priority order."""
+    """Returns active contracts in repayment priority order.
+
+    Oldest first, with the row ID as the tiebreak, so a partial payment always retires the longest
+    outstanding debt first and the order is stable across calls. `lender_id` narrows the set only
+    for a personal loan; a central-bank query covers every such contract the borrower holds.
+
+    Args:
+        session (AsyncSession): Active session to read through.
+        borrower_id (int): Discord user ID whose debts are being collected.
+        lender_type (LoanLenderType): Which side of the ledger to repay.
+        lender_id (int | None): The personal lender to narrow to; ignored for central bank.
+
+    Returns:
+        Active contracts, oldest first, empty when the borrower owes this lender nothing.
+    """
     stmt = (
         select(LoanContract)
         .where(
@@ -3023,7 +3829,30 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
     amount: int,
     now: datetime,
 ) -> LoanPaymentResult | None:
-    """Applies a repayment or forced collection across ordered contracts."""
+    """Applies a repayment or forced collection across ordered contracts.
+
+    Interest is accrued per contract first, then paid before principal, so a payment that only
+    covers the interest leaves the principal whole. Each contract's share is debited through the
+    clamped path, so a borrower who cannot cover the full amount pays what they have and the loop
+    stops there rather than failing, which is what makes forced collection partial rather than
+    all-or-nothing. A personal lender is credited the collected amount in the same transaction; the
+    central bank is not, since its principal was minted and repaying it burns.
+
+    Returning None means nothing was collected at all, and the caller rolls back.
+
+    Args:
+        session (AsyncSession): Active session; the writes are left uncommitted.
+        contracts (Sequence[LoanContract]): Active contracts in repayment priority order.
+        borrower_id (int): Discord user ID being debited.
+        borrower_name (str): Username to store, falling back to the contract's own copy.
+        borrower_avatar_url (str): Avatar URL to store, falling back to the contract's own copy.
+        amount (int): Total the borrower is willing (or forced) to pay across all contracts.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        What was paid, split into interest and principal, with the contracts this closed; None
+        when no money moved.
+    """
     if amount <= 0 or not contracts:
         return None
 
@@ -3114,7 +3943,22 @@ async def repay_personal_loans(
     amount: int,
     borrower_avatar_url: str = "",
 ) -> LoanPaymentResult | None:
-    """Repays active personal loans from `borrower_id` to `lender_id`."""
+    """Repays active personal loans from `borrower_id` to `lender_id`.
+
+    The borrower-initiated path: they name the amount, and it is spread over their contracts with
+    that one lender, oldest first. The lender is credited what was actually collected.
+
+    Args:
+        borrower_id (int): Discord user ID repaying.
+        borrower_name (str): Last-seen borrower username to store.
+        lender_id (int): Discord user ID being repaid.
+        amount (int): Total the borrower is paying across their contracts with this lender.
+        borrower_avatar_url (str): Last-seen Discord avatar URL for the borrower.
+
+    Returns:
+        What was paid and what remains, or None when there was nothing to repay or the borrower
+        could not cover any of it.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -3148,7 +3992,24 @@ async def call_personal_loans(
     amount: int | None = None,
     borrower_avatar_url: str = "",
 ) -> LoanPaymentResult | None:
-    """Forcibly collects active personal loans owed to `lender_id`."""
+    """Forcibly collects active personal loans owed to `lender_id`.
+
+    The lender-initiated mirror of `repay_personal_loans`. Interest is accrued across every
+    contract BEFORE the total owed is worked out, so `amount=None` collects a figure that includes
+    interest earned right up to now. Collection is partial by design: a borrower who cannot cover
+    it pays what they have and keeps the remainder as debt.
+
+    Args:
+        lender_id (int): Discord user ID collecting.
+        borrower_id (int): Discord user ID being collected from.
+        borrower_name (str): Last-seen borrower username to store.
+        amount (int | None): Amount to collect, or None for everything owed.
+        borrower_avatar_url (str): Last-seen Discord avatar URL for the borrower.
+
+    Returns:
+        What was collected and what remains, or None when there was nothing owed or nothing
+        could be collected.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -3184,7 +4045,21 @@ async def call_personal_loans(
 async def repay_central_bank_loans(
     borrower_id: int, borrower_name: str, amount: int, borrower_avatar_url: str = ""
 ) -> LoanPaymentResult | None:
-    """Repays active central-bank loans for a borrower."""
+    """Repays active central-bank loans for a borrower.
+
+    The repaid points are burned: there is no lender wallet to credit, which is the other half of
+    the mint at approval and what keeps central-bank lending inflation-neutral over a loan's life.
+
+    Args:
+        borrower_id (int): Discord user ID repaying.
+        borrower_name (str): Last-seen borrower username to store.
+        amount (int): Total the borrower is paying across their central-bank contracts.
+        borrower_avatar_url (str): Last-seen Discord avatar URL for the borrower.
+
+    Returns:
+        What was paid and what remains, or None when there was nothing to repay or the borrower
+        could not cover any of it.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -3211,7 +4086,22 @@ async def repay_central_bank_loans(
 async def call_central_bank_loans(
     borrower_id: int, borrower_name: str, amount: int | None = None, borrower_avatar_url: str = ""
 ) -> LoanPaymentResult | None:
-    """Forcibly collects active central-bank loans from a borrower."""
+    """Forcibly collects active central-bank loans from a borrower.
+
+    The central banker's collection command. Like the personal mirror, interest is accrued across
+    every contract before the owed total is computed, so `amount=None` collects everything owed as
+    of now; the collected points are burned rather than credited to anyone.
+
+    Args:
+        borrower_id (int): Discord user ID being collected from.
+        borrower_name (str): Last-seen borrower username to store.
+        amount (int | None): Amount to collect, or None for everything owed.
+        borrower_avatar_url (str): Last-seen Discord avatar URL for the borrower.
+
+    Returns:
+        What was collected and what remains, or None when there was nothing owed or nothing
+        could be collected.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
@@ -3249,6 +4139,16 @@ async def list_loan_contracts(
     Accrues and persists interest-due on active contracts first (a write),
     matching `get_portfolio`'s lazy-accrual behavior, so the returned views
     reflect interest owed up to now.
+
+    Both sides of a personal loan are matched, so one call answers "what do I owe" and "what am I
+    owed" together; a central-bank contract only ever appears for its borrower.
+
+    Args:
+        user_id (int): Discord user ID to list contracts for.
+        include_closed (bool): Whether contracts already repaid in full are included.
+
+    Returns:
+        Contract views, oldest first, with interest accrued up to now.
     """
     await _ensure_schema()
     now = _database_now()
@@ -3270,7 +4170,20 @@ async def list_loan_contracts(
 async def _portfolio_in_session(
     session: AsyncSession, user_id: int, now: datetime
 ) -> PortfolioView:
-    """Builds a portfolio view, accruing active debt interest first."""
+    """Builds a portfolio view, accruing active debt interest first.
+
+    Net worth is wallet minus principal minus accrued interest, so it can go negative and the
+    caller must be ready for that. Debt is counted from the borrower side only; money lent out is
+    not an asset here. A user with no account row reads back as the numeric id at zero.
+
+    Args:
+        session (AsyncSession): Active session; the accrual is left uncommitted.
+        user_id (int): Discord user ID to build the portfolio for.
+        now (datetime): `_database_now()` value pinned for this transaction.
+
+    Returns:
+        Wallet balance, outstanding principal and interest, and the resulting net worth.
+    """
     account_result = await session.execute(
         statement=select(UserAccount.name, UserWallet.balance)
         .select_from(UserAccount)
@@ -3306,7 +4219,17 @@ async def _portfolio_in_session(
 
 
 async def get_portfolio(user_id: int) -> PortfolioView:
-    """Returns a user's current portfolio and estimated net worth."""
+    """Returns a user's current portfolio and estimated net worth.
+
+    What `/balance` shows, and a WRITE despite the name: the interest accrual it runs is committed
+    here, so reading a portfolio is what keeps a debt figure honest.
+
+    Args:
+        user_id (int): Discord user ID to build the portfolio for.
+
+    Returns:
+        Wallet balance, outstanding principal and interest, and the resulting net worth.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:

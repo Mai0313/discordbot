@@ -1,4 +1,35 @@
-"""Tunable thresholds shared by the per-user memory store, extraction, and pipeline."""
+"""Tunable thresholds shared by the memory store, extraction and pipeline.
+
+Every number deciding WHEN the two-phase memory pipeline acts and HOW MUCH it may read, keep or
+inject lives here instead of beside the code that reads it, so the whole tuning surface can be
+reviewed at once. They are plain module constants and deliberately NOT environment-backed — the
+memory service's only env switch is `MEMORY_GIT_ENABLED` in `typings/memory.py` — because most
+were set against a measurement of the live store rather than a preference, so retuning one is a
+code change that goes through review and the tests. Each carries its own reasoning in the comment
+above it; what follows is only how they fit together.
+
+Who reads what: `store.py` owns the file-tier caps (raw, detail, tone, the render cache, and the
+injection ceiling it renders down to), `pipeline.py` the consolidation triggers, cooldowns,
+process-wide concurrency and the fan-out timeout, `deltas.py` the aging windows and the
+net-deletion floor, `extraction.py` the transcript caps and the per-call timeouts, and
+`prompts.py` renders `COMPACTION_TARGET_CHARS` into the compaction block the model is told to aim
+at. Consumers import the names by value, so a test overrides one on the module that reads it
+(`...memory.store.RAW_FILE_MAX_BYTES`, `...memory.pipeline.RAW_CONSOLIDATION_THRESHOLD`), never
+here; `MEMORY_GLOBAL_CONCURRENCY` is the exception, read through a provider lambda when the
+semaphore is built.
+
+Four relationships have to survive a retune, and no test pins them against each other:
+
+* `RAW_CONSOLIDATION_MAX_BYTES` stays well under `RAW_FILE_MAX_BYTES`, or a verbose burst is
+  evicted into the detail file before it ever fires the consolidation it was meant to.
+* `DETAIL_FILE_TRIM_TARGET_BYTES` stays above the consolidation read window
+  (`MEMORY_DETAIL_CONTEXT_MAX_CHARS * 4` bytes, UTF-8's worst case), or a trim cuts into evidence
+  the next consolidation can still reach.
+* `MEMORY_INJECTION_WARN_CHARS` stays below `MEMORY_INJECTION_MAX_CHARS`, since a warning that
+  only fires once the cap is already dropping facts on read arrives too late to act on.
+* `MEMORY_COMPARTMENT_TIMEOUT_SECONDS` stays at or below `MEMORY_CONSOLIDATE_TIMEOUT_SECONDS`,
+  which bounds the whole fan-out those per-compartment calls run inside.
+"""
 
 # Raw entries accumulated before a consolidation runs. Kept low so stored facts stay
 # fresh; still above 1 (together with the consolidation cooldown) so a heavy chatter
@@ -13,12 +44,13 @@ RAW_CONSOLIDATION_MAX_BYTES = 16_384
 # unbounded; the oldest entries are evicted into the detail file first.
 RAW_FILE_MAX_BYTES = 65_536
 
-# Minimum gap between entry-count-triggered consolidations per user. Not a cost
-# guard: it batches the fan-out so the injected facts do not churn on every other
-# message, and, recorded at attempt time, it also rate-limits a failing
-# consolidation's retries. No data is lost while it waits (raw keeps accumulating, detail.md
-# keeps verbatim evidence, and the raw byte trigger above bypasses it for a
-# burst), so it stays short enough that new facts reach replies promptly.
+# Minimum gap between entry-count-triggered consolidations per scope (a server scope
+# consolidates through the same path as a user's). Not a cost guard: it batches the
+# fan-out so the injected facts do not churn on every other message, and, recorded at
+# attempt time, it also rate-limits a failing consolidation's retries. No data is lost
+# while it waits (raw keeps accumulating, detail.md keeps verbatim evidence, and the raw
+# byte trigger above bypasses it for a burst), so it stays short enough that new facts
+# reach replies promptly.
 MEMORY_CONSOLIDATION_COOLDOWN_SECONDS = 300.0
 
 # Minimum gap between user-requested rebuilds. Recorded at
@@ -34,8 +66,9 @@ MEMORY_REGENERATION_COOLDOWN_SECONDS = 600.0
 # latency.
 MEMORY_GLOBAL_CONCURRENCY = 24
 
-# Past the trigger, consolidation is told to run a deep-summarization (compaction)
-# pass over the compartment it is rewriting, aiming at roughly the target size.
+# Measured per compartment against its rendered stored facts: past the trigger,
+# consolidation is told to run a deep-summarization (compaction) pass over the
+# compartment it is rewriting, aiming at roughly the target size.
 # Compaction merges low-signal and stale facts; it never drops durable memory
 # outright, and fine-grained evidence survives in the detail file regardless.
 COMPACTION_TRIGGER_CHARS = 30_000
@@ -51,9 +84,11 @@ COMPACTION_TARGET_CHARS = 15_000
 # Permanent facts and member-alias rows are exempt.
 STABLE_FRESHNESS_WINDOW_DAYS = 45
 
-# Lifetime of a `recent` fact, measured against `today`. Was a prompt rule dated by
-# the model; now a code sweep, because `last_confirmed` is code-stamped and a
-# deterministic date beats a rule the rewrite had to re-apply correctly every pass.
+# Lifetime of a fact filed in the `recent` SECTION, measured against `today`. Keyed on
+# the section rather than on the `recent` step of the durability ladder, which the sweep
+# never reads for this rule. Was a prompt rule dated by the model; now a code sweep,
+# because `last_confirmed` is code-stamped and a deterministic date beats a rule the
+# rewrite had to re-apply correctly every pass.
 RECENT_CONTEXT_TTL_DAYS = 30
 
 # Ceiling on one rendered memory document (the merged compartments injected for one

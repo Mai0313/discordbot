@@ -12,6 +12,16 @@ consumer working unchanged: ``allowlist_ids_from_server_memory`` still finds
 ``## 成員稱呼``, and the four prompts that tell the model to read that table still point
 at something real. Section keys are ASCII so the structured LLM schema stays English;
 the headings below are the only place the two vocabularies meet.
+
+Nothing here touches the filesystem and nothing here holds state, so the format lives in
+one module while ``store.py`` owns every read and write of it. What this module does own
+are the values a fact must never take from the model: ``mint_fact_id`` derives the
+filename from code-held inputs, ``node_type_for`` derives the node type from the section
+so the two cannot drift, and the per-flavor heading tables double as the section
+allowlist ``deltas.py`` drops an out-of-flavor delta against. The callers are
+``store.py`` (fact file round-trip plus the injected document), ``deltas.py`` (id
+minting, the allowlist, node type, and the one timestamp every code-stamped date comes
+from), and ``pipeline.py`` / ``cogs/gen_reply`` (the identity-line round-trip).
 """
 
 import re
@@ -65,17 +75,42 @@ TRUNCATION_NOTICE = "（記憶已達可注入上限，較舊的內容未列出�
 
 
 def section_headings(flavor: MemoryFlavor) -> tuple[tuple[MemorySection, str], ...]:
-    """Returns the flavor's sections in document order, paired with their headings."""
+    """Returns the flavor's sections in document order, paired with their headings.
+
+    Args:
+        flavor (MemoryFlavor): Which vocabulary to read, a user's or a server's.
+
+    Returns:
+        The `(section, heading)` pairs in the order the document renders them.
+    """
     return _USER_SECTION_HEADINGS if flavor == "user" else _SERVER_SECTION_HEADINGS
 
 
 def sections_for_flavor(flavor: MemoryFlavor) -> frozenset[MemorySection]:
-    """Returns the sections a delta may name for this flavor."""
+    """Returns the sections a delta may name for this flavor.
+
+    The section vocabulary is shared across flavors, so this is what stops a server
+    delta filing a `preference` fact (`deltas._resolve_delta` drops the delta) and what
+    the consolidation prompt is handed as the list it may choose from.
+
+    Args:
+        flavor (MemoryFlavor): Which vocabulary to read, a user's or a server's.
+
+    Returns:
+        The sections this flavor renders, as an unordered set.
+    """
     return frozenset(section for section, _ in section_headings(flavor=flavor))
 
 
 def node_type_for(section: MemorySection) -> MemoryNodeType:
-    """Derives the stored node type from the section so the two cannot drift."""
+    """Derives the stored node type from the section so the two cannot drift.
+
+    Args:
+        section (MemorySection): The section the fact renders under.
+
+    Returns:
+        `"member_alias"` for a nickname row, `"memory"` for everything else.
+    """
     return "member_alias" if section == "member_alias" else "memory"
 
 
@@ -85,6 +120,14 @@ def parse_identity(identity: str, fallback_owner_id: int) -> MemoryOwner:
     A line that does not parse (a job persisted before the format existed, a
     hand-edited row) keeps the id the scope key already carries and drops the name,
     which the next online write fills back in.
+
+    Args:
+        identity (str): The rendered `<name> [id: <N>]` line, as it survived the
+            `memory_job` round-trip.
+        fallback_owner_id (int): Id to stamp when the line carries none of its own.
+
+    Returns:
+        The owner fields to stamp onto every fact this batch writes.
     """
     match = _IDENTITY_RE.match(identity.strip())
     if match is None:
@@ -99,6 +142,12 @@ def render_owner_identity(owner: MemoryOwner) -> str:
 
     The inverse of `parse_identity`, for the offline and restart paths that have a
     stored scope but no Discord context to rebuild the label from.
+
+    Args:
+        owner (MemoryOwner): The owner recovered from an already-stored fact.
+
+    Returns:
+        The identity line, which is just the id in brackets when no name was stored.
     """
     return f"{owner.owner_name} [id: {owner.owner_id}]".strip()
 
@@ -111,13 +160,35 @@ def mint_fact_id(compartment: str, summary: str) -> str:
     traversal one prompt injection away. Including the compartment also means the same
     sentence distilled in two compartments gets two ids, so a cross-compartment
     collision cannot happen and the reader never has to arbitrate one.
+
+    The summary's whitespace is collapsed first, so a retry whose only difference is
+    line wrapping lands on the same file instead of filing a duplicate.
+
+    Args:
+        compartment (str): The compartment the fact is being written into.
+        summary (str): The model-authored one-line gist the id is derived from.
+
+    Returns:
+        A 16-hex id matching `FACT_ID_RE`, which is also the file's stem.
     """
     digest = hashlib.sha256(f"{compartment}\0{' '.join(summary.split())}".encode())
     return digest.hexdigest()[:16]
 
 
 def render_fact_file(fact: MemoryFact) -> str:
-    """Renders one fact as its on-disk file."""
+    """Renders one fact as its on-disk file.
+
+    Every free-text header value is collapsed to one line, so nothing carried in from a
+    conversation can span lines or forge the closing fence. `subject_id` is written only
+    when the fact has one, which is what keeps an ordinary fact's header free of a field
+    only alias rows mean anything by.
+
+    Args:
+        fact (MemoryFact): The fact to serialize.
+
+    Returns:
+        The complete file text, newline-terminated.
+    """
     header = {
         "id": fact.fact_id,
         "summary": _one_line(text=fact.summary),
@@ -150,6 +221,17 @@ def parse_fact_file(text: str, compartment: str) -> MemoryFact | None:
     half way, and there is no safe way to guess which side is right. Returning None
     (the caller logs it) keeps the fact out of every reply rather than guessing the
     permissive answer.
+
+    `node_type` is re-derived from the stored section rather than read back, so an
+    edited file cannot make an ordinary fact claim to be an alias row.
+
+    Args:
+        text (str): The file's full contents.
+        compartment (str): The compartment directory the file was listed from.
+
+    Returns:
+        The parsed fact, or None when the front matter is missing, a header key is
+        absent, a value does not parse, or the stored compartment disagrees.
     """
     header, body = _split_front_matter(text=text)
     if header is None:
@@ -198,6 +280,21 @@ def render_memory_document(facts: list[MemoryFact], flavor: MemoryFlavor, max_ch
     an arbitrary tail. Truncation only ever affects this rendering; nothing is deleted
     from disk, which is what stops the size cap fighting the next consolidation over
     facts it would immediately write back.
+
+    The cap stops the section it is reached in, not the whole render, so a later
+    section's shorter lines can still land. It is budgeted over the fact lines and their
+    headings only, so the blank line between sections and the notice itself ride a
+    little over it; `max_chars` is a backstop, not an exact ceiling.
+
+    Args:
+        facts (list[MemoryFact]): Every fact read across the requested compartments,
+            in any order.
+        flavor (MemoryFlavor): Which section order and headings to render under.
+        max_chars (int): Budget the rendering stops at.
+
+    Returns:
+        The document, empty when no section rendered, and closed with
+        `TRUNCATION_NOTICE` when it rendered something and left something out.
     """
     by_section: dict[MemorySection, list[MemoryFact]] = {}
     for fact in facts:
@@ -240,6 +337,14 @@ def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
     has every id token stripped from its body before the real `subject_id` is appended —
     so the id can never be hallucinated (or injected by a member) onto the wrong person,
     and the table stays parseable by the allowlist reader.
+
+    Args:
+        fact (MemoryFact): The fact to render.
+        section (MemorySection): The section it is being rendered under, which is the
+            key it was grouped by.
+
+    Returns:
+        One document line, bulleted for every section but `profile`.
     """
     body = " ".join(fact.text.split()) if section == "profile" else fact.text.strip()
     if section == "profile":
@@ -254,7 +359,19 @@ def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
 
 
 def _split_front_matter(text: str) -> tuple[dict[str, str] | None, str]:
-    """Splits a fact file into its header mapping and its body."""
+    """Splits a fact file into its header mapping and its body.
+
+    A header line that is neither the closing fence nor a `key: value` pair rejects the
+    whole file rather than being skipped: a header that half parsed would hand the
+    caller a fact with silently missing provenance.
+
+    Args:
+        text (str): The file's full contents.
+
+    Returns:
+        The header pairs and the stripped body, or `(None, "")` when the opening fence
+        is missing, a header line does not parse, or the closing fence never arrives.
+    """
     lines = text.splitlines()
     if not lines or lines[0].strip() != _FENCE:
         return None, ""
@@ -270,15 +387,39 @@ def _split_front_matter(text: str) -> tuple[dict[str, str] | None, str]:
 
 
 def _optional_int(value: str) -> int | None:
-    """Parses an optional numeric header value, treating an empty one as absent."""
+    """Parses an optional numeric header value, treating an empty one as absent.
+
+    A non-numeric value propagates a `ValueError`, which `parse_fact_file` folds into
+    its malformed-file path along with every other unparsable header scalar.
+
+    Args:
+        value (str): The raw header value, empty when the key was absent.
+
+    Returns:
+        The parsed id, or None when the field was not written.
+    """
     return int(value) if value else None
 
 
 def _one_line(text: str) -> str:
-    """Collapses a header value so it can never span lines or forge a fence."""
+    """Collapses a header value so it can never span lines or forge a fence.
+
+    Args:
+        text (str): The value to collapse.
+
+    Returns:
+        The value with every run of whitespace reduced to one space.
+    """
     return " ".join(text.split())
 
 
 def utc_now() -> datetime:
-    """Returns the timestamp used for every code-stamped fact date."""
+    """Returns the timestamp used for every code-stamped fact date.
+
+    Whole seconds, matching the `timespec="seconds"` the file is written with, so a fact
+    read back off disk compares equal to the one just written.
+
+    Returns:
+        The current UTC time, without microseconds.
+    """
     return datetime.now(UTC).replace(microsecond=0)

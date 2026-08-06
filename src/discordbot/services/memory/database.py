@@ -12,6 +12,17 @@ the clear from recreating the erased transcript after the tombstone commits, and
 a row already newer than the clear makes `clear_job` refuse rather than report an
 empty scope, so the caller never erases the files behind a tombstone that no-opped.
 
+`services/memory/pipeline.py` is the only caller. Every write but `clear_job`
+goes through its best-effort `_safe` wrapper and the resume read through
+`safe_list_resumable`, so reply.db trouble costs the resume guarantee rather than
+the fire-and-forget pipeline itself; the tombstone write is the deliberate
+exception, since swallowing its failure would leave a resumable transcript behind
+an erase the user asked for. The distilled memory never lands here: the markdown
+store under `data/memories/` stays the source of truth, and this table holds only
+one turn's progress plus, until that turn reaches `raw.md`, the transcript it is
+distilled from. Reads hand back `MemoryJob` snapshots rather than ORM rows, so
+nothing outside this module reads a row after its session closed.
+
 Engine, PRAGMA hooks, and the schema bootstrap follow `cogs/research/database.py`
 exactly: a module-level `AsyncEngine` singleton on the shared `reply.db` (a
 per-instance `cached_property` engine would leak the pool / dialect cache), with
@@ -66,20 +77,39 @@ _token_state_lock = Lock()
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Applies the project's standard PRAGMA setup to a new reply.db connection."""
+    """Applies the project's standard PRAGMA setup to a new reply.db connection.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+    """
     configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 @event.listens_for(_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures a newly opened SQLite connection."""
+    """Configures a newly opened SQLite connection.
+
+    Args:
+        dbapi_connection (Any): The connection the pool just opened.
+        _connection_record (Any): The pool's bookkeeping record, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _configure_sqlite_on_checkout(
     dbapi_connection: object, _connection_record: object, _connection_proxy: object
 ) -> None:
-    """Configures pooled connections from test-swapped engines."""
+    """Configures pooled connections from test-swapped engines.
+
+    `connect` fires only when the pool opens a NEW connection, so one an engine had already
+    pooled before a test swapped it in would stay unconfigured forever; this catches it on its
+    way back out.
+
+    Args:
+        dbapi_connection (object): The connection being handed to a caller.
+        _connection_record (object): The pool's bookkeeping record, unused.
+        _connection_proxy (object): The proxy wrapping the checked-out connection, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
@@ -95,9 +125,11 @@ class MemoryJobRow(Base):
     Attributes:
         scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
         flavor: ``user`` or ``server`` so the restart sweep picks the matching extractor.
-        subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
+        subject: The phase-1 subject directive: the target line (``target_user_id: <id>`` or
+            ``target_server_id: <id>``), plus the ``source:`` line a user turn carries.
         transcript: The rendered phase-1 input; set to NULL once the turn is ``done``.
-        identity: Single-line identity stamped into main.md, persisted so resume needs no Discord context.
+        identity: The rendered ``<name> [id: <N>]`` line each stored fact's owner fields are
+            stamped from, persisted so a resume needs no Discord context.
         status: Lifecycle status (see ``MemoryJobStatus``).
         token: Logical version / ordering token; guards newest-wins and the terminal update.
         last_error: Bounded failure blurb when ``status='failed'``.
@@ -122,7 +154,13 @@ class MemoryJobRow(Base):
 
 
 class MemoryTokenClockRow(Base):
-    """Singleton high watermark for process-level logical token reservations."""
+    """Singleton high watermark for process-level logical token reservations.
+
+    Attributes:
+        id: Always 1; the table holds exactly one row.
+        high_watermark: The largest token the most recently reserved block can issue, so the
+            next reservation starts above it.
+    """
 
     __tablename__ = "memory_token_clock"
 
@@ -139,7 +177,9 @@ class MemoryJob(BaseModel):
     transcript: str | None = Field(
         ..., description="The rendered phase-1 input, or None once the turn is done."
     )
-    identity: str = Field(..., description="Single-line identity stamped into main.md.")
+    identity: str = Field(
+        ..., description="Single-line `<name> [id: <N>]` identity of the memory target."
+    )
     status: MemoryJobStatus = Field(..., description="Lifecycle status of the turn.")
     token: int = Field(..., description="Logical version / ordering token.")
     last_error: str | None = Field(..., description="Bounded failure blurb when failed.")
@@ -150,7 +190,14 @@ _schema_lock = LoopLocalLock()
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps the `memory_job` table once per engine (loop-local-locked)."""
+    """Bootstraps this module's tables once per engine, and re-arms its connection hooks.
+
+    The hook install runs on every call, ahead of the already-bootstrapped fast path: a test
+    that monkeypatches `_engine` gets an engine the import-time `@event.listens_for` never
+    reached, which would otherwise open every connection with no PRAGMAs at all. The cache key
+    is engine identity rather than a bool for the same reason. The re-check inside the
+    loop-local lock is what stops two concurrent first calls both running `create_all`.
+    """
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     ensure_sqlite_hooks(
         engine=_engine,
@@ -168,7 +215,15 @@ async def _ensure_schema() -> None:
 
 
 def open_session() -> AsyncSession:
-    """Creates an async session bound to the current reply.db engine."""
+    """Creates an async session bound to the current reply.db engine.
+
+    Reads `_engine` per call rather than caching a session factory, so a test that swaps the
+    module engine is served by the next open; `ensure_sqlite_hooks` keeps the repeat installs
+    from stacking listeners.
+
+    Returns:
+        A session bound to whichever engine the module currently holds.
+    """
     ensure_sqlite_hooks(
         engine=_engine,
         on_connect_fn=_configure_sqlite,
@@ -178,19 +233,49 @@ def open_session() -> AsyncSession:
 
 
 def cast_flavor(value: str) -> MemoryJobFlavor:
-    """Narrows a stored flavor string, defaulting odd values to user."""
+    """Narrows a stored flavor string, defaulting odd values to user.
+
+    The column is a plain `String`, so a hand-edited or future value still has to narrow to
+    something; `user` is what the restart sweep's own else-branch picks its extractor with.
+
+    Args:
+        value (str): The stored `flavor` column.
+
+    Returns:
+        The narrowed flavor.
+    """
     return "server" if value == "server" else "user"
 
 
 def cast_status(value: str) -> MemoryJobStatus:
-    """Narrows a stored status string, defaulting odd values to pending."""
+    """Narrows a stored status string, defaulting odd values to pending.
+
+    Only the typed snapshot is affected: `list_resumable` filters on the stored column in SQL,
+    so narrowing an unrecognised value here never widens what the restart sweep resumes.
+
+    Args:
+        value (str): The stored `status` column.
+
+    Returns:
+        The narrowed status.
+    """
     if value in ("pending", "done", "failed", "cleared"):
         return cast("MemoryJobStatus", value)
     return "pending"
 
 
 def _row_to_model(row: MemoryJobRow) -> MemoryJob:
-    """Maps an ORM row to its pydantic snapshot."""
+    """Maps an ORM row to its pydantic snapshot.
+
+    Callers get a plain model rather than the ORM instance, so nothing outside this module can
+    end up reading a row after its session closed.
+
+    Args:
+        row (MemoryJobRow): The row just read.
+
+    Returns:
+        The snapshot handed back to callers.
+    """
     return MemoryJob(
         scope=row.scope,
         flavor=cast_flavor(value=row.flavor),
@@ -204,7 +289,19 @@ def _row_to_model(row: MemoryJobRow) -> MemoryJob:
 
 
 def new_token() -> int:
-    """Returns a process-local token placeholder in strict capture order."""
+    """Returns a process-local token placeholder in strict capture order.
+
+    Synchronous and negative on purpose: capture order has to be fixed at the moment a turn is
+    captured, with no await in the way, while the durable base it maps onto costs a database
+    round trip. `_resolve_token` performs that mapping, and maps one placeholder to the same
+    positive token every time, so a turn deferred and replayed later still guards on its own row.
+
+    Returns:
+        A negative placeholder, ordered by capture; never stored as-is.
+
+    Raises:
+        RuntimeError: This process minted more placeholders than its reserved block can hold.
+    """
     with _token_state_lock:
         sequence = next(_token_sequence)
     if sequence > _TOKEN_BLOCK_SIZE:
@@ -213,7 +310,26 @@ def new_token() -> int:
 
 
 async def _reserve_token_block(*, engine: AsyncEngine) -> int:
-    """Atomically reserves a token range and returns its exclusive lower bound."""
+    """Atomically reserves a token range and returns its exclusive lower bound.
+
+    `BEGIN IMMEDIATE` takes SQLite's write lock before the two reads, so two processes racing
+    to reserve cannot compute the same base. The base clears the persisted watermark AND the
+    largest positive token already in `memory_job`: rows staged under the previous wall-clock
+    scheme carry tokens far above any watermark, and a block underneath one of those would mint
+    a clear that reads as older than the transcript it has to erase.
+
+    Args:
+        engine (AsyncEngine): The engine to reserve against, passed in rather than read off the
+            module global so the reserved base and the key it is cached under can never come
+            from two different engines.
+
+    Returns:
+        The exclusive lower bound of the reserved range; this process issues
+        `base + 1` through `base + _TOKEN_BLOCK_SIZE`.
+
+    Raises:
+        RuntimeError: Another block would run past SQLite's signed 64-bit integer ceiling.
+    """
     async with AsyncSession(bind=engine, expire_on_commit=False) as session:
         await session.execute(statement=text("BEGIN IMMEDIATE"))
         clock_high = await session.scalar(
@@ -237,7 +353,22 @@ async def _reserve_token_block(*, engine: AsyncEngine) -> int:
 
 
 async def _resolve_token(*, token: int) -> int:
-    """Maps a local placeholder to this process's durable token range."""
+    """Maps a local placeholder to this process's durable token range.
+
+    A non-negative token passes through untouched, which is what lets the restart sweep hand
+    back the durable token already stored on a row so its terminal write still guards on it.
+    The block is reserved lazily on the first call that needs one, so importing this module
+    touches no database.
+
+    Args:
+        token (int): A `new_token` placeholder, or a durable token to pass through.
+
+    Returns:
+        The positive token to write onto the row.
+
+    Raises:
+        RuntimeError: The placeholder falls outside the block size this process reserved.
+    """
     if token >= 0:
         return token
     sequence = -token
@@ -269,7 +400,17 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
 
     On conflict the row is overwritten only when the new `token` is strictly
     newer than the stored one, so an older turn's write can never clobber a newer
-    turn's row (the guard that keeps two interleaved turns consistent).
+    turn's row (the guard that keeps two interleaved turns consistent). A clear's
+    tombstone is just another newer row to that guard, which is how a turn captured
+    before a clear fails to recreate the transcript it erased.
+
+    Args:
+        scope (str): Memory scope this row belongs to; the primary key.
+        flavor (MemoryJobFlavor): Which extractor the restart sweep must rebuild.
+        subject (str): The phase-1 subject directive naming the target.
+        transcript (str): The rendered phase-1 input a resume replays.
+        identity (str): The target's rendered `<name> [id: <N>]` line.
+        token (int): This turn's ordering token, placeholder or durable.
     """
     await _ensure_schema()
     token = await _resolve_token(token=token)
@@ -307,7 +448,16 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
 
 
 async def mark_done(*, scope: str, token: int) -> None:
-    """Marks a turn done and drops its now-consumed transcript (token-guarded)."""
+    """Marks a turn done and drops its now-consumed transcript (token-guarded).
+
+    The guard is exact equality, not "at least": once a newer turn (or a clear) has taken the
+    row, a slow turn finishing late no-ops instead of reporting that newer row done and
+    stripping a transcript the restart sweep still needs.
+
+    Args:
+        scope (str): The scope whose row is being closed.
+        token (int): The token this turn staged its row with.
+    """
     await _ensure_schema()
     token = await _resolve_token(token=token)
     now = _database_now()
@@ -321,7 +471,16 @@ async def mark_done(*, scope: str, token: int) -> None:
 
 
 async def mark_failed(*, scope: str, token: int, error: str) -> None:
-    """Parks a turn at failed, keeping its transcript for a restart retry (token-guarded)."""
+    """Parks a turn at failed, keeping its transcript for a restart retry (token-guarded).
+
+    Same exact-token guard as `mark_done`. `error` is stored truncated to `_MAX_ERROR_CHARS`,
+    since it carries whatever text the failing provider raised.
+
+    Args:
+        scope (str): The scope whose row is being parked.
+        token (int): The token this turn staged its row with.
+        error (str): Failure blurb, truncated before it is stored.
+    """
     await _ensure_schema()
     token = await _resolve_token(token=token)
     now = _database_now()
@@ -342,6 +501,11 @@ async def clear_job(*, scope: str, flavor: MemoryJobFlavor, token: int) -> bool:
     commits later loses the existing newest-token guard. `BEGIN IMMEDIATE` makes
     the existence check and tombstone upsert one serialized write transaction, so
     the caller can still distinguish an empty scope without reopening that race.
+
+    Args:
+        scope (str): The scope being erased.
+        flavor (MemoryJobFlavor): Flavor stamped onto the tombstone row.
+        token (int): The clear's ordering token; every earlier staging write loses to it.
 
     Returns:
         True when a non-cleared row existed and was scrubbed.
@@ -409,7 +573,14 @@ async def clear_job(*, scope: str, flavor: MemoryJobFlavor, token: int) -> bool:
 
 
 async def list_resumable() -> list[MemoryJob]:
-    """Returns pending and failed rows for the restart resume sweep."""
+    """Returns pending and failed rows for the restart resume sweep.
+
+    The status filter runs in SQL against the stored column, so a `done` row and a clear's
+    `cleared` tombstone never leave the database at all.
+
+    Returns:
+        A snapshot of every row still staged for resume.
+    """
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
@@ -419,7 +590,17 @@ async def list_resumable() -> list[MemoryJob]:
 
 
 async def get_job(*, scope: str) -> MemoryJob | None:
-    """Reads one scope's row, or `None` when it is not tracked."""
+    """Reads one scope's row, or `None` when it is not tracked.
+
+    The single-scope read, for inspecting a scope's processing state; the pipeline itself works
+    off `list_resumable` plus the token-guarded writes and never needs it.
+
+    Args:
+        scope (str): The scope to read.
+
+    Returns:
+        A snapshot of the row, or None when the scope has none.
+    """
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(

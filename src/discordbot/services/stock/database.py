@@ -1,4 +1,50 @@
-"""Persistent store and settlement service for the simulated stock market."""
+"""Persistent store and settlement engine for the simulated stock market.
+
+Owns `data/database/stock.db` and every row in it: `stock_profile` (one virtual company, its
+simulation knobs and its latest quote), `stock_position` (a user's long and short side by side),
+`stock_operation` plus `stock_trade_leg` (the lifecycle row and the ordered legs that are the only
+audit trail there is), `stock_price_tick` (the materialized price history) and `stock_news` (the
+fictional headlines that move it). Cash is not here: balances stay in `economy.db` and every money
+movement goes through `services/economy/database.py`. `cogs/stock/` renders what this module
+returns and `cogs/economy/cog.py` reads a portfolio out of it; neither ever touches an ORM model,
+splits a price / wallet / position read, or writes a leg of its own.
+
+There is no market loop. A symbol advances lazily when someone interacts with it
+(`advance_market_in_session`), materializing one tick per `STOCK_TICK_SECONDS` boundary up to
+`MAX_TICKS_PER_INTERACTION`, so a quiet symbol just replays its backlog on the next command. The
+price formula itself is pure and lives in `market.py`; this module feeds it stored state (news
+impulses, decayed order flow, the profile's knobs) and persists the result. A tick write is an
+insert-once on `(symbol, created_at)`, so two concurrent advances over the same boundary agree on
+one price instead of racing.
+
+Settlement has exactly one entry point, `settle_stock_operation`, and that is where the operation
+lifecycle comes from. `stock.db` and `economy.db` cannot commit together, so the order is fixed:
+the PENDING operation and its legs commit here first, the wallet legs apply next, and only then is
+the position written and the operation marked APPLIED. A failure between those steps parks the
+operation at RECONCILE_REQUIRED rather than rolling back or retrying — a non-final row keeps
+reserving float in `_market_exposures` and blocks that user's next trade on the symbol through
+`_blocking_operation`, so two databases out of step stop the feature for one user instead of being
+papered over. `list_reconciliation_operations` is what an operator reads to clear it.
+
+Wallet legs are gross, never netted: a cover expands into a collateral credit, a short-entry credit
+and then the cover debit, in that order. The order is load-bearing, because the economy side
+rejects a debit it cannot cover in full at that point in the sequence, which is what lets a cover
+be paid out of proceeds the spendable balance never held; the split is what keeps the economy's
+`total_earned - total_spent == balance` invariant describing real flow.
+
+Concurrency is per key and every primitive is loop-local (`utils/asyncio_locks.py`), since a
+module-level `asyncio.Lock` cannot outlive the event loop it first bound to: `_operation_locks`
+serializes one user's submissions on one symbol, `_market_locks` serializes tick advancement per
+symbol, `_news_generation_lock` admits one due-news sweep at a time and `_news_provider_semaphore`
+bounds how many provider calls that sweep runs at once. Anything that reads state a mutation plan
+depends on opens with `BEGIN IMMEDIATE`, so SQLite's write lock is taken before the read rather
+than after the plan is built.
+
+The engine and its schema flag are module-level on purpose: tests monkeypatch `_engine` onto a
+`tmp_path`, and `_schema_ready_for` compares by engine identity so a swapped engine bootstraps its
+own schema. There are no migrations and nothing seeds a company — `upsert_stock_profile` is the
+operator's offline write path, and a fresh database is an empty market.
+"""
 
 from __future__ import annotations
 
@@ -100,7 +146,15 @@ _stock_portfolio_cache: dict[_StockPortfolioCacheKey, tuple[float, StockPortfoli
 
 
 def invalidate_stock_portfolio_cache(user_id: int | None = None) -> None:
-    """Clears process-local stock portfolio view cache entries."""
+    """Drops cached portfolio views so the next read rebuilds them.
+
+    Every write that can change a valuation calls this: a profile upsert and a position reset drop
+    the whole map, a finalized trade drops only its owner. A tick advance deliberately does not, so
+    a valuation goes stale on the entry's own short TTL instead of invalidating on every quote.
+
+    Args:
+        user_id (int | None): Owner whose entry to drop, or None to clear every engine's entries.
+    """
     if user_id is None:
         _stock_portfolio_cache.clear()
         return
@@ -109,7 +163,17 @@ def invalidate_stock_portfolio_cache(user_id: int | None = None) -> None:
 
 
 def _cached_stock_portfolio(user_id: int) -> StockPortfolioView | None:
-    """Returns a cached stock portfolio when its short TTL is still valid."""
+    """Returns a cached portfolio while its short TTL holds, evicting it once it does not.
+
+    The key carries the engine's identity, so a test that monkeypatches `_engine` onto a `tmp_path`
+    can never be served the previous engine's rows.
+
+    Args:
+        user_id (int): Owner whose cached portfolio to look up.
+
+    Returns:
+        The cached view, or None when there is none or it has aged out.
+    """
     cache_key: _StockPortfolioCacheKey = (id(_engine), user_id)
     cached = _stock_portfolio_cache.get(cache_key)
     if cached is None:
@@ -122,7 +186,14 @@ def _cached_stock_portfolio(user_id: int) -> StockPortfolioView | None:
 
 
 def _cache_stock_portfolio(portfolio: StockPortfolioView) -> StockPortfolioView:
-    """Stores one stock portfolio view in the short process cache."""
+    """Stores one portfolio view in the short process cache and hands it straight back.
+
+    Args:
+        portfolio (StockPortfolioView): The freshly built view to cache.
+
+    Returns:
+        The same view, so the caller can cache and return in one expression.
+    """
     _stock_portfolio_cache[(id(_engine), portfolio.user_id)] = (monotonic(), portfolio)
     return portfolio
 
@@ -134,7 +205,12 @@ class Base(DeclarativeBase):
 
 
 class StockProfile(Base):
-    """Stock profile and latest quote state."""
+    """One virtual company: its simulation knobs, its daily anchors and its latest quote.
+
+    Maintained offline through `upsert_stock_profile`; nothing in the runtime creates a row. The
+    quote here trails `stock_price_tick` — an advance writes the tick first and only copies the
+    price back when it moved.
+    """
 
     __tablename__ = "stock_profile"
 
@@ -158,7 +234,11 @@ class StockProfile(Base):
 
 
 class StockPosition(Base):
-    """Per-user long and short position."""
+    """Per-user long and short position, keyed on `(symbol, user_id)`.
+
+    `version` counts writes and is never read back for optimistic locking; serialization comes from
+    the per-user operation lock instead.
+    """
 
     __tablename__ = "stock_position"
 
@@ -176,7 +256,11 @@ class StockPosition(Base):
 
 
 class StockOperation(Base):
-    """Lifecycle row for one cross-database stock operation."""
+    """Lifecycle row for one cross-database stock operation.
+
+    Written before the wallet moves, so a row sitting outside `_FINAL_OPERATION_STATUSES` is what
+    reserves the float its legs would consume and blocks that user's next trade on the symbol.
+    """
 
     __tablename__ = "stock_operation"
     __table_args__ = (
@@ -196,7 +280,11 @@ class StockOperation(Base):
 
 
 class StockTradeLeg(Base):
-    """One ordered leg produced by a stock operation."""
+    """One ordered leg produced by a stock operation, and the whole audit trail there is.
+
+    Each leg keeps its own slipped `price_cents` and its own deltas, so legs are never netted into
+    a single movement; there is no transaction table above this.
+    """
 
     __tablename__ = "stock_trade_leg"
     __table_args__ = (
@@ -222,7 +310,11 @@ class StockTradeLeg(Base):
 
 
 class StockPriceTick(Base):
-    """Materialized price tick."""
+    """Materialized price tick, stamped at its boundary rather than at write time.
+
+    `(symbol, created_at)` is unique, which is what makes a lazy replay of an already-priced
+    boundary an insert-once rather than a duplicate point.
+    """
 
     __tablename__ = "stock_price_tick"
     __table_args__ = (
@@ -236,7 +328,11 @@ class StockPriceTick(Base):
 
 
 class StockNews(Base):
-    """Stock news that can influence lazy ticks."""
+    """One fictional headline, whose sentiment fires once into a lazy tick.
+
+    `id` is `<symbol>-<cadence bucket>`, so a bucket holds at most one headline and a second
+    generation in the same bucket collides instead of stacking another impulse onto the price.
+    """
 
     __tablename__ = "stock_news"
     __table_args__ = (Index("ix_stock_news_symbol_created", "symbol", "created_at"),)
@@ -252,11 +348,20 @@ class StockNews(Base):
 
 
 class _StockOperationPlan(StockSettlementResult):
-    """Internal settlement plan before any database mutation."""
+    """A settlement that passed validation, before any row is written.
+
+    Adds no field to `StockSettlementResult`; the subclass exists so the plan builders can return
+    either an accepted plan or a rejection in the same slot, and settlement can tell them apart by
+    type rather than by trusting `success`.
+    """
 
 
 class _StockExecutionSnapshot(BaseModel):
-    """Submit-time state needed to cap a requested quantity."""
+    """Submit-time state needed to cap a requested quantity.
+
+    Frozen and read-only: the quantity searches walk it repeatedly, so it is gathered once under
+    the market lock rather than re-read per candidate size.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -316,50 +421,113 @@ class _StockOrderFlowSummary(BaseModel):
 
 
 def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Configures SQLite for stock storage."""
+    """Applies the project's standard SQLite PRAGMAs to one stock connection.
+
+    Takes the shared defaults unchanged: no foreign keys, and the `StoredInteger` UDFs left on,
+    which the money and share columns need to compare and add as integers rather than as text. The
+    two listeners below differ only in the signature SQLAlchemy hands them, so both land here.
+
+    Args:
+        dbapi_connection (Any): The DBAPI connection to configure.
+    """
     configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 @event.listens_for(_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures SQLite for stock storage."""
+    """Configures each connection the engine newly opens.
+
+    The decorator binds this to whichever engine existed at import time, so a test-swapped engine
+    only gets it once `ensure_sqlite_hooks` re-installs it.
+
+    Args:
+        dbapi_connection (Any): The freshly opened DBAPI connection.
+        _connection_record (Any): SQLAlchemy's pool record, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _configure_sqlite_on_checkout(
     dbapi_connection: object, _connection_record: object, _connection_proxy: object
 ) -> None:
-    """Configures pooled connections from test-swapped engines."""
+    """Configures a pooled connection on its way out of the pool.
+
+    A connection the pool already held when a test swapped `_engine` will never fire `connect`
+    again, so this is the listener that reaches it.
+
+    Args:
+        dbapi_connection (object): The pooled DBAPI connection being checked out.
+        _connection_record (object): SQLAlchemy's pool record, unused.
+        _connection_proxy (object): SQLAlchemy's connection proxy, unused.
+    """
     _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _current_schema_lock() -> asyncio.Lock:
-    """Returns the schema bootstrap lock bound to the current event loop."""
+    """Returns the schema bootstrap lock, rebound if the event loop changed.
+
+    Returns:
+        The lock guarding the one-time `create_all` for this loop.
+    """
     return _schema_lock.get()
 
 
 def _current_news_generation_lock() -> asyncio.Lock:
-    """Returns the process-local stock news generation lock for this event loop."""
+    """Returns the due-news sweep lock, rebound if the event loop changed.
+
+    Returns:
+        The lock admitting one `ensure_due_stock_news` sweep at a time.
+    """
     return _news_generation_lock.get()
 
 
 def _current_news_provider_semaphore() -> asyncio.Semaphore:
-    """Returns the stock news provider concurrency limiter for this event loop."""
+    """Returns the news provider limiter, rebound if the event loop changed.
+
+    Returns:
+        The semaphore bounding concurrent provider calls to `_NEWS_PROVIDER_CONCURRENCY`.
+    """
     return _news_provider_semaphore.get()
 
 
 def _operation_lock(user_id: int, symbol: str) -> AbstractAsyncContextManager[None]:
-    """Returns a per-user stock operation lock bound to the current event loop."""
+    """Returns the lock serializing one user's submissions on one symbol.
+
+    Held across the whole of `settle_stock_operation`, wallet legs included, so a second
+    submission cannot plan against a position the first has already spent.
+
+    Args:
+        user_id (int): Discord user submitting the operation.
+        symbol (str): Already-normalized ticker symbol.
+
+    Returns:
+        An async context manager holding that key's lock for the current event loop.
+    """
     return _operation_locks.hold(key=(user_id, symbol))
 
 
 def _market_lock(symbol: str) -> AbstractAsyncContextManager[None]:
-    """Returns a per-symbol market advancement lock bound to the current event loop."""
+    """Returns the lock serializing tick advancement for one symbol.
+
+    Args:
+        symbol (str): Ticker symbol, upper-cased here so a mixed-case caller shares the key.
+
+    Returns:
+        An async context manager holding that symbol's lock for the current event loop.
+    """
     return _market_locks.hold(key=symbol.upper())
 
 
 def open_stock_session() -> AsyncSession:
-    """Creates an async session bound to the current stock database engine."""
+    """Opens an async session on the current stock engine, re-installing its PRAGMA listeners.
+
+    The listeners are re-installed on every open (idempotently) because a test-swapped engine
+    carries none of its own, and an unconfigured connection would run without WAL.
+
+    Returns:
+        A session bound to `_engine` with `expire_on_commit=False`, so a view built from a
+        committed row is still readable.
+    """
     ensure_sqlite_hooks(
         engine=_engine,
         on_connect_fn=_configure_sqlite,
@@ -369,12 +537,24 @@ def open_stock_session() -> AsyncSession:
 
 
 async def _begin_immediate(session: AsyncSession) -> None:
-    """Acquires SQLite's write lock before reading stock state for a mutation plan."""
+    """Takes SQLite's write lock before the reads a mutation plan is built from.
+
+    SQLite's default deferred transaction upgrades to a write lock only at the first write, by
+    which point the plan has already read state another writer may have changed underneath it.
+
+    Args:
+        session (AsyncSession): The session whose transaction to start immediately.
+    """
     await session.execute(statement=text("BEGIN IMMEDIATE"))
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps stock schema once per engine."""
+    """Creates the stock tables once per engine.
+
+    The double-check around the lock keeps the common case lock-free, and the flag stores the
+    engine itself rather than a bool so a test that swaps `_engine` bootstraps its own file
+    instead of inheriting the previous engine's "ready".
+    """
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     ensure_sqlite_hooks(
         engine=_engine,
@@ -392,7 +572,14 @@ async def _ensure_schema() -> None:
 
 
 def _profile_view(profile: StockProfile) -> StockProfileView:
-    """Projects an ORM profile into a typed view."""
+    """Projects an ORM profile into the frozen view the cogs read.
+
+    Args:
+        profile (StockProfile): The loaded profile row.
+
+    Returns:
+        The profile as a `StockProfileView`, minus `created_at`, which nothing renders.
+    """
     return StockProfileView(
         symbol=profile.symbol,
         name=profile.name,
@@ -416,7 +603,20 @@ def _profile_view(profile: StockProfile) -> StockProfileView:
 def _position_view(
     position: StockPosition | None, symbol: str, user_id: int, user_name: str = ""
 ) -> StockPositionView:
-    """Projects an ORM position into a typed view."""
+    """Projects an ORM position into a typed view, inventing an empty one where there is no row.
+
+    A user who has never traded a symbol has no row, and the detail view still has to render, so
+    absence becomes an all-zero position rather than None.
+
+    Args:
+        position (StockPosition | None): The loaded position row, or None when the user has none.
+        symbol (str): Ticker symbol the view is for.
+        user_id (int): Discord user the view is for.
+        user_name (str): Display name to fall back on when the row stored none.
+
+    Returns:
+        The position as a `StockPositionView`.
+    """
     if position is None:
         return StockPositionView(symbol=symbol, user_id=user_id, user_name=user_name)
     return StockPositionView(
@@ -433,7 +633,16 @@ def _position_view(
 
 
 def _participant_position_view(position: StockPosition) -> StockParticipantPositionView:
-    """Projects a stock position into a public participant summary."""
+    """Projects a position into the summary every viewer of the stock sees.
+
+    Sizes and realized P&L only; cost basis, entry value and collateral stay private to the owner.
+
+    Args:
+        position (StockPosition): The loaded position row.
+
+    Returns:
+        The public summary, with the user id as text when no name was ever stored.
+    """
     return StockParticipantPositionView(
         user_id=position.user_id,
         user_name=position.user_name or str(position.user_id),
@@ -444,7 +653,16 @@ def _participant_position_view(position: StockPosition) -> StockParticipantPosit
 
 
 def _trade_leg_view(leg: StockTradeLeg, user_name: str = "") -> StockTradeLegView:
-    """Projects an ORM trade leg into a typed view."""
+    """Projects an ORM trade leg into a typed view.
+
+    Args:
+        leg (StockTradeLeg): The loaded leg row.
+        user_name (str): Name to fall back on when the leg row stored none.
+
+    Returns:
+        The leg as a `StockTradeLegView`, naming the trader by the leg's own name, then the
+        fallback, then the user id as text, so a row always renders.
+    """
     return StockTradeLegView(
         operation_id=leg.operation_id,
         leg_order=leg.leg_order,
@@ -463,7 +681,15 @@ def _trade_leg_view(leg: StockTradeLeg, user_name: str = "") -> StockTradeLegVie
 
 
 def _news_view(news: StockNews) -> StockNewsView:
-    """Projects an ORM news row into a typed view."""
+    """Projects an ORM news row into a typed view.
+
+    Args:
+        news (StockNews): The loaded news row.
+
+    Returns:
+        The headline as a `StockNewsView`, keeping the `source` / `model` provenance the refresh
+        logic reads back.
+    """
     return StockNewsView(
         symbol=news.symbol,
         headline=news.headline,
@@ -476,14 +702,33 @@ def _news_view(news: StockNews) -> StockNewsView:
 
 
 def _tick_view(tick: StockPriceTick) -> StockPriceTickView:
-    """Projects an ORM tick row into a typed view."""
+    """Projects an ORM tick row into a typed view.
+
+    Args:
+        tick (StockPriceTick): The loaded tick row.
+
+    Returns:
+        The tick as a `StockPriceTickView`, dropping the surrogate id the chart never reads.
+    """
     return StockPriceTickView(
         symbol=tick.symbol, price_cents=tick.price_cents, created_at=tick.created_at
     )
 
 
 def _quote_from_profile(profile: StockProfile, pressure_bps: int) -> StockMarketQuote:
-    """Builds a quote from the latest profile row."""
+    """Builds a quote from the latest profile row.
+
+    The change pair is measured against the previous close rather than the day open, so it reads
+    the way a real ticker does across a day rollover. A profile whose previous close is zero
+    reports no change instead of dividing by it.
+
+    Args:
+        profile (StockProfile): The advanced profile row.
+        pressure_bps (int): Recent order-flow pressure, computed by the caller.
+
+    Returns:
+        The quote the market board and the detail header render.
+    """
     change_cents = profile.price_cents - profile.previous_close_price_cents
     change_bps = (
         change_cents * 10_000 // profile.previous_close_price_cents
@@ -501,7 +746,24 @@ def _quote_from_profile(profile: StockProfile, pressure_bps: int) -> StockMarket
 async def upsert_stock_profile(
     profile: StockProfileUpsert, now: datetime | None = None
 ) -> StockProfileView:
-    """Creates or updates a DB-owned stock profile from an explicit maintenance payload."""
+    """Creates or retunes one virtual company from an operator-authored payload.
+
+    The offline maintenance path, and the only way a company comes into existence; nothing in the
+    runtime calls it. A create seeds both daily anchors from `price_cents` and writes the current
+    boundary's tick; a retune leaves the anchors alone and rewrites that boundary's tick only when
+    the price actually changed, so a knob-only edit does not disturb the chart. Every holding's
+    valuation can move here, so the whole portfolio cache is dropped rather than one owner's.
+
+    Args:
+        profile (StockProfileUpsert): The company's fields as the operator wants them.
+        now (datetime | None): Timestamp to write and to bucket the tick into, defaulting to now.
+
+    Returns:
+        The stored profile as a view.
+
+    Raises:
+        ValueError: The symbol is empty once stripped.
+    """
     await _ensure_schema()
     effective_now = now or _database_now()
     normalized_symbol = profile.symbol.strip().upper()
@@ -565,7 +827,11 @@ async def upsert_stock_profile(
 
 
 async def list_stock_profiles() -> tuple[StockProfileView, ...]:
-    """Lists DB-owned stock profiles without advancing market ticks."""
+    """Lists every company as stored, without advancing a tick.
+
+    Returns:
+        Every profile in symbol order, at whatever price the last advance left it.
+    """
     await _ensure_schema()
     async with open_stock_session() as session:
         result = await session.execute(
@@ -575,7 +841,15 @@ async def list_stock_profiles() -> tuple[StockProfileView, ...]:
 
 
 async def list_stock_supply_audit() -> tuple[StockSupplyAuditView, ...]:
-    """Lists DB-owned stock supply and aggregate exposure without advancing ticks."""
+    """Reports issued supply against aggregate exposure, for an operator retuning a company.
+
+    Advances nothing, so it describes the market as stored. The remaining capacity already has the
+    non-final operations' opens subtracted out of it, which is why their count rides alongside:
+    non-zero means the figure is provisional and may come back if those operations fail.
+
+    Returns:
+        One audit row per company, in symbol order.
+    """
     await _ensure_schema()
     async with open_stock_session() as session:
         result = await session.execute(
@@ -623,7 +897,24 @@ async def ensure_due_stock_news(
     symbols: tuple[str, ...] | None = None,
     now: datetime | None = None,
 ) -> None:
-    """Creates due stock news rows, using AI when a provider is available."""
+    """Fills in the headlines whose cadence has come round, preferring the provider's.
+
+    Serialized process-wide, because two interactions arriving together would otherwise both find
+    the same symbol due. Provider calls run concurrently under `_news_provider_semaphore` and,
+    deliberately, with no session open — an LLM call is slow enough that holding a write
+    transaction across it would stall every other trade on the file. A provider that raises or
+    answers with a blank headline degrades to the deterministic templates built from the same
+    market context, so the symbol always ends up with a headline.
+
+    Passing a provider also reopens a symbol that already has a template headline inside its
+    cadence, which the per-bucket insert then upgrades in place; nothing ever downgrades an AI
+    headline back to a template.
+
+    Args:
+        news_provider (Callable[[StockNewsGenerationContext], Awaitable[StockGeneratedNews | None]] | None): Producer for one symbol's headline, or None to use the templates alone.
+        symbols (tuple[str, ...] | None): Symbols to consider, upper-cased here; None means all.
+        now (datetime | None): Timestamp deciding what is due, defaulting to now.
+    """
     await _ensure_schema()
     effective_now = now or _database_now()
     normalized_symbols = tuple(symbol.upper() for symbol in symbols) if symbols else None
@@ -639,12 +930,18 @@ async def ensure_due_stock_news(
         async def generate_row(
             context: StockNewsGenerationContext,
         ) -> tuple[StockNewsGenerationContext, StockGeneratedNews]:
-            """Generates one news row without holding a database transaction."""
+            """Generates one news row without holding a database transaction.
+
+            Returns:
+                The context paired with its headline, which is always produced.
+            """
             generated: StockGeneratedNews | None = None
             if news_provider is not None:
                 async with _current_news_provider_semaphore():
                     try:
                         generated = await news_provider(context)
+                    # Broad on purpose: a provider is best-effort, so anything it raises degrades
+                    # to the deterministic templates rather than leaving the symbol without news.
                     except Exception:
                         logfire.warn(
                             "Stock news provider failed; using deterministic fallback",
@@ -671,7 +968,22 @@ async def ensure_due_stock_news(
 async def _due_stock_news_contexts(
     normalized_symbols: tuple[str, ...] | None, now: datetime, allow_template_upgrade: bool = False
 ) -> tuple[StockNewsGenerationContext, ...]:
-    """Returns stock news generation contexts for profiles that need fresh news."""
+    """Decides which symbols are due a headline and gathers the context each producer needs.
+
+    A symbol is due when it has never had a headline, when its cadence has elapsed, or when a
+    provider is available and the latest headline is still a template. The cadence is floored at
+    one hour, so a profile carrying zero cannot make every read due.
+
+    Args:
+        normalized_symbols (tuple[str, ...] | None): Upper-cased symbols to consider, or None
+            for every profile.
+        now (datetime): Timestamp the cadence is measured against.
+        allow_template_upgrade (bool): Whether a template headline inside its cadence counts as
+            due, which is what lets an available provider replace one.
+
+    Returns:
+        One context per due symbol, empty when nothing is due.
+    """
     async with open_stock_session() as session:
         statement = select(StockProfile)
         if normalized_symbols:
@@ -735,7 +1047,21 @@ async def _stock_news_generation_contexts(
     latest_news_by_symbol: dict[str, tuple[datetime, str, str, int]],
     now: datetime,
 ) -> tuple[StockNewsGenerationContext, ...]:
-    """Builds DB-backed market context for stock news generation."""
+    """Builds the market picture a news producer is told about, batched over every due symbol.
+
+    Order flow and recent sentiment are fetched once for the whole batch rather than per symbol,
+    since a market-wide sweep would otherwise run two queries per company.
+
+    Args:
+        session (AsyncSession): Open session to read order flow and news through.
+        profiles (tuple[StockProfile, ...]): The due profiles, already selected.
+        latest_news_by_symbol (dict[str, tuple[datetime, str, str, int]]): Per symbol, the latest
+            headline's `(created_at, source, headline, sentiment_bps)`, as the caller read it.
+        now (datetime): Timestamp the flow and sentiment windows end at.
+
+    Returns:
+        One context per profile, in the order given.
+    """
     symbols = tuple(profile.symbol for profile in profiles)
     flow_summaries = await _order_flow_summaries_for_symbols(
         session=session,
@@ -789,7 +1115,21 @@ async def _order_flow_summaries_for_symbols(
     at: datetime,
     liquidity_by_symbol: dict[str, int],
 ) -> dict[str, _StockOrderFlowSummary]:
-    """Returns recent order-flow summaries keyed by symbol."""
+    """Summarizes recent order flow for several symbols in one query.
+
+    Only legs of APPLIED operations count, so a pending or reconcile-parked operation never shows
+    up as traded volume.
+
+    Args:
+        session (AsyncSession): Open session to read trade legs through.
+        symbols (tuple[str, ...]): Symbols to summarize.
+        at (datetime): End of the `_ORDER_FLOW_LOOKBACK` window.
+        liquidity_by_symbol (dict[str, int]): Each symbol's liquidity depth, which the pressure
+            figure is scaled against; a symbol missing from it is treated as having none.
+
+    Returns:
+        One summary per requested symbol, zeroed where nothing traded.
+    """
     if not symbols:
         return {}
     since = at - _ORDER_FLOW_LOOKBACK
@@ -822,7 +1162,20 @@ async def _order_flow_summaries_for_symbols(
 def _order_flow_summary_from_rows(
     pressure_rows: tuple[tuple[str, int, datetime], ...], at: datetime, liquidity_shares: int
 ) -> _StockOrderFlowSummary:
-    """Summarizes recent order flow for stock news context."""
+    """Splits prefetched legs into buy-side and sell-side volume and their net pressure.
+
+    The two volumes are raw sums over the window while `pressure_bps` is time-decayed, so a
+    producer sees both how much traded and how much of it still counts.
+
+    Args:
+        pressure_rows (tuple[tuple[str, int, datetime], ...]): Legs as `(leg_type, shares,
+            created_at)`.
+        at (datetime): End of the window, which the decay ages toward.
+        liquidity_shares (int): Liquidity depth the pressure is scaled against.
+
+    Returns:
+        The order-flow summary for one symbol.
+    """
     buy_side_shares = 0
     sell_side_shares = 0
     for leg_type, shares, _created_at in pressure_rows:
@@ -842,7 +1195,19 @@ def _order_flow_summary_from_rows(
 async def _news_rows_by_symbol_for_context(
     session: AsyncSession, symbols: tuple[str, ...], now: datetime
 ) -> dict[str, tuple[StockNews, ...]]:
-    """Returns recent news rows keyed by symbol for generation context."""
+    """Fetches the still-counting news rows for several symbols in one query.
+
+    Bounded by `_NEWS_SENTIMENT_LOOKBACK`, which is how long a headline can still carry any decayed
+    sentiment at all, and skips rows that have already expired.
+
+    Args:
+        session (AsyncSession): Open session to read news through.
+        symbols (tuple[str, ...]): Symbols to fetch for.
+        now (datetime): End of the sentiment window.
+
+    Returns:
+        One entry per requested symbol, newest first, empty where nothing is in window.
+    """
     if not symbols:
         return {}
     result = await session.execute(
@@ -864,7 +1229,20 @@ async def _news_rows_by_symbol_for_context(
 async def _insert_generated_news(
     session: AsyncSession, profile: StockProfileView, generated: StockGeneratedNews, now: datetime
 ) -> None:
-    """Persists one generated news row with a stable cadence-bucket ID."""
+    """Files one generated headline into its cadence bucket, upgrading a template in place.
+
+    The id is `<symbol>-<bucket>`, so a bucket holds one headline and a second generation collides
+    with the first instead of stacking a second impulse onto the same ticks. The conflict clause is
+    deliberately one-way — it rewrites only a `template` row with an `ai` one, so a provider that
+    arrives late improves the bucket while a template refresh can never undo it. `sentiment_bps`
+    is clamped here rather than trusted, since a producer may ask for anything.
+
+    Args:
+        session (AsyncSession): Open session; the caller commits.
+        profile (StockProfileView): The symbol the headline belongs to, and its cadence.
+        generated (StockGeneratedNews): What the producer returned.
+        now (datetime): Creation stamp, and the anchor for `expires_at`.
+    """
     bucket = _stock_news_bucket(profile=profile, now=now)
     source = generated.source or "template"
     insert_statement = insert(StockNews).values(
@@ -898,7 +1276,15 @@ async def _insert_generated_news(
 
 
 def _stock_news_bucket(profile: StockProfileView, now: datetime) -> int:
-    """Returns the cadence bucket for one stock news row."""
+    """Returns which cadence window a timestamp falls in, as a whole number of periods.
+
+    Args:
+        profile (StockProfileView): The symbol whose cadence sets the window, floored at an hour.
+        now (datetime): Timestamp to bucket, read in Asia/Taipei.
+
+    Returns:
+        The bucket index, which is what makes a news row's id stable within one cadence period.
+    """
     cadence_seconds = max(profile.news_cadence_hours, 1) * 60 * 60
     return int(as_taipei(dt=now).timestamp()) // cadence_seconds
 
@@ -906,7 +1292,18 @@ def _stock_news_bucket(profile: StockProfileView, now: datetime) -> int:
 def _fallback_generated_news(
     context: StockNewsGenerationContext, now: datetime
 ) -> StockGeneratedNews:
-    """Returns deterministic fictional news for a due stock profile."""
+    """Picks a template headline for a symbol, without an LLM.
+
+    The seed mixes the symbol, the cadence bucket and the batch's own order-flow figures, so the
+    choice is reproducible within a bucket but does not repeat the same line for every company.
+
+    Args:
+        context (StockNewsGenerationContext): The market picture, which also chooses the tone.
+        now (datetime): Timestamp deciding the cadence bucket.
+
+    Returns:
+        A headline marked `source="template"`, which an AI refresh may later replace.
+    """
     profile = context.profile
     bucket = _stock_news_bucket(profile=profile, now=now)
     templates = _fallback_templates_for_context(context=context)
@@ -930,7 +1327,17 @@ def _fallback_generated_news(
 def _fallback_templates_for_context(
     context: StockNewsGenerationContext,
 ) -> tuple[tuple[str, int], ...]:
-    """Chooses fallback templates from the same market context used by AI news."""
+    """Chooses the bullish, bearish or neutral template set from the market context.
+
+    Reads the same context the LLM prompt gets, so a fallback headline still fits the tape rather
+    than contradicting a chart the user is looking at.
+
+    Args:
+        context (StockNewsGenerationContext): The market picture for one symbol.
+
+    Returns:
+        The `(headline template, sentiment_bps)` pairs to pick from.
+    """
     signal_bps = (
         context.change_bps // 2 + context.pressure_bps + context.recent_news_sentiment_bps // 3
     )
@@ -942,7 +1349,15 @@ def _fallback_templates_for_context(
 
 
 async def _latest_tick(session: AsyncSession, symbol: str) -> StockPriceTick | None:
-    """Returns the latest price tick for a stock."""
+    """Reads the most recent materialized tick for a stock.
+
+    Args:
+        session (AsyncSession): Open session to read through.
+        symbol (str): Ticker symbol to read.
+
+    Returns:
+        The newest tick, or None for a symbol that has never been advanced.
+    """
     result = await session.execute(
         statement=select(StockPriceTick)
         .where(StockPriceTick.symbol == symbol)
@@ -955,7 +1370,21 @@ async def _latest_tick(session: AsyncSession, symbol: str) -> StockPriceTick | N
 async def _insert_price_tick_or_existing(
     session: AsyncSession, symbol: str, price_cents: int, created_at: datetime
 ) -> int:
-    """Inserts a tick once and returns the persisted price for that boundary."""
+    """Claims a boundary's price, or reports the price already stored there.
+
+    This is what makes lazy advancement idempotent: the unique index on `(symbol, created_at)` lets
+    the loser of a concurrent advance read back the winner's price and carry on from it, so two
+    interactions racing over the same backlog converge on one price history instead of forking.
+
+    Args:
+        session (AsyncSession): Open session; the caller commits.
+        symbol (str): Ticker symbol the tick belongs to.
+        price_cents (int): Price to store if this call is the one that inserts.
+        created_at (datetime): The tick boundary, not the wall clock.
+
+    Returns:
+        The price now persisted at that boundary, which is `price_cents` only when this call won.
+    """
     result = cast(
         "CursorResult[Any]",
         await session.execute(
@@ -978,7 +1407,17 @@ async def _insert_price_tick_or_existing(
 async def _upsert_price_tick(
     session: AsyncSession, symbol: str, price_cents: int, created_at: datetime
 ) -> None:
-    """Inserts or replaces the maintenance price tick for a boundary."""
+    """Writes an operator's price onto a boundary, replacing whatever is there.
+
+    The maintenance twin of `_insert_price_tick_or_existing`, and the one place a stored tick is
+    overwritten: a hand-set price has to reach the chart, so here the newest write wins.
+
+    Args:
+        session (AsyncSession): Open session; the caller commits.
+        symbol (str): Ticker symbol the tick belongs to.
+        price_cents (int): Price the operator set.
+        created_at (datetime): The tick boundary to write onto.
+    """
     await session.execute(
         statement=insert(StockPriceTick)
         .values(symbol=symbol, price_cents=price_cents, created_at=created_at)
@@ -991,7 +1430,19 @@ async def _upsert_price_tick(
 async def _news_rows_for_boundaries(
     session: AsyncSession, symbol: str, boundaries: tuple[datetime, ...]
 ) -> tuple[StockNews, ...]:
-    """Returns news rows needed to price an already selected boundary range."""
+    """Fetches every news row that can influence a chosen run of boundaries, in one query.
+
+    Reaching back a further `_NEWS_SENTIMENT_LOOKBACK` before the first boundary is what lets the
+    whole backlog be priced without a query per tick.
+
+    Args:
+        session (AsyncSession): Open session to read news through.
+        symbol (str): Ticker symbol being advanced.
+        boundaries (tuple[datetime, ...]): The boundaries about to be priced, ascending.
+
+    Returns:
+        The in-window, unexpired news rows newest first, empty when there are no boundaries.
+    """
     if not boundaries:
         return ()
     result = await session.execute(
@@ -1008,7 +1459,20 @@ async def _news_rows_for_boundaries(
 
 
 def _decayed_news_sentiment_for_context(news_rows: tuple[StockNews, ...], at: datetime) -> int:
-    """Returns time-decayed ambient sentiment for the AI news generation prompt only."""
+    """Sums the decayed sentiment still hanging over a symbol, for the news prompt alone.
+
+    Deliberately not what the price reads: a headline lands on the price once, as an impulse at its
+    own boundary. This decayed figure exists so a producer knows how much news mood is already
+    priced in, and feeding it back into the formula would apply the same headline every tick.
+
+    Args:
+        news_rows (tuple[StockNews, ...]): Candidate news rows; future and expired ones are
+            skipped here rather than by the query.
+        at (datetime): The moment to decay toward.
+
+    Returns:
+        The summed decayed sentiment, clamped to `NEWS_SENTIMENT_LIMIT_BPS`.
+    """
     sentiment = 0
     for news in news_rows:
         if as_taipei(dt=news.created_at) > as_taipei(dt=at):
@@ -1031,10 +1495,18 @@ def _news_impulse_by_boundary(
 ) -> dict[datetime, int]:
     """Maps each applied tick boundary to its one-shot news sentiment sum.
 
-    Each news row contributes its clamped sentiment exactly once, at the first
-    applied boundary at or after its own tick boundary. News whose tick boundary
-    falls before every applied boundary is skipped (its impulse already landed
-    on a previous lazy advance).
+    Each news row contributes its clamped sentiment exactly once, at the first applied boundary at
+    or after its own tick boundary. News whose tick boundary falls before every applied boundary is
+    skipped, its impulse having already landed on a previous lazy advance. Compression matters
+    here: when a backlog drops boundaries, a headline that fired into a dropped one is carried
+    forward to the next surviving boundary rather than lost.
+
+    Args:
+        news_rows (tuple[StockNews, ...]): News rows in window for this advance.
+        applied_boundaries (tuple[datetime, ...]): The boundaries actually being priced.
+
+    Returns:
+        The one-shot sentiment sum per boundary, empty when either input is.
     """
     if not applied_boundaries or not news_rows:
         return {}
@@ -1057,7 +1529,20 @@ def _news_impulse_by_boundary(
 async def _recent_pressure_bps(
     session: AsyncSession, symbol: str, at: datetime, liquidity_shares: int
 ) -> int:
-    """Returns recent buy/sell pressure from applied trade legs."""
+    """Reads one symbol's current order-flow pressure straight from the database.
+
+    The single-shot twin of `_pressure_rows_for_boundaries`, used for the figure a quote carries
+    rather than for pricing a run of boundaries.
+
+    Args:
+        session (AsyncSession): Open session to read trade legs through.
+        symbol (str): Ticker symbol to measure.
+        at (datetime): End of the `_ORDER_FLOW_LOOKBACK` window.
+        liquidity_shares (int): Liquidity depth the pressure is scaled against.
+
+    Returns:
+        Net pressure in basis points, bounded by `PRESSURE_LIMIT_BPS`.
+    """
     since = at - _ORDER_FLOW_LOOKBACK
     result = await session.execute(
         statement=select(StockTradeLeg.leg_type, StockTradeLeg.shares, StockTradeLeg.created_at)
@@ -1077,7 +1562,20 @@ async def _recent_pressure_bps(
 async def _pressure_rows_for_boundaries(
     session: AsyncSession, symbol: str, boundaries: tuple[datetime, ...]
 ) -> tuple[tuple[str, int, datetime], ...]:
-    """Returns trade-leg rows needed to price an already selected boundary range."""
+    """Fetches every trade leg that can influence a chosen run of boundaries, in one query.
+
+    Reaching back a further `_ORDER_FLOW_LOOKBACK` before the first boundary is what lets each
+    boundary recompute its own decayed pressure in memory instead of querying per tick. Only legs
+    of APPLIED operations count, so a pending one never moves the price it is waiting on.
+
+    Args:
+        session (AsyncSession): Open session to read trade legs through.
+        symbol (str): Ticker symbol being advanced.
+        boundaries (tuple[datetime, ...]): The boundaries about to be priced, ascending.
+
+    Returns:
+        Legs as `(leg_type, shares, created_at)`, empty when there are no boundaries.
+    """
     if not boundaries:
         return ()
     result = await session.execute(
@@ -1096,7 +1594,22 @@ async def _pressure_rows_for_boundaries(
 def _recent_pressure_bps_from_rows(
     pressure_rows: tuple[tuple[str, int, datetime], ...], at: datetime, liquidity_shares: int
 ) -> int:
-    """Returns recent buy/sell pressure from prefetched trade legs."""
+    """Computes decayed net order-flow pressure from legs already in memory.
+
+    A leg's weight falls linearly to zero across the lookback window, so pressure fades on its own
+    rather than dropping off a cliff when a trade leaves the window. Legs outside `[at -
+    lookback, at]` are ignored here, which is what lets one prefetched batch serve every boundary
+    of a backlog.
+
+    Args:
+        pressure_rows (tuple[tuple[str, int, datetime], ...]): Legs as `(leg_type, shares,
+            created_at)`.
+        at (datetime): The moment pressure is measured at.
+        liquidity_shares (int): Liquidity depth the net flow is scaled against.
+
+    Returns:
+        Net pressure in basis points, bounded by `PRESSURE_LIMIT_BPS`.
+    """
     since = at - _ORDER_FLOW_LOOKBACK
     net_shares = 0.0
     at_taipei = as_taipei(dt=at)
@@ -1125,7 +1638,34 @@ async def advance_market_in_session(
     rng: Random | None = None,
     begin_immediate: bool = True,
 ) -> StockMarketQuote:
-    """Advances one stock lazily to the current tick boundary."""
+    """Prices every tick boundary a symbol still owes, up to now.
+
+    The whole simulation loop, run on demand instead of on a timer. News and trade legs for the
+    entire run are fetched once up front, then each boundary is priced from the previous boundary's
+    persisted price — persisted, not computed, so an advance that loses the insert race adopts the
+    winner's price and the two agree. A boundary that crosses the Asia/Taipei date first rolls the
+    previous close to the price the day ended on, so the daily limit bands the new day against the
+    right anchor, and then stamps the day open from what actually landed.
+
+    Mutates the profile and inserts ticks in the caller's transaction without committing, so a
+    caller settling a trade can advance the market and write its own rows atomically. The caller
+    must hold that symbol's `_market_lock`.
+
+    Args:
+        session (AsyncSession): Open session; the caller commits.
+        symbol (str): Ticker symbol to advance, already normalized.
+        now (datetime | None): Advance target, defaulting to now.
+        rng (Random | None): Volatility source, defaulting to `SystemRandom`; tests inject a
+            seeded one to make a run reproducible.
+        begin_immediate (bool): Whether to take SQLite's write lock here. Settlement passes False
+            because it has already begun its own immediate transaction.
+
+    Returns:
+        The quote after the advance, carrying pressure measured at `now`.
+
+    Raises:
+        ValueError: No profile exists for the symbol.
+    """
     if begin_immediate:
         await _begin_immediate(session=session)
     effective_now = now or _database_now()
@@ -1202,7 +1742,20 @@ async def advance_market_in_session(
 async def list_market_quotes(
     now: datetime | None = None, rng: Random | None = None, refresh_news: bool = True
 ) -> tuple[StockMarketQuote, ...]:
-    """Returns public market quotes after lazy advancement."""
+    """Advances every symbol and returns the board the market view renders.
+
+    Symbols are advanced one at a time, each under its own lock and committed before the next, so
+    the board never holds every symbol's write lock at once.
+
+    Args:
+        now (datetime | None): Advance target, defaulting to now.
+        rng (Random | None): Volatility source, defaulting to `SystemRandom`.
+        refresh_news (bool): Whether to run the due-news sweep first. False is for a caller that
+            has already swept, or one that must not pay for it.
+
+    Returns:
+        One quote per company, in symbol order.
+    """
     if refresh_news:
         await ensure_due_stock_news(now=now)
     await _ensure_schema()
@@ -1227,7 +1780,16 @@ async def list_market_quotes(
 async def _advance_symbols_for_views(
     symbols: tuple[str, ...], now: datetime | None, rng: Random | None
 ) -> None:
-    """Advances several symbols with one stock session while preserving per-symbol locks."""
+    """Advances a set of symbols on one session, still one lock and one commit per symbol.
+
+    Sharing the session saves a connection per symbol; the per-symbol lock and commit are what stop
+    that turning into one long transaction over the whole set.
+
+    Args:
+        symbols (tuple[str, ...]): Symbols to advance.
+        now (datetime | None): Advance target, defaulting to now.
+        rng (Random | None): Volatility source, defaulting to `SystemRandom`.
+    """
     async with open_stock_session() as session:
         for symbol in symbols:
             async with _market_lock(symbol=symbol):
@@ -1236,7 +1798,18 @@ async def _advance_symbols_for_views(
 
 
 async def _current_stock_portfolio(user_id: int) -> StockPortfolioView:
-    """Reads a portfolio after the caller has advanced relevant symbols."""
+    """Values a user's non-zero holdings at whatever price is currently stored.
+
+    Advances nothing, so the caller is responsible for having advanced the symbols it cares about
+    first. Rows come back sorted by total size then symbol, which is display order rather than
+    anything the totals depend on.
+
+    Args:
+        user_id (int): Owner whose portfolio to build.
+
+    Returns:
+        The portfolio, with equity and P&L summed over the holdings; all zero when there are none.
+    """
     async with open_stock_session() as session:
         result = await session.execute(
             statement=select(StockPosition, StockProfile)
@@ -1271,7 +1844,23 @@ async def get_stock_detail(
     now: datetime | None = None,
     rng: Random | None = None,
 ) -> StockDetailViewData:
-    """Returns a personal stock detail view after lazy advancement."""
+    """Gathers everything one `/stock` detail render needs, under a single market advance.
+
+    Every stock-side read happens in one session while the symbol's lock is held, so the quote, the
+    position, the recent trades and the chart cannot disagree about which tick the user is looking
+    at. Only the wallet balance is fetched afterwards, from the economy database.
+
+    Args:
+        symbol (str): Ticker symbol to render.
+        user_id (int): Viewer, whose own position and balance are included.
+        user_name (str): Viewer's display name, used only when no name is stored on the position.
+        now (datetime | None): Advance target, defaulting to now.
+        rng (Random | None): Volatility source, defaulting to `SystemRandom`.
+
+    Returns:
+        The detail payload: the viewer's own quote, balance and position, plus the stock-wide
+        recent trades, participant positions, news and ticks the public message shows.
+    """
     await ensure_due_stock_news(symbols=(symbol,), now=now)
     await _ensure_schema()
     async with open_stock_session() as session, _market_lock(symbol=symbol):
@@ -1299,7 +1888,21 @@ async def get_stock_detail(
 async def get_stock_portfolio(
     user_id: int, now: datetime | None = None, rng: Random | None = None
 ) -> StockPortfolioView:
-    """Returns the user's non-zero stock positions with current quote valuation."""
+    """Advances the symbols a user holds and values their portfolio at the result.
+
+    The economy profile embed's read, so it is served from a short process cache on the default
+    call — passing `now` or `rng` means the caller wants a specific market state, so those calls
+    neither read nor write that cache. A user holding nothing skips the advance entirely.
+
+    Args:
+        user_id (int): Owner whose portfolio to build.
+        now (datetime | None): Advance target, defaulting to now; also disables the cache.
+        rng (Random | None): Volatility source, defaulting to `SystemRandom`; also disables the
+            cache.
+
+    Returns:
+        The portfolio, valued at the post-advance quotes.
+    """
     if now is None and rng is None:
         cached = _cached_stock_portfolio(user_id=user_id)
         if cached is not None:
@@ -1317,7 +1920,16 @@ async def get_stock_portfolio(
 
 
 async def get_stock_news(symbol: str) -> tuple[StockNewsView, ...]:
-    """Returns recent news for a stock."""
+    """Refreshes a symbol's news if it is due, then returns the latest headlines.
+
+    Advances no tick, so a headline created here only reaches the price on the next advance.
+
+    Args:
+        symbol (str): Ticker symbol to read.
+
+    Returns:
+        The most recent headlines, newest first.
+    """
     await ensure_due_stock_news(symbols=(symbol,))
     await _ensure_schema()
     async with open_stock_session() as session:
@@ -1327,7 +1939,17 @@ async def get_stock_news(symbol: str) -> tuple[StockNewsView, ...]:
 async def _get_position_view(
     session: AsyncSession, symbol: str, user_id: int, user_name: str = ""
 ) -> StockPositionView:
-    """Returns a position view inside the caller's stock session."""
+    """Reads one user's position for a symbol inside the caller's session.
+
+    Args:
+        session (AsyncSession): Open session, typically already inside the caller's transaction.
+        symbol (str): Ticker symbol to read.
+        user_id (int): Owner to read for.
+        user_name (str): Display name to fall back on when the row stored none.
+
+    Returns:
+        The position, all-zero when the user has never traded the symbol.
+    """
     result = await session.execute(
         statement=select(StockPosition).where(
             StockPosition.symbol == symbol, StockPosition.user_id == user_id
@@ -1341,7 +1963,20 @@ async def _get_position_view(
 async def _recent_trade_views(
     session: AsyncSession, symbol: str, user_id: int | None = None
 ) -> tuple[StockTradeLegView, ...]:
-    """Returns recent applied trade legs for a stock, optionally scoped to one user."""
+    """Reads the stock's most recent applied trade legs, newest leg of the newest operation first.
+
+    Only APPLIED operations appear, so a pending or reconcile-parked trade is never shown as
+    something that happened. The parent operation's stored name rides along as the fallback for a
+    leg row that never got one.
+
+    Args:
+        session (AsyncSession): Open session to read through.
+        symbol (str): Ticker symbol to read.
+        user_id (int | None): Restrict to one trader, or None for every trader on the stock.
+
+    Returns:
+        Up to eight legs, newest first.
+    """
     filters = [
         StockTradeLeg.symbol == symbol,
         StockOperation.status == StockOperationStatus.APPLIED.value,
@@ -1361,7 +1996,17 @@ async def _recent_trade_views(
 async def _public_position_views(
     session: AsyncSession, symbol: str
 ) -> tuple[StockParticipantPositionView, ...]:
-    """Returns public stock-level non-zero position summaries."""
+    """Reads the largest open positions on a stock, for the public participant table.
+
+    Ranked by combined long-plus-short size, with the most recent update breaking a tie.
+
+    Args:
+        session (AsyncSession): Open session to read through.
+        symbol (str): Ticker symbol to read.
+
+    Returns:
+        Up to eight participant summaries, largest first.
+    """
     result = await session.execute(
         statement=select(StockPosition)
         .where(
@@ -1382,7 +2027,15 @@ async def _public_position_views(
 
 
 async def _user_position_symbols(session: AsyncSession, user_id: int) -> tuple[str, ...]:
-    """Returns symbols where the user has a non-zero position."""
+    """Lists the symbols a user actually holds, so a portfolio read advances only those.
+
+    Args:
+        session (AsyncSession): Open session to read through.
+        user_id (int): Owner to look up.
+
+    Returns:
+        Symbols with a non-zero long or short side, in symbol order.
+    """
     result = await session.execute(
         statement=select(StockPosition.symbol)
         .where(
@@ -1395,14 +2048,37 @@ async def _user_position_symbols(session: AsyncSession, user_id: int) -> tuple[s
 
 
 def _position_share_total(position: StockPosition) -> int:
-    """Returns total long and short shares for ordering display rows."""
+    """Returns a position's combined size, as the sort key for display rows.
+
+    Long and short are added rather than netted: the ranking is about how much of the stock a
+    trader is exposed to, not which way.
+
+    Args:
+        position (StockPosition): The position row to measure.
+
+    Returns:
+        Long shares plus short shares.
+    """
     return position.long_shares + position.short_shares
 
 
 def _portfolio_holding_view(
     position: StockPosition, profile: StockProfile
 ) -> StockPortfolioHolding:
-    """Projects a stock position into portfolio valuation terms."""
+    """Values one position at the current quote.
+
+    Rounding goes against the trader on both sides — the long side floors and the cover cost ceils
+    — so a portfolio can never be inflated by rounding. A short contributes its collateral plus its
+    entry value minus what covering would cost, never a bare negative market value, which is what
+    keeps equity comparable across a long-only and a short-heavy portfolio.
+
+    Args:
+        position (StockPosition): The position row to value.
+        profile (StockProfile): Its company, for the name and the current price.
+
+    Returns:
+        The holding with its market value, equity and unrealized P&L filled in.
+    """
     long_market_value = cash_floor(cents=profile.price_cents * position.long_shares)
     short_cover_cost = cash_ceil(cents=profile.price_cents * position.short_shares)
     unrealized_pnl = (
@@ -1435,14 +2111,38 @@ def _portfolio_holding_view(
 
 
 async def _market_exposure(session: AsyncSession, profile: StockProfile) -> _StockMarketExposure:
-    """Returns aggregate long and short exposure against the configured float."""
+    """Returns one symbol's exposure, through the batched query.
+
+    Args:
+        session (AsyncSession): Open session to read through.
+        profile (StockProfile): The company whose float the totals are measured against.
+
+    Returns:
+        That symbol's exposure and remaining capacity.
+    """
     return (await _market_exposures(session=session, profiles=(profile,)))[profile.symbol]
 
 
 async def _market_exposures(
     session: AsyncSession, profiles: tuple[StockProfile, ...]
 ) -> dict[str, _StockMarketExposure]:
-    """Returns aggregate exposure by symbol, reserving shares for non-final operations."""
+    """Totals held and in-flight exposure per symbol, against each company's float.
+
+    The opens of every non-final operation are counted as though they had already happened. That
+    reservation is what stops two submissions racing over the last of the float: the first commits
+    its PENDING legs before touching a wallet, so the second plans against a float that already has
+    them subtracted, and the shares come back only if that operation ends FAILED.
+
+    Long and short are capped separately, each against the whole float, because a borrow is not
+    drawn from the same pool a long is.
+
+    Args:
+        session (AsyncSession): Open session to read through.
+        profiles (tuple[StockProfile, ...]): The companies to total, which also supply the floats.
+
+    Returns:
+        Exposure keyed by symbol, empty when no profiles were given.
+    """
     profile_by_symbol = {profile.symbol: profile for profile in profiles}
     if not profile_by_symbol:
         return {}
@@ -1494,7 +2194,18 @@ async def _market_exposures(
 
 
 async def _news_views(session: AsyncSession, symbol: str) -> tuple[StockNewsView, ...]:
-    """Returns recent news views inside the caller's stock session."""
+    """Reads a stock's latest headlines inside the caller's session.
+
+    Ignores `expires_at`: expiry bounds how long a headline still counts toward sentiment, not how
+    long it is worth reading.
+
+    Args:
+        session (AsyncSession): Open session to read through.
+        symbol (str): Ticker symbol to read.
+
+    Returns:
+        Up to five headlines, newest first.
+    """
     result = await session.execute(
         statement=select(StockNews)
         .where(StockNews.symbol == symbol)
@@ -1507,7 +2218,16 @@ async def _news_views(session: AsyncSession, symbol: str) -> tuple[StockNewsView
 async def _price_tick_views(
     session: AsyncSession, symbol: str, now: datetime
 ) -> tuple[StockPriceTickView, ...]:
-    """Returns chart ticks for the last seven days."""
+    """Reads the tick history the 7D chart draws.
+
+    Args:
+        session (AsyncSession): Open session to read through.
+        symbol (str): Ticker symbol to read.
+        now (datetime): End of the `STOCK_HISTORY_DAYS` window.
+
+    Returns:
+        The window's ticks, oldest first, which is the order the chart plots them in.
+    """
     since = now - timedelta(days=STOCK_HISTORY_DAYS)
     result = await session.execute(
         statement=select(StockPriceTick)
@@ -1524,7 +2244,25 @@ def _parse_quantity(
     wallet_balance: int,
     position: StockPositionView,
 ) -> int:
-    """Parses a modal quantity at submit time."""
+    """Turns what the user typed into a share count.
+
+    The `ALL` shorthand means "flatten the opposite side" whenever there is one: a buy with an open
+    short closes exactly the short and opens no long, a short with a long sells exactly the long.
+    Only with nothing to close does it mean the whole wallet, sized at the reference price before
+    slippage — deliberately optimistic, since `_clamp_quantity_to_available` is what trims it back
+    to what actually executes. Anything else goes through `int`, whose `ValueError` the caller
+    turns into a format error rather than a zero.
+
+    Args:
+        raw_quantity (str): The raw modal text, tolerating thousands separators and whitespace.
+        action (StockAction): Which direction was submitted.
+        price_cents (int): Reference quote price, before per-leg impact.
+        wallet_balance (int): Cash available at submit time.
+        position (StockPositionView): The user's current position in the symbol.
+
+    Returns:
+        The requested share count, not yet capped against the market.
+    """
     normalized = raw_quantity.strip().replace(",", "")
     if normalized.upper() in {"ALL", "全部", "MAX"}:
         if action == StockAction.BUY and position.short_shares > 0:
@@ -1536,12 +2274,35 @@ def _parse_quantity(
 
 
 def _is_all_quantity(raw_quantity: str) -> bool:
-    """Returns whether the raw quantity uses the ALL shorthand."""
+    """Returns whether the raw quantity is the ALL shorthand rather than a number.
+
+    Asked again after parsing, because an `ALL` that sizes to zero is a "nothing is executable"
+    failure worth explaining, while a typed `0` is just an invalid quantity.
+
+    Args:
+        raw_quantity (str): The raw modal text.
+
+    Returns:
+        True for any accepted spelling of the shorthand.
+    """
     return raw_quantity.strip().replace(",", "").upper() in {"ALL", "全部", "MAX"}
 
 
 def _prorated_amount(total: int, shares: int, current_shares: int) -> int:
-    """Returns a prorated integer basis amount, consuming dust on final close."""
+    """Splits a running total across a partial close, handing over everything on a full one.
+
+    Integer division leaves dust behind on each partial close, so closing the whole position
+    releases the stored total outright rather than the sum of its slices; otherwise a flattened
+    position would keep a few units of basis or collateral it can never release.
+
+    Args:
+        total (int): The stored basis, entry value or collateral being released from.
+        shares (int): Shares being closed.
+        current_shares (int): Shares the total currently covers.
+
+    Returns:
+        The share of the total this close releases.
+    """
     if shares >= current_shares:
         return total
     return total * shares // current_shares
@@ -1550,7 +2311,17 @@ def _prorated_amount(total: int, shares: int, current_shares: int) -> int:
 def _buy_execution_price(
     price_cents: int, shares: int, liquidity_shares: int, max_impact_bps: int
 ) -> int:
-    """Returns the execution price for a buy-side leg."""
+    """Returns the slipped price a buy-side leg executes at, above the quote.
+
+    Args:
+        price_cents (int): Reference quote price.
+        shares (int): Size of this one leg, which is what the impact scales with.
+        liquidity_shares (int): The company's liquidity depth.
+        max_impact_bps (int): Ceiling on the per-leg impact.
+
+    Returns:
+        The execution price in cents.
+    """
     return execution_price_cents(
         reference_price_cents=price_cents,
         shares=shares,
@@ -1563,7 +2334,17 @@ def _buy_execution_price(
 def _sell_execution_price(
     price_cents: int, shares: int, liquidity_shares: int, max_impact_bps: int
 ) -> int:
-    """Returns the execution price for a sell-side leg."""
+    """Returns the slipped price a sell-side leg executes at, below the quote.
+
+    Args:
+        price_cents (int): Reference quote price.
+        shares (int): Size of this one leg, which is what the impact scales with.
+        liquidity_shares (int): The company's liquidity depth.
+        max_impact_bps (int): Ceiling on the per-leg impact.
+
+    Returns:
+        The execution price in cents.
+    """
     return execution_price_cents(
         reference_price_cents=price_cents,
         shares=shares,
@@ -1574,7 +2355,17 @@ def _sell_execution_price(
 
 
 def _buy_cost(price_cents: int, shares: int, liquidity_shares: int, max_impact_bps: int) -> int:
-    """Returns integer cash needed for a buy-side leg."""
+    """Returns what a buy-side leg costs in whole wallet units, rounded up.
+
+    Args:
+        price_cents (int): Reference quote price.
+        shares (int): Size of this one leg.
+        liquidity_shares (int): The company's liquidity depth.
+        max_impact_bps (int): Ceiling on the per-leg impact.
+
+    Returns:
+        Cash the wallet must cover, ceiled so the rounding never favours the buyer.
+    """
     execution_price = _buy_execution_price(
         price_cents=price_cents,
         shares=shares,
@@ -1587,7 +2378,17 @@ def _buy_cost(price_cents: int, shares: int, liquidity_shares: int, max_impact_b
 def _sell_proceeds(
     price_cents: int, shares: int, liquidity_shares: int, max_impact_bps: int
 ) -> int:
-    """Returns integer cash received from a sell-side leg."""
+    """Returns what a sell-side leg pays out in whole wallet units, rounded down.
+
+    Args:
+        price_cents (int): Reference quote price.
+        shares (int): Size of this one leg.
+        liquidity_shares (int): The company's liquidity depth.
+        max_impact_bps (int): Ceiling on the per-leg impact.
+
+    Returns:
+        Cash the wallet receives, floored so the rounding never favours the seller.
+    """
     execution_price = _sell_execution_price(
         price_cents=price_cents,
         shares=shares,
@@ -1604,7 +2405,21 @@ def _max_affordable_buy_shares(
     max_impact_bps: int,
     share_cap: int,
 ) -> int:
-    """Returns the largest buy-side size affordable after execution impact."""
+    """Finds the largest buy that still fits the wallet once its own slippage is counted.
+
+    Binary search rather than division, because the cost is not linear in size: a bigger order
+    slips further, so the price the last share pays depends on how many are bought with it.
+
+    Args:
+        price_cents (int): Reference quote price.
+        wallet_balance (int): Cash available for this leg.
+        liquidity_shares (int): The company's liquidity depth.
+        max_impact_bps (int): Ceiling on the per-leg impact.
+        share_cap (int): Upper bound from float and ownership limits.
+
+    Returns:
+        The largest affordable size, zero when nothing is.
+    """
     if wallet_balance <= 0 or share_cap <= 0:
         return 0
     low = 0
@@ -1627,7 +2442,19 @@ def _max_affordable_buy_shares(
 
 
 def _max_collateralized_short_shares(price_cents: int, wallet_balance: int, share_cap: int) -> int:
-    """Returns the largest short size allowed by the reference-price collateral."""
+    """Returns the largest short the wallet can post collateral for.
+
+    No search is needed here: collateral is charged at the reference price, not the slipped one, so
+    the requirement is linear in size. The slipped price only decides what the short is entered at.
+
+    Args:
+        price_cents (int): Reference quote price, which is what collateral is priced at.
+        wallet_balance (int): Cash available to lock up.
+        share_cap (int): Upper bound from remaining borrow capacity.
+
+    Returns:
+        The largest collateralizable size, zero when nothing is.
+    """
     if wallet_balance <= 0 or share_cap <= 0:
         return 0
     return min(share_cap, wallet_balance * 100 // price_cents)
@@ -1640,7 +2467,23 @@ def _max_coverable_short_shares(
     liquidity_shares: int,
     max_impact_bps: int,
 ) -> int:
-    """Returns how many short shares can be covered from the submit-time state."""
+    """Finds how much of a short the user can afford to cover right now.
+
+    The search has to price each candidate size whole, because covering releases collateral and
+    entry value prorated by the shares covered while the cover itself slips with size — so the cash
+    available and the cash needed both move with the answer. This is why a cover can succeed on a
+    zero spendable balance: the released proceeds pay for it.
+
+    Args:
+        price_cents (int): Reference quote price.
+        wallet_balance (int): Cash available before anything is released.
+        position (StockPositionView): The short being covered, with its collateral and entry value.
+        liquidity_shares (int): The company's liquidity depth.
+        max_impact_bps (int): Ceiling on the per-leg impact.
+
+    Returns:
+        The largest coverable size, at most the whole short.
+    """
     low = 0
     high = position.short_shares
     while low < high:
@@ -1665,22 +2508,59 @@ def _max_coverable_short_shares(
 
 
 def _individual_long_cap_shares(float_shares: int) -> int:
-    """Returns the maximum long shares one user may hold for a stock."""
+    """Returns the ceiling on how much of one company a single user may hold long.
+
+    Args:
+        float_shares (int): The company's tradable float.
+
+    Returns:
+        `STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS` of the float, floored.
+    """
     return float_shares * STOCK_INDIVIDUAL_OWNERSHIP_CAP_BPS // STOCK_BPS_DENOMINATOR
 
 
 def _available_individual_long_shares(float_shares: int, position: StockPositionView) -> int:
-    """Returns how many new long shares the user can open before the ownership cap."""
+    """Returns the headroom a user has left under the ownership cap.
+
+    Gates opening only. A user already over the cap (a retune can lower a float underneath them)
+    reads zero here and can still sell, since risk-reducing flow is never blocked.
+
+    Args:
+        float_shares (int): The company's tradable float.
+        position (StockPositionView): The user's current position.
+
+    Returns:
+        New long shares the user may still open, never negative.
+    """
     return max(_individual_long_cap_shares(float_shares=float_shares) - position.long_shares, 0)
 
 
 def _open_long_share_cap(snapshot: _StockExecutionSnapshot) -> int:
-    """Returns the submit-time cap for opening new long shares."""
+    """Returns the binding limit on opening long: market float or this user's own cap.
+
+    Args:
+        snapshot (_StockExecutionSnapshot): Submit-time market and position state.
+
+    Returns:
+        The smaller of the two remaining allowances.
+    """
     return min(snapshot.available_long_shares, snapshot.available_individual_long_shares)
 
 
 def _max_executable_quantity(snapshot: _StockExecutionSnapshot) -> int:
-    """Returns the largest quantity that can pass balance validation."""
+    """Returns the largest quantity this submission could actually execute.
+
+    Sized the way the plan builders spend it, in two legs. A short first sells the whole long,
+    which funds the collateral for whatever it then borrows; a buy first covers the whole short,
+    and only the cash left after that cover is what opens a long. Sizing each leg against the other
+    leg's own proceeds is what lets `ALL` flatten and reverse in one submission.
+
+    Args:
+        snapshot (_StockExecutionSnapshot): Submit-time market and position state.
+
+    Returns:
+        Total shares across both legs, which is what a numeric request is clamped to.
+    """
     if snapshot.action == StockAction.SHORT:
         sell_proceeds = _sell_proceeds(
             price_cents=snapshot.price_cents,
@@ -1736,14 +2616,36 @@ def _max_executable_quantity(snapshot: _StockExecutionSnapshot) -> int:
 
 
 def _clamp_quantity_to_available(parsed_quantity: int, snapshot: _StockExecutionSnapshot) -> int:
-    """Treats oversized numeric quantities as the submit-time executable maximum."""
+    """Trims an over-ambitious request down to what the market can fill.
+
+    Asking for more than is executable is treated as asking for everything, so a user who types a
+    round number gets the trade rather than a rejection. A non-positive request is passed through
+    untouched, so the plan builder can reject it with its own wording.
+
+    Args:
+        parsed_quantity (int): The share count the user asked for.
+        snapshot (_StockExecutionSnapshot): Submit-time market and position state.
+
+    Returns:
+        The quantity to plan, at most `_max_executable_quantity`.
+    """
     if parsed_quantity <= 0:
         return parsed_quantity
     return min(parsed_quantity, _max_executable_quantity(snapshot=snapshot))
 
 
 def _max_quantity_error(snapshot: _StockExecutionSnapshot) -> str:
-    """Returns the clearest validation error when nothing is executable."""
+    """Names the reason nothing is executable.
+
+    The market limits are tested before the balance one, so a user blocked by the ownership cap or
+    by exhausted float is not told to add money instead.
+
+    Args:
+        snapshot (_StockExecutionSnapshot): Submit-time market and position state.
+
+    Returns:
+        The user-facing Traditional Chinese failure line.
+    """
     if snapshot.action == StockAction.BUY:
         if snapshot.position.short_shares <= 0 and snapshot.available_individual_long_shares <= 0:
             return "單一玩家持股上限為 49%，目前無法再買入這檔股票"
@@ -1769,7 +2671,28 @@ def _leg_view(  # noqa: PLR0913 -- trade leg fields mirror the persisted audit r
     realized_pnl_delta: int,
     now: datetime,
 ) -> StockTradeLegView:
-    """Builds an in-memory trade leg view."""
+    """Records one planned leg, before anything is written.
+
+    The name is left empty here and stamped onto the whole plan once settlement knows it, so the
+    plan builders never need the caller's Discord identity.
+
+    Args:
+        operation_id (str): Identifier of the operation this leg belongs to.
+        leg_order (int): Position within the operation, 1-based.
+        symbol (str): Ticker symbol traded.
+        user_id (int): Trader the leg belongs to.
+        leg_type (StockTradeLegType): Which of the four atomic movements this is.
+        shares (int): Shares moved by this leg.
+        price_cents (int): This leg's own slipped execution price.
+        wallet_delta (int): Net cash the leg moves, before the gross expansion.
+        basis_delta (int): Change to long cost basis, or to short entry value.
+        collateral_delta (int): Change to short collateral.
+        realized_pnl_delta (int): Profit or loss the leg realizes.
+        now (datetime): Creation stamp shared by every leg of the operation.
+
+    Returns:
+        The leg as a view, which is also what gets persisted.
+    """
     return StockTradeLegView(
         operation_id=operation_id,
         leg_order=leg_order,
@@ -1787,7 +2710,18 @@ def _leg_view(  # noqa: PLR0913 -- trade leg fields mirror the persisted audit r
 
 
 def _average_leg_price(legs: tuple[StockTradeLegView, ...], fallback_price_cents: int) -> int:
-    """Returns a share-weighted execution price for a result summary."""
+    """Blends the legs' prices into the one figure a settlement summary shows.
+
+    Summary only: each leg keeps and settles at its own price, so this is never what anything is
+    charged at.
+
+    Args:
+        legs (tuple[StockTradeLegView, ...]): The operation's legs.
+        fallback_price_cents (int): Price to report when the legs moved no shares.
+
+    Returns:
+        The share-weighted average execution price in cents.
+    """
     total_shares = sum(leg.shares for leg in legs)
     if total_shares <= 0:
         return fallback_price_cents
@@ -1803,7 +2737,24 @@ def _insufficient_result(  # noqa: PLR0913 -- failed results preserve the submit
     position: StockPositionView,
     error: str,
 ) -> StockSettlementResult:
-    """Builds a typed failed settlement result without an operation row."""
+    """Refuses a submission before anything is written.
+
+    Carries no `operation_id` and no `status`, which is how a caller tells a rejection apart from a
+    trade that started and stopped part way; the position echoed back is the one the user already
+    had, unchanged.
+
+    Args:
+        symbol (str): Ticker symbol the user submitted against.
+        action (StockAction): Which direction was submitted.
+        quantity (int): Shares asked for, reported as zero when negative.
+        price_cents (int): Quote the refusal was judged against.
+        balance (int): Wallet balance at submit time, unchanged by this.
+        position (StockPositionView): The user's position, unchanged by this.
+        error (str): User-facing Traditional Chinese reason.
+
+    Returns:
+        A failed settlement result.
+    """
     return StockSettlementResult(
         success=False,
         operation_id=None,
@@ -1835,7 +2786,31 @@ def _build_plan(  # noqa: PLR0913 -- settlement plan needs the current wallet an
     available_individual_long_shares: int,
     now: datetime,
 ) -> _StockOperationPlan | StockSettlementResult:
-    """Builds ordered stock and wallet mutations from the submit-time state."""
+    """Turns a validated request into the ordered legs that will settle it.
+
+    Pure: reads nothing and writes nothing, so a plan is entirely decided by the snapshot handed
+    in. Dispatches on direction after rejecting a non-positive quantity, which is the one check the
+    two directions share.
+
+    Args:
+        operation_id (str): Identifier to stamp on the operation and every leg.
+        symbol (str): Ticker symbol traded.
+        user_id (int): Trader submitting.
+        action (StockAction): Which direction was submitted.
+        quantity (int): Shares to plan, already clamped to what is executable.
+        price_cents (int): Reference quote price.
+        liquidity_shares (int): The company's liquidity depth.
+        max_order_impact_bps (int): Ceiling on the per-leg impact.
+        wallet_balance (int): Cash available at submit time.
+        position (StockPositionView): The user's position before this operation.
+        available_long_shares (int): Float still openable as long, market-wide.
+        available_short_shares (int): Float still borrowable for shorting.
+        available_individual_long_shares (int): This user's remaining ownership-cap headroom.
+        now (datetime): Creation stamp for the legs.
+
+    Returns:
+        The plan, or a failed result carrying the reason it could not be built.
+    """
     if quantity <= 0:
         return _insufficient_result(
             symbol=symbol,
@@ -1890,7 +2865,35 @@ def _build_buy_plan(  # noqa: PLR0913 -- buy can cover short and open long in or
     available_individual_long_shares: int,
     now: datetime,
 ) -> _StockOperationPlan | StockSettlementResult:
-    """Builds a buy/cover plan."""
+    """Plans a buy: cover any open short first, then open long with whatever is left.
+
+    The order is what makes one submission both close and open, and it is also what funds the
+    close: the cover is affordable against the collateral and entry value it releases, so a user
+    with no spendable cash can still cover. Each leg's own share count decides its slippage, so a
+    cover-plus-open pays two different prices, and the running wallet total is threaded through so
+    the open is judged against the cash the cover produced.
+
+    Rejects rather than trims — a quantity past the ownership cap, past the remaining float, or
+    past the wallet comes back as a failed result, because `_clamp_quantity_to_available` has
+    already had its chance to size the request down.
+
+    Args:
+        operation_id (str): Identifier to stamp on the operation and every leg.
+        symbol (str): Ticker symbol traded.
+        user_id (int): Trader submitting.
+        quantity (int): Shares to plan across both legs.
+        price_cents (int): Reference quote price.
+        liquidity_shares (int): The company's liquidity depth.
+        max_order_impact_bps (int): Ceiling on the per-leg impact.
+        wallet_balance (int): Cash available at submit time.
+        position (StockPositionView): The user's position before this operation.
+        available_long_shares (int): Float still openable as long, market-wide.
+        available_individual_long_shares (int): This user's remaining ownership-cap headroom.
+        now (datetime): Creation stamp for the legs.
+
+    Returns:
+        The plan with its ordered legs and resulting position, or a failed result.
+    """
     long_shares = position.long_shares
     long_cost_basis = position.long_cost_basis
     short_shares = position.short_shares
@@ -2050,7 +3053,28 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
     available_short_shares: int,
     now: datetime,
 ) -> _StockOperationPlan | StockSettlementResult:
-    """Builds a short/sell plan."""
+    """Plans a short: sell any long first, then borrow and open short with the rest.
+
+    The mirror of the buy plan, with one asymmetry that matters. Collateral is charged at the
+    reference price while the short is entered at the slipped one, so a short locks up slightly
+    more than it books as entry value; the difference comes back on the cover.
+
+    Args:
+        operation_id (str): Identifier to stamp on the operation and every leg.
+        symbol (str): Ticker symbol traded.
+        user_id (int): Trader submitting.
+        quantity (int): Shares to plan across both legs.
+        price_cents (int): Reference quote price.
+        liquidity_shares (int): The company's liquidity depth.
+        max_order_impact_bps (int): Ceiling on the per-leg impact.
+        wallet_balance (int): Cash available at submit time.
+        position (StockPositionView): The user's position before this operation.
+        available_short_shares (int): Float still borrowable for shorting.
+        now (datetime): Creation stamp for the legs.
+
+    Returns:
+        The plan with its ordered legs and resulting position, or a failed result.
+    """
     long_shares = position.long_shares
     long_cost_basis = position.long_cost_basis
     short_shares = position.short_shares
@@ -2174,7 +3198,19 @@ def _build_short_plan(  # noqa: PLR0913 -- short can sell long and open short in
 async def _blocking_operation(
     session: AsyncSession, symbol: str, user_id: int
 ) -> StockOperation | None:
-    """Returns the oldest non-final operation that blocks new trades."""
+    """Finds an unresolved operation standing in the way of a new one.
+
+    Scoped to one user and one symbol: a stuck trade freezes only that pair, so nobody else and no
+    other company is affected. Oldest first, so the reported operation is the one to clear.
+
+    Args:
+        session (AsyncSession): Open session, already inside the caller's immediate transaction.
+        symbol (str): Ticker symbol being submitted against.
+        user_id (int): Trader submitting.
+
+    Returns:
+        The oldest operation outside `_FINAL_OPERATION_STATUSES`, or None when the pair is clear.
+    """
     result = await session.execute(
         statement=select(StockOperation)
         .where(
@@ -2191,7 +3227,20 @@ async def _blocking_operation(
 def _blocked_operation_result(
     operation: StockOperation, action: StockAction, balance: int, position: StockPositionView
 ) -> StockSettlementResult:
-    """Builds a failed result when a previous operation needs attention first."""
+    """Refuses a submission because an earlier one is still unresolved.
+
+    The one failure whose `operation_id` and `status` name an operation other than this request, so
+    the user can quote the blocker to an operator instead of just being told no.
+
+    Args:
+        operation (StockOperation): The unresolved operation standing in the way.
+        action (StockAction): The direction this refused submission asked for.
+        balance (int): Wallet balance at submit time, unchanged by this.
+        position (StockPositionView): The user's position, unchanged by this.
+
+    Returns:
+        A failed settlement result naming the blocking operation and its status.
+    """
     status = StockOperationStatus(operation.status)
     return StockSettlementResult(
         success=False,
@@ -2213,7 +3262,22 @@ def _blocked_operation_result(
 
 
 def _wallet_delta_legs_for_plan(plan: _StockOperationPlan) -> tuple[WalletDeltaLeg, ...]:
-    """Expands trade legs into ordered gross wallet movements."""
+    """Expands the plan's legs into the ordered gross movements the wallet applies.
+
+    Every leg but a cover moves its net cash once. A cover is split into three — the collateral it
+    releases, the short entry value it releases, then the cover cost as a debit — and the order is
+    load-bearing: the economy side rejects a debit it cannot cover in full at that point in the
+    sequence, so the two credits have to land first or a cover funded by its own proceeds would be
+    refused. Splitting also keeps the economy's `total_earned - total_spent == balance` invariant
+    describing the real flow rather than the netted remainder. A zero movement is dropped, since it
+    would only add a no-op leg to the ledger.
+
+    Args:
+        plan (_StockOperationPlan): The accepted plan whose legs to expand.
+
+    Returns:
+        The wallet legs in application order, each carrying a `stock:<operation>:<leg>` reason.
+    """
     deltas: list[WalletDeltaLeg] = []
     for leg in plan.legs:
         reason_prefix = f"stock:{plan.operation_id}:{leg.leg_order}"
@@ -2250,7 +3314,32 @@ async def _build_submit_time_operation_plan(  # noqa: PLR0913 -- submit-time pla
     effective_now: datetime,
     rng: Random | None,
 ) -> _StockOperationPlan | StockSettlementResult:
-    """Builds a submit-time operation plan from locked market and position state."""
+    """Advances the market, then plans the request against the state that advance produced.
+
+    Runs inside settlement's own immediate transaction, so the quote it plans against is the same
+    one the trade will be written under; the advance is told not to begin a transaction of its own.
+    Quantity handling happens here rather than in the plan builders because it needs the market:
+    a bad quantity string is a format failure, and an over-large one is trimmed to what the
+    snapshot can execute before a failure is even considered.
+
+    Args:
+        session (AsyncSession): Open session inside the caller's immediate transaction.
+        normalized_symbol (str): Upper-cased ticker symbol.
+        operation_id (str): Identifier to stamp on the operation and every leg.
+        user_id (int): Trader submitting.
+        requested_action (StockAction): Which direction was submitted.
+        quantity (str): The raw modal text, still unparsed.
+        wallet_balance (int): Cash read before the transaction opened.
+        position (StockPositionView): The user's position, read under the same lock.
+        effective_now (datetime): Advance target and creation stamp.
+        rng (Random | None): Volatility source, defaulting to `SystemRandom`.
+
+    Returns:
+        The plan, or a failed result carrying the reason.
+
+    Raises:
+        ValueError: The profile vanished between the advance and the plan.
+    """
     quote = await advance_market_in_session(
         session=session,
         symbol=normalized_symbol,
@@ -2340,7 +3429,42 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Service boundary returns t
     now: datetime | None = None,
     rng: Random | None = None,
 ) -> StockSettlementResult:
-    """Settles a buy/cover or short/sell request through one service boundary."""
+    """Settles one buy/cover or short/sell request across both databases.
+
+    The only way a position or a stock-side wallet movement is ever written, and the whole
+    two-database dance lives here. Under the user's operation lock and the symbol's market lock, in
+    order: refuse if an earlier operation is still unresolved, plan against a freshly advanced
+    market, commit the PENDING operation and its legs, apply the ordered wallet legs, mark
+    WALLET_APPLIED, write the position and mark APPLIED.
+
+    Nothing rolls back and nothing retries. A wallet rejection is the clean failure — the wallet
+    never moved and the operation is marked FAILED, releasing the float its legs reserved. A wallet
+    that raises, or a stock-side write that fails after the wallet moved, is the dangerous one, and
+    it parks the operation at RECONCILE_REQUIRED: an operator has to look, and until they do, that
+    user is blocked on that symbol. Cancellation is treated as the same kind of unknown, with the
+    marking shielded so the record survives the cancel before it is re-raised.
+
+    Validation and lifecycle failures come back as a result rather than an exception, which is what
+    this function's noqa claims and all it claims: an unknown symbol still raises `ValueError`
+    before anything is written.
+
+    Args:
+        symbol (str): Ticker symbol, upper-cased here.
+        user_id (int): Trader submitting.
+        user_name (str): Display name, stamped onto the plan and stored with the rows.
+        requested_action (StockAction): Which direction was submitted.
+        quantity (str): The raw modal text, parsed under the lock.
+        avatar_url (str): Last-seen avatar to refresh on the wallet row.
+        now (datetime | None): Advance target and creation stamp, defaulting to now.
+        rng (Random | None): Volatility source, defaulting to `SystemRandom`.
+
+    Returns:
+        The settled result on success, or a failed one carrying the user-facing reason and, where
+        an operation was written, its id and lifecycle status.
+
+    Raises:
+        asyncio.CancelledError: Re-raised after the operation has been marked RECONCILE_REQUIRED.
+    """
     normalized_symbol = symbol.upper()
     await _ensure_schema()
     async with _operation_lock(user_id=user_id, symbol=normalized_symbol):
@@ -2495,7 +3619,17 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Service boundary returns t
 async def _commit_pending_operation(
     session: AsyncSession, plan: _StockOperationPlan, now: datetime
 ) -> None:
-    """Commits the planned operation and legs before wallet mutation."""
+    """Writes the operation and its legs as PENDING, and commits before any money moves.
+
+    Committing this early is what makes the rest recoverable: from here on there is a durable
+    record of what was intended, its opens reserve float against other traders, and a crash leaves
+    something an operator can read rather than a silent gap.
+
+    Args:
+        session (AsyncSession): Open session inside the caller's immediate transaction.
+        plan (_StockOperationPlan): The accepted plan to persist.
+        now (datetime): Creation stamp for the operation row.
+    """
     session.add(
         instance=StockOperation(
             operation_id=plan.operation_id or "",
@@ -2532,7 +3666,16 @@ async def _commit_pending_operation(
 
 
 async def _finalize_stock_side(plan: _StockOperationPlan, now: datetime) -> None:
-    """Applies the stock position after wallet legs have committed."""
+    """Writes the resulting position and closes the operation out as APPLIED.
+
+    The last step, run only once the wallet has moved. Position and status commit together, so the
+    operation can never read as finished while the position it describes is missing. Drops the
+    owner's cached portfolio, since their valuation just changed.
+
+    Args:
+        plan (_StockOperationPlan): The plan whose position to apply.
+        now (datetime): Update stamp for the position and the operation.
+    """
     async with open_stock_session() as session:
         await _write_position(session=session, position=plan.position, now=now)
         await session.execute(
@@ -2547,7 +3690,16 @@ async def _finalize_stock_side(plan: _StockOperationPlan, now: datetime) -> None
 async def _write_position(
     session: AsyncSession, position: StockPositionView, now: datetime
 ) -> None:
-    """Upserts the final position after stock-side validation."""
+    """Writes a user's position for a symbol, creating the row if it is their first trade.
+
+    Stores the whole position rather than a delta, because the plan already computed the end state
+    from the position it read under the same lock.
+
+    Args:
+        session (AsyncSession): Open session; the caller commits.
+        position (StockPositionView): The end state to store.
+        now (datetime): Update stamp.
+    """
     await session.execute(
         statement=insert(StockPosition)
         .values(
@@ -2583,7 +3735,17 @@ async def _write_position(
 async def _mark_operation(
     operation_id: str, status: StockOperationStatus, failure_reason: str
 ) -> None:
-    """Updates operation status after a cross-database lifecycle step."""
+    """Moves an operation to its next lifecycle status, in its own transaction.
+
+    Deliberately separate from whatever it is reporting on: the failure paths call this after their
+    own session is gone, and a cancelled settlement shields the call so the record outlives the
+    cancel.
+
+    Args:
+        operation_id (str): The operation to update.
+        status (StockOperationStatus): The status to move it to.
+        failure_reason (str): Operator-facing note, empty on a healthy step.
+    """
     await _ensure_schema()
     async with open_stock_session() as session:
         await session.execute(
@@ -2595,7 +3757,16 @@ async def _mark_operation(
 
 
 async def list_reconciliation_operations() -> tuple[StockReconciliationOperation, ...]:
-    """Lists non-final stock operations for manual reconciliation."""
+    """Lists every operation stuck short of a final state, with its legs, for an operator.
+
+    Nothing repairs these automatically: the legs say what the stock side intended and
+    `failure_reason` says where it stopped, but only a human can tell whether the wallet moved. An
+    operation with no legs at all still appears, since a plan that got no further is exactly the
+    kind that needs looking at.
+
+    Returns:
+        The unresolved operations oldest first, each with its legs in `leg_order`.
+    """
     await _ensure_schema()
     async with open_stock_session() as session:
         result = await session.execute(

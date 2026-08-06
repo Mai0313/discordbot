@@ -21,6 +21,12 @@ Note what this does NOT do: a ``/memory clear`` commits the deletion, but every 
 commit still holds the content, and ``gc`` only drops *unreachable* objects. Local
 history therefore outlives a clear. That is a deliberate, recorded decision on #408, not
 an oversight — the store is a private, unpushed, single-operator repository.
+
+The bot holds exactly one service, ``memory_git`` at the bottom of this module, mirroring
+the one repository it commits to. ``gen_reply``'s ``on_ready`` calls ``start`` on it so the
+queue binds to the gateway's loop, and ``services/memory/pipeline.py`` is the only caller of
+``enqueue`` — once per applied consolidation, per regeneration, and per clear. Tests build
+their own service against a ``tmp_path`` repository; nothing in the running bot should.
 """
 
 import asyncio
@@ -64,7 +70,14 @@ class MemoryGitService(BaseModel):
     enabled: bool = Field(default=True, description="Whether commits are attempted at all.")
 
     def __init__(self, **data: object) -> None:
-        """Initializes the service with no worker; `start` binds it to a loop."""
+        """Initializes the service with no worker; `start` binds it to a loop.
+
+        Nothing loop-bound is built here, because the process-wide singleton is constructed at
+        import time when there is no running loop for a queue to attach to.
+
+        Args:
+            **data (object): Field values forwarded to pydantic, i.e. `enabled`.
+        """
         super().__init__(**data)
         self._queue: asyncio.Queue[_GitRequest] | None = None
         self._worker: asyncio.Task[None] | None = None
@@ -76,7 +89,9 @@ class MemoryGitService(BaseModel):
 
         Called from a cog's `on_ready`, so the queue is created on the running loop.
         Deliberately not lazy: an unstarted service drops every request instead of
-        binding a queue to whichever loop happened to enqueue first.
+        binding a queue to whichever loop happened to enqueue first. Idempotent, since
+        `on_ready` fires again on every reconnect. A store that is not a repository
+        disables the service for the rest of the process rather than being rechecked.
         """
         if not self.enabled or self._worker is not None:
             return
@@ -101,14 +116,26 @@ class MemoryGitService(BaseModel):
             await worker
 
     def enqueue(self, scope: str, reason: str) -> None:
-        """Requests a commit of one scope. Never blocks, never raises, never awaits."""
+        """Requests a commit of one scope. Never blocks, never raises, never awaits.
+
+        A request made before `start`, or after the service disabled itself, is dropped
+        silently, so no caller has to know whether history is on in this deployment.
+
+        Args:
+            scope (str): Scope directory to stage, relative to the store root.
+            reason (str): What changed, used as the commit subject.
+        """
         queue = self._queue
         if queue is None or not self.enabled:
             return
         queue.put_nowait(_GitRequest(scope=scope, reason=reason))
 
     async def _run(self) -> None:
-        """Drains the queue one request at a time for as long as the service is enabled."""
+        """Drains the queue one request at a time for as long as the service is enabled.
+
+        A request already queued when the service disables itself is taken off and dropped, so
+        a broken deployment stops committing without leaving work parked behind it.
+        """
         queue = self._queue
         if queue is None:
             return
@@ -119,7 +146,16 @@ class MemoryGitService(BaseModel):
             await self._commit(request=request)
 
     async def _commit(self, request: _GitRequest) -> None:
-        """Stages and commits one scope, swallowing and counting any failure."""
+        """Stages and commits one scope, swallowing and counting any failure.
+
+        Takes the process-wide lock and then that scope's write lock, in that order and for the
+        reasons in the module docstring; waiting on either costs nothing, since this is
+        background work. A run of `_MAX_CONSECUTIVE_FAILURES` failures disables the service for
+        the rest of the process, and any success resets the count.
+
+        Args:
+            request (_GitRequest): The scope to stage and the reason for its commit subject.
+        """
         try:
             async with self._lock.get(), scope_lock(scope=request.scope):
                 if not await self._has_changes(scope=request.scope):
@@ -147,11 +183,25 @@ class MemoryGitService(BaseModel):
         self._failures = 0
 
     async def _has_changes(self, scope: str) -> bool:
-        """Whether the scope's directory differs from HEAD."""
+        """Whether the scope's directory differs from HEAD.
+
+        Args:
+            scope (str): Scope directory to inspect, relative to the store root.
+
+        Returns:
+            True when `git status` reports anything under it, tracked or not.
+        """
         return bool(await self._git("status", "--porcelain", "--", scope))
 
     async def _git(self, *args: str) -> str:
         """Runs one git command in the store, returning stdout.
+
+        Args:
+            *args (str): The subcommand and its arguments, appended after the flags every
+                invocation carries.
+
+        Returns:
+            The command's stdout, decoded with undecodable bytes replaced.
 
         Raises:
             RuntimeError: The command exited non-zero. The caller turns every failure

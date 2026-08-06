@@ -1,4 +1,50 @@
-"""LLM extraction and consolidation for per-user long-term memory."""
+"""Phase-1 extraction, phase-2 consolidation, and the deterministic gates around both.
+
+This is the LLM half of long-term memory. `MemoryExtractorAI` runs the three model calls the
+pipeline makes — phase 1 (a conversation to structured observations), the optional phase-1.5
+evaluator that re-reads its own candidates, and phase 2 (one compartment's raw batch to a set of
+deltas) — and each of them degrades to None instead of raising, so a failed call keeps the
+previous memory state. The phase prompts are instance fields, which is what lets the same engine
+drive the bot's per-server memory by swapping prompts alone.
+
+The structured schemas live here too: `MemoryObservation` / `RawMemoryDraft` are what phase 1
+returns, `MemoryFactDelta` / `ConsolidatedMemory` what phase 2 returns, and `ConsolidationRequest`
+is the input bundle one compartment call is given. The four output schemas are prompt surface —
+their `Field(description=...)` strings are read by the model, so editing one changes behavior;
+`ConsolidationRequest` is built in Python and its descriptions are only documentation.
+
+Around the calls sit the parts that deliberately are NOT prompt rules:
+
+* The sharing gate. `_sanitize_observation` forces `source_only` on a recent-context
+  observation, on `ongoing_situation` evidence, on an id token or mention naming anyone but the
+  target, and on text that literally names another participant of the same conversation (the
+  roster is read back out of the transcript's own trusted author prefixes by
+  `participant_names_from_transcript`). Code only ever TIGHTENS sharing; it never turns a
+  `source_only` call back into `global`. Since the compartment directory became the privacy
+  boundary there is no read-time filter left, so `global` means permanent cross-server reach and
+  a false positive here costs one harmless fact its portability while a false negative publishes
+  a private one everywhere.
+* The acceptance gate. `_is_accepted_observation` drops casual mentions, hypotheticals, bot
+  suggestions, observations about somebody else, and anything under the per-category confidence
+  and durability floor, so raw only ever stages what survived it.
+* Anti-injection. `transcript_from_messages` renders each turn as a column-0
+  `[message <n> | <role>]` marker over an indented body, so nothing a user writes can forge a
+  block boundary or plant an author prefix; `_truncate_middle` realigns a cut tail to the next
+  marker for the same reason; `redact_secrets` scrubs secret-shaped strings off the transcript on
+  the way in and off every model-authored string on the way out.
+
+The rest is the raw-entry format: `render_memory_observations` writes one block per accepted
+observation with the conversation source stamped by code rather than echoed by the model, and
+`observation_keys_from_text` / `observation_key_sources_from_text` /
+`filter_duplicate_observations` read it back, keyed on `(normalized_key, source)` so a fact
+re-stated in another guild re-enters raw instead of being deduped away.
+
+Nothing here touches the filesystem, takes a lock, or knows about Discord: `pipeline.py` owns the
+ordering, the locking and every write, `store.py` the files, and `deltas.py` what a delta is
+allowed to do to them. The other callers only build inputs or the engine —
+`cogs/gen_reply/cog.py` for the target-centered message list and the subject's source line,
+`cogs/memory/cog.py` for the extractor itself, and the offline `scripts/`.
+"""
 
 import re
 from typing import TYPE_CHECKING, TypeVar, cast
@@ -108,7 +154,13 @@ _STABLE_EVIDENCE_KINDS = frozenset({
 
 
 class MemoryObservation(BaseModel):
-    """One validated phase-1 observation before markdown rendering."""
+    """One phase-1 observation, as the model emits it and as the gates hand it back.
+
+    The same type carries both: `_sanitize_observation` returns a new instance with the text
+    redacted and trimmed, the key normalized, the TTL settled and `sharing` tightened where code
+    says it must be, and `_is_accepted_observation` then decides whether it reaches raw at all.
+    Every description below is prompt text.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -162,7 +214,12 @@ class MemoryObservation(BaseModel):
 
 
 class RawMemoryDraft(BaseModel):
-    """Structured phase-1 extraction output for one conversation."""
+    """Structured phase-1 extraction output for one conversation.
+
+    Also the phase-1.5 evaluator's schema and what `_validated_draft` rebuilds afterwards, so
+    `has_signal` on a draft the pipeline sees means "something survived the gates", not "the model
+    thought it saw something".
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -215,7 +272,12 @@ class MemoryFactDelta(BaseModel):
 
 
 class ConsolidatedMemory(BaseModel):
-    """Structured phase-2 consolidation output for one compartment."""
+    """Structured phase-2 consolidation output for one compartment.
+
+    Only one of the two fields is ever read per call: a compartment call's `tone_markdown` is
+    ignored, and the dedicated tone-note call's `deltas` are discarded by code, which is what lets
+    that call be handed unpartitioned tone evidence without it becoming a stored fact.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -255,7 +317,7 @@ class ConsolidationRequest(BaseModel):
     recent_detail: str = Field(..., description="Cold evidence filtered to this compartment.")
     tone_evidence: str = Field(
         default="",
-        description="Unpartitioned tone signal; global-only, and for the tone note alone.",
+        description="Unpartitioned tone signal; the tone-note call sets it, no compartment does.",
     )
     global_reference: str = Field(
         default="",
@@ -305,11 +367,25 @@ class MemoryExtractorAI(BaseModel):
     )
 
     async def extract(self, subject: str, transcript: str) -> RawMemoryDraft | None:
-        """Returns the phase-1 raw memory draft, or None when the LLM path fails.
+        """Runs phase 1, then the phase-1.5 evaluator when one is configured.
 
-        `subject` is the leading directive naming the memory's target (e.g.
-        `target_user_id: <id>` or `target_server_id: <id>`); the phase-1 prompt
-        explains how to read it.
+        Both model outputs go through `_validated_draft`, so the evaluator can only narrow what
+        phase 1 proposed: it never sees an ungated observation and its own answer is gated again.
+        The roster the sharing gate matches names against is read out of `transcript` here rather
+        than threaded down from the reply pipeline, so a job resumed from its stored transcript
+        rebuilds exactly the same one.
+
+        Args:
+            subject (str): The leading directive naming the memory's target
+                (`target_user_id: <id>` or `target_server_id: <id>`, plus the optional `source:`
+                line); the phase-1 prompt explains how to read it. A server subject carries no
+                user id, so no roster is built for it.
+            transcript (str): The rendered conversation, already redacted and capped by
+                `transcript_from_messages`.
+
+        Returns:
+            The gated draft, or None when either LLM call failed — which the caller must read as
+            "keep the previous state and retry later", never as "no signal".
         """
         user_text = f"{subject}\n\nConversation transcript:\n{transcript}"
         target_match = _SUBJECT_TARGET_USER_RE.search(subject)
@@ -352,7 +428,21 @@ class MemoryExtractorAI(BaseModel):
         return _validated_draft(draft=evaluated, target_user_id=target_user_id, roster=roster)
 
     async def consolidate(self, request: ConsolidationRequest) -> ConsolidatedMemory | None:
-        """Returns one compartment's consolidation deltas, or None when the LLM path fails."""
+        """Runs phase 2 for one compartment and redacts every model-authored string.
+
+        The compaction block is appended to the prompt only when the compartment is large enough
+        to be worth deep-summarizing. `existing_tone` and `tone_evidence` are put in front of the
+        model only on the call that owns the tone note; every other call is handed neither, which
+        is what keeps unpartitioned tone evidence out of a call that can write facts.
+
+        Args:
+            request (ConsolidationRequest): The compartment's identity, its evidence, and the two
+                flags that shape the call.
+
+        Returns:
+            The deltas plus the tone note with their prose redacted, or None when the LLM path
+            failed (the caller then keeps the raw batch for the next attempt).
+        """
         sections = ", ".join(request.allowed_sections)
         blocks = [
             f"today: {request.today}",
@@ -400,10 +490,22 @@ class MemoryExtractorAI(BaseModel):
     ) -> _OutputT | None:
         """Runs one structured Responses API call, returning None on any failure.
 
-        Delegates to the shared `parse_responses_or_none`, which owns the call surface,
-        the timeout, and the degrade-to-None handling (timeout, refused output, an
-        incomplete/truncated response — the last matters here because a model that closed
-        the JSON early could otherwise pass the `v1` header check with an amputated file).
+        Delegates to the shared `parse_responses_or_none`, which owns the call surface, the
+        timeout, and the degrade-to-None handling (timeout, refusal, off-schema body, a response
+        the proxy reported incomplete). Every phase here maps that None onto "keep the previous
+        memory state", so nothing partial is ever written.
+
+        Args:
+            model (ModelSettings): Tier this phase runs on.
+            instructions (str): Developer-authority prompt for the phase.
+            user_text (str): Body of the single user-role message.
+            text_format (type[_OutputT]): Schema the reply is parsed into.
+            timeout_seconds (float): Wall-clock budget for the call.
+            end_user_label (str): Per-phase label sent as the LiteLLM end-user header; a phase
+                name, never a Discord identity.
+
+        Returns:
+            The parsed instance, or None when the call failed.
         """
         return await parse_responses_or_none(
             client=self.client,
@@ -417,12 +519,33 @@ class MemoryExtractorAI(BaseModel):
 
 
 def _tagged(tag: str, body: str) -> str:
-    """Wraps one consolidation input block, marking an absent one explicitly."""
+    """Wraps one consolidation input block, marking an absent one explicitly.
+
+    An empty body renders as `(empty)` rather than as nothing, so the model reads "there is none
+    of this" instead of having to guess whether the block was omitted from the request.
+
+    Args:
+        tag (str): Element name the block is wrapped in.
+        body (str): Block contents; whitespace-only counts as absent.
+
+    Returns:
+        The tagged block.
+    """
     return f"<{tag}>\n{body.strip() or '(empty)'}\n</{tag}>"
 
 
 def _redacted_delta(delta: MemoryFactDelta) -> MemoryFactDelta:
-    """Scrubs secret-shaped strings out of one delta's model-authored text."""
+    """Scrubs secret-shaped strings out of one delta's model-authored text.
+
+    Only `summary` and `text` are free prose, and they are the two fields that become the stored
+    fact's readable body; the remaining fields are ids, keys and enum members and are left alone.
+
+    Args:
+        delta (MemoryFactDelta): The delta as the model returned it.
+
+    Returns:
+        A copy with both prose fields redacted and stripped.
+    """
     return delta.model_copy(
         update={
             "summary": redact_secrets(text=delta.summary).strip(),
@@ -444,6 +567,14 @@ def participant_names_from_transcript(
 
     A forged prefix inside someone's message body can only ADD a name, and an extra name
     can only tighten an observation's sharing, so the untrusted position costs nothing.
+
+    Args:
+        transcript (str): The rendered transcript to read author prefixes out of.
+        target_user_id (int | None): The observation's target, left out of the roster; None keeps
+            everyone, since there is nobody to exclude.
+
+    Returns:
+        The sorted, deduplicated display names and usernames distinctive enough to match on.
     """
     names: set[str] = set()
     for match in _PARTICIPANT_PREFIX_RE.finditer(transcript):
@@ -454,7 +585,14 @@ def participant_names_from_transcript(
 
 
 def _is_matchable_name(name: str) -> bool:
-    """Whether a roster name is distinctive enough to lock an observation on."""
+    """Whether a roster name is distinctive enough to lock an observation on.
+
+    Args:
+        name (str): One display name or username read off the transcript.
+
+    Returns:
+        True when the name clears the length floor for its script.
+    """
     floor = _MIN_LATIN_ROSTER_NAME if _LATIN_NAME_RE.match(name) else _MIN_OTHER_ROSTER_NAME
     return len(name) >= floor
 
@@ -466,6 +604,13 @@ def _mentions_roster_name(text: str, roster: tuple[str, ...]) -> bool:
     name has no boundaries to anchor to and is matched as a substring, which is the
     deliberate asymmetry — a false positive keeps a harmless fact inside one guild,
     while a false negative publishes a private one everywhere.
+
+    Args:
+        text (str): The observation's summary and evidence quote, before trimming.
+        roster (tuple[str, ...]): The conversation's other participants.
+
+    Returns:
+        True when any roster name appears in the text.
     """
     folded = text.casefold()
     for name in roster:
@@ -484,6 +629,18 @@ def transcript_from_messages(message_list: list[EasyInputMessageParam], full_rep
     Each message becomes a block whose `[message <n> | <role>]` marker sits at
     column 0 while every content line is indented, so user-authored text can
     never forge a block boundary or plant an author prefix at content start.
+
+    Pure and sub-millisecond, which is why the pipeline renders it eagerly on the reply path and
+    persists the string: a resumed job then re-renders nothing and reads the same evidence.
+
+    Args:
+        message_list (list[EasyInputMessageParam]): The turn's input messages, already narrowed
+            by `target_centered_memory_messages`.
+        full_reply (str): The streamed reply text; its usage footer is stripped first, being
+            delivery chrome rather than evidence about anyone.
+
+    Returns:
+        The transcript, redacted and capped at `MEMORY_TRANSCRIPT_MAX_CHARS`.
     """
     blocks: list[str] = []
     for message in message_list:
@@ -510,7 +667,20 @@ def target_centered_memory_messages(
     current_message: list[EasyInputMessageParam],
     target_user_id: int,
 ) -> list[EasyInputMessageParam]:
-    """Narrows reply context to target-centered evidence for memory extraction."""
+    """Narrows reply context to target-centered evidence for memory extraction.
+
+    Only the history is thinned. The reply-reference chain and the current message are kept whole
+    because they are what the turn is actually about.
+
+    Args:
+        hist_messages (list[EasyInputMessageParam]): Channel history, header message first.
+        reference_messages (list[EasyInputMessageParam]): The replied-to chain, kept whole.
+        current_message (list[EasyInputMessageParam]): The triggering message, kept whole.
+        target_user_id (int): Whose memory is being extracted.
+
+    Returns:
+        The narrowed message list, in the order the reply pipeline built it.
+    """
     return [
         *_target_centered_history_messages(
             hist_messages=hist_messages, target_user_id=target_user_id
@@ -523,12 +693,20 @@ def target_centered_memory_messages(
 def render_memory_observations(
     observations: tuple[MemoryObservation, ...], source: str | None
 ) -> str:
-    """Renders structured observations as timestamp-entry body markdown.
+    """Renders accepted observations as the body of one raw entry.
 
-    `source` names the conversation the observations came from (`guild <id>` /
-    `dm`), stamped deterministically here — never LLM-echoed — so consolidation
-    can scope each bullet. None (the server flavor, or a legacy job with no
-    source line) renders neither the source nor the sharing field.
+    The `## <timestamp>` header above them belongs to `store.append_raw_entry`; this is only the
+    blocks under it. `source` names the conversation the observations came from (`guild <id>` /
+    `dm`), stamped deterministically here — never LLM-echoed — so `partition_raw_entries` can
+    later route each block to a compartment off it and the code-stamped sharing field. None (the
+    server flavor, or a legacy job with no source line) renders neither field.
+
+    Args:
+        observations (tuple[MemoryObservation, ...]): The observations that survived the gates.
+        source (str | None): `guild <id>` / `dm`, or None to omit source and sharing.
+
+    Returns:
+        The blocks joined by a blank line; empty when there are no observations.
     """
     blocks: list[str] = []
     for observation in observations:
@@ -552,7 +730,17 @@ def render_memory_observations(
 
 
 def subject_source_line(guild_id: int | None) -> str:
-    """Renders the subject's second line naming where the conversation happened."""
+    """Renders the subject's second line naming where the conversation happened.
+
+    The writing half of the format `parse_subject_source` reads back after the `memory_job`
+    round-trip; both live beside `_SUBJECT_SOURCE_RE` so they cannot drift apart.
+
+    Args:
+        guild_id (int | None): The guild the turn happened in; None for a DM.
+
+    Returns:
+        `source: guild <id>`, or `source: dm`.
+    """
     return f"source: guild {guild_id}" if guild_id is not None else "source: dm"
 
 
@@ -562,13 +750,26 @@ def parse_subject_source(subject: str) -> str | None:
     None covers the server flavor (its subject never carries a source line) and
     user jobs persisted before the source line existed; both render without
     per-observation source stamping.
+
+    Args:
+        subject (str): The subject as it was persisted with the job.
+
+    Returns:
+        `guild <id>` or `dm`, or None when the subject names no source.
     """
     match = _SUBJECT_SOURCE_RE.search(subject)
     return match.group("source") if match else None
 
 
 def observation_keys_from_text(text: str) -> set[str]:
-    """Extracts structured observation keys already present in raw/detail evidence."""
+    """Extracts structured observation keys already present in raw/detail evidence.
+
+    Args:
+        text (str): Raw or detail markdown to scan.
+
+    Returns:
+        Every `normalized_key` the text stages.
+    """
     return {match.group("key") for match in _STRUCTURED_KEY_RE.finditer(text)}
 
 
@@ -578,6 +779,12 @@ def observation_key_sources_from_text(text: str) -> set[tuple[str, str | None]]:
     The renderer emits `- source:` after `- normalized_key:` inside one block, so a
     line walk can pair each key with its block's source; entries written before
     source stamping (or by the server flavor) pair with None.
+
+    Args:
+        text (str): Raw or detail markdown to scan.
+
+    Returns:
+        One `(normalized_key, source)` pair per staged observation.
     """
     pairs: set[tuple[str, str | None]] = set()
     pending_key: str | None = None
@@ -606,6 +813,16 @@ def filter_duplicate_observations(
     re-stated in another guild (or a DM) must re-enter raw so consolidation can
     widen that bullet's source tag; key-only dedupe would lock every fact to the
     first source that ever observed it.
+
+    The batch is also deduped against itself, so one draft cannot stage the same key twice.
+
+    Args:
+        observations (tuple[MemoryObservation, ...]): The accepted observations of one turn.
+        existing_text (str): Raw plus the detail tail, the evidence already on disk.
+        source (str | None): This turn's conversation source, or None when it has none.
+
+    Returns:
+        The observations not yet evidenced from this source, in their original order.
     """
     existing_pairs = observation_key_sources_from_text(text=existing_text)
     kept: list[MemoryObservation] = []
@@ -618,7 +835,14 @@ def filter_duplicate_observations(
 
 
 def redact_secrets(text: str) -> str:
-    """Replaces token-, key-, and password-like strings with a redaction marker."""
+    """Replaces token-, key-, and password-like strings with a redaction marker.
+
+    Args:
+        text (str): Any string on its way into a prompt or out of a model.
+
+    Returns:
+        The text with every matched secret shape replaced by `[REDACTED_SECRET]`.
+    """
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub("[REDACTED_SECRET]", text)
     return text
@@ -627,7 +851,20 @@ def redact_secrets(text: str) -> str:
 def _validated_draft(
     draft: RawMemoryDraft, target_user_id: int | None, roster: tuple[str, ...] = ()
 ) -> RawMemoryDraft:
-    """Applies deterministic high-precision gates to model observations."""
+    """Applies the deterministic high-precision gates to one model draft.
+
+    Sanitizing runs before the dedupe, so two observations the model keyed differently that
+    normalize to the same token collapse into one. `has_signal` is recomputed from what survived
+    rather than carried over, so a draft the gates emptied reports no signal to the caller.
+
+    Args:
+        draft (RawMemoryDraft): The model's own output, from phase 1 or the evaluator.
+        target_user_id (int | None): Whose memory this is; None for the server flavor.
+        roster (tuple[str, ...]): The conversation's other participants, for the sharing gate.
+
+    Returns:
+        A rebuilt draft holding only the accepted observations.
+    """
     observations: list[MemoryObservation] = []
     seen_keys: set[str] = set()
     for observation in draft.observations:
@@ -644,7 +881,16 @@ def _validated_draft(
 
 
 def _mentions_other_person(text: str, target_user_id: int | None) -> bool:
-    """Whether the text references any participant other than the target user."""
+    """Whether the text references any participant other than the target user.
+
+    Args:
+        text (str): Observation text, scanned for `[id: N]` and `<@N>` tokens.
+        target_user_id (int | None): The one exempt id; None makes every token count, since
+            there is no target to quote.
+
+    Returns:
+        True when a token naming somebody else is present.
+    """
     for match in _OTHER_PERSON_TOKEN_RE.finditer(text):
         mentioned = int(match.group("user_id") or match.group("mention_id"))
         if target_user_id is None or mentioned != target_user_id:
@@ -655,7 +901,22 @@ def _mentions_other_person(text: str, target_user_id: int | None) -> bool:
 def _sanitize_observation(
     observation: MemoryObservation, target_user_id: int | None, roster: tuple[str, ...] = ()
 ) -> MemoryObservation:
-    """Normalizes text, keys, TTL, and sharing fields before validation."""
+    """Normalizes text, keys, TTL, and sharing fields before validation.
+
+    Recent context is forced unpromotable, `recent`, and TTL-bound whatever the model said; every
+    other category loses its TTL entirely. The sharing half is the privacy backstop and the
+    reasoning for it sits at the block that applies it.
+
+    Args:
+        observation (MemoryObservation): The observation as the model wrote it.
+        target_user_id (int | None): The id exempt from the other-person check; None for the
+            server flavor.
+        roster (tuple[str, ...]): The conversation's other participants, matched literally.
+
+    Returns:
+        A new observation with the normalized fields, tightened to `source_only` where a rule
+        fired.
+    """
     category = observation.category
     ttl_days = observation.ttl_days
     promotion_eligible = observation.promotion_eligible
@@ -707,7 +968,18 @@ def _sanitize_observation(
 
 
 def _is_accepted_observation(observation: MemoryObservation) -> bool:
-    """Returns whether an observation is precise enough to enter raw memory."""
+    """Returns whether an observation is precise enough to enter raw memory.
+
+    Recent context is held to a lower bar (medium confidence plus a TTL), which the sanitizer has
+    already source-locked and dated; everything else has to be a promotable, high-confidence,
+    durable observation resting on one of the stable evidence kinds.
+
+    Args:
+        observation (MemoryObservation): The sanitized observation.
+
+    Returns:
+        True when it may be staged in raw.
+    """
     if not observation.subject_is_target_user:
         return False
     if observation.evidence_kind in _REJECTED_EVIDENCE_KINDS:
@@ -729,14 +1001,33 @@ def _is_accepted_observation(observation: MemoryObservation) -> bool:
 
 
 def _clean_normalized_key(value: str) -> str:
-    """Normalizes a model-provided dedupe key into a compact safe token."""
+    """Normalizes a model-provided dedupe key into a compact safe token.
+
+    Everything outside `[a-z0-9._:-]` collapses to a dot and the result is capped, so two
+    spellings of one key still dedupe together and a key the model wrote as a sentence cannot
+    grow unbounded.
+
+    Args:
+        value (str): The key as the model wrote it.
+
+    Returns:
+        The lowercase dotted token, at most 120 characters.
+    """
     key = _KEY_SAFE_RE.sub(".", redact_secrets(text=value).strip().lower())
     key = re.sub(r"\.+", ".", key).strip(".")
     return key[:120]
 
 
 def _trim_text(text: str, max_chars: int) -> str:
-    """Collapses whitespace and caps one observation field."""
+    """Collapses whitespace and caps one observation field.
+
+    Args:
+        text (str): The field value, already redacted.
+        max_chars (int): Ceiling, ellipsis included.
+
+    Returns:
+        The single-line value, ellipsized when it was over the cap.
+    """
     trimmed = " ".join(text.split())
     if len(trimmed) <= max_chars:
         return trimmed
@@ -746,7 +1037,21 @@ def _trim_text(text: str, max_chars: int) -> str:
 def _target_centered_history_messages(
     hist_messages: list[EasyInputMessageParam], target_user_id: int
 ) -> list[EasyInputMessageParam]:
-    """Keeps target history plus local neighboring context."""
+    """Keeps target history plus local neighboring context.
+
+    The first message is the history header and is always kept ahead of the window. Each target
+    message brings the one either side of it, so a reply still reads with the line it answers,
+    and every dropped run becomes a count marker rather than a silent join — otherwise the model
+    reads two unrelated moments as one continuous exchange.
+
+    Args:
+        hist_messages (list[EasyInputMessageParam]): Channel history, header message first.
+        target_user_id (int): Whose messages anchor the window.
+
+    Returns:
+        The narrowed history, or an empty list when the target never spoke in it (the header
+        alone is not evidence).
+    """
     if not hist_messages:
         return []
     header, body = hist_messages[0], hist_messages[1:]
@@ -772,13 +1077,31 @@ def _target_centered_history_messages(
 
 
 def _is_target_user_message(message: EasyInputMessageParam, target_user_id: int) -> bool:
-    """Returns whether the trusted author prefix names the target user."""
+    """Returns whether the trusted author prefix names the target user.
+
+    Anchored to the first line, where the input builder puts the prefix, so an `[id: N]` quoted
+    deeper in the body cannot claim authorship.
+
+    Args:
+        message (EasyInputMessageParam): One input message.
+        target_user_id (int): The id being looked for.
+
+    Returns:
+        True when the message's own prefix carries that id.
+    """
     match = _AUTHOR_PREFIX_RE.match(_message_text(message=message))
     return match is not None and int(match.group("user_id")) == target_user_id
 
 
 def _omission_message(omitted_count: int) -> EasyInputMessageParam:
-    """Builds a neutral marker for omitted non-target history."""
+    """Builds a neutral marker for omitted non-target history.
+
+    Args:
+        omitted_count (int): How many consecutive messages the window dropped here.
+
+    Returns:
+        A `system` message stating the size of the gap.
+    """
     return EasyInputMessageParam(
         role="system",
         content=f"[{omitted_count} non-target history message(s) omitted from memory extraction]",
@@ -786,7 +1109,14 @@ def _omission_message(omitted_count: int) -> EasyInputMessageParam:
 
 
 def _indent_block(text: str) -> str:
-    """Indents content lines so column-0 block markers cannot be forged in bodies."""
+    """Indents content lines so column-0 block markers cannot be forged in bodies.
+
+    Args:
+        text (str): One message body.
+
+    Returns:
+        The body with every line indented by two spaces.
+    """
     return "\n".join(f"  {line}" for line in text.splitlines())
 
 
@@ -797,6 +1127,12 @@ def _strip_forwarded_payload(text: str) -> str:
     first marker is the suffix boundary: everything from it to end-of-body is someone else's
     words and must not become a fact about the (target) forwarder. The answer still sees the
     full body; only this memory-evidence transcript excludes it.
+
+    Args:
+        text (str): One rendered message body.
+
+    Returns:
+        The body up to the first forward marker, or unchanged when it carries none.
     """
     index = text.find(FORWARDED_MESSAGE_MARKER)
     if index == -1:
@@ -805,7 +1141,17 @@ def _strip_forwarded_payload(text: str) -> str:
 
 
 def _message_text(message: EasyInputMessageParam) -> str:
-    """Extracts the plain text from one input message, dropping non-text parts."""
+    """Extracts the plain text from one input message, dropping non-text parts.
+
+    A non-text part is a file or image handle whose id is opaque, so the transcript keeps only
+    what was actually written.
+
+    Args:
+        message (EasyInputMessageParam): One input message, string- or parts-shaped.
+
+    Returns:
+        The message's text parts joined by newlines, stripped.
+    """
     content = message["content"]
     if isinstance(content, str):
         return content.strip()
@@ -828,6 +1174,13 @@ def _truncate_middle(text: str, max_chars: int) -> str:
     cut landing inside an indented body could leave user content at column 0 and forge
     a block boundary. When no marker lands inside the tail it is returned as a best
     effort (mirrors `store.read_detail_tail`).
+
+    Args:
+        text (str): The rendered transcript.
+        max_chars (int): Ceiling, the truncation marker included.
+
+    Returns:
+        The text unchanged when it fits, else head + marker + boundary-aligned tail.
     """
     if len(text) <= max_chars:
         return text
