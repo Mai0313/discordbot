@@ -86,9 +86,22 @@ def _reporter_line(*, ticket: FeedbackTicket) -> str:
     )
 
 
-def render_issue_body(*, ticket: FeedbackTicket, write_up: ReportWriteUp | None) -> str:
+def stored_draft(*, ticket: FeedbackTicket) -> tuple[str, str] | None:
+    """The write-up already stored for this report, as `(title, body)`.
+
+    The write-up does not wait for a token, so a report that queued through an outage or
+    a half-configured deployment usually has one by the time its issue is opened. Using
+    it there opens the issue in its finished form instead of opening it raw and editing
+    it a moment later.
+    """
+    if ticket.draft_title.strip() and ticket.draft_body.strip():
+        return ticket.draft_title.strip(), ticket.draft_body.strip()
+    return None
+
+
+def render_issue_body(*, ticket: FeedbackTicket, lead: str = "") -> str:
     """Builds the issue body: the write-up when there is one, then the original wording."""
-    lead = write_up.body.strip()[:_MAX_BODY_CHARS] if write_up is not None else ""
+    lead = lead.strip()[:_MAX_BODY_CHARS]
     original = _fenced(text=ticket.raw_text.strip() or "(empty)")
     sections = [
         lead,
@@ -106,6 +119,10 @@ async def write_up_report(
 
     None is an ordinary outcome, not an error: the issue keeps the reporter's own words
     and the panel keeps showing their first line, which is what it showed all along.
+
+    Nothing here needs GitHub. Two of the four fields are for the reporter's own panel
+    and for reading the store later, so this runs as soon as a report is filed rather
+    than waiting for a token that may be days away.
     """
     return await parse_responses_or_none(
         client=client,

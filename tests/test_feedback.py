@@ -7,6 +7,7 @@ survive all of them.
 """
 
 from typing import Any, cast
+import asyncio
 
 from openai import AsyncOpenAI
 import pytest
@@ -39,6 +40,7 @@ from discordbot.cogs.feedback.github import (
 )
 from discordbot.cogs.feedback.writeup import (
     ReportWriteUp,
+    stored_draft,
     render_issue_body,
     label_for_category,
     initial_issue_title,
@@ -138,6 +140,24 @@ def _cog(*, issues: FakeIssues, config: FeedbackConfig | None = None) -> Feedbac
     cog.issues = cast("Any", issues)
     cog.client = cast("Any", object())
     return cog
+
+
+async def _tidy_write_up(
+    *, client: AsyncOpenAI, model: ModelSettings, ticket: FeedbackTicket
+) -> ReportWriteUp:
+    """Stands in for the model, returning one fixed write-up."""
+    return ReportWriteUp(
+        label="下載會卡住",
+        category="bug",
+        title="fix: download stalls midway",
+        body="Downloading a long video stalls.",
+    )
+
+
+async def _drain(*, cog: FeedbackCogs) -> None:
+    """Waits for the background tasks the cog spawned during a call."""
+    while cog._background:
+        await asyncio.gather(*tuple(cog._background), return_exceptions=True)
 
 
 async def _no_cooldown(*, user_id: int) -> float | None:
@@ -292,9 +312,7 @@ def test_the_original_wording_survives_a_code_fence_in_the_report() -> None:
     Fencing is what keeps `@name` and `#123` inert on GitHub, so a report that closes
     the fence early would turn its own text back into live references.
     """
-    body = render_issue_body(
-        ticket=_ticket(raw_text="see ```py\nprint(1)\n``` and @someone #12"), write_up=None
-    )
+    body = render_issue_body(ticket=_ticket(raw_text="see ```py\nprint(1)\n``` and @someone #12"))
     original = body.split("<summary>Original wording</summary>")[1]
     assert "````text" in original
     assert "@someone #12" in original
@@ -308,7 +326,7 @@ def test_the_original_wording_survives_a_code_fence_in_the_report() -> None:
 
 def test_the_issue_body_names_the_reporter() -> None:
     """The maintainer can tell who filed a report and from where without a lookup."""
-    body = render_issue_body(ticket=_ticket(), write_up=None)
+    body = render_issue_body(ticket=_ticket())
     assert "Alice" in body
     assert "alice" in body
     assert "test guild" in body
@@ -322,7 +340,7 @@ def test_a_write_up_leads_the_body_and_keeps_the_original() -> None:
         title="fix: download stalls midway",
         body="Downloading a long video stalls.",
     )
-    body = render_issue_body(ticket=_ticket(), write_up=write_up)
+    body = render_issue_body(ticket=_ticket(), lead=write_up.body)
     assert body.startswith("Downloading a long video stalls.")
     assert "下載長影片會卡住" in body
 
@@ -1163,3 +1181,61 @@ async def test_the_sweep_waits_while_the_token_is_still_missing(
     await cog.retry_unfiled_reports()
     assert issues.created == []
     assert len(await tickets_awaiting_issue(limit=10, min_age_seconds=0)) == 1
+
+
+async def test_a_queued_report_is_written_up_without_waiting_for_a_token(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tidy-up needs nothing from GitHub, so it must not wait for it.
+
+    Half of what it produces is local: the line the reporter's own panel shows, and the
+    classification. Holding it back until a token appears would leave the panel showing
+    raw first lines for as long as the setup takes, which is the whole benefit of storing
+    the report locally in the first place.
+    """
+    cog = _cog(issues=FakeIssues())
+    cog.config = _config(FEEDBACK_GITHUB_TOKEN="")
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.write_up_report", _tidy_write_up)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(
+        interaction=cast("Any", interaction), text="下載長影片會卡住", outstanding=0
+    )
+    await _drain(cog=cog)
+    stored = (await list_user_tickets(user_id=7, limit=10))[0]
+    assert stored.issue_number is None
+    assert stored.label == "下載會卡住"
+    assert stored.draft_title == "fix: download stalls midway"
+    assert stored.category == "bug"
+
+
+async def test_a_queued_issue_opens_from_the_draft_instead_of_raw_text(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep opens the issue in its finished form, with no follow-up edit."""
+    cog = _cog(issues=FakeIssues())
+    cog.config = _config(FEEDBACK_GITHUB_TOKEN="")
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.write_up_report", _tidy_write_up)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(
+        interaction=cast("Any", interaction), text="下載長影片會卡住", outstanding=0
+    )
+    await _drain(cog=cog)
+
+    configured = FakeIssues()
+    cog.issues = cast("Any", configured)
+    cog.config = _config()
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.RETRY_MIN_AGE_SECONDS", 0)
+    await cog.retry_unfiled_reports()
+    await _drain(cog=cog)
+    assert configured.created[0]["title"] == "fix: download stalls midway"
+    assert configured.created[0]["labels"] == ["user-report", "bug"]
+    assert "下載長影片會卡住" in configured.created[0]["body"]
+    # Nothing to rewrite: it was opened finished, so the model is not called a second time.
+    assert configured.updated == []
+
+
+def test_a_half_written_draft_is_not_used() -> None:
+    """A row with only one half of the draft is not a draft."""
+    assert stored_draft(ticket=_ticket()) is None
+    assert stored_draft(ticket=_ticket(draft_title="t")) is None
+    assert stored_draft(ticket=_ticket(draft_title="t", draft_body="b")) == ("t", "b")

@@ -8,12 +8,15 @@ number is not there yet.
 A deployment with no token yet rides that same queue rather than turning the command off.
 The token is an operational state, not a switch — `FEEDBACK_ENABLED` is the switch — so
 reports are taken and stored from the first day, and the first sweep after the credentials
-land files all of them.
+land files all of them. The write-up runs either way: it needs nothing from GitHub, half
+of what it produces is for the reporter's own panel and for reading the store later, and
+a queued report that is already written up gets its issue opened in finished form.
 
 The issue is opened from the reporter's raw words, and the LLM write-up rewrites it
 afterwards in the background. Nobody is waiting on that call, so it takes as long as it
 takes, and a failure needs no fallback text — the issue already reads as the reporter
-wrote it.
+wrote it. A queued report is the one case that skips the rewrite: by the time its issue
+is opened the draft is already there, so it is opened from the draft in one call.
 
 There is no admin surface here on purpose. Replies are written on the issue, which is
 also where the panel reads status from, so the developer keeps one inbox instead of two.
@@ -53,6 +56,7 @@ from discordbot.cogs.feedback.github import (
     GitHubIssuesError,
 )
 from discordbot.cogs.feedback.writeup import (
+    stored_draft,
     write_up_report,
     render_issue_body,
     label_for_category,
@@ -227,11 +231,16 @@ class FeedbackCogs(commands.Cog):
                 ticket_id=ticket.ticket_id,
             )
             return None
+        # A report that waited in the queue has usually been written up already, since the
+        # write-up never waits for a token. Opening the issue from that draft is one call
+        # instead of opening it raw and editing it a moment later.
+        draft = stored_draft(ticket=ticket)
+        title = draft[0] if draft else initial_issue_title(ticket=ticket)
+        lead = draft[1] if draft else ""
+        labels = label_for_category(category=ticket.category) if draft else ["user-report"]
         try:
             number = await self.issues.create_issue(
-                title=initial_issue_title(ticket=ticket),
-                body=render_issue_body(ticket=ticket, write_up=None),
-                labels=["user-report"],
+                title=title, body=render_issue_body(ticket=ticket, lead=lead), labels=labels
             )
         except GitHubIssuesError as exc:
             logfire.warn(
@@ -265,15 +274,20 @@ class FeedbackCogs(commands.Cog):
         return number
 
     async def _apply_write_up(self, *, ticket: FeedbackTicket) -> None:
-        """Writes the report up and rewrites its issue, best-effort.
+        """Writes the report up, stores it, and rewrites its issue if there is one.
 
         Every failure here leaves the issue exactly as the reporter wrote it, which is
         why none of them is escalated.
 
-        The issue is rewritten before the draft is stored, not after. Nothing retries a
-        failed rewrite, so storing first would leave the panel showing a tidy summary
-        line for an issue that still reads as the raw report — two descriptions of the
-        same thing, with no way to tell which one the developer is looking at.
+        **This does not wait for an issue.** Two of the four fields it produces are local
+        — the line the reporter's own panel shows, and the classification — so a report
+        that is queued for a token still gets tidied, and the sweep opens its issue from
+        the finished draft rather than from raw text it would then have to edit.
+
+        Where an issue does exist, it is rewritten before the draft is stored. Nothing
+        retries a failed rewrite, so storing first would leave the panel showing a tidy
+        summary line for an issue that still reads as the raw report — two descriptions
+        of the same thing, with no way to tell which one the developer is looking at.
         """
         try:
             write_up = await write_up_report(
@@ -285,29 +299,24 @@ class FeedbackCogs(commands.Cog):
                     ticket_id=ticket.ticket_id,
                 )
                 return
-            if ticket.issue_number is None:
-                logfire.warn(
-                    "A report was written up before its issue existed; dropping the draft",
-                    ticket_id=ticket.ticket_id,
-                )
-                return
-            try:
-                await self.issues.update_issue(
-                    number=ticket.issue_number,
-                    title=write_up.title,
-                    body=render_issue_body(ticket=ticket, write_up=write_up),
-                )
-            except GitHubIssuesError as exc:
-                # Named separately from the model call above: the write-up worked, and
-                # what did not is the edit. Nothing retries it, so the issue keeps the
-                # reporter's own words and the panel keeps showing their first line.
-                logfire.warn(
-                    "Could not rewrite a report's issue; it keeps the original wording",
-                    ticket_id=ticket.ticket_id,
-                    issue_number=ticket.issue_number,
-                    _exc_info=exc,
-                )
-                return
+            if ticket.issue_number is not None:
+                try:
+                    await self.issues.update_issue(
+                        number=ticket.issue_number,
+                        title=write_up.title,
+                        body=render_issue_body(ticket=ticket, lead=write_up.body),
+                    )
+                except GitHubIssuesError as exc:
+                    # Named separately from the model call above: the write-up worked, and
+                    # what did not is the edit. Nothing retries it, so the issue keeps the
+                    # reporter's own words and the panel keeps showing their first line.
+                    logfire.warn(
+                        "Could not rewrite a report's issue; it keeps the original wording",
+                        ticket_id=ticket.ticket_id,
+                        issue_number=ticket.issue_number,
+                        _exc_info=exc,
+                    )
+                    return
             await store_write_up(
                 ticket_id=ticket.ticket_id,
                 label=write_up.label,
@@ -315,6 +324,8 @@ class FeedbackCogs(commands.Cog):
                 draft_title=write_up.title,
                 draft_body=write_up.body,
             )
+            if ticket.issue_number is None:
+                return
             try:
                 await self.issues.add_labels(
                     number=ticket.issue_number,
@@ -447,8 +458,10 @@ class FeedbackCogs(commands.Cog):
             guild_id=ticket.guild_id,
         )
         self._spawn(self._notify_owner(ticket=ticket))
-        if number is not None:
-            self._spawn(self._apply_write_up(ticket=ticket))
+        # Unconditional: the write-up needs nothing from GitHub, and a report waiting for
+        # a token is exactly the one whose panel would otherwise show a raw first line
+        # for as long as the setup takes.
+        self._spawn(self._apply_write_up(ticket=ticket))
         await interaction.followup.send(embed=build_submitted_embed(ticket=ticket), ephemeral=True)
 
     async def submit_reply(
@@ -624,6 +637,10 @@ class FeedbackCogs(commands.Cog):
                 if number is None:
                     # GitHub is still refusing; the rest of the batch would only repeat it.
                     return
+                if stored_draft(ticket=ticket) is not None:
+                    # Already written up while it waited, and `_open_issue` opened the
+                    # issue from that draft, so there is nothing left to rewrite.
+                    continue
                 self._spawn(
                     self._apply_write_up(ticket=ticket.model_copy(update={"issue_number": number}))
                 )
