@@ -242,8 +242,10 @@ async def create_interactions_answer_stream(
             type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
         ),
         generation_config=GenerationConfigParam(
-            # effort is the route grade copied onto slow_model (always low / medium / high here,
-            # all valid for gemini-3.1-pro), so narrowing ReasoningEffort to the enum is safe.
+            # effort is the route grade copied onto slow_model (always low / medium / high here),
+            # and the enum Gemini accepts is per-model: every `*-latest` alias 400s `medium`,
+            # every pinned snapshot takes it, which is why `slow_model` is pinned on both
+            # branches (#459). Narrowing ReasoningEffort to the enum is safe only while it is.
             thinking_level=cast("ThinkingLevel", effort),
             thinking_summaries="auto",
         ),
