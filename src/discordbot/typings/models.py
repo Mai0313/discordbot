@@ -236,17 +236,19 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Slow-path model settings for reply generation and summaries.
         """
-        # Pinned to the explicit gemini-3.1-pro-preview snapshot, not the gemini-pro-latest
-        # alias: the alias is silently downgraded to the gemini-3-pro generation on Google's
-        # side (its Interactions `thinking_level` enum rejects `medium`, allowing only
-        # low / high), while the explicit 3.1 snapshot supports `medium`.
-        # Both branches dispatch the same model today.
-        # the peak/off-peak split is kept on purpose because Gemini Pro has historically slowed
-        # down during peak hours and may be needed again.
-        # 2026/08/05 update: Testing if there is still an issue for Gemini 3.1 Pro will be routed to Gemini 3 Pro.
+        # Both branches are pinned to explicit snapshots, never a `*-latest` alias. This is the
+        # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
+        # answer turn hands that effort straight to the Interactions API as a `thinking_level`
+        # (`gen_reply/interactions.py`), where the enum is per-model: every alias measured
+        # (flash / pro / flash-lite) accepts only low / high and 400s `medium`, while every
+        # pinned snapshot accepts it. An alias here therefore loses a whole reply whenever the
+        # grade comes back `medium` (#459). Note `minimal` is still a 400 on the pro snapshot;
+        # it stays legal only because `EffortGrade` never emits it.
+        # The peak/off-peak split is load-bearing again rather than dormant: Gemini Pro has
+        # historically slowed down during peak hours, so peak takes the flash snapshot.
         if self.is_peak:
-            return ModelSettings(name="gemini-flash-latest", effort="high")
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+            return ModelSettings(name="gemini-3.6-flash", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
     def memory_extractor_model(self) -> ModelSettings:
