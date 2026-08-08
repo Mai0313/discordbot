@@ -88,6 +88,7 @@ from discordbot.cogs.gen_reply.generation import (
 )
 from discordbot.cogs.gen_reply.memory_tool import (
     NO_STORED_MEMORY,
+    MemoryCandidate,
     MemoryReadContext,
     parse_user_id_list,
     memory_read_context,
@@ -808,12 +809,14 @@ def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test var
     section: MemorySection = "preference",
     durability: MemoryDurability = "stable",
     subject_id: int | None = None,
+    owner_name: str | None = None,
 ) -> None:
     """Seeds one stored fact, stamping everything consolidation owns.
 
     Memory is one fact per file, so a test states the body it wants injected and the
     compartment it must be readable from; the id, the dates, the node type and the owner
-    follow from those exactly as the pipeline derives them.
+    follow from those exactly as the pipeline derives them. `owner_name` is spelled out
+    only by a test that reads the stamped identity back, since the store writes it raw.
     """
     owner_id = scope_owner_id(scope=scope)
     now = utc_now()
@@ -827,7 +830,7 @@ def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test var
             text=text,
             compartment=compartment,
             owner_id=owner_id,
-            owner_name=f"U{owner_id} (u{owner_id})",
+            owner_name=f"U{owner_id} (u{owner_id})" if owner_name is None else owner_name,
             subject_id=subject_id,
             node_type=node_type_for(section=section),
             created=now,
@@ -6835,8 +6838,13 @@ def test_build_memory_allowlist_collects_authors_and_mentions_excluding_bot() ->
 
     # Insertion order preserved, bot (999) excluded from both author and mention slots.
     assert list(allowed.keys()) == [1, 2]
-    assert allowed[1] == "Tester (tester)"
-    assert allowed[2] == "Alice (alice)"
+    # A participant carries the same label on both sides until aliases widen the prompt one.
+    assert allowed[1] == MemoryCandidate(
+        prompt_label="Tester (tester)", credit_label="Tester (tester)"
+    )
+    assert allowed[2] == MemoryCandidate(
+        prompt_label="Alice (alice)", credit_label="Alice (alice)"
+    )
 
 
 def test_build_memory_allowlist_escapes_mention_labels() -> None:
@@ -6847,9 +6855,11 @@ def test_build_memory_allowlist_escapes_mention_labels() -> None:
         users=cast("list[nextcord.Member | nextcord.User]", [author]), bot_user_id=999
     )
 
-    # The active @everyone is broken (zero-width space) while the text survives.
-    assert "@everyone" not in allowed[1]
-    assert "everyone" in allowed[1]
+    # The active @everyone is broken (zero-width space) while the text survives, on the
+    # credit label too since that is the one a public footer renders.
+    assert "@everyone" not in allowed[1].prompt_label
+    assert "everyone" in allowed[1].prompt_label
+    assert allowed[1].credit_label == allowed[1].prompt_label
 
 
 def test_parse_user_id_list_handles_valid_and_malformed() -> None:
@@ -6865,7 +6875,10 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     """Ids outside the allowlist drop, mention wrappers and dupes collapse, gaps signal clearly."""
     del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=1), text="甲的記憶")
-    allowed = {1: "A (a)", 2: "B (b)"}
+    allowed = {
+        1: MemoryCandidate(prompt_label="A (a)", credit_label="A (a)"),
+        2: MemoryCandidate(prompt_label="B (b)", credit_label="B (b)"),
+    }
 
     memories = resolve_user_memories(
         user_id_list=["1", "<@1>", "3", "abc", "2"],
@@ -6876,8 +6889,72 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     by_id = {memory.user_id: memory for memory in memories}
     assert set(by_id) == {"1", "2"}
     assert "甲的記憶" in by_id["1"].memory
-    assert by_id["1"].username == "A (a)"
+    assert by_id["1"].prompt_label == "A (a)"
     assert by_id["2"].memory == "(no stored memory for this user)"
+
+
+def test_absent_member_credit_comes_from_the_store_not_the_alias_row(
+    memory_isolated_dir: object,
+) -> None:
+    """A member named only by the nickname table is credited by what their own memory stamped.
+
+    The alias row is community prose the model reads; it can never be the public footer
+    credit (#463). Falls back to the bare id when no fact carries a name, and escapes what
+    it does find, since the store writes the stamped identity raw.
+    """
+    del memory_isolated_dir
+    _seed_fact(scope=user_scope(user_id=42), text="第三人的記憶")
+    _seed_fact(scope=user_scope(user_id=43), text="無名氏的記憶", owner_name="")
+    _seed_fact(scope=user_scope(user_id=44), text="壞名字的記憶", owner_name="@everyone (evil)")
+
+    memories = resolve_user_memories(
+        user_id_list=["42", "43", "44"],
+        allowed={
+            42: MemoryCandidate(prompt_label="Boss(社群暱稱:李董)"),
+            43: MemoryCandidate(prompt_label="Nobody(社群暱稱:阿伯)"),
+            44: MemoryCandidate(prompt_label="Evil(社群暱稱:壞人)"),
+        },
+        context=MemoryReadContext(guild_id=None, dm_partner_id=None),
+    )
+
+    credit_labels = memory_lookup_labels(memories=memories)
+    assert credit_labels[:2] == ["U42 (u42)", "43"]
+    assert "@everyone" not in credit_labels[2]
+    assert "everyone" in credit_labels[2]
+    # The model still reads the row the credit refused.
+    assert memories[0].prompt_label == "Boss(社群暱稱:李董)"
+
+
+def test_absent_member_credit_never_names_them_by_another_guilds_nickname(
+    memory_isolated_dir: object,
+) -> None:
+    """The credit is read through the same compartments as the body it credits.
+
+    A stamped owner name is `Member.display_name`, so it is that user's nickname in the
+    guild whose consolidation wrote it. Scanning the whole scope would credit a member with
+    nothing under `global/` by the name they use in an unrelated server.
+    """
+    del memory_isolated_dir
+    _seed_fact(
+        scope=user_scope(user_id=45),
+        text="他群的記憶",
+        compartment=guild_compartment(guild_id=100),
+        owner_name="他群暱稱 (u45)",
+    )
+    _seed_fact(
+        scope=user_scope(user_id=45),
+        text="本群的記憶",
+        compartment=guild_compartment(guild_id=999),
+        owner_name="本群暱稱 (u45)",
+    )
+
+    memories = resolve_user_memories(
+        user_id_list=["45"],
+        allowed={45: MemoryCandidate(prompt_label="Boss(社群暱稱:李董)")},
+        context=MemoryReadContext(guild_id=999, dm_partner_id=None),
+    )
+
+    assert memory_lookup_labels(memories=memories) == ["本群暱稱 (u45)"]
 
 
 # One fact per compartment, so a document says by its body alone which directories the
@@ -6948,7 +7025,11 @@ def test_memory_read_opens_only_the_permitted_compartments(
 
     assert set(compartments_for_reading(owner_id=1, context=context)) == compartments
 
-    memories = resolve_user_memories(user_id_list=["1"], allowed={1: "A (a)"}, context=context)
+    memories = resolve_user_memories(
+        user_id_list=["1"],
+        allowed={1: MemoryCandidate(prompt_label="A (a)", credit_label="A (a)")},
+        context=context,
+    )
     document = memories[0].memory
     for fragment in present:
         assert fragment in document
@@ -6993,7 +7074,7 @@ def test_resolve_user_memories_fully_locked_reads_as_no_memory(
 
     memories = resolve_user_memories(
         user_id_list=["1"],
-        allowed={1: "A (a)"},
+        allowed={1: MemoryCandidate(prompt_label="A (a)", credit_label="A (a)")},
         context=MemoryReadContext(guild_id=111, dm_partner_id=None),
     )
 
@@ -7368,9 +7449,20 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [["42"], ["42"]],
             None,
             (1, 1),
-            ["\n-# <:tag:1517563887573143595> Tester (tester), Boss(社群暱稱:李董) 的記憶"],
+            ["\n-# <:tag:1517563887573143595> Tester (tester), U42 (u42) 的記憶"],
+            ["社群暱稱"],
+            "U42 (u42)",
+        ),
+        (
+            [1],
+            (1, "Tester", "李董"),
             [],
-            "Boss(社群暱稱:李董)",
+            [],
+            None,
+            (1, 1),
+            ["\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
+            ["社群暱稱"],
+            None,
         ),
         ([], None, [], [["42"]], None, (5, 6), [], ["<:tag:1517563887573143595>"], None),
     ],
@@ -7378,7 +7470,8 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
         "skipped-selector-not-counted",
         "selection-usage-folded-in",
         "owners-collapse-past-two",
-        "repeat-lookups-credited-once",
+        "absent-member-credited-by-stored-owner-name",
+        "participant-alias-row-stays-out-of-the-credit",
         "no-memory-no-credit",
     ],
 )
@@ -7400,7 +7493,9 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
 
     Reads the user-visible reply text (the feature's small, real output surface): the single-owner
     credit, the selection-request token contribution, the collapse to "等 N 人" past two owners,
-    repeat-lookup de-duplication, and the no-credit case.
+    repeat-lookup de-duplication, and the no-credit case. The last two also pin that the
+    `## 成員稱呼` row never reaches this line from either side it used to (#463) — an absent
+    member is credited by the name their own memory carries, a participant by their Discord one.
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
@@ -7610,14 +7705,18 @@ def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
     memory = (
         "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
-    allowed = {123: "Mai (mai9999)"}
+    allowed = {123: MemoryCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
     widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=True)
 
     # The conversation label leads and the table row rides behind it on the same line.
-    assert allowed[123].startswith("Mai (mai9999)")
-    assert "李董" in allowed[123]
-    # A member absent from the conversation is added with the table row as label.
-    assert "阿伯" in allowed[456]
+    assert allowed[123].prompt_label.startswith("Mai (mai9999)")
+    assert "李董" in allowed[123].prompt_label
+    # The footer credit stays the short Discord label; the row never reaches it (#463).
+    assert allowed[123].credit_label == "Mai (mai9999)"
+    # A member absent from the conversation is added with the table row as label, and with
+    # no credit at all: the conversation never names them, so the resolver supplies one.
+    assert "阿伯" in allowed[456].prompt_label
+    assert allowed[456].credit_label is None
 
 
 def test_widen_allowlist_with_aliases_skips_absent_when_not_public() -> None:
@@ -7629,12 +7728,12 @@ def test_widen_allowlist_with_aliases_skips_absent_when_not_public() -> None:
     memory = (
         "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
-    allowed = {123: "Mai (mai9999)"}
+    allowed = {123: MemoryCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
     widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=False)
 
     # The present participant is still enriched with community aliases.
-    assert allowed[123].startswith("Mai (mai9999)")
-    assert "李董" in allowed[123]
+    assert allowed[123].prompt_label.startswith("Mai (mai9999)")
+    assert "李董" in allowed[123].prompt_label
     # The absent member is not added, so their personal memory stays unreachable here.
     assert 456 not in allowed
 
@@ -7975,7 +8074,7 @@ async def test_select_user_memories_uses_text_only_transcript() -> None:
     await cog._select_user_memories(
         message=as_message(fake=message),
         message_list=message_list,
-        allowed={1: "u"},
+        allowed={1: MemoryCandidate(prompt_label="u", credit_label="u")},
         read_context=memory_read_context(message=as_message(fake=message)),
     )
 

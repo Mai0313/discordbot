@@ -100,6 +100,7 @@ from discordbot.cogs.gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     GET_USER_MEMORY_TOOL,
     UserMemory,
+    MemoryCandidate,
     MemorySelection,
     MemoryReadContext,
     render_tone_block,
@@ -1560,7 +1561,7 @@ class ReplyGeneratorCogs(commands.Cog):
         *,
         message: Message,
         message_list: list[EasyInputMessageParam],
-        allowed: dict[int, str],
+        allowed: dict[int, MemoryCandidate],
         read_context: MemoryReadContext,
         server_memory_block: EasyInputMessageParam | None = None,
     ) -> MemorySelection:
@@ -1632,7 +1633,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     def _resolve_reply_memory_candidates(
         self, *, message: Message, server_memory: str, read_context: MemoryReadContext
-    ) -> tuple[list[UserMemory], dict[int, str], int]:
+    ) -> tuple[list[UserMemory], dict[int, MemoryCandidate], int]:
         """Resolves deterministic memories and derives disjoint optional alias candidates."""
         bot_user = self.bot.user
         if bot_user is None:
@@ -1643,7 +1644,7 @@ class ReplyGeneratorCogs(commands.Cog):
             users=[message.author, *(ref.author for ref in reference_chain), *message.mentions],
             bot_user_id=bot_user.id,
         )
-        optional_allowed: dict[int, str] = {}
+        optional_allowed: dict[int, MemoryCandidate] = {}
         # Existing participant labels keep their community aliases even in a private
         # channel because that grants no new access. Only a public channel may offer absent
         # nickname-table members to the selector.
@@ -1652,8 +1653,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 allowed=deterministic_allowed, memory=server_memory, include_absent=False
             )
             if _source_channel_is_public(message=message):
+                # No credit label: the conversation never names these members, so the
+                # footer falls back to the identity their own memory carries.
                 optional_allowed = {
-                    user_id: label
+                    user_id: MemoryCandidate(prompt_label=label)
                     for user_id, label in allowlist_ids_from_server_memory(
                         memory=server_memory
                     ).items()
@@ -1778,7 +1781,7 @@ class ReplyGeneratorCogs(commands.Cog):
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
         memories: list[UserMemory] = []
-        optional_allowed: dict[int, str] = {}
+        optional_allowed: dict[int, MemoryCandidate] = {}
         deterministic_candidate_count = 0
         deterministic_memory_count = 0
         remaining_slots = 0

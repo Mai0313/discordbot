@@ -11,6 +11,7 @@ from openai.types.responses import ResponseInputParam, EasyInputMessageParam
 from discordbot.services.economy.database import adjust_balance
 from discordbot.cogs.gen_reply.memory_tool import (
     UserMemory,
+    MemoryCandidate,
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
@@ -44,12 +45,20 @@ def _answer_request(
     """Builds a recorded answer input mirroring what the pipeline assembles."""
     request: ResponseInputParam = []
     if callable_ids is not None:
-        request.append(render_callable_users_block(allowed=callable_ids))
+        request.append(
+            render_callable_users_block(
+                allowed={
+                    uid: MemoryCandidate(prompt_label=label) for uid, label in callable_ids.items()
+                }
+            )
+        )
     if server_memory is not None:
         request.append(render_server_memory_block(memory=server_memory))
     if memory_ids is not None:
         memories = [
-            UserMemory(user_id=str(uid), username=f"u{uid}", memory=body)
+            UserMemory(
+                user_id=str(uid), prompt_label=f"u{uid}", credit_label=f"u{uid}", memory=body
+            )
             for uid, body in memory_ids.items()
         ]
         request.append(render_memory_context_block(memories=memories))
