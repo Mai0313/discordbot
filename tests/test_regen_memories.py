@@ -5,7 +5,6 @@ import asyncio
 
 import pytest
 from scripts import regen_memories as regen_script
-from rich.console import Console
 
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.services.memory.store import (
@@ -15,7 +14,9 @@ from discordbot.services.memory.store import (
     server_scope,
     compartment_dir,
     append_raw_entry,
+    read_raw_entries,
 )
+from discordbot.services.memory.pipeline import RegenerationReport
 from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 
 if TYPE_CHECKING:
@@ -26,23 +27,6 @@ pytestmark = pytest.mark.usefixtures("memory_isolated_dir")
 _USER = user_scope(user_id=111)
 _OTHER_USER = user_scope(user_id=222)
 _SERVER = server_scope(server_id=333)
-
-
-@pytest.fixture(autouse=True)
-def _fixed_width_console(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Gives the report a console width the terminal cannot set.
-
-    rich consults `COLUMNS` only for a `Console` built without a width, and ellipsizes a
-    table cell that does not fit, so an assertion on the printed report otherwise passes
-    or fails on the environment rather than on the code it covers: the note column carries
-    `REBUILDS EMPTY` whole at rich's no-tty default of 80 and cuts it after six characters
-    at 40, and an `UNACCOUNTED` filename — the half an operator acts on — goes the same
-    way. The console is replaced rather than the variable set, because the script builds
-    its own at import time: rich resolves `COLUMNS` into a fixed width right there when it
-    is already exported, and otherwise reads the live environment on every print, so a
-    `setenv` would reach that console on one machine and not on the next.
-    """
-    monkeypatch.setattr(regen_script, "console", Console(width=200))
 
 
 def _seed(scope: str) -> None:
@@ -96,12 +80,13 @@ def test_a_collective_target_over_an_empty_store_is_not_an_error() -> None:
     assert regen_script._scopes_for_target(target="all") == []
 
 
-def test_parse_args_defaults_to_the_whole_store_and_the_writer_tier() -> None:
-    """A bare invocation is a dry run over every scope with the runtime writer model."""
+def test_parse_args_defaults_to_the_real_rebuild_over_the_whole_store() -> None:
+    """The rebuild is the common case, so the preview is the flag and not the default."""
     args = regen_script._parse_args(argv=[])
     writer = RuntimeModelCatalog().memory_writer_model
     assert args.target == "all"
-    assert args.apply is False
+    assert args.dry_run is False
+    assert regen_script._parse_args(argv=["--dry-run"]).dry_run is True
     assert args.model == writer.name
     assert args.effort == writer.effort
 
@@ -121,10 +106,10 @@ async def test_the_stop_the_bot_warning_fires_on_every_target(
     """An out-of-process write races the bot on one scope too; only blast radius grades."""
     _seed(scope=_USER)
     await regen_script._regen_all(
-        model=ModelSettings(name="test-model", effort="low"), target=target, apply=False
+        model=ModelSettings(name="test-model", effort="low"), target=target, dry_run=True
     )
     output = " ".join(capsys.readouterr().out.split())
-    assert "Stop the bot before --apply" in output
+    assert "Stop the bot before rebuilding" in output
     assert ("commit data/memories first" in output) is expects_store_line
 
 
@@ -134,7 +119,7 @@ async def test_the_dry_run_flags_a_scope_with_nothing_left_to_rebuild_from(
     """The loud note has to reach the preview, not only the run that already rewrote."""
     write_tone(scope=_USER, content="## 語氣偏好\n- 簡短")
     await regen_script._regen_all(
-        model=ModelSettings(name="test-model", effort="low"), target=_USER, apply=False
+        model=ModelSettings(name="test-model", effort="low"), target=_USER, dry_run=True
     )
     output = " ".join(capsys.readouterr().out.split())
     assert "REBUILDS EMPTY" in output
@@ -151,12 +136,65 @@ async def test_the_dry_run_names_files_a_rebuild_cannot_account_for(
     (directory / "backup.txt").write_text("備份", encoding="utf-8")
 
     await regen_script._regen_all(
-        model=ModelSettings(name="test-model", effort="low"), target=_USER, apply=False
+        model=ModelSettings(name="test-model", effort="low"), target=_USER, dry_run=True
     )
 
     output = " ".join(capsys.readouterr().out.split())
     assert "UNACCOUNTED" in output
     assert "backup.txt" in output
+
+
+async def test_a_batch_run_counts_finished_scopes_and_reports_them_in_store_order(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`_CONCURRENCY` scopes are in flight at once, so the bar tracks the batch, not one."""
+    for scope in (_USER, _OTHER_USER, _SERVER):
+        _seed(scope=scope)
+    scopes = regen_script._scopes_for_target(target="all")
+
+    async def _land_in_reverse(scope: str, extractor: object, identity: str) -> object:
+        """Finishes the batch back to front, which is what the re-keying has to survive."""
+        await asyncio.sleep(0.01 * (len(scopes) - scopes.index(scope)))
+        return RegenerationReport(result="no_evidence")
+
+    monkeypatch.setattr(regen_script, "regenerate_main_memory", _land_in_reverse)
+
+    rows = await regen_script._rebuild_batch(
+        extractor=cast("MemoryExtractorAI", None), scopes=scopes
+    )
+
+    assert [scope for scope, *_ in rows] == scopes
+    assert "3/3" in " ".join(capsys.readouterr().out.split())
+
+
+@pytest.mark.parametrize("answer", ["n", "", "yes", pytest.param(EOFError, id="nothing-on-stdin")])
+async def test_a_run_that_is_not_confirmed_builds_no_client_and_writes_nothing(
+    answer: str | type[EOFError],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The typed `y` is what `--apply` left behind, and silence is not consent."""
+    _seed(scope=_USER)
+
+    def _answer(*args: object, **kwargs: object) -> str:
+        if isinstance(answer, str):
+            return answer
+        raise answer
+
+    def _refuse_client(*args: object, **kwargs: object) -> object:
+        raise AssertionError("the run built a client without a confirmation")
+
+    monkeypatch.setattr(regen_script.console, "input", _answer)
+    monkeypatch.setattr(regen_script, "AsyncOpenAI", _refuse_client)
+
+    await regen_script._regen_all(
+        model=ModelSettings(name="test-model", effort="low"), target=_USER, dry_run=False
+    )
+
+    # A rebuild ends by unlinking `raw.md`, so its survival is what says nothing ran.
+    assert read_raw_entries(scope=_USER)
+    # A run that stops after the warnings with no word for it reads like a crash.
+    assert "nothing was written" in " ".join(capsys.readouterr().out.split())
 
 
 def test_the_report_says_how_many_fact_files_a_run_destroyed_unread(
