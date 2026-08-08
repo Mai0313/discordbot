@@ -594,6 +594,12 @@ class ThreadsCogs(commands.Cog):
             return
 
         url = match.group(0)
+        # Persistent marker (added directly, not through the status chain, which replaces its own
+        # reaction) saying a Threads post was read. `gen_reply` adds the same one on the path it
+        # takes instead of this one, so every read is marked the same way whichever cog did it.
+        await update_reaction(
+            message=message, bot_user=self.bot.user, emoji="<:threads:1535657820668559380>"
+        )
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
         try:
