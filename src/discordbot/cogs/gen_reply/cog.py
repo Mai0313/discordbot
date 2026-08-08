@@ -2346,6 +2346,16 @@ class ReplyGeneratorCogs(commands.Cog):
                                 deadline=link_context_deadline,
                             )
                         )
+                    if "threads" in link_tasks:
+                        # Persistent marker (added directly, not via the status chain) saying a
+                        # Threads post was read, the same one `parse_threads` adds when it expands
+                        # a link instead. Added once every builder is started so the REST call
+                        # never sits between two of them.
+                        await update_reaction(
+                            message=message,
+                            bot_user=self.bot.user,
+                            emoji="<:threads:1535657820668559380>",
+                        )
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only
                     # in the status emoji and which media handler runs. Effort is answer-only,
