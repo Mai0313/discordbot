@@ -32,9 +32,9 @@ Two expected losses, reported rather than hidden:
 
 Run from the repo root::
 
-    uv run python -m scripts.regen_memories                                # dry run, all
-    uv run python -m scripts.regen_memories 1010833712956592200 --apply
-    uv run python -m scripts.regen_memories bot_memories/1234567890 --apply
+    uv run python -m scripts.regen_memories                            # dry run, all
+    uv run python -m scripts.regen_memories 1234567890 --apply
+    uv run python -m scripts.regen_memories bot_memories/9876543210 --apply
     uv run python -m scripts.regen_memories users --apply
 """
 
@@ -124,8 +124,16 @@ def _written(scope: str) -> dict[str, int]:
 
 
 def _loss_note(result: str, buckets: dict[str, int]) -> str:
-    """Returns the warning for a scope that rebuilds empty or loses its global compartment."""
-    if result == "no_evidence":
+    """Returns the warning for a scope that rebuilds empty or loses its global compartment.
+
+    The empty-bucket test is what makes the first note reachable BEFORE `--apply`: a dry
+    run's result is always the literal `dry-run`, so keying on `no_evidence` alone flagged
+    a scope with nothing to rebuild from only once the destructive run had happened, and
+    until then mislabelled it `EMPTY GLOBAL` (one live scope, measured). It also retires
+    that second note for server scopes, whose evidence all routes to `global` by
+    construction, so its user-flavored wording can no longer land on one.
+    """
+    if result == "no_evidence" or not any(buckets.values()):
         return "REBUILDS EMPTY: no evidence left to rebuild from"
     if not buckets.get(GLOBAL_COMPARTMENT):
         return "EMPTY GLOBAL: unknown in a server this user has not spoken in"
@@ -148,19 +156,28 @@ def _report(rows: list[tuple[str, str, dict[str, int]]]) -> None:
 async def _regen_one(
     extractor: MemoryExtractorAI, scope: str, semaphore: asyncio.Semaphore
 ) -> tuple[str, str, dict[str, int]]:
-    """Rebuilds one scope and returns its report row."""
-    identity = render_owner_identity(owner=read_owner(scope=scope))
+    """Rebuilds one scope, prints its outcome, and returns its report row."""
     async with semaphore:
         # The script calls the rebuild directly rather than through the reply pipeline,
         # so it needs its own bound: `_memory_semaphore` is entered inside
         # `regenerate_main_memory`, but nothing else here throttles the fan-out.
         try:
+            # Inside the handler because it is not safe either: `read_owner` parses the
+            # id out of the scope key, so one non-numeric directory under the store (a
+            # backup copy, which this tool's own advice invites) used to raise past the
+            # gather and throw away every row that had already rebuilt.
+            identity = render_owner_identity(owner=read_owner(scope=scope))
             result = await regenerate_main_memory(
                 scope=scope, extractor=extractor, identity=identity
             )
         except Exception as error:
             # Broad on purpose: one scope failing must not abandon the rest of the batch.
-            return scope, f"error: {type(error).__name__}: {error}", _preview(scope=scope)
+            result = f"error: {type(error).__name__}: {error}"
+            console.print(f"{scope}: {result}")
+            return scope, result, _preview(scope=scope)
+    # A 145-scope run is several minutes of LLM work, so each scope reports as it lands
+    # rather than leaving the closing table as the only output.
+    console.print(f"{scope}: {result}")
     return scope, result, _written(scope=scope)
 
 
@@ -200,7 +217,11 @@ async def _regen_all(model: ModelSettings, target: str, apply: bool) -> None:
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parses the offline rebuild CLI arguments."""
-    parser = argparse.ArgumentParser(description="Preview or rebuild file-backed memories.")
+    # `--help` carries the whole module docstring, so the target table and the
+    # stop-the-bot framing reach an operator who never opens the file.
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument(
         "target",
         nargs="?",
