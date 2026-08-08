@@ -212,6 +212,16 @@ class MemoryFactDelta(BaseModel):
         description="Member id a nickname row refers to; empty for any other section.",
         examples=["987654321098765432"],
     )
+    display_name: str = Field(
+        default="",
+        description="Nickname row only: the member's current display name.",
+        examples=["小李"],
+    )
+    aliases: tuple[str, ...] = Field(
+        default=(),
+        description="Nickname row only: the aliases the community calls that member.",
+        examples=[("李董", "破貓親爹")],
+    )
 
 
 class ConsolidatedMemory(BaseModel):
@@ -427,6 +437,8 @@ def _redacted_delta(delta: MemoryFactDelta) -> MemoryFactDelta:
         update={
             "summary": redact_secrets(text=delta.summary).strip(),
             "text": redact_secrets(text=delta.text).strip(),
+            "display_name": redact_secrets(text=delta.display_name).strip(),
+            "aliases": tuple(redact_secrets(text=alias).strip() for alias in delta.aliases),
         }
     )
 

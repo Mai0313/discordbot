@@ -129,14 +129,14 @@ OUTPUT (`deltas`): a list of changes. Emitting nothing is normal and preferred w
 
 ONE FACT PER DELTA:
 * A fact is one self-contained community trait a future reply could act on alone.
-* `summary`: one short line naming it. `text`: how it should read in a reply — keep the concrete specifics (which game or topic, the actual running joke, short verbatim fragments) instead of a vague summary.
+* `summary`: one short line naming it. `text`: how it should read in a reply — keep the concrete specifics (which game or topic, the actual running joke, short verbatim fragments) instead of a vague summary. A `member_alias` row is the one exception and writes no `text` at all; see SECTIONS.
 
 SECTIONS:
 * `profile`: one short paragraph describing the server overall. At most one such fact.
 * `culture`: how people here talk to each other, their tolerance for banter and trash talk, what they expect from the bot, shared etiquette.
 * `topic`: subjects the server keeps coming back to.
 * `fact`: stable facts about the server — its dominant language, recurring rituals, inside jokes, notable shared references.
-* `member_alias`: ONE fact per member the community has an established alias for. `subject_id` MUST carry that member's numeric id, taken ONLY from the column-0 author prefix `display_name (username) [id: USER_ID]:`; never guess an id from message text. Write `text` as `<display_name>(社群暱稱:<別稱1>、<別稱2>)` and nothing else — the id is appended for you. Merge by `subject_id`: union new aliases into the existing fact and take the most recent display name. Record a member only when the server clearly and repeatedly uses the alias, never a one-off.
+* `member_alias`: ONE fact per member the community has an established alias for. `subject_id` MUST carry that member's numeric id, taken ONLY from the column-0 author prefix `display_name (username) [id: USER_ID]:`; never guess an id from message text. Put the member's current display name in `display_name` and every alias the community uses in `aliases`, and leave `text` empty: the row is written from those fields and the id is appended for you, so a body you write is discarded. Merge by `subject_id`: union new aliases into the existing fact and take the most recent display name. Record a member only when the server clearly and repeatedly uses the alias, never a one-off. Nothing else about the member goes in this section — an alias row is a name, not a description.
 * `recent`: a time-bound server-level situation or event a near-future reply should know about.
 
 DURABILITY (it decides how the fact ages, and aging is applied for you):

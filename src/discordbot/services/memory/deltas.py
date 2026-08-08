@@ -35,6 +35,7 @@ from discordbot.services.memory.facts import (
     mint_fact_id,
     node_type_for,
     sections_for_flavor,
+    render_member_alias_text,
 )
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
@@ -190,7 +191,7 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
                 summary=" ".join(delta.summary.split()),
                 section=delta.section,
                 durability=delta.durability,
-                text=delta.text.strip(),
+                text=_delta_body(delta=delta),
                 compartment=compartment,
                 owner_id=owner.owner_id,
                 owner_name=owner.owner_name,
@@ -247,7 +248,7 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
     known = named_id if FACT_ID_RE.match(named_id) and named_id in existing else ""
     if delta.action == "delete":
         return (known, True) if known else None
-    if not delta.summary.strip() or not delta.text.strip():
+    if not delta.summary.strip() or not _delta_body(delta=delta):
         logfire.warn("Memory delta carries no content; dropping", action=delta.action)
         return None
     if delta.section == "member_alias" and not delta.subject_id.isdigit():
@@ -259,6 +260,18 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
     if matched is not None:
         return matched, False
     return mint_fact_id(compartment=compartment, summary=delta.summary), False
+
+
+def _delta_body(delta: MemoryFactDelta) -> str:
+    """Returns the body this delta writes, which for an alias row the code renders itself.
+
+    The model's `text` is not read for that section at all: it is asked for the member's
+    name and aliases as fields instead, so the row cannot come out as a sentence with a
+    personal aside attached to it (#464).
+    """
+    if delta.section == "member_alias":
+        return render_member_alias_text(display_name=delta.display_name, aliases=delta.aliases)
+    return delta.text.strip()
 
 
 def _merged_keys(delta: MemoryFactDelta, previous: MemoryFact | None) -> tuple[str, ...]:
