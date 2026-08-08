@@ -84,7 +84,6 @@ from discordbot.services.memory.extraction import (
     subject_source_line,
     parse_subject_source,
     transcript_from_messages,
-    observation_keys_from_text,
     render_memory_observations,
     filter_duplicate_observations,
     target_centered_memory_messages,
@@ -810,7 +809,6 @@ def test_filter_duplicate_observations_uses_normalized_key() -> None:
         existing_text=existing,
         source=None,
     )
-    assert observation_keys_from_text(text=existing) == {"preference.reply.short"}
     assert [observation.normalized_key for observation in kept] == ["preference.reply.zh_tw"]
 
 

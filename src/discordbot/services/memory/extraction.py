@@ -567,11 +567,6 @@ def parse_subject_source(subject: str) -> str | None:
     return match.group("source") if match else None
 
 
-def observation_keys_from_text(text: str) -> set[str]:
-    """Extracts structured observation keys already present in raw/detail evidence."""
-    return {match.group("key") for match in _STRUCTURED_KEY_RE.finditer(text)}
-
-
 def observation_key_sources_from_text(text: str) -> set[tuple[str, str | None]]:
     """Extracts `(normalized_key, source)` pairs from raw/detail evidence.
 
