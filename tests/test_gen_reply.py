@@ -47,7 +47,6 @@ from discordbot.cogs.gen_reply.cog import (
     _await_deadline_bound_task,
     _build_runtime_instructions,
 )
-from discordbot.utils.model_pricing import load_model_info
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
@@ -137,7 +136,7 @@ FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from collections.abc import Callable, Iterator, AsyncIterator
+    from collections.abc import Callable, AsyncIterator
 
     from aiohttp import ClientResponse
     from nextcord import Attachment
@@ -1026,18 +1025,16 @@ async def test_handle_streaming_allows_missing_output_token_details(
 
 
 @pytest.fixture
-def price_table_unavailable(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Makes every price-table fetch fail, resetting the process-wide cache around it."""
+def price_table_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes every price-table fetch fail, restoring the process-wide held table after."""
 
     def refuse(url: str, timeout: int) -> None:
         """Fails the way an unreachable raw.githubusercontent.com does."""
         del url, timeout
         raise requests.ConnectionError("name or service not known")
 
-    load_model_info.cache_clear()
+    monkeypatch.setattr("discordbot.utils.model_pricing._LOADED_TABLE", None)
     monkeypatch.setattr("discordbot.utils.model_pricing.requests.get", refuse)
-    yield
-    load_model_info.cache_clear()
 
 
 async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(

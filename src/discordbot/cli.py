@@ -18,7 +18,7 @@ from discordbot import setup_logging
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
-from discordbot.utils.model_pricing import load_model_info
+from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.services.economy.database import credit_with_repayment
 
@@ -106,7 +106,7 @@ class DiscordBot(commands.Bot):
         """Called when the bot is ready; performs first-time-only setup.
 
         `on_ready` re-fires on every gateway reconnect/resume, so the body
-        is gated on `_initial_setup_done` to keep sync + status_task.start
+        is gated on `_initial_setup_done` to keep sync + the task starts
         idempotent.
         """
         if self._initial_setup_done:
@@ -128,9 +128,7 @@ class DiscordBot(commands.Bot):
 
         await self.sync_all_application_commands()
         self.status_task.start()
-        # Fetch the LiteLLM price table now, off the event loop, so the first
-        # AI reply does not stall on a synchronous network call.
-        await asyncio.to_thread(load_model_info)
+        self.price_table_task.start()
 
         app_info = await self.application_info()
         invite_url = (
@@ -153,6 +151,25 @@ class DiscordBot(commands.Bot):
     async def before_status_task(self) -> None:
         """Ensures the bot is ready before starting the status task."""
         await self.wait_until_ready()
+
+    @tasks.loop(minutes=MODEL_INFO_REFRESH_MINUTES)
+    async def price_table_task(self) -> None:
+        """Loads the LiteLLM price table, and keeps re-checking upstream while it is degraded.
+
+        `tasks.Loop` runs its body immediately, so the first pass is the warm-up that keeps
+        the first AI reply from stalling on a synchronous network call; every later one is
+        a branch once upstream has served. Off the event loop for the same reason the
+        warm-up always was.
+        """
+        try:
+            await asyncio.to_thread(refresh_model_info)
+        except Exception as exc:
+            # Broad because what must not happen here is the loop stopping, whatever the
+            # reason: `Loop._loop` re-raises after one failed iteration, and its default
+            # error hook never reports it — `_call_loop_function` prepends `_injected`, so
+            # the bound `_error` gets an argument too many and dies first. A raise would
+            # take recovery down for the life of the process with no line anywhere.
+            logfire.error("model price table refresh failed; retrying next pass", _exc_info=exc)
 
     async def on_message(self, message: Message) -> None:
         """Handles incoming messages.
