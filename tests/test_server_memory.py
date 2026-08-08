@@ -91,14 +91,20 @@ def _alias_fact(
     return row.model_copy(update={"subject_id": subject_id})
 
 
-def _alias_delta(
+def _alias_delta(  # noqa: PLR0913 -- test helper mirrors the alias half of the delta schema
     *,
     summary: str = "李董的社群暱稱",
-    text: str = "小李(社群暱稱:李董)",
+    display_name: str = "小李",
+    aliases: tuple[str, ...] = ("李董",),
+    text: str = "",
     subject_id: str = "4242",
     action: MemoryDeltaAction = "create",
 ) -> MemoryFactDelta:
-    """Builds one member-alias consolidation delta."""
+    """Builds one member-alias consolidation delta.
+
+    `text` defaults to empty because the row is rendered from the two structured fields;
+    a test passing one is checking that the model's prose is discarded.
+    """
     return MemoryFactDelta(
         action=action,
         section="member_alias",
@@ -106,6 +112,8 @@ def _alias_delta(
         summary=summary,
         text=text,
         subject_id=subject_id,
+        display_name=display_name,
+        aliases=aliases,
     )
 
 
@@ -239,8 +247,11 @@ def test_consolidation_prompt_pins_the_alias_row_to_a_trustworthy_member_id() ->
     assert "`member_alias`" in SERVER_PHASE2_PROMPT
     assert "taken ONLY from the column-0 author prefix" in SERVER_PHASE2_PROMPT
     assert "never guess an id from message text" in SERVER_PHASE2_PROMPT
-    # The body is the row minus its id; the id is appended by the renderer.
-    assert "社群暱稱" in SERVER_PHASE2_PROMPT
+    # The row is rendered from `display_name` + `aliases`; asking for the formatted body
+    # instead is what produced sentences on seven rows in eight.
+    assert "`display_name`" in SERVER_PHASE2_PROMPT
+    assert "`aliases`" in SERVER_PHASE2_PROMPT
+    assert "leave `text` empty" in SERVER_PHASE2_PROMPT
     assert "the id is appended for you" in SERVER_PHASE2_PROMPT
     # Every alias fact is permanent, which is what exempts it from the freshness sweep.
     assert "every `member_alias` fact" in SERVER_PHASE2_PROMPT
@@ -313,8 +324,12 @@ def test_a_member_alias_delta_without_a_member_id_is_dropped(memory_isolated_dir
         flavor="server",
         deltas=(
             _alias_delta(),
-            _alias_delta(summary="沒有 id 的暱稱", text="阿明(社群暱稱:明哥)", subject_id=""),
-            _alias_delta(summary="猜出來的 id", text="阿華(社群暱稱:華哥)", subject_id="阿華"),
+            _alias_delta(
+                summary="沒有 id 的暱稱", display_name="阿明", aliases=("明哥",), subject_id=""
+            ),
+            _alias_delta(
+                summary="猜出來的 id", display_name="阿華", aliases=("華哥",), subject_id="阿華"
+            ),
         ),
         owner=SERVER_OWNER,
         allow_mass_delete=False,
@@ -328,6 +343,91 @@ def test_a_member_alias_delta_without_a_member_id_is_dropped(memory_isolated_dir
     assert allowlist_ids_from_server_memory(memory=_server_document()) == {
         4242: "小李(社群暱稱:李董)"
     }
+
+
+def test_an_alias_row_is_built_from_its_fields_not_the_models_prose(
+    memory_isolated_dir: Path,
+) -> None:
+    """The compact shape was a prompt request the model honoured about one time in eight.
+
+    Code renders it now, so whatever the model puts in `text` — a full sentence, an id
+    token, a personal aside that has no business in a nickname table — never reaches the
+    stored row.
+    """
+    apply_deltas(
+        scope=SERVER_SCOPE,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="server",
+        deltas=(
+            _alias_delta(
+                display_name="阿明",
+                aliases=("明哥", "明神"),
+                text="社群習慣稱呼成員 阿明 [id: 999] 為「明哥」，他常被拿來開玩笑說投資虧錢。",
+                subject_id="9001",
+            ),
+        ),
+        owner=SERVER_OWNER,
+        allow_mass_delete=False,
+    )
+    stored = read_facts(scope=SERVER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.text for fact in stored] == ["阿明(社群暱稱:明哥、明神)"]
+    assert allowlist_ids_from_server_memory(memory=_server_document()) == {
+        9001: "阿明(社群暱稱:明哥、明神)"
+    }
+
+
+def test_an_alias_row_survives_a_missing_name_but_not_a_missing_alias(
+    memory_isolated_dir: Path,
+) -> None:
+    """The mapping the table exists for is the alias and the id; the name is a label.
+
+    A member the evidence only ever identifies by id is an ordinary outcome (13 of the
+    99 live rows), so the row is written without one rather than lost. A row with no
+    alias carries nothing at all and is dropped like any other empty body.
+    """
+    outcome = apply_deltas(
+        scope=SERVER_SCOPE,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="server",
+        deltas=(
+            _alias_delta(summary="只有 id 的暱稱", display_name="", subject_id="4242"),
+            # The shape a model that ignores the new fields produces: prose in `text`,
+            # nothing in `aliases`. That row is dropped, not written back as the sentence.
+            _alias_delta(
+                summary="沒有別稱",
+                display_name="阿華",
+                aliases=(),
+                text="社群習慣稱呼成員 阿華 為「華哥」。",
+                subject_id="9001",
+            ),
+            _alias_delta(summary="只有空白別稱", aliases=("", "  "), subject_id="9002"),
+        ),
+        owner=SERVER_OWNER,
+        allow_mass_delete=False,
+    )
+    assert outcome.created == 1
+    assert outcome.dropped == 2
+    assert allowlist_ids_from_server_memory(memory=_server_document()) == {4242: "(社群暱稱:李董)"}
+
+
+def test_an_alias_row_stays_one_clean_line(memory_isolated_dir: Path) -> None:
+    """The rendered table is read back line by line, and a repeat is what unioning costs."""
+    apply_deltas(
+        scope=SERVER_SCOPE,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="server",
+        deltas=(
+            _alias_delta(
+                display_name="阿明\n（新名字）",
+                aliases=("明哥", "明哥", "明  神"),
+                subject_id="9001",
+            ),
+        ),
+        owner=SERVER_OWNER,
+        allow_mass_delete=False,
+    )
+    stored = read_facts(scope=SERVER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.text for fact in stored] == ["阿明 （新名字）(社群暱稱:明哥、明 神)"]
 
 
 def test_member_alias_rows_never_age_out(memory_isolated_dir: Path) -> None:

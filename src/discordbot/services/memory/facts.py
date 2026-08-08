@@ -79,6 +79,27 @@ def node_type_for(section: MemorySection) -> MemoryNodeType:
     return "member_alias" if section == "member_alias" else "memory"
 
 
+def render_member_alias_text(display_name: str, aliases: tuple[str, ...]) -> str:
+    """Renders an alias row's body from the parts a consolidation delta carries.
+
+    The compact shape used to be asked for in the consolidation prompt and arrived about
+    one time in eight (#464): it is the one rigid format among five sections of prose, so
+    the model wrote sentences instead — and a sentence carries whatever else it had to say
+    about the member into a table whose only job is mapping a name to an id. Code renders
+    it from the fields instead, the way `subject_id` is already stamped rather than typed.
+
+    Every value is collapsed to one line because the rendered table is read back line by
+    line. An empty return means there is no alias to record, which is what drops the
+    delta; a missing display name is not fatal, since the mapping the table exists for is
+    the alias and the id.
+    """
+    collapsed = (_one_line(text=alias) for alias in aliases)
+    unique = list(dict.fromkeys(alias for alias in collapsed if alias))
+    if not unique:
+        return ""
+    return f"{_one_line(text=display_name)}(社群暱稱:{'、'.join(unique)})"
+
+
 def parse_identity(identity: str, fallback_owner_id: int) -> MemoryOwner:
     """Splits a rendered identity line into the owner fields stamped onto a fact.
 
