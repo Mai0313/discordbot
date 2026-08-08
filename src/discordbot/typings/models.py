@@ -270,7 +270,7 @@ class RuntimeModelCatalog(BaseModel):
         Callers: the phase-1.5 evaluator (`MemoryExtractorAI.extract`, its optional
         `evaluate_model` field) and phase-2 consolidation (`MemoryExtractorAI.consolidate`,
         its `consolidate_model` field), which also backs `regenerate_main_memory`, plus
-        `scripts/migrate_memories.py`, which reads this tier to drive that rebuild offline.
+        `scripts/regen_memories.py`, which defaults to this tier to drive that rebuild offline.
 
         Returns:
             Model settings for the background memory write calls. One tier for both because

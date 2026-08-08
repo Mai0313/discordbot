@@ -135,7 +135,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - The model authors a fact's summary, section, durability and body. Everything else in the file header — the id, the compartment, the owner, the dates, the evidence keys — is stamped by code and never shown to it. Keep it that way: the id is also the filename, so letting conversation content reach it would put path traversal one prompt injection away.
 - Consolidation emits deltas against one compartment at a time. Reject a whole batch only for a shape failure or a mass deletion; anything a deterministic check can decide must drop that single delta instead, or a scope's memory freezes permanently on a model output that never changes.
 - `data/memories` keeps its own git history, and the bot never creates it. To enable it on a deployment, run `git -c init.defaultBranch=main init` inside that directory once and commit a baseline. Note that `/memory clear` removes the files but not the commits that already hold them.
-- Migrating an existing store is `uv run python -m scripts.migrate_memories` (dry run) then `--apply`, with the bot stopped and the store committed and tagged first. Rebuild before deleting anything: the rebuild reads `raw.md` as well as `detail.md`.
+- Rebuilding a store offline is `uv run python -m scripts.regen_memories <target>` (dry run) then `--apply`, where the target is `all` / `users` / `servers` or a single scope key. Stop the bot either way: the script writes from a second process, which the in-process `scope_lock` does not serialize, so a rebuild drops whatever raw entries the bot appended while it ran. `/memory regenerate` is the live-safe way to rebuild one scope. Commit `data/memories` first for a collective target.
 
 ## Economy And Games
 
