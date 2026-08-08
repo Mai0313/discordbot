@@ -34,9 +34,12 @@ from datetime import UTC, datetime
 import itertools
 import contextlib
 
+import logfire
+
 from discordbot.typings.memory import MemoryFact, MemoryOwner
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.services.memory.facts import (
+    FACT_ID_RE,
     MemoryFlavor,
     parse_fact_file,
     render_fact_file,
@@ -156,12 +159,20 @@ def _scope_has_memory(scope: str) -> bool:
     though it is never injected — it is the evidence a rebuild reconstructs everything
     from (`regeneration_has_evidence` reads it), and a scope that has gone quiet since
     its last consolidation holds nothing else, which is the steady state for a server.
+
+    The compartment tier is parsed rather than listed, so a file no reader can parse does
+    not answer for a scope on its own. Listing it kept such a scope on `iter_scopes`
+    permanently, handing it to the restart consolidation sweep and to
+    `scripts/regen_memories.py` on every run with nothing either could do about it. The
+    parse costs nothing in practice: a scope that has ever consolidated has a `detail.md`
+    and answers above, so what reaches the walk is a leftover directory with no fact in
+    it (every one of them, in the live store).
     """
     scope_dir = _scope_dir(scope=scope)
     if any((scope_dir / name).is_file() for name in ("raw.md", "tone.md", "detail.md")):
         return True
     return any(
-        _fact_paths(directory=compartment_dir(scope=scope, compartment=compartment))
+        read_facts(scope=scope, compartment=compartment)
         for compartment in list_compartments(scope=scope)
     )
 
@@ -221,9 +232,16 @@ def _read_text(path: Path) -> str:
 
 
 def _fact_paths(directory: Path) -> list[Path]:
-    """Returns the fact files in one compartment directory, missing dir counting as none."""
+    """Returns the fact files in one compartment directory, missing dir counting as none.
+
+    The `is_file` test is load-bearing: a *directory* whose name ends in `.md` otherwise
+    reaches `_read_text`, which catches only `FileNotFoundError`, so one hand-made
+    directory inside a compartment takes down every reader that walks the tree.
+    """
     try:
-        return sorted(path for path in directory.iterdir() if path.suffix == ".md")
+        return sorted(
+            path for path in directory.iterdir() if path.suffix == ".md" and path.is_file()
+        )
     except FileNotFoundError:
         return []
 
@@ -258,7 +276,20 @@ def read_facts(scope: str, compartment: str) -> list[MemoryFact]:
     """
     facts: list[MemoryFact] = []
     for path in _fact_paths(directory=compartment_dir(scope=scope, compartment=compartment)):
-        text = _read_text(path=path)
+        try:
+            text = _read_text(path=path)
+        except (OSError, UnicodeDecodeError) as error:
+            # A file that cannot even be decoded is skipped like one that cannot be
+            # parsed, rather than raised: `_scope_has_memory` reads through here, so one
+            # hand edit saved in the wrong encoding would otherwise take down the whole
+            # restart sweep and stop `scripts/regen_memories.py` starting at all — the
+            # tool an operator reaches for to repair exactly that store.
+            logfire.warn(
+                "Memory fact file could not be read; skipping",
+                compartment=compartment,
+                error_type=type(error).__name__,
+            )
+            continue
         if not text:
             continue
         fact = parse_fact_file(text=text, compartment=compartment)
@@ -325,6 +356,88 @@ def delete_fact(scope: str, compartment: str, fact_id: str) -> bool:
         return False
     _bump_generation(scope=scope)
     return True
+
+
+def _is_store_file(path: Path) -> bool:
+    r"""Whether one entry of a compartment directory is a file the store itself wrote.
+
+    Matched by NAME — `<fact id>.md`, or the `.md.tmp` a crash between `write_fact`'s tmp
+    write and its `os.replace` can strand — the way the media reaper matches its own
+    files. Every name the store mints is a `mint_fact_id` digest, so a `notes.md` an
+    operator dropped in beside the facts fails the test and a prune cannot take it.
+    `fullmatch`, not `match`, for the reason the reaper uses it too: `$` also matches
+    before a trailing newline, so `<fact id>\\n.md` would otherwise pass for one of ours.
+    """
+    stem, _, suffix = path.name.partition(".")
+    return path.is_file() and suffix in {"md", "md.tmp"} and FACT_ID_RE.fullmatch(stem) is not None
+
+
+def unaccounted_files(scope: str, compartment: str) -> list[str]:
+    """Returns the names in a compartment directory that the store never wrote.
+
+    Anything not named the way the store names a fact file arrived from outside — a
+    hand-dropped note, a backup copy, an editor's swap file — and `_fact_paths` globs
+    `*.md`, so no code path can see most of them today. That is what lets a rebuild
+    report a compartment replaced while such a file sits in it.
+
+    Nothing here removes them, because a rebuild REPLACES a compartment and may only
+    take what the store itself put there; naming them is what makes the difference
+    visible instead of assumed. `delete_memory_files` is the opposite contract and takes
+    every `.md` in the tree, this one included — a clear is a wipe its owner asked for,
+    so sparing a file that might carry their memory would be the wrong answer there.
+    """
+    try:
+        # Materialized inside the guard: `iterdir` is a generator, so a missing
+        # directory would otherwise raise out of the comprehension below instead.
+        children = list(compartment_dir(scope=scope, compartment=compartment).iterdir())
+    except FileNotFoundError:
+        return []
+    return sorted(path.name for path in children if not _is_store_file(path=path))
+
+
+def prune_compartment(scope: str, compartment: str, keep: set[str]) -> list[str]:
+    """Reduces a compartment to `keep`, returning what it could not account for.
+
+    The rebuild's replace pass runs through here rather than over the facts it read
+    back. `read_facts` skips a file `parse_fact_file` rejects — a hand edit, an
+    interrupted write, a stored `compartment` disagreeing with the directory holding it
+    — so a snapshot taken there leaves exactly those files standing through a rebuild
+    that reports the compartment replaced. Working off the listing makes "replaced" mean
+    the directory instead of its readable part, which is the only reading that survives
+    a path that already drops perfectly good facts by not re-emitting them.
+
+    The `.md.tmp` leftovers go with them: they are the store's own, and nothing in THIS
+    process can be mid-write, since every writer holds the same scope lock. Out of
+    process is the offline rebuild's standing caveat rather than a new one — it is why
+    `scripts/regen_memories.py` opens by telling the operator to stop the bot. An emptied
+    directory
+    is then removed, so a compartment a rebuild emptied stops being one
+    `list_compartments` reports, and stops costing a consolidation call on every later
+    rebuild.
+    """
+    directory = compartment_dir(scope=scope, compartment=compartment)
+    removed = False
+    try:
+        children = list(directory.iterdir())
+    except FileNotFoundError:
+        return []
+    for path in children:
+        if not _is_store_file(path=path):
+            continue
+        if path.suffix == ".md" and path.stem in keep:
+            continue
+        path.unlink(missing_ok=True)
+        removed = True
+    if removed:
+        _bump_generation(scope=scope)
+    with contextlib.suppress(OSError):
+        directory.rmdir()
+        if compartment.startswith(f"{_GUILD_DIR_NAME}/"):
+            # A `g/<id>` leaves the `g/` parent behind, which `delete_memory_files`
+            # removes for the same reason. Inside the same suppression on purpose: a
+            # compartment that survived is what stops the parent being tried at all.
+            directory.parent.rmdir()
+    return unaccounted_files(scope=scope, compartment=compartment)
 
 
 def read_owner(scope: str) -> MemoryOwner:

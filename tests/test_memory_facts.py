@@ -43,6 +43,8 @@ from discordbot.services.memory.store import (
     compartment_dir,
     guild_compartment,
     list_compartments,
+    prune_compartment,
+    unaccounted_files,
     read_memory_document,
 )
 from discordbot.services.memory.deltas import (
@@ -334,6 +336,180 @@ def test_iter_scopes_finds_compartment_trees_and_skips_dot_dirs(memory_isolated_
     (memory_isolated_dir / ".git").mkdir(parents=True, exist_ok=True)
     (memory_isolated_dir / ".git" / "raw.md").write_text("## 2026-01-01T00:00:00+00:00\n")
     assert iter_scopes() == ["111", "bot_memories/500"]
+
+
+def test_iter_scopes_ignores_a_scope_whose_only_file_is_unreadable(
+    memory_isolated_dir: Path,
+) -> None:
+    """A file no reader can parse must not answer for a whole scope on its own.
+
+    Listing it instead of parsing it kept such a scope on `iter_scopes` permanently, so
+    the restart sweep and the offline rebuild picked it up on every run with nothing
+    either could do about it.
+    """
+    scope = user_scope(user_id=111)
+    directory = compartment_dir(scope=scope, compartment=GLOBAL_COMPARTMENT)
+    directory.mkdir(parents=True)
+    (directory / f"{'b' * 16}.md").write_text("hand-edited into nonsense\n", encoding="utf-8")
+    assert iter_scopes() == []
+
+
+def test_prune_compartment_removes_every_fact_file_it_cannot_read(
+    memory_isolated_dir: Path,
+) -> None:
+    """The rebuild's prune reads the directory, not the facts readable inside it.
+
+    Both shapes `read_facts` skips are here: a header that does not parse, and a fact
+    whose stored compartment disagrees with the directory holding it (the deliberate
+    skip). Neither reaches a snapshot taken over `read_facts`, which is what let them
+    outlive a rebuild that reports the compartment replaced.
+    """
+    scope = user_scope(user_id=111)
+    kept = _fact()
+    write_fact(scope=scope, fact=kept)
+    directory = compartment_dir(scope=scope, compartment=GLOBAL_COMPARTMENT)
+    broken = directory / f"{'b' * 16}.md"
+    broken.write_text("hand-edited into nonsense\n", encoding="utf-8")
+    misfiled = directory / f"{'c' * 16}.md"
+    misfiled.write_text(
+        render_fact_file(
+            fact=_fact(fact_id="c" * 16, compartment=guild_compartment(guild_id=222))
+        ),
+        encoding="utf-8",
+    )
+    # The leftover of a crash between `write_fact`'s tmp write and its `os.replace`, in a
+    # compartment that keeps its facts, so no `rmdir` can stand in for removing it.
+    stranded = directory / f"{'d' * 16}.md.tmp"
+    stranded.write_text("半途寫壞的檔案", encoding="utf-8")
+
+    assert (
+        prune_compartment(scope=scope, compartment=GLOBAL_COMPARTMENT, keep={kept.fact_id}) == []
+    )
+    assert not broken.exists()
+    assert not misfiled.exists()
+    assert not stranded.exists()
+    assert [fact.fact_id for fact in read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)] == [
+        kept.fact_id
+    ]
+
+
+def test_prune_compartment_reports_a_file_the_store_never_wrote(memory_isolated_dir: Path) -> None:
+    """Removing a foreign file is too aggressive to do silently, so it is named instead.
+
+    A store file is recognised by its name, not by its suffix, so an operator's own
+    markdown note beside the facts is reported like anything else rather than swept up
+    with the fact files.
+    """
+    scope = user_scope(user_id=111)
+    write_fact(scope=scope, fact=_fact())
+    directory = compartment_dir(scope=scope, compartment=GLOBAL_COMPARTMENT)
+    for name in ("backup.txt", "notes.md"):
+        (directory / name).write_text("操作者的備份", encoding="utf-8")
+
+    assert prune_compartment(scope=scope, compartment=GLOBAL_COMPARTMENT, keep=set()) == [
+        "backup.txt",
+        "notes.md",
+    ]
+    assert (directory / "notes.md").exists()
+    assert read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT) == []
+
+
+def test_a_file_the_store_cannot_decode_never_stops_the_sweep(memory_isolated_dir: Path) -> None:
+    """`iter_scopes` parses the tier now, so an undecodable file must degrade, not raise.
+
+    A hand edit saved in the wrong encoding would otherwise abort the restart sweep and
+    stop the offline rebuild starting at all — the tool for repairing exactly that store.
+    """
+    scope = user_scope(user_id=111)
+    write_fact(scope=scope, fact=_fact())
+    mojibake = compartment_dir(scope=scope, compartment=GLOBAL_COMPARTMENT) / f"{'b' * 16}.md"
+    mojibake.write_bytes("喜歡簡短回覆".encode("big5"))
+
+    assert iter_scopes() == ["111"]
+    assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 1
+    # It is still the store's own file by name, so a rebuild's prune takes it.
+    assert prune_compartment(scope=scope, compartment=GLOBAL_COMPARTMENT, keep=set()) == []
+    assert not mojibake.exists()
+
+
+def test_a_fact_shaped_name_carrying_a_newline_is_not_the_stores_own(
+    memory_isolated_dir: Path,
+) -> None:
+    """`$` also matches before a trailing newline, so the name test has to be a fullmatch."""
+    scope = user_scope(user_id=111)
+    write_fact(scope=scope, fact=_fact())
+    forged = compartment_dir(scope=scope, compartment=GLOBAL_COMPARTMENT) / f"{'b' * 16}\n.md"
+    forged.write_text("不是我們寫的", encoding="utf-8")
+
+    assert prune_compartment(scope=scope, compartment=GLOBAL_COMPARTMENT, keep=set()) == [
+        f"{'b' * 16}\n.md"
+    ]
+    assert forged.exists()
+
+
+def test_a_directory_named_like_a_fact_file_never_reaches_a_reader(
+    memory_isolated_dir: Path,
+) -> None:
+    """`iter_scopes` parses the tier now, so a reader that raises takes the sweep with it.
+
+    `_read_text` catches only a missing file, so one hand-made directory whose name ends
+    in `.md` would abort the restart sweep and every offline run.
+    """
+    scope = user_scope(user_id=111)
+    write_fact(scope=scope, fact=_fact())
+    (compartment_dir(scope=scope, compartment=GLOBAL_COMPARTMENT) / f"{'b' * 16}.md").mkdir()
+
+    assert iter_scopes() == ["111"]
+    assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 1
+    assert unaccounted_files(scope=scope, compartment=GLOBAL_COMPARTMENT) == [f"{'b' * 16}.md"]
+
+
+def test_the_guild_parent_goes_with_the_last_compartment_under_it(
+    memory_isolated_dir: Path,
+) -> None:
+    """`delete_memory_files` removes `g/` for the same reason; a prune emptying it must too.
+
+    `list_compartments` cannot stand in for this assertion: it reports nothing for an
+    empty `g/` either way.
+    """
+    scope = user_scope(user_id=111)
+    compartment = guild_compartment(guild_id=222)
+    write_fact(scope=scope, fact=_fact(compartment=compartment))
+
+    assert prune_compartment(scope=scope, compartment=compartment, keep=set()) == []
+    assert not (memory_isolated_dir / scope / "g").exists()
+
+
+def test_a_pruned_fact_leaves_the_cached_document(memory_isolated_dir: Path) -> None:
+    """The prune is a write like any other, and the render cache is keyed on that counter."""
+    scope = user_scope(user_id=111)
+    write_fact(scope=scope, fact=_fact())
+    write_fact(scope=scope, fact=_fact(fact_id="a" * 16, text="另一件事"))
+    assert "喜歡簡短回覆" in read_memory_document(
+        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
+    )
+
+    assert prune_compartment(scope=scope, compartment=GLOBAL_COMPARTMENT, keep={"a" * 16}) == []
+    assert "喜歡簡短回覆" not in read_memory_document(
+        scope=scope, compartments=[GLOBAL_COMPARTMENT], flavor="user"
+    )
+
+
+def test_prune_compartment_removes_a_directory_it_emptied(memory_isolated_dir: Path) -> None:
+    """An emptied compartment stops being one, so it stops costing a call per rebuild.
+
+    The stranded `.md.tmp` of a crashed `write_fact` goes too: it is the store's own, and
+    leaving it behind would keep the directory alive forever.
+    """
+    scope = user_scope(user_id=111)
+    compartment = guild_compartment(guild_id=222)
+    write_fact(scope=scope, fact=_fact(compartment=compartment))
+    directory = compartment_dir(scope=scope, compartment=compartment)
+    (directory / f"{'d' * 16}.md.tmp").write_text("半途寫壞的檔案", encoding="utf-8")
+
+    assert prune_compartment(scope=scope, compartment=compartment, keep=set()) == []
+    assert not directory.exists()
+    assert list_compartments(scope=scope) == []
 
 
 def test_clear_removes_the_whole_compartment_tree(memory_isolated_dir: Path) -> None:

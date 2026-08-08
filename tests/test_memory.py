@@ -1607,6 +1607,36 @@ async def test_regenerate_main_memory_rebuilds_from_evidence_only(
     assert "喜歡簡短回覆" in user_text
 
 
+async def test_regenerate_main_memory_replaces_the_directory_not_only_what_it_could_read(
+    memory_isolated_dir: Path,
+) -> None:
+    """A file no reader can parse must not outlive a rebuild that reports the scope replaced.
+
+    `read_facts` skips it, so the snapshot the replace pass used to take there never saw
+    it. A rebuild drops perfectly good facts by not re-emitting them, which makes the
+    broken one surviving the odd case out. A file the store never wrote is a different
+    thing: it stays where it is and is reported instead.
+    """
+    extractor, fake_client = _extractor()
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
+    directory = memory_isolated_dir / str(USER_ID) / GLOBAL_COMPARTMENT
+    broken = directory / f"{'b' * 16}.md"
+    broken.write_text("hand-edited into nonsense\n", encoding="utf-8")
+    stray = directory / "notes.md"
+    stray.write_text("操作者自己放的筆記", encoding="utf-8")
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
+
+    result = await pipeline.regenerate_main_memory(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+
+    assert result == "regenerated"
+    assert not broken.exists()
+    assert stray.exists()
+    assert "重建後的記憶" in _memory_text()
+
+
 async def test_regenerate_main_memory_without_evidence_skips_llm(
     memory_isolated_dir: Path,
 ) -> None:
