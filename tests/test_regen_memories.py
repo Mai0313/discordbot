@@ -5,9 +5,17 @@ import asyncio
 
 import pytest
 from scripts import regen_memories as regen_script
+from rich.console import Console
 
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
-from discordbot.services.memory.store import user_scope, write_tone, server_scope, append_raw_entry
+from discordbot.services.memory.store import (
+    GLOBAL_COMPARTMENT,
+    user_scope,
+    write_tone,
+    server_scope,
+    compartment_dir,
+    append_raw_entry,
+)
 from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 
 if TYPE_CHECKING:
@@ -115,6 +123,30 @@ async def test_the_dry_run_flags_a_scope_with_nothing_left_to_rebuild_from(
     output = " ".join(capsys.readouterr().out.split())
     assert "REBUILDS EMPTY" in output
     assert "EMPTY GLOBAL" not in output
+
+
+async def test_the_dry_run_names_files_a_rebuild_cannot_account_for(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rebuild never removes a file the store did not write, and logfire is off here.
+
+    The console is replaced rather than the environment: rich snapshots `os.environ` when
+    it is constructed, and the width matters because it ellipsizes the note column — the
+    filename is the half an operator acts on, and the first thing a narrow terminal eats.
+    """
+    monkeypatch.setattr(regen_script, "console", Console(width=200))
+    _seed(scope=_USER)
+    directory = compartment_dir(scope=_USER, compartment=GLOBAL_COMPARTMENT)
+    directory.mkdir(parents=True)
+    (directory / "backup.txt").write_text("備份", encoding="utf-8")
+
+    await regen_script._regen_all(
+        model=ModelSettings(name="test-model", effort="low"), target=_USER, apply=False
+    )
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "UNACCOUNTED" in output
+    assert "backup.txt" in output
 
 
 async def test_a_scope_key_that_is_not_a_discord_id_becomes_one_error_row() -> None:

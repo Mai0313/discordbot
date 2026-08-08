@@ -30,6 +30,10 @@ Two expected losses, reported rather than hidden:
   read as having no memory in a server it has never spoken in, until its next
   cross-server-safe observation.
 
+The report also names any file in a compartment directory the store did not write. A
+rebuild removes every fact file it did not re-emit, an unreadable one included, but
+never a foreign file — so those are what a rebuilt scope still holds unaccounted for.
+
 Run from the repo root::
 
     uv run python -m scripts.regen_memories                            # dry run, all
@@ -58,6 +62,7 @@ from discordbot.services.memory.store import (
     read_detail_tail,
     read_raw_entries,
     list_compartments,
+    unaccounted_files,
 )
 from discordbot.services.memory.deltas import partition_raw_entries
 from discordbot.services.memory.pipeline import flavor_of, regenerate_main_memory
@@ -140,6 +145,23 @@ def _loss_note(result: str, buckets: dict[str, int]) -> str:
     return ""
 
 
+def _unaccounted_note(scope: str) -> str:
+    """Returns the note for files a rebuild of this scope leaves behind untouched.
+
+    A rebuild removes every fact file it did not re-emit, but never a file the store did
+    not write, so those survive it and nothing else will ever remove them either. The
+    rebuild logs them through logfire, which is unconfigured in a script run and reaches
+    nobody here; this is the operator's copy, and it lands on the dry run too, while
+    there is still time to act on it.
+    """
+    stray = [
+        f"{compartment}/{name}"
+        for compartment in list_compartments(scope=scope)
+        for name in unaccounted_files(scope=scope, compartment=compartment)
+    ]
+    return f"UNACCOUNTED: {', '.join(stray)}" if stray else ""
+
+
 def _report(rows: list[tuple[str, str, dict[str, int]]]) -> None:
     """Prints one row per scope, flagging the two expected kinds of loss."""
     table = Table(title="memory regeneration")
@@ -149,7 +171,8 @@ def _report(rows: list[tuple[str, str, dict[str, int]]]) -> None:
     table.add_column("note", style="yellow")
     for scope, result, buckets in rows:
         summary = ", ".join(f"{name}={count}" for name, count in sorted(buckets.items()))
-        table.add_row(scope, result, summary or "-", _loss_note(result=result, buckets=buckets))
+        notes = (_loss_note(result=result, buckets=buckets), _unaccounted_note(scope=scope))
+        table.add_row(scope, result, summary or "-", "; ".join(note for note in notes if note))
     console.print(table)
 
 

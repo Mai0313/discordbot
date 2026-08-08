@@ -29,7 +29,6 @@ from discordbot.services.memory.store import (
     read_facts,
     scope_lock,
     write_tone,
-    delete_fact,
     mark_cleared,
     append_detail,
     cleared_since,
@@ -41,6 +40,7 @@ from discordbot.services.memory.store import (
     count_raw_entries,
     detail_file_bytes,
     list_compartments,
+    prune_compartment,
     delete_memory_files,
     read_memory_document,
 )
@@ -1254,16 +1254,20 @@ def _replace_compartment(
 ) -> None:
     """Replaces a compartment's contents with a from-scratch rebuild's facts.
 
-    Applies the batch first and drops whatever it did not re-emit afterwards, so a fact
-    the rebuild kept is never momentarily absent. What survives is decided by the ids the
-    batch actually WROTE, not by what is left on disk: a rebuild says "this fact is gone"
-    by simply not mentioning it, so comparing against the post-apply state would only
-    re-delete what the batch already deleted and leave every stale fact standing.
+    Applies the batch first and prunes afterwards, so a fact the rebuild kept is never
+    momentarily absent. What survives is decided by the ids the batch actually WROTE, not
+    by what is left on disk: a rebuild says "this fact is gone" by simply not mentioning
+    it, so comparing against the post-apply state would only re-delete what the batch
+    already deleted and leave every stale fact standing.
+
+    The prune reads the directory rather than the facts read back from it, so a file no
+    reader can parse cannot outlive a rebuild that reports the compartment replaced
+    (`prune_compartment` carries the why). What it could not account for is reported
+    here instead, since the store never removes a file it did not write.
 
     The mass-delete guard is off here for the reason it was skipped by the old whole-file
     rebuild: replacing the entire set is what this path is for.
     """
-    before = {fact.fact_id for fact in read_facts(scope=scope, compartment=compartment)}
     outcome = apply_deltas(
         scope=scope,
         compartment=compartment,
@@ -1272,5 +1276,13 @@ def _replace_compartment(
         owner=owner,
         allow_mass_delete=True,
     )
-    for fact_id in sorted(before - set(outcome.written)):
-        delete_fact(scope=scope, compartment=compartment, fact_id=fact_id)
+    unaccounted = prune_compartment(
+        scope=scope, compartment=compartment, keep=set(outcome.written)
+    )
+    if unaccounted:
+        logfire.warn(
+            "Memory rebuild left files it cannot account for",
+            scope=scope,
+            compartment=compartment,
+            files=unaccounted,
+        )
