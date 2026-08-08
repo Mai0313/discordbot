@@ -15,7 +15,7 @@ and drops only audio and video instead of the whole message's attachments.
 A degrade is not permanent either: the process remembers whether upstream is what served
 the table it holds, and `refresh_model_info` re-checks upstream while the answer is no.
 `cli.py` runs it off the event loop every `MODEL_INFO_REFRESH_MINUTES`, so recovery costs
-no lookup anything and needs no restart.
+a lookup nothing and needs no restart.
 """
 
 import json

@@ -161,7 +161,15 @@ class DiscordBot(commands.Bot):
         a branch once upstream has served. Off the event loop for the same reason the
         warm-up always was.
         """
-        await asyncio.to_thread(refresh_model_info)
+        try:
+            await asyncio.to_thread(refresh_model_info)
+        except Exception as exc:
+            # Broad because what must not happen here is the loop stopping, whatever the
+            # reason: `Loop._loop` re-raises after one failed iteration, and its default
+            # error hook never reports it — `_call_loop_function` prepends `_injected`, so
+            # the bound `_error` gets an argument too many and dies first. A raise would
+            # take recovery down for the life of the process with no line anywhere.
+            logfire.error("model price table refresh failed; retrying next pass", _exc_info=exc)
 
     async def on_message(self, message: Message) -> None:
         """Handles incoming messages.
