@@ -81,7 +81,7 @@ console = Console()
 # is sized for background work sharing the proxy with the latency-critical reply path, on
 # the assumption that path exists. A batch run here has no reply latency to protect and no
 # reason to push the proxy as hard. No flag on purpose — edit this if a store needs more.
-_CONCURRENCY = 8
+_CONCURRENCY = 20
 
 # Targets naming more than one scope, which is what makes a run store-scale.
 _BATCH_TARGETS = ("all", "users", "servers")
