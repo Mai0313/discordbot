@@ -119,6 +119,23 @@ def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
 
 @pytest.fixture(autouse=True)
+def model_price_mirror_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Points the LiteLLM price-table mirror at a throwaway file.
+
+    Autouse because any test reaching `load_model_info` mirrors the fetched table, and the
+    live `data/` is no place for a 1.6MB file a test wrote (the same reason
+    `usage_log_isolated_dir` exists). The `cache` on the loader is deliberately NOT cleared
+    here, since clearing per test would make every test that reaches it pay the fetch again;
+    `tests/test_model_pricing.py` clears it around its own cases, so a worker that ran one of
+    those refetches on the next test needing the table. Which table a worker ends up
+    memoizing is therefore not deterministic — pinning that for the whole suite is #450.
+    """
+    mirror_path = tmp_path / "model_prices_and_context_window.json"
+    monkeypatch.setattr("discordbot.utils.model_pricing.MODEL_INFO_CACHE_PATH", mirror_path)
+    return mirror_path
+
+
+@pytest.fixture(autouse=True)
 def feedback_env_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keeps a real deployment's reporting credentials out of every test.
 
