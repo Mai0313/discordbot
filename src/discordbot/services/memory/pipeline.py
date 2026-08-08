@@ -1140,6 +1140,18 @@ async def regenerate_main_memory(
             # per-call timeout (`constants.py` states the nesting as the invariant).
             async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
                 for compartment in compartments:
+                    raw_bucket = buckets.get(compartment, "")
+                    if not raw_bucket and not read_facts(scope=scope, compartment=compartment):
+                        # A leftover directory with nothing to distil and nothing to keep:
+                        # the model would be handed an empty corpus and could only answer
+                        # with an empty batch, so the prune alone reaches the same state.
+                        # It also removes the emptied directory, which is what stops the
+                        # leftover costing another call — and another way to fail the
+                        # compartments that do have something — on every later rebuild.
+                        unreadable_removed += _prune_rebuilt_compartment(
+                            scope=scope, compartment=compartment, keep=set()
+                        )
+                        continue
                     result = await extractor.consolidate(
                         request=ConsolidationRequest(
                             compartment_note=_compartment_note(
@@ -1148,7 +1160,7 @@ async def regenerate_main_memory(
                             allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
                             existing_facts="",
                             existing_tone="",
-                            raw_entries=buckets.get(compartment, ""),
+                            raw_entries=raw_bucket,
                             recent_detail="",
                             tone_evidence="",
                             global_reference="",
@@ -1255,7 +1267,9 @@ def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
 
     Compartments that still hold files but have no surviving evidence are included so
     the rebuild empties them; leaving them alone would keep pre-rebuild facts visible
-    alongside the new ones with no evidence behind them.
+    alongside the new ones with no evidence behind them. Touching one does not always
+    mean consolidating it: an entry that turns out to hold neither evidence nor a
+    readable fact is pruned without a model call (`regenerate_main_memory` has the why).
     """
     ordered = [GLOBAL_COMPARTMENT]
     ordered.extend(
@@ -1281,16 +1295,6 @@ def _replace_compartment(
     it, so comparing against the post-apply state would only re-delete what the batch
     already deleted and leave every stale fact standing.
 
-    The prune reads the directory rather than the facts read back from it, so a file no
-    reader can parse cannot outlive a rebuild that reports the compartment replaced
-    (`prune_compartment` carries the why). What it could not account for is reported
-    here instead, since the store never removes a file it did not write.
-
-    What it DID remove unread is reported here too, and returned for the offline
-    rebuild's own report. Renaming a section or a durability value makes every fact
-    carrying the old one unparsable, so the next rebuild of a scope drops all of them in
-    one pass; a run that says only what it spared reads as one that destroyed nothing.
-
     The mass-delete guard is off here for the reason it was skipped by the old whole-file
     rebuild: replacing the entire set is what this path is for.
     """
@@ -1302,7 +1306,30 @@ def _replace_compartment(
         owner=owner,
         allow_mass_delete=True,
     )
-    pruned = prune_compartment(scope=scope, compartment=compartment, keep=set(outcome.written))
+    return _prune_rebuilt_compartment(
+        scope=scope, compartment=compartment, keep=set(outcome.written)
+    )
+
+
+def _prune_rebuilt_compartment(scope: str, compartment: str, keep: set[str]) -> int:
+    """Reduces a rebuilt compartment to `keep`, reporting what it left and what it took.
+
+    The prune reads the directory rather than the facts read back from it, so a file no
+    reader can parse cannot outlive a rebuild that reports the compartment replaced
+    (`prune_compartment` carries the why). What it could not account for is reported
+    here instead, since the store never removes a file it did not write.
+
+    What it DID remove unread is reported here too, and returned for the offline
+    rebuild's own report. Renaming a section or a durability value makes every fact
+    carrying the old one unparsable, so the next rebuild of a scope drops all of them in
+    one pass; a run that says only what it spared reads as one that destroyed nothing.
+
+    Shared with the skip path, which prunes a compartment it never handed to the model,
+    so a file the store never wrote is named there on the same terms — and so is the
+    unreadable one, which is the ONLY thing that path ever removes: a compartment reaches
+    it precisely when nothing in it could be read.
+    """
+    pruned = prune_compartment(scope=scope, compartment=compartment, keep=keep)
     if pruned.unaccounted:
         logfire.warn(
             "Memory rebuild left files it cannot account for",

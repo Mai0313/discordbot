@@ -1643,6 +1643,69 @@ async def test_regenerate_main_memory_replaces_the_directory_not_only_what_it_co
     assert report.unreadable_removed == 1
 
 
+async def test_regenerate_main_memory_never_calls_the_model_for_an_empty_compartment(
+    memory_isolated_dir: Path,
+) -> None:
+    """A leftover directory with no evidence and no fact is pruned, not consolidated.
+
+    `sweep_stale_facts` and an ordinary delta batch both delete through `delete_fact`,
+    which leaves the directory it emptied behind, so this state arises on its own. The
+    model would be handed an empty corpus and could only answer with an empty batch, and
+    the answer it does not get is one more way to fail the compartments that do have
+    something.
+    """
+    extractor, fake_client = _extractor()
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    leftover = memory_isolated_dir / str(USER_ID) / _GUILD_222
+    leftover.mkdir(parents=True)
+    fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
+
+    report = await pipeline.regenerate_main_memory(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+
+    assert report.result == "regenerated"
+    # One call, for the one compartment the evidence reached.
+    assert len(fake_client.responses.parse_models) == 1
+    # Removed, so it does not cost the same call again on the next rebuild.
+    assert not leftover.exists()
+    assert list_compartments(scope=USER_SCOPE) == [GLOBAL_COMPARTMENT]
+    assert "重建後的記憶" in _memory_text()
+
+
+async def test_regenerate_main_memory_prunes_a_compartment_it_never_handed_to_the_model(
+    memory_isolated_dir: Path,
+) -> None:
+    """Skipping the call keeps the replace pass's own rules about what may be removed.
+
+    A compartment holding nothing a reader can parse has nothing to keep, so it is
+    skipped — but a file the store never wrote is still not the store's to delete, and
+    naming it is what makes the difference visible instead of assumed.
+    """
+    extractor, fake_client = _extractor()
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    leftover = memory_isolated_dir / str(USER_ID) / _GUILD_222
+    leftover.mkdir(parents=True)
+    broken = leftover / f"{'c' * 16}.md"
+    broken.write_text("hand-edited into nonsense\n", encoding="utf-8")
+    stray = leftover / "notes.md"
+    stray.write_text("操作者自己放的筆記", encoding="utf-8")
+    fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
+
+    report = await pipeline.regenerate_main_memory(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+
+    assert report.result == "regenerated"
+    assert len(fake_client.responses.parse_models) == 1
+    assert not broken.exists()
+    assert stray.read_text(encoding="utf-8") == "操作者自己放的筆記"
+    # The skip path removes nothing BUT unreadable files — a compartment reaches it
+    # precisely when nothing in it could be read — so it is the one that most needs to
+    # say what it took.
+    assert report.unreadable_removed == 1
+
+
 async def test_regenerate_main_memory_without_evidence_skips_llm(
     memory_isolated_dir: Path,
 ) -> None:
