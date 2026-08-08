@@ -3,6 +3,7 @@
 import pytest
 from scripts import regen_memories as regen_script
 
+from discordbot.typings.models import ModelSettings
 from discordbot.services.memory.store import user_scope, server_scope, append_raw_entry
 
 pytestmark = pytest.mark.usefixtures("memory_isolated_dir")
@@ -64,6 +65,22 @@ def test_parse_args_defaults_to_the_whole_store_and_the_writer_tier() -> None:
     assert args.target == "all"
     assert args.apply is False
     assert args.model
+
+
+@pytest.mark.parametrize(
+    ("target", "expects_store_line"), [("all", True), ("users", True), (_USER, False)]
+)
+async def test_the_stop_the_bot_warning_fires_on_every_target(
+    target: str, expects_store_line: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An out-of-process write races the bot on one scope too; only blast radius grades."""
+    _seed(scope=_USER)
+    await regen_script._regen_all(
+        model=ModelSettings(name="test-model", effort="low"), target=target, apply=False
+    )
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Stop the bot before --apply" in output
+    assert ("commit data/memories first" in output) is expects_store_line
 
 
 @pytest.mark.parametrize(

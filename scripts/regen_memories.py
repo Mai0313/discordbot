@@ -14,9 +14,13 @@ The target is a scope key or one of three collective words::
     <user_id>                 one user
     bot_memories/<server_id>  one server
 
-Rebuilding one scope is the safe operation: it is what `/memory regenerate` already does
-against a live bot. Rebuilding a batch is the disruptive one, so a collective target says
-so before it runs.
+Stop the bot before `--apply`, whatever the target. This runs in a second process and
+`scope_lock` is an in-process `asyncio.Lock`, so nothing serializes the two: the rebuild
+ends by unlinking `raw.md`, which drops any observation the bot appended while it ran, and
+the bot keeps serving its cached pre-rebuild document until its own next write to that
+scope. `/memory regenerate` is the live-safe way to rebuild one scope, precisely because it
+runs inside the bot under that lock. What the target grades is blast radius, not safety, so
+a collective one also asks for the store to be committed first.
 
 Two expected losses, reported rather than hidden:
 
@@ -164,11 +168,17 @@ async def _regen_all(model: ModelSettings, target: str, apply: bool) -> None:
     """Rebuilds every scope the target names, bounded by this script's own semaphore."""
     scopes = _scopes_for_target(target=target)
     console.print(f"{len(scopes)} scope(s) found; apply={apply}")
+    # Printed on the dry run too, which is when there is still time to act on it, and on
+    # every target: an out-of-process write races the bot's own `scope_lock` whether it
+    # touches one scope or all of them (`/memory regenerate` is the live-safe single-scope
+    # path). Only the blast radius is graded.
+    console.print(
+        "[yellow]Stop the bot before --apply: this writes from a second process, so a "
+        "rebuilt scope loses whatever raw entries the bot appended meanwhile.[/yellow]"
+    )
     if target in _BATCH_TARGETS:
-        # Printed on the dry run too, which is when there is still time to act on it.
         console.print(
-            "[yellow]This rebuilds the store at scale. Stop the bot and commit "
-            "data/memories before running with --apply.[/yellow]"
+            "[yellow]This one covers the whole store; commit data/memories first.[/yellow]"
         )
     if not apply:
         _report(rows=[(scope, "dry-run", _preview(scope=scope)) for scope in scopes])
