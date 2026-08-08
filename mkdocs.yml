@@ -25,6 +25,7 @@ nav:
                   - embeds: Reference/discordbot/cogs/economy/embeds.md
                   - views: Reference/discordbot/cogs/economy/views.md
               - feedback:
+                  - auth: Reference/discordbot/cogs/feedback/auth.md
                   - cog: Reference/discordbot/cogs/feedback/cog.md
                   - database: Reference/discordbot/cogs/feedback/database.md
                   - github: Reference/discordbot/cogs/feedback/github.md
@@ -183,7 +184,6 @@ nav:
       - batch_dev: Scripts/batch_dev.md
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md
-      - migrate_memories: Scripts/migrate_memories.md
       - modify_balance: Scripts/modify_balance.md
       - prompt_dev: Scripts/prompt_dev.md
       - regen_memories: Scripts/regen_memories.md
