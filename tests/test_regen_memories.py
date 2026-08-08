@@ -149,14 +149,32 @@ async def test_the_dry_run_names_files_a_rebuild_cannot_account_for(
     assert "backup.txt" in output
 
 
+def test_the_report_says_how_many_fact_files_a_run_destroyed_unread(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """What a rebuild removed unread has no other trace offline: logfire reaches nobody.
+
+    The console is replaced for the reason the unaccounted test gives — a narrow terminal
+    ellipsizes the note column, which is the only place this count is ever printed.
+    """
+    monkeypatch.setattr(regen_script, "console", Console(width=200))
+
+    regen_script._report(rows=[(_USER, "regenerated", {"global": 2}, 3)])
+
+    output = " ".join(capsys.readouterr().out.split())
+    assert "UNREADABLE: 3 fact file(s) removed unread" in output
+
+
 async def test_a_scope_key_that_is_not_a_discord_id_becomes_one_error_row() -> None:
     """`read_owner` parses the id, and it used to raise past the handler into the gather."""
     _seed(scope="111.bak")
-    scope, result, _ = await regen_script._regen_one(
+    scope, result, _, removed = await regen_script._regen_one(
         extractor=cast("MemoryExtractorAI", None), scope="111.bak", semaphore=asyncio.Semaphore(1)
     )
     assert scope == "111.bak"
     assert result.startswith("error: ValueError")
+    # A run that never reached the store destroyed nothing, and must not imply it did.
+    assert removed == 0
 
 
 @pytest.mark.parametrize(
