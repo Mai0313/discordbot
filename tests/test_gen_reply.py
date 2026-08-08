@@ -19,6 +19,7 @@ from openai import APITimeoutError
 import pytest
 import nextcord
 from nextcord import File, Embed, Message
+import requests
 from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
@@ -46,6 +47,7 @@ from discordbot.cogs.gen_reply.cog import (
     _await_deadline_bound_task,
     _build_runtime_instructions,
 )
+from discordbot.utils.model_pricing import load_model_info
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
@@ -135,7 +137,7 @@ FAKE_MESSAGE_CREATED_AT = datetime(2026, 6, 10, 3, 4, 5, tzinfo=UTC)
 
 if TYPE_CHECKING:
     from pathlib import Path
-    from collections.abc import Callable, AsyncIterator
+    from collections.abc import Callable, Iterator, AsyncIterator
 
     from aiohttp import ClientResponse
     from nextcord import Attachment
@@ -1020,6 +1022,34 @@ async def test_handle_streaming_allows_missing_output_token_details(
 
     expected = f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
     assert result == expected
+    assert message.replies[0].content == result
+
+
+@pytest.fixture
+def price_table_unavailable(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Makes every price-table fetch fail, resetting the process-wide cache around it."""
+
+    def refuse(url: str, timeout: int) -> None:
+        """Fails the way an unreachable raw.githubusercontent.com does."""
+        del url, timeout
+        raise requests.ConnectionError("name or service not known")
+
+    load_model_info.cache_clear()
+    monkeypatch.setattr("discordbot.utils.model_pricing.requests.get", refuse)
+    yield
+    load_model_info.cache_clear()
+
+
+async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
+    economy_isolated_db: None, price_table_unavailable: None
+) -> None:
+    """The footer loses its estimate; the reply that is already on screen is not lost with it."""
+    del economy_isolated_db, price_table_unavailable
+    message = FakeMessage()
+
+    result = await ResponseStreamer(message=message).stream(responses=_stream_events())
+
+    assert result == f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
     assert message.replies[0].content == result
 
 
@@ -3716,14 +3746,14 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
     assert len(text_markers) == len(full_files) == 1
 
 
-async def test_text_only_render_degrades_when_modality_lookup_fails(
+async def test_text_only_render_degrades_when_the_modality_gate_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A cold-start modality lookup failure degrades to empty text, not a pipeline abort."""
+    """A raising modality gate degrades to empty text, not a pipeline abort."""
     cog = _cog()
 
     def boom(model_name: str) -> set[str]:
-        """Simulates the LiteLLM model-info fetch failing on a cold cache."""
+        """Stands in for any unexpected failure inside the gate; the lookup itself cannot."""
         del model_name
         raise RuntimeError("model info unreachable")
 

@@ -591,9 +591,10 @@ class MessageInputBuilder(BaseModel):
             )
             return await self.render_text_only(message=message, sources=sources)
         except Exception:
-            # The route awaits this before dispatching, so a cold-start modality lookup
-            # (or render) failure must degrade to empty text like process_single_message
-            # does, not abort the whole reply through the generic error path.
+            # Broad on purpose, and the route awaits this before dispatching: any failure
+            # across the collect, gate and render steps (an unexpected nextcord shape, say)
+            # must degrade to empty text like process_single_message does, not abort the
+            # whole reply through the generic error path.
             logfire.warn(
                 "gen_reply failed to render message for routing",
                 message_id=message.id,
@@ -626,10 +627,9 @@ class MessageInputBuilder(BaseModel):
             )
         except Exception as exc:
             # Broad on purpose: this render feeds the answer request directly, so any failure
-            # (cold-start LiteLLM modality lookup, an unexpected nextcord shape) must degrade
-            # this one message to empty text rather than abort the reply. Per-attachment
-            # download/upload failures never reach here; the handlers drop them to None with
-            # their own step-named warn.
+            # (an unexpected nextcord shape, say) must degrade this one message to empty text
+            # rather than abort the reply. Per-attachment download/upload failures never reach
+            # here; the handlers drop them to None with their own step-named warn.
             logfire.warn(
                 "gen_reply failed to process message",
                 message_id=message.id,
