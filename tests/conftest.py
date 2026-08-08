@@ -124,11 +124,11 @@ def model_price_mirror_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     Autouse because any test reaching `load_model_info` mirrors the fetched table, and the
     live `data/` is no place for a 1.6MB file a test wrote (the same reason
-    `usage_log_isolated_dir` exists). The `cache` on the loader is deliberately NOT cleared
-    here, since clearing per test would make every test that reaches it pay the fetch again;
-    `tests/test_model_pricing.py` clears it around its own cases, so a worker that ran one of
-    those refetches on the next test needing the table. Which table a worker ends up
-    memoizing is therefore not deterministic — pinning that for the whole suite is #450.
+    `usage_log_isolated_dir` exists). The table the loader holds is deliberately NOT reset
+    here, since resetting per test would make every test that reaches it pay the fetch again;
+    `tests/test_model_pricing.py` swaps its own in through `monkeypatch`, which puts the
+    worker's back afterwards. Which table a worker ends up holding is therefore not
+    deterministic — pinning that for the whole suite is #450.
     """
     mirror_path = tmp_path / "model_prices_and_context_window.json"
     monkeypatch.setattr("discordbot.utils.model_pricing.MODEL_INFO_CACHE_PATH", mirror_path)

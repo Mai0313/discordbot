@@ -1,9 +1,10 @@
-"""Tests for the LiteLLM price-table load: the disk mirror and the never-raises degrade."""
+"""Tests for the LiteLLM price-table load: the disk mirror, the never-raises degrade, the
+recovery of a degraded table once upstream answers again.
+"""
 
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
 from pathlib import Path
 
 import pytest
@@ -14,11 +15,9 @@ from discordbot.utils.model_pricing import (
     _write_mirror,
     get_token_rates,
     load_model_info,
+    refresh_model_info,
     get_supported_modalities,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
 
 _MODEL = "gemini-pro-latest"
 _TABLE = {
@@ -28,14 +27,23 @@ _TABLE = {
         "supported_modalities": ["text", "image", "video"],
     }
 }
+_FRESH_TABLE = {
+    _MODEL: {
+        "input_cost_per_token": 3.0,
+        "output_cost_per_token": 4.0,
+        "supported_modalities": ["text", "image", "video", "audio"],
+    }
+}
 
 
 @pytest.fixture(autouse=True)
-def price_cache_isolated() -> Iterator[None]:
-    """Keeps this module's fake tables out of the process-wide loader cache."""
-    load_model_info.cache_clear()
-    yield
-    load_model_info.cache_clear()
+def price_cache_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keeps this module's fake tables out of the process-wide held one.
+
+    Through `monkeypatch` rather than a reset helper, so teardown puts back whatever the
+    worker had already loaded instead of making the next test needing it refetch.
+    """
+    monkeypatch.setattr("discordbot.utils.model_pricing._LOADED_TABLE", None)
 
 
 class FakeResponse:
@@ -176,7 +184,7 @@ def test_a_total_outage_is_logged_as_an_error(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_a_failed_fetch_is_paid_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The degrade is memoized too, so an outage is not re-paid at 5s per call."""
+    """The degrade is held too, so an outage is not re-paid at 5s per call."""
     calls = _refuse(monkeypatch=monkeypatch)
 
     for _ in range(3):
@@ -188,7 +196,7 @@ def test_a_failed_fetch_is_paid_once_per_process(monkeypatch: pytest.MonkeyPatch
 def test_each_mirror_write_uses_its_own_temp_file(
     monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
 ) -> None:
-    """`cache` does not serialize its body, so a shared temp path is two writers on one file."""
+    """A load runs outside the lock, so a shared temp path would be two writers on one file."""
     del model_price_mirror_isolated
     staged: list[Path] = []
     real_replace = Path.replace
@@ -218,3 +226,68 @@ def test_a_mirror_write_failure_never_costs_the_fetched_table(
     _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
 
     assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+
+
+def test_an_empty_table_recovers_once_upstream_answers(
+    monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
+) -> None:
+    """The case #473 is about: a first start with no mirror while upstream is unreachable."""
+    _refuse(monkeypatch=monkeypatch)
+    assert load_model_info() == {}
+
+    _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+    refresh_model_info()
+
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+    # The recovered table is mirrored like any other, so the next start has it too.
+    assert json.loads(s=model_price_mirror_isolated.read_text(encoding="utf-8")) == _TABLE
+
+
+def test_a_mirrored_table_is_upgraded_once_upstream_answers(
+    monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
+) -> None:
+    """A mirror keeps a degraded process serving rates, and they are still the stale ones."""
+    model_price_mirror_isolated.write_text(json.dumps(obj=_TABLE), encoding="utf-8")
+    _refuse(monkeypatch=monkeypatch)
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+
+    _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_FRESH_TABLE))
+    refresh_model_info()
+
+    assert get_token_rates(model_name=_MODEL) == (3.0, 4.0)
+    assert get_supported_modalities(model_name=_MODEL) == {"text", "image", "video", "audio"}
+
+
+def test_a_failed_retry_keeps_the_table_already_being_served(
+    monkeypatch: pytest.MonkeyPatch, model_price_mirror_isolated: Path
+) -> None:
+    """Re-running the whole chain here would install `{}` over a table that still works."""
+    model_price_mirror_isolated.write_text(json.dumps(obj=_TABLE), encoding="utf-8")
+    _refuse(monkeypatch=monkeypatch)
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+
+    model_price_mirror_isolated.unlink()
+    refresh_model_info()
+
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+
+
+def test_upstream_is_never_refetched_once_it_has_served(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Recovery is what the loop is for, so a healthy process pays it nothing per pass."""
+    calls = _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+
+    for _ in range(3):
+        refresh_model_info()
+
+    assert calls == [MODEL_INFO_URL]
+
+
+def test_a_refresh_before_any_load_is_the_warm_up(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`cli.py` starts with a refresh, so it has to load the table the warm-up used to."""
+    calls = _serve(monkeypatch=monkeypatch, payload=json.dumps(obj=_TABLE))
+
+    refresh_model_info()
+
+    assert get_token_rates(model_name=_MODEL) == (1.0, 2.0)
+    assert calls == [MODEL_INFO_URL]
