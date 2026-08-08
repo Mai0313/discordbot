@@ -33,6 +33,9 @@ Two expected losses, reported rather than hidden:
 The report also names any file in a compartment directory the store did not write. A
 rebuild removes every fact file it did not re-emit, an unreadable one included, but
 never a foreign file — so those are what a rebuilt scope still holds unaccounted for.
+It counts the unreadable ones it removed as well: renaming a section or a durability
+value makes every fact carrying the old one unparsable, and the next rebuild then drops
+all of them in one pass, which nothing else here would say out loud.
 
 Run from the repo root::
 
@@ -162,24 +165,41 @@ def _unaccounted_note(scope: str) -> str:
     return f"UNACCOUNTED: {', '.join(stray)}" if stray else ""
 
 
-def _report(rows: list[tuple[str, str, dict[str, int]]]) -> None:
-    """Prints one row per scope, flagging the two expected kinds of loss."""
+def _unreadable_note(removed: int) -> str:
+    """Returns the note for fact files a rebuild of this scope destroyed unread.
+
+    The one loss nothing else here can report after the fact: the files are gone, and
+    `prune_compartment` is the only thing that saw them, so the count travels back on the
+    rebuild's own report. Names would not help — they are `mint_fact_id` digests of a
+    file that no longer exists — but the count says a rebuild took content with it, which
+    an operator running without `MEMORY_GIT_ENABLED` had no way to learn at all.
+    """
+    return f"UNREADABLE: {removed} fact file(s) removed unread" if removed else ""
+
+
+def _report(rows: list[tuple[str, str, dict[str, int], int]]) -> None:
+    """Prints one row per scope, flagging what a rebuild of it loses, leaves and destroys."""
     table = Table(title="memory regeneration")
     table.add_column("scope")
     table.add_column("result")
     table.add_column("compartments")
     table.add_column("note", style="yellow")
-    for scope, result, buckets in rows:
+    for scope, result, buckets, removed in rows:
         summary = ", ".join(f"{name}={count}" for name, count in sorted(buckets.items()))
-        notes = (_loss_note(result=result, buckets=buckets), _unaccounted_note(scope=scope))
+        notes = (
+            _loss_note(result=result, buckets=buckets),
+            _unaccounted_note(scope=scope),
+            _unreadable_note(removed=removed),
+        )
         table.add_row(scope, result, summary or "-", "; ".join(note for note in notes if note))
     console.print(table)
 
 
 async def _regen_one(
     extractor: MemoryExtractorAI, scope: str, semaphore: asyncio.Semaphore
-) -> tuple[str, str, dict[str, int]]:
+) -> tuple[str, str, dict[str, int], int]:
     """Rebuilds one scope, prints its outcome, and returns its report row."""
+    removed = 0
     async with semaphore:
         # The script calls the rebuild directly rather than through the reply pipeline,
         # so it needs its own bound: `_memory_semaphore` is entered inside
@@ -190,9 +210,10 @@ async def _regen_one(
             # backup copy, which this tool's own advice invites) used to raise past the
             # gather and throw away every row that had already rebuilt.
             identity = render_owner_identity(owner=read_owner(scope=scope))
-            result = await regenerate_main_memory(
+            report = await regenerate_main_memory(
                 scope=scope, extractor=extractor, identity=identity
             )
+            result, removed = report.result, report.unreadable_removed
             counts = _written(scope=scope)
         except Exception as error:
             # Broad on purpose: one scope failing must not abandon the rest of the batch.
@@ -200,7 +221,7 @@ async def _regen_one(
     # A 145-scope run is several minutes of LLM work, so each scope reports as it lands
     # rather than leaving the closing table as the only output.
     console.print(f"{scope}: {result}")
-    return scope, result, counts
+    return scope, result, counts, removed
 
 
 async def _regen_all(model: ModelSettings, target: str, apply: bool) -> None:
@@ -220,7 +241,7 @@ async def _regen_all(model: ModelSettings, target: str, apply: bool) -> None:
             "[yellow]This one covers the whole store; commit data/memories first.[/yellow]"
         )
     if not apply:
-        _report(rows=[(scope, "dry-run", _preview(scope=scope)) for scope in scopes])
+        _report(rows=[(scope, "dry-run", _preview(scope=scope), 0) for scope in scopes])
         return
     config = LLMConfig()
     extractor = MemoryExtractorAI(

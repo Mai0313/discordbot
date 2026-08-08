@@ -1586,15 +1586,17 @@ async def test_regenerate_main_memory_rebuilds_from_evidence_only(
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "regenerated"
+    assert report.result == "regenerated"
     # A rebuild REPLACES the compartment: it says a fact is gone by not re-emitting it,
     # so the previous generation must not survive alongside the new one.
     assert "重建後的記憶" in _memory_text()
     assert "舊的整理" not in _memory_text()
+    # Dropping a readable fact is that ordinary replacement, not content destroyed unread.
+    assert report.unreadable_removed == 0
     # The consumed raw batch retires into the cold tier like a consolidation.
     assert count_raw_entries(scope=USER_SCOPE) == 0
     assert "喜歡簡短回覆" in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
@@ -1627,14 +1629,18 @@ async def test_regenerate_main_memory_replaces_the_directory_not_only_what_it_co
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "regenerated"
+    assert report.result == "regenerated"
     assert not broken.exists()
     assert stray.exists()
     assert "重建後的記憶" in _memory_text()
+    # The stored fact it dropped for not being re-emitted parsed fine, so the count is
+    # the broken file alone: what a rebuild destroys unread is the loss nothing else
+    # reports, and one that removed nothing unread must not claim it did.
+    assert report.unreadable_removed == 1
 
 
 async def test_regenerate_main_memory_never_calls_the_model_for_an_empty_compartment(
@@ -1654,11 +1660,11 @@ async def test_regenerate_main_memory_never_calls_the_model_for_an_empty_compart
     leftover.mkdir(parents=True)
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "regenerated"
+    assert report.result == "regenerated"
     # One call, for the one compartment the evidence reached.
     assert len(fake_client.responses.parse_models) == 1
     # Removed, so it does not cost the same call again on the next rebuild.
@@ -1686,14 +1692,18 @@ async def test_regenerate_main_memory_prunes_a_compartment_it_never_handed_to_th
     stray.write_text("操作者自己放的筆記", encoding="utf-8")
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "regenerated"
+    assert report.result == "regenerated"
     assert len(fake_client.responses.parse_models) == 1
     assert not broken.exists()
     assert stray.read_text(encoding="utf-8") == "操作者自己放的筆記"
+    # The skip path removes nothing BUT unreadable files — a compartment reaches it
+    # precisely when nothing in it could be read — so it is the one that most needs to
+    # say what it took.
+    assert report.unreadable_removed == 1
 
 
 async def test_regenerate_main_memory_without_evidence_skips_llm(
@@ -1703,11 +1713,11 @@ async def test_regenerate_main_memory_without_evidence_skips_llm(
     # Stored facts alone are not evidence: the rebuild never reads them back in.
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "no_evidence"
+    assert report.result == "no_evidence"
     assert fake_client.responses.parse_models == []
     assert "舊的整理" in _memory_text()
     # No LLM attempt happened, so the cooldown must stay untouched.
@@ -1736,15 +1746,53 @@ async def test_regenerate_main_memory_failure_keeps_existing_state(
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.raises = TimeoutError()
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "failed"
+    assert report.result == "failed"
     assert "舊的整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 1
     # Attempt-time cooldown: repeated failures are rate-limited too.
     assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is True
+
+
+async def test_regenerate_main_memory_reports_what_it_destroyed_before_it_failed(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rebuild that gives up part way still accounts for what its earlier passes took.
+
+    The compartments are rebuilt one at a time, so the failure of a later one leaves the
+    earlier ones already replaced. Reporting the count only on the way out through the
+    success path would lose exactly the runs an operator most needs to hear about.
+    """
+    extractor, fake_client = _extractor()
+    broken = memory_isolated_dir / str(USER_ID) / GLOBAL_COMPARTMENT / f"{'b' * 16}.md"
+    broken.parent.mkdir(parents=True, exist_ok=True)
+    broken.write_text("hand-edited into nonsense\n", encoding="utf-8")
+    # A second compartment for the run to fail on, after `global` has been replaced.
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(fact_id="a" * 16, compartment=guild_compartment(guild_id=222)),
+    )
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    calls = 0
+
+    async def failing_second_parse(**kwargs: object) -> SimpleNamespace:
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise TimeoutError
+        return _parsed(output=_consolidated(text="重建後的記憶"))
+
+    monkeypatch.setattr(fake_client.responses, "parse", failing_second_parse)
+    report = await pipeline.regenerate_main_memory(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+
+    assert report.result == "failed"
+    assert not broken.exists()
+    assert report.unreadable_removed == 1
 
 
 def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> None:
@@ -1766,11 +1814,11 @@ async def test_regenerate_main_memory_recheck_cooldown_under_lock(
     # keeps the per-user limit on the expensive rewrite.
     pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "cooldown"
+    assert report.result == "cooldown"
     assert fake_client.responses.parse_models == []
 
 
@@ -1785,11 +1833,11 @@ async def test_regenerate_main_memory_aborts_write_after_clear(
         return _parsed(output=_consolidated(text="不該被寫入"))
 
     monkeypatch.setattr(fake_client.responses, "parse", clearing_parse)
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "failed"
+    assert report.result == "failed"
     assert _memory_text() == ""
 
 
@@ -1938,9 +1986,11 @@ async def test_schedule_memory_regeneration_dedupes_in_flight(
     extractor, _ = _extractor()
     release = asyncio.Event()
 
-    async def blocking_regen(scope: str, extractor: object, identity: str) -> str:
+    async def blocking_regen(
+        scope: str, extractor: object, identity: str
+    ) -> pipeline.RegenerationReport:
         await release.wait()
-        return "regenerated"
+        return pipeline.RegenerationReport(result="regenerated")
 
     monkeypatch.setattr(pipeline, "regenerate_main_memory", blocking_regen)
 
@@ -3355,11 +3405,11 @@ async def test_regenerate_main_memory_writes_tone_and_ignores_existing_tone(
         text="重建後的記憶", tone="## 語氣偏好\n* 新語氣"
     )
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "regenerated"
+    assert report.result == "regenerated"
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 新語氣"
     # A pure-evidence rebuild feeds no existing tone to the model; the note is rebuilt
     # from the evidence alone, exactly like the facts.
@@ -3382,11 +3432,11 @@ async def test_regenerate_main_memory_clears_stale_tone_on_empty_output(
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    result = await pipeline.regenerate_main_memory(
+    report = await pipeline.regenerate_main_memory(
         scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
     )
 
-    assert result == "regenerated"
+    assert report.result == "regenerated"
     assert read_tone(scope=USER_SCOPE) == ""
 
 

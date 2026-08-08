@@ -82,6 +82,22 @@ from discordbot.services.memory.git_history import memory_git
 _RegenerationResult = Literal["regenerated", "no_evidence", "failed", "cooldown"]
 
 
+class RegenerationReport(BaseModel):
+    """What one from-scratch rebuild did, for a caller with no logfire to read.
+
+    Attributes:
+        result: How the rebuild ended.
+        unreadable_removed: Fact files it destroyed that no reader could parse.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    result: _RegenerationResult = Field(..., description="How the rebuild ended.")
+    unreadable_removed: int = Field(
+        default=0, description="Fact files removed that no reader could parse."
+    )
+
+
 class _PendingMemoryUpdate(BaseModel):
     """The newest skipped update request, replayed once the in-flight task ends.
 
@@ -161,9 +177,7 @@ _last_regeneration: dict[str, float] = {}
 # background without blocking the command, and a second request while one is
 # still running cannot double-schedule the rebuild. Kept separate
 # from `_inflight_tasks` because regeneration is a distinct, user-triggered job.
-_regeneration_tasks: LoopLocalRegistry[str, asyncio.Task[_RegenerationResult]] = (
-    LoopLocalRegistry()
-)
+_regeneration_tasks: LoopLocalRegistry[str, asyncio.Task[RegenerationReport]] = LoopLocalRegistry()
 
 # Process-wide semaphore capping concurrent background memory updates so a busy server
 # cannot fan out unbounded LLM work; shared across flavors and rebuilt per loop. The cap
@@ -1055,7 +1069,7 @@ def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, ident
     return True
 
 
-def _finish_memory_regeneration(scope: str, task: asyncio.Task[_RegenerationResult]) -> None:
+def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationReport]) -> None:
     """Clears the in-flight slot and logs failures of a background rebuild."""
     if _regeneration_tasks.get(key=scope) is task:
         _regeneration_tasks.pop(key=scope)
@@ -1079,7 +1093,7 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[_RegenerationResu
 
 async def regenerate_main_memory(
     scope: str, extractor: MemoryExtractorAI, identity: str
-) -> _RegenerationResult:
+) -> RegenerationReport:
     """Rebuilds every compartment from cold-tier evidence alone.
 
     The existing facts are deliberately NOT fed to the model: the rebuild distills the
@@ -1090,15 +1104,18 @@ async def regenerate_main_memory(
     tagged-era content behind forever.
 
     On an LLM failure the compartment is left exactly as it was, and the raw batch is
-    retired only when every compartment rebuilt.
+    retired only when every compartment rebuilt. The report carries what the run removed
+    unread whichever way it ended, so a rebuild that gave up on its third compartment
+    still accounts for what the first two destroyed.
     """
     started_at = time.monotonic()
+    unreadable_removed = 0
     async with scope_lock(scope=scope), _memory_semaphore():
         if regeneration_on_cooldown(scope=scope):
             # Invocations queued behind a held lock all pass the command-level
             # cooldown check before the first one stamps the attempt; the
             # re-check under the lock keeps the per-scope limit on the rewrite.
-            return "cooldown"
+            return RegenerationReport(result="cooldown")
         flavor = flavor_of(scope=scope)
         owner = parse_identity(identity=identity, fallback_owner_id=scope_owner_id(scope=scope))
         raw_entries = read_raw_entries(scope=scope)
@@ -1108,7 +1125,7 @@ async def regenerate_main_memory(
         # slots into the raw-entries consolidation input unchanged.
         evidence = "\n\n".join(part for part in (recent_detail, raw_entries) if part)
         if not evidence:
-            return "no_evidence"
+            return RegenerationReport(result="no_evidence")
         # Recorded at attempt time, not success time, so repeated LLM failures
         # are rate-limited by the same cooldown.
         _last_regeneration[scope] = time.monotonic()
@@ -1131,7 +1148,7 @@ async def regenerate_main_memory(
                         # It also removes the emptied directory, which is what stops the
                         # leftover costing another call — and another way to fail the
                         # compartments that do have something — on every later rebuild.
-                        _prune_rebuilt_compartment(
+                        unreadable_removed += _prune_rebuilt_compartment(
                             scope=scope, compartment=compartment, keep=set()
                         )
                         continue
@@ -1161,10 +1178,14 @@ async def regenerate_main_memory(
                             scope=scope,
                             compartment=compartment,
                         )
-                        return "failed"
+                        return RegenerationReport(
+                            result="failed", unreadable_removed=unreadable_removed
+                        )
                     if cleared_since(scope=scope, started_at=started_at):
-                        return "failed"
-                    _replace_compartment(
+                        return RegenerationReport(
+                            result="failed", unreadable_removed=unreadable_removed
+                        )
+                    unreadable_removed += _replace_compartment(
                         scope=scope,
                         compartment=compartment,
                         flavor=flavor,
@@ -1183,7 +1204,7 @@ async def regenerate_main_memory(
             logfire.warn(
                 "Memory regeneration timed out", scope=scope, compartments=len(compartments)
             )
-            return "failed"
+            return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
         _report_injection_size(scope=scope, flavor=flavor)
         if raw_entries:
             # The rebuild consumed the raw batch; retire it to the cold tier
@@ -1191,7 +1212,7 @@ async def regenerate_main_memory(
             append_detail(scope=scope, text=raw_entries)
             clear_raw(scope=scope)
         memory_git.enqueue(scope=scope, reason="rebuild")
-        return "regenerated"
+        return RegenerationReport(result="regenerated", unreadable_removed=unreadable_removed)
 
 
 async def _rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the corpus, its stamp, and the LLM handle
@@ -1265,7 +1286,7 @@ def _replace_compartment(
     flavor: MemoryFlavor,
     owner: MemoryOwner,
     result: ConsolidatedMemory,
-) -> None:
+) -> int:
     """Replaces a compartment's contents with a from-scratch rebuild's facts.
 
     Applies the batch first and prunes afterwards, so a fact the rebuild kept is never
@@ -1285,25 +1306,42 @@ def _replace_compartment(
         owner=owner,
         allow_mass_delete=True,
     )
-    _prune_rebuilt_compartment(scope=scope, compartment=compartment, keep=set(outcome.written))
+    return _prune_rebuilt_compartment(
+        scope=scope, compartment=compartment, keep=set(outcome.written)
+    )
 
 
-def _prune_rebuilt_compartment(scope: str, compartment: str, keep: set[str]) -> None:
-    """Reduces a rebuilt compartment to `keep`, reporting what it could not account for.
+def _prune_rebuilt_compartment(scope: str, compartment: str, keep: set[str]) -> int:
+    """Reduces a rebuilt compartment to `keep`, reporting what it left and what it took.
 
     The prune reads the directory rather than the facts read back from it, so a file no
     reader can parse cannot outlive a rebuild that reports the compartment replaced
     (`prune_compartment` carries the why). What it could not account for is reported
     here instead, since the store never removes a file it did not write.
 
+    What it DID remove unread is reported here too, and returned for the offline
+    rebuild's own report. Renaming a section or a durability value makes every fact
+    carrying the old one unparsable, so the next rebuild of a scope drops all of them in
+    one pass; a run that says only what it spared reads as one that destroyed nothing.
+
     Shared with the skip path, which prunes a compartment it never handed to the model,
-    so a file the store never wrote is named there on the same terms.
+    so a file the store never wrote is named there on the same terms — and so is the
+    unreadable one, which is the ONLY thing that path ever removes: a compartment reaches
+    it precisely when nothing in it could be read.
     """
-    unaccounted = prune_compartment(scope=scope, compartment=compartment, keep=keep)
-    if unaccounted:
+    pruned = prune_compartment(scope=scope, compartment=compartment, keep=keep)
+    if pruned.unaccounted:
         logfire.warn(
             "Memory rebuild left files it cannot account for",
             scope=scope,
             compartment=compartment,
-            files=unaccounted,
+            files=pruned.unaccounted,
         )
+    if pruned.unreadable:
+        logfire.warn(
+            "Memory rebuild removed fact files it could not read",
+            scope=scope,
+            compartment=compartment,
+            files=pruned.unreadable,
+        )
+    return len(pruned.unreadable)

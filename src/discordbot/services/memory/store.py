@@ -35,6 +35,7 @@ import itertools
 import contextlib
 
 import logfire
+from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.memory import MemoryFact, MemoryOwner
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
@@ -395,8 +396,26 @@ def unaccounted_files(scope: str, compartment: str) -> list[str]:
     return sorted(path.name for path in children if not _is_store_file(path=path))
 
 
-def prune_compartment(scope: str, compartment: str, keep: set[str]) -> list[str]:
-    """Reduces a compartment to `keep`, returning what it could not account for.
+class PrunedCompartment(BaseModel):
+    """What one prune pass left standing, and what it destroyed unread.
+
+    Attributes:
+        unaccounted: Names in the directory the store never wrote, left where they are.
+        unreadable: Fact files removed that no reader could have parsed.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    unaccounted: list[str] = Field(
+        default=[], description="Names the store never wrote, left where they are."
+    )
+    unreadable: list[str] = Field(
+        default=[], description="Fact files removed that no reader could have parsed."
+    )
+
+
+def prune_compartment(scope: str, compartment: str, keep: set[str]) -> PrunedCompartment:
+    """Reduces a compartment to `keep`, reporting what it left and what it destroyed unread.
 
     The rebuild's replace pass runs through here rather than over the facts it read
     back. `read_facts` skips a file `parse_fact_file` rejects — a hand edit, an
@@ -414,18 +433,29 @@ def prune_compartment(scope: str, compartment: str, keep: set[str]) -> list[str]
     is then removed, so a compartment a rebuild emptied stops being one
     `list_compartments` reports, and stops costing a consolidation call on every later
     rebuild.
+
+    Which of them no reader could parse is answered by reading the compartment back HERE
+    rather than by the caller before it applied its batch: a rebuild that re-emits the
+    same summary mints the same id and OVERWRITES the broken file, which is a fact
+    regenerated and not a fact destroyed. A stranded `.md.tmp` is not counted either —
+    `_fact_paths` globs `*.md`, so no reader ever saw one to lose.
     """
     directory = compartment_dir(scope=scope, compartment=compartment)
     removed = False
     try:
         children = list(directory.iterdir())
     except FileNotFoundError:
-        return []
+        return PrunedCompartment()
+    readable = {fact.fact_id for fact in read_facts(scope=scope, compartment=compartment)}
+    unreadable: list[str] = []
     for path in children:
         if not _is_store_file(path=path):
             continue
-        if path.suffix == ".md" and path.stem in keep:
-            continue
+        if path.suffix == ".md":
+            if path.stem in keep:
+                continue
+            if path.stem not in readable:
+                unreadable.append(path.name)
         path.unlink(missing_ok=True)
         removed = True
     if removed:
@@ -437,7 +467,10 @@ def prune_compartment(scope: str, compartment: str, keep: set[str]) -> list[str]
             # removes for the same reason. Inside the same suppression on purpose: a
             # compartment that survived is what stops the parent being tried at all.
             directory.parent.rmdir()
-    return unaccounted_files(scope=scope, compartment=compartment)
+    return PrunedCompartment(
+        unaccounted=unaccounted_files(scope=scope, compartment=compartment),
+        unreadable=sorted(unreadable),
+    )
 
 
 def read_owner(scope: str) -> MemoryOwner:
