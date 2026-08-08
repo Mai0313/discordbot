@@ -28,6 +28,23 @@ _OTHER_USER = user_scope(user_id=222)
 _SERVER = server_scope(server_id=333)
 
 
+@pytest.fixture(autouse=True)
+def _fixed_width_console(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Gives the report a console width the terminal cannot set.
+
+    rich consults `COLUMNS` only for a `Console` built without a width, and ellipsizes a
+    table cell that does not fit, so an assertion on the printed report otherwise passes
+    or fails on the environment rather than on the code it covers: the note column carries
+    `REBUILDS EMPTY` whole at rich's no-tty default of 80 and cuts it after six characters
+    at 40, and an `UNACCOUNTED` filename — the half an operator acts on — goes the same
+    way. The console is replaced rather than the variable set, because the script builds
+    its own at import time: rich resolves `COLUMNS` into a fixed width right there when it
+    is already exported, and otherwise reads the live environment on every print, so a
+    `setenv` would reach that console on one machine and not on the next.
+    """
+    monkeypatch.setattr(regen_script, "console", Console(width=200))
+
+
 def _seed(scope: str) -> None:
     """Gives a scope enough on disk for `iter_scopes` to return it."""
     append_raw_entry(scope=scope, entry_text="### stable_preference\n- summary_zh: 喜歡簡短回覆")
@@ -126,15 +143,9 @@ async def test_the_dry_run_flags_a_scope_with_nothing_left_to_rebuild_from(
 
 
 async def test_the_dry_run_names_files_a_rebuild_cannot_account_for(
-    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A rebuild never removes a file the store did not write, and logfire is off here.
-
-    The console is replaced rather than the environment: rich snapshots `os.environ` when
-    it is constructed, and the width matters because it ellipsizes the note column — the
-    filename is the half an operator acts on, and the first thing a narrow terminal eats.
-    """
-    monkeypatch.setattr(regen_script, "console", Console(width=200))
+    """A rebuild never removes a file the store did not write, and logfire is off here."""
     _seed(scope=_USER)
     directory = compartment_dir(scope=_USER, compartment=GLOBAL_COMPARTMENT)
     directory.mkdir(parents=True)
