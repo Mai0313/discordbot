@@ -809,14 +809,12 @@ def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test var
     section: MemorySection = "preference",
     durability: MemoryDurability = "stable",
     subject_id: int | None = None,
-    owner_name: str | None = None,
 ) -> None:
     """Seeds one stored fact, stamping everything consolidation owns.
 
     Memory is one fact per file, so a test states the body it wants injected and the
     compartment it must be readable from; the id, the dates, the node type and the owner
-    follow from those exactly as the pipeline derives them. `owner_name` is spelled out
-    only by a test that reads the stamped identity back, since the store writes it raw.
+    follow from those exactly as the pipeline derives them.
     """
     owner_id = scope_owner_id(scope=scope)
     now = utc_now()
@@ -830,7 +828,7 @@ def _seed_fact(  # noqa: PLR0913 -- one keyword per stored-fact field a test var
             text=text,
             compartment=compartment,
             owner_id=owner_id,
-            owner_name=f"U{owner_id} (u{owner_id})" if owner_name is None else owner_name,
+            owner_name=f"U{owner_id} (u{owner_id})",
             subject_id=subject_id,
             node_type=node_type_for(section=section),
             created=now,
@@ -6859,7 +6857,8 @@ def test_build_memory_allowlist_escapes_mention_labels() -> None:
     # credit label too since that is the one a public footer renders.
     assert "@everyone" not in allowed[1].prompt_label
     assert "everyone" in allowed[1].prompt_label
-    assert allowed[1].credit_label == allowed[1].prompt_label
+    assert allowed[1].credit_label is not None
+    assert "@everyone" not in allowed[1].credit_label
 
 
 def test_parse_user_id_list_handles_valid_and_malformed() -> None:
@@ -6893,68 +6892,28 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     assert by_id["2"].memory == "(no stored memory for this user)"
 
 
-def test_absent_member_credit_comes_from_the_store_not_the_alias_row(
+def test_absent_member_is_credited_by_id_never_by_the_alias_row(
     memory_isolated_dir: object,
 ) -> None:
-    """A member named only by the nickname table is credited by what their own memory stamped.
+    """A member named only by the nickname table is credited by their bare id.
 
-    The alias row is community prose the model reads; it can never be the public footer
-    credit (#463). Falls back to the bare id when no fact carries a name, and escapes what
-    it does find, since the store writes the stamped identity raw.
+    The row is community prose the model reads; it can never be the public footer credit
+    (#463). Nothing else here can name them: the guild member cache is empty for an absent
+    member, and the identity the store stamps belongs to whichever guild's consolidation
+    last wrote that fact, so it would put another server's nickname in this channel.
     """
     del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=42), text="第三人的記憶")
-    _seed_fact(scope=user_scope(user_id=43), text="無名氏的記憶", owner_name="")
-    _seed_fact(scope=user_scope(user_id=44), text="壞名字的記憶", owner_name="@everyone (evil)")
 
     memories = resolve_user_memories(
-        user_id_list=["42", "43", "44"],
-        allowed={
-            42: MemoryCandidate(prompt_label="Boss(社群暱稱:李董)"),
-            43: MemoryCandidate(prompt_label="Nobody(社群暱稱:阿伯)"),
-            44: MemoryCandidate(prompt_label="Evil(社群暱稱:壞人)"),
-        },
+        user_id_list=["42"],
+        allowed={42: MemoryCandidate(prompt_label="Boss(社群暱稱:李董)")},
         context=MemoryReadContext(guild_id=None, dm_partner_id=None),
     )
 
-    credit_labels = memory_lookup_labels(memories=memories)
-    assert credit_labels[:2] == ["U42 (u42)", "43"]
-    assert "@everyone" not in credit_labels[2]
-    assert "everyone" in credit_labels[2]
+    assert memory_lookup_labels(memories=memories) == ["42"]
     # The model still reads the row the credit refused.
     assert memories[0].prompt_label == "Boss(社群暱稱:李董)"
-
-
-def test_absent_member_credit_never_names_them_by_another_guilds_nickname(
-    memory_isolated_dir: object,
-) -> None:
-    """The credit is read through the same compartments as the body it credits.
-
-    A stamped owner name is `Member.display_name`, so it is that user's nickname in the
-    guild whose consolidation wrote it. Scanning the whole scope would credit a member with
-    nothing under `global/` by the name they use in an unrelated server.
-    """
-    del memory_isolated_dir
-    _seed_fact(
-        scope=user_scope(user_id=45),
-        text="他群的記憶",
-        compartment=guild_compartment(guild_id=100),
-        owner_name="他群暱稱 (u45)",
-    )
-    _seed_fact(
-        scope=user_scope(user_id=45),
-        text="本群的記憶",
-        compartment=guild_compartment(guild_id=999),
-        owner_name="本群暱稱 (u45)",
-    )
-
-    memories = resolve_user_memories(
-        user_id_list=["45"],
-        allowed={45: MemoryCandidate(prompt_label="Boss(社群暱稱:李董)")},
-        context=MemoryReadContext(guild_id=999, dm_partner_id=None),
-    )
-
-    assert memory_lookup_labels(memories=memories) == ["本群暱稱 (u45)"]
 
 
 # One fact per compartment, so a document says by its body alone which directories the
@@ -7449,9 +7408,9 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [["42"], ["42"]],
             None,
             (1, 1),
-            ["\n-# <:tag:1517563887573143595> Tester (tester), U42 (u42) 的記憶"],
+            ["\n-# <:tag:1517563887573143595> Tester (tester), 42 的記憶"],
             ["社群暱稱"],
-            "U42 (u42)",
+            "42",
         ),
         (
             [1],
@@ -7470,7 +7429,7 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
         "skipped-selector-not-counted",
         "selection-usage-folded-in",
         "owners-collapse-past-two",
-        "absent-member-credited-by-stored-owner-name",
+        "absent-member-credited-by-id",
         "participant-alias-row-stays-out-of-the-credit",
         "no-memory-no-credit",
     ],
@@ -7493,9 +7452,9 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
 
     Reads the user-visible reply text (the feature's small, real output surface): the single-owner
     credit, the selection-request token contribution, the collapse to "等 N 人" past two owners,
-    repeat-lookup de-duplication, and the no-credit case. The last two also pin that the
+    repeat-lookup de-duplication, and the no-credit case. Two of them also pin that the
     `## 成員稱呼` row never reaches this line from either side it used to (#463) — an absent
-    member is credited by the name their own memory carries, a participant by their Discord one.
+    member is credited by their id, a participant by their Discord label.
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()

@@ -27,7 +27,6 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from discordbot.utils.llm_transcript import sanitize_identity
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
-    read_facts,
     user_scope,
     guild_compartment,
     list_compartments,
@@ -100,8 +99,14 @@ class MemoryCandidate(BaseModel):
     server memory's `## 成員稱呼` row appended when there is one, or that row alone for a member
     this conversation knows only from the table. `credit_label` is what the public usage footer
     names, so it stays the short Discord label and never carries the table's community prose.
-    It is None for a table-only member, who has no Discord label here; `resolve_user_memories`
-    falls back to the identity the memory store itself stamped.
+
+    A table-only member has no Discord label here, so their `credit_label` is None and
+    `resolve_user_memories` credits them by their bare id. Deliberately not a name pulled from
+    somewhere else: the guild member cache is empty for them (the bot runs without the members
+    intent, so nextcord never caches a plain message author), and the identity the memory store
+    stamps is the display name of whichever guild's consolidation last wrote that fact, which
+    would put another server's nickname in this channel's footer. An id is the one short thing
+    that is true everywhere.
 
     Attributes:
         prompt_label: Label the model reads, community aliases included.
@@ -355,34 +360,6 @@ def compartments_for_reading(owner_id: int, context: MemoryReadContext) -> list[
     return [GLOBAL_COMPARTMENT]
 
 
-def _stored_owner_credit(*, user_id: int, context: MemoryReadContext) -> str:
-    """Footer credit for a member this conversation knows only from the nickname table.
-
-    The table row is community prose, so it can never be the credit. There is no Discord
-    label to fall back on either: such a member is absent from the conversation by
-    definition, and the bot runs without the members intent, so `Guild.get_member` would
-    miss for exactly them (nextcord never caches a plain message author). What is left is
-    the `display (username)` the memory store stamped on that user's own facts the last
-    time they spoke. Escaped here because the store writes it raw, and degraded to the bare
-    id when no fact carries a name.
-
-    Read through `compartments_for_reading` rather than `read_owner`, which scans the whole
-    scope: what a fact stamps is `Member.display_name`, so it is that user's nickname IN
-    THE GUILD THAT WROTE IT, and a member with nothing under `global/` would otherwise be
-    credited in a public footer here by the name they use in some unrelated server.
-    Uncached and a whole compartment per call (`read_facts` parses every file before this
-    scans it), so it stays behind two bounds: only a selector-chosen member reaches it, and
-    a member with no memory readable here has no readable facts either, so the walk that
-    costs anything is the one whose credit is actually rendered.
-    """
-    scope = user_scope(user_id=user_id)
-    for compartment in compartments_for_reading(owner_id=user_id, context=context):
-        for fact in read_facts(scope=scope, compartment=compartment):
-            if fact.owner_name:
-                return escape_mentions(fact.owner_name)
-    return str(user_id)
-
-
 def resolve_user_memories(
     *, user_id_list: list[str], allowed: dict[int, MemoryCandidate], context: MemoryReadContext
 ) -> list[UserMemory]:
@@ -414,8 +391,7 @@ def resolve_user_memories(
         results.append(
             UserMemory(
                 prompt_label=candidate.prompt_label,
-                credit_label=candidate.credit_label
-                or _stored_owner_credit(user_id=user_id, context=context),
+                credit_label=candidate.credit_label or str(user_id),
                 user_id=str(user_id),
                 memory=memory or NO_STORED_MEMORY,
             )
