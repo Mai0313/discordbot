@@ -14,13 +14,15 @@ The target is a scope key or one of three collective words::
     <user_id>                 one user
     bot_memories/<server_id>  one server
 
-Stop the bot before `--apply`, whatever the target. This runs in a second process and
+Stop the bot before a real run, whatever the target. This runs in a second process and
 `scope_lock` is an in-process `asyncio.Lock`, so nothing serializes the two: the rebuild
 ends by unlinking `raw.md`, which drops any observation the bot appended while it ran, and
 the bot keeps serving its cached pre-rebuild document until its own next write to that
 scope. `/memory regenerate` is the live-safe way to rebuild one scope, precisely because it
 runs inside the bot under that lock. What the target grades is blast radius, not safety, so
-a collective one also asks for the store to be committed first.
+a collective one also asks for the store to be committed first. Rebuilding is the default,
+so that warning is followed by a typed confirmation rather than by a flag: nothing is
+written, and no client is even built, until the operator answers `y`.
 
 Two expected losses, reported rather than hidden:
 
@@ -39,10 +41,11 @@ all of them in one pass, which nothing else here would say out loud.
 
 Run from the repo root::
 
-    uv run python -m scripts.regen_memories                            # dry run, all
-    uv run python -m scripts.regen_memories 1234567890 --apply
-    uv run python -m scripts.regen_memories bot_memories/9876543210 --apply
-    uv run python -m scripts.regen_memories users --apply
+    uv run python -m scripts.regen_memories                            # rebuild all
+    uv run python -m scripts.regen_memories --dry-run                  # preview all
+    uv run python -m scripts.regen_memories 1234567890
+    uv run python -m scripts.regen_memories bot_memories/9876543210
+    uv run python -m scripts.regen_memories users
 """
 
 from typing import TYPE_CHECKING, cast
@@ -51,8 +54,8 @@ import argparse
 from collections.abc import Sequence
 
 from openai import AsyncOpenAI
-from rich.table import Table
 from rich.console import Console
+from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
@@ -134,7 +137,7 @@ def _written(scope: str) -> dict[str, int]:
 def _loss_note(result: str, buckets: dict[str, int]) -> str:
     """Returns the warning for a scope that rebuilds empty or loses its global compartment.
 
-    The empty-bucket test is what makes the first note reachable BEFORE `--apply`: a dry
+    The empty-bucket test is what makes the first note reachable on `--dry-run`: a dry
     run's result is always the literal `dry-run`, so keying on `no_evidence` alone flagged
     a scope with nothing to rebuild from only once the destructive run had happened, and
     until then mislabelled it `EMPTY GLOBAL` (one live scope, measured). It also retires
@@ -178,21 +181,27 @@ def _unreadable_note(removed: int) -> str:
 
 
 def _report(rows: list[tuple[str, str, dict[str, int], int]]) -> None:
-    """Prints one row per scope, flagging what a rebuild of it loses, leaves and destroys."""
-    table = Table(title="memory regeneration")
-    table.add_column("scope")
-    table.add_column("result")
-    table.add_column("compartments")
-    table.add_column("note", style="yellow")
+    """Prints one line per scope, flagging what a rebuild of it loses, leaves and destroys.
+
+    Deliberately not a `rich.Table`: the notes are the half an operator acts on, and a
+    table cell narrower than one ellipsizes it away. Word wrap can still fold a long note
+    across lines here, but it never drops what it cannot fit.
+    """
+    console.print("[bold]memory regeneration[/bold]")
+    # Only the scope is padded. A failed rebuild carries the exception text as its result,
+    # so aligning on that column too would let one long error indent every other row.
+    width = max((len(scope) for scope, _, _, _ in rows), default=0)
     for scope, result, buckets, removed in rows:
         summary = ", ".join(f"{name}={count}" for name, count in sorted(buckets.items()))
+        console.print(f"{scope:<{width}}  {result}  {summary or '-'}")
         notes = (
             _loss_note(result=result, buckets=buckets),
             _unaccounted_note(scope=scope),
             _unreadable_note(removed=removed),
         )
-        table.add_row(scope, result, summary or "-", "; ".join(note for note in notes if note))
-    console.print(table)
+        for note in notes:
+            if note:
+                console.print(f"    [yellow]{note}[/yellow]")
 
 
 async def _regen_one(
@@ -219,29 +228,84 @@ async def _regen_one(
             # Broad on purpose: one scope failing must not abandon the rest of the batch.
             result, counts = f"error: {type(error).__name__}: {error}", _preview(scope=scope)
     # A 145-scope run is several minutes of LLM work, so each scope reports as it lands
-    # rather than leaving the closing table as the only output.
+    # rather than leaving the closing report as the only output.
     console.print(f"{scope}: {result}")
     return scope, result, counts, removed
 
 
-async def _regen_all(model: ModelSettings, target: str, apply: bool) -> None:
-    """Rebuilds every scope the target names, bounded by this script's own semaphore."""
+async def _rebuild_batch(
+    extractor: MemoryExtractorAI, scopes: list[str]
+) -> list[tuple[str, str, dict[str, int], int]]:
+    """Rebuilds every scope concurrently, advancing one bar over the whole batch.
+
+    The bar counts finished scopes out of total rather than tracking any one of them,
+    since `_CONCURRENCY` of them are in flight at once and they land out of order. It
+    shows elapsed time and no estimate, which out-of-order LLM completions would make up.
+    It draws on the module's own console, so `_regen_one`'s per-scope lines scroll above
+    it instead of fighting its redraw.
+    """
+    semaphore = asyncio.Semaphore(_CONCURRENCY)
+    rows: dict[str, tuple[str, str, dict[str, int], int]] = {}
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("[green]rebuilding", total=len(scopes))
+        pending = [
+            _regen_one(extractor=extractor, scope=scope, semaphore=semaphore) for scope in scopes
+        ]
+        for landing in asyncio.as_completed(pending):
+            row = await landing
+            rows[row[0]] = row
+            progress.advance(task)
+    # Keyed back into store order: which scope happened to finish first is noise, and a
+    # report shuffled by it cannot be compared against the previous run's.
+    return [rows[scope] for scope in scopes]
+
+
+def _confirmed() -> bool:
+    """Asks for a typed `y` before the run writes anything.
+
+    This is what the removed `--apply` flag used to carry. Nothing on stdin raises
+    `EOFError`, which is refused rather than read as consent: an unattended or piped
+    invocation is exactly the one that must not rewrite the store.
+    """
+    try:
+        answer = console.input("[bold yellow]Type y to rebuild: [/bold yellow]")
+    except EOFError:
+        console.print("[red]Nothing on stdin; nothing was written.[/red]")
+        return False
+    if answer.strip().lower() == "y":
+        return True
+    # Said out loud rather than returned silently: `yes` is refused like anything else,
+    # and a run that just stops after the warnings reads like a crash.
+    console.print("[red]Not confirmed; nothing was written.[/red]")
+    return False
+
+
+async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
+    """Previews or rebuilds every scope the target names, warning about the race first."""
     scopes = _scopes_for_target(target=target)
-    console.print(f"{len(scopes)} scope(s) found; apply={apply}")
+    console.print(f"{len(scopes)} scope(s) found; dry_run={dry_run}")
     # Printed on the dry run too, which is when there is still time to act on it, and on
     # every target: an out-of-process write races the bot's own `scope_lock` whether it
     # touches one scope or all of them (`/memory regenerate` is the live-safe single-scope
     # path). Only the blast radius is graded.
     console.print(
-        "[yellow]Stop the bot before --apply: this writes from a second process, so a "
+        "[yellow]Stop the bot before rebuilding: this writes from a second process, so a "
         "rebuilt scope loses whatever raw entries the bot appended meanwhile.[/yellow]"
     )
     if target in _BATCH_TARGETS:
         console.print(
             "[yellow]This one covers the whole store; commit data/memories first.[/yellow]"
         )
-    if not apply:
+    if dry_run:
         _report(rows=[(scope, "dry-run", _preview(scope=scope), 0) for scope in scopes])
+        return
+    if not _confirmed():
         return
     config = LLMConfig()
     extractor = MemoryExtractorAI(
@@ -251,11 +315,7 @@ async def _regen_all(model: ModelSettings, target: str, apply: bool) -> None:
         consolidate_model=model,
     )
     console.print(f"Rebuilding with [bold]{model.name}[/bold] (effort: {model.effort})")
-    semaphore = asyncio.Semaphore(_CONCURRENCY)
-    rows = await asyncio.gather(
-        *(_regen_one(extractor=extractor, scope=scope, semaphore=semaphore) for scope in scopes)
-    )
-    _report(rows=list(rows))
+    _report(rows=await _rebuild_batch(extractor=extractor, scopes=scopes))
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -275,7 +335,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--model", default=writer.name)
     parser.add_argument("--effort", default=writer.effort)
     parser.add_argument(
-        "--apply", action="store_true", help="Rewrite the store; omit for a dry run."
+        "--dry-run", action="store_true", help="Preview only; omit to rewrite the store."
     )
     return parser.parse_args(argv)
 
@@ -284,7 +344,7 @@ def main() -> None:
     """Parses arguments and runs the rebuild."""
     args = _parse_args()
     model = ModelSettings(name=args.model, effort=cast("ReasoningEffort", args.effort))
-    asyncio.run(main=_regen_all(model=model, target=args.target, apply=args.apply))
+    asyncio.run(main=_regen_all(model=model, target=args.target, dry_run=args.dry_run))
 
 
 if __name__ == "__main__":
