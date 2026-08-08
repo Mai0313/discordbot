@@ -170,15 +170,14 @@ async def _regen_one(
             result = await regenerate_main_memory(
                 scope=scope, extractor=extractor, identity=identity
             )
+            counts = _written(scope=scope)
         except Exception as error:
             # Broad on purpose: one scope failing must not abandon the rest of the batch.
-            result = f"error: {type(error).__name__}: {error}"
-            console.print(f"{scope}: {result}")
-            return scope, result, _preview(scope=scope)
+            result, counts = f"error: {type(error).__name__}: {error}", _preview(scope=scope)
     # A 145-scope run is several minutes of LLM work, so each scope reports as it lands
     # rather than leaving the closing table as the only output.
     console.print(f"{scope}: {result}")
-    return scope, result, _written(scope=scope)
+    return scope, result, counts
 
 
 async def _regen_all(model: ModelSettings, target: str, apply: bool) -> None:
