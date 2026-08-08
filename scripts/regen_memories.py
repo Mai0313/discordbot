@@ -1,119 +1,177 @@
-"""Offline regeneration of per-user consolidated memory from cold-tier evidence.
+"""Offline rebuild of file-backed memory from cold-tier evidence.
 
-Rebuilds `main.md` for one user or every user with a caller-specified model,
-using only the detail tail window plus unconsumed raw entries (never the
-existing main file). Run from the repo root: the `folder` argument only picks
-single-user versus all-users and enumerates user ids; reads and writes always
-go through the memory store rooted at `./data/memories`.
+Rebuilds one scope, or a batch of them, through `regenerate_main_memory` — the same
+pure-evidence path `/memory regenerate` runs, which distills the detail tail window plus
+any unconsumed raw entries and never reads the existing facts. That function is already
+scope-agnostic (it resolves the flavor itself), so this script only decides which scopes
+it is pointed at.
+
+The target is a scope key or one of three collective words::
+
+    all                       every scope on disk (default)
+    users                     every user scope
+    servers                   every server scope
+    <user_id>                 one user
+    bot_memories/<server_id>  one server
+
+Rebuilding one scope is the safe operation: it is what `/memory regenerate` already does
+against a live bot. Rebuilding a batch is the disruptive one, so a collective target says
+so before it runs.
+
+Two expected losses, reported rather than hidden:
+
+* a scope with no evidence at all rebuilds empty — its facts were distilled from evidence
+  that has since been trimmed away, and there is nothing to rebuild them from;
+* a scope whose every observation is `source_only` gets an empty `global/`, so it will
+  read as having no memory in a server it has never spoken in, until its next
+  cross-server-safe observation.
+
+Run from the repo root::
+
+    uv run python -m scripts.regen_memories                                # dry run, all
+    uv run python -m scripts.regen_memories 1010833712956592200 --apply
+    uv run python -m scripts.regen_memories bot_memories/1234567890 --apply
+    uv run python -m scripts.regen_memories users --apply
 """
 
 from typing import TYPE_CHECKING, cast
 import asyncio
-from pathlib import Path
 import argparse
+from collections.abc import Sequence
 
 from openai import AsyncOpenAI
+from rich.table import Table
 from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import ModelSettings
+from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import (
+    GLOBAL_COMPARTMENT,
+    read_facts,
     read_owner,
-    user_scope,
+    iter_scopes,
     read_detail_tail,
     read_raw_entries,
-    count_raw_entries,
     list_compartments,
-    read_memory_document,
 )
-from discordbot.services.memory.pipeline import regenerate_main_memory
+from discordbot.services.memory.deltas import partition_raw_entries
+from discordbot.services.memory.pipeline import flavor_of, regenerate_main_memory
 from discordbot.services.memory.constants import MEMORY_DETAIL_CONTEXT_MAX_CHARS
-from discordbot.services.memory.extraction import MemoryExtractorAI, observation_keys_from_text
+from discordbot.services.memory.extraction import MemoryExtractorAI
 
 if TYPE_CHECKING:
     from openai.types.shared.reasoning_effort import ReasoningEffort
 
 console = Console()
 
+# The offline fan-out's own bound, deliberately not `MEMORY_GLOBAL_CONCURRENCY`: that one
+# is sized for background work sharing the proxy with the latency-critical reply path, on
+# the assumption that path exists. A batch run here has no reply latency to protect and no
+# reason to push the proxy as hard. No flag on purpose — edit this if a store needs more.
+_CONCURRENCY = 8
 
-def _resolve_user_ids(folder: Path) -> list[int]:
-    """Returns the user ids for a single-user directory or a memories root.
-
-    Args:
-        folder: Either one user's memory directory (numeric basename) or the
-            memories root containing one numeric subdirectory per user.
-    """
-    if folder.name.isdigit():
-        return [int(folder.name)]
-    return sorted(
-        int(path.name) for path in folder.iterdir() if path.is_dir() and path.name.isdigit()
-    )
+# Targets naming more than one scope, which is what makes a run store-scale.
+_BATCH_TARGETS = ("all", "users", "servers")
 
 
-def _preview_one(user_id: int) -> None:
-    """Prints privacy-preserving memory evidence statistics for one user."""
-    scope = user_scope(user_id=user_id)
-    compartments = list_compartments(scope=scope)
-    main_text = read_memory_document(
-        scope=scope, compartments=compartments, flavor="user", max_chars=1_000_000
-    )
-    raw_text = read_raw_entries(scope=scope)
-    detail_text = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
-    raw_keys = observation_keys_from_text(text=raw_text)
-    detail_keys = observation_keys_from_text(text=detail_text)
-    duplicate_keys = raw_keys & detail_keys
-    console.print(
-        f"[cyan]{user_id}: dry-run[/cyan] "
-        f"main_chars={len(main_text)} compartments={len(compartments)} "
-        f"raw_entries={count_raw_entries(scope=scope)} "
-        f"raw_keys={len(raw_keys)} detail_keys={len(detail_keys)} "
-        f"duplicate_keys={len(duplicate_keys)}"
-    )
-
-
-async def _regen_one(extractor: MemoryExtractorAI, user_id: int) -> None:
-    """Regenerates one user's main memory file and prints the outcome.
+def _scopes_for_target(target: str) -> list[str]:
+    """Returns the scopes a target names, in store order.
 
     Args:
-        extractor: Memory extractor whose consolidate model performs the rewrite.
-        user_id: Discord user id whose memory directory is rebuilt.
+        target: One of `all` / `users` / `servers`, or a single scope key.
+
+    Raises:
+        SystemExit: The target names a single scope with nothing on disk to rebuild,
+            which is what a mistyped id looks like. Reported here rather than left to
+            come back as a `no_evidence` row, which reads like data loss.
     """
-    scope = user_scope(user_id=user_id)
-    identity = render_owner_identity(owner=read_owner(scope=scope))
-    try:
-        result = await regenerate_main_memory(scope=scope, extractor=extractor, identity=identity)
-    except Exception as error:
-        console.print(f"[red]{user_id}: error ({error})[/red]")
-        return
-    styles = {
-        "regenerated": "green",
-        "no_evidence": "yellow",
-        "failed": "red",
-        "cooldown": "yellow",
-    }
-    console.print(f"[{styles[result]}]{user_id}: {result}[/{styles[result]}]")
+    scopes = iter_scopes()
+    if target == "all":
+        return scopes
+    if target in _BATCH_TARGETS:
+        wanted = "server" if target == "servers" else "user"
+        return [scope for scope in scopes if flavor_of(scope=scope) == wanted]
+    if target not in scopes:
+        raise SystemExit(f"no memory on disk for scope {target!r}")
+    return [target]
 
 
-async def _regen_all(model: ModelSettings, folder: str, apply: bool) -> None:
-    """Regenerates the main memory file for every resolved user concurrently.
-
-    Concurrency is bounded by the pipeline's global memory semaphore
-    (`MEMORY_GLOBAL_CONCURRENCY`), not by this script.
-
-    Args:
-        model: Model settings (LiteLLM model string plus reasoning effort)
-            used for the consolidation rewrite.
-        folder: Single-user memory directory or the memories root.
-        apply: Whether to rewrite memory files; false prints a dry-run preview.
-    """
-    user_ids = _resolve_user_ids(folder=Path(folder))
-    if not apply:
-        console.print(
-            f"Dry-run preview for {len(user_ids)} user(s). Pass --apply to rewrite main.md."
+def _preview(scope: str) -> dict[str, int]:
+    """Returns the per-compartment observation counts a rebuild of this scope would see."""
+    evidence = "\n\n".join(
+        part
+        for part in (
+            read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
+            read_raw_entries(scope=scope),
         )
-        for user_id in user_ids:
-            _preview_one(user_id=user_id)
+        if part
+    )
+    buckets = partition_raw_entries(raw_text=evidence, flavor=flavor_of(scope=scope))
+    return {compartment: text.count("### ") for compartment, text in buckets.items()}
+
+
+def _written(scope: str) -> dict[str, int]:
+    """Returns the fact counts actually written per compartment."""
+    return {
+        compartment: len(read_facts(scope=scope, compartment=compartment))
+        for compartment in list_compartments(scope=scope)
+    }
+
+
+def _loss_note(result: str, buckets: dict[str, int]) -> str:
+    """Returns the warning for a scope that rebuilds empty or loses its global compartment."""
+    if result == "no_evidence":
+        return "REBUILDS EMPTY: no evidence left to rebuild from"
+    if not buckets.get(GLOBAL_COMPARTMENT):
+        return "EMPTY GLOBAL: unknown in a server this user has not spoken in"
+    return ""
+
+
+def _report(rows: list[tuple[str, str, dict[str, int]]]) -> None:
+    """Prints one row per scope, flagging the two expected kinds of loss."""
+    table = Table(title="memory regeneration")
+    table.add_column("scope")
+    table.add_column("result")
+    table.add_column("compartments")
+    table.add_column("note", style="yellow")
+    for scope, result, buckets in rows:
+        summary = ", ".join(f"{name}={count}" for name, count in sorted(buckets.items()))
+        table.add_row(scope, result, summary or "-", _loss_note(result=result, buckets=buckets))
+    console.print(table)
+
+
+async def _regen_one(
+    extractor: MemoryExtractorAI, scope: str, semaphore: asyncio.Semaphore
+) -> tuple[str, str, dict[str, int]]:
+    """Rebuilds one scope and returns its report row."""
+    identity = render_owner_identity(owner=read_owner(scope=scope))
+    async with semaphore:
+        # The script calls the rebuild directly rather than through the reply pipeline,
+        # so it needs its own bound: `_memory_semaphore` is entered inside
+        # `regenerate_main_memory`, but nothing else here throttles the fan-out.
+        try:
+            result = await regenerate_main_memory(
+                scope=scope, extractor=extractor, identity=identity
+            )
+        except Exception as error:
+            # Broad on purpose: one scope failing must not abandon the rest of the batch.
+            return scope, f"error: {type(error).__name__}: {error}", _preview(scope=scope)
+    return scope, result, _written(scope=scope)
+
+
+async def _regen_all(model: ModelSettings, target: str, apply: bool) -> None:
+    """Rebuilds every scope the target names, bounded by this script's own semaphore."""
+    scopes = _scopes_for_target(target=target)
+    console.print(f"{len(scopes)} scope(s) found; apply={apply}")
+    if target in _BATCH_TARGETS:
+        # Printed on the dry run too, which is when there is still time to act on it.
+        console.print(
+            "[yellow]This rebuilds the store at scale. Stop the bot and commit "
+            "data/memories before running with --apply.[/yellow]"
+        )
+    if not apply:
+        _report(rows=[(scope, "dry-run", _preview(scope=scope)) for scope in scopes])
         return
     config = LLMConfig()
     extractor = MemoryExtractorAI(
@@ -122,40 +180,38 @@ async def _regen_all(model: ModelSettings, folder: str, apply: bool) -> None:
         evaluate_model=model,
         consolidate_model=model,
     )
-    console.print(
-        f"Regenerating {len(user_ids)} user(s) with [bold]{model.name}[/bold] "
-        f"(effort: {model.effort})"
+    console.print(f"Rebuilding with [bold]{model.name}[/bold] (effort: {model.effort})")
+    semaphore = asyncio.Semaphore(_CONCURRENCY)
+    rows = await asyncio.gather(
+        *(_regen_one(extractor=extractor, scope=scope, semaphore=semaphore) for scope in scopes)
     )
-    tasks = []
-    for user_id in user_ids:
-        tasks.append(_regen_one(extractor=extractor, user_id=user_id))
-    await asyncio.gather(*tasks)
+    _report(rows=list(rows))
 
 
-def regen_memories(model: ModelSettings, folder: str, apply: bool = False) -> None:
-    """Regenerates `main.md` from evidence for one user or every user.
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parses the offline rebuild CLI arguments."""
+    parser = argparse.ArgumentParser(description="Preview or rebuild file-backed memories.")
+    parser.add_argument(
+        "target",
+        nargs="?",
+        default="all",
+        help="all (default), users, servers, a user id, or bot_memories/<server_id>.",
+    )
+    writer = RuntimeModelCatalog().memory_writer_model
+    parser.add_argument("--model", default=writer.name)
+    parser.add_argument("--effort", default=writer.effort)
+    parser.add_argument(
+        "--apply", action="store_true", help="Rewrite the store; omit for a dry run."
+    )
+    return parser.parse_args(argv)
 
-    Args:
-        model: Model settings (LiteLLM model string plus reasoning effort)
-            used for the consolidation rewrite.
-        folder: Single-user memory directory (e.g. `./data/memories/<id>`) or
-            the memories root (`./data/memories`) for every user.
-        apply: Whether to rewrite memory files; false prints a dry-run preview.
-    """
-    asyncio.run(main=_regen_all(model=model, folder=folder, apply=apply))
 
-
-def _parse_args() -> argparse.Namespace:
-    """Parses the offline regeneration CLI arguments."""
-    parser = argparse.ArgumentParser(description="Preview or regenerate file-backed memories.")
-    parser.add_argument("--folder", default="./data/memories")
-    parser.add_argument("--model", default="azure/gpt-5.5")
-    parser.add_argument("--effort", default="xhigh")
-    parser.add_argument("--apply", action="store_true")
-    return parser.parse_args()
+def main() -> None:
+    """Parses arguments and runs the rebuild."""
+    args = _parse_args()
+    model = ModelSettings(name=args.model, effort=cast("ReasoningEffort", args.effort))
+    asyncio.run(main=_regen_all(model=model, target=args.target, apply=args.apply))
 
 
 if __name__ == "__main__":
-    args = _parse_args()
-    model_settings = ModelSettings(name=args.model, effort=cast("ReasoningEffort", args.effort))
-    regen_memories(model=model_settings, folder=args.folder, apply=args.apply)
+    main()
