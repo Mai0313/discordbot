@@ -1439,32 +1439,64 @@ class ReplyGeneratorCogs(commands.Cog):
         Runs in parallel with the route under the shared `route_done` gate (`_await_gated`);
         the grade is consumed only on the QA and SUMMARY paths, while IMAGE and VIDEO cancel
         this task. The parts arrive already text-only, so grading never waits on uploads.
-        Raises on any provider/parse failure so the caller (`_resolve_effort`) can fall back.
+        A message whose attachment or link that render hides settles as "high" here with no
+        call at all (`_hides_content_from_the_grader`). Raises on any provider/parse failure so
+        the caller (`_resolve_effort`) can fall back.
+
+        `graded_by` on the log line separates the two populations, since a grade nobody would
+        agree with is otherwise invisible: it neither fails nor leaves a hint on the message.
         """
         message_list = [*reference_messages, *current_message]
 
         fast_model = self.runtime_models.fast_model
         started = time.monotonic()
-        with logfire.span("gen_reply effort"):
-            responses = await self.openai_client.responses.parse(
-                model=fast_model.name,
-                instructions=EFFORT_PROMPT,
-                input=cast("ResponseInputParam", message_list),
-                text_format=EffortGrade,
-                reasoning=fast_model.reasoning,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
-            )
-        parsed = responses.output_parsed
-        grade = parsed if parsed is not None else EffortGrade(effort="high")
+        if self._hides_content_from_the_grader(message=message):
+            grade = EffortGrade(effort="high")
+            graded_by = "code"
+        else:
+            with logfire.span("gen_reply effort"):
+                responses = await self.openai_client.responses.parse(
+                    model=fast_model.name,
+                    instructions=EFFORT_PROMPT,
+                    input=cast("ResponseInputParam", message_list),
+                    text_format=EffortGrade,
+                    reasoning=fast_model.reasoning,
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": message.author.name},
+                    extra_body={"mock_testing_fallbacks": False},
+                )
+            parsed = responses.output_parsed
+            grade = parsed if parsed is not None else EffortGrade(effort="high")
+            graded_by = "model"
         logfire.info(
             "gen_reply effort done",
             elapsed_seconds=time.monotonic() - started,
             effort=grade.effort,
+            graded_by=graded_by,
             message_id=message.id,
         )
         return grade
+
+    def _hides_content_from_the_grader(self, message: Message) -> bool:
+        """Whether the message carries content the text-only grade cannot read.
+
+        The grade is built from text-only parts on purpose, since it must not wait on the Files
+        API, so an attachment reaches it as an `[attachment: image]` marker and a link as a bare
+        URL. Both hide exactly what decides how hard the reply is, which is why this is settled
+        in code rather than asked of a model that would be weighing a stack-trace screenshot by
+        the four words next to it. The current message only: a question about a replied-to image
+        is decided by its own text, which the grader does see in full, while reaching up the
+        chain would spend "high" on a bare thanks under a bot reply that carried an image.
+        """
+        if self.input_builder.collect_attachment_sources(message=message):
+            return True
+        return (
+            _first_url_match(
+                pattern=_MESSAGE_URL_RE,
+                texts=_message_link_texts(message=message, strip_usage_footer=False),
+            )
+            is not None
+        )
 
     async def _resolve_effort(
         self,
@@ -1472,7 +1504,7 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         effort_task: "asyncio.Task[EffortGrade]",
         route_done: asyncio.Event,
-    ) -> Literal["low", "medium", "high"]:
+    ) -> Literal["low", "high"]:
         """Resolves the parallel effort grade, bounded by the route like memory selection.
 
         Falls back to "high" on the post-route grace timeout or any grading error, so a slow
@@ -1903,7 +1935,7 @@ class ReplyGeneratorCogs(commands.Cog):
         system_prompt: str,
         context: ReplyContext,
         memory_enabled: bool = True,
-        effort: Literal["low", "medium", "high"] = "high",
+        effort: Literal["low", "high"] = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
         allow_music: bool = False,
