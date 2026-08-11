@@ -185,13 +185,16 @@ Also fill in the `link_context_sources` field for registered linked-post sources
 """
 
 EFFORT_PROMPT = """
-You are an effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `effort` field with how much reasoning the answer model should spend on a reply.
+You are an effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `effort` field with how much reasoning the answer model should spend on its reply.
 
-Effort rules:
-- low: casual chat, greetings, banter, short factual lookups, simple opinions — anything answerable without multi-step thinking.
-- medium: ordinary questions that need some synthesis — translations, short explanations, straightforward code or how-to questions, recaps of provided content.
-- high: multi-step reasoning, math, debugging or non-trivial code, planning, analysis, comparisons, or anything where answer quality depends on careful thinking.
-- When uncertain, choose high.
+`high` is the ordinary grade. Give it to anything that wants a real answer: a question about facts, code, or how something works; a request to make, find, explain, or work something out; a problem to solve; anything that turns on content you were not shown — and anything you are unsure about.
+
+`low` is the exception and has to be earned. Grade a message `low` only when all of these hold:
+- It asks for nothing, looks nothing up, and works nothing out: a greeting, thanks, an emoji, a joke, teasing, flirting, or a plain reaction to something you can see — including when it is phrased as a question.
+- Answering it does not turn on an attachment, a link, or earlier messages you were not given.
+- A person could answer it in one line without knowing anything in particular.
+
+Wording does not decide it. A casual-sounding message that really wants something answered is `high`; a question asked purely as banter, where any friendly line would do, is `low`.
 """
 
 # Director instructions for the IMAGE route (and edit): faithfully restate a thin user request as

@@ -876,7 +876,7 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
     system_prompt: str = "SYS",
     history_limit: int = 2,
     memory_enabled: bool = True,
-    effort: Literal["low", "medium", "high"] = "high",
+    effort: Literal["low", "high"] = "high",
     describe_capabilities: bool = False,
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
@@ -2460,11 +2460,11 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
         system_prompt="SYS",
         context=ReplyContext(),
         memory_enabled=False,
-        effort="medium",
+        effort="low",
         yt_url=url,
     )
 
-    assert fake.recorder.calls[0].generation_config["thinking_level"] == "medium"
+    assert fake.recorder.calls[0].generation_config["thinking_level"] == "low"
 
 
 @pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url", "no_key"])
@@ -7896,6 +7896,40 @@ async def test_grade_effort_carries_grade_and_defaults_high() -> None:
 
     _recorded(cog).responses.effort_parsed = None
     assert (await _grade(cog=cog, message=message)).effort == "high"
+
+
+async def test_grade_effort_settles_high_in_code_for_what_it_cannot_read() -> None:
+    """An attachment or a URL grades high without asking a model that cannot read it."""
+    cog = _cog()
+    # A grade the model would hand back, so a "high" here can only have come from the code path.
+    _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
+
+    with_attachment = FakeMessage(content="how do I fix this", author=FakeAuthor(user_id=1))
+    with_attachment.attachments = [FakeAttachment(filename="shot.png", content_type="image/png")]
+    assert (await _grade(cog=cog, message=with_attachment)).effort == "high"
+
+    with_url = FakeMessage(content="這篇 https://example.test/post", author=FakeAuthor(user_id=1))
+    assert (await _grade(cog=cog, message=with_url)).effort == "high"
+
+    # Neither reached the grader at all: the text-only render it reads hides the content that
+    # decides the grade, so the call would only be a guess made from the words beside it.
+    assert _recorded(cog).responses.parse_models == []
+
+
+async def test_grade_effort_ignores_what_the_replied_to_message_carries() -> None:
+    """The code rule reads the current message only, so a bare thanks under an image stays low."""
+    cog = _cog()
+    _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
+
+    carrier = FakeMessage(content="here you go", author=FakeAuthor(user_id=2))
+    carrier.attachments = [FakeAttachment(filename="shot.png", content_type="image/png")]
+    thanks = FakeMessage(content="謝謝", author=FakeAuthor(user_id=1))
+    thanks.reference = FakeReference(resolved=carrier)
+
+    # Widening the rule to the reply chain would spend "high" on this; the grader decides it,
+    # since the current message's own text is all the grade turns on.
+    assert (await _grade(cog=cog, message=thanks)).effort == "low"
+    assert _recorded(cog).responses.parse_models != []
 
 
 async def test_resolve_effort_returns_graded_effort_on_success() -> None:

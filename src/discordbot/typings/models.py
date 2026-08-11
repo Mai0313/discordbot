@@ -240,10 +240,11 @@ class RuntimeModelCatalog(BaseModel):
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
         # answer turn hands that effort straight to the Interactions API as a `thinking_level`
         # (`gen_reply/interactions.py`), where the enum is per-model: every alias measured
-        # (flash / pro / flash-lite) accepts only low / high and 400s `medium`, while every
-        # pinned snapshot accepts it. An alias here therefore loses a whole reply whenever the
-        # grade comes back `medium` (#459). Note `minimal` is still a 400 on the pro snapshot;
-        # it stays legal only because `EffortGrade` never emits it.
+        # (flash / pro / flash-lite) accepts only low / high, while every pinned snapshot takes
+        # `medium` as well. The grade is binary since #490, so it no longer reaches the value
+        # that lost whole replies through an alias in #459; the pinning stays because it is what
+        # keeps the next vocabulary change from doing it again. Note `minimal` is still a 400 on
+        # the pro snapshot; it stays legal only because `EffortGrade` never emits it.
         # The peak/off-peak split is load-bearing again rather than dormant: Gemini Pro has
         # historically slowed down during peak hours, so peak takes the flash snapshot.
         if self.is_peak:
@@ -319,16 +320,24 @@ class EffortGrade(BaseModel):
     Graded by a call that runs in parallel with the route; the answer model's effort is
     overridden with it on the QA and SUMMARY paths.
 
+    Deliberately binary, with `high` as the grade an ordinary message gets and `low` as the
+    exception that has to be earned (#490): the grader reads text-only parts, so it never sees
+    an attachment's content, a linked post, or the history behind a short message, and every
+    one of those blind spots hides work rather than inventing it. `{low, high}` is also the one
+    set every model and surface measured in #461 accepts as a `thinking_level`.
+
     Attributes:
         effort: Reasoning effort the answer model should spend on this message.
     """
 
-    effort: Literal["low", "medium", "high"] = Field(
+    effort: Literal["low", "high"] = Field(
         default="high",
         description=(
-            "Reasoning effort the answer model should spend: high for any substantive "
-            "question or task, medium for trivial lookups or transforms, low only for "
-            "pure social chatter."
+            "Reasoning effort the answer model should spend. Use low only for a message "
+            "that asks for nothing, looks nothing up and works nothing out — banter and "
+            "greetings, even when phrased as a question — and that is fully answerable "
+            "from what you were shown; everything else, including anything you are "
+            "unsure about, is high."
         ),
     )
 
