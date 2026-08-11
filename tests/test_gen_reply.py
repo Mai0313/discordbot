@@ -7916,6 +7916,22 @@ async def test_grade_effort_settles_high_in_code_for_what_it_cannot_read() -> No
     assert _recorded(cog).responses.parse_models == []
 
 
+async def test_grade_effort_ignores_what_the_replied_to_message_carries() -> None:
+    """The code rule reads the current message only, so a bare thanks under an image stays low."""
+    cog = _cog()
+    _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
+
+    carrier = FakeMessage(content="here you go", author=FakeAuthor(user_id=2))
+    carrier.attachments = [FakeAttachment(filename="shot.png", content_type="image/png")]
+    thanks = FakeMessage(content="謝謝", author=FakeAuthor(user_id=1))
+    thanks.reference = FakeReference(resolved=carrier)
+
+    # Widening the rule to the reply chain would spend "high" on this; the grader decides it,
+    # since the current message's own text is all the grade turns on.
+    assert (await _grade(cog=cog, message=thanks)).effort == "low"
+    assert _recorded(cog).responses.parse_models != []
+
+
 async def test_resolve_effort_returns_graded_effort_on_success() -> None:
     """A completed grade flows through _resolve_effort as the answer model's effort."""
     cog = _cog()

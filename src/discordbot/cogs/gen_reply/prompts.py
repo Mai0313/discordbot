@@ -187,14 +187,14 @@ Also fill in the `link_context_sources` field for registered linked-post sources
 EFFORT_PROMPT = """
 You are an effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `effort` field with how much reasoning the answer model should spend on its reply.
 
-`high` is the ordinary grade. Give it to anything that asks a question, requests something, states a problem, or talks about content you were not shown — and to anything you are unsure about.
+`high` is the ordinary grade. Give it to anything that wants a real answer: a question about facts, code, or how something works; a request to make, find, explain, or work something out; a problem to solve; anything that turns on content you were not shown — and anything you are unsure about.
 
 `low` is the exception and has to be earned. Grade a message `low` only when all of these hold:
-- It asks for nothing, looks nothing up, and works nothing out: a greeting, thanks, a joke, banter, an emoji, or a plain reaction to what was just said.
-- Everything needed to answer it is in front of you, so it does not turn on an attachment, a link, or earlier messages you were not given.
+- It asks for nothing, looks nothing up, and works nothing out: a greeting, thanks, an emoji, a joke, teasing, flirting, or a plain reaction to something you can see — including when it is phrased as a question.
+- Answering it does not turn on an attachment, a link, or earlier messages you were not given.
 - A person could answer it in one line without knowing anything in particular.
 
-A short or casual-sounding message that still asks for something is `high`, not `low`.
+Wording does not decide it. A casual-sounding message that really wants something answered is `high`; a question asked purely as banter, where any friendly line would do, is `low`.
 """
 
 # Director instructions for the IMAGE route (and edit): faithfully restate a thin user request as

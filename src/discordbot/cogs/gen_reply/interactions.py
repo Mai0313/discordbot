@@ -244,8 +244,10 @@ async def create_interactions_answer_stream(
         generation_config=GenerationConfigParam(
             # effort is the route grade copied onto slow_model (always low or high here), and
             # the enum Gemini accepts is per-model: every `*-latest` alias 400s `medium`, every
-            # pinned snapshot takes it, which is why `slow_model` is pinned on both branches
-            # (#459). Narrowing ReasoningEffort to the enum is safe only while it is.
+            # pinned snapshot takes it. That is what pinned `slow_model` on both branches
+            # (#459); the grade is binary since #490, so the pin now guards the next vocabulary
+            # change rather than today's traffic, and narrowing ReasoningEffort to the enum here
+            # is safe only while both hold.
             thinking_level=cast("ThinkingLevel", effort),
             thinking_summaries="auto",
         ),

@@ -171,7 +171,8 @@ MEMORY_CONTEXT_TARGET_USERS = 8
 # memory selection: it runs unbounded while the route is in flight and gets only this
 # grace once the route returns before the reply falls back to "high" effort. The grade
 # is consumed only just before the answer model starts, so this latency hides behind the
-# route. Tune against the `gen_reply effort done` latency log.
+# route. Tune against the `gen_reply effort done` latency log, reading only its
+# `graded_by="model"` records: a code-decided grade makes no call and logs ~0 seconds.
 EFFORT_GRACE_SECONDS = 5.0
 
 # An intent-selected linked-post context build gets this grace once the QA path resolves it.
@@ -243,6 +244,24 @@ def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str
         if match:
             return match
     return None
+
+
+def _carries_url(message: Message) -> bool:
+    """Whether the message's own rendered text carries any URL.
+
+    Shared by the SUMMARY -> QA reroute guard and the effort grade's code-decided "high", so the
+    two cannot drift into disagreeing about what counts as a link. `_MESSAGE_URL_RE` anchors on a
+    word boundary, and CJK is a word character, so a URL typed flush against Chinese
+    ("看這篇https://...") is missed; both callers degrade softly on that (the reroute stays put,
+    the grade falls through to the grader, which reads the raw URL text anyway).
+    """
+    return (
+        _first_url_match(
+            pattern=_MESSAGE_URL_RE,
+            texts=_message_link_texts(message=message, strip_usage_footer=False),
+        )
+        is not None
+    )
 
 
 def _link_url_for_source(source: LinkContextSource, message: Message) -> str | None:
@@ -1390,13 +1409,7 @@ class ReplyGeneratorCogs(commands.Cog):
             parsed = responses.output_parsed
             if parsed is None:
                 route = RouteClassification(decision="QA")
-            elif parsed.decision == "SUMMARY" and (
-                _first_url_match(
-                    pattern=_MESSAGE_URL_RE,
-                    texts=_message_link_texts(message=message, strip_usage_footer=False),
-                )
-                is not None
-            ):
+            elif parsed.decision == "SUMMARY" and _carries_url(message=message):
                 # A summary request carrying a URL is really a QA recap of that link, not a
                 # recap of channel history, so steer it back to QA. Preserve both content-read
                 # decisions so the corrected route still ingests what the user asked about.
@@ -1439,9 +1452,9 @@ class ReplyGeneratorCogs(commands.Cog):
         Runs in parallel with the route under the shared `route_done` gate (`_await_gated`);
         the grade is consumed only on the QA and SUMMARY paths, while IMAGE and VIDEO cancel
         this task. The parts arrive already text-only, so grading never waits on uploads.
-        A message whose attachment or link that render hides settles as "high" here with no
-        call at all (`_hides_content_from_the_grader`). Raises on any provider/parse failure so
-        the caller (`_resolve_effort`) can fall back.
+        A message carrying an attachment or a link settles as "high" here with no call at all,
+        since the text-only render hides what would decide it (`_hides_content_from_the_grader`).
+        Raises on any provider/parse failure so the caller (`_resolve_effort`) can fall back.
 
         `graded_by` on the log line separates the two populations, since a grade nobody would
         agree with is otherwise invisible: it neither fails nor leaves a hint on the message.
@@ -1484,19 +1497,16 @@ class ReplyGeneratorCogs(commands.Cog):
         API, so an attachment reaches it as an `[attachment: image]` marker and a link as a bare
         URL. Both hide exactly what decides how hard the reply is, which is why this is settled
         in code rather than asked of a model that would be weighing a stack-trace screenshot by
-        the four words next to it. The current message only: a question about a replied-to image
-        is decided by its own text, which the grader does see in full, while reaching up the
-        chain would spend "high" on a bare thanks under a bot reply that carried an image.
+        the four words next to it. `collect_attachment_sources` counts stickers, embed images and
+        a forward's snapshot media too, so a sticker-only reaction is graded high as well; that
+        is the price of one rule instead of a taxonomy, and it is ~0.1% of addressed traffic.
+        The current message only: a question about a replied-to image is decided by its own text,
+        which the grader does see in full, while reaching up the chain would spend "high" on a
+        bare thanks under a bot reply that carried an image.
         """
-        if self.input_builder.collect_attachment_sources(message=message):
-            return True
-        return (
-            _first_url_match(
-                pattern=_MESSAGE_URL_RE,
-                texts=_message_link_texts(message=message, strip_usage_footer=False),
-            )
-            is not None
-        )
+        return bool(
+            self.input_builder.collect_attachment_sources(message=message)
+        ) or _carries_url(message=message)
 
     async def _resolve_effort(
         self,
