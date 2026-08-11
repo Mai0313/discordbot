@@ -3709,6 +3709,32 @@ async def test_uploaded_image_without_extension_marks_as_image(
     assert step_dicts(steps=parts)[-1]["text"] == "[attachment: image]"
 
 
+async def test_text_only_render_names_a_sticker_instead_of_calling_it_an_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sticker marks as a sticker, so a text-only reader can tell a reaction from a screenshot."""
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities", lambda model_name: {"image"}
+    )
+    message = FakeMessage(content="", author=FakeAuthor(user_id=1))
+    message.stickers = [
+        FakeAttachment(
+            filename="sticker.png",
+            content_type="image/png",
+            payload=base64.b64decode(_png_b64()),
+            url="https://example.test/sticker.png",
+        )
+    ]
+
+    rendered = await cog.input_builder.process_single_message_text_only(
+        message=as_message(fake=message)
+    )
+    parts = rendered["content"]
+    assert isinstance(parts, list)
+    assert step_dicts(steps=parts)[-1]["text"] == "[attachment: sticker]"
+
+
 async def test_text_only_and_full_render_agree_on_attachment_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -7898,38 +7924,22 @@ async def test_grade_effort_carries_grade_and_defaults_high() -> None:
     assert (await _grade(cog=cog, message=message)).effort == "high"
 
 
-async def test_grade_effort_settles_high_in_code_for_what_it_cannot_read() -> None:
-    """An attachment or a URL grades high without asking a model that cannot read it."""
+async def test_grade_effort_asks_the_model_even_about_what_it_cannot_read() -> None:
+    """An attachment or a URL is graded by the model, not settled in code (#493)."""
     cog = _cog()
-    # A grade the model would hand back, so a "high" here can only have come from the code path.
     _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
 
     with_attachment = FakeMessage(content="how do I fix this", author=FakeAuthor(user_id=1))
     with_attachment.attachments = [FakeAttachment(filename="shot.png", content_type="image/png")]
-    assert (await _grade(cog=cog, message=with_attachment)).effort == "high"
+    assert (await _grade(cog=cog, message=with_attachment)).effort == "low"
 
     with_url = FakeMessage(content="這篇 https://example.test/post", author=FakeAuthor(user_id=1))
-    assert (await _grade(cog=cog, message=with_url)).effort == "high"
+    assert (await _grade(cog=cog, message=with_url)).effort == "low"
 
-    # Neither reached the grader at all: the text-only render it reads hides the content that
-    # decides the grade, so the call would only be a guess made from the words beside it.
-    assert _recorded(cog).responses.parse_models == []
-
-
-async def test_grade_effort_ignores_what_the_replied_to_message_carries() -> None:
-    """The code rule reads the current message only, so a bare thanks under an image stays low."""
-    cog = _cog()
-    _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
-
-    carrier = FakeMessage(content="here you go", author=FakeAuthor(user_id=2))
-    carrier.attachments = [FakeAttachment(filename="shot.png", content_type="image/png")]
-    thanks = FakeMessage(content="謝謝", author=FakeAuthor(user_id=1))
-    thanks.reference = FakeReference(resolved=carrier)
-
-    # Widening the rule to the reply chain would spend "high" on this; the grader decides it,
-    # since the current message's own text is all the grade turns on.
-    assert (await _grade(cog=cog, message=thanks)).effort == "low"
-    assert _recorded(cog).responses.parse_models != []
+    # Both reached the grader: #491's code-decided "high" for these graded a sticker-only
+    # reaction as if it hid something to read, and bought nothing the prompt does not already
+    # deliver on its own.
+    assert len(_recorded(cog).responses.parse_models) == 2
 
 
 async def test_resolve_effort_returns_graded_effort_on_success() -> None:

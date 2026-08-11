@@ -45,6 +45,7 @@ class AttachmentSource(BaseModel):
     Attributes:
         handle: The attachment, sticker, or image URL the loaders consume.
         kind: Whether the source renders as an image or a generic file.
+        is_sticker: Whether the source is a Discord sticker.
         content_type: Resolved MIME type, empty only for unguessable sources.
         cache_key: Stable identity (attachment/sticker id or chosen embed URL).
     """
@@ -56,6 +57,14 @@ class AttachmentSource(BaseModel):
     )
     kind: Literal["image", "file"] = Field(
         ..., description="Whether the source renders as an image or a generic file."
+    )
+    is_sticker: bool = Field(
+        default=False,
+        description=(
+            "Whether the source is a Discord sticker. Separate from `kind`, which stays the "
+            "render path a sticker shares with every other image; this is what the text-only "
+            "marker names it."
+        ),
     )
     content_type: str = Field(
         ..., description="Resolved MIME type, empty only for unguessable sources."
@@ -268,6 +277,7 @@ class MessageInputBuilder(BaseModel):
                 AttachmentSource(
                     handle=sticker,
                     kind="image",
+                    is_sticker=True,
                     content_type=guess_type(sticker.url)[0] or "image/png",
                     cache_key=sticker.id,
                 )
@@ -567,16 +577,27 @@ class MessageInputBuilder(BaseModel):
     async def render_text_only(
         self, message: Message, sources: list[AttachmentSource]
     ) -> EasyInputMessageParam:
-        """Renders a message as cleaned text plus `[attachment: kind]` markers.
+        """Renders a message as cleaned text plus `[attachment: ...]` markers.
 
         Pure metadata plus the already-cheap cleaned content; performs no upload, so the
         route and memory-selection calls never wait on the Files API. Mirrors
         `process_single_message`'s role and prefix rules so the route sees the same shape
         the answer will, minus the payload bytes.
+
+        A sticker is named rather than called an image: it renders through the image path like
+        any other, but the marker is all a text-only reader gets, and "image" makes a pure
+        reaction indistinguishable from a screenshot someone needs read. That cost the effort
+        grade 18 of 20 on a sticker-only message, and naming it takes the same message to 20 of
+        20 `low` with no prompt change (#493). The route reads the same marker and does not move
+        on it: `ROUTE_PROMPT`'s IMAGE branch keys on "an image", yet an edit request over a
+        sticker measured IMAGE 20 of 20 under either spelling.
         """
         content = await self.get_cleaned_content(message=message)
         markers: list[ResponseInputTextParam] = [
-            ResponseInputTextParam(text=f"[attachment: {source.kind}]", type="input_text")
+            ResponseInputTextParam(
+                text=f"[attachment: {'sticker' if source.is_sticker else source.kind}]",
+                type="input_text",
+            )
             for source in sources
         ]
         return self._assemble_input_message(
