@@ -171,8 +171,7 @@ MEMORY_CONTEXT_TARGET_USERS = 8
 # memory selection: it runs unbounded while the route is in flight and gets only this
 # grace once the route returns before the reply falls back to "high" effort. The grade
 # is consumed only just before the answer model starts, so this latency hides behind the
-# route. Tune against the `gen_reply effort done` latency log, reading only its
-# `graded_by="model"` records: a code-decided grade makes no call and logs ~0 seconds.
+# route. Tune against the `gen_reply effort done` latency log.
 EFFORT_GRACE_SECONDS = 5.0
 
 # An intent-selected linked-post context build gets this grace once the QA path resolves it.
@@ -249,11 +248,9 @@ def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str
 def _carries_url(message: Message) -> bool:
     """Whether the message's own rendered text carries any URL.
 
-    Shared by the SUMMARY -> QA reroute guard and the effort grade's code-decided "high", so the
-    two cannot drift into disagreeing about what counts as a link. `_MESSAGE_URL_RE` anchors on a
-    word boundary, and CJK is a word character, so a URL typed flush against Chinese
-    ("看這篇https://...") is missed; both callers degrade softly on that (the reroute stays put,
-    the grade falls through to the grader, which reads the raw URL text anyway).
+    Read by the SUMMARY -> QA reroute guard. `_MESSAGE_URL_RE` anchors on a word boundary, and
+    CJK is a word character, so a URL typed flush against Chinese ("看這篇https://...") is
+    missed; the reroute degrades softly on that and stays put.
     """
     return (
         _first_url_match(
@@ -1452,61 +1449,39 @@ class ReplyGeneratorCogs(commands.Cog):
         Runs in parallel with the route under the shared `route_done` gate (`_await_gated`);
         the grade is consumed only on the QA and SUMMARY paths, while IMAGE and VIDEO cancel
         this task. The parts arrive already text-only, so grading never waits on uploads.
-        A message carrying an attachment or a link settles as "high" here with no call at all,
-        since the text-only render hides what would decide it (`_hides_content_from_the_grader`).
         Raises on any provider/parse failure so the caller (`_resolve_effort`) can fall back.
 
-        `graded_by` on the log line separates the two populations, since a grade nobody would
-        agree with is otherwise invisible: it neither fails nor leaves a hint on the message.
+        Every message is graded by the model, including one carrying an attachment or a link:
+        #491's code-decided "high" for those was measured against the live grader in #493 and
+        bought nothing the prompt does not already deliver (19-20 of 20 on a screenshot, a thin
+        caption over an image, a bare URL and a casual line beside a link), while costing the
+        one case it reads wrong, a sticker-only reaction. What that case actually needed was for
+        the marker to name a sticker instead of calling it an image (`render_text_only`).
         """
         message_list = [*reference_messages, *current_message]
 
         fast_model = self.runtime_models.fast_model
         started = time.monotonic()
-        if self._hides_content_from_the_grader(message=message):
-            grade = EffortGrade(effort="high")
-            graded_by = "code"
-        else:
-            with logfire.span("gen_reply effort"):
-                responses = await self.openai_client.responses.parse(
-                    model=fast_model.name,
-                    instructions=EFFORT_PROMPT,
-                    input=cast("ResponseInputParam", message_list),
-                    text_format=EffortGrade,
-                    reasoning=fast_model.reasoning,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": message.author.name},
-                    extra_body={"mock_testing_fallbacks": False},
-                )
-            parsed = responses.output_parsed
-            grade = parsed if parsed is not None else EffortGrade(effort="high")
-            graded_by = "model"
+        with logfire.span("gen_reply effort"):
+            responses = await self.openai_client.responses.parse(
+                model=fast_model.name,
+                instructions=EFFORT_PROMPT,
+                input=cast("ResponseInputParam", message_list),
+                text_format=EffortGrade,
+                reasoning=fast_model.reasoning,
+                service_tier="auto",
+                extra_headers={"x-litellm-end-user-id": message.author.name},
+                extra_body={"mock_testing_fallbacks": False},
+            )
+        parsed = responses.output_parsed
+        grade = parsed if parsed is not None else EffortGrade(effort="high")
         logfire.info(
             "gen_reply effort done",
             elapsed_seconds=time.monotonic() - started,
             effort=grade.effort,
-            graded_by=graded_by,
             message_id=message.id,
         )
         return grade
-
-    def _hides_content_from_the_grader(self, message: Message) -> bool:
-        """Whether the message carries content the text-only grade cannot read.
-
-        The grade is built from text-only parts on purpose, since it must not wait on the Files
-        API, so an attachment reaches it as an `[attachment: image]` marker and a link as a bare
-        URL. Both hide exactly what decides how hard the reply is, which is why this is settled
-        in code rather than asked of a model that would be weighing a stack-trace screenshot by
-        the four words next to it. `collect_attachment_sources` counts stickers, embed images and
-        a forward's snapshot media too, so a sticker-only reaction is graded high as well; that
-        is the price of one rule instead of a taxonomy, and it is ~0.1% of addressed traffic.
-        The current message only: a question about a replied-to image is decided by its own text,
-        which the grader does see in full, while reaching up the chain would spend "high" on a
-        bare thanks under a bot reply that carried an image.
-        """
-        return bool(
-            self.input_builder.collect_attachment_sources(message=message)
-        ) or _carries_url(message=message)
 
     async def _resolve_effort(
         self,
