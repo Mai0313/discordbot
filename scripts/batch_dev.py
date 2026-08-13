@@ -49,7 +49,6 @@ def _response_body(user_prompt: str, file_id: str | None = None) -> dict[str, ob
         "reasoning": SLOW_MODEL.reasoning,
         "tools": SLOW_MODEL.tools,
         "service_tier": "auto",
-        "mock_testing_fallbacks": False,
         "cache": {"no-cache": True},
     }
 

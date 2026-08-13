@@ -189,7 +189,6 @@ nav:
       - regen_memories: Scripts/regen_memories.md
       - route_dev: Scripts/route_dev.md
       - seed_fishing: Scripts/seed_fishing.md
-      - test_fallback: Scripts/test_fallback.md
       - trading: Scripts/trading.md
       - video_dev: Scripts/video_dev.md
       - voice_dev: Scripts/voice_dev.md

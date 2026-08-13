@@ -398,7 +398,6 @@ class PromptGenerator(BaseModel):
                         tools=list(self.prompt_model.tools),
                         service_tier="auto",
                         extra_headers={"x-litellm-end-user-id": end_user_id},
-                        extra_body={"mock_testing_fallbacks": False},
                     )
             refined = output_text_or_empty(responses=responses).strip()
         except Exception as exc:

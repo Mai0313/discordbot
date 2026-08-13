@@ -1076,7 +1076,6 @@ async def _create_auto_unmute_response(  # noqa: PLR0913 -- mirrors Responses AP
     reasoning: dict[str, str],
     service_tier: str,
     extra_headers: dict[str, str],
-    extra_body: dict[str, bool],
 ) -> FakeGeneratedResponse:
     """Returns a deterministic auto-unmute response."""
     return FakeGeneratedResponse(output_text="not today")

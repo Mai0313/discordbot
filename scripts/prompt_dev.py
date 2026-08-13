@@ -75,10 +75,9 @@ def gen_reply(user_prompt: str) -> None:
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "prompt_dev"},
         extra_body={
-            "mock_testing_fallbacks": False,
             "cache": {
                 "no-cache": True  # Skip cache check, get fresh response
-            },
+            }
         },
     )
     model_name = ""
@@ -125,10 +124,9 @@ def gen_reply_chat(user_prompt: str) -> None:
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "prompt_dev"},
         extra_body={
-            "mock_testing_fallbacks": False,
             "cache": {
                 "no-cache": True  # Skip cache check, get fresh response
-            },
+            }
         },
     )
     model_name = ""
@@ -158,10 +156,9 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
             # NOTICE: extra_body properties are not supported in `.interactions` yet
             # But this is fine for leaving it here.
             extra_body={
-                "mock_testing_fallbacks": False,
                 "cache": {
                     "no-cache": True  # Skip cache check, get fresh response
-                },
+                }
             },
         ),
     )
