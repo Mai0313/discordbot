@@ -2177,7 +2177,7 @@ def _fake_audio_client(speech: _FakeSpeech) -> SimpleNamespace:
 async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
     """A normal reply renders to bytes with the style directive prepended to the input."""
     speech = _FakeSpeech(data=b"RIFFwav")
-    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
 
     clip = await synth.generate(text="閉嘴", end_user_id="tester")
 
@@ -2185,6 +2185,8 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
     assert clip.audio == b"RIFFwav"
     assert speech.calls[0]["input"].endswith("閉嘴")
     assert speech.calls[0]["input"] != "閉嘴"
+    # The catalog's tier is what reaches the proxy; the generator holds no model of its own.
+    assert speech.calls[0]["model"] == "tts-test"
     # response_format is intentionally never sent (the proxy 500s on it).
     assert "response_format" not in speech.calls[0]
     # The per-request timeout is applied so a slow clip cannot stall the message pipeline.
@@ -2194,7 +2196,7 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
 async def test_voice_generator_swallows_provider_errors() -> None:
     """A provider error reports ERROR with no audio so the reply stays text-only."""
     speech = _FakeSpeech(error=RuntimeError("boom"))
-    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
 
     clip = await synth.generate(text="嗆你", end_user_id="tester")
 
@@ -2205,7 +2207,7 @@ async def test_voice_generator_swallows_provider_errors() -> None:
 async def test_voice_generator_reports_timeout() -> None:
     """A request timeout is reported as TIMEOUT so the caller can hint distinctly."""
     speech = _FakeSpeech(error=APITimeoutError(request=httpx.Request("POST", "http://proxy")))
-    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
 
     clip = await synth.generate(text="嗆你", end_user_id="tester")
 
