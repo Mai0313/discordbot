@@ -248,7 +248,7 @@ class RuntimeModelCatalog(BaseModel):
         # The peak/off-peak split is load-bearing again rather than dormant: Gemini Pro has
         # historically slowed down during peak hours, so peak takes the flash snapshot.
         if self.is_peak:
-            return ModelSettings(name="gemini-3.6-flash", effort="high")
+            return ModelSettings(name="gemini-3.7-flash", effort="high")
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
