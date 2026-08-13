@@ -1,4 +1,4 @@
-"""Guards the reasoning-effort values the runtime model catalog ships.
+"""Guards the model strings and reasoning-effort values the runtime model catalog ships.
 
 Gemini 3 cannot switch thinking off, so its `thinking_level` vocabulary starts at `minimal`.
 `none` still round-trips through LiteLLM, but only for a model it recognises as Gemini 3 by
@@ -13,7 +13,7 @@ an alias narrows the `thinking_level` vocabulary the YouTube answer turn may han
 """
 
 from types import SimpleNamespace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -66,34 +66,36 @@ def test_the_default_effort_is_the_gemini_floor() -> None:
     assert ModelSettings(name="gemini-flash-latest").effort == "minimal"
 
 
-def test_neither_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Both slow-model branches stay on a pinned snapshot at high effort.
+def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every slow-model branch stays on a pinned snapshot at high effort.
 
     The one tier whose effort is decided at runtime is also the one dispatched direct to Google,
     where the accepted `thinking_level` set is per-model and an alias's is the narrowest measured.
-    Which snapshot each branch names is free to change; that neither is an alias is not, and
-    nothing else in the tree reports it. The two branches may legitimately be equal.
-    """
-    branches = {
-        "peak": _slow_model_at(
-            monkeypatch=monkeypatch, now=datetime(year=2026, month=5, day=18, hour=12, tzinfo=UTC)
-        ),
-        "off_peak": _slow_model_at(
-            monkeypatch=monkeypatch, now=datetime(year=2026, month=5, day=23, hour=12, tzinfo=UTC)
-        ),
-    }
+    Which snapshot a branch names is free to change and two branches may legitimately be equal;
+    that none of them is an alias is not free, and nothing else in the tree reports it.
 
-    aliases = {
-        branch: settings.name for branch, settings in branches.items() if "latest" in settings.name
-    }
+    Every hour of a week is swept rather than one instant per branch the catalog has today: the
+    dispatch condition is the catalog's own to change, so a branch added on a second condition
+    would be invisible to a fixed pair of timestamps and the guard would report nothing.
+    """
+    monday = datetime(year=2026, month=5, day=18, tzinfo=UTC)
+    aliases: dict[str, str] = {}
+    wrong_effort: dict[str, str] = {}
+    for offset in range(7 * 24):
+        now = monday + timedelta(hours=offset)
+        settings = _slow_model_at(monkeypatch=monkeypatch, now=now)
+        when = f"{now:%a %H:00} UTC"
+        if "latest" in settings.name:
+            aliases.setdefault(settings.name, when)
+        if settings.effort != "high":
+            wrong_effort.setdefault(str(settings.effort), when)
+
     assert aliases == {}, (
-        "A `*-latest` alias accepts only low / high as a thinking level, so a graded effort "
-        f"outside that pair loses the whole reply. Pin a snapshot instead. Offenders: {aliases}"
+        "A `*-latest` alias narrows the thinking levels this tier can be dispatched with to "
+        "low / high. `EffortGrade` emits only those two today, so this guards the next "
+        f"vocabulary change rather than today's traffic, which #459 was. Aliases: {aliases}"
     )
-    assert {branch: settings.effort for branch, settings in branches.items()} == {
-        "peak": "high",
-        "off_peak": "high",
-    }
+    assert wrong_effort == {}, f"Every slow-model branch ships `high`. Offenders: {wrong_effort}"
 
 
 def test_the_catalog_exposes_the_tiers_under_test() -> None:

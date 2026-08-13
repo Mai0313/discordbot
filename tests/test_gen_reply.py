@@ -2185,7 +2185,7 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
     assert clip.audio == b"RIFFwav"
     assert speech.calls[0]["input"].endswith("閉嘴")
     assert speech.calls[0]["input"] != "閉嘴"
-    # The catalog's tier is what reaches the proxy; the generator holds no model of its own.
+    # The generator holds no model of its own; the name it is handed is the one dispatched.
     assert speech.calls[0]["model"] == "tts-test"
     # response_format is intentionally never sent (the proxy 500s on it).
     assert "response_format" not in speech.calls[0]
