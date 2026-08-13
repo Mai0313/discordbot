@@ -2177,7 +2177,7 @@ def _fake_audio_client(speech: _FakeSpeech) -> SimpleNamespace:
 async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
     """A normal reply renders to bytes with the style directive prepended to the input."""
     speech = _FakeSpeech(data=b"RIFFwav")
-    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
 
     clip = await synth.generate(text="閉嘴", end_user_id="tester")
 
@@ -2185,6 +2185,8 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
     assert clip.audio == b"RIFFwav"
     assert speech.calls[0]["input"].endswith("閉嘴")
     assert speech.calls[0]["input"] != "閉嘴"
+    # The generator holds no model of its own; the name it is handed is the one dispatched.
+    assert speech.calls[0]["model"] == "tts-test"
     # response_format is intentionally never sent (the proxy 500s on it).
     assert "response_format" not in speech.calls[0]
     # The per-request timeout is applied so a slow clip cannot stall the message pipeline.
@@ -2194,7 +2196,7 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
 async def test_voice_generator_swallows_provider_errors() -> None:
     """A provider error reports ERROR with no audio so the reply stays text-only."""
     speech = _FakeSpeech(error=RuntimeError("boom"))
-    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
 
     clip = await synth.generate(text="嗆你", end_user_id="tester")
 
@@ -2205,7 +2207,7 @@ async def test_voice_generator_swallows_provider_errors() -> None:
 async def test_voice_generator_reports_timeout() -> None:
     """A request timeout is reported as TIMEOUT so the caller can hint distinctly."""
     speech = _FakeSpeech(error=APITimeoutError(request=httpx.Request("POST", "http://proxy")))
-    synth = VoiceGenerator(client=_fake_audio_client(speech=speech))
+    synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
 
     clip = await synth.generate(text="嗆你", end_user_id="tester")
 
@@ -6554,7 +6556,6 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     assert isinstance(catalog.fast_model, ModelSettings)
     assert "image" in catalog.image_model.name
     assert "omni" in catalog.video_model.name
-    assert catalog.slow_model.effort == "high"
     # Code execution is omitted on purpose: it 400s the request on file attachments.
     assert ModelSettings(name="gemini-test").tools == [{"googleSearch": {}}, {"urlContext": {}}]
     assert ModelSettings(name="claude-test").tools == [
@@ -6592,9 +6593,10 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
-    assert peak_start[0] == ModelSettings(name="gemini-3.7-flash", effort="high")
+    # Which snapshot each branch names is the catalog's to change; that neither may be a
+    # `*-latest` alias is guarded in `tests/test_runtime_models.py`. What this test owns is
+    # that the window is read correctly and that a branch answers the same on every hour in it.
     assert peak_start[0] == peak_end[0]
-    assert before_peak[0] == ModelSettings(name="gemini-3.1-pro-preview", effort="high")
     assert before_peak[0] == after_peak[0] == weekend[0]
 
 

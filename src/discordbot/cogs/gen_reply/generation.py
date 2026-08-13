@@ -104,7 +104,6 @@ MUSIC_RENDER_TIMEOUT_SECONDS = 300.0
 # the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and
 # distorts); it is prepended to the input (English on purpose: Gemini TTS style prompting is
 # documented in English and is read as style, not spoken aloud).
-TTS_MODEL_NAME = "gemini-3.1-flash-tts-preview"
 TTS_VOICE = "Despina"
 TTS_STYLE_DIRECTIVE = "Using a natural 18-year-old woman's voice that fits the following text:"
 TTS_SPEED = 1.5
@@ -435,9 +434,7 @@ class VoiceGenerator(BaseModel):
     client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Shared LiteLLM-proxy client used for the audio.speech call."
     )
-    model_name: str = Field(
-        default=TTS_MODEL_NAME, description="TTS model string dispatched on the proxy."
-    )
+    model_name: str = Field(..., description="TTS model string dispatched on the proxy.")
     voice: str = Field(
         default=TTS_VOICE, description="Fixed voice timbre name for spoken replies."
     )
