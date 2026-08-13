@@ -433,12 +433,11 @@ class FakeResponses:
         reasoning: dict[str, str],
         service_tier: str,
         extra_headers: dict[str, str],
-        extra_body: dict[str, bool],
         stream: bool = False,
         tools: list[object] | None = None,
     ) -> object:
         """Records the call; returns a streamed event iterator or non-stream output."""
-        del service_tier, extra_headers, extra_body
+        del service_tier, extra_headers
         self.create_reasonings.append(reasoning)
         self.create_models.append(model)
         self.create_instructions.append(instructions)
@@ -475,7 +474,6 @@ class FakeResponses:
         reasoning: dict[str, str],
         service_tier: str,
         extra_headers: dict[str, str],
-        extra_body: dict[str, bool],
     ) -> SimpleNamespace:
         """Records the model and returns the parsed output for the requested schema."""
         self.parse_models.append(model)

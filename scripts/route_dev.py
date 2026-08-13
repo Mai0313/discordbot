@@ -29,7 +29,6 @@ def _smoke_parse(
         reasoning=FAST_MODEL.reasoning,
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "route_dev"},
-        extra_body={"mock_testing_fallbacks": False},
     )
     console.print(f"[{label}] {responses.output_parsed}")
     console.print(f"{responses.model} on Litellm takes {time.time() - start:.2f} seconds")

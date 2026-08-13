@@ -85,7 +85,6 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
         reasoning=MEDIA_REPLY_MODEL.reasoning,
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "image_dev"},
-        extra_body={"mock_testing_fallbacks": False},
     )
     image_reply = (reply_responses.output_text or "").strip()
 

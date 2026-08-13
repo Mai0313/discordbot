@@ -48,10 +48,9 @@ def gen_reply(user_prompt: str) -> None:
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "voice_dev"},
         extra_body={
-            "mock_testing_fallbacks": False,
             "cache": {
                 "no-cache": True  # Skip cache check, get fresh response
-            },
+            }
         },
     )
     full_content = ""

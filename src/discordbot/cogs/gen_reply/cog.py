@@ -1245,7 +1245,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     stream=True,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": message.author.name},
-                    extra_body={"mock_testing_fallbacks": False},
                 )
                 await streamer.stream(responses=responses)
         except Exception as exc:
@@ -1401,7 +1400,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     reasoning=fast_model.reasoning,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": message.author.name},
-                    extra_body={"mock_testing_fallbacks": False},
                 )
             parsed = responses.output_parsed
             if parsed is None:
@@ -1471,7 +1469,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 reasoning=fast_model.reasoning,
                 service_tier="auto",
                 extra_headers={"x-litellm-end-user-id": message.author.name},
-                extra_body={"mock_testing_fallbacks": False},
             )
         parsed = responses.output_parsed
         grade = parsed if parsed is not None else EffortGrade(effort="high")
@@ -1609,7 +1606,6 @@ class ReplyGeneratorCogs(commands.Cog):
             stream=False,
             service_tier="auto",
             extra_headers={"x-litellm-end-user-id": message.author.name},
-            extra_body={"mock_testing_fallbacks": False},
         )
         memories: list[UserMemory] = []
         seen: set[str] = set()
@@ -2061,7 +2057,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     stream=True,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": message.author.name},
-                    extra_body={"mock_testing_fallbacks": False},
                 )
             full_reply = await streamer.stream(responses=responses)
         # A <deep-research> brief the answer model emitted launches a research thread. Done after

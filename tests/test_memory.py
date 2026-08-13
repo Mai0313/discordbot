@@ -170,7 +170,6 @@ class FakeMemoryResponses:
         reasoning: dict[str, str],
         service_tier: str,
         extra_headers: dict[str, str],
-        extra_body: dict[str, bool],
         **unexpected: object,
     ) -> SimpleNamespace:
         """Records the call and returns or raises the configured result.
@@ -179,7 +178,7 @@ class FakeMemoryResponses:
         pass (e.g. a reintroduced `max_output_tokens`) so a test can assert the
         memory path leaves the output budget to the backend.
         """
-        del text_format, reasoning, service_tier, extra_headers, extra_body
+        del text_format, reasoning, service_tier, extra_headers
         self.parse_models.append(model)
         self.parse_instructions.append(instructions)
         self.parse_inputs.append(input)

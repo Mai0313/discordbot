@@ -65,7 +65,6 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
                 reasoning=model.reasoning,
                 service_tier="auto",
                 extra_headers={"x-litellm-end-user-id": end_user_id},
-                extra_body={"mock_testing_fallbacks": False},
             )
     except TimeoutError as exc:
         logfire.warn(
@@ -132,7 +131,6 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
                 reasoning=model.reasoning,
                 service_tier="auto",
                 extra_headers={"x-litellm-end-user-id": end_user_id},
-                extra_body={"mock_testing_fallbacks": False},
             )
     except TimeoutError as exc:
         logfire.warn(
