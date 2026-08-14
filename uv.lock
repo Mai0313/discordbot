@@ -8,6 +8,9 @@ resolution-markers = [
     "python_full_version < '3.13'",
 ]
 
+[options]
+prerelease-mode = "if-necessary"
+
 [[package]]
 name = "absl-py"
 version = "2.5.0"
