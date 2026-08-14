@@ -28,6 +28,7 @@ import logfire
 from google.genai.types import FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 
 # The Files API refuses anything larger, so a caller that can measure a download up front
@@ -64,7 +65,10 @@ async def upload_to_files_api(
     """Uploads media to the Gemini Files API and returns its ACTIVE uri; None on any failure.
 
     Best-effort by design: every caller has a text-only degradation to fall back on, so a
-    failure here must not raise into the reply pipeline.
+    failure here must not raise into the reply pipeline. That is also what lets the
+    `file_api_enabled` kill-switch sit here rather than at each caller: a switched-off upload
+    takes the same path a failed one already takes, and skipping before the transfer means an
+    incident costs no fetch either.
 
     `source` accepts a path as well as bytes (mirroring `MediaItem`) because the SDK's
     `files.upload` takes `str | os.PathLike | io.IOBase`: a clip already written to a temp
@@ -81,6 +85,9 @@ async def upload_to_files_api(
         The full `https://.../files/<id>` uri, or None when the upload failed or never
         became ACTIVE in time.
     """
+    if not LLMConfig().file_api_enabled:
+        logfire.info("files api upload skipped by kill-switch", name=display_name)
+        return None
     started = time.monotonic()
     # A path is handed to the SDK untouched so it streams from disk; only in-memory bytes need
     # the file-like wrapper the SDK's signature requires.

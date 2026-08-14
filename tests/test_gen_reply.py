@@ -3380,6 +3380,19 @@ def test_grok_attachment_handler_path_stays_disabled() -> None:
     assert isinstance(build_attachment_handler(model_name="grok-4.5"), InlineRenderer)
 
 
+def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
+    """The Gemini branch uploads to the Files API while the switch is on."""
+    assert isinstance(build_attachment_handler(model_name="gemini-3.7-flash"), GeminiFileUploader)
+
+
+def test_the_file_api_kill_switch_inlines_gemini_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the switch off, even a Gemini answer model gets inlined attachments."""
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    assert isinstance(build_attachment_handler(model_name="gemini-3.7-flash"), InlineRenderer)
+
+
 async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
     """The xAI uploader references files by id and keeps images inline."""
     files = FakeXAIFiles()
