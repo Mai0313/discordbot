@@ -41,6 +41,10 @@ class LLMConfig(BaseSettings):
             the raw user request goes straight to the image model with no refinement step.
         video_refine_prompt_enabled: Kill-switch for the VIDEO-route prompt director; when false
             the raw user request goes straight to the video model with no refinement step.
+        file_api_enabled: Kill-switch for handing the answer model a provider Files API
+            reference; when false attachments inline as base64 instead and link media is not
+            uploaded at all. Provider-agnostic on purpose: the Gemini path is the only one
+            wired today, but the switch answers the same question for every uploader.
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
@@ -125,6 +129,11 @@ class LLMConfig(BaseSettings):
         default=True,
         description="Whether the prompt director refines the VIDEO-route request before generation.",
         validation_alias=AliasChoices("VIDEO_REFINE_PROMPT_ENABLED"),
+    )
+    file_api_enabled: bool = Field(
+        default=True,
+        description="Whether media may reach the answer model as a provider Files API reference.",
+        validation_alias=AliasChoices("FILE_API_ENABLED"),
     )
 
     @property

@@ -3380,6 +3380,61 @@ def test_grok_attachment_handler_path_stays_disabled() -> None:
     assert isinstance(build_attachment_handler(model_name="grok-4.5"), InlineRenderer)
 
 
+def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
+    """The Gemini branch uploads to the Files API while the switch is on."""
+    assert isinstance(build_attachment_handler(model_name="gemini-3.7-flash"), GeminiFileUploader)
+
+
+def test_the_file_api_kill_switch_inlines_gemini_attachments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the switch off, even a Gemini answer model gets inlined attachments."""
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    assert isinstance(build_attachment_handler(model_name="gemini-3.7-flash"), InlineRenderer)
+
+
+async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
+    """A clip the renderer cannot carry is dropped on its MIME type, before the download.
+
+    Reachable only since the kill-switch paired this renderer with a Gemini answer model:
+    `_supported_sources` gates on the slow model, so video passes, and a dropped part keeps
+    the WHOLE message out of the render cache. Downloading here would therefore re-fetch the
+    clip on every single reply, only to throw it away each time.
+    """
+    clip = FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"0" * 32)
+
+    rendered = await InlineRenderer().render_file(
+        attachment=cast("Attachment", clip), cache_key="clip.mp4"
+    )
+
+    assert rendered is None
+    assert clip.read_count == 0
+
+
+def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The switch reaches the link sources that download first and upload after.
+
+    Gating the upload alone would still spend a full Douyin / Bilibili download on media that
+    can no longer reach the model, and Douyin's is the WAF-sensitive path an incident most
+    wants left alone. Read off the live registry so the wiring is what is pinned.
+    """
+    monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
+    monkeypatch.setenv(name="DOUYIN_VIDEO_ENABLED", value="true")
+    monkeypatch.setenv(name="BILIBILI_VIDEO_ENABLED", value="true")
+
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
+    on = LLMConfig()
+    assert _link_source(name="douyin").media_ingest_allowed(on)
+    assert _link_source(name="bilibili").media_ingest_allowed(on)
+
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    off = LLMConfig()
+    assert not _link_source(name="douyin").media_ingest_allowed(off)
+    assert not _link_source(name="bilibili").media_ingest_allowed(off)
+
+
 async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
     """The xAI uploader references files by id and keeps images inline."""
     files = FakeXAIFiles()
@@ -4942,6 +4997,7 @@ def _link_config() -> LLMConfig:
         deep_research_enabled=False,
         douyin_video_enabled=True,
         bilibili_video_enabled=True,
+        file_api_enabled=True,
         gemini_api_key="key",
     )
 

@@ -82,6 +82,19 @@ class InlineRenderer(AttachmentRenderer):
                 url=attachment.url,
             )
             return None
+        if mime_type.startswith(("video/", "audio/")):
+            # `_inline_file_part` drops these anyway, and reaching it means downloading the
+            # whole clip first. Free until `file_api_enabled` made this renderer reachable for
+            # a Gemini answer model: every other provider's modality gate (`_supported_sources`,
+            # keyed on the slow model) already rejects them before any renderer runs. A dropped
+            # part also keeps the whole message out of the render cache, so without this the
+            # clip is re-downloaded on every single reply.
+            logfire.warn(
+                "dropping video / audio attachment the inline renderer cannot carry",
+                filename=attachment.filename,
+                mime_type=mime_type,
+            )
+            return None
         try:
             file_bytes, _ = await load_attachment_bytes(attachment=attachment)
         except Exception as exc:

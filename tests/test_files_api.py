@@ -6,6 +6,7 @@ import asyncio
 from pathlib import Path
 
 from google import genai
+import pytest
 from google.genai.types import FileState
 
 from discordbot.cogs.gen_reply.files_api import (
@@ -227,6 +228,36 @@ async def test_input_file_part_is_none_when_the_upload_fails() -> None:
     """A failed upload produces no part, so the caller degrades to text instead of a bad ref."""
     part = await upload_as_input_file(
         client=_client(_Files(final_state=FileState.FAILED)),
+        source=b"data",
+        mime_type="video/mp4",
+        filename="douyin_123.mp4",
+        timeout_seconds=5.0,
+    )
+    assert part is None
+
+
+async def test_the_kill_switch_skips_the_upload_entirely(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Switched off, the transfer never starts, so an outage costs no upload either."""
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    files = _Files()
+    uri = await upload_to_files_api(
+        client=_client(files),
+        source=b"data",
+        mime_type="video/mp4",
+        display_name="clip.mp4",
+        timeout_seconds=5.0,
+    )
+    assert uri is None
+    assert files.uploads == []
+
+
+async def test_the_kill_switch_leaves_the_link_builders_with_no_part(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No part means every link builder takes the text-only path it already has for a failure."""
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
+    part = await upload_as_input_file(
+        client=_client(_Files()),
         source=b"data",
         mime_type="video/mp4",
         filename="douyin_123.mp4",

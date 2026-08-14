@@ -1,5 +1,6 @@
 """Selects the attachment renderer that matches the current answer model's provider."""
 
+from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import GeminiFileUploader
@@ -18,7 +19,15 @@ def build_attachment_handler(model_name: str) -> AttachmentRenderer:
     reference path is verified. This is the single place that maps an answer model to its
     attachment handling, so adding a provider changes only here. Each uploader builds its own
     Files API client lazily, so this only needs the name.
+
+    `file_api_enabled` overrides the provider branch entirely: a provider whose Files API is
+    refusing to resolve references costs the WHOLE reply, since the answer carries the failing
+    part, so the switch trades video / audio ingestion (which `InlineRenderer` drops) for
+    replies that still land. Flipping it takes a restart, like every other setting here:
+    `.env` is read at import and the one production caller is a `cached_property`.
     """
+    if not LLMConfig().file_api_enabled:
+        return InlineRenderer()
     if "gemini" in model_name:
         return GeminiFileUploader()
     # if "gpt" in model_name:

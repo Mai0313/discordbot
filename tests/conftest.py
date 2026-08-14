@@ -119,6 +119,19 @@ def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
 
 @pytest.fixture(autouse=True)
+def file_api_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins the Files API kill-switch on for every test.
+
+    Autouse for the reason `usage_log_isolated_dir` pins its own switch: `LLMConfig` reads the
+    environment and `.env` is loaded at import, so a deployment that set `FILE_API_ENABLED=false`
+    to ride out a provider outage would otherwise turn every upload and Gemini-renderer
+    assertion red on that checkout alone. A test about the switched-off path sets it back to
+    false itself, which wins because `monkeypatch` applies in fixture-then-test order.
+    """
+    monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
+
+
+@pytest.fixture(autouse=True)
 def model_price_mirror_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Points the LiteLLM price-table mirror at a throwaway file.
 
