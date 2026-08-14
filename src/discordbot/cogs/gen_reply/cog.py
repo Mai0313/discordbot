@@ -597,13 +597,30 @@ def _threads_media_ingest_allowed(config: LLMConfig) -> bool:
 
 
 def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:
-    """The Douyin kill-switch plus the direct-Gemini key its Files API upload needs."""
-    return config.douyin_video_enabled and bool(config.gemini_api_key.strip())
+    """The Douyin kill-switch plus the direct-Gemini key its Files API upload needs.
+
+    `file_api_enabled` belongs here rather than only at the upload: the clip is downloaded
+    first and the upload skipped after, so gating it there alone would still spend the whole
+    fetch on a WAF-sensitive path for media that can no longer reach the model.
+    """
+    return (
+        config.douyin_video_enabled
+        and config.file_api_enabled
+        and bool(config.gemini_api_key.strip())
+    )
 
 
 def _bilibili_media_ingest_allowed(config: LLMConfig) -> bool:
-    """The Bilibili kill-switch plus the direct-Gemini key its Files API upload needs."""
-    return config.bilibili_video_enabled and bool(config.gemini_api_key.strip())
+    """The Bilibili kill-switch plus the direct-Gemini key its Files API upload needs.
+
+    Carries `file_api_enabled` for the reason the Douyin predicate does, minus the WAF: a
+    30-minute video is downloaded in full before the upload it can no longer feed.
+    """
+    return (
+        config.bilibili_video_enabled
+        and config.file_api_enabled
+        and bool(config.gemini_api_key.strip())
+    )
 
 
 # The linked-content sources gen_reply reads into answer context, in splice order: the blocks

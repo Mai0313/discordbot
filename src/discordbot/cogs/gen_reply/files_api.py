@@ -67,8 +67,10 @@ async def upload_to_files_api(
     Best-effort by design: every caller has a text-only degradation to fall back on, so a
     failure here must not raise into the reply pipeline. That is also what lets the
     `file_api_enabled` kill-switch sit here rather than at each caller: a switched-off upload
-    takes the same path a failed one already takes, and skipping before the transfer means an
-    incident costs no fetch either.
+    takes the same path a failed one already takes. It is the backstop, not the saving —
+    callers fetch the media BEFORE calling this, so the switch only avoids that fetch where
+    the caller checks it too (`_douyin_media_ingest_allowed` and its Bilibili twin do; the
+    Threads builder takes no such flag and still pays its CDN reads).
 
     `source` accepts a path as well as bytes (mirroring `MediaItem`) because the SDK's
     `files.upload` takes `str | os.PathLike | io.IOBase`: a clip already written to a temp

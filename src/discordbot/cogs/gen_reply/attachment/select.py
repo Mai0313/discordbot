@@ -23,8 +23,8 @@ def build_attachment_handler(model_name: str) -> AttachmentRenderer:
     `file_api_enabled` overrides the provider branch entirely: a provider whose Files API is
     refusing to resolve references costs the WHOLE reply, since the answer carries the failing
     part, so the switch trades video / audio ingestion (which `InlineRenderer` drops) for
-    replies that still land. It is read per call because that is the granularity an operator
-    flipping it mid-incident expects.
+    replies that still land. Flipping it takes a restart, like every other setting here:
+    `.env` is read at import and the one production caller is a `cached_property`.
     """
     if not LLMConfig().file_api_enabled:
         return InlineRenderer()
