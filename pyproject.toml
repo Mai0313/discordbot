@@ -204,7 +204,7 @@ compile-bytecode = true
 index-strategy = "first-index"
 system-certs = false
 offline = false
-prerelease = "if-necessary-or-explicit"
+prerelease = "if-necessary"
 preview-features = true
 
 # https://docs.astral.sh/uv/reference/settings/#index
@@ -223,7 +223,7 @@ annotation-style = "split"
 compile-bytecode = true
 index-url = "https://pypi.org/simple"
 output-file = "requirements.txt"
-prerelease = "if-necessary-or-explicit"
+prerelease = "if-necessary"
 
 
 # ================== #
