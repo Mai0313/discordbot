@@ -2520,6 +2520,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 kind="reply",
                 name=route_decision or UNROUTED_REPLY,
                 user_id=message.author.id,
+                user_name=message.author.name,
                 guild_id=message.guild.id if message.guild else None,
                 channel_id=message.channel.id,
             )

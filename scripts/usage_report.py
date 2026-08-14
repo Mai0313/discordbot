@@ -5,11 +5,17 @@ the features nobody uses can be found; this is the reader for that. It only ever
 the month files, so it is safe against a live bot: a line half-written while it reads is
 counted as unreadable rather than silently dropped, and nothing here writes back.
 
-Every number is a count of invocations. The records carry no success field and no names,
-arguments or content — only numeric ids, see that module's docstring for why — so a share
-below is a share of uses and never a success rate, and a user or a guild is named by id.
-That also bounds what this can answer: a command that exists but was never run leaves no
-record at all, so the tables name the features that were used, not the ones that were not.
+Every number is a count of invocations. The records carry no success field, no arguments
+and no content (see that module's docstring for why), so a share below is a share of uses
+and never a success rate. That also bounds what this can answer: a command that exists but
+was never run leaves no record at all, so the tables name the features that were used, not
+the ones that were not.
+
+A user is grouped by id and labelled with the username the newest of their records carries.
+That username is a write-time snapshot: someone who renamed leaves both names in the file,
+so grouping by it would split them in two, and a record written before the field existed
+carries none at all and falls back to its id. A guild is named by id throughout, since
+nothing records its name.
 
 Run from the repo root::
 
@@ -208,9 +214,18 @@ def _daily_table(records: list[UsageRecord]) -> Table:
 
 
 def _top_table(
-    records: list[UsageRecord], title: str, label: str, key: Callable[[UsageRecord], str]
+    records: list[UsageRecord],
+    title: str,
+    label: str,
+    key: Callable[[UsageRecord], str],
+    display: dict[str, str] | None = None,
 ) -> Table:
-    """Returns the `_TOP_ROWS` busiest values of `key`, with everything else as one row."""
+    """Returns the `_TOP_ROWS` busiest values of `key`, with everything else as one row.
+
+    `display` relabels a key for the table only. Grouping and labelling are separate on
+    purpose: a username drifts and an id does not, so the id is what counts the rows up
+    and the name is only what the row is called.
+    """
     counts = Counter(key(record) for record in records)
     features: defaultdict[str, Counter[str]] = defaultdict(Counter)
     for record in records:
@@ -231,7 +246,7 @@ def _top_table(
     peak = max((count for _, count in top), default=0)
     for name, count in top:
         table.add_row(
-            name,
+            (display or {}).get(name, name),
             str(count),
             _share(value=count, total=len(records)),
             _bar(value=count, peak=peak),
@@ -291,12 +306,15 @@ def main() -> None:
             key=lambda record: "DM" if record.guild_id is None else str(record.guild_id),
         )
     )
+    # The records are in time order, so the last name written per id is the current one.
+    names = {str(record.user_id): record.user_name for record in records if record.user_name}
     console.print(
         _top_table(
             records=records,
             title="who used",
-            label="user id",
+            label="user",
             key=lambda record: str(record.user_id),
+            display=names,
         )
     )
 

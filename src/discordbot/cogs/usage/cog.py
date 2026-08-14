@@ -94,6 +94,7 @@ class UsageCogs(commands.Cog):
             kind="slash",
             name=name,
             user_id=user.id,
+            user_name=user.name,
             guild_id=interaction.guild_id,
             channel_id=interaction.channel_id,
         )

@@ -9,9 +9,15 @@ can read a month of in one pass.
 What a record answers is "someone used this", nothing more: there is no success/failure
 field, because how well a use went is what the runtime log is for, and the slash record
 is written at the one point that sees an invocation before its outcome exists (see
-`cogs/usage/cog.py`). Only numeric ids are stored — no names, no message content, no
-command arguments — since every question this file exists to answer needs a stable
-identifier and nothing else, names drift, and nothing prunes these files.
+`cogs/usage/cog.py`). No message content and no command arguments are stored, since no
+question this file exists to answer needs them and nothing prunes these files.
+
+Who is stored twice over: `user_id` is the identifier every read groups by, and
+`user_name` is the Discord username as it read at write time, kept only so an operator
+does not have to resolve a hundred ids by hand. It is a snapshot and it drifts — someone
+who renames leaves both names behind in the same file — so it is a label, never a key.
+The per-guild display name is deliberately not what is stored: it differs per server and
+changes far more often, so it would drift without even identifying anyone.
 """
 
 from typing import Literal
@@ -67,6 +73,7 @@ class UsageRecord(BaseModel):
         kind: Whether this was a slash command or an AI reply.
         name: The command path (`memory server show`) or the reply's route (`QA`).
         user_id: Discord user ID that used it.
+        user_name: That user's Discord username when the record was written.
         guild_id: Discord guild ID, or None in a DM.
         channel_id: Discord channel ID, or None when the interaction carries none.
     """
@@ -79,6 +86,14 @@ class UsageRecord(BaseModel):
         examples=["memory server show", "QA"],
     )
     user_id: int = Field(..., description="Discord user ID that used the feature.")
+    # Defaulted rather than required, for the records written before this field existed:
+    # a month file is append-only and never rewritten, so a reader has to expect both
+    # shapes forever. Every new record carries it, since `record` takes it as an argument.
+    user_name: str = Field(
+        default="",
+        description="The user's Discord username as it read at write time; a label, not a key.",
+        examples=["weichenglee"],
+    )
     guild_id: int | None = Field(..., description="Discord guild ID, or None in a DM.")
     channel_id: int | None = Field(..., description="Discord channel ID, when there is one.")
 
@@ -112,11 +127,12 @@ class UsageRecorder(BaseModel):
         description="The usage-recording configuration backing this recorder.",
     )
 
-    async def record(
+    async def record(  # noqa: PLR0913 -- one record's fields are all per-call inputs
         self,
         kind: UsageKind,
         name: str,
         user_id: int,
+        user_name: str,
         guild_id: int | None,
         channel_id: int | None,
     ) -> None:
@@ -132,6 +148,7 @@ class UsageRecorder(BaseModel):
             kind=kind,
             name=name,
             user_id=user_id,
+            user_name=user_name,
             guild_id=guild_id,
             channel_id=channel_id,
         )

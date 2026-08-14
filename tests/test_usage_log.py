@@ -11,7 +11,7 @@ from nextcord import InteractionType
 
 from discordbot.cogs.usage.cog import UsageCogs, setup, command_path
 from discordbot.utils.timezone import database_now
-from discordbot.utils.usage_log import UsageRecorder, UsageLogConfig
+from discordbot.utils.usage_log import UsageRecord, UsageRecorder, UsageLogConfig
 
 from tests.helpers.casting import as_bot, as_interaction, as_command_interaction_data
 
@@ -57,7 +57,7 @@ class FakeCommandInteraction:
         """Initializes the payload, interaction type, invoker and location ids."""
         self.data = data
         self.type = interaction_type
-        self.user: SimpleNamespace | None = SimpleNamespace(id=42)
+        self.user: SimpleNamespace | None = SimpleNamespace(id=42, name="tester")
         self.guild_id = guild_id
         self.channel_id = channel_id
 
@@ -67,18 +67,25 @@ async def test_a_record_lands_in_its_own_month_file(tmp_path: Path) -> None:
     usage_dir = tmp_path / "usage"
 
     await _recorder(directory=usage_dir).record(
-        kind="slash", name="games blackjack", user_id=1, guild_id=2, channel_id=3
+        kind="slash",
+        name="games blackjack",
+        user_id=1,
+        user_name="tester",
+        guild_id=2,
+        channel_id=3,
     )
 
     month_file = usage_dir / f"{database_now():%Y-%m}.jsonl"
     assert [path.name for path in usage_dir.iterdir()] == [month_file.name]
     (record,) = _lines(directory=usage_dir)
-    # The exact key set is the privacy decision: an id says who, and nothing here says
-    # what they typed or what they are called. Nothing prunes these files.
-    assert set(record) == {"at", "kind", "name", "user_id", "guild_id", "channel_id"}
+    # The exact key set is the privacy decision: who and where, and nothing about what
+    # they typed. The username rides along so an operator can read the file, but it is a
+    # label beside the id rather than a second identifier. Nothing prunes these files.
+    assert set(record) == {"at", "kind", "name", "user_id", "user_name", "guild_id", "channel_id"}
     assert record["kind"] == "slash"
     assert record["name"] == "games blackjack"
-    assert (record["user_id"], record["guild_id"], record["channel_id"]) == (1, 2, 3)
+    assert (record["user_id"], record["user_name"]) == (1, "tester")
+    assert (record["guild_id"], record["channel_id"]) == (2, 3)
     # Stamped in Asia/Taipei with the offset present, so grouping by day is a string slice
     # and the value is still unambiguous.
     assert record["at"].endswith("+08:00")
@@ -90,8 +97,12 @@ async def test_each_use_appends_its_own_line(tmp_path: Path) -> None:
     usage_dir = tmp_path / "usage"
     recorder = _recorder(directory=usage_dir)
 
-    await recorder.record(kind="slash", name="ping", user_id=1, guild_id=2, channel_id=3)
-    await recorder.record(kind="reply", name="QA", user_id=1, guild_id=None, channel_id=3)
+    await recorder.record(
+        kind="slash", name="ping", user_id=1, user_name="a", guild_id=2, channel_id=3
+    )
+    await recorder.record(
+        kind="reply", name="QA", user_id=1, user_name="a", guild_id=None, channel_id=3
+    )
 
     records = _lines(directory=usage_dir)
     assert [(record["kind"], record["name"]) for record in records] == [
@@ -107,7 +118,7 @@ async def test_the_kill_switch_writes_nothing(tmp_path: Path) -> None:
     usage_dir = tmp_path / "usage"
 
     await _recorder(directory=usage_dir, enabled=False).record(
-        kind="slash", name="ping", user_id=1, guild_id=2, channel_id=3
+        kind="slash", name="ping", user_id=1, user_name="a", guild_id=2, channel_id=3
     )
 
     assert not usage_dir.exists()
@@ -119,10 +130,25 @@ async def test_a_write_failure_never_reaches_the_caller(tmp_path: Path) -> None:
     blocked.write_text(data="not a directory", encoding="utf-8")
 
     await _recorder(directory=blocked).record(
-        kind="slash", name="ping", user_id=1, guild_id=2, channel_id=3
+        kind="slash", name="ping", user_id=1, user_name="a", guild_id=2, channel_id=3
     )
 
     assert blocked.read_text(encoding="utf-8") == "not a directory"
+
+
+def test_a_record_written_before_usernames_still_parses() -> None:
+    """`user_name` has to stay optional on the model, whatever the writer now sends.
+
+    A month file is append-only and never rewritten, so the records from before the field
+    existed keep their old shape forever. Making it required would not lose one line, it
+    would make every reader reject every month written up to that point.
+    """
+    record = UsageRecord.model_validate_json(
+        '{"at":"2026-08-03T03:29:00+08:00","kind":"reply","name":"QA","user_id":1,'
+        '"guild_id":2,"channel_id":3}'
+    )
+
+    assert (record.user_id, record.user_name) == (1, "")
 
 
 def test_command_path_walks_to_the_invoked_subcommand() -> None:
@@ -204,7 +230,8 @@ async def test_the_listener_records_one_invocation(tmp_path: Path) -> None:
     records = _lines(directory=usage_dir)
     assert [record["name"] for record in records] == ["memory clear", "ping"]
     assert all(record["kind"] == "slash" for record in records)
-    assert (records[0]["user_id"], records[0]["guild_id"]) == (42, 55)
+    assert (records[0]["user_id"], records[0]["user_name"]) == (42, "tester")
+    assert records[0]["guild_id"] == 55
     assert (records[1]["guild_id"], records[1]["channel_id"]) == (None, None)
 
 
