@@ -159,6 +159,10 @@ def roll_catch(  # noqa: PLR0913 -- a roll needs rng, configs, species, rod, bai
     intra-grade weights within that grade, and the size uniformly across the
     species' basis-point range. The final value applies the size multiplier and
     the bait value bonus, then clamps to `max_value`.
+
+    Raises:
+        ValueError: The species catalog is empty, or every grade that could be
+            rolled is disabled by a zero base weight.
     """
     if not species:
         msg = "cannot roll a catch from an empty species catalog"

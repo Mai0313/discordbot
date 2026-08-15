@@ -1,9 +1,11 @@
 """Loop-local asyncio primitives that rebind when the running event loop changes.
 
-Module-level locks / semaphores / registries must rebind per loop: the test suite runs
-each case on a fresh event loop (and swaps the module-level engines tests monkeypatch), so
-a primitive bound to a closed loop would be unusable. Hold one instance per call site; each
-accessor rebinds to the current loop, rebuilding (or clearing) state bound to a stale loop.
+An `asyncio.Lock` / `Semaphore` binds to the loop of the first call that actually waits on
+it rather than to the loop it was built on, so constructing one lazily does not help: the
+next loop to reach it raises `is bound to a different event loop`. Every test case runs on
+a fresh loop, so a primitive held at module level or on a process-wide singleton hits that
+on the second test. Hold one instance per call site; each accessor rebinds to the current
+loop, rebuilding (or clearing) state bound to a stale loop.
 """
 
 import asyncio

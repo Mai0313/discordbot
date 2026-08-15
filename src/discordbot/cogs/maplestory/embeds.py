@@ -43,7 +43,9 @@ class TranslateFn(Protocol):
             name: Source name to translate.
 
         Returns:
-            The translated name, or an implementation-defined fallback.
+            The translated name, or `name` unchanged when the category holds no
+            entry for it. Callers detect a miss by comparing the result against
+            the name they passed in.
         """
         ...
 
@@ -59,7 +61,11 @@ def _truncate(text: str, limit: int = 1024) -> str:
 
 
 def _translate_map_name(name: str, translate: TranslateFn) -> str:
-    """Translate composite map names like 'Amherst > Weapon Store'."""
+    """Translates a composite map name like 'Rainbow Street: Amherst > Weapon Store'.
+
+    The translation table keys each half separately, so the whole string never
+    resolves on its own.
+    """
     parts = [translate(category="maps", name=p.strip()) for p in name.split(" > ")]
     return " > ".join(parts)
 

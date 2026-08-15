@@ -1,9 +1,10 @@
 """Gemini Files API attachment renderer: direct-SDK upload, activation poll, re-poll cache.
 
 Owns the mechanical side-channel that turns attachment bytes into an ACTIVE Gemini file URI
-referenced as an `input_file` part: the direct-SDK upload, the activation poll, the pending
-re-poll, and the per-source dead-source / pending / concurrency caches. Kept separate from
-`input.py` so the upload state machine does not tangle with source-to-part rendering.
+referenced as an `input_file` part: the direct-SDK upload, the activation poll, and the
+per-source pending re-poll cache. The dead-source cache and the media semaphore it works
+against are inherited from `base.AttachmentRenderer`. Kept separate from `input.py` so the
+upload state machine does not tangle with source-to-part rendering.
 """
 
 import io

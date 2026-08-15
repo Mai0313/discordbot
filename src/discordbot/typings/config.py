@@ -16,7 +16,7 @@ class DiscordConfig(BaseSettings):
 
     discord_bot_token: str = Field(
         ...,
-        description="The token from discord for calling models.",
+        description="The token from Discord the bot authenticates its gateway session with.",
         examples=["MTEz-..."],
         validation_alias=AliasChoices("DISCORD_BOT_TOKEN"),
     )

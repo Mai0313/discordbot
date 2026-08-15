@@ -1,8 +1,9 @@
 """Shared cent-to-integer-cash conversion helpers.
 
-Stock execution and presentation convert cent-denominated prices into integer
-`CURRENCY_NAME` cash. These rounding helpers live here so economy code can
-reuse the same conversion without redefining it.
+Stock prices are cent-denominated while wallets hold whole `CURRENCY_NAME` cash, so
+stock execution and stock presentation round every settlement leg and every displayed
+total through one of these two. Picking one is the call site's job: stock settlement
+ceils what a user pays and floors what a user receives.
 """
 
 

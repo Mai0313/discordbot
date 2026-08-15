@@ -171,7 +171,9 @@ async def _fetch_and_upload(
 
     The cap handed to `download` is the Files API's own 2 GB ceiling, so an impossible file is
     refused from its `Content-Length` in seconds instead of consuming the whole media budget.
-    Nothing below that is refused: a full-resolution clip is exactly what the model should see.
+    Nothing below that is refused: it is a fail-fast guard, not a quality lever. Resolution is
+    the separate lever and is already turned down — `AI_INGEST_QUALITY` asks Douyin for its
+    lowest preset, so the bytes that arrive are not the ones the expansion posts to Discord.
     """
     with tempfile.TemporaryDirectory(prefix="douyin-ai-") as download_dir:
         downloader = DouyinDownloader(output_folder=download_dir)

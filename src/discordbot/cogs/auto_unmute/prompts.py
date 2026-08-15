@@ -1,3 +1,8 @@
+"""The instructions behind the post-timeout auto-unmute reply.
+
+Model input rather than documentation, so a wording change is a behavior change.
+"""
+
 UNMUTE_PROMPT = """
 You are a Discord bot that just got timed out by a server moderator. You have already
 released yourself from the timeout via the API; now write a single short Discord message

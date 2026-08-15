@@ -44,7 +44,12 @@ def tick_boundary(dt: datetime) -> datetime:
 
 
 def decay_news_sentiment(sentiment_bps: int, elapsed_seconds: int) -> int:
-    """Applies linear time-based news sentiment decay and clamps the result."""
+    """Applies linear time-based news sentiment decay and clamps the result.
+
+    Ambient context for the news-generation prompt only. Pricing applies each
+    news row as a one-shot impulse at its own firing tick boundary, never as a
+    decayed drift over the ticks after it.
+    """
     clamped = clamp_bps(
         value=sentiment_bps, lower=-NEWS_SENTIMENT_LIMIT_BPS, upper=NEWS_SENTIMENT_LIMIT_BPS
     )
@@ -94,7 +99,7 @@ def execution_price_cents(
 def mean_reversion_bps(
     previous_price_cents: int, fair_value_cents: int, mean_reversion_strength_bps: int
 ) -> int:
-    """Returns the bounded fair-value pull for the next tick."""
+    """Returns the fair-value pull for the next tick, scaled by the reversion strength."""
     if previous_price_cents <= 0 or fair_value_cents <= 0 or mean_reversion_strength_bps <= 0:
         return 0
     fair_value_gap_bps = (fair_value_cents - previous_price_cents) * 10_000 // previous_price_cents
@@ -198,7 +203,14 @@ def _fill_compressed_boundaries(
 
 
 def tick_boundaries_to_apply(latest_tick_at: datetime, now: datetime) -> tuple[datetime, ...]:
-    """Returns tick boundaries that should be materialized for a lazy interaction."""
+    """Returns tick boundaries that should be materialized for a lazy interaction.
+
+    A backlog longer than `MAX_TICKS_PER_INTERACTION` is compressed to that many
+    boundaries. Each Asia/Taipei day rollover keeps both the boundary that opens
+    the new day and the one before it, so the caller still sees every previous
+    close and day open; a backlog holding more rollovers than the cap keeps only
+    the most recent ones.
+    """
     latest_boundary = tick_boundary(dt=latest_tick_at)
     current_boundary = tick_boundary(dt=now)
     if current_boundary <= latest_boundary:

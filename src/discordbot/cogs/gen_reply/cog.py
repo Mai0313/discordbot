@@ -183,9 +183,11 @@ EFFORT_GRACE_SECONDS = 5.0
 # preparation and effort grading. Tune against the `gen_reply link context done` latency log.
 LINK_CONTEXT_GRACE_SECONDS = 180.0
 
-# Bound on the ACTIVE poll for a generated clip uploaded so the persona reply can watch it.
-# Generous relative to an image because video sits in PROCESSING longer, but far under the
-# link-media bound: the clip was just produced here, so it is small and known-good.
+# Bound on the whole Files API upload of a generated clip the persona reply then watches:
+# `upload_to_files_api` covers the transfer as well as the ACTIVE poll under this one timeout,
+# started once an upload slot is free. Generous relative to an image because video sits in
+# PROCESSING longer, but far under the link-media bound: the clip was just produced here, so it
+# is small and known-good.
 GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS = 60.0
 
 # Recorded as a reply's route when the pipeline failed before the router returned one.
@@ -224,7 +226,7 @@ def _authored_link_texts(message: Message) -> list[str]:
     Narrower than `_message_link_texts` by exactly one thing: an embed card never counts,
     neither the message's own nor a forwarded snapshot's. One hop out an embed is a card the
     author did not write, and the bot's own Threads expansion is the common one:
-    `parse_threads._build_embeds` emits one permalink per post in the reply chain, ROOT first,
+    `parse_threads._build_embed_plan` emits one permalink per post in the reply chain, ROOT first,
     so a scan keyed on it would read the thread's top post rather than the one the human
     linked — and it disappears entirely when an oversize video pushes hosted URLs into
     `content`. A link a person typed always lives in `content` (or in the content of what they
@@ -443,9 +445,10 @@ async def _discard_task[TaskResultT](
     """Cancels and drains a speculative task so its exception is retrieved.
 
     The except is deliberately broad: this drains unrelated subsystems (prep, effort, parts,
-    threads, douyin, memory selection), so anything they can raise must be swallowed here rather
-    than surfacing on a route that already decided it does not need the result. `label` names
-    which one failed, since the tasks are otherwise indistinguishable at this point.
+    memory selection), so anything they can raise must be swallowed here rather than surfacing on
+    a route that already decided it does not need the result. `label` names which one failed,
+    since the tasks are otherwise indistinguishable at this point. A link-context build is drained
+    by `_drain_deadline_bound_task` instead, which must not steal its own deadline's cancellation.
     """
     task.cancel()
     try:
@@ -625,7 +628,9 @@ def _bilibili_media_ingest_allowed(config: LLMConfig) -> bool:
 
 # The linked-content sources gen_reply reads into answer context, in splice order: the blocks
 # land in the answer input in this order, just before the current message. Adding a source is
-# one entry here plus its builder module; the pipeline loops stay untouched.
+# one entry here, its builder module, and its name in `RouteClassification.link_context_sources`
+# (a source the router cannot name is never selected, so its builder never starts); the pipeline
+# loops stay untouched.
 LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
     LinkContextSource(
         name="threads",
@@ -728,6 +733,8 @@ class ReplyGeneratorCogs(commands.Cog):
     Attributes:
         bot: The Discord bot instance that owns this cog.
         config: The LLM client configuration loaded for reply generation.
+        runtime_models: The model strings and per-tier settings every call here dispatches on.
+        usage_recorder: The per-reply usage-record writer read by `scripts/usage_report.py`.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -763,16 +770,21 @@ class ReplyGeneratorCogs(commands.Cog):
     def gemini_client(self) -> genai.Client:
         """The cached native Gemini client for every DIRECT-to-Google runtime path.
 
-        DIRECT to Google (`gemini_api_key`, no proxy): it serves the two runtime paths the
-        LiteLLM proxy cannot, and the swap only ever fires when the answer model is already
-        Gemini so the direct credential is always the right one:
+        DIRECT to Google (`gemini_api_key`, no proxy): it serves the runtime paths the LiteLLM
+        proxy cannot.
+
         - native omni video generation / editing (`interactions.create`, delivery=uri + Files
-          download); and
+          download), for both the VIDEO route and the inline `<generate-video>` marker;
+        - the inline `<generate-music>` Lyria render, also on the Interactions API;
+        - Files API uploads, so a generated clip (and, through
+          `gemini_client_if_configured`, a linked post's media) can be referenced by uri; and
         - the YouTube-aware QA answer turn that streams through the native Interactions API (the
-          only path that can actually watch a linked video).
-        Both forgo proxy-side cost/usage tracking, like the deep-research direct path. An empty
-        key raises at construction, so a caller that is reachable without one must go through
-        `gemini_client_if_configured` instead of touching this.
+          only path that can actually watch a linked video). That last swap only ever fires when
+          the answer model is already Gemini, so the direct credential is always the right one.
+
+        All of them forgo proxy-side cost/usage tracking, like the deep-research direct path. An
+        empty key raises at construction, so a caller that is reachable without one must go
+        through `gemini_client_if_configured` instead of touching this.
 
         Returns:
             A Gemini client for native media generation and the Interactions answer turn.
@@ -836,12 +848,13 @@ class ReplyGeneratorCogs(commands.Cog):
 
     @cached_property
     def video_generator(self) -> VideoGenerator:
-        """The cached video renderer for the VIDEO route.
+        """The cached video renderer shared by the VIDEO route and the QA-route `<generate-video>` marker.
 
         Returns:
             A generator bound to this cog's DIRECT-to-Google Gemini client and the video model
             (the Interactions API is Gemini-only, not reachable via the proxy); the route calls
-            `render` (raises).
+            `render` (raises) while the inline path calls `generate` (best-effort, gated on
+            `allow_video` and `config.video_available`).
         """
         return VideoGenerator(
             client=self.gemini_client, video_model=self.runtime_models.video_model
@@ -922,10 +935,10 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     async def _fetch_history(self, message: Message, limit: int) -> list[Message]:
-        """Fetches up to `limit` channel-history messages once (a single Discord API call).
+        """Fetches up to `limit` channel-history messages once.
 
         Returned raw so both the optional selector's text-only render and the answer's
-        uploaded render derive from one fetch, without a second history round-trip.
+        uploaded render derive from one fetch, without a second walk of history.
         """
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
@@ -1207,8 +1220,9 @@ class ReplyGeneratorCogs(commands.Cog):
         path, and a fresh hosted-case base that never received content is deleted (never an orphan).
         Builds the answer-path input (history, selected user memory, tone note, reference, current),
         appends the just-made media as the focus, and streams onto the base (its content edits keep an
-        attached media). Injects only the selected user memory (already source-filtered) plus the
-        author's tone note, never the server memory block, and seeds the
+        attached media). Injects only the selected user memory (already read through the
+        compartments this conversation may open) plus the author's tone note, never the server
+        memory block, and seeds the
         selection-call usage / memory labels so the footer matches the QA path. Consumes the
         speculative `context_task` (awaited here so its build overlaps generation); any failure
         leaves the delivered media untouched.
@@ -1219,8 +1233,8 @@ class ReplyGeneratorCogs(commands.Cog):
             context = await context_task
             base = await self._persona_base_reply(message=message, reply=reply)
             # Mirror the answer path's order (history, memory, tone, reference, current),
-            # injecting only the selected user memory (already source-filtered) and the
-            # author's tone note, never the server memory block.
+            # injecting only the selected user memory (already compartment-scoped by
+            # `resolve_user_memories`) and the author's tone note, never the server memory block.
             response_input: ResponseInputParam = [*context.hist_messages]
             response_input.extend(
                 block for block in (context.memory_block, context.tone_block) if block is not None
@@ -1397,11 +1411,12 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> RouteClassification:
         """Classifies the message into a reply mode using pre-built context parts.
 
-        Only the handler choice is decided here; the answer effort is graded by
-        `_grade_effort` in a parallel call, so this stays a short single-purpose
-        classification on the critical path. The reference + current parts arrive already
-        text-only (attachment markers, no file ids), so the route classifies on the text
-        without reading or waiting on uploads.
+        The handler choice and the two content-read decisions that ride with it
+        (`watch_video`, `link_context_sources`) all come from this one call; the answer
+        effort is graded by `_grade_effort` in a parallel call, so this stays short on the
+        critical path. The reference + current parts arrive already text-only (attachment
+        markers, no file ids), so the route classifies on the text without reading or
+        waiting on uploads.
         """
         message_list = [*reference_messages, *current_message]
 
@@ -1683,8 +1698,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 allowed=deterministic_allowed, memory=server_memory, include_absent=False
             )
             if _source_channel_is_public(message=message):
-                # No credit label: the conversation never names these members, so the
-                # footer falls back to the identity their own memory carries.
+                # No credit label: the conversation never names these members, so
+                # `resolve_user_memories` credits them by their bare id. Deliberately NOT the
+                # identity their own memory carries, which is the display name of whichever
+                # guild's consolidation last wrote that fact (see `MemoryCandidate`).
                 optional_allowed = {
                     user_id: MemoryCandidate(prompt_label=label)
                     for user_id, label in allowlist_ids_from_server_memory(
@@ -2107,7 +2124,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 ),
             )
         # Server memory is not gated by `memory_enabled`: the SUMMARY route runs with it
-        # off (no per-user memory) yet its ~100-message digest is high-quality community
+        # off (no per-user memory) yet its 200-message digest is high-quality community
         # signal worth recording. DMs and non-public channels are dropped by the guards
         # inside `_schedule_server_memory_update`.
         self._schedule_server_memory_update(
@@ -2421,7 +2438,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     # A digest recaps channel history, not one linked post, so intent-gated link
                     # builders never start here. A URL-bearing SUMMARY is already rerouted to QA.
                     reactions.advance(emoji="<:stacks:1517562531365912607>")
-                    # so it neither biases the digest nor floods extraction, but the
+                    # A digest reads 200 channel messages, so it is rebuilt with per-user memory
+                    # off: it neither biases the digest nor floods extraction, but the
                     # per-server memory is still recorded since the digest is rich
                     # community signal. Cancelling the speculative prep leaves `parts_task`
                     # running (prep awaits it through asyncio.shield), so the shared

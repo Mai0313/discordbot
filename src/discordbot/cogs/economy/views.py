@@ -257,7 +257,11 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         await send_ephemeral_response(interaction=interaction, embed=embed)
 
     async def _require_lender(self, interaction: Interaction[commands.Bot]) -> bool:
-        """Returns whether the clicking user is the requested lender."""
+        """Returns whether the clicking user is the requested lender.
+
+        Someone other than the lender is answered with the permission notice
+        before this returns `False`, so the caller must not reply again.
+        """
         if interaction.user is None:
             return False
         if interaction.user.id == self.lender_id:

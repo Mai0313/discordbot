@@ -10,13 +10,14 @@ render goes through the same calling convention instead of a half-free-function 
   proxy like the answer model. The QA-route inline
   `<generate-image>` marker does NOT refine (its description is already written by the answer model).
 - `ImageGenerator` runs the downstream image model on the LiteLLM proxy (`AsyncOpenAI`). `render`
-  is the raising primitive shared by the router IMAGE route (which also edits source pixels) and
-  the best-effort inline path; `generate` is the QA-route `<generate-image>` marker's best-effort wrapper
-  (generation-only, timeout, None on any failure) so a slow inline render never blocks anything but
-  its own reply.
+  is the raising primitive shared by the router IMAGE route and the best-effort inline path (both
+  edit source pixels when the message carried an image); `generate` is the QA-route
+  `<generate-image>` marker's best-effort wrapper (timeout, None on any failure) so a slow inline
+  render never blocks anything but its own reply.
 - `VoiceGenerator` runs the text-to-speech model on the same LiteLLM proxy (`AsyncOpenAI`) as the
   image generator. Kept on the proxy on purpose: TTS has many interchangeable providers, so the
-  one-SDK proxy path stays the most portable, unlike Veo / Lyria below which can only go direct.
+  one-SDK proxy path stays the most portable, unlike the omni video and Lyria music renders
+  below, which can only go direct.
   `generate` is best-effort but returns a `VoiceClip` carrying a `VoiceOutcome`
   (OK / EMPTY / TIMEOUT / ERROR) rather than a bare None, so the caller can hint a timeout (⏱️)
   apart from any other failure (⚠️). The `speechify_discord_markup` helper that prepares its spoken
@@ -523,8 +524,11 @@ class _InteractionResult(Protocol):
     attributes are declared here and cast to instead. Naming the response class is its own
     trap: `google.genai.interactions` star-imports `Interaction` from both the request-union
     alias (which carries none of these attributes) and the response module, and only the
-    runtime import order makes the response class win. `ty` resolves it to the response class;
-    mypy bound the request union, which is what a nominal cast used to get wrong.
+    runtime import order makes the response class win. `ty` resolves it to the response class,
+    so a nominal `cast("Interaction", ...)` is no longer wrong there, merely fragile: its
+    meaning rests on that import order, while this Protocol pins the attributes actually read.
+    That the collision is real rather than theoretical was demonstrated by mypy, which bound
+    the request union before it was dropped in #356; no checker in the tree will show it again.
     """
 
     @property
@@ -639,7 +643,7 @@ class VideoGenerator(BaseModel):
             )
         # No `stream=True`, so this is the interaction rather than an event stream: exclude the
         # stream at runtime, then read the result through the structural `_InteractionResult`
-        # view (its docstring has why the genai response class cannot be named or narrowed to).
+        # view (its docstring has why naming the genai response class is not enough on its own).
         if isinstance(interaction, AsyncIterator):
             raise RuntimeError("Video generation returned an event stream, not an interaction")
         result = cast("_InteractionResult", interaction)

@@ -139,7 +139,7 @@ class AnglerStateView(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     user_id: int = Field(..., description="Discord user ID of the angler.")
-    user_name: str = Field(default="", description="Last-seen display name of the angler.")
+    user_name: str = Field(default="", description="Last-seen Discord username of the angler.")
     rod: GearView | None = Field(
         default=None, description="Currently equipped rod, or None when the angler has no rod."
     )
@@ -182,7 +182,9 @@ class CatchLogView(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     user_id: int = Field(..., description="Discord user ID of the angler who made the catch.")
-    user_name: str = Field(..., description="Stored display name of the angler.")
+    user_name: str = Field(
+        ..., description="Username stored with the catch, or the user id when none was stored."
+    )
     species_id: str = Field(..., description="Identifier of the caught species.")
     species_name: str = Field(..., description="Stored display name of the caught species.")
     grade: FishGrade = Field(..., description="Rarity grade of the catch.")

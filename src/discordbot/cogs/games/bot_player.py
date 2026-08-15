@@ -91,11 +91,11 @@ class ShoeSummary(BaseModel):
 
 
 class DealerKnowledge(BaseModel):
-    """Dealer state exposed to the bot player AI.
+    """Dealer state exposed to the bot player.
 
     Only the up-card is shared, exactly what any seated player sees. The hole
     card, the combined two-card total, and the natural-Blackjack flag are
-    deliberately withheld so nothing the model receives can reveal the hole.
+    deliberately withheld so nothing carried here can reveal the hole.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -330,7 +330,7 @@ def build_shoe_summary(*, shoe: list[Card]) -> ShoeSummary:
 
 
 def build_dealer_knowledge(*, dealer_up: Card | None) -> DealerKnowledge:
-    """Builds the up-card-only dealer state exposed to the bot player AI."""
+    """Builds the up-card-only dealer state exposed to the bot player."""
     return DealerKnowledge(
         up_card=str(dealer_up) if dealer_up is not None else "unknown",
         up_value=_dealer_up_value(up_card=dealer_up),
@@ -418,7 +418,7 @@ def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap
 
     Returns:
         A positive integer wager within `[1, max_fraction * balance]`, never above
-        `balance`.
+        `balance`. A non-positive balance returns 1, the one case above `balance`.
     """
     if balance <= 0:
         return 1
@@ -560,7 +560,7 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
     balance_remaining: int,
     doubled: bool = False,
 ) -> BotPlayerActionContext:
-    """Builds computed AI context without exposing the future shoe order."""
+    """Builds the bot's computed decision context without exposing the future shoe order."""
     hand_total, _is_soft = _hand_total_and_soft(cards=hand_cards)
     ev_analysis = _safe_compute_action_evs(
         hand_cards=hand_cards,
@@ -641,9 +641,10 @@ def choose_bot_action(  # noqa: PLR0913 -- deterministic action picker mirrors t
 ) -> BotAction:
     """Returns the deterministic action the bot plays this turn.
 
-    The action is the EV engine's hole-aware recommendation carried on the
-    action context (always one of `allowed_actions`); it degrades to the
-    up-card-only basic-strategy fallback only when the context is missing.
+    The choice is whatever the action context already resolved (always one of
+    `allowed_actions`): the EV engine's hole-aware recommendation, or the
+    basic-strategy fallback the builder substituted when the engine failed.
+    This function only recomputes that fallback when the context is missing.
     """
     if action_context is not None:
         return action_context.action_analysis.basic_strategy_action
@@ -661,8 +662,8 @@ def build_bot_insurance_context(
 ) -> BotPlayerInsuranceContext:
     """Builds insurance context from the remaining-shoe ten density only.
 
-    The dealer hole card is never passed in, so it cannot reach the decision or
-    the prompt. Insurance pays only on a ten-value hole, so the remaining shoe's
+    The dealer hole card is never passed in, so it cannot reach the decision.
+    Insurance pays only on a ten-value hole, so the remaining shoe's
     ten-value fraction is the fair probability a counter would use. Insurance is
     +EV only when that fraction clears 1/3; the probability matches the exposed
     shoe counts exactly, leaving nothing to cross-solve.

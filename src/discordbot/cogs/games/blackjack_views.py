@@ -277,10 +277,11 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
 ) -> Embed:
     """Builds the dealer seat embed shown alongside player seats.
 
-    Pass `hide_hole=False` during the dealer phase or peek-reveal animations so
-    the hole card is visible; `dealer_steps` populates the rule-driven action
-    log once dealer play starts. When `is_settled=True`, `results` drives the
-    color from the casino-vs-table outcome rather than the dealer hand total.
+    Only the peek-reveal frame passes `hide_hole=False` before settlement, which is
+    what makes the hole visible there; `dealer_steps` populates the rule-driven
+    action log once dealer play starts. When `is_settled=True`, `results` drives the
+    color from the casino-vs-table outcome; otherwise the color tracks the
+    round phase.
     """
     description_parts: list[str] = [
         _format_dealer_block(round_state=round_state, hide_hole=hide_hole)
@@ -289,7 +290,7 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
     if decision_path:
         description_parts.append(metadata_line(text=f"動作: {decision_path}"))
     if not is_settled and not hide_hole:
-        # We are still showing the table while the dealer plays.
+        # Hole card face-up on a round that has not settled: the peek-reveal frame.
         description_parts.append(metadata_line(text="莊家正在依規則出牌"))
     elif not is_settled:
         description_parts.append(metadata_line(text="莊家暗牌待揭示"))
@@ -1466,7 +1467,7 @@ class BlackjackView(View):
             )
 
     def _track_background_task(self, coroutine: Coroutine[Any, Any, None]) -> None:
-        """Tracks a background UI refresh task until it finishes."""
+        """Holds a strong reference to an off-critical-path task until it finishes."""
         task = asyncio.create_task(coro=coroutine)
         self._background_tasks.add(task)
 
@@ -1476,7 +1477,10 @@ class BlackjackView(View):
         task.add_done_callback(_discard_task)
 
     async def wait_for_background_tasks(self) -> None:
-        """Waits for currently scheduled background UI refreshes."""
+        """Waits for the round's off-critical-path tasks (round-history persistence).
+
+        Only tests await this; the round itself never blocks on them.
+        """
         while self._background_tasks:
             await asyncio.gather(*tuple(self._background_tasks))
 

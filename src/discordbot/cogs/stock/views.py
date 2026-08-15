@@ -102,7 +102,7 @@ class _StockQuantitySubmission(BaseModel):
 
 
 class StockMarketView(StockPublicView):
-    """Stock select and tutorial controls for the market list."""
+    """Stock select, pagination and tutorial controls for the market list."""
 
     def __init__(
         self, quotes: tuple[StockMarketQuote, ...], owner_id: int, page_index: int = 0
@@ -251,7 +251,7 @@ class StockDetailView(StockPublicView):
     async def news(
         self, _button: Button["StockDetailView"], interaction: Interaction[commands.Bot]
     ) -> None:
-        """Shows recent deterministic news in the public stock message."""
+        """Shows the stock's recent news in the public stock message."""
         news = await get_stock_news(symbol=self.symbol)
         self.stop()
         await edit_owned_public_message(
@@ -523,7 +523,12 @@ async def edit_stock_action_prompt(
 
 
 async def submit_stock_quantity(submission: _StockQuantitySubmission) -> None:
-    """Submits a stock quantity from either a dropdown preset or modal."""
+    """Settles one stock quantity submitted from the quantity modal.
+
+    Re-checks panel ownership: a modal submit is dispatched straight to the modal and
+    never passes through the parent view's `interaction_check`, so this is the only
+    ownership test on the settle path rather than a second one.
+    """
     interaction = submission.interaction
     user = require_stock_user(interaction=interaction)
     if submission.owner_id != user.id:

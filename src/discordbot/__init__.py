@@ -1,3 +1,5 @@
+"""Package root: loads `.env` on import, and defines the console + file logging setup."""
+
 import re
 import sys
 from typing import TextIO, cast
@@ -79,7 +81,8 @@ def setup_logging() -> None:
         send_to_logfire=False,
         scrubbing=False,
         inspect_arguments=False,
-        # We can remove `console` if log is no longer needed to be saved in a file.
+        # `output` is what tees the console to a file; the rest of this block carries
+        # the console format and the `LOG_LEVEL` floor, so dropping it loses those too.
         console=logfire.ConsoleOptions(
             colors="auto",
             span_style="show-parents",

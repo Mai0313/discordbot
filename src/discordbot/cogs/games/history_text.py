@@ -38,7 +38,11 @@ _RESULT_TAGS: Final[dict[SettleOutcome, str]] = {
 
 
 class _HistorySummary(BaseModel):
-    """Aggregate win/loss/push counts and net delta over the rendered rounds."""
+    """Aggregate win/loss/push counts and net delta over every fetched round.
+
+    Computed before the description budget trims the table, so it can legitimately
+    count more rounds than the embed lists.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -143,7 +147,12 @@ def _net_color(net_delta: int) -> int:
 def build_blackjack_history_embed(
     *, player_name: str, records: Sequence[BlackjackHistoryRecord]
 ) -> Embed:
-    """Builds the public embed for a player's recent Blackjack rounds."""
+    """Builds the public embed for a player's recent Blackjack rounds.
+
+    The summary line counts every record passed in, while the table below it
+    drops the oldest rows until the block fits `_DESCRIPTION_BUDGET` and states
+    how many it dropped, so the two can legitimately disagree on round count.
+    """
     title = f"🃏 {player_name} 的二十一點紀錄"
     if not records:
         return Embed(title=title, description="還沒有任何二十一點對局紀錄。", color=PUSH_COLOR)

@@ -91,6 +91,11 @@ class ResearchCogs(commands.Cog):
     """Owns the deep-research thread lifecycle, slash command, and restart resume."""
 
     def __init__(self, bot: commands.Bot) -> None:
+        """Initializes the research cog.
+
+        Args:
+            bot: The Discord bot instance.
+        """
         self.bot = bot
         self.config = LLMConfig()
         self.runtime_models = RuntimeModelCatalog()
@@ -108,9 +113,11 @@ class ResearchCogs(commands.Cog):
         """The Gemini Interactions client, built lazily on first use.
 
         DIRECT to Google (`gemini_api_key`, no base_url / proxy): a managed agent rides the native
-        Interactions API, which this project always calls direct. Built inline here (not via a
-        `utils/llm.py` factory) so no new factory caller is added. A missing key does not fail
-        construction; it surfaces at the first interaction call, which the run loop catches.
+        Interactions API, which this project always calls direct. Built inline like every other
+        direct-to-Google path (the `create_*_client` factories are gone). `genai.Client` raises
+        `ValueError` on a missing key rather than deferring it to the first call (measured), and
+        both run loops read this property inside their own try, so that raise still lands as a
+        thread failure notice instead of an unhandled background-task error.
         """
         return genai.Client(api_key=self.config.gemini_api_key)
 
@@ -118,8 +125,9 @@ class ResearchCogs(commands.Cog):
     def responses_client(self) -> AsyncOpenAI:
         """The LiteLLM-proxy Responses client for small side calls (the thread-title generator).
 
-        Built inline (no `utils/llm.py` factory) per the no-new-factory convention; distinct from
-        the direct `interactions_client` since a plain Responses call rides the proxy fine.
+        Built inline like every other client here (there is no `utils/llm.py` client factory left);
+        distinct from the direct `interactions_client` since a plain Responses call rides the proxy
+        fine.
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
@@ -390,7 +398,12 @@ class ResearchCogs(commands.Cog):
         agent: str,
         status: Message | None,
     ) -> None:
-        """Delivers a terminal result, finalizes the opening status message, and records the phase."""
+        """Delivers a terminal result, records its phase, and releases the thread.
+
+        On a completed run the opening status message is spent by `deliver_report`, which edits the
+        report's first chunk into it; any other terminal status finalizes it with a failure line
+        instead.
+        """
         if not result.ok:
             await self._post_failure(
                 thread=thread,

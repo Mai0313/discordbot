@@ -1,7 +1,8 @@
 """Shared byte loaders for attachment rendering (image fetch + downscale, mime resolution).
 
-Used by both renderer strategies and by the IMAGE route's raw-bytes path, so the
-download/downscale logic lives in one place independent of how the bytes are later consumed.
+Used by every renderer strategy, by the IMAGE route's raw-bytes path and by the Threads link
+builder, so the download/downscale logic lives in one place independent of how the bytes are
+later consumed.
 """
 
 import asyncio
@@ -16,9 +17,11 @@ async def load_image_bytes(source: Attachment | StickerItem | str) -> tuple[byte
     """Fetches and downscales an image source to upload-ready bytes and MIME type.
 
     URL sources fetch over the network and attachments decode/re-encode, so the blocking
-    work runs off the event loop. Raises on any fetch/decode failure. Callers bound their
-    own concurrency (the Gemini uploader's media semaphore) or fetch a single current-turn
-    image (the IMAGE route, the inline render).
+    work runs off the event loop. Raises on any fetch/decode failure. This bounds nothing
+    itself: the Gemini uploader holds its media semaphore across the call, while the inline
+    renderer, the IMAGE route and the Threads link builder do not, so each of those fans
+    out as wide as whatever it passes in (the Threads builder slices to its own media-part
+    budget first, the other two do not).
     """
     if isinstance(source, str):
         file_bytes = await asyncio.to_thread(get_image_data, image_file=source)

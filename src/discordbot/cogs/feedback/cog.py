@@ -78,7 +78,8 @@ from discordbot.cogs.feedback.database import (
 )
 
 # How often the sweep tries again for reports whose issue was never opened, and how many
-# it takes per pass. Small: this only ever runs after a GitHub outage.
+# it takes per pass. Small: the queue is whatever still has no issue number, which is
+# usually a GitHub refusal or a deployment without credentials yet.
 RETRY_INTERVAL_MINUTES = 10
 RETRY_BATCH_SIZE = 10
 

@@ -1,11 +1,12 @@
 """Posts a finished research report body into its Discord thread.
 
 The report is long cited markdown. It is delivered two ways at once so nothing is
-lost: chunked inline messages (split on paragraph boundaries so citations and
-headings survive) for in-thread readability, plus the full report as a `research.md`
-File attachment (the durable artifact). A generated chart, if any, rides a follow-up
-message. Every send is best-effort. The completion line (usage footer, owner ping) is
-owned by the cog, which edits the opening status message.
+lost: chunked inline messages (split on `---` sections, then paragraph boundaries, so
+citations and headings survive) for in-thread readability, plus the full report as a
+`research.md` File attachment (the durable artifact). A generated chart, if any, rides
+the same message as that attachment. Every send is best-effort. The cog supplies the
+completion line's parts (usage footer, owner ping); this module places them on the
+last chunk, having spent the opening status message on the first.
 """
 
 from typing import TYPE_CHECKING

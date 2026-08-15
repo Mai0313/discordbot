@@ -28,8 +28,9 @@ monkeypatch `_engine` per-test and every subsequent call sees the swap.
 VIP, admin status, and leaderboard visibility are boolean columns on
 `user_account`. VIP bumps daily check-in rewards and the player's winning
 payout from games. The flag is permanent once set. Admin and central-banker
-status gate maintenance-only economy commands and are managed out-of-band by
-scripts. Daily casino counters live on `casino_account` so
+status gate maintenance-only economy commands and are set out-of-band by a
+direct DB write; `set_admin` / `set_central_banker` exist for that path, but
+nothing at runtime calls them. Daily casino counters live on `casino_account` so
 `/loss_leaderboard` can read current-day gross losses without scanning an audit
 log.
 
@@ -186,6 +187,9 @@ class UserAccount(Base):
         checkin_streak: Consecutive-day streak (1..`CHECKIN_STREAK_CYCLE`),
             persisted after the latest `/checkin`. 0 means never checked in.
         is_admin: Whether the user can run Discord-side economy admin commands.
+        is_central_banker: Whether the user can decide central-bank loan
+            proposals and force collection with `/central_bank call`; separate
+            from `is_admin` and set out-of-band.
         hide_from_leaderboard: Whether the account is omitted from public balance
             and daily casino loss leaderboards.
     """
@@ -247,8 +251,10 @@ class CasinoAccount(Base):
 
     __tablename__ = "casino_account"
     __table_args__ = (
-        # /loss_leaderboard filters to one Taipei day and orders by gross loss.
-        # SQLite can read the daily loss suffix backwards for DESC ordering.
+        # /loss_leaderboard filters to one Taipei day, which this index serves.
+        # Its ordering half does not: the counters are decimal text, so the
+        # query sorts by length(daily_loss) first and SQLite falls back to a
+        # temp B-tree for the ORDER BY.
         Index("ix_casino_account_day_loss", "day_started_at", "daily_loss"),
     )
 
@@ -409,8 +415,8 @@ CASINO_LEDGER_ID: Final[str] = "casino"
 
 
 # On-the-house seed amount for each registered jackpot pool. The seed is
-# bookkeeping only — the bot's user_account row is never decremented to fund
-# it, so /casino P&L stays unaffected by the donation. Seeded pools are also
+# bookkeeping only — no wallet and no casino ledger row is debited to fund it,
+# so /casino P&L stays unaffected by the donation. Seeded pools are also
 # topped back up to this amount whenever they are drained.
 _JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 1_000),)
 
@@ -671,10 +677,11 @@ def _build_signed_delta_upsert(
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed `delta` with NO clamp on wallet balance.
 
-    Used for the dealer's house-ledger row, which is allowed to go negative
-    when the casino has paid out more than it took in. `total_earned` /
-    `total_spent` still accumulate gross flows so `/house` can show the
-    direction of the volume, not just the net.
+    Reached only by `adjust_balance(allow_negative=True)`, i.e. the offline
+    `scripts/modify_balance.py --allow-negative` path; the casino's own
+    negative P&L is a `casino_ledger` row, not a wallet. `total_earned` /
+    `total_spent` still accumulate gross flows, so
+    `balance == total_earned - total_spent` holds through a negative balance.
 
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
@@ -894,8 +901,9 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
 ) -> int:
     """Applies a signed delta without clamping.
 
-    Used for casino-mirror or other ledger rows that may run cumulative
-    negative P&L. Player-side losses use the clamped path instead.
+    Reached only by `adjust_balance(allow_negative=True)`. Player-side losses
+    use the clamped path, and the casino mirror has its own row writer
+    (`_apply_casino_ledger_delta_in_session`).
     """
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
@@ -1105,8 +1113,8 @@ async def credit_with_repayment(
     Args:
         user_id: Discord user ID receiving the credit.
         name: Last-seen Discord username to store on the account.
-        amount: Gross income amount; must be positive for the repayment
-            path to run.
+        amount: Gross income amount; a non-positive amount credits nothing
+            and returns the current balance.
         avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
@@ -1142,7 +1150,7 @@ async def adjust_balance(
     """Applies an explicit manual balance adjustment.
 
     This is the public maintenance API for scripts and admin tooling. It does
-    does not touch loan contracts or daily casino counters, so leaderboards and
+    not touch loan contracts or daily casino counters, so leaderboards and
     house P&L remain clean.
 
     Args:
@@ -1432,8 +1440,8 @@ async def _apply_jackpot_delta_in_session(
         now: `_database_now()` value pinned for this transaction.
 
     Returns:
-        A tuple containing the pool balance after the write and any automatic
-        replenishment, plus whether the pool was depleted by this write.
+        The pool snapshot after the write and any automatic replenishment,
+        plus whether this write depleted the pool.
     """
     contributed_add = max(delta, 0)
     claimed_add = max(-delta, 0)
@@ -1888,13 +1896,14 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
     """Records a daily check-in and credits the streak-adjusted reward.
 
     Returns `None` when the user has already checked in today (Taipei
-    local date). On first check-in or after a missed day the streak resets
-    to 1; otherwise the streak advances by 1 and cycles back to 1 after
-    reaching `CHECKIN_STREAK_CYCLE`. The reward is computed with
-    `checkin_reward` and persisted alongside the streak counter in the
-    same write. VIP perks (2x base) read the persisted flag inside the
-    same transaction so a freshly-bought VIP immediately applies on the
-    next check-in.
+    local date), and also when the retry budget below is exhausted; the
+    caller cannot tell the two apart. On first check-in or after a missed
+    day the streak resets to 1; otherwise the streak advances by 1 and
+    cycles back to 1 after reaching `CHECKIN_STREAK_CYCLE`. The reward is
+    computed with `checkin_reward` and persisted alongside the streak
+    counter in the same write. VIP perks (2x base) read the persisted flag
+    inside the same transaction so a freshly-bought VIP immediately applies
+    on the next check-in.
 
     The SELECT-then-conditional-UPDATE pattern (gated on the
     observed `last_checkin_at` value) prevents two parallel coroutines
@@ -1909,7 +1918,7 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
 
     Returns:
         `CheckinResult` describing the credit, or `None` when the user
-        already checked in today.
+        already checked in today or the retry budget ran out.
     """
     await _ensure_schema()
     now = _database_now()
@@ -1970,8 +1979,9 @@ async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResul
 async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseResult | None:
     """Promotes the user to VIP after debiting `VIP_PURCHASE_COST` points.
 
-    Returns `None` when the user is already VIP, has insufficient balance,
-    or the retry budget for the conditional UPDATE was exhausted.
+    Returns `None` when the user is missing either the account or the wallet
+    row, is already VIP, has insufficient balance, or the retry budget for the
+    conditional UPDATE was exhausted.
 
     Args:
         user_id: Discord user ID purchasing VIP.
@@ -2101,10 +2111,10 @@ async def get_admin(user_id: int) -> bool:
 async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "") -> bool:
     """Sets the economy admin flag for a Discord user.
 
-    Granting admin creates a zero-balance account row if the user has never
-    touched the economy system. Revoking admin updates an existing row only;
-    missing users are left untouched so revoke operations do not create empty
-    account rows.
+    Granting admin creates the `user_account` identity row if the user has
+    never touched the economy system; no wallet row is created, so the balance
+    still reads 0. Revoking admin updates an existing row only; missing users
+    are left untouched so revoke operations do not create empty account rows.
 
     Args:
         user_id: Discord user ID to modify.
@@ -2184,7 +2194,15 @@ async def get_central_banker(user_id: int) -> bool:
 async def set_central_banker(
     user_id: int, name: str, is_central_banker: bool, avatar_url: str = ""
 ) -> bool:
-    """Sets the central banker flag for a Discord user."""
+    """Sets the central banker flag for a Discord user.
+
+    Mirrors `set_admin`: granting creates the identity row when missing, while
+    revoking touches an existing row only.
+
+    Returns:
+        `True` when a row was created or updated; `False` when revoking a
+        missing user.
+    """
     await _ensure_schema()
     now = _database_now()
     effective_name = name or str(user_id)
@@ -2361,11 +2379,12 @@ async def top_n(
 ) -> list[LeaderboardEntry]:
     """Returns accounts ordered by balance descending.
 
-    `exclude_user_ids` filters out specific accounts (notably the bot's
-    own house ledger row) before applying the limit, so the leaderboard
-    always shows real players. Stored integer values are sorted in SQL with
-    explicit decimal-text aware order terms so the query can still apply
-    `LIMIT` before rows reach Python.
+    Hidden accounts are the only thing dropped by default (`include_hidden`).
+    Neither production caller passes `exclude_user_ids`: the bot is an ordinary
+    player here and the casino's own P&L is a `casino_ledger` row, not a
+    wallet. Stored integer values are
+    sorted in SQL with explicit decimal-text aware order terms so the query
+    can still apply `LIMIT` before rows reach Python.
 
     Args:
         limit: Maximum number of accounts to return, or `None` to return all

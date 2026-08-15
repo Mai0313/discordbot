@@ -1,4 +1,10 @@
-"""Shared send/edit helpers for interaction responses that clean themselves up."""
+"""Shared send/edit helpers for the economy and games interaction responses.
+
+Each helper pairs one response shape (public followup, loan-request followup, private
+followup, ephemeral response, edit) with the `embed_spacer_payload` call that keeps embed
+widths aligned. Only the plain public followup schedules its own deletion up front; the
+loan-request one hands that to the view, which schedules it at a terminal state.
+"""
 
 from typing import Protocol, cast
 
@@ -22,7 +28,7 @@ async def send_expiring_followup(
     view: View | None = None,
     file: File | None = None,
 ) -> None:
-    """Sends a game-related economy embed and schedules its cleanup."""
+    """Sends a public embed as an interaction followup and schedules its deletion."""
     extra_files = [file] if file is not None else None
     spacer = embed_spacer_payload(
         embeds=[embed], is_edit=False, target=interaction, extra_files=extra_files

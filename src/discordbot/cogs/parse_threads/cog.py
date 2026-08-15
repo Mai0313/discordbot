@@ -207,6 +207,7 @@ class ThreadsCogs(commands.Cog):
         bot: The Discord bot instance that owns this cog.
         output_folder: Directory where downloaded Threads media is stored.
         downloader: Downloader used to parse Threads posts and fetch media.
+        media_delivery: Planner deciding whether a downloaded video is attached, hosted or dropped.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -304,7 +305,10 @@ class ThreadsCogs(commands.Cog):
         chain_depth: int,
         quoted_index: int,
     ) -> set[int]:
-        """Selects complete posts by relevance until the message-wide text budget is full."""
+        """Selects complete posts by relevance until the message-wide text budget is full.
+
+        The target is kept whatever its own text costs; every other post has to fit.
+        """
         selected: set[int] = set()
         text_budget = _EMBED_TOTAL_LENGTH_LIMIT
         for index in priority:
@@ -647,7 +651,7 @@ class ThreadsCogs(commands.Cog):
                 # appended by `_build_post_embeds` AFTER any check on the raw body, so a text
                 # sitting just under the limit crossed it and turned a ⚠️ skip into a Discord 400
                 # and a ❌. A body past the limit cannot be rescued by hosting, so it stays the ⚠️
-                # refusal. (Image count is not guarded: _build_embeds caps the message at 10
+                # refusal. (Image count is not guarded: _build_embed_plan caps the message at 10
                 # embeds and shows as many images as fit.)
                 longest_text = max(
                     (_utf16_length(value=embed.description or "") for embed in embeds), default=0

@@ -24,12 +24,13 @@ class AutoUnmuteCogs(commands.Cog):
 
     Per-guild we remember the channel ID where a human last spoke; that's
     where the AI's post-timeout reply lands. We do not track a per-moderator
-    "current channel", Discord's audit log entry for a timeout does not carry
-    a channel, and using `last_active_channel` keeps the dict O(guilds).
+    "current channel", because Discord's audit log entry for a timeout does not
+    carry a channel, and using `last_active_channel` keeps the dict O(guilds).
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
         config: The LLM client configuration loaded for reply generation.
+        runtime_models: Catalog the reply's model tier is read from.
     """
 
     def __init__(self, bot: commands.Bot) -> None:

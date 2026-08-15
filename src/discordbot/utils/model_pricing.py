@@ -241,8 +241,9 @@ def load_model_info() -> dict[str, ModelPriceEntry]:
 def refresh_model_info() -> None:
     """Loads the price table, or re-checks upstream while what is held did not come from it.
 
-    `cli.py`'s `price_table_task` runs this off the event loop, so neither the first load
-    nor a retry is ever paid on a lookup's path. Once upstream has served this process
+    `cli.py`'s `price_table_task` runs this off the event loop, so no RETRY is ever paid on
+    a lookup's path. The first load still falls to whichever caller reaches it first, which
+    is why `_write_mirror` needs a unique temp name. Once upstream has served this process
     there is nothing left to recover and every later call returns on the second branch.
 
     A retry that fails keeps what is held: the mirrored table a degraded process is

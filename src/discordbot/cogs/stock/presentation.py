@@ -172,8 +172,8 @@ def _market_board_spec(
     )
 
 
-# The cache key is the digest of every pixel-affecting quote field, so any quote
-# change yields a new key and a fresh render; stale entries are never served.
+# The cache key is the immutable spec holding every pixel-affecting quote field, so any
+# quote change yields a new key and a fresh render; stale entries are never served.
 @lru_cache(maxsize=128)
 def _build_market_board_image_cached(spec: _MarketBoardSpec) -> bytes:
     """Renders the market list as a fixed-layout PNG board."""
@@ -552,7 +552,7 @@ def _recent_trade_lines(detail: StockDetailViewData) -> str:
 
 
 def _position_summary_lines(detail: StockDetailViewData) -> str:
-    """Formats public non-zero stock positions."""
+    """Formats the public positions that still hold long shares."""
     positions = sorted(
         (position for position in detail.public_positions if position.long_shares > 0),
         key=lambda position: position.long_shares,

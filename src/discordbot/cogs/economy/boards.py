@@ -61,7 +61,11 @@ class _RankingBoardSpec(BaseModel):
         ..., description="Label prefixed to each amount cell, empty for none."
     )
     accent: tuple[int, int, int] = Field(
-        ..., description="Accent RGB color for headers and medals."
+        ...,
+        description=(
+            "Accent RGB color for the PUBLIC badge, the amount column header, "
+            "and the top-three rank numbers."
+        ),
     )
     rows: tuple[tuple[str, int], ...] = Field(
         ..., description="Ranked (name, amount) rows to render."

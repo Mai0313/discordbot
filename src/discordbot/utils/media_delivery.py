@@ -10,7 +10,7 @@ decision and differs only in how it sends the result.
 This module also owns the two low-level concerns the decision needs: the destination's real
 upload ceiling (`upload_limit_for`) and the external static host that turns oversized media
 into a public URL (`MediaHostingService`, env-backed via `MediaHostingConfig`). The host is
-best-effort: every method returns None (never raises) when hosting is disabled, unconfigured,
+best-effort: a publish returns None rather than raising when hosting is disabled, unconfigured,
 handed a non-allowlisted suffix, or fails to write, so a `MEDIA_HOSTING_ENABLED=false` (or
 unconfigured) deployment degrades to its prior, host-free behavior at every call site.
 """
@@ -534,7 +534,7 @@ class MediaHostingService(BaseModel):
                     continue
 
     def run_maintenance(self, *, now: float) -> tuple[int, int]:
-        """One sweep for the cleanup loop: reap expired, enforce the cap, clear stale temps.
+        """One sweep for the cleanup loop: clear stale temps, reap expired, enforce the cap.
 
         Returns (deleted_count, freed_bytes). Age runs before size so the cap acts on what remains.
         """
@@ -701,9 +701,10 @@ class MediaDeliveryPlanner(BaseModel):
 def build_media_delivery_planner() -> MediaDeliveryPlanner:
     """Builds the default MediaDeliveryPlanner wired to the env-configured external media host.
 
-    The shared wiring used by every cog that delivers media (the streamer builds its own
-    test-friendly disabled planner instead). `MediaHostingConfig` self-disables when the host is
-    unconfigured, so this stays the byte-for-byte host-free path until hosting is set up.
+    The shared wiring used by every cog that delivers media, the QA streamer included: it is
+    handed this planner by `gen_reply/cog.py`, and its own field default is a disabled planner
+    so that a streamer built without one drops oversize media instead of hosting it. `MediaHostingConfig` self-disables when the host is unconfigured, so this stays
+    the byte-for-byte host-free path until hosting is set up.
     """
     return MediaDeliveryPlanner(media_hosting=MediaHostingService(config=MediaHostingConfig()))
 

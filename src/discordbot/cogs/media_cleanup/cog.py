@@ -1,7 +1,7 @@
 """Periodically reaps hosted media so the serve dir stays bounded by size and age.
 
 Each publish enforces the size cap eagerly; this cog is the backstop that also applies the age cap
-and clears crash-left temp files, on a timer and once at startup (to catch a restart). It self-
+and clears crash-left temp files, on a timer whose first iteration fires at startup. It self-
 disables when hosting is unavailable or both caps are off, so it never starts the loop or touches
 the serve dir then. The sweep only ever deletes the bot's own content-addressed files (see
 `MediaHostingService`), never a foreign file parked in the serve dir.
@@ -42,9 +42,9 @@ class MediaCleanupCogs(commands.Cog):
     async def on_ready(self) -> None:
         """Starts the cleanup loop once, only when hosting and at least one cap are configured.
 
-        `on_ready` fires on every reconnect, so `_started` guards a single start. The loop fires only
-        after the first interval, so a startup sweep is spawned immediately to catch a restart. When
-        cleanup is disabled the loop never starts and nothing in the serve dir is touched.
+        `on_ready` fires on every reconnect, so `_started` guards a single start; a one-off startup
+        sweep is spawned beside the loop. When cleanup is disabled neither runs and nothing in the
+        serve dir is touched.
         """
         if self._started:
             return

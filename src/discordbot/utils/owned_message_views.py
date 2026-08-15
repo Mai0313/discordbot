@@ -32,6 +32,9 @@ async def send_ephemeral_notice(
             await interaction.followup.send(content=content, ephemeral=True)
             return
         await interaction.response.send_message(content=content, ephemeral=True)
+    # Broad on purpose: the notice is advisory, and every way Discord can refuse it (an expired
+    # token, an already-answered response, a transient HTTP error) must leave the caller's own
+    # flow running, whether that is an ownership rejection or a button callback.
     except Exception:
         logfire.warn(log_message, _exc_info=True)
 
@@ -107,7 +110,13 @@ async def edit_owned_public_message(
     file: File | None = None,
     message: Message | None = None,
 ) -> None:
-    """Edits the panel's current message for a component or modal interaction."""
+    """Edits the panel's current message for a component or modal interaction.
+
+    Once the interaction has already been answered and the panel's own message is gone, this
+    degrades to a fresh followup: the deleted message's stale cleanup record is forgotten
+    first, and the followup is bound to the view and tracked for cleanup in its place, so the
+    panel keeps its idle deletion.
+    """
     target_message = message or interaction.message
     if view is not None:
         view.bind_message(message=target_message)

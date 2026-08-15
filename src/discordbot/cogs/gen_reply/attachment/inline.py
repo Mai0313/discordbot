@@ -37,12 +37,14 @@ def _inline_expiry() -> datetime:
 
 
 class InlineRenderer(AttachmentRenderer):
-    """Inlines attachments as base64 / text parts (OpenAI / Anthropic answer models).
+    """Inlines attachments as base64 / text parts.
 
-    Stateless: every render fetches the source and embeds it directly in the request, so
-    there is no upload handle to track and the `cache_key` / `allow_dead_cache` re-poll
-    arguments are ignored. Images inline as `input_image` base64, PDFs as base64
-    `input_file`, UTF-8 files as `input_text`, and anything else is dropped.
+    Selected for any non-Gemini answer model, none of which can resolve a Gemini Files URI,
+    and for every provider (Gemini included) while `file_api_enabled` is off. Stateless:
+    every render fetches the source and embeds it directly in the request, so there is no
+    upload handle to track; `allow_dead_cache` is ignored and `cache_key` only labels a
+    failure log. Images inline as `input_image` base64, PDFs as base64 `input_file`, UTF-8
+    files as `input_text`, and anything else is dropped.
     """
 
     async def render_image(

@@ -13,9 +13,9 @@ client can poll a file to ACTIVE: the proxy's file resource reports a deprecated
 status, and referencing a not-yet-ACTIVE file intermittently 400s the whole answer request.
 
 Distinct from `attachment/gemini_file_api.py`, which owns the same upload for Discord
-attachments plus a per-source render cache and a pending-upload re-poll keyed on the message
-that carried them. A file this module uploads has no such later reference to adopt, so it
-gets a plain bounded wait instead.
+attachments plus a pending-upload re-poll keyed on the attachment source (the per-message
+render cache is a third thing again, and lives in `input.py`). A file this module uploads
+has no such later reference to adopt, so it gets a plain bounded wait instead.
 """
 
 import io
@@ -64,7 +64,8 @@ async def upload_to_files_api(
 ) -> str | None:
     """Uploads media to the Gemini Files API and returns its ACTIVE uri; None on any failure.
 
-    Best-effort by design: every caller has a text-only degradation to fall back on, so a
+    Best-effort by design: every caller degrades rather than failing — the link builders to
+    their text-only block, the generated-clip path by skipping its persona reply — so a
     failure here must not raise into the reply pipeline. That is also what lets the
     `file_api_enabled` kill-switch sit here rather than at each caller: a switched-off upload
     takes the same path a failed one already takes. It is the backstop, not the saving —

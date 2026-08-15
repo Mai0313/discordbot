@@ -45,7 +45,9 @@ _MAX_EMBED_TITLE_CHARS = 240
 _MAX_QUOTED_CHARS = 900
 _MAX_SUMMARY_CHARS = 120
 
-# Nothing is dropped quietly: each cap has a line that says what is not on screen.
+# Marks the three body caps that run through `_clipped`, so a trimmed report does not read as
+# the bot having garbled it. The embed title and the select label are hard slices instead: both
+# are one line of chrome the reader can open the full text from.
 _TRUNCATED_SUFFIX = "…"
 
 REPORT_TITLE = "🎫 回報中心"

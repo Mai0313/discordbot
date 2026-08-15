@@ -62,7 +62,13 @@ class TransferParticipant(BaseModel):
     mention: str = Field(
         ..., description="Discord mention string (<@user_id>) shown in the embed."
     )
-    display_name: str = Field(..., description="Display name shown next to the mention.")
+    display_name: str = Field(
+        ...,
+        description=(
+            "Display name shown in the post-transfer balances, and in the author line for "
+            "the sender only."
+        ),
+    )
 
 
 class LoanParty(BaseModel):
@@ -73,8 +79,13 @@ class LoanParty(BaseModel):
     mention: str = Field(
         ..., description="Discord mention string (<@user_id>) shown in the embed."
     )
-    display_name: str = Field(default="", description="Display name shown next to the mention.")
-    avatar_url: str = Field(default="", description="Avatar URL for the embed thumbnail.")
+    display_name: str = Field(
+        default="", description="Display name shown as the embed author; set only on the borrower."
+    )
+    avatar_url: str = Field(
+        default="",
+        description="Avatar URL: author icon for the borrower, thumbnail for the lender.",
+    )
 
 
 def _vip_perk_lines(checkin_streak: int = 1) -> str:

@@ -167,8 +167,8 @@ class ResearchProgressStreamer(BaseModel):
         """Paints reasoning onto the status message until the event stream ends.
 
         Starts the editor up front so the elapsed timer ticks from t=0 even before the first
-        thought, then feeds every event; the editor is always stopped in `finally` so the last
-        snapshot lands before the caller delivers the report on the same message.
+        thought, then feeds every event; the editor is always stopped in `finally` so any
+        in-flight edit lands before the caller delivers the report on the same message.
         """
         self._ensure_editor_started()
         try:

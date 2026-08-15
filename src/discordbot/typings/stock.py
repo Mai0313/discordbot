@@ -1,3 +1,10 @@
+"""Shared vocabulary for the stock market simulation.
+
+Two money units live here and only the field name tells them apart: a `*_cents` field is
+cent-denominated, and every other money field is whole wallet cash, already rounded out of
+cents by `cash_ceil` / `cash_floor` before it was stored.
+"""
+
 from enum import StrEnum
 from typing import Self, Final
 from datetime import datetime
@@ -147,17 +154,17 @@ class StockPositionView(BaseModel):
     user_name: str = Field(default="", description="Stored display name of the position owner.")
     long_shares: int = Field(default=0, description="Number of shares held long.")
     long_cost_basis: int = Field(
-        default=0, description="Aggregate cost basis of the long position in cents."
+        default=0, description="Aggregate cost basis of the long position, in cash."
     )
     short_shares: int = Field(default=0, description="Number of shares held short.")
     short_entry_value: int = Field(
-        default=0, description="Aggregate entry value of the short position in cents."
+        default=0, description="Aggregate entry value of the short position, in cash."
     )
     short_collateral: int = Field(
-        default=0, description="Collateral reserved against the short position in cents."
+        default=0, description="Collateral reserved against the short position, in cash."
     )
     realized_pnl: int = Field(
-        default=0, description="Realized profit and loss for this position in cents."
+        default=0, description="Realized profit and loss for this position, in cash."
     )
 
 
@@ -171,7 +178,7 @@ class StockParticipantPositionView(BaseModel):
     long_shares: int = Field(..., description="Number of shares the participant holds long.")
     short_shares: int = Field(..., description="Number of shares the participant holds short.")
     realized_pnl: int = Field(
-        ..., description="Realized profit and loss for the participant in cents."
+        ..., description="Realized profit and loss for the participant, in cash."
     )
 
 
@@ -189,12 +196,12 @@ class StockTradeLegView(BaseModel):
     shares: int = Field(..., description="Share quantity executed in this leg.")
     price_cents: int = Field(..., description="Per-leg execution price in cents.")
     wallet_delta: int = Field(..., description="Wallet balance change applied by this leg.")
-    basis_delta: int = Field(..., description="Cost-basis change applied by this leg in cents.")
+    basis_delta: int = Field(..., description="Cost-basis change applied by this leg, in cash.")
     collateral_delta: int = Field(
-        ..., description="Short collateral change applied by this leg in cents."
+        ..., description="Short collateral change applied by this leg, in cash."
     )
     realized_pnl_delta: int = Field(
-        ..., description="Realized profit and loss change applied by this leg in cents."
+        ..., description="Realized profit and loss change applied by this leg, in cash."
     )
     created_at: datetime = Field(..., description="Timestamp the leg was created.")
 
@@ -208,7 +215,7 @@ class StockNewsView(BaseModel):
     headline: str = Field(..., description="News headline text.")
     sentiment_bps: int = Field(..., description="News sentiment impulse in basis points.")
     source: str = Field(
-        default="template", description="Origin of the news item, such as template or model."
+        default="template", description="Origin of the news item: `template` or `ai`."
     )
     model: str = Field(default="", description="Model identifier that generated the news, if any.")
     expires_at: datetime | None = Field(
@@ -226,9 +233,7 @@ class StockGeneratedNews(BaseModel):
     sentiment_bps: int = Field(
         ..., description="Generated news sentiment impulse in basis points."
     )
-    source: str = Field(
-        ..., description="Origin of the generated news, such as template or model."
-    )
+    source: str = Field(..., description="Origin of the generated news: `template` or `ai`.")
     model: str = Field(default="", description="Model identifier that generated the news, if any.")
 
 
@@ -313,27 +318,27 @@ class StockPortfolioHolding(BaseModel):
     price_cents: int = Field(..., description="Latest quote price in cents.")
     long_shares: int = Field(..., description="Number of shares held long.")
     long_cost_basis: int = Field(
-        ..., description="Aggregate cost basis of the long position in cents."
+        ..., description="Aggregate cost basis of the long position, in cash."
     )
     long_market_value: int = Field(
-        ..., description="Current market value of the long position in cents."
+        ..., description="Current market value of the long position, in cash."
     )
     short_shares: int = Field(..., description="Number of shares held short.")
     short_entry_value: int = Field(
-        ..., description="Aggregate entry value of the short position in cents."
+        ..., description="Aggregate entry value of the short position, in cash."
     )
     short_collateral: int = Field(
-        ..., description="Collateral reserved against the short position in cents."
+        ..., description="Collateral reserved against the short position, in cash."
     )
     short_cover_cost: int = Field(
-        ..., description="Current cost to cover the short position in cents."
+        ..., description="Current cost to cover the short position, in cash."
     )
-    equity_value: int = Field(..., description="Net equity value of this holding in cents.")
+    equity_value: int = Field(..., description="Net equity value of this holding, in cash.")
     unrealized_pnl: int = Field(
-        ..., description="Unrealized profit and loss for this holding in cents."
+        ..., description="Unrealized profit and loss for this holding, in cash."
     )
     realized_pnl: int = Field(
-        ..., description="Realized profit and loss for this holding in cents."
+        ..., description="Realized profit and loss for this holding, in cash."
     )
 
 
@@ -347,13 +352,13 @@ class StockPortfolioView(BaseModel):
         ..., description="Current stock holdings for the user."
     )
     equity_value: int = Field(
-        ..., description="Total net equity value across all holdings in cents."
+        ..., description="Total net equity value across all holdings, in cash."
     )
     unrealized_pnl: int = Field(
-        ..., description="Total unrealized profit and loss across holdings in cents."
+        ..., description="Total unrealized profit and loss across holdings, in cash."
     )
     realized_pnl: int = Field(
-        ..., description="Total realized profit and loss across holdings in cents."
+        ..., description="Total realized profit and loss across holdings, in cash."
     )
 
 

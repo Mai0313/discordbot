@@ -128,8 +128,8 @@ def settlement_metadata(  # noqa: PLR0913 -- final result metadata has several o
         five_card_bonus: System-funded bonus from five-card 21.
 
     Returns:
-        `-# 本局 +X · 餘額 Y` style metadata, with an `· all-in` suffix
-        when the round was all-in.
+        `-# 本局 +X · 餘額 Y` style metadata, with an `all-in` segment inserted
+        before the balance when the round was all-in.
     """
     segments = [f"本局 {amount_code(amount=delta, signed=True, compact=True)}"]
     if vip_bonus > 0 and base_delta is not None:

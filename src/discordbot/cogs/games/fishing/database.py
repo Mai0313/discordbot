@@ -9,8 +9,9 @@ Two operations cross databases. A purchase debits (burns) the wallet first, then
 grants gear in games.db, refunding on a grant failure. A cast consumes bait and
 durability and logs the catch in games.db first, then credits the payout in the
 economy database; a payout that fails after the catch is logged is reported as
-deferred rather than rolled back, which only ever deflates further. Hard crashes
-between the two file commits are an accepted non-atomicity.
+deferred rather than rolled back, so the failure can only ever leave currency
+unminted. Hard crashes between the two file commits are an accepted
+non-atomicity.
 """
 
 from random import Random, SystemRandom
@@ -861,8 +862,8 @@ async def fetch_recent_catches(user_id: int, limit: int = 10) -> tuple[CatchLogV
 async def reset_all_fishing() -> int:
     """Clears all per-user fishing state, leaving the tunable catalog intact.
 
-    Used by the offline economy reset so stale rods, bait, and catch history do
-    not survive a wallet deflation. Grade, species, and gear catalog rows are
+    Nothing in the tree calls this: #248 deleted `scripts/reset_economy.py`, the
+    offline reset it was written for. Grade, species, and gear catalog rows are
     intentionally left untouched.
 
     Returns:

@@ -17,8 +17,9 @@ class LLMConfig(BaseSettings):
             Anthropic Files API directly (the side-channel for Claude answer models).
         xai_api_key: The xAI key used to upload attachments to the xAI Files API
             directly (the side-channel for Grok answer models, which the proxy cannot route).
-        inline_voice_enabled: Kill-switch for spoken QA replies; when false the answer
-            model's voice marker is still stripped but no audio clip is synthesized.
+        inline_voice_enabled: Kill-switch for spoken QA and SUMMARY replies; when false
+            the answer model's voice marker is still stripped but no audio clip is
+            synthesized.
         inline_image_enabled: Kill-switch for inline generated images on QA replies; when
             false the answer model's `<generate-image>` marker is still stripped but no image is rendered.
         inline_music_enabled: Kill-switch for inline generated music on QA replies; when false
@@ -82,7 +83,7 @@ class LLMConfig(BaseSettings):
     )
     inline_voice_enabled: bool = Field(
         default=True,
-        description="Whether the bot may synthesize a spoken clip for fierce QA replies.",
+        description="Whether the bot may synthesize a spoken clip for QA and SUMMARY replies.",
         validation_alias=AliasChoices("INLINE_VOICE_ENABLED"),
     )
     inline_image_enabled: bool = Field(

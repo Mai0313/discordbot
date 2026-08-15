@@ -49,9 +49,10 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     """Runs one best-effort structured Responses.parse call, returning None on any failure.
 
     Owns the shared proxy call surface, the timeout, and the failure handling so each caller
-    only maps None to its own fallback: a timeout, an empty or refused output or a payload
-    that does not match `text_format` (both surface as `ValidationError`), an incomplete
-    (truncated) response, or any other error all degrade to None.
+    only maps None to its own fallback: a timeout, an empty output or a payload that does
+    not match `text_format` (both surface as `ValidationError`), a refusal (which simply
+    leaves `output_parsed` None), an incomplete (truncated) response, or any other error
+    all degrade to None.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):

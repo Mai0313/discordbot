@@ -303,7 +303,8 @@ class MemoryCogs(commands.Cog):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        # The rebuild is one whole-file LLM rewrite that runs far past Discord's
+        # The rebuild is one LLM call per non-empty compartment plus one for the tone
+        # note, and runs far past Discord's
         # ack window, so it is dispatched to the background task queue and the
         # command replies immediately; the user checks back with `/memory show`.
         scheduled = schedule_memory_regeneration(

@@ -55,9 +55,11 @@ class BlackjackShoeStore(BaseModel):
         depletion by saving the round's remaining shoe with `save_shoe` once it
         settles (the round may deal from a copy, so the returned list itself is not
         relied on to mutate). The `reshuffled` flag is True only for a genuine
-        penetration cut, not for the first shoe in a channel, so the table only
-        announces a real reshuffle. The `generation` stamps this round; pass it back to
-        `save_shoe` so an older in-flight round cannot overwrite a newer table's shoe.
+        penetration cut, not for the first shoe in a channel, so a caller can
+        announce a real reshuffle without announcing the channel's first deal;
+        `BlackjackLobbyView._start_game` discards it today. The `generation` stamps
+        this round; pass it back to `save_shoe` so an older in-flight round cannot
+        overwrite a newer table's shoe.
         """
         generation = self._take_generation.get(channel_id, 0) + 1
         self._take_generation[channel_id] = generation

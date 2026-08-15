@@ -268,9 +268,11 @@ async def store_write_up(
 ) -> None:
     """Stores the background write-up next to the original text.
 
-    Written only after the issue itself carries it, so the panel's summary line can never
-    describe a report in words the issue does not use. Kept locally as well so a later
-    pass over the store can read the drafts without calling GitHub.
+    A report that already has an issue has that issue rewritten first, so the panel's
+    summary line can never describe a report in words the issue does not use. A report
+    still waiting for credentials has no issue to rewrite, and the draft stored here is
+    what its issue is later opened from; the retry sweep reads it back to tell that case
+    apart and skip a rewrite it no longer needs.
     """
     await _ensure_schema()
     async with open_session() as session:

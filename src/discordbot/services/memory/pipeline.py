@@ -76,9 +76,7 @@ from discordbot.services.memory.extraction import (
 )
 from discordbot.services.memory.git_history import memory_git
 
-# Outcome of a from-scratch main-file rebuild. Aliased so the background
-# scheduler's task dict shares the exact type (asyncio.Task is invariant in its
-# result type, so a Literal cannot stand in for a bare str).
+# The ways a from-scratch rebuild can end, carried on `RegenerationReport.result`.
 _RegenerationResult = Literal["regenerated", "no_evidence", "failed", "cooldown"]
 
 
@@ -106,8 +104,8 @@ class _PendingMemoryUpdate(BaseModel):
         transcript: The rendered phase-1 input captured for the skipped turn
             (already folds in the reply), so the replay needs no re-render.
         extractor: The extraction service to run the replayed update with.
-        identity: Single-line target identity stamped into the main memory
-            file as human-inspection metadata.
+        identity: Single-line target identity `parse_identity` splits into the
+            `owner_id` / `owner_name` stamped on every fact this scope writes.
         captured_at: `time.monotonic()` when the turn was captured, so a clear
             that lands before the replay can abort it via `cleared_since`.
         token: Process-local logical token persisted with the deferred turn's DB
@@ -128,8 +126,8 @@ class _PendingMemoryUpdate(BaseModel):
     identity: str = Field(
         ...,
         description=(
-            "Single-line target identity stamped into the main memory file as "
-            "human-inspection metadata."
+            "Single-line target identity `parse_identity` splits into the `owner_id` / "
+            "`owner_name` stamped on every fact this scope writes."
         ),
     )
     captured_at: float = Field(
@@ -156,15 +154,15 @@ _inflight_loop: asyncio.AbstractEventLoop | None = None
 # not need a loop-change reset. Tests clear it through the conftest fixture.
 _last_consolidation: dict[str, float] = {}
 
-# Consecutive refused consolidation batches per scope. A refusal keeps the raw batch
-# for retry, which is right for a transient LLM failure and wrong for a mass-delete the
-# model reproduces verbatim: that retries every cooldown forever while the scope's memory
-# silently stops updating. Past the threshold the log escalates from warn to error, since
-# CONTRIBUTING puts "an unexpected failure that lost a deliverable" at error.
 # The exact header a tone note must lead with; the tier is injected on every reply,
 # so anything else is a rewrite that did not land and must not be written.
 _TONE_HEADER = "## 語氣偏好"
 
+# Consecutive refused consolidation batches per (scope, compartment). A refusal keeps the
+# raw batch for retry, which is right for a transient LLM failure and wrong for a
+# mass-delete the model reproduces verbatim: that retries every cooldown forever while the
+# scope's memory silently stops updating. Past the threshold the log escalates from warn to
+# error, since CONTRIBUTING puts "an unexpected failure that lost a deliverable" at error.
 _consecutive_rejections: dict[tuple[str, str], int] = {}
 _MAX_QUIET_REJECTIONS = 3
 
@@ -191,7 +189,7 @@ def _memory_semaphore() -> asyncio.Semaphore:
 
 
 # Detached best-effort reply.db writes (the deferred-turn persist), held so the
-# event loop keeps a strong reference until they finish; rebuilt per loop.
+# event loop keeps a strong reference until they finish; reset by the test fixture.
 _db_tasks: set[asyncio.Task[None]] = set()
 
 # A clear and the short reply.db staging transaction must not pass each other:
@@ -611,7 +609,7 @@ async def _run_memory_update(  # noqa: PLR0913, PLR0911 -- schedule_memory_updat
 
 
 async def safe_list_resumable() -> list[memory_db.MemoryJob]:
-    """Returns the persisted non-`done` jobs for the restart sweep, best-effort.
+    """Returns the persisted `pending` and `failed` jobs for the restart sweep, best-effort.
 
     Wrapped so a reply.db read failure degrades to "nothing to resume" instead of
     breaking `on_ready`; the in-memory pipeline keeps working regardless.
@@ -636,10 +634,10 @@ def needs_consolidation(scope: str) -> bool:
 async def consolidate_if_needed(scope: str, extractor: MemoryExtractorAI, identity: str) -> None:
     """Consolidates a scope whose raw backlog is over threshold; best-effort, self-logging.
 
-    The boot-sweep entry point: `_consolidate_locked` / `_should_consolidate` are
-    private and assume the scope lock + semaphore are held, so this wrapper takes
-    both and re-checks the threshold under the lock. It swallows its own errors
-    (a background digest must never surface), so the caller just spawns it.
+    The boot-sweep entry point: `_consolidate_locked` is private and assumes the
+    scope lock and the semaphore permit are held, so this wrapper takes both and
+    re-checks the threshold under the lock. It swallows its own errors (a background
+    digest must never surface), so the caller just spawns it.
     """
     try:
         async with scope_lock(scope=scope), _memory_semaphore():
@@ -1008,14 +1006,12 @@ def _report_injection_size(scope: str, flavor: MemoryFlavor) -> None:
 
 
 def _write_tone_result(scope: str, tone_markdown: str) -> None:
-    """Persists a consolidation's tone note when it is acceptable for this scope.
+    """Persists a tone-note call's output when it is acceptable for this scope.
 
-    Sits on the tone-consuming paths (accepted rewrite AND genuine no-op, both of
-    which retire the raw batch — a main no-op can still carry fresh tone signal
-    that would otherwise be consumed without landing). User scopes only, and only
-    a note starting with the exact `## 語氣偏好` header; an empty or malformed
-    output never deletes the existing note — the tier is best-effort and the next
-    consolidation repairs it.
+    User scopes only, and only a note starting with the exact `## 語氣偏好` header;
+    an empty or malformed output never deletes the existing note — the tier is
+    best-effort and the next consolidation repairs it. Only `_rebuild_tone_note`,
+    which saw the whole evidence corpus, may clear it.
     """
     if flavor_of(scope=scope) != "user":
         return
@@ -1099,9 +1095,10 @@ async def regenerate_main_memory(
     The existing facts are deliberately NOT fed to the model: the rebuild distills the
     detail tail window plus any unconsumed raw entries from scratch, e.g. to redo an
     unsatisfying consolidation with another model. Facts the rebuild did not re-emit are
-    then deleted, which is the one path allowed to lose most of a compartment at once —
-    it is also the path the offline migration runs, and refusing it would leave the old
-    tagged-era content behind forever.
+    then deleted, which is the one path allowed to lose most of a compartment at once:
+    replacing the whole set is what it is for, and that exemption is also what let the
+    #408 compartment migration run through here instead of needing a writer of its own.
+    `scripts/regen_memories.py` drives the same path offline.
 
     On an LLM failure the compartment is left exactly as it was, and the raw batch is
     retired only when every compartment rebuilt. The report carries what the run removed

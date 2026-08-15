@@ -1,18 +1,25 @@
 """Blackjack expected-value engine for the bot player.
 
-An LLM reasons poorly about multi-step no-replacement probability, so this pure
-module turns the table state into decision-grade numbers: the dealer's H17
-final-total distribution and the expected value of every legal action, measured
-in multiples of the base hand bet.
+The bot plays off exact multi-step no-replacement probability rather than a
+heuristic strategy table, so this pure module turns the table state into
+decision-grade numbers: the dealer's H17 final-total distribution and the
+expected value of every legal action, measured in multiples of the base hand
+bet. `bot_player.py` falls back to its up-card-only table only when a call
+here fails.
 
-The engine runs two passes. The exact pass knows the dealer hole card and drives
-the recommended action only; it is the bot's private informational edge and is
-never surfaced verbatim. The marginal pass integrates a hypothetical hole out
-over the remaining shoe (the real hole is never added back, so every exposed
-number depends only on the up-card and the shoe) and, when the dealer has
-already peeked under an Ace/ten up-card, conditions on "no dealer Blackjack".
-Only the marginal dealer distribution and marginal per-action EVs are exposed,
-so nothing handed to the model can reveal or reconstruct the actual hole card.
+The engine runs two passes. The exact pass knows the dealer hole card and
+drives `recommended_action` only; its own EVs never leave this module, so the
+hole stays the bot's private informational edge. The marginal pass integrates a
+hypothetical hole out over the remaining shoe (the real hole is never added
+back, so every reported number depends only on the up-card and the shoe) and,
+when the dealer has already peeked under an Ace/ten up-card, conditions on "no
+dealer Blackjack". Every NUMBER on the returned `ActionEvAnalysis` comes from
+that marginal pass, so none of them can reveal or reconstruct the real hole;
+`recommended_action` is the single exception, an action rather than a value,
+which is why `compute_action_evs` looks its reported EV back up in the marginal
+table instead of carrying the exact one across. Nothing renders those numbers
+today — the bot reads only `basic_strategy_action` — so the split is upkeep for
+the turn they do reach the table, and it has to be kept until then.
 
 Everything here is deterministic and order-independent: the shoe is collapsed
 to a 10-bucket value-count multiset (`2..9`, ten-value, ace), so results depend
@@ -183,8 +190,10 @@ def _dealer_distribution(
     shoe_total = sum(shoe)
     if shoe_total == 0:
         # Defensive guard for a degraded/empty shoe (callers may pass one): the
-        # dealer cannot draw, so treat the sub-17 total as terminal and never
-        # divide by zero.
+        # dealer cannot draw, so the sub-17 total stands. The tuple has no slot
+        # below 17, so that stand is reported in the 17 bucket. Without the
+        # guard the loop below would skip every bucket and return an unnormalised
+        # all-zero distribution rather than raise.
         return (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     accumulator = [0.0] * 6
     for bucket, count in enumerate(shoe):
@@ -537,15 +546,15 @@ def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring 
     EV is expressed in multiples of the base hand bet. Two passes run over H17
     rules and this table's five-card payouts:
 
-    - The exact pass knows the hole card and selects `recommended_action`; this
-      is the bot's private edge and is never surfaced directly.
-    - The marginal pass integrates the hole out over the unseen deck (remaining
-      shoe plus the hole as one anonymous unknown) and supplies the
-      `dealer_outcome` distribution and every `action_evs` value. These hole-free
-      numbers are all that the model ever sees, so they cannot reveal the hole.
+    - The exact pass knows the hole card and selects `recommended_action`; its
+      EVs are dropped, so the bot's private edge never leaves this function.
+    - The marginal pass integrates a hypothetical hole out over the remaining
+      shoe (the real hole is never added back) and supplies the
+      `dealer_outcome` distribution and every `action_evs` value. Those numbers
+      depend only on the up-card and the shoe, so they cannot reveal the hole.
 
     `recommended_expected_value` is reported as the recommended action's marginal
-    EV to stay consistent with the exposed numbers.
+    EV to stay consistent with the other reported numbers.
 
     Args:
         hand_cards: The bot's active sub-hand cards.

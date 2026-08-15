@@ -219,7 +219,12 @@ async def _fetch_tracked_message(bot: commands.Bot, record: PendingPublicMessage
 
 
 async def delete_public_message(message: Message, message_id: int | None = None) -> bool:
-    """Deletes a public message and removes its persisted cleanup record."""
+    """Deletes a public message and removes its persisted cleanup record.
+
+    Returns:
+        True when the message is gone, an already-deleted one included; False when Discord
+        refused the delete, which keeps the record for the next process's startup sweep.
+    """
     resolved_message_id = message_id if message_id is not None else getattr(message, "id", None)
     try:
         await message.delete()
