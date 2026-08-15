@@ -173,7 +173,11 @@ def _extract_output_text(response_body: object) -> str:
 
 
 def print_batch_results(result_path: str | Path) -> None:
-    """Prints completed Responses API batch results from a downloaded JSONL file."""
+    """Prints completed Responses API batch results from a downloaded JSONL file.
+
+    Args:
+        result_path (str | Path): Path to the downloaded JSONL batch output file.
+    """
     path = Path(result_path)
     for line in path.read_text(encoding="utf-8").splitlines():
         result = cast("dict[str, object]", json.loads(line))
@@ -211,13 +215,13 @@ def retrieve_batch(
     """Polls an existing batch and downloads its output or error files.
 
     Args:
-        batch_id: Batch id returned by `submit_gen_reply_batch`.
-        result_path: Path where the successful output JSONL should be written.
-        error_path: Path where the error output JSONL should be written.
-        poll_interval_seconds: Seconds to sleep between polling requests.
+        batch_id (str): Batch id returned by `submit_gen_reply_batch`.
+        result_path (str | Path): Path where the successful output JSONL should be written.
+        error_path (str | Path): Path where the error output JSONL should be written.
+        poll_interval_seconds (int): Seconds to sleep between polling requests.
 
     Raises:
-        RuntimeError: The batch reaches a terminal non-completed status.
+        RuntimeError: The batch reaches a terminal non-completed status or lacks an output file.
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     batch = _wait_for_batch(
@@ -251,12 +255,15 @@ def submit_gen_reply_batch(
     """Submits a Responses API batch using the dev reply prompt.
 
     Args:
-        user_prompts: User prompts to send as separate batch requests.
-        file_path: Optional file to include as an input_file part in every request.
-        request_path: Path where the generated JSONL request file should be written.
+        user_prompts (Sequence[str]): User prompts to send as separate batch requests.
+        file_path (str | Path | None): Optional file to include as an input_file part in every request.
+        request_path (str | Path): Path where the generated JSONL request file should be written.
 
     Returns:
-        The created batch id.
+        str: The created batch id.
+
+    Raises:
+        ValueError: If user_prompts is empty.
     """
     if not user_prompts:
         raise ValueError("user_prompts must contain at least one prompt")
@@ -300,15 +307,15 @@ def gen_reply_batch(  # noqa: PLR0913 -- dev helper keeps file paths explicit at
     """Submits a dev reply batch and optionally waits for the result.
 
     Args:
-        user_prompts: User prompts to send as separate batch requests.
-        file_path: Optional file to include as an input_file part in every request.
-        request_path: Path where the generated JSONL request file should be written.
-        result_path: Path where the successful output JSONL should be written when waiting.
-        error_path: Path where the error output JSONL should be written when waiting.
-        wait: Whether to poll until the batch reaches a terminal state.
+        user_prompts (Sequence[str]): User prompts to send as separate batch requests.
+        file_path (str | Path | None): Optional file to include as an input_file part in every request.
+        request_path (str | Path): Path where the generated JSONL request file should be written.
+        result_path (str | Path): Path where the successful output JSONL should be written when waiting.
+        error_path (str | Path): Path where the error output JSONL should be written when waiting.
+        wait (bool): Whether to poll until the batch reaches a terminal state.
 
     Returns:
-        The created batch id.
+        str: The created batch id.
     """
     batch_id = submit_gen_reply_batch(
         user_prompts=user_prompts, file_path=file_path, request_path=request_path

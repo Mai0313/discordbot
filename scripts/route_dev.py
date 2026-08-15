@@ -35,7 +35,11 @@ def _smoke_parse(
 
 
 def use_oai_responses_parse(user_prompt: str) -> None:
-    """Smoke-tests the parallel route classification and effort grading calls."""
+    """Smoke-tests the parallel route classification and effort grading calls.
+
+    Args:
+        user_prompt (str): User prompt to classify and grade.
+    """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     _smoke_parse(
         client=client,

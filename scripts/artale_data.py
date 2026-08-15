@@ -39,11 +39,11 @@ def fetch_html(url: str, max_retries: int = 3) -> str:
     """Fetches HTML content from a URL with retry logic.
 
     Args:
-        url: The URL to fetch.
-        max_retries: Maximum number of retries on failure.
+        url (str): The URL to fetch.
+        max_retries (int): Maximum number of retries on failure.
 
     Returns:
-        The HTML content of the page.
+        str: The HTML content of the page.
 
     Raises:
         requests.RequestException: If fetching fails after max_retries.
@@ -64,10 +64,10 @@ def extract_rsc_text(html: str) -> str:
     """Concatenates all RSC payload chunks from script tags.
 
     Args:
-        html: The raw HTML content containing Next.js RSC payloads.
+        html (str): The raw HTML content containing Next.js RSC payloads.
 
     Returns:
-        The concatenated RSC text payload.
+        str: The concatenated RSC text payload.
     """
     chunks = re.findall(r"self\.__next_f\.push\(\s*(\[.*?\])\s*\)", html, re.DOTALL)
     parts: list[str] = []
@@ -82,7 +82,7 @@ def extract_rsc_text(html: str) -> str:
 
 
 def _raw_decode_value(text: str, key: str) -> list[JsonRecord] | dict[str, str] | None:
-    """Extract the JSON value for a given key using json.JSONDecoder.raw_decode."""
+    """Extracts the JSON value for a given key using json.JSONDecoder.raw_decode."""
     pattern = f'"{key}":'
     try:
         idx = text.index(pattern)
@@ -100,18 +100,18 @@ def extract_json_list(text: str, key: str) -> list[JsonRecord] | None:
     """Extracts a JSON array for a given key.
 
     Args:
-        text: The text containing JSON-like structures.
-        key: The key to look for in the text.
+        text (str): The text containing JSON-like structures.
+        key (str): The key to look for in the text.
 
     Returns:
-        A list of JSON records if found and is a list, otherwise None.
+        list[JsonRecord] | None: A list of JSON records if found and is a list, otherwise None.
     """
     value = _raw_decode_value(text, key)
     return value if isinstance(value, list) else None
 
 
 def _get_nested_dict(d: Mapping[str, JsonValue], *keys: str) -> dict[str, str]:
-    """Traverse nested dicts safely, returning {} if any key is missing."""
+    """Traverses nested dicts safely, returning {} if any key is missing."""
     current: Mapping[str, JsonValue] = d
     for k in keys:
         nested = current.get(k)
@@ -125,10 +125,10 @@ def extract_translations(rsc_text: str) -> dict[str, dict[str, str]]:
     """Extracts all name translation dicts from the RSC messages section.
 
     Args:
-        rsc_text: The concatenated RSC text payload.
+        rsc_text (str): The concatenated RSC text payload.
 
     Returns:
-        A dictionary mapping categories to their translation dictionaries.
+        dict[str, dict[str, str]]: A dictionary mapping categories to their translation dictionaries.
     """
     raw = _raw_decode_value(rsc_text, "messages")
     if not isinstance(raw, dict):
@@ -174,8 +174,8 @@ def apply_name_translations(items: list[JsonRecord], name_dict: dict[str, str]) 
     """Adds 'nameZh' field to each item from translation dictionary.
 
     Args:
-        items: A list of JSON records to be updated.
-        name_dict: A dictionary mapping English names to Traditional Chinese names.
+        items (list[JsonRecord]): A list of JSON records to be updated.
+        name_dict (dict[str, str]): A dictionary mapping English names to Traditional Chinese names.
     """
     for item in items:
         en_name = item.get("name")
@@ -189,13 +189,13 @@ def scrape_category(
     """Scrapes data for a specific category from the website.
 
     Args:
-        category: The category name (e.g., "monsters").
-        url_path: The URL path segment for this category.
-        rsc_key: The key in the RSC payload containing the data.
-        translations: The loaded translation dictionaries.
+        category (str): The category name (e.g., "monsters").
+        url_path (str): The URL path segment for this category.
+        rsc_key (str): The key in the RSC payload containing the data.
+        translations (dict[str, dict[str, str]]): The loaded translation dictionaries.
 
     Returns:
-        A list of JSON records for the category.
+        list[JsonRecord]: A list of JSON records for the category.
     """
     url = f"{BASE_URL}/{LOCALE}/{url_path}"
     console.print(f"  📖 {url}")
@@ -218,10 +218,10 @@ def scrape_maps(translations: dict[str, dict[str, str]]) -> list[JsonRecord]:
     """Scrapes maps by fetching each region page.
 
     Args:
-        translations: The loaded translation dictionaries.
+        translations (dict[str, dict[str, str]]): The loaded translation dictionaries.
 
     Returns:
-        A list of JSON records for all maps.
+        list[JsonRecord]: A list of JSON records for all maps.
     """
     # Discover region slugs from main maps page
     main_url = f"{BASE_URL}/{LOCALE}/maps"
@@ -264,11 +264,11 @@ def save_json(data: list[JsonRecord] | dict[str, dict[str, str]], filename: str)
     """Saves data to a JSON file in the data directory.
 
     Args:
-        data: The data to save (list or dict).
-        filename: The name of the file (without extension).
+        data (list[JsonRecord] | dict[str, dict[str, str]]): The data to save (list or dict).
+        filename (str): The name of the file (without extension).
 
     Returns:
-        The path to the saved file.
+        Path: The path to the saved file.
     """
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     path = DATA_DIR / f"{filename}.json"

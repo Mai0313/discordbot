@@ -66,11 +66,7 @@ class CatalogSeedSummary(BaseModel):
 
 
 def _diff(payload: BaseModel, existing: BaseModel | None) -> tuple[str, ...]:
-    """Returns one line per field where the stored row differs from the default.
-
-    Compared field by field off the payload rather than by dumping both models,
-    so a view carrying extra columns (timestamps, say) never reads as a change.
-    """
+    """Returns one line per field where the stored row differs from the default."""
     if existing is None:
         return ()
     return tuple(
@@ -185,9 +181,6 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     """Runs the fishing catalog seeding CLI.
-
-    Parses command-line arguments, applies the default catalog, and prints a
-    human-readable summary of what changed.
 
     Args:
         argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.

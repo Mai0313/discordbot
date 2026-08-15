@@ -8,7 +8,7 @@
 #     "rich",
 # ]
 # ///
-"""Generate and execute Markdown documentation from source files."""
+"""Generates Markdown documentation from source files and rebuilds the MkDocs nav."""
 
 import ast
 import shutil
@@ -38,21 +38,7 @@ def _nav_indent(level: int) -> str:
 
 
 def _build_nav_section(title: str, dir_path: Path, level: int, docs_root: Path) -> list[str]:
-    """Render YAML lines for a nav section rooted at `dir_path`.
-
-    Subdirectories are emitted before sibling markdown files so packages
-    appear above leaf modules. Returns an empty list if the directory has
-    no renderable children.
-
-    Args:
-        title (str): Nav label for this directory.
-        dir_path (Path): Directory to scan.
-        level (int): Zero-based nav nesting depth.
-        docs_root (Path): Root used to compute Markdown paths.
-
-    Returns:
-        list[str]: YAML lines for this section.
-    """
+    """Renders YAML lines for a nav section rooted at `dir_path`."""
     if not dir_path.is_dir():
         return []
 
@@ -76,13 +62,7 @@ def _build_nav_section(title: str, dir_path: Path, level: int, docs_root: Path) 
 def _rebuild_nav(
     docs_dir: str, config_path: str, sections: tuple[str, ...] | list[str] | str
 ) -> None:
-    """Rewrite the marker-bounded nav block in `config_path` from `docs_dir`.
-
-    Args:
-        docs_dir (str): MkDocs source directory.
-        config_path (str): `mkdocs.yml` path to update.
-        sections (tuple[str, ...] | list[str] | str): Top-level nav sections to expose.
-    """
+    """Rewrites the marker-bounded nav block in `config_path` from `docs_dir`."""
     docs_root = Path(docs_dir)
     config_file = Path(config_path)
 
@@ -107,7 +87,7 @@ def _rebuild_nav(
 
 
 class DocsGenerator(BaseModel):
-    """Generate module markdown pages and rebuild the MkDocs nav.
+    """Generates module markdown pages and rebuilds the MkDocs nav.
 
     Attributes:
         source_path (Path): Source directory or file path.
@@ -171,14 +151,7 @@ class DocsGenerator(BaseModel):
     )
 
     def _get_all_files(self, suffix: str) -> list[Path]:
-        """Gets all files with the specified suffixes recursively.
-
-        Args:
-            suffix (str): Comma-separated suffixes without leading dots.
-
-        Returns:
-            list[Path]: Matching files under `source_path`.
-        """
+        """Discovers all files with the specified comma-separated suffixes recursively."""
         targets = [s.strip() for s in suffix.split(",")]
         all_files: list[Path] = []
         for target in targets:
@@ -189,14 +162,7 @@ class DocsGenerator(BaseModel):
     @computed_field
     @cached_property
     def source_files(self) -> list[Path]:
-        """The source files selected for documentation generation.
-
-        Returns:
-            list[Path]: Source files under `source_path`, excluding configured entries and
-            default skipped paths when `source_path` is a directory. Returns the
-            single source file when `source_path` is a file, or an empty list
-            when it is neither a valid file nor directory.
-        """
+        """Discovers and filters source files selected for documentation generation."""
         if self.source_path.is_dir():
             if self.output_path.exists():
                 shutil.rmtree(self.output_path.absolute())
@@ -216,14 +182,7 @@ class DocsGenerator(BaseModel):
         return all_files
 
     async def _prepare_docs_path(self, file: Path) -> Path:
-        """Prepares the output directory for the given file.
-
-        Args:
-            file (Path): Source file being converted.
-
-        Returns:
-            Path: Markdown output path for the source file.
-        """
+        """Prepares the output markdown path and directory for a source file."""
         # Preserve nested source directories under the output path.
         filename = file.with_suffix(".md").name
         if file.parent.as_posix() != ".":
@@ -236,14 +195,7 @@ class DocsGenerator(BaseModel):
         return docs_path
 
     async def _gen_python_docs(self, file: Path) -> str:
-        """Generates markdown documentation for a Python file.
-
-        Args:
-            file (Path): Python source file to document.
-
-        Returns:
-            str: Generated Markdown file path.
-        """
+        """Generates markdown documentation for a single Python file."""
         docs_path = await self._prepare_docs_path(file=file)
         if self.mode == "file":
             note_content = f"::: {file.with_suffix('').as_posix().replace('/', '.')}\n"
@@ -266,14 +218,7 @@ class DocsGenerator(BaseModel):
         return docs_path.as_posix()
 
     async def _gen_notebook_docs(self, file: Path) -> str:
-        """Generates markdown documentation for a Jupyter notebook.
-
-        Args:
-            file (Path): Notebook file to convert.
-
-        Returns:
-            str: Generated Markdown file path.
-        """
+        """Generates markdown documentation for a Jupyter notebook."""
         docs_path = await self._prepare_docs_path(file=file)
         async with await anyio.open_file(file, encoding="utf-8") as f:
             notebook_content = nbformat.reads(await f.read(), as_version=4)
@@ -301,16 +246,7 @@ class DocsGenerator(BaseModel):
         return docs_path.as_posix()
 
     async def _process_file(self, file: Path, progress: Progress, task: TaskID) -> str:
-        """Process a single file and update progress.
-
-        Args:
-            file (Path): Source file to convert.
-            progress (Progress): Progress renderer to update.
-            task (TaskID): Progress task identifier.
-
-        Returns:
-            str: Generated Markdown file path, or an empty string on failure.
-        """
+        """Processes a single file and advances progress."""
         try:
             if file.suffix == ".ipynb":
                 result = await self._gen_notebook_docs(file=file)
@@ -330,16 +266,7 @@ class DocsGenerator(BaseModel):
     async def _process_batch(
         self, files: list[Path], progress: Progress, task: TaskID
     ) -> list[str]:
-        """Process a batch of files with the configured concurrency limit.
-
-        Args:
-            files (list[Path]): Source files to convert.
-            progress (Progress): Progress renderer to update.
-            task (TaskID): Progress task identifier.
-
-        Returns:
-            list[str]: Generated Markdown file paths, with empty strings for failures.
-        """
+        """Processes a batch of files with the configured concurrency limit."""
         semaphore = asyncio.Semaphore(self.concurrency)
 
         async def process_with_semaphore(file: Path) -> str:
@@ -374,23 +301,13 @@ class DocsGenerator(BaseModel):
         config_path: str = "mkdocs.yml",
         sections: tuple[str, ...] = ("Reference", "Scripts"),
     ) -> None:
-        """Rewrite the auto-generated MkDocs nav block by scanning the docs tree.
-
-        The script walks each requested top-level section under `docs_dir` and
-        emits a nested nav YAML structure so the sidebar shows every leaf module
-        directly. It rewrites only the region delimited by the sentinel comments
-        in `config_path`; everything outside the markers is preserved verbatim.
-
-        Exposed as a `@staticmethod` so Fire can dispatch
-        `gen_docs.py build_nav` without instantiating `DocsGenerator` (which
-        would require `--source` / `--output` that are irrelevant here).
+        """Rewrites the auto-generated MkDocs nav block by scanning the docs tree.
 
         Args:
-            docs_dir (str): Path to the MkDocs source directory (where `index.md` lives).
-            config_path (str): Path to the `mkdocs.yml` to update in-place.
+            docs_dir (str): Path to the MkDocs source directory.
+            config_path (str): Path to the `mkdocs.yml` file to update in place.
             sections (tuple[str, ...]): Top-level directory names under `docs_dir` to expose as
-                expandable nav sections. Sections that do not exist on disk are
-                silently skipped.
+                expandable nav sections.
         """
         _rebuild_nav(docs_dir=docs_dir, config_path=config_path, sections=sections)
 

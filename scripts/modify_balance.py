@@ -243,9 +243,6 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 def main(argv: Sequence[str] | None = None) -> None:
     """Runs the manual balance adjustment CLI.
 
-    Parses command-line arguments, applies the requested balance change, and
-    prints a human-readable summary to the console.
-
     Args:
         argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
     """
