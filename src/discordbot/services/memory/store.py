@@ -7,9 +7,9 @@ memory uses ``server_scope(server_id)`` (``bot_memories/<server_id>``).
 Inside a scope the consolidated tier is **one file per fact**, filed under the
 compartment that decides who may read it — ``global/`` (safe anywhere),
 ``g/<guild_id>/`` (that guild only) and ``dm/`` (the owner's own DMs). The path *is*
-the privacy boundary: reading for guild G is ``global/`` plus ``g/<G>/``, two joins and
-a containment check, with no read-time content filter to get wrong. A server scope has
-exactly one compartment (``global/``) because a server memory is per-guild by
+the privacy boundary: reading for guild G is ``global/`` plus ``g/<G>/``, two joins each
+guarded by ``_COMPARTMENT_RE``, with no read-time content filter to get wrong. A server
+scope has exactly one compartment (``global/``) because a server memory is per-guild by
 construction and its evidence carries no source to route by.
 
 The remaining tiers are per-scope and unchanged: ``raw.md`` accumulates phase-1 entries
@@ -18,7 +18,7 @@ until consolidation consumes them, ``detail.md`` is the append-only cold evidenc
 always-read note of how the user wants the bot to sound.
 
 IO is synchronous, which one fact per file would otherwise make untenable on the reply
-path: ``render_memory_document`` is cached under a per-scope generation counter that
+path: ``read_memory_document`` is cached under a per-scope generation counter that
 every write bumps, so a repeat read costs no syscalls at all. The counter is exact
 because every write in this process goes through here under ``scope_lock``; editing the
 tree from outside while the bot runs is not supported (nor is it today, for
@@ -188,9 +188,9 @@ def iter_scopes() -> list[str]:
     is pending for them.
 
     `bot_memories` is the only directory descended into, and dot directories are
-    skipped outright (the store is itself a git work tree), so a stray directory — or a
-    symlink to this one — can never hand the sweep the same memory twice under another
-    name.
+    skipped outright (the store is itself a git work tree), so nested memory anywhere
+    else — a stray directory, or a symlink to `bot_memories` — can never hand the sweep
+    the same memory under a second name.
     """
     scopes: list[str] = []
     if not _MEMORY_DIR.is_dir():
@@ -429,8 +429,7 @@ def prune_compartment(scope: str, compartment: str, keep: set[str]) -> PrunedCom
     process can be mid-write, since every writer holds the same scope lock. Out of
     process is the offline rebuild's standing caveat rather than a new one — it is why
     `scripts/regen_memories.py` opens by telling the operator to stop the bot. An emptied
-    directory
-    is then removed, so a compartment a rebuild emptied stops being one
+    directory is then removed, so a compartment a rebuild emptied stops being one
     `list_compartments` reports, and stops costing a consolidation call on every later
     rebuild.
 
@@ -601,11 +600,11 @@ def _trim_detail(path: Path) -> None:
 def read_detail_tail(scope: str, max_chars: int) -> str:
     """Returns the newest detail-file window, aligned to a raw-entry header.
 
-    Only a bounded byte window is read from the end of the file so the call
-    stays O(window) as the uncapped detail file grows. The window is aligned
-    to the first raw-entry header inside the tail so a partial entry never
-    leads the result; when no header lands inside the window (e.g. one giant
-    entry) the raw tail is returned as a best effort.
+    Only a bounded byte window is read from the end of the file so the call stays
+    O(window) however far the detail file has grown toward its multi-megabyte cap.
+    The window is aligned to the first raw-entry header inside the tail so a partial
+    entry never leads the result; when no header lands inside the window (e.g. one
+    giant entry) the raw tail is returned as a best effort.
     """
     try:
         with _detail_path(scope=scope).open(mode="rb") as handle:
@@ -685,11 +684,13 @@ def clear_memory(scope: str) -> bool:
 def delete_memory_files(scope: str) -> bool:
     """Deletes the scope's memory files without moving its clear boundary.
 
-    Walks the compartment tree as well as the three single-file tiers, removing only
-    `.md` files and the `.md.tmp` leftovers a crash between a tmp write and its
-    `os.replace` can strand — never a foreign file that shares the directory. Empty
-    directories are then removed bottom-up; a non-empty or missing one is left for
-    offline maintenance instead of failing the clear.
+    Walks the compartment tree as well as the three single-file tiers, taking every
+    `.md` it finds — a foreign one included, because a clear is a wipe its owner asked
+    for and sparing a file that might carry their memory would be the wrong answer here
+    (`unaccounted_files` is the opposite contract) — plus the `.md.tmp` leftovers a crash
+    between a tmp write and its `os.replace` can strand. Anything with another suffix is
+    left alone. Empty directories are then removed bottom-up; a non-empty or missing one
+    is left for offline maintenance instead of failing the clear.
 
     Returns:
         True when at least one memory file existed and was removed.

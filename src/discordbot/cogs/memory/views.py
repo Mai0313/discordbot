@@ -1,4 +1,4 @@
-"""Views and embed builders for the /memory show and /memory clear commands."""
+"""Views and embed builders for /memory show, /memory server show and /memory clear."""
 
 from typing import cast
 import contextlib
@@ -85,7 +85,7 @@ def memory_footer_text(pending_count: int) -> str:
 def build_memory_embed(
     page_text: str, page_index: int, page_count: int, footer_text: str, title: str
 ) -> Embed:
-    """Builds one /memory show embed page with the shared footer."""
+    """Builds one memory embed page with the shared footer, for either show command."""
     embed = Embed(title=title, description=page_text, color=MEMORY_EMBED_COLOR)
     footer = footer_text
     if page_count > 1:
@@ -234,7 +234,7 @@ class MemoryClearConfirmView(View):
 
 
 class MemoryPagesView(View):
-    """Ephemeral pagination view for an oversized personal memory embed.
+    """Ephemeral pagination view for an oversized memory embed, personal or per-server.
 
     Attributes:
         pages: Pre-split page texts, each within one embed description.

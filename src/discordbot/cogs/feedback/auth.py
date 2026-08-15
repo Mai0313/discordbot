@@ -176,8 +176,9 @@ class AppCredentials(BaseModel):
 def _parse_expiry(*, value: object) -> datetime:
     """Reads GitHub's expiry timestamp, falling back to the documented one-hour life.
 
-    A missing or odd timestamp is not worth failing over: the fallback is shorter than
-    the real life, so the worst case is minting a token slightly more often than needed.
+    A missing or odd timestamp is not worth failing over: the fallback counts the hour
+    from now rather than from when GitHub minted the token, so it lands a moment past the
+    real expiry, and `_RENEW_BEFORE` is what absorbs the difference.
     """
     if isinstance(value, str):
         try:

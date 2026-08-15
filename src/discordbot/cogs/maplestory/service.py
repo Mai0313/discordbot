@@ -31,8 +31,10 @@ def _load_json[T: BaseModel](path: Path, model: type[T]) -> list[T]:
             _exc_info=exc,
         )
     except (json.JSONDecodeError, ValidationError, OSError, UnicodeDecodeError, TypeError) as exc:
-        # TypeError covers a JSON document that parses but is not a list, which
-        # would otherwise escape into the synchronous cog load and kill startup.
+        # A JSON document that is not a list still has to be caught here or it
+        # escapes into the synchronous cog load and kills startup: a bare scalar
+        # or null raises TypeError from the iteration, while a dict or a string
+        # reaches model_validate and raises ValidationError.
         logfire.error(
             "failed to load maplestory data",
             path=str(path),
@@ -135,7 +137,9 @@ class MapleStoryService(BaseModel):
         """Checks if the service has loaded data.
 
         Returns:
-            True if data is loaded, False otherwise.
+            True if monsters are loaded. Monsters stand in for every category, so
+            a load where only monsters.json failed reports False while one where
+            only monsters.json succeeded reports True.
         """
         return bool(self._monsters)
 
@@ -444,7 +448,9 @@ class MapleStoryService(BaseModel):
             query: The search query string.
 
         Returns:
-            A sorted list of matching item names.
+            A sorted list of matching source item names. A Chinese query matches
+            through the translation table, but the untranslated name is returned,
+            since that is the key monster drops are recorded under.
         """
         key = query.lower()
         if key not in self._item_cache:
@@ -513,7 +519,9 @@ class MapleStoryService(BaseModel):
         """Gets a list of item names sorted by drop popularity.
 
         Returns:
-            A list of item names, sorted by the number of monsters that drop them.
+            A list of item names, sorted descending by how many drop entries name
+            them. A monster listing one item under two drop categories counts
+            twice, so this is close to but not exactly a monster count.
         """
         counts: dict[str, int] = {}
         for m in self._monsters:

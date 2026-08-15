@@ -116,7 +116,7 @@ def _outcome_presentation(outcome: DragonGateOutcome) -> tuple[str, int]:
 
 
 def _result_line(result: DragonGateTurnResult) -> str:
-    """Formats the latest resolved turn for the main embed."""
+    """Formats the last resolved turn for the final embed's last-hand block."""
     outcome_label, _color = _outcome_presentation(outcome=result.outcome)
     direction = f" · {_direction_label(direction=result.direction)}" if result.direction else ""
     pillars = " ".join(str(card) for card in result.pillars)
@@ -440,7 +440,7 @@ class DragonGateView(View):
         self.sync_controls()
 
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:
-        """Restricts bet/direction to the active player; leave is open to all seated."""
+        """Restricts every control to a seated player who has not withdrawn."""
         if self._settled or interaction.user is None:
             return False
         data = (
@@ -555,7 +555,7 @@ class DragonGateView(View):
         await self._place_bet_locked_by_interaction(interaction=interaction, amount=amount)
 
     def sync_controls(self) -> None:
-        """Updates button labels and select options from the current table state."""
+        """Rebuilds control labels, options, and visibility from the table state."""
         active = self.round_state.active_turn
         needs_pair_choice = not self._settled and self.round_state.needs_pair_choice()
         minimum = self.round_state.current_min_bet(jackpot=self._jackpot_snapshot)
@@ -651,8 +651,8 @@ class DragonGateView(View):
         Losses already clamp at the player's balance, so bounding the bet by the
         same balance closes the asymmetric free option where a low-balance player
         risks only their wallet yet could win the full pool. If the balance drops
-        below the table minimum, the betting controls are hidden until the player
-        leaves instead of flooring the maximum back above their wallet.
+        below the table minimum, `sync_controls` hides the bet select until the
+        player leaves instead of flooring the maximum back above their wallet.
         """
         pool_max = self.round_state.current_max_bet(jackpot=self._jackpot_snapshot)
         if user_id is None:
@@ -821,7 +821,7 @@ class DragonGateView(View):
                 self._refunded_to_pool[participant.user_id] = refunded_to_pool
 
     async def _finalize_locked(self, message: Message, reason: str) -> None:
-        """Builds final results, disables controls, and schedules cleanup."""
+        """Builds final results, clears the controls, and schedules cleanup."""
         if self._settled:
             return
         self._settled = True

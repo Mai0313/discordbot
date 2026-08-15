@@ -2,7 +2,7 @@
 
 REST over `httpx`, which is already a dependency. Not the `gh` CLI (absent from the
 runtime image, and it would need its own credential setup) and not an MCP server (an
-agent-side tool, not a runtime library). Only five calls are needed, so the client is a
+agent-side tool, not a runtime library). Only six calls are needed, so the client is a
 thin object rather than a dependency.
 
 Every call raises `GitHubIssuesError` on a non-2xx answer. Nothing is degraded here: the
@@ -271,8 +271,8 @@ class GitHubIssues(BaseModel):
         Paged rather than one call: the endpoint answers 30 at a time by default, and the
         panel shows the *newest* replies, so a thread past the first page would hide the
         very answer the reporter came to read while the status still said someone had
-        replied. `_MAX_COMMENT_PAGES` bounds it — past that many the oldest are dropped,
-        which is the end nobody is looking at.
+        replied. `_MAX_COMMENT_PAGES` bounds it at the first 300 comments; the endpoint
+        orders oldest first, so past that the newest replies are the ones left unread.
 
         Raises:
             GitHubIssuesError: The comments could not be read.

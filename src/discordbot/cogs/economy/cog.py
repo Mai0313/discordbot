@@ -1,4 +1,4 @@
-"""Slash commands that surface point balances, leaderboards, transfers, and loans."""
+"""Slash commands for balances, leaderboards, transfers, loans, check-in, VIP, and admin tax."""
 
 from io import BytesIO
 from datetime import UTC, datetime
@@ -81,10 +81,13 @@ def _parse_collect_amount(raw_amount: str | None) -> tuple[bool, int | None]:
 
 
 class EconomyCogs(commands.Cog):
-    """Player-facing point balance, leaderboards, loans, VIP, and check-in commands.
+    """Point balance, leaderboard, loan, VIP, check-in, and economy-admin commands.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
+        economy_config: Environment-backed economy settings; only
+            `allow_central_bank_self_approval` is read, and only by
+            `/central_bank borrow`.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -848,7 +851,7 @@ class EconomyCogs(commands.Cog):
         },
     )
     async def credit_status(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the caller's active personal credit contracts."""
+        """Shows the active personal credit contracts the caller borrowed or lent on."""
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return

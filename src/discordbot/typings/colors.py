@@ -1,9 +1,9 @@
 """Shared Discord embed color constants.
 
-The economy transfer and in-progress game embeds both use the same neutral
-blurple, and the economy / stock / games embeds all use Discord's
-red/green/yellow status palette. Defining each hex once keeps the theme
-consistent; the semantic aliases document where each color is used.
+Every cog that renders an embed draws its accents from here: the same neutral
+blurple, and Discord's own red/green/yellow status palette. Defining each hex
+once keeps the theme consistent; the semantic aliases document what each color
+means rather than where it is used.
 """
 
 from typing import Final
@@ -11,7 +11,7 @@ from typing import Final
 # Discord blurple, used wherever a neutral/info accent is wanted.
 NEUTRAL_BLUE: Final[int] = 0x5865F2
 
-# Discord's status palette, reused across economy / stock / games embeds.
+# Discord's status palette, reused across every embed-rendering cog.
 DISCORD_RED: Final[int] = 0xED4245  # error / loss
 DISCORD_GREEN: Final[int] = 0x57F287  # success / win / positive balance
 DISCORD_YELLOW: Final[int] = 0xFEE75C  # neutral / push / leaderboard

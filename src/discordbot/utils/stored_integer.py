@@ -101,7 +101,14 @@ class StoredIntegerComparator(TypeDecorator.Comparator[int]):
 
 
 class StoredInteger(TypeDecorator[int]):
-    """Persists Python integers as decimal text in SQLite."""
+    """Persists Python integers as decimal text in SQLite.
+
+    Text rather than INTEGER because a balance can outgrow SQLite's 64-bit integer, which
+    Python's own int never does; the comparator keeps SQL arithmetic and comparisons
+    numeric. Ordering is NOT covered: SQLAlchemy exposes no `ORDER BY` hook here, so a bare
+    `order_by` on one of these columns sorts lexically, and every DB-side ranking builds its
+    own decimal-aware order terms instead.
+    """
 
     impl = Text
     cache_ok = True

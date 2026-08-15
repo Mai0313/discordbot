@@ -1,9 +1,9 @@
 """Shared SQLite connection configuration for the project's DB engines.
 
-Economy, stock, message-log, and cleanup storage all open SQLite with the same
-WAL / synchronous / busy_timeout PRAGMA trade-off. This helper centralizes that
-setup so every engine configures connections the same way. `StoredInteger`
-engines additionally register the integer-aware UDFs.
+Every SQLite engine in the project opens connections with the same WAL /
+synchronous / busy_timeout PRAGMA trade-off. This helper centralizes that setup
+so every engine configures connections the same way. `StoredInteger` engines
+additionally register the integer-aware UDFs.
 """
 
 from typing import Any

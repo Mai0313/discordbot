@@ -2,15 +2,16 @@
 
 One row per launched research thread. The row lets a bot restart resume an
 in-flight research: the Gemini interaction runs server-side with `store=True`,
-so after a restart the cog reloads the rows still in `researching` and re-enters
-the poll loop on each `interaction_id`. It is also the per-user concurrency
+so after a restart the cog reloads the rows still in `researching` and re-attaches
+a live stream to each `interaction_id`. It is also the per-user concurrency
 guard (one active research per owner).
 
 The engine is a module-level `AsyncEngine` singleton, exactly like
 `services/economy/database.py`: a per-instance `cached_property` engine would leak
 the connection pool / dialect cache for every interaction. `reply.db` is the
-shared file for reply-side persistence (research today, room for more later);
-it has no money columns, so no `StoredInteger`. Each call opens an `AsyncSession`
+shared file for reply-side persistence (this table plus the memory pipeline's
+phase-1 inbox in `services/memory/database.py`, which keeps its own engine on the
+same file); it has no money columns, so no `StoredInteger`. Each call opens an `AsyncSession`
 bound to the current `_engine`, so tests can monkeypatch `_engine` per-test.
 
 This module deliberately avoids `from __future__ import annotations`: SQLAlchemy
@@ -68,8 +69,9 @@ class ResearchSessionRow(Base):
     Attributes:
         thread_id: Discord thread ID; primary key.
         owner_id: Discord user ID that launched the research.
-        channel_id: Parent channel ID (the thread's parent, or the DM-fallback channel).
-        guild_id: Guild ID, or `None` for a DM-fallback session with no thread.
+        channel_id: The thread's parent channel ID.
+        guild_id: Guild ID. Nullable in the schema, but never written `None`: a launch outside a
+            guild text channel is refused before any row exists.
         source_message_id: The message the thread was anchored to.
         agent: The Gemini agent string currently running this session.
         interaction_id: The running interaction's id; `None` before it starts.
@@ -103,8 +105,10 @@ class PersistentResearchSession(BaseModel):
 
     thread_id: int = Field(..., description="Discord thread ID; primary key.")
     owner_id: int = Field(..., description="Discord user ID that launched the research.")
-    channel_id: int = Field(..., description="Parent channel ID for the thread or DM fallback.")
-    guild_id: int | None = Field(..., description="Guild ID, or None for a DM-fallback session.")
+    channel_id: int = Field(..., description="Parent channel ID the thread hangs off.")
+    guild_id: int | None = Field(
+        ..., description="Guild ID; nullable in the schema but never written None."
+    )
     source_message_id: int = Field(..., description="The message the thread was anchored to.")
     agent: str = Field(..., description="The Gemini agent string currently running this session.")
     interaction_id: str | None = Field(

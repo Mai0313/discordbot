@@ -88,7 +88,11 @@ def has_open_gate(pillars: list[Card]) -> bool:
 
 
 class DragonGateTurn(BaseModel):
-    """Mutable state for one active player's 射龍門 attempt."""
+    """Frozen state for one active player's 射龍門 attempt.
+
+    A pair-gate direction choice replaces the whole turn rather than mutating
+    it; see `DragonGateRound.choose_pair_direction`.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -172,7 +176,11 @@ class DragonGateRound(BaseModel):
     def from_participants(
         cls, rng: Random, participants: list[GameParticipant]
     ) -> "DragonGateRound":
-        """Builds and starts a 射龍門 round from lobby participants."""
+        """Builds a 射龍門 round from lobby participants and deals the first gate.
+
+        Raises:
+            ValueError: `participants` is empty.
+        """
         if not participants:
             raise ValueError("At least one participant is required")
         round_state = cls(rng=rng, participants=participants)
@@ -220,7 +228,8 @@ class DragonGateRound(BaseModel):
 
         Args:
             user_id: Discord user ID that must match the active player.
-            amount: Bet amount, constrained to current min bet..jackpot.
+            amount: Bet amount, constrained to the `current_min_bet` /
+                `current_max_bet` range for the supplied jackpot.
             jackpot: Live jackpot balance used to bound the legal bet
                 range; tracked outside this module.
 
@@ -263,7 +272,12 @@ class DragonGateRound(BaseModel):
         return self.player_deltas.get(user_id, 0)
 
     def replace_last_result_delta(self, user_id: int, delta: int) -> DragonGateTurnResult:
-        """Replaces the latest result delta after database-side clamping."""
+        """Replaces the latest result delta after database-side clamping.
+
+        Raises:
+            DragonGateParticipantUnknownError: No turn has resolved yet, or the
+                latest one belongs to another player.
+        """
         result = self.last_result
         if result is None or result.participant.user_id != user_id:
             raise DragonGateParticipantUnknownError("No latest result for user")

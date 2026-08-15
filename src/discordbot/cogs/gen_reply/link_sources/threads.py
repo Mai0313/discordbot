@@ -44,14 +44,15 @@ from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 if TYPE_CHECKING:
     from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-# Cap on media parts injected for the linked post, mirroring the parse_threads cog's
-# 10-embed ceiling so a huge carousel cannot bloat the answer input — and, now that each
-# part costs a fetch plus an upload, cannot blow the media budget either.
+# Cap on media parts injected for the whole block, shared by the linked post and the post it
+# quotes (`_media_plan` splits it, target first). Mirrors the parse_threads cog's 10-embed
+# ceiling so a huge carousel cannot bloat the answer input — and, now that each part costs a
+# fetch plus an upload, cannot blow the media budget either.
 MAX_THREADS_MEDIA_PARTS = 10
 
 # Cap on posts rendered from a reply chain, mirroring the cog's deep-chain trim
-# (`results[-max_embeds:]`): a linked reply deep in a long Threads thread would otherwise
-# render every ancestor's text and bloat or overflow the answer input. The chain is
+# (`results[-_MAX_EMBEDS_PER_MESSAGE:]`): a linked reply deep in a long Threads thread would
+# otherwise render every ancestor's text and bloat or overflow the answer input. The chain is
 # ordered oldest-first, so the tail keeps the target plus its nearest ancestors.
 MAX_THREADS_POSTS = 6
 
@@ -346,12 +347,13 @@ def _reply_label(*, post: ThreadsOutput, depth: int, target_author: str) -> str:
 
 
 def _reply_media_note(*, post: ThreadsOutput) -> str:
-    """Notes the media a comment carries, which is never fetched (only the target's is).
+    """Notes the media a comment carries, which is never fetched.
 
-    Without it a picture-only comment renders as a blank body, which reads as an empty comment
-    rather than as one whose content the model simply did not receive. Never inverted into a
-    "this comment has no media" claim: a comment the page serialises without media URLs is not
-    the same thing as a comment that had none.
+    `_media_plan` ingests the target's media and that of the post it quotes; a comment's is
+    never among them. Without this note a picture-only comment renders as a blank body, which
+    reads as an empty comment rather than as one whose content the model simply did not
+    receive. Never inverted into a "this comment has no media" claim: a comment the page
+    serialises without media URLs is not the same thing as a comment that had none.
     """
     counts = [
         f"{len(urls)} {noun}"

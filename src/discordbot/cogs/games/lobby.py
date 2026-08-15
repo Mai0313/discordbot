@@ -42,7 +42,8 @@ class PrepareParticipant(Protocol):
 class RefreshParticipants(Protocol):
     """Callable used by lobby start to re-check balances.
 
-    Wager / mode are bound by the caller via `functools.partial`.
+    The wager mode is bound by the caller via `functools.partial`; each
+    participant's own wager rides on the participant passed in.
     """
 
     async def __call__(self, participants: list[GameParticipant]) -> RefreshParticipantsResult:

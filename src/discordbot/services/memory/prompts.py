@@ -1,4 +1,4 @@
-"""Prompts for per-user memory extraction, consolidation, and prompt injection."""
+"""Prompts for per-user memory extraction, evaluation, and consolidation."""
 
 from discordbot.services.memory.constants import COMPACTION_TARGET_CHARS
 

@@ -29,15 +29,15 @@ from requests.exceptions import RequestException
 from discordbot.typings.video import VideoQuality
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
 
-# Single source of truth for detecting a Douyin URL, kept module level so the planned
-# auto-expand cog can share it the way `THREADS_URL_RE` is shared by parse_threads and
-# gen_reply. Douyin's own share button emits the link inside a blob of noise
+# Single source of truth for detecting a Douyin URL, kept module level so the expansion cog,
+# gen_reply and `/download_video` all share it, the way `THREADS_URL_RE` is shared by
+# parse_threads and gen_reply. Douyin's own share button emits the link inside a blob of noise
 # ("7.64 gOX:/ w@f.oD ... https://v.douyin.com/iR2syBRn/ 复制此链接，打开Dou音搜索"), so the
 # match has to survive being surrounded by CJK text: the path is matched as ASCII URL
 # characters only and must END on `[A-Za-z0-9_/-]`, which stops the match at a trailing
 # `，`/`。`/`!` instead of swallowing it into the short code and breaking the lookup.
-# `(?:[A-Za-z0-9-]+\.)*` requires the `.com` to be immediately followed by `/`, so a
-# lookalike host such as `douyin.com.attacker.com/x` does not match.
+# Only whole labels may precede the host (`(?:[A-Za-z0-9-]+\.)*`) and the `.com` must be followed
+# immediately by `/`, so a lookalike host such as `douyin.com.attacker.com/x` does not match.
 DOUYIN_URL_RE = re.compile(
     r"https?://(?:[A-Za-z0-9-]+\.)*(?:douyin|iesdouyin)\.com/[A-Za-z0-9_.?=&%/-]*[A-Za-z0-9_/-]"
 )
@@ -571,9 +571,9 @@ class DouyinDownloader(BaseModel):
     def parse_metadata(self, url: str) -> DouyinPost:
         """Parses a Douyin URL into post metadata WITHOUT downloading any media.
 
-        The planned auto-expand path needs the caption and media URLs but no local files, so the
-        parse is kept separate from the download the same way `ThreadsDownloader.parse_metadata`
-        is split from `parse`.
+        The expansion cog and the reply pipeline both need the caption and media URLs before (or
+        without) any local file, so the parse is kept separate from the download the same way
+        `ThreadsDownloader.parse_metadata` is split from `parse`.
 
         Args:
             url: The raw Douyin URL.

@@ -1,4 +1,8 @@
-"""LLM extraction and consolidation for per-user long-term memory."""
+"""LLM extraction and consolidation for long-term memory, in either flavor.
+
+The phase prompts ride on `MemoryExtractorAI` as fields, so the per-user and the
+per-server memory share every gate, renderer and redaction here.
+"""
 
 import re
 from typing import TYPE_CHECKING, TypeVar, cast
@@ -264,8 +268,7 @@ class ConsolidationRequest(BaseModel):
     raw_entries: str = Field(..., description="This compartment's share of the raw batch.")
     recent_detail: str = Field(..., description="Cold evidence filtered to this compartment.")
     tone_evidence: str = Field(
-        default="",
-        description="Unpartitioned tone signal; global-only, and for the tone note alone.",
+        default="", description="Unpartitioned tone signal; carried only by the tone-note call."
     )
     global_reference: str = Field(
         default="",
@@ -412,8 +415,9 @@ class MemoryExtractorAI(BaseModel):
 
         Delegates to the shared `parse_responses_or_none`, which owns the call surface,
         the timeout, and the degrade-to-None handling (timeout, refused output, an
-        incomplete/truncated response — the last matters here because a model that closed
-        the JSON early could otherwise pass the `v1` header check with an amputated file).
+        incomplete/truncated response — the last matters here because a half-emitted delta
+        batch is indistinguishable from a complete one, and the rebuild path deletes every
+        fact its batch did not re-emit).
         """
         return await parse_responses_or_none(
             client=self.client,
@@ -609,9 +613,9 @@ def filter_duplicate_observations(
 ) -> tuple[MemoryObservation, ...]:
     """Drops observations already evidenced from the SAME conversation source.
 
-    The dedupe key is `(normalized_key, source)`, not the key alone: a fact
-    re-stated in another guild (or a DM) must re-enter raw so consolidation can
-    widen that bullet's source tag; key-only dedupe would lock every fact to the
+    The dedupe key is `(normalized_key, source)`, not the key alone: a fact re-stated in
+    another guild (or a DM) must re-enter raw so `partition_raw_entries` can file it in
+    that conversation's own compartment; key-only dedupe would lock every fact to the
     first source that ever observed it.
     """
     existing_pairs = observation_key_sources_from_text(text=existing_text)

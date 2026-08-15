@@ -1,4 +1,4 @@
-"""Settlement helpers shared by game commands and interactive views."""
+"""Settlement helpers for the Blackjack interactive views."""
 
 from discordbot.typings.games import (
     Card,
@@ -29,7 +29,7 @@ from discordbot.services.economy.database import (
 
 
 def _blackjack_detail_for_hand(cards: list[Card], dealer: list[Card]) -> str:
-    """Builds a concise Blackjack result summary for dealer banter.
+    """Builds a concise Blackjack result summary for one settled hand.
 
     Args:
         cards: Player sub-hand cards.
@@ -67,7 +67,7 @@ def _blackjack_detail_for_hand(cards: list[Card], dealer: list[Card]) -> str:
 def _blackjack_hand_detail_part(
     index: int, settlement: BlackjackHandSettlement, dealer_total: int
 ) -> str:
-    """Formats one settled Blackjack sub-hand for dealer banter detail."""
+    """Formats one settled Blackjack sub-hand for the multi-hand detail line."""
     hand_total = hand_value(cards=settlement.cards)
     prefix = f"手{index}"
     if settlement.surrendered:
@@ -99,7 +99,7 @@ def blackjack_detail_player(
     hand_settlements: list[BlackjackHandSettlement],
     insurance: BlackjackInsuranceSettlement | None,
 ) -> str:
-    """Builds a multi-hand Blackjack summary for dealer banter.
+    """Builds a multi-hand Blackjack summary for `BlackjackPlayerSettlement.detail`.
 
     Args:
         player: Player whose hands are being summarized.
@@ -108,8 +108,8 @@ def blackjack_detail_player(
         insurance: Optional insurance side-bet result.
 
     Returns:
-        Short Chinese summary. Single-hand players keep the concise detail
-        shape used by dealer banter.
+        Short Chinese summary. A lone hand with no insurance keeps the concise
+        single-hand shape instead.
     """
     if len(hand_settlements) == 1 and insurance is None:
         only = hand_settlements[0]
@@ -281,7 +281,7 @@ async def settle_blackjack_player(
     sum).
 
     Args:
-        round_state: Round providing the dealer cards, RNG, and peek state.
+        round_state: Round providing the dealer cards and peek state.
         player: Player to settle.
         player_id: Discord user ID for the player account.
         player_account_name: Account name to store for the player.

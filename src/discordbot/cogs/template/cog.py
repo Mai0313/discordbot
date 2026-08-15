@@ -29,11 +29,9 @@ class TemplateCogs(commands.Cog):
         Args:
             message: The message that was sent.
         """
-        # 忽略來自機器人的訊息
         if message.author.bot:
             return
 
-        # 如果訊息內容是 "debug"，對該訊息按讚
         if message.content.lower() == "debug":
             await message.add_reaction("🤬")
         if message.content.lower() == "可愛捏":
@@ -58,13 +56,9 @@ class TemplateCogs(commands.Cog):
             interaction: The interaction that triggered the command.
         """
         await interaction.response.defer()
-        bot_latency = round(self.bot.latency * 1000, 2)  # 取得 API 延遲
+        bot_latency = round(self.bot.latency * 1000, 2)
 
-        embed = Embed(
-            title=":ping_pong: Pong!",
-            color=0x00FF00,  # 綠色
-            timestamp=nextcord.utils.utcnow(),
-        )
+        embed = Embed(title=":ping_pong: Pong!", color=0x00FF00, timestamp=nextcord.utils.utcnow())
         embed.add_field(name="Bot Latency", value=f"`{bot_latency}ms`")
         user = interaction.user
         if user is not None:
@@ -77,7 +71,6 @@ class TemplateCogs(commands.Cog):
         )
 
 
-# 註冊 Cog
 def setup(bot: commands.Bot) -> None:
     """Adds the TemplateCogs to the bot.
 

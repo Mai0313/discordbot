@@ -108,7 +108,7 @@ class MemoryGitService(BaseModel):
         queue.put_nowait(_GitRequest(scope=scope, reason=reason))
 
     async def _run(self) -> None:
-        """Drains the queue one request at a time for as long as the service is enabled."""
+        """Drains the queue one request at a time, discarding requests once disabled."""
         queue = self._queue
         if queue is None:
             return

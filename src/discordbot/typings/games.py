@@ -90,14 +90,22 @@ class GameParticipantIdentity(BaseModel):
 
 
 class SystemIdentity(BaseModel):
-    """Discord identity used for the casino system narrator in game views."""
+    """The house label a game view shows, beside the bot's own id and avatar.
+
+    A label, not a speaker: #303 removed the casino narrator, so nothing built from
+    this writes a message. `system_name` is the only part that reaches a render today
+    (the Blackjack dealer seat's embed author); Dragon Gate carries the identity
+    without displaying it.
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    system_id: int = Field(..., description="Discord user ID used for the casino system narrator.")
-    system_name: str = Field(..., description="Display name used for the casino system narrator.")
+    system_id: int = Field(
+        ..., description="Discord user ID of the bot, or 0 when the client user is unavailable."
+    )
+    system_name: str = Field(..., description="House label shown on the casino side of a table.")
     system_avatar_url: str = Field(
-        default="", description="Avatar URL used for the casino system narrator."
+        default="", description="The bot's guild-aware avatar URL, resolved alongside the label."
     )
 
 
@@ -247,7 +255,7 @@ class BlackjackPlayerSettlement(WagerSettlement):
         hands: Per-hand settlements in display order.
         insurance: Insurance side-bet result, or `None` when the player
             never took insurance.
-        detail: Short game-state summary for the dealer AI prompt.
+        detail: Short Chinese round summary built by `blackjack_detail_player`.
         five_card_bonus: Aggregate system-funded five-card 21 bonus.
     """
 
@@ -259,7 +267,9 @@ class BlackjackPlayerSettlement(WagerSettlement):
             "by net base delta."
         ),
     )
-    detail: str = Field(..., description="Short game-state summary for the dealer AI prompt.")
+    detail: str = Field(
+        ..., description="Short Chinese round summary built by `blackjack_detail_player`."
+    )
     hands: list[BlackjackHandSettlement] = Field(
         default_factory=list, description="Per-hand settlements in display order."
     )
@@ -479,15 +489,20 @@ class ActionEv(BaseModel):
 class ActionEvAnalysis(BaseModel):
     """EV analysis for one bot-player action decision.
 
-    `dealer_outcome` and `action_evs` are the hole-unknown (marginalized) numbers
-    shown to the model, while `recommended_action` is selected from the engine's
-    private hole-aware pass; the two never leak the hole card to the model.
+    Every NUMBER that reaches this analysis is the hole-unknown (marginalized) one:
+    `dealer_outcome`, `action_evs` and `recommended_expected_value` depend on the
+    up-card and the remaining shoe alone, so no caller can back out the dealer's real
+    hole from them. `recommended_action` is the single exception, selected from the
+    engine's private hole-aware pass — an action, never a value, which is why the
+    engine looks its reported EV back up in the marginal table rather than carrying
+    the exact one across.
     """
 
     model_config = ConfigDict(frozen=True)
 
     dealer_outcome: DealerOutcome = Field(
-        ..., description="Marginalized dealer final-total distribution shown to the model."
+        ...,
+        description="Marginalized dealer final-total distribution; the real hole never enters it.",
     )
     action_evs: tuple[ActionEv, ...] = Field(
         ...,

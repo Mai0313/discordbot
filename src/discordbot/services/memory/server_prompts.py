@@ -2,9 +2,9 @@
 
 These mirror the per-user prompts in ``prompts.py`` but reframe the target from
 one individual to the server / community as a whole. The structured schema,
-validation gates, redaction, and the `v1` consolidation contract are shared
-unchanged; only the framing and the consolidated section headings differ. The
-compaction block is reused from the per-user prompts because it is flavor
+validation gates, redaction, and the delta protocol ``apply_deltas`` enforces are
+shared unchanged; only the framing and the consolidated section headings differ.
+The compaction block is reused from the per-user prompts because it is flavor
 agnostic.
 """
 

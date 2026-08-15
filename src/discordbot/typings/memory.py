@@ -58,7 +58,9 @@ type MemorySection = Literal[
 
 # What a stored file holds. Derived from `section` by code so it can never disagree
 # with it; kept as its own field so a reader can select alias rows without knowing the
-# section vocabulary (`allowlist_ids_from_server_memory`'s successor).
+# section vocabulary. `allowlist_ids_from_server_memory` is NOT that reader and was not
+# replaced by this: it still parses `## 成員稱呼` out of the rendered document. Today the
+# freshness sweep is the only reader, exempting alias rows from aging.
 type MemoryNodeType = Literal["memory", "member_alias"]
 
 # What one consolidation delta asks for. `create` mints a fresh id, `update` and
@@ -83,8 +85,13 @@ class MemoryOwner(BaseModel):
 class MemoryFact(BaseModel):
     """One distilled memory, stored as a single file inside one compartment.
 
-    Attributes carry their zone in the description: the model authors the first four,
-    code stamps the rest.
+    The model authors `summary`, `section`, `durability` and `text`, except that a
+    `member_alias` body is code-built and its `text` unread. Code owns provenance —
+    `fact_id`, `compartment`, the `owner_*` and timestamp fields — and mints `fact_id`
+    itself so conversation content can never influence it. Provenance is not hidden
+    from the model: an update or delete has to name the id it is editing, so
+    `render_existing_facts` shows the id, `keys` and `subject_id` of every stored fact
+    and the delta schema takes them back.
     """
 
     model_config = ConfigDict(frozen=True)

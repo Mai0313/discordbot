@@ -26,6 +26,9 @@ def get_pil_image(image_file: str) -> Image.Image:
     Raises:
         ValueError: `image_file` is neither an `http(s)://` URL nor a
             recognised image data URI.
+        requests.RequestException: The URL could not be fetched.
+        PIL.UnidentifiedImageError: What came back is not a decodable image, which is
+            what a 404 HTML body from a dead CDN arrives as.
     """
     if image_file.startswith(("http://", "https://")):
         # 10s caps the history-render I/O tail: a URL taking longer is almost always a
@@ -54,7 +57,8 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
     bytes); images with transparency or an indexed palette stay PNG (alpha must
     survive, and JPEG artifacts are visible on flat-color palette graphics);
     GIFs and other animated images pass through untouched so motion context
-    survives. Anything PIL cannot decode passes through unchanged.
+    survives. Anything PIL cannot decode passes through unchanged, as does an
+    image already within the cap: those come back byte-identical, never re-encoded.
 
     Args:
         payload: The original encoded image bytes.

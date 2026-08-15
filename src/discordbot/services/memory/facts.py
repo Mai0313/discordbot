@@ -168,9 +168,9 @@ def parse_fact_file(text: str, compartment: str) -> MemoryFact | None:
 
     `compartment` is the directory the file was found in and is authoritative: a stored
     `compartment` that disagrees means the tree was hand-edited or a migration stopped
-    half way, and there is no safe way to guess which side is right. Returning None
-    (the caller logs it) keeps the fact out of every reply rather than guessing the
-    permissive answer.
+    half way, and there is no safe way to guess which side is right. Returning None keeps the
+    fact out of every reply rather than guessing the permissive answer; `read_facts` only
+    skips it, so a mismatch is logged here, while an unreadable header is dropped silently.
     """
     header, body = _split_front_matter(text=text)
     if header is None:

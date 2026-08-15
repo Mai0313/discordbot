@@ -349,7 +349,7 @@ def _current_news_provider_semaphore() -> asyncio.Semaphore:
 
 
 def _operation_lock(user_id: int, symbol: str) -> AbstractAsyncContextManager[None]:
-    """Returns a per-user stock operation lock bound to the current event loop."""
+    """Returns a per-user, per-symbol operation lock bound to the current event loop."""
     return _operation_locks.hold(key=(user_id, symbol))
 
 
@@ -501,7 +501,14 @@ def _quote_from_profile(profile: StockProfile, pressure_bps: int) -> StockMarket
 async def upsert_stock_profile(
     profile: StockProfileUpsert, now: datetime | None = None
 ) -> StockProfileView:
-    """Creates or updates a DB-owned stock profile from an explicit maintenance payload."""
+    """Creates or updates a DB-owned stock profile from an explicit maintenance payload.
+
+    A new profile also seeds the price tick for the current boundary; an existing
+    one writes a tick only when the maintenance price differs from the stored one.
+
+    Raises:
+        ValueError: `profile.symbol` is empty once trimmed.
+    """
     await _ensure_schema()
     effective_now = now or _database_now()
     normalized_symbol = profile.symbol.strip().upper()
@@ -623,7 +630,15 @@ async def ensure_due_stock_news(
     symbols: tuple[str, ...] | None = None,
     now: datetime | None = None,
 ) -> None:
-    """Creates due stock news rows, using AI when a provider is available."""
+    """Creates due stock news rows, using AI when a provider is available.
+
+    A symbol is due when it has no news at all, or its newest row is older than
+    the profile's `news_cadence_hours`. Passing a provider additionally reworks a
+    still-fresh template row, so a deterministic fallback written while no
+    provider was around is replaced by an AI headline instead of waiting out the
+    cadence. A provider that raises or returns nothing degrades to the templates
+    rather than propagating.
+    """
     await _ensure_schema()
     effective_now = now or _database_now()
     normalized_symbols = tuple(symbol.upper() for symbol in symbols) if symbols else None
@@ -1125,7 +1140,16 @@ async def advance_market_in_session(
     rng: Random | None = None,
     begin_immediate: bool = True,
 ) -> StockMarketQuote:
-    """Advances one stock lazily to the current tick boundary."""
+    """Advances one stock lazily to the current tick boundary.
+
+    Callers hold the per-symbol market lock and own the commit: the materialized
+    ticks and the mutated profile row stay in the caller's session. Pass
+    `begin_immediate=False` only when that session already holds SQLite's write
+    lock.
+
+    Raises:
+        ValueError: No `stock_profile` row exists for `symbol`.
+    """
     if begin_immediate:
         await _begin_immediate(session=session)
     effective_now = now or _database_now()
@@ -2340,7 +2364,24 @@ async def settle_stock_operation(  # noqa: PLR0913 -- Service boundary returns t
     now: datetime | None = None,
     rng: Random | None = None,
 ) -> StockSettlementResult:
-    """Settles a buy/cover or short/sell request through one service boundary."""
+    """Settles a buy/cover or short/sell request through one service boundary.
+
+    `stock.db` and `economy.db` cannot commit together, so the operation row and
+    its legs commit first, then the wallet legs move, then the position is
+    written and the operation marked `applied`. A wallet rejection marks it
+    `failed` with the position untouched; a failure after the wallet moved marks
+    it `reconcile_required`, which `list_reconciliation_operations` reports on and
+    which `_blocking_operation` reads to refuse the user's next trade on that symbol.
+
+    Returns:
+        The settled result, or a `success=False` result carrying the validation
+        or lifecycle error.
+
+    Raises:
+        ValueError: No `stock_profile` row exists for `symbol`.
+        asyncio.CancelledError: Re-raised once the in-flight operation has been
+            marked `reconcile_required`.
+    """
     normalized_symbol = symbol.upper()
     await _ensure_schema()
     async with _operation_lock(user_id=user_id, symbol=normalized_symbol):
@@ -2635,12 +2676,14 @@ async def list_reconciliation_operations() -> tuple[StockReconciliationOperation
 async def reset_all_positions() -> int:
     """Flattens every stock position and finalizes any non-final operation.
 
-    Used by the offline economy reset so stale, inflated positions cannot be
-    re-extracted into wallet cash after balances are deflated. Non-final
-    operations (pending / wallet_applied / reconcile_required) are also forced to
-    `failed`; otherwise `_blocking_operation` would keep the affected users from
-    trading that symbol even though the reset claims to flatten stock state.
-    Market prices in `stock_profile` are intentionally left untouched.
+    An offline wipe, so stale positions inflated under an earlier economy cannot
+    be re-extracted into wallet cash once balances are deflated. Its only caller
+    was `scripts/reset_economy.py`, deleted in #248, so nothing outside the tests
+    reaches it today. Non-final operations (pending / wallet_applied /
+    reconcile_required) are also forced to `failed`; otherwise
+    `_blocking_operation` would keep the affected users from trading that symbol
+    even though the reset claims to flatten stock state. Market prices in
+    `stock_profile` are intentionally left untouched.
 
     Returns:
         The number of position rows affected.

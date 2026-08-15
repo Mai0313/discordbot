@@ -47,20 +47,24 @@ class AttachmentRenderer(BaseModel):
     swapped by injecting a different renderer into `MessageInputBuilder`, not by branching
     inside it. Both methods return the rendered part plus the cache expiry the per-message
     render cache reuses it until, or None when the source is dropped (unsupported / failed).
-    `cache_key` and `allow_dead_cache` drive the shared dead-source cache below (and the Gemini
-    uploader's per-class re-poll cache); a stateless renderer inherits the cache attributes for
+    `cache_key` and `allow_dead_cache` drive the dead-source cache below (and the Gemini
+    uploader's own re-poll cache); a stateless renderer inherits the cache attributes for
     interface parity but never uses them.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    # Sources whose byte fetch failed, keyed by cache_key -> first-failure time. Shared by every
-    # uploading renderer so the Files-API uploaders cannot drift; a hit within DEAD_SOURCE_TTL
-    # skips the fetch fast, past it the entry is dropped and the source retried once. Bounded at
-    # 128 entries. A stateless renderer (InlineRenderer) inherits but never touches it.
+    # Sources whose byte fetch failed, keyed by cache_key -> first-failure time. Held here rather
+    # than on each uploader so the Files-API uploaders cannot drift (the dict itself is per
+    # instance); a hit within DEAD_SOURCE_TTL skips the fetch fast, past it the entry is dropped
+    # and the source retried once. Bounded at 128 entries. A stateless renderer (InlineRenderer)
+    # inherits but never touches it.
     _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
-    # Caps concurrent media fetch + upload work; see MEDIA_CONCURRENCY. Created in-loop on first
-    # access (during message handling), so it binds to the running event loop.
+    # Caps concurrent media fetch + upload work; see MEDIA_CONCURRENCY. A plain Semaphore is safe
+    # here only because a renderer never outlives one loop: it is reachable solely through one
+    # cog instance's `input_builder` cached_property, and there is one cog per process and a
+    # fresh one per test. It binds to the loop of the first call that WAITS on it, not the one it
+    # was built on, so anything shared more widely needs `utils/asyncio_locks.py` instead.
     _media_semaphore: SkipValidation[asyncio.Semaphore] = PrivateAttr(
         default_factory=lambda: asyncio.Semaphore(MEDIA_CONCURRENCY)
     )

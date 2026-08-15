@@ -1,3 +1,8 @@
+"""Runtime prompt text for the reply pipeline, sent verbatim to the models.
+
+Every string here is model input, not documentation: a wording change is a behavior change.
+"""
+
 from discordbot.cogs.gen_reply.markers import (
     IMAGE_OPEN,
     MUSIC_OPEN,
@@ -122,7 +127,8 @@ VIDEO_INSTRUCTION = f"""
     * Never mention the tags and never wrap them in backticks or a code block.
 """
 
-# Appended to the QA system prompt only when deep research is enabled (kill-switch on, QA route).
+# Appended to the QA system prompt only when deep research can actually run (kill-switch on,
+# direct Gemini key present, QA route).
 # Kept out of REPLY_PROMPT for the same reason as INLINE_IMAGE_INSTRUCTION: a deployment with
 # DEEP_RESEARCH_ENABLED=false must not be told about a marker the streamer would strip with no effect.
 DEEP_RESEARCH_INSTRUCTION = f"""
@@ -232,9 +238,9 @@ Output ONLY the final image prompt text. Nothing else.
 
 # Director instructions for the VIDEO route: the image prompt's video twin, faithful about WHAT is
 # in the clip but allowed restrained, fitting cinematography (single continuous shot, gentle camera,
-# suitable light/mood) per omni's prompt guide. Unlike `IMAGE_PROMPT` it carries NO default aesthetic
-# (the visual style is left entirely to the model); it keeps only the spoken-language order for any
-# dialogue (Chinese first, Japanese second, English only on explicit request). Run by
+# suitable light/mood) per omni's prompt guide. Like `IMAGE_PROMPT` it carries NO default aesthetic
+# (the visual style is left entirely to the model); what it adds on top is the spoken-language order
+# for any dialogue (Chinese first, Japanese second, English only on explicit request). Run by
 # `PromptGenerator.refine` with grounding tools; the edit path skips the director entirely.
 VIDEO_PROMPT = """
 You are an expert video prompt engineer working behind a Discord bot. A user asked the bot to create a short video. Your job is NOT to make the video and NOT to chat with the user. Your only job is to restate the user's request as ONE clear, self-contained prompt that a downstream text-to-video model will render directly. You are faithful about WHAT is in the clip: you never invent subjects, characters, props, settings, actions, events, on-screen text, or audio the user did not state. You MAY add restrained, fitting cinematography (a single continuous shot, a gentle camera move, and lighting / mood that simply suit the stated subject), because this downstream model renders its best results with a little scene, camera, and lighting direction — but keep it minimal and never let it smuggle in content or a storyline.

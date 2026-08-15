@@ -54,8 +54,8 @@ class ModelSettings(BaseModel):
 
         Returns:
             Gemini models receive googleSearch and urlContext tools. Claude models
-            receive web_search and web_fetch tools. Other models receive the OpenAI
-            web_search tool.
+            receive web_search and web_fetch tools. Grok models receive web_search and
+            x_search. Every other model receives the OpenAI web_search tool.
         """
         if "gemini" in self.name:
             return cast("list[ToolParam]", [{"googleSearch": {}}, {"urlContext": {}}])
@@ -105,7 +105,9 @@ class RuntimeModelCatalog(BaseModel):
     def video_model(self) -> ModelSettings:
         """The model settings for video generation.
 
-        Callers: `VideoGenerator.render` (via the VIDEO route `_handle_video_reply`).
+        Callers: `VideoGenerator` (its raising `render` for the VIDEO route
+        `_handle_video_reply`, its best-effort `generate` for the QA-route inline
+        `<generate-video>` marker, which delegates to that same `render`).
 
         Returns:
             Model settings used with the native Gemini Interactions API (`interactions.create`,
@@ -185,8 +187,9 @@ class RuntimeModelCatalog(BaseModel):
         Callers: `VoiceGenerator` (via `ReplyGeneratorCogs.voice_generator`).
 
         Returns:
-            Model settings whose name is dispatched on the `audio.speech` endpoint to
-            render a fierce QA reply to a voice clip. `effort` is unused for TTS.
+            Model settings whose name is dispatched on the `audio.speech` endpoint. Only
+            the reply's `<generate-voice>` segments are synthesized, concatenated into one
+            clip; the rest of the reply is never spoken. `effort` is unused for TTS.
         """
         return ModelSettings(name="gemini-3.1-flash-tts-preview")
 
@@ -228,10 +231,13 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and strategic reasoning.
 
-        Callers: `_handle_message_reply` (which overrides `effort` with the
-        route-decided level), attachment modality gating, `write_up_report` (the
-        background rewrite of a `/feedback` report into an issue, which nobody waits on),
-        and dev scripts.
+        Dispatched by `_handle_message_reply` (which overrides `effort` with the
+        route-decided level) and by `write_up_report` (the background rewrite of a
+        `/feedback` report into an issue, which nobody waits on). Three more read only
+        the model NAME and dispatch nothing: `_supported_sources` gates attachment
+        modalities on it, `ReplyGeneratorCogs.input_builder` picks the attachment handler
+        off it through `build_attachment_handler`, and `_run_reply_pipeline` derives each
+        link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
             Slow-path model settings for reply generation and summaries.

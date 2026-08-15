@@ -8,9 +8,10 @@ Expansion is skipped when the message is addressed to the bot (a DM, or an expli
 mention): `gen_reply` reads the linked post and answers about it, so expanding as well would
 fetch the same media twice and post an attachment nobody asked for. The two paths are
 mutually exclusive, and `is_addressed_to_bot` is the single predicate deciding which runs.
-One link therefore costs one clip download, which matters here more than anywhere, since the
-WAF below bans on volume. Handing the model the play URL instead saves nothing on the path
-the reply takes: the proxy fetches it and inlines it rather than forwarding it.
+One message carrying a link therefore costs one clip download, which matters here more than
+anywhere, since the WAF below bans on volume. Handing the model the play URL instead saves
+nothing on the path the reply takes: the proxy fetches it and inlines it rather than
+forwarding it.
 
 That predicate is deliberately coarser than `gen_reply`'s own guards, so a few addressed
 messages get neither treatment: one typed inside an active research thread (the reply
@@ -73,6 +74,8 @@ class DouyinCogs(commands.Cog):
         bot: The Discord bot instance that owns this cog.
         config: Runtime configuration carrying the auto-expansion kill-switch.
         media_delivery: Planner deciding which files attach and which are hosted as a URL.
+        downloader_factory: Builds the per-invocation downloader, one per scratch directory;
+            the seam a test replaces to keep an expansion off the network.
     """
 
     # A retryable block gets its own reaction so it never reads like the ⚠️ "could not read

@@ -10,7 +10,11 @@ WagerMode = Literal["clamp", "exact"]
 
 
 def parse_wager_amount(raw_amount: str | None) -> int | None:
-    """Parses user-entered wager text; zero is allowed and means all-in."""
+    """Parses user-entered wager text; zero parses rather than being rejected.
+
+    What zero means is the caller's rule: an all-in Blackjack table stake, but
+    an ordinary out-of-range amount for a 射龍門 custom bet.
+    """
     return parse_decimal_amount(raw=raw_amount)
 
 
@@ -21,6 +25,10 @@ def build_wager_participant(
 
     `clamp` allows a lower-balance player to join by wagering their full balance.
     `exact` requires the player to cover the full wager, which is used for antes.
+
+    Returns:
+        The seated participant, or None when the wager or the balance is
+        non-positive, or when `exact` mode meets a balance below the wager.
     """
     if wager <= 0 or balance <= 0:
         return None
@@ -29,9 +37,10 @@ def build_wager_participant(
 
     bet = min(wager, balance)
     if mode == "clamp":
-        # MAX_SINGLE_BET caps player-chosen table bets so balances cannot compound
-        # exponentially through repeated all-in doubling. Exact-mode antes must be
-        # paid in full, so they are never reduced by the cap.
+        # MAX_SINGLE_BET caps every clamp-mode table stake, the bot player's own
+        # Kelly bet included, so balances cannot compound exponentially through
+        # repeated all-in doubling. Exact-mode antes must be paid in full, so
+        # they are never reduced by the cap.
         bet = min(bet, MAX_SINGLE_BET)
     return GameParticipant(
         user_id=identity.user_id,

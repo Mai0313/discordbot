@@ -21,8 +21,9 @@ not this renderer, builds the message that cites the file): the answer request m
 not auto-add that header for file references; LiteLLM's Anthropic mapper needs the file format,
 not a bare `file_id`, to emit a `document` block rather than a code-execution `container_upload`,
 so PDF / text references must preserve their MIME; and Anthropic document blocks only cover
-PDF / plain text / images, so keep the type narrowing `InlineRenderer` does today (UTF-8 files
-as `input_text`, the rest dropped) instead of uploading every MIME and referencing it blindly.
+PDF / plain text / images, so keep the type narrowing `InlineRenderer` does today (PDFs as
+base64 `input_file`, UTF-8 files as `input_text`, the rest dropped) instead of uploading every
+MIME and referencing it blindly.
 """
 
 import io

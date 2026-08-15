@@ -1,4 +1,4 @@
-"""Casino-style games (`/games blackjack`, `/games dragon_gate`) wagering economy points."""
+"""The `/games` group: Blackjack, 射龍門, the Blackjack history lookup, and fishing."""
 
 from random import SystemRandom
 from functools import partial
@@ -50,7 +50,11 @@ from discordbot.cogs.games.fishing.presentation import build_panel_embed
 
 
 class GamesCogs(commands.Cog):
-    """Slash commands for multiplayer casino games against the casino system.
+    """Slash commands for the `/games` group.
+
+    Blackjack and 射龍門 are multiplayer tables played against the casino
+    system; fishing is a single-player panel and blackjack_history only reads
+    stored rounds.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -69,7 +73,7 @@ class GamesCogs(commands.Cog):
         self._blackjack_shoes = BlackjackShoeStore()
 
     async def _system_identity(self, guild: Guild | None = None) -> SystemIdentity:
-        """Returns the casino system identity used for narrator embeds.
+        """Returns the casino system identity that labels the house in game embeds.
 
         Slash commands only fire after the gateway has connected, so
         `self.bot.user` is guaranteed non-None at call time. We still fall back
@@ -265,7 +269,7 @@ class GamesCogs(commands.Cog):
         nsfw=False,
     )
     async def games(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for casino games."""
+        """Slash command group; every game runs from one of its subcommands."""
 
     @games.subcommand(
         name="blackjack",

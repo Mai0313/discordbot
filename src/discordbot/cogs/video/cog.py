@@ -43,6 +43,7 @@ class VideoCogs(commands.Cog):
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
+        media_delivery: Planner deciding which files attach and which are hosted as a URL.
     """
 
     def __init__(self, bot: commands.Bot):
@@ -365,7 +366,6 @@ class VideoCogs(commands.Cog):
         )
 
 
-# 註冊 Cog
 def setup(bot: commands.Bot) -> None:
     """Adds the VideoCogs to the bot.
 

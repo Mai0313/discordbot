@@ -71,6 +71,7 @@ class DeltaOutcome(BaseModel):
         deleted: Facts removed.
         dropped: Deltas refused individually (unknown section, empty body, bad id).
         rejected: Why the whole batch was refused, or "" when it was applied.
+        written: Ids this batch created or updated, so a rebuild can drop the rest.
     """
 
     model_config = ConfigDict(frozen=True)

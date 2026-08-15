@@ -16,8 +16,9 @@ class DouyinConfig(BaseSettings):
 
     Attributes:
         auto_expand_enabled: Kill-switch for expanding a pasted Douyin link into the channel.
-            The one lever that stops the bot talking to Douyin at all if its WAF starts
-            blocking, since expansion turns every pasted link into a request.
+            The lever for the UNPROMPTED traffic if its WAF starts blocking, since
+            expansion turns every pasted link into a request; `/download_video` and the
+            reply pipeline's ingest have their own switches and are unaffected.
     """
 
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)

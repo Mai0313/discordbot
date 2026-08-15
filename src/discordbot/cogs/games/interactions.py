@@ -39,6 +39,10 @@ async def edit_message_with_retry(
     couple of seconds; the game-start edits must succeed or the lobby is left
     stopped with antes already charged. Backoff grows 0.5s, 1.0s, ... so the
     final attempt covers ~1.5s of upstream flakiness before propagating.
+
+    Pass `kwargs_factory` whenever the payload carries files: a failed attempt
+    has already consumed those upload streams, so every retry needs a payload
+    built from scratch.
     """
 
     def edit_kwargs() -> dict[str, Any]:

@@ -172,7 +172,10 @@ class DiscordBot(commands.Bot):
             logfire.error("model price table refresh failed; retrying next pass", _exc_info=exc)
 
     async def on_message(self, message: Message) -> None:
-        """Handles incoming messages.
+        """Awards the cooldown-gated message reward, then dispatches commands.
+
+        This and `/checkin` are the only two faucets that pay an action reward; it is
+        best-effort, so command dispatch runs whether or not the credit lands.
 
         Args:
             message: The message that was sent.

@@ -128,7 +128,10 @@ class ResponseStreamer(BaseModel):
     )
     input_builder: SkipValidation[MessageInputBuilder | None] = Field(
         default=None,
-        description="Loads the message's uploaded image bytes so an inline <generate-image> can edit them.",
+        description=(
+            "Loads the message's uploaded images so an inline <generate-image> edits them and an "
+            "inline <generate-video> references them."
+        ),
     )
     music_generator: SkipValidation[MusicGenerator | None] = Field(
         default=None,
@@ -426,10 +429,11 @@ class ResponseStreamer(BaseModel):
         cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
-        # The answer model may wrap a <generate-voice> segment (spoken aloud, kept in the reply) and an
-        # <generate-image> block (a generation request, removed from the reply). Extract both before the
-        # footer is built or anything is written. The <generate-voice> segment stays in the visible text;
-        # only it (not the whole reply) feeds the spoken clip so the audio matches what is read.
+        # The answer model may wrap <generate-voice> segments (spoken aloud, kept in the reply) plus
+        # <generate-image> / <generate-music> / <generate-video> / <deep-research> blocks (requests,
+        # removed from the reply). Extract them all before the footer is built or anything is
+        # written. The <generate-voice> segments stay in the visible text; only they (not the whole
+        # reply) feed the spoken clip so the audio matches what is read.
         markers = extract_inline_markers(text=self.stored_content)
         self.stored_content = markers.cleaned_text
         self.voice_requested = markers.voice_requested
@@ -458,7 +462,8 @@ class ResponseStreamer(BaseModel):
                 memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names[:2])} 等 {len(names)} 人的記憶"
             else:
                 memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names)} 的記憶"
-        # Footer format must stay matchable by `input.USAGE_FOOTER_RE`; the ⬆/⬇ icons are its anchor.
+        # Footer format must stay matchable by `utils/llm_transcript.py::USAGE_FOOTER_RE`; the
+        # ⬆/⬇ icons are its anchor.
         model_label = (
             f"{self.model_name} ({self.model_effort})" if self.model_effort else self.model_name
         )
@@ -555,11 +560,11 @@ class ResponseStreamer(BaseModel):
             # Nothing to say (the segment was empty after stripping): no hint.
             return None
         if clip.outcome is VoiceOutcome.TIMEOUT:
-            # synthesize() logged the timeout; cue the user that the clip ran out of time.
+            # generate() logged the timeout; cue the user that the clip ran out of time.
             await self._hint_media_unavailable(emoji="⏱️")
             return None
         if clip.audio is None:
-            # Any other synthesis failure (most often a policy refusal); synthesize() logged it.
+            # Any other synthesis failure (most often a policy refusal); generate() logged it.
             await self._hint_media_unavailable(emoji="⚠️")
             return None
         return MediaItem(source=clip.audio, filename=VOICE_REPLY_FILENAME)
@@ -735,8 +740,9 @@ class ResponseStreamer(BaseModel):
         (one edit, because `edit` replaces the attachment list). Anything too big to upload (a
         long voice WAV in a DM, or almost any video clip) is hosted on the external static server
         and its URL appended to the reply instead of being dropped; if hosting is unavailable it
-        degrades to today's drop + ⚠️ hint. Voice/music/video are ordered first so the rare
-        over-cap overflow peels a trailing image, not a clip.
+        degrades to the drop + ⚠️ hint. Voice/music/video are ordered first because the planner
+        applies Discord's attachment-count cap to the tail, so the rare over-cap overflow drops a
+        trailing image rather than a clip.
         """
         if self._reply_deleted:
             # There is no message left to attach to, and the user removed it themselves, so a

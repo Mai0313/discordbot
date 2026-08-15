@@ -377,13 +377,13 @@ class VipPurchaseResult(BaseModel):
     """Outcome of a successful VIP purchase.
 
     Attributes:
-        new_balance: User balance after the 10M debit.
+        new_balance: User balance after the `VIP_PURCHASE_COST` debit.
         cost: Points deducted for the purchase.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    new_balance: int = Field(..., description="User balance after the 10M debit.")
+    new_balance: int = Field(..., description="User balance after the VIP_PURCHASE_COST debit.")
     cost: int = Field(..., description="Points deducted for the purchase.")
 
 

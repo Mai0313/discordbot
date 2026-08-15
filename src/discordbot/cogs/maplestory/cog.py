@@ -53,7 +53,7 @@ class MapleStoryCogs(commands.Cog):
         self.service = MapleStoryService.from_directory(data_dir)
 
     def _ensure_data(self) -> bool:
-        """Ensures that game data is loaded."""
+        """Reloads from disk once when nothing is loaded, and reports the result."""
         if self.service.has_data():
             return True
         self.service.reload(self.data_dir)
@@ -71,7 +71,7 @@ class MapleStoryCogs(commands.Cog):
         return self._translate(category="misc", name=item)
 
     async def _send_error(self, interaction: Interaction[commands.Bot]) -> None:
-        """Sends a generic error message to the user."""
+        """Tells the user the local dataset could not be loaded."""
         embed = Embed(
             title=":x: 錯誤", description="無法載入資料，請聯絡管理員", color=_ERROR_COLOR
         )
@@ -98,7 +98,11 @@ class MapleStoryCogs(commands.Cog):
         },
     )
     async def maplestory(self, interaction: Interaction[commands.Bot]) -> None:
-        """Slash command group for MapleStory Artale data queries."""
+        """Slash command group for MapleStory Artale data queries.
+
+        Never invoked: nextcord dispatches the subcommands directly, so this
+        docstring is the whole body and removing it is a SyntaxError.
+        """
 
     # ── /maplestory monster ─────────────────────────────────────────
 

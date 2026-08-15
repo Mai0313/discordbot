@@ -1,8 +1,10 @@
 """Shared Asia/Taipei timezone helpers for persisted timestamps.
 
-Economy and stock storage both stamp rows in Asia/Taipei and re-interpret
-stored datetimes in that zone. This module is the single source for those
-helpers so the two database layers stay aligned.
+The storage layers that reach for these stamp their rows in Asia/Taipei and
+re-interpret stored datetimes in that zone; this module is the single source so
+no layer grows its own copy. Not every table is in that zone — anything stamped
+by SQLite's own `CURRENT_TIMESTAMP` or by a Discord snowflake time is UTC and
+never comes through here.
 """
 
 from typing import Final

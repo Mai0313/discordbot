@@ -788,9 +788,11 @@ class ThreadsOutput(BaseModel):
     quote_count: int = Field(default=0, description="Number of quote posts")
     reshare_count: int = Field(default=0, description="Total reshare count")
     taken_at: datetime | None = Field(default=None, description="Post creation time")
-    # Its own media stays URL-only: `video_paths` is always empty here because neither caller
-    # downloads a quoted clip (the expansion links it, the reply pipeline uploads from the URL),
-    # which is also what keeps `parse` and `parse_metadata` producing equal trees.
+    # Its own media stays URL-only in this walk: `video_paths` is always empty here because
+    # `_build_output` never downloads for a quoted post, which is also what keeps `parse` and
+    # `parse_metadata` producing equal trees. The expansion links a quoted clip instead of
+    # attaching it; the reply pipeline fetches what it wants from these URLs itself, images
+    # straight to bytes and a clip into a scratch dir of its own.
     quoted: "ThreadsOutput | None" = Field(
         default=None,
         description="The post this one quotes, absent when it quotes nothing readable",
@@ -1095,7 +1097,9 @@ class ThreadsDownloader(BaseModel):
             The Path to the downloaded file.
 
         Raises:
-            RuntimeError: If the download fails.
+            RuntimeError: If the HTTP fetch fails.
+            OSError: If the file cannot be written. A caller that removed the scratch dir
+                mid-download gets `FileNotFoundError` here, deliberately: see below.
         """
         # Created before the request, never after: a caller that cancels mid-download cannot stop
         # the worker thread (`asyncio.to_thread` abandons it), so it may remove the scratch dir
@@ -1319,8 +1323,9 @@ class ThreadsDownloader(BaseModel):
         """Parses a Threads post URL into the conversation WITHOUT downloading media.
 
         Mirrors `parse` with `download=False`, so no video is written to disk and there is
-        nothing to clean up (not a context manager). The reply pipeline uses this: it fetches
-        the target's media itself, straight to the answer model.
+        nothing to clean up (not a context manager). The reply pipeline uses this: it fetches the
+        media it wants (the target's, plus that of the post it quotes) from the returned URLs
+        itself, straight to the answer model.
 
         Args:
             url: The Threads post URL.

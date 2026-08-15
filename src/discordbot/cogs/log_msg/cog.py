@@ -147,7 +147,7 @@ class MessageLogger(BaseModel):
 
     @staticmethod
     def sanitize_text(s: str | None) -> str:
-        """Sanitizes text by removing control characters (null bytes).
+        """Sanitizes text by removing null bytes.
 
         Args:
             s: The string to sanitize.
@@ -289,10 +289,12 @@ class LogMessageCog(commands.Cog):
         """Re-logs message edits so streaming bot replies converge to their final state.
 
         `on_message` only fires on the initial `reply()` call, which for the
-        streaming text path in `cogs/gen_reply/streaming.py` captures only the
-        first ~30 chars. Every subsequent `reply.edit(...)` fires here; the UPSERT on
-        `discord_message_id` collapses them into a single row whose content
-        matches what is actually on Discord.
+        streaming text path in `cogs/gen_reply/streaming.py` usually carries the
+        transient reasoning preview rather than the answer (a stream that finishes
+        before the first preview tick creates the reply complete instead, and never
+        reaches here). Every subsequent `reply.edit(...)` fires
+        here; the UPSERT on `discord_message_id` collapses them into a single row
+        whose content matches what is actually on Discord.
 
         Args:
             _before: The pre-edit message snapshot (unused; only `after.id`

@@ -97,7 +97,9 @@ class MemoryJobRow(Base):
         flavor: ``user`` or ``server`` so the restart sweep picks the matching extractor.
         subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
         transcript: The rendered phase-1 input; set to NULL once the turn is ``done``.
-        identity: Single-line identity stamped into main.md, persisted so resume needs no Discord context.
+        identity: Single-line identity ``parse_identity`` splits into the ``owner_id`` /
+            ``owner_name`` stamped on every fact this scope writes; persisted so a resume
+            needs no Discord context.
         status: Lifecycle status (see ``MemoryJobStatus``).
         token: Logical version / ordering token; guards newest-wins and the terminal update.
         last_error: Bounded failure blurb when ``status='failed'``.
@@ -139,7 +141,7 @@ class MemoryJob(BaseModel):
     transcript: str | None = Field(
         ..., description="The rendered phase-1 input, or None once the turn is done."
     )
-    identity: str = Field(..., description="Single-line identity stamped into main.md.")
+    identity: str = Field(..., description="Single-line identity stamped onto the scope's facts.")
     status: MemoryJobStatus = Field(..., description="Lifecycle status of the turn.")
     token: int = Field(..., description="Logical version / ordering token.")
     last_error: str | None = Field(..., description="Bounded failure blurb when failed.")
@@ -150,7 +152,7 @@ _schema_lock = LoopLocalLock()
 
 
 async def _ensure_schema() -> None:
-    """Bootstraps the `memory_job` table once per engine (loop-local-locked)."""
+    """Bootstraps this module's tables once per engine (loop-local-locked)."""
     global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
     ensure_sqlite_hooks(
         engine=_engine,

@@ -5,9 +5,10 @@ The answer model wraps the parts of its reply it wants read aloud in `<generate-
 but they STAY in the visible reply (only the tags are stripped). It may also wrap short
 descriptions in `<generate-image>...</generate-image>` to have images generated and attached, one
 `<generate-music>...</generate-music>` description to have a music clip generated and attached, or
-one `<generate-video>...</generate-video>` description to have a short video generated and attached;
-each such block (tags AND content) is REMOVED from the visible reply so the generation prompt never
-leaks into chat. `ResponseStreamer` extracts them at finalize time via `extract_inline_markers` and
+one `<generate-video>...</generate-video>` description to have a short video generated and
+attached, or one `<deep-research>...</deep-research>` brief to launch a research thread; each such
+block (tags AND content) is REMOVED from the visible reply so the generation prompt never leaks
+into chat. `ResponseStreamer` extracts them at finalize time via `extract_inline_markers` and
 scrubs partial/complete tags from the live preview via `scrub_markers_for_preview`, so none flickers
 mid-stream. The asymmetry is deliberate: voice content is meant to stay visible, image / music /
 video content are meant to be pulled.
@@ -38,8 +39,8 @@ DEEP_RESEARCH_CLOSE = "</deep-research>"
 # 10-attachment ceiling. The prompt tells the model this limit; the streamer enforces it by
 # dropping any extra blocks so a confused model never blows past the attachment cap. A reply
 # may also carry one music clip and one video clip (each single per reply by design), so a rare
-# voice + music + video + 9 images would be 12 attachments; the streamer's
-# `[:DISCORD_ATTACHMENT_LIMIT]` clamp is the backstop.
+# voice + music + video + 9 images would be 12 attachments; `MediaDeliveryPlanner.plan`'s
+# attachment-count clamp is the backstop, dropping the trailing overflow.
 MAX_INLINE_IMAGES = 9
 
 # Complete blocks: non-greedy, DOTALL so a multi-line segment is captured, IGNORECASE so a

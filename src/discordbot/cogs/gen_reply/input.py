@@ -184,9 +184,10 @@ class MessageInputBuilder(BaseModel):
     def forwarded_request_text(self, message: Message) -> str:
         """Concatenated raw forwarded text (no `[forwarded message]` tag) across snapshots.
 
-        Used as the media prompt when a pure forward carries no comment of its own, so a
-        forwarded "draw a cat" reaches the IMAGE/VIDEO handler as its actual request instead
-        of the generic fallback. Empty for a normal message or a media-only forward.
+        Merged into the media prompt by the caller (after the forwarder's own comment, when
+        there is one), so a forwarded "draw a cat" reaches the IMAGE/VIDEO handler as its actual
+        request even when the `@bot` trigger comment left text of its own behind. Empty for a
+        normal message or a media-only forward.
         """
         texts = [
             text
@@ -196,7 +197,12 @@ class MessageInputBuilder(BaseModel):
         return "\n".join(texts)
 
     async def get_cleaned_content(self, message: Message) -> str:
-        """Returns the textual content of a message without the author prefix."""
+        """Renders one message's text: its content, or an embed / system-content fallback.
+
+        The bot's own usage footer is stripped from its own messages so the model / token /
+        cost line does not ride back in as part of the answer. The sender prefix is added
+        later, by `_assemble_input_message`.
+        """
         content = message.content
         content_present = bool(content.strip())
         if content and self.bot.user and message.author.id == self.bot.user.id:
@@ -336,8 +342,9 @@ class MessageInputBuilder(BaseModel):
         rather than reusing the Files-API handles `get_attachment_parts` produces. Only
         image sources are collected; non-image files are not editable as images. The
         IMAGE/VIDEO routes run on the image/video model, so the slow model's modality gate
-        is not applied here. The MIME is kept because the native Veo `types.Image` requires
-        it; the IMAGE route drops it via `get_image_source_bytes`.
+        is not applied here. The MIME is kept because omni's `ImageContentParam` requires a real
+        one (an empty mime 400s "Unsupported MIME type: "); the IMAGE route, which needs only the
+        pixels, drops it via `get_image_source_bytes`.
         """
         tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
         for source in self.collect_attachment_sources(message=message):

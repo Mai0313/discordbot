@@ -34,10 +34,12 @@ MEMORY_REGENERATION_COOLDOWN_SECONDS = 600.0
 # latency.
 MEMORY_GLOBAL_CONCURRENCY = 24
 
-# Past the trigger, consolidation is told to run a deep-summarization (compaction)
-# pass over the compartment it is rewriting, aiming at roughly the target size.
-# Compaction merges low-signal and stale facts; it never drops durable memory
-# outright, and fine-grained evidence survives in the detail file regardless.
+# Past the trigger (measured on the compartment's own rendered facts), consolidation
+# is told to spend the pass compacting it toward the target size. Compaction folds
+# overlapping facts together and condenses low-signal ones rather than summarizing the
+# set. A well-supported durable fact is merged or tightened, never dropped outright; what it
+# drops first is the unsupported, weak, stale and one-off, and fine-grained evidence survives
+# in the detail file regardless.
 COMPACTION_TRIGGER_CHARS = 30_000
 COMPACTION_TARGET_CHARS = 15_000
 

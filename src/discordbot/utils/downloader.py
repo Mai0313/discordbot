@@ -1,4 +1,9 @@
-"""yt-dlp wrapper utilities used by the video download command."""
+"""yt-dlp wrapper utilities shared by `/download_video` and the Bilibili link builder.
+
+The command calls `download` and nothing else; the metadata probe and the stop-signal
+half exist for the link builder, which has to decide whether to fetch at all and has to
+be able to abandon a download that outran the reply's budget.
+"""
 
 import types
 from typing import Any, ClassVar

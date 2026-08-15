@@ -3,7 +3,7 @@
 The one research agent (`antigravity-preview-05-2026`) runs through an injected `genai.Client`
 that talks DIRECT to Google (`gemini_api_key`, no proxy): a managed agent rides the native
 Interactions API, which this project always calls direct rather than through the LiteLLM proxy's
-interactions transform. Every call uses `background=True` + `store=True` + `stream=True`, so the
+interactions transform. The create uses `background=True` + `store=True` + `stream=True`, so the
 agent's reasoning streams live to the thread (`_StreamDriver` + `ResearchProgressStreamer`) while
 it works.
 
@@ -17,7 +17,9 @@ last_event_id=...)`. The final result is ALWAYS read through `_poll_until_termin
 non-stream `interactions.get(id)` with retry-on-error): the streamed deltas are the live view
 only, `interaction.completed` carries no report body on purpose, and the poll both settles a run
 whose stream died and waits out any brief `in_progress` visibility lag, then `_to_result` maps it.
-These functions can raise (network errors, `TimeoutError`); the cog maps failure to a friendly message.
+There is no wall-clock timeout anywhere here, so what escapes is either the SDK error from a create
+or a poll that never recovered, or a `RuntimeError` when the stream ended before any interaction id
+existed; the cog maps both to a friendly message.
 """
 
 import time
@@ -59,7 +61,9 @@ RESEARCH_POLL_INTERVAL_SECONDS = 15.0
 # bounds each request and the agent settles server-side on its own budget.
 MAX_CONSECUTIVE_POLL_ERRORS = 30
 
-# Reports progress to the thread: (latest thought summary or None, elapsed seconds).
+# `_poll_until_terminal`'s optional progress hook: (latest thought summary or None, elapsed
+# seconds). Nothing passes one today -- the live view is the streamer's, and the only call site
+# polls with `on_progress=None` -- so `_latest_thought` is unreached outside its tests.
 type ProgressCallback = Callable[[str | None, float], Awaitable[None]]
 
 
