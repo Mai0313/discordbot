@@ -124,7 +124,7 @@ def test_facebook_share_resolution_never_downloads_the_page(
     """Only where the request landed is wanted, so the body is left on the wire.
 
     Every other test stubs the resolver out, so without this one a request that downloads a
-    full Facebook page to read a single header stays green forever.
+    full Facebook page just to learn where it landed stays green forever.
     """
     requests_made: list[dict[str, object]] = []
 

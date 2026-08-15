@@ -66,8 +66,9 @@ class FakeUser:
         self.bot = bot
         self.mention = f"<@{user_id}>"
         self.display_avatar = SimpleNamespace(url=avatar_url)
-        # Commands that surface snowflake-derived account age read created_at; pin
-        # it well into the past so the value is never surprising under freezegun.
+        # Commands that surface snowflake-derived account age read created_at (`/balance`
+        # renders `now - created_at`); pinning it years back keeps that a plausible number
+        # instead of the zero a stub created "now" would show.
         self.created_at = datetime.now(tz=UTC) - timedelta(days=365 * 5)
 
 

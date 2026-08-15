@@ -759,7 +759,7 @@ def test_local_write_failure_leaves_no_partial_file(
             raise OSError(28, "No space left on device")
 
         # Simulate a mid-write disk failure; the instance-dict write shadows the
-        # bound method without tripping either checker's method-assign rule.
+        # bound method without the direct attribute assignment a type checker rejects.
         handle.__dict__["write"] = write
         return handle
 

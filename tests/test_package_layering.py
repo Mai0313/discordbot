@@ -113,7 +113,7 @@ def test_a_lower_layer_never_imports_a_higher_one(layer: str, forbidden: tuple[s
 def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:
     """The scan is only worth its assertions if it sees the forms the tree actually uses.
 
-    `cogs/maplestory/cog.py` is the one place using relative imports, and
+    `cogs/maplestory/` is the one cog using relative imports, and
     `cogs/games/blackjack_views.py` imports a cog module under `TYPE_CHECKING`. A scan that
     silently skipped either would pass the tests above while seeing nothing.
     """

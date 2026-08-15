@@ -350,7 +350,7 @@ def test_append_raw_entry_creates_timestamped_entries(memory_isolated_dir: Path)
 
 def test_append_raw_entry_headers_omit_identity(memory_isolated_dir: Path) -> None:
     # Raw entries flow verbatim into the detail file, so author identity stays
-    # confined to the main file and headers carry only the timestamp.
+    # confined to the fact files and the header carries only the timestamp.
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短")
     on_disk = (memory_isolated_dir / str(USER_ID) / "raw.md").read_text(encoding="utf-8")
     header = on_disk.splitlines()[0]
@@ -553,7 +553,7 @@ async def test_extract_filters_weak_observations() -> None:
 
 async def test_extract_accepts_permanent_and_rejects_volatile_durability() -> None:
     # The freshness tiers hinge on the durability gate: an immutable identity fact
-    # tagged `permanent` must pass (it routes to the never-aged 永久事實 section),
+    # tagged `permanent` must pass (the sweep never ages a `permanent` fact out),
     # while a `volatile` observation on a stable category is still dropped.
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = RawMemoryDraft(
@@ -2001,7 +2001,7 @@ async def test_schedule_memory_regeneration_dedupes_in_flight(
     )
 
     assert first is True
-    # A rebuild already in flight must not double-schedule the whole-file rewrite.
+    # A rebuild already in flight must not double-schedule the whole-scope rebuild.
     assert second is False
     release.set()
     task = pipeline._regeneration_tasks.get(key=USER_SCOPE)
@@ -3125,8 +3125,9 @@ def test_filter_duplicate_observations_is_source_aware() -> None:
         source="guild 111",
     )
     assert same_source == ()
-    # The same key re-stated from another guild re-enters raw so consolidation
-    # can widen the bullet's source tag; key-only dedupe would lock it forever.
+    # The same key re-stated from another guild re-enters raw so consolidation can file
+    # it in that guild's compartment too; key-only dedupe would lock it to the first
+    # source that ever observed it.
     other_source = filter_duplicate_observations(
         observations=(_observation(summary="重述", normalized_key="preference.reply.short"),),
         existing_text=existing,
@@ -4131,7 +4132,7 @@ async def test_memory_clear_second_click_does_not_overwrite_the_outcome(
 async def test_memory_clear_failure_keeps_memory_and_says_so(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A reply.db failure must not half-clear: the row deletion runs before any unlink."""
+    """A reply.db failure must not half-clear: the tombstone write runs before any unlink."""
     _populate_every_tier()
 
     async def exploding_clear_job(*, scope: str, flavor: str, token: int) -> bool:
@@ -4161,7 +4162,8 @@ async def test_memory_clear_reports_a_file_failure_without_claiming_success(
     """The file half walks the tiers one at a time, so it can stop part way.
 
     The message must not claim the memory survived intact (the reply.db row is
-    already gone by then) nor that the clear succeeded; a retry finishes it.
+    already a scrubbed tombstone by then) nor that the clear succeeded; a retry
+    finishes it.
     """
     _populate_every_tier()
     await memory_db.upsert_pending(

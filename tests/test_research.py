@@ -646,7 +646,7 @@ async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: N
 
 
 async def test_list_resumable_only_returns_researching(research_isolated_db: None) -> None:
-    # One session per phase, so only the researching one may come back as resumable.
+    # A researching session beside two terminal ones: only the first may come back resumable.
     seeded: tuple[tuple[int, ResearchPhase], ...] = (
         (20, "researching"),
         (21, "cancelled"),

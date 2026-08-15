@@ -44,7 +44,7 @@ async def _wait_for(check: Callable[[], bool]) -> None:
     """Waits for the single worker to produce an observable outcome.
 
     Polls the outcome rather than the queue: the queue empties when the worker picks a
-    request up, not when it has finished the two subprocesses that request runs.
+    request up, not when it has finished the git commands that request runs.
     """
     for _ in range(200):
         if check():

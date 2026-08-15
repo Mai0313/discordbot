@@ -175,7 +175,7 @@ def test_settle_player_blackjack_pays_three_to_two() -> None:
 
 
 def test_settlement_metadata_shows_vip_bonus_numbers() -> None:
-    """VIP winning settlements surface the base and boosted deltas."""
+    """A VIP-boosted win shows the total delta and the VIP bonus inside it."""
     metadata = settlement_metadata(
         delta=150, new_balance=1_150, is_allin=False, base_delta=100, vip_bonus=50
     )

@@ -1,9 +1,8 @@
-"""Button-state matrix and dealer / bot turn tests for `BlackjackView`.
+"""Button-state matrix, dealer play, and bot-turn tests for `BlackjackView`.
 
-Each test instantiates the view with a deterministic `BlackjackRound`, then
-asserts which action / insurance buttons are attached across the round
-lifecycle. Dealer play is deterministic (H17), so dealer tests cover the rule
-path; bot-turn tests cover the deterministic bot player decisions.
+Controls are presence-based, so the button tests assert which custom_ids are
+attached rather than which are disabled. Dealer play is deterministic (H17) and
+the bot's decisions come from the EV engine, so both are asserted exactly.
 """
 
 # ruff: noqa: S311 -- seeded Random() in tests is for determinism, not cryptography
@@ -155,7 +154,7 @@ async def test_player_actions_ace_ten_hides_split() -> None:
 
 
 async def test_player_actions_after_hit_disables_double_split_surrender() -> None:
-    """After a Hit, `actions_taken` > 0 locks the first-action-only buttons."""
+    """After a Hit the first-action-only controls leave the view instead of being disabled."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
@@ -184,7 +183,7 @@ async def test_player_actions_is_split_hand_disables_double_split_surrender() ->
 
 
 async def test_split_aces_subhand_disables_hit_and_stand() -> None:
-    """Split Aces forces finished + is_split_aces, blocking Hit and Stand."""
+    """Split Aces removes Hit and Stand with `finished` still False; Split removed the rest."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[_participant(user_id=1, display_name="Alice")],
@@ -565,7 +564,7 @@ async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 async def test_apply_bot_action_routes_known_actions() -> None:
-    """`_apply_bot_action` calls the matching BlackjackRound API for each known action."""
+    """An allowed action is routed to its `BlackjackRound` method and reported applied."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],

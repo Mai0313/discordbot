@@ -911,8 +911,8 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     assert len(state.calls) == 1
     assert state.calls[0]["player_delta"] == 10_000
     assert view._settled is True
-    # The pool state above is the invariant; the dealer embed is rendered and well-formed but its
-    # exact replenishment copy is not pinned.
+    # The pool state above is the invariant; the final embed's replenishment copy is not pinned,
+    # only that the closing render still carries a well-formed history embed.
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
     assert isinstance(embeds[1], Embed)
@@ -1022,8 +1022,8 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     assert round_state.is_active(user_id=1) is False
     assert round_state.finished is True
     assert view._settled is True
-    # The end-state above is the invariant; the dealer embed is rendered and well-formed but its
-    # exact "all players out" copy is not pinned.
+    # The end-state above is the invariant; the final embed's "all players out" copy is not
+    # pinned, only the clamped delta the history embed below carries.
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
     assert isinstance(embeds[1], Embed)

@@ -808,7 +808,7 @@ async def test_threads_cog_reserves_the_quoted_posts_slot_against_an_ancestors_g
     descriptions = [embed.description or "" for embed in embeds]
     assert any(text.startswith("🔗 **被引用的貼文**") for text in descriptions)
     assert "commentary" in descriptions
-    # The ancestor gives up its tenth image, not the target or the quoted post.
+    # The ancestor gives up two of its ten images, not the target or the quoted post.
     assert sum(1 for embed in embeds if embed.image) == 8
 
 
@@ -905,7 +905,8 @@ async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
     message = FakeDiscordMessage()
     message.__dict__["author"] = FakeUser(bot=False)
     message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
-    # A tiny ceiling drives max_size negative, so the 3-byte video counts as oversized.
+    # The 1 MiB envelope margin alone overshoots this ceiling, so no combined body ever fits
+    # and even a 3-byte video is peeled out to a hosted URL.
     message.__dict__["guild"] = SimpleNamespace(filesize_limit=4)
     cog.downloader = cast(
         "ThreadsDownloader",
@@ -2166,7 +2167,11 @@ def ignore_scheduled_public_message(
 
 
 async def fake_game_balance(user_id: int) -> int:
-    """Returns a small fake game balance (bot stays at 0 so it does not auto-join)."""
+    """Returns a small fake game balance, and zero for the bot's own id.
+
+    Zero is not what keeps the bot out of the lobby: `_bot_blackjack_participant` reads
+    `get_account`, so the empty isolated economy DB is what makes it skip its seat.
+    """
     if user_id == 999:
         return 0
     return 100
@@ -2576,7 +2581,7 @@ async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.Mon
 
 
 def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies every cog setup function registers the expected cog type."""
+    """Verifies each cog setup function listed here registers the expected cog type."""
     added: list[
         tuple[
             VideoCogs

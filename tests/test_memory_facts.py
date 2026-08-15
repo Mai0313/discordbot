@@ -791,7 +791,7 @@ def test_existing_facts_render_with_the_ids_the_model_must_echo(memory_isolated_
 
 
 def test_sections_are_flavor_scoped() -> None:
-    """A user scope has no member-alias table and a server scope has no permanent tier."""
+    """A user scope has no member-alias table and a server scope has no preference section."""
     assert "member_alias" in sections_for_flavor(flavor="server")
     assert "member_alias" not in sections_for_flavor(flavor="user")
     assert "preference" in sections_for_flavor(flavor="user")

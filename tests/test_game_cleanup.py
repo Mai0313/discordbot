@@ -269,7 +269,7 @@ async def test_delete_tracked_public_messages_deletes_stale_restart_records() ->
 
 
 async def test_delete_tracked_public_messages_skips_non_messageable_cached_channel() -> None:
-    """Cached PartialMessageable-like channels should be resolved via fetch_channel first."""
+    """A cached channel that is not Messageable is re-resolved through fetch_channel."""
     message = _DeletableMessageStub(message_id=10, channel_id=20)
     await track_public_message(message=as_message(fake=message))
     bot = _BotStub(cached_channel=_NonMessageableChannelStub())

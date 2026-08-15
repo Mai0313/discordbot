@@ -20,10 +20,11 @@ def _import_every_module() -> None:
 def test_the_module_walk_reaches_a_nested_subpackage() -> None:
     """`walk_packages` skips a directory with no `__init__.py`, and does so silently.
 
-    Views live inside cog directories now, some of them a level down (`games/fishing/`,
-    `gen_reply/link_sources/`). A subpackage missing its `__init__.py` still imports
-    fine by name and the cog still loads, so nothing else would notice that every
-    `View` inside it dropped out of the shadowing check below.
+    Views live inside cog directories now, some of them a level down (`games/fishing/`),
+    and a cog may nest a subpackage that holds none yet (`gen_reply/link_sources/`). A
+    subpackage missing its `__init__.py` still imports fine by name and the cog still
+    loads, so nothing else would notice that every `View` inside it dropped out of the
+    shadowing check below.
     """
     _import_every_module()
     walked = {

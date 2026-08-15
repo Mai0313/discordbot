@@ -168,7 +168,8 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
     assert isinstance(source, Path)
     assert mime_type == "video/mp4"
     assert filename.endswith(".mp4")
-    # Only the provider's own ceiling is applied; a full-resolution clip is the point.
+    # A fail-fast Content-Length guard, not a quality lever: the resolution is chosen separately
+    # by `quality=AI_INGEST_QUALITY`, deliberately below what the human-facing expansion posts.
     assert recorded["max_bytes"] == douyin_builder.FILES_API_MAX_BYTES
 
 

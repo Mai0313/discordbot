@@ -914,7 +914,7 @@ async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_mi
 
 
 async def test_comment_media_is_noted_but_never_ingested(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only the target's media is fetched, so a picture-only comment says so instead of reading blank."""
+    """A comment's media is never fetched, so a picture-only comment says so instead of reading blank."""
     _stub_parse(
         monkeypatch,
         [_post(text="target", images=["https://cdn.test/target.jpg"])],
@@ -1055,7 +1055,7 @@ async def test_one_failed_item_does_not_sink_the_others(monkeypatch: pytest.Monk
     """Media items are independent, so an expired image url still leaves the video attached.
 
     What survives is the video; what must NOT survive is the separator claiming the post's media
-    while one of three signed CDN urls expired between the page fetch and the upload.
+    while one of its signed CDN urls expired between the page fetch and the upload.
     """
     _stub_parse(
         monkeypatch, [_post(images=["https://cdn.test/a.jpg"], videos=["https://cdn.test/v.mp4"])]

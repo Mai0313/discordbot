@@ -1,4 +1,4 @@
-"""Tests for AI reply routing, attachment handling, streaming, and regeneration."""
+"""Tests for AI reply routing, attachment handling, streaming, and memory injection."""
 
 from __future__ import annotations
 
@@ -1004,7 +1004,7 @@ def _default_turn_events() -> list[SimpleNamespace]:
 
 
 async def _ready_reply_context() -> ReplyContext:
-    """An empty reply context for directly exercising `_handle_image_reply`."""
+    """An empty reply context for directly exercising the IMAGE and VIDEO handlers."""
     return ReplyContext()
 
 
@@ -1382,7 +1382,7 @@ async def test_voice_too_big_without_hosting_drops_with_hint(economy_isolated_db
 
 
 def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
-    """Builds a real media-hosting service writing into a temp serve dir for streamer tests."""
+    """Builds a real media-hosting service writing into a temp serve dir for the media routes."""
     return MediaHostingService(
         config=make_media_hosting_config(
             enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
@@ -3671,7 +3671,8 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
         context_task=asyncio.create_task(_ready_reply_context()),
     )
     assert len(message.replies) == 1
-    # Text-to-video: the (director-expanded) request reaches omni as the interaction input text.
+    # Text-to-video: the fake director returns no draft, so `refine` falls back to the raw
+    # request, which reaches omni as the interaction input text.
     create_input = _recorded_video(cog).create_inputs[0]
     assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
 
@@ -3681,7 +3682,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
         context_task=asyncio.create_task(_ready_reply_context()),
     )
     assert _recorded(cog).images.generate_calls
-    # No director: the raw request reaches images.generate directly.
+    # The director returns no draft here either, so images.generate gets the raw request.
     assert _recorded(cog).images.generate_prompts == ["image"]
     # The image is delivered first, then a conversational reply streams onto that same
     # message via the flash media_reply_model with no tools.
