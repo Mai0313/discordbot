@@ -1,10 +1,11 @@
 """Shared pytest fixtures.
 
 Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
-`tmp_path` SQLite file for one test and disposes it afterwards; `memory_isolated_dir` does
-the same for the file-backed memory store. The autouse fixtures are the other half of that
-isolation, keeping a real deployment's `.env` and `data/` out of every test whether or not
-it asked for them.
+`tmp_path` SQLite file for one test and disposes it afterwards. `memory_isolated_dir` covers
+more than a directory: the store dir, the `memory_job` engine, the process-local caches,
+counters and task registries the store and pipeline hold, and the git committer. The autouse
+fixtures are the other half of that isolation, keeping a real deployment's `.env` and `data/`
+out of every test whether or not it asked for them.
 """
 
 from pathlib import Path

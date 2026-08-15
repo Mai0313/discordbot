@@ -485,9 +485,9 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     """A slow upload must not keep another link waiting on the Bilibili bound.
 
     The bound exists for the host's disk and bandwidth; the upload talks to Google, so holding
-    it across the upload would throttle unrelated links for no protective reason. Capacity 1
-    makes "still held" mean "the other link cannot start", which is exactly the property under
-    test.
+    it across the upload would throttle unrelated links for no protective reason. Capacity 1 is
+    set so a bound still held would show, but the second link here takes no media and so never
+    reaches the bound: what this actually pins is that a stalled upload blocks nothing behind it.
     """
     monkeypatch.setattr(bilibili_builder, "BILIBILI_FETCH_CONCURRENCY", 1)
     _stub_bilibili(monkeypatch)

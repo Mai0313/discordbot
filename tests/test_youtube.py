@@ -122,7 +122,7 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
 
 
 def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
-    """Empty content is dropped, and a video with no prior user step still gets one."""
+    """An answer input with no messages still yields one user step carrying just the video."""
     steps = step_dicts(
         steps=to_interactions_input(answer_input=[], youtube_url="https://youtu.be/abcdefghijk")
     )

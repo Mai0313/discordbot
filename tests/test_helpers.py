@@ -42,7 +42,7 @@ def _answer_request(
     server_memory: str | None = None,
     callable_ids: dict[int, str] | None = None,
 ) -> ResponseInputParam:
-    """Builds a recorded answer input mirroring what the pipeline assembles."""
+    """Assembles a request from whichever blocks a case needs, in this helper's own order."""
     request: ResponseInputParam = []
     if callable_ids is not None:
         request.append(

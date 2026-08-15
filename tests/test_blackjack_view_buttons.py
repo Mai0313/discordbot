@@ -183,7 +183,7 @@ async def test_player_actions_is_split_hand_disables_double_split_surrender() ->
 
 
 async def test_split_aces_subhand_disables_hit_and_stand() -> None:
-    """Split Aces alone removes every control, without relying on the finished flag."""
+    """Split Aces removes Hit and Stand with `finished` still False; Split removed the rest."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
         participants=[_participant(user_id=1, display_name="Alice")],

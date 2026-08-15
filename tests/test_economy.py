@@ -1793,7 +1793,7 @@ async def _settle_player(round_state: BlackjackRound) -> BlackjackPlayerSettleme
 
 
 async def test_settle_blackjack_player_surrender_returns_half_bet() -> None:
-    """Surrender refunds half the original bet and writes the audit row."""
+    """Surrender books half the original bet as a loss and mirrors it into the casino ledger."""
     await _add_balance(user_id=1, name="alice", amount=100)
     round_state = BlackjackRound.from_participants(
         rng=SystemRandom(), participants=[_participant(bet=50)]

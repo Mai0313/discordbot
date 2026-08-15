@@ -41,7 +41,7 @@ def test_apply_embed_spacer_image_sets_attachment_url() -> None:
 
 
 def test_build_embed_spacer_file_returns_fresh_png_upload() -> None:
-    """Each send or edit gets its own Discord File object."""
+    """Every call builds its own Discord File, since one File's buffer serves one request."""
     first = build_embed_spacer_file()
     second = build_embed_spacer_file()
 
