@@ -24,6 +24,10 @@ MEDIA_REPLY_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
     """Runs the dev image generation or edit flow and writes the PNG result.
 
+    The raw user request is sent straight to the image model (no prompt director), then the
+    reply stage answers about the image as the bot would (production also feeds it history
+    and the user's memory).
+
     Args:
         user_prompt (str): Prompt describing the image to generate or edit instruction.
         image_path (str | Path | None): Optional local image path to edit.

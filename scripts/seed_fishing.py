@@ -66,7 +66,11 @@ class CatalogSeedSummary(BaseModel):
 
 
 def _diff(payload: BaseModel, existing: BaseModel | None) -> tuple[str, ...]:
-    """Returns one line per field where the stored row differs from the default."""
+    """Returns one line per field where the stored row differs from the default.
+
+    Compared field by field off the payload rather than by dumping both models,
+    so a view carrying extra columns (timestamps, say) never reads as a change.
+    """
     if existing is None:
         return ()
     return tuple(

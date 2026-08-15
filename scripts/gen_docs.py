@@ -151,7 +151,7 @@ class DocsGenerator(BaseModel):
     )
 
     def _get_all_files(self, suffix: str) -> list[Path]:
-        """Discovers all files with the specified comma-separated suffixes recursively."""
+        """Discovers all files with the given comma-separated suffixes, each without a leading dot."""
         targets = [s.strip() for s in suffix.split(",")]
         all_files: list[Path] = []
         for target in targets:
@@ -162,7 +162,17 @@ class DocsGenerator(BaseModel):
     @computed_field
     @cached_property
     def source_files(self) -> list[Path]:
-        """Discovers and filters source files selected for documentation generation."""
+        """The source files selected for documentation generation.
+
+        Reading this clears `output_path` when `source_path` is a directory, so the
+        previously generated tree is gone before anything regenerates it.
+
+        Returns:
+            list[Path]: Source files under `source_path`, excluding configured entries and
+            default skipped paths when `source_path` is a directory. Returns the
+            single source file when `source_path` is a file, or an empty list
+            when it is neither a valid file nor directory.
+        """
         if self.source_path.is_dir():
             if self.output_path.exists():
                 shutil.rmtree(self.output_path.absolute())
@@ -303,11 +313,19 @@ class DocsGenerator(BaseModel):
     ) -> None:
         """Rewrites the auto-generated MkDocs nav block by scanning the docs tree.
 
+        It rewrites only the region delimited by the sentinel comments in `config_path`;
+        everything outside the markers is preserved verbatim.
+
+        Exposed as a `@staticmethod` so Fire can dispatch
+        `gen_docs.py build_nav` without instantiating `DocsGenerator` (which
+        would require `--source` / `--output` that are irrelevant here).
+
         Args:
-            docs_dir (str): Path to the MkDocs source directory.
+            docs_dir (str): Path to the MkDocs source directory (where `index.md` lives).
             config_path (str): Path to the `mkdocs.yml` file to update in place.
             sections (tuple[str, ...]): Top-level directory names under `docs_dir` to expose as
-                expandable nav sections.
+                expandable nav sections. Sections that do not exist on disk are
+                silently skipped.
         """
         _rebuild_nav(docs_dir=docs_dir, config_path=config_path, sections=sections)
 

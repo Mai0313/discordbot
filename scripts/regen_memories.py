@@ -91,7 +91,13 @@ _BATCH_TARGETS = ("all", "users", "servers")
 
 
 def _scopes_for_target(target: str) -> list[str]:
-    """Returns the scopes a target names, in store order."""
+    """Returns the scopes a target names, in store order.
+
+    Raises:
+        SystemExit: The target names a single scope with nothing on disk to rebuild,
+            which is what a mistyped id looks like. Reported here rather than left to
+            come back as a `no_evidence` row, which reads like data loss.
+    """
     scopes = iter_scopes()
     if target == "all":
         return scopes

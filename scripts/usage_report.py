@@ -54,7 +54,12 @@ _BAR_WIDTH = 16
 
 
 def _month_files(directory: Path, month: str | None) -> list[Path]:
-    """Returns the month files to read, oldest first."""
+    """Returns the month files to read, oldest first.
+
+    Raises:
+        SystemExit: The directory is absent or holds nothing matching, which is what a
+            mistyped month and a deployment that never recorded both look like.
+    """
     if not directory.is_dir():
         raise SystemExit(f"no usage records at {directory}")
     files = sorted(directory.glob(pattern="*.jsonl"))
@@ -66,7 +71,13 @@ def _month_files(directory: Path, month: str | None) -> list[Path]:
 
 
 def _read_records(paths: Sequence[Path]) -> tuple[list[UsageRecord], int]:
-    """Parses every record in `paths`, returning them in time order plus the unreadable count."""
+    """Parses every record in `paths`, returning them in time order plus the unreadable count.
+
+    Parsing goes through `UsageRecord` itself so this report tracks the writer's schema
+    instead of a second copy of it. A line it rejects is counted rather than raised on:
+    the last line of a live month file is routinely a partial write, and one torn line
+    must not cost the report the whole month.
+    """
     records: list[UsageRecord] = []
     unreadable = 0
     for path in paths:
@@ -165,7 +176,11 @@ def _feature_table(records: list[UsageRecord], kind: "UsageKind", title: str, la
 
 
 def _daily_table(records: list[UsageRecord]) -> Table:
-    """Returns one row per calendar day, oldest first."""
+    """Returns one row per calendar day, oldest first.
+
+    The user count sits beside the totals on purpose: it is what tells a busy day apart
+    from one person hammering a single command.
+    """
     per_day: defaultdict[str, Counter[str]] = defaultdict(Counter)
     users: defaultdict[str, set[int]] = defaultdict(set)
     for record in records:
@@ -201,7 +216,12 @@ def _top_table(
     key: Callable[[UsageRecord], str],
     display: dict[str, str] | None = None,
 ) -> Table:
-    """Returns the `_TOP_ROWS` busiest values of `key`, with everything else as one row."""
+    """Returns the `_TOP_ROWS` busiest values of `key`, with everything else as one row.
+
+    `display` relabels a key for the table only. Grouping and labelling are separate on
+    purpose: a username drifts and an id does not, so the id is what counts the rows up
+    and the name is only what the row is called.
+    """
     counts = Counter(key(record) for record in records)
     features: defaultdict[str, Counter[str]] = defaultdict(Counter)
     for record in records:

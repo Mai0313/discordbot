@@ -73,6 +73,10 @@ def gen_video(
 ) -> None:
     """Runs the dev omni video flow and saves the MP4 result to generated.mp4.
 
+    A `source_video_path` is uploaded and edited in place (task=edit); otherwise any
+    `image_paths` ride as subject reference images (task=reference_to_video, up to three);
+    otherwise plain text (task=text_to_video).
+
     Args:
         user_prompt (str): Prompt (or, in edit mode, the literal edit instruction).
         image_paths (list[str] | None): Optional local image files used as subject reference images.
