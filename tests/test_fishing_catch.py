@@ -386,7 +386,7 @@ def test_every_default_combo_returns_at_least_its_cost() -> None:
 
 
 def test_no_default_combo_prints_past_the_faucet_ceiling() -> None:
-    """The stated ceiling on how much fishing may mint per cast still holds."""
+    """No combo's expected return exceeds the ceiling as a multiple of its own cost."""
     catalog = build_default_catalog()
     for rod, bait in _default_combos(catalog=catalog):
         ratio = _return_ratio(catalog=catalog, rod=rod, bait=bait)

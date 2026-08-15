@@ -216,7 +216,7 @@ def test_each_mirror_write_uses_its_own_temp_file(
 def test_a_mirror_write_failure_never_costs_the_fetched_table(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A serve directory that cannot be written loses the mirror, never the loaded table."""
+    """A directory the mirror cannot be written into loses the mirror, never the loaded table."""
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where the mirror wants a directory", encoding="utf-8")
     monkeypatch.setattr(

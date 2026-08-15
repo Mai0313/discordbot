@@ -62,7 +62,7 @@ from discordbot.cogs.feedback.database import (
 
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction
 
-# Never a real credential: every test that uses it answers from a scripted transport.
+# Never a real credential: nothing holding it ever reaches the network.
 _FAKE_TOKEN = "not-a-real-value"  # noqa: S105 -- a placeholder, not a secret
 
 

@@ -652,7 +652,7 @@ async def test_top_n_orders_by_balance_descending() -> None:
 
 
 async def test_top_n_excludes_specified_users() -> None:
-    """Excluded user IDs (e.g. the bot's house ledger) must not appear in the result."""
+    """An excluded account is filtered out even when its balance would top the board."""
     await _add_balance(user_id=1, name="alice", amount=100)
     await _add_balance(user_id=2, name="bob", amount=300)
     await _add_balance(user_id=99, name="house", amount=999)
@@ -1027,7 +1027,7 @@ async def test_blackjack_view_dealer_hits_soft_17(monkeypatch: pytest.MonkeyPatc
 
     await view.finalize(message=as_message(fake=message))
 
-    # Soft 17 must trigger at least one draw, landing the dealer above 17.
+    # Soft 17 must trigger a draw; the drawn K lands a hard 17, where the dealer stands.
     assert len(view.round_state.dealer) >= 3
     assert view.round_state.dealer_played is True
     assert "embeds" not in message.edits[0]
@@ -1671,7 +1671,7 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
 
 
 async def test_top_losers_excludes_specified_users() -> None:
-    """`exclude_user_ids` filters the house ledger out of the report."""
+    """An excluded user id never appears in the daily loss report."""
     await _add_balance(user_id=1, name="alice", amount=500)
     await apply_round_settlement(
         player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500

@@ -1,7 +1,10 @@
 """Shared pytest fixtures.
 
-`economy_isolated_db` lives here instead of being copy-pasted into every
-test module that exercises the economy DB.
+Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
+`tmp_path` SQLite file for one test and disposes it afterwards; `memory_isolated_dir` does
+the same for the file-backed memory store. The autouse fixtures are the other half of that
+isolation, keeping a real deployment's `.env` and `data/` out of every test whether or not
+it asked for them.
 """
 
 from pathlib import Path

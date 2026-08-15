@@ -8,9 +8,10 @@ helpers walk the role/content structure instead, keyed on the production block
 headers and the ``[id: N]`` markers the memory blocks emit, so a test asserts on
 *which user's memory reached which role* rather than on an arbitrary literal.
 
-The block-header anchors are derived from the production renderers at import
-time, so a wording change in ``memory_tool.py`` is tracked automatically rather
-than silently breaking these extractors.
+The block-header anchors are derived from the production renderers and the
+link-source separators at import time, so a wording change in ``memory_tool.py``
+or in a ``link_sources`` module is tracked automatically rather than silently
+breaking these extractors.
 """
 
 import re
