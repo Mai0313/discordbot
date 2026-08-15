@@ -56,10 +56,6 @@ _BAR_WIDTH = 16
 def _month_files(directory: Path, month: str | None) -> list[Path]:
     """Returns the month files to read, oldest first.
 
-    Args:
-        directory: The directory the recorder writes its monthly files into.
-        month: A `YYYY-MM` file stem, or None for every month on disk.
-
     Raises:
         SystemExit: The directory is absent or holds nothing matching, which is what a
             mistyped month and a deployment that never recorded both look like.

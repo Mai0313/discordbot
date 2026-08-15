@@ -93,9 +93,6 @@ _BATCH_TARGETS = ("all", "users", "servers")
 def _scopes_for_target(target: str) -> list[str]:
     """Returns the scopes a target names, in store order.
 
-    Args:
-        target: One of `all` / `users` / `servers`, or a single scope key.
-
     Raises:
         SystemExit: The target names a single scope with nothing on disk to rebuild,
             which is what a mistyped id looks like. Reported here rather than left to

@@ -16,6 +16,14 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph  # ty: ignore[u
 
 
 def run_trading_agents(stock: str) -> str:
+    """Runs the TradingAgents workflow for a single stock ticker.
+
+    Args:
+        stock (str): Stock ticker symbol (for example `GOOG` or `2330.TW`).
+
+    Returns:
+        str: The resulting decision string.
+    """
     config = DEFAULT_CONFIG.copy()
 
     # Use Gemini

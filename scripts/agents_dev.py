@@ -23,12 +23,11 @@ AGENT_MODEL = ModelSettings(name="gemini/gemini-flash-latest", effort="minimal")
 def gen_reply_oai(user_prompt: str) -> RunResult:
     """Runs a dev reply through OpenAI Agents with the LiteLLM model adapter.
 
-    Mirrors the local dev scripts by keeping the model setting near the top and
-    reusing `REPLY_PROMPT` from the Discord reply flow. Prints the final agent
-    output to the console.
-
     Args:
-        user_prompt: User message to send as the single prompt input.
+        user_prompt (str): User message to send as the single prompt input.
+
+    Returns:
+        RunResult: Final agent run result.
     """
     set_tracing_disabled(disabled=True)
     agent = Agent(
@@ -48,6 +47,11 @@ def gen_reply_oai(user_prompt: str) -> RunResult:
 
 
 def gen_reply_gemini(user_prompt: str) -> None:
+    """Streams a dev reply using the Antigravity agent on the Gemini Interactions API.
+
+    Args:
+        user_prompt (str): User message to send as the single prompt input.
+    """
     client = genai.Client()
     responses = client.interactions.create(
         agent="antigravity-preview-05-2026",
@@ -73,6 +77,11 @@ def gen_reply_gemini(user_prompt: str) -> None:
 
 
 async def gen_reply_agy(user_prompt: str) -> None:
+    """Streams a dev reply using the local Antigravity agent SDK.
+
+    Args:
+        user_prompt (str): User message to send as the single prompt input.
+    """
     agent_config = antigravity.LocalAgentConfig(
         system_instructions=REPLY_PROMPT, api_key=config.gemini_api_key
     )

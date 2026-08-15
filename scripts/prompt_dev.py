@@ -54,13 +54,8 @@ SLOW_MODEL = ModelSettings(name="gemini-flash-latest", effort="high")
 def gen_reply(user_prompt: str) -> None:
     """Streams a dev reply through the LiteLLM Responses API.
 
-    Mirrors `_handle_message_reply` in `cogs/gen_reply/cog.py` by sending
-    `REPLY_PROMPT`, the configured slow model, reasoning settings, and model
-    tools through `client.responses.create`. Prints reasoning deltas dimmed,
-    output text deltas as they stream, and elapsed time to the console.
-
     Args:
-        user_prompt: User message to send as the single prompt input.
+        user_prompt (str): User message to send as the single prompt input.
     """
     message_list = [{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}]
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
@@ -98,13 +93,8 @@ def gen_reply(user_prompt: str) -> None:
 def gen_reply_chat(user_prompt: str) -> None:
     """Streams a dev reply through LiteLLM Chat Completions.
 
-    Uses the same `REPLY_PROMPT`, configured slow model, reasoning effort, and
-    tools as the deployed reply flow, but sends them through
-    `client.chat.completions.create` for comparison. Prints streamed text and
-    elapsed time to the console.
-
     Args:
-        user_prompt: User message to send as the single prompt input.
+        user_prompt (str): User message to send as the single prompt input.
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
     tools: list[ToolParam] = SLOW_MODEL.tools
@@ -143,8 +133,8 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
     """Streams a dev reply through the native Gemini SDK.
 
     Args:
-        user_prompt: User message to send as the comparison prompt.
-        video_uri: Optional URI of a video to include as input content, for testing Gemini's video understanding capabilities.
+        user_prompt (str): User message to send as the comparison prompt.
+        video_uri (str): Optional URI of a video to include as input content.
 
     Raises:
         RuntimeError: The SDK returned an interaction instead of the requested event stream.
@@ -211,13 +201,8 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
 def gen_reply_anthropic(user_prompt: str) -> None:
     """Streams a dev reply through the native Anthropic SDK.
 
-    Uses `REPLY_PROMPT` with a pinned Claude model instead of `SLOW_MODEL`, then
-    streams responses from `client.messages.stream` with adaptive thinking and
-    the model's tool configuration. Prints thinking deltas dimmed, answer text
-    as it streams, and elapsed time to the console.
-
     Args:
-        user_prompt: User message to send as the comparison prompt.
+        user_prompt (str): User message to send as the comparison prompt.
     """
     client = Anthropic(base_url=config.base_url, api_key=config.api_key)
     start = time.time()

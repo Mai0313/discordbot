@@ -27,6 +27,13 @@ def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
     The raw user request is sent straight to the image model (no prompt director), then the
     reply stage answers about the image as the bot would (production also feeds it history
     and the user's memory).
+
+    Args:
+        user_prompt (str): Prompt describing the image to generate or edit instruction.
+        image_path (str | Path | None): Optional local image path to edit.
+
+    Raises:
+        ValueError: The image operation returned no results.
     """
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
 

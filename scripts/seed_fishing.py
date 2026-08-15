@@ -186,9 +186,6 @@ async def _async_main(argv: Sequence[str] | None = None) -> None:
 def main(argv: Sequence[str] | None = None) -> None:
     """Runs the fishing catalog seeding CLI.
 
-    Parses command-line arguments, applies the default catalog, and prints a
-    human-readable summary of what changed.
-
     Args:
         argv (Sequence[str] | None): Optional argument sequence to parse instead of `sys.argv`.
     """

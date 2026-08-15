@@ -1,3 +1,5 @@
+"""Local text-to-speech smoke test for generating speech from AI replies."""
+
 from typing import TYPE_CHECKING, cast
 
 from openai import OpenAI
@@ -26,15 +28,13 @@ SLOW_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
 
 
 def gen_reply(user_prompt: str) -> None:
-    """Streams a dev reply through the LiteLLM Responses API.
+    """Streams a dev reply through LiteLLM and synthesizes speech audio.
 
-    Mirrors `_handle_message_reply` in `cogs/gen_reply/cog.py` by sending
-    `REPLY_PROMPT`, the configured slow model, reasoning settings, and model
-    tools through `client.responses.create`. Prints reasoning deltas dimmed,
-    output text deltas as they stream, and elapsed time to the console.
+    Mirrors the reply flow by streaming the answer text, then requests speech
+    audio from `client.audio.speech.create` and saves it to `./speech.mp3`.
 
     Args:
-        user_prompt: User message to send as the single prompt input.
+        user_prompt (str): User message to send as the single prompt input.
     """
     message_list = [{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}]
     client = OpenAI(base_url=config.base_url, api_key=config.api_key)
