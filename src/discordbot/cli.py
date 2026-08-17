@@ -73,13 +73,14 @@ class DiscordBot(commands.Bot):
     def _load_cogs_sync(self) -> None:
         """Loads every cog directory under `cogs/`.
 
-        A cog is a directory holding `cog.py`, which is the module nextcord reads
-        `setup` off; everything else in the directory is that cog's own helpers.
-        The scan is one level deep on purpose: a nested helper subpackage such as
-        `gen_reply/link_sources/` carries an `__init__.py` too, and handing one to
-        `load_extensions` raises `NoEntryPointError` and aborts boot under
-        `stop_at_error=True`. A directory that is not a cog raises here rather than
-        being skipped, so a half-finished move cannot silently stop loading a cog.
+        A cog is a directory holding both `__init__.py` and `cog.py`, the latter being
+        the module nextcord reads `setup` off; everything else in the directory is that
+        cog's own helpers. The scan is one level deep on purpose: a nested helper
+        subpackage such as `gen_reply/link_sources/` carries an `__init__.py` too, and
+        handing one to `load_extensions` raises `NoEntryPointError` and aborts boot
+        under `stop_at_error=True`. A `_`-prefixed entry is skipped, which is what keeps
+        `__pycache__` from raising; anything else that is not a cog raises here rather
+        than being skipped, so a half-finished move cannot silently stop loading a cog.
         """
         cog_dir = Path(__file__).parent / "cogs"
         cog_files: list[str] = []
