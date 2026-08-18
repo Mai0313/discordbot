@@ -147,6 +147,7 @@ nav:
               - memory: Reference/discordbot/typings/memory.md
               - models: Reference/discordbot/typings/models.md
               - stock: Reference/discordbot/typings/stock.md
+              - timeouts: Reference/discordbot/typings/timeouts.md
               - video: Reference/discordbot/typings/video.md
           - utils:
               - amount_parsing: Reference/discordbot/utils/amount_parsing.md
@@ -190,6 +191,7 @@ nav:
       - route_dev: Scripts/route_dev.md
       - seed_fishing: Scripts/seed_fishing.md
       - trading: Scripts/trading.md
+      - usage_report: Scripts/usage_report.md
       - video_dev: Scripts/video_dev.md
       - voice_dev: Scripts/voice_dev.md
   # <<< auto-generated nav end
