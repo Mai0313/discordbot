@@ -95,7 +95,7 @@ class VideoCogs(commands.Cog):
         url = extract_first_url(text=url, patterns=(DOUYIN_URL_RE,))
 
         # Read the destination's real upload ceiling (boost tier raises it to 50/100 MiB);
-        # a DM has no guild to query, so fall back to Discord's current non-Nitro base of 10 MiB.
+        # a DM has no guild to query, so fall back to Discord's current non-Nitro base of 20 MiB.
         upload_limit = upload_limit_for(guild=interaction.guild)
 
         # Douyin is routed away from yt-dlp entirely: its extractor needs cookies, never yields a

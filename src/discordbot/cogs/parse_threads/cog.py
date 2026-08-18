@@ -444,7 +444,7 @@ class ThreadsCogs(commands.Cog):
             # Videos too big to attach are hosted on the external static server and linked
             # instead of refusing the whole post; the rest attach natively. The planner
             # reserves 1 MiB for the multipart envelope + embeds JSON and pulls the per-guild
-            # limit from nextcord (boost tier raises it to 50/100 MiB; a DM has the 10 MiB base).
+            # limit from nextcord (boost tier raises it to 50/100 MiB; a DM has the 20 MiB base).
             items = [
                 MediaItem(source=path, filename=path.name)
                 for path in target.video_paths

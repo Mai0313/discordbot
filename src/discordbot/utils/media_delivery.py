@@ -39,9 +39,10 @@ if TYPE_CHECKING:
 
 dotenv.load_dotenv()
 
-# Discord lowered the non-Nitro base upload limit to 10 MiB in 2024; a guild-less context
-# (DM) has no boost-tier table to consult, so it falls back to this base.
-DEFAULT_NON_NITRO_UPLOAD_LIMIT = 10 * 1024 * 1024
+# Discord raised the non-Nitro base upload limit back to 20 MiB on 2026-08-13, two years after
+# cutting it to 10 MiB; a guild-less context (DM) has no boost-tier table to consult, so it falls
+# back to this base.
+DEFAULT_NON_NITRO_UPLOAD_LIMIT = 20 * 1024 * 1024
 
 # Discord caps one message at 10 attachments; the combined media edit is clamped to this.
 DISCORD_ATTACHMENT_LIMIT = 10
@@ -131,7 +132,7 @@ def upload_limit_for(guild: "Guild | None") -> int:
 
     A boosted guild's 50/100 MiB is honored via nextcord's `filesize_limit` (its boost-tier
     table lookup keyed on `premium_tier`); a DM has no guild to query, so it falls back to
-    Discord's non-Nitro base of 10 MiB.
+    Discord's non-Nitro base of 20 MiB.
 
     Args:
         guild: The destination guild, or None for a DM.
