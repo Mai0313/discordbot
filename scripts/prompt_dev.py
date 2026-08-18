@@ -25,7 +25,7 @@ from google.genai.interactions import (
     AllowlistParam,
     EnvironmentParam,
     TextContentParam,
-    VideoContentParam,
+    # VideoContentParam,
     AllowlistEntryParam,
     ThoughtSummaryDelta,
     GenerationConfigParam,
@@ -129,12 +129,11 @@ def gen_reply_chat(user_prompt: str) -> None:
     console.print(f"\n{model_name} on Litellm (Chat Completions) takes {end - start:.2f} seconds")
 
 
-def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
+def gen_reply_gemini(user_prompt: str) -> None:
     """Streams a dev reply through the native Gemini SDK.
 
     Args:
         user_prompt (str): User message to send as the comparison prompt.
-        video_uri (str): Optional URI of a video to include as input content.
 
     Raises:
         RuntimeError: The SDK returned an interaction instead of the requested event stream.
@@ -159,9 +158,12 @@ def gen_reply_gemini(user_prompt: str, video_uri: str = "") -> None:
     responses = client.interactions.create(
         model=SLOW_MODEL.name,
         system_instruction=REPLY_PROMPT,
+        service_tier="auto",
         input=[
-            TextContentParam(text=user_prompt, type="text"),
-            VideoContentParam(uri=video_uri, type="video"),
+            TextContentParam(text=user_prompt, type="text")
+            # Check this docs for more info: https://ai.google.dev/gemini-api/docs/video-understanding.md.txt
+            # We can send a YouTube video URL to the model by this way:
+            # VideoContentParam(uri="https://www.youtube.com/watch?v=jNQXAC9IVRw", type="video"),
         ],
         environment=EnvironmentParam(
             type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
@@ -208,9 +210,10 @@ def gen_reply_anthropic(user_prompt: str) -> None:
     start = time.time()
     with client.messages.stream(
         model=SLOW_MODEL.name,
+        system=REPLY_PROMPT,
+        service_tier="auto",
         max_tokens=16000,
         thinking={"type": "adaptive"},
-        system=REPLY_PROMPT,
         messages=[{"role": "user", "content": user_prompt}],
         # Same cross-SDK tool shape note as `gen_reply_chat`.
         tools=cast("list[AnthropicToolParam]", SLOW_MODEL.tools),
@@ -233,8 +236,5 @@ def gen_reply_anthropic(user_prompt: str) -> None:
 if __name__ == "__main__":
     gen_reply(user_prompt="為何 37 是質數?")
     # gen_reply_chat(user_prompt="為何 37 是質數?")
-    # gen_reply_gemini(
-    #     user_prompt="用三句話總結這個影片",
-    #     video_uri="https://www.youtube.com/watch?v=jNQXAC9IVRw"  # This is optional
-    # )
+    # gen_reply_gemini(user_prompt="為何 37 是質數?")
     # gen_reply_anthropic(user_prompt="為何 37 是質數?")
