@@ -37,11 +37,8 @@ from discordbot.utils.douyin import (
     douyin_fetch_semaphore,
 )
 from discordbot.typings.video import VideoQuality
-from discordbot.cogs.gen_reply.files_api import (
-    FILES_API_MAX_BYTES,
-    LINK_MEDIA_TIMEOUT_SECONDS,
-    upload_as_input_file,
-)
+from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 
 # Resolution asked of Douyin for the clip the model reads: the lowest preset (540p).
 # Deliberately below what the expansion posts to Discord: the model samples frames at its own

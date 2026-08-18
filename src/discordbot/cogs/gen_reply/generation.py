@@ -66,40 +66,23 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.utils.llm import output_text_or_empty
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
+from discordbot.typings.timeouts import (
+    VOICE_TIMEOUT_SECONDS,
+    FILES_READY_TIMEOUT_SECONDS,
+    INLINE_IMAGE_TIMEOUT_SECONDS,
+    MUSIC_RENDER_TIMEOUT_SECONDS,
+    VIDEO_RENDER_TIMEOUT_SECONDS,
+    PROMPT_REFINE_TIMEOUT_SECONDS,
+)
 
 if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-# Bound for the inline-image best-effort path: the render runs after the text reply is already
-# on screen, so the wait only delays this message's own image, never others. Generous (mirrors
-# VOICE_TIMEOUT_SECONDS) so a slower render still has room to land.
-INLINE_IMAGE_TIMEOUT_SECONDS = 300.0
-
-# Bound for the prompt-refinement call: it sits SERIALLY before the image/video render on the
-# IMAGE/VIDEO critical path, so a hung director must not keep the route waiting forever. On
-# timeout the refine falls back to the raw user prompt like any other failure.
-PROMPT_REFINE_TIMEOUT_SECONDS = 120.0
-
-# Hard ceiling on the whole omni video render (a single blocking interactions.create) so a hung
-# provider job cannot leave the message handler waiting forever. Co-located with the image timeout
-# since it is a property of the render, not of the route that calls it.
-VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
-
-# Bound for waiting on a Files API entry to become usable: the source video uploaded for an omni
-# edit (polled to ACTIVE) and the URI-delivered generated clip (download retried until it lands).
-# Generous because a large clip can sit in PROCESSING a while; the render hard-fails past it, since
-# video is the primary deliverable.
-FILES_READY_TIMEOUT_SECONDS = 180.0
-
 # omni accepts a handful of subject reference images. Shared so the VIDEO route caps the frames it
 # grounds the prompt director on to exactly the set render will send, rather than letting the
 # director describe references omni never receives (and uploading those unused bytes on the path).
 MAX_VIDEO_REFERENCE_IMAGES = 3
-
-# Bound for the inline-music best-effort path, mirroring the inline-image timeout: the render
-# runs after the text reply is on screen, so the wait only delays this message's own clip.
-MUSIC_RENDER_TIMEOUT_SECONDS = 300.0
 
 # Tunable voice config (edit here). The style directive fixes the voice age/gender and lets
 # the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and
@@ -111,15 +94,9 @@ TTS_SPEED = 1.5
 
 # Filename of the attached voice clip. Shared so input rendering can recognise and skip the
 # bot's own clip when it later appears in history, instead of re-uploading it as self-input.
+# Its upload-size guard lives at the attach site (`streaming.py`), where the guild's real
+# `filesize_limit` is known, not as a hardcoded byte ceiling here.
 VOICE_REPLY_FILENAME = "reply.wav"
-
-# Bound: a request timeout so a slow/hung clip cannot keep this message's own pipeline (its final
-# status reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text is
-# already on screen, so the wait only delays its own message, never others; it is generous so a
-# longer spoken reply has room to render. There is deliberately no spoken-length cap: the answer
-# model decides how much to say. The upload-size guard lives at the attach site (`streaming.py`),
-# where the guild's real `filesize_limit` is known, not as a hardcoded byte ceiling here.
-VOICE_TIMEOUT_SECONDS = 300.0
 
 # Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
 # Lyria prompt surface is documented in English). Lyria picks the lyric language from the prompt

@@ -604,20 +604,6 @@ async def test_extract_evaluator_can_drop_candidates(monkeypatch: pytest.MonkeyP
     assert draft.has_signal is False
 
 
-async def test_extract_returns_none_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "discordbot.services.memory.extraction.MEMORY_EXTRACT_TIMEOUT_SECONDS", 0.01
-    )
-    extractor, fake_client = _extractor()
-
-    async def hang(**kwargs: object) -> SimpleNamespace:
-        await asyncio.sleep(10)
-        return _parsed(output=None)
-
-    monkeypatch.setattr(fake_client.responses, "parse", hang)
-    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
-
-
 async def test_extract_returns_none_on_validation_error() -> None:
     extractor, fake_client = _extractor()
     try:

@@ -13,6 +13,7 @@ from collections.abc import Callable
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from discordbot.typings.timeouts import SQLITE_BUSY_TIMEOUT_SECONDS
 from discordbot.utils.stored_integer import configure_sqlite_stored_integer_functions
 
 
@@ -35,7 +36,8 @@ def configure_sqlite_connection(
     with contextlib.closing(dbapi_connection.cursor()) as cursor:
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
-        cursor.execute("PRAGMA busy_timeout=5000")
+        # The one surface that wants milliseconds; the shared bound is in seconds like the rest.
+        cursor.execute(f"PRAGMA busy_timeout={int(SQLITE_BUSY_TIMEOUT_SECONDS * 1000)}")
         if enable_foreign_keys:
             cursor.execute("PRAGMA foreign_keys=ON")
     if register_stored_integer:

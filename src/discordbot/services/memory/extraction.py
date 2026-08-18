@@ -32,8 +32,6 @@ from discordbot.services.memory.prompts import (
 from discordbot.services.memory.constants import (
     MEMORY_REPLY_MAX_CHARS,
     MEMORY_TRANSCRIPT_MAX_CHARS,
-    MEMORY_EXTRACT_TIMEOUT_SECONDS,
-    MEMORY_COMPARTMENT_TIMEOUT_SECONDS,
 )
 
 if TYPE_CHECKING:
@@ -337,7 +335,6 @@ class MemoryExtractorAI(BaseModel):
             instructions=self.phase1_prompt,
             user_text=user_text,
             text_format=RawMemoryDraft,
-            timeout_seconds=MEMORY_EXTRACT_TIMEOUT_SECONDS,
             end_user_label="memory_extract",
         )
         if draft is None:
@@ -357,7 +354,6 @@ class MemoryExtractorAI(BaseModel):
                 f"Candidate observations:\n{draft.model_dump_json()}"
             ),
             text_format=RawMemoryDraft,
-            timeout_seconds=MEMORY_EXTRACT_TIMEOUT_SECONDS,
             end_user_label="memory_evaluate",
         )
         if evaluated is None:
@@ -390,7 +386,6 @@ class MemoryExtractorAI(BaseModel):
             instructions=instructions,
             user_text="\n\n".join(blocks),
             text_format=ConsolidatedMemory,
-            timeout_seconds=MEMORY_COMPARTMENT_TIMEOUT_SECONDS,
             end_user_label="memory_consolidate",
         )
         if result is None:
@@ -402,22 +397,25 @@ class MemoryExtractorAI(BaseModel):
             }
         )
 
-    async def _parse(  # noqa: PLR0913 -- thin delegate mirroring the 3 phase call sites
+    async def _parse(
         self,
         model: ModelSettings,
         instructions: str,
         user_text: str,
         text_format: type[_OutputT],
-        timeout_seconds: float,
         end_user_label: str,
     ) -> _OutputT | None:
         """Runs one structured Responses API call, returning None on any failure.
 
-        Delegates to the shared `parse_responses_or_none`, which owns the call surface,
-        the timeout, and the degrade-to-None handling (timeout, refused output, an
-        incomplete/truncated response — the last matters here because a half-emitted delta
-        batch is indistinguishable from a complete one, and the rebuild path deletes every
-        fact its batch did not re-emit).
+        Delegates to the shared `parse_responses_or_none`, which owns the call surface and
+        the degrade-to-None handling (refused output, an incomplete/truncated response — the
+        last matters here because a half-emitted delta batch is indistinguishable from a
+        complete one, and the rebuild path deletes every fact its batch did not re-emit).
+
+        No deadline is passed: every phase runs in the background with nobody waiting on it,
+        so the client's own ceiling is the right bound (`constants.py` has what a stuck call
+        costs while it holds the scope lock). What the fan-out AROUND these calls needs is a
+        different question, answered in `pipeline.py`.
         """
         return await parse_responses_or_none(
             client=self.client,
@@ -426,7 +424,6 @@ class MemoryExtractorAI(BaseModel):
             user_text=user_text,
             end_user_id=end_user_label,
             text_format=text_format,
-            timeout_seconds=timeout_seconds,
         )
 
 

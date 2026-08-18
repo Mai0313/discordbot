@@ -35,6 +35,12 @@ from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.utils.usage_log import UsageRecorder
+from discordbot.typings.timeouts import (
+    EFFORT_GRACE_SECONDS,
+    LINK_CONTEXT_GRACE_SECONDS,
+    MEMORY_SELECT_GRACE_SECONDS,
+    GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS,
+)
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -154,41 +160,10 @@ if TYPE_CHECKING:
 
 _MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
 
-# Optional third-party memory selection overlaps the route call for free: the QA path joins
-# the speculative prep task only after the route returns, so selection runs unbounded while
-# the route is still in flight. Once the route completes, a still-running selection gets only
-# this grace before the reply answers with its deterministic participant memories, so a slow
-# selector can never cost the author, reply-chain authors, or explicitly mentioned users.
-# Tune against the `gen_reply memory selection done` latency log.
-MEMORY_SELECT_GRACE_SECONDS = 2.0
-
 # Preserve the existing eight-user context target for optional model-selected additions.
 # Deterministic participants are never displaced: if they fill or exceed the target, the
 # selector is skipped; otherwise it can use only the remaining slots.
 MEMORY_CONTEXT_TARGET_USERS = 8
-
-# Effort grading runs in parallel with the route under the same `route_done` gate as
-# memory selection: it runs unbounded while the route is in flight and gets only this
-# grace once the route returns before the reply falls back to "high" effort. The grade
-# is consumed only just before the answer model starts, so this latency hides behind the
-# route. Tune against the `gen_reply effort done` latency log.
-EFFORT_GRACE_SECONDS = 5.0
-
-# An intent-selected linked-post context build gets this grace once the QA path resolves it.
-# Far wider than memory/effort because it fetches the post's media and uploads it to the Files
-# API, and because answering blind about a link the user explicitly pointed at is the failure
-# this feature exists to prevent. The builder bounds its own media step just under this and
-# degrades to text, so the grace is a backstop rather than the usual exit. It starts only after
-# routing so an incidental link never begins network work, then overlaps any remaining context
-# preparation and effort grading. Tune against the `gen_reply link context done` latency log.
-LINK_CONTEXT_GRACE_SECONDS = 180.0
-
-# Bound on the whole Files API upload of a generated clip the persona reply then watches:
-# `upload_to_files_api` covers the transfer as well as the ACTIVE poll under this one timeout,
-# started once an upload slot is free. Generous relative to an image because video sits in
-# PROCESSING longer, but far under the link-media bound: the clip was just produced here, so it
-# is small and known-good.
-GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS = 60.0
 
 # Recorded as a reply's route when the pipeline failed before the router returned one.
 UNROUTED_REPLY = "unrouted"

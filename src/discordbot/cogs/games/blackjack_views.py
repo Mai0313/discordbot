@@ -23,6 +23,7 @@ from discordbot.typings.games import (
 )
 from discordbot.typings.colors import IN_PROGRESS_COLOR
 from discordbot.cogs.games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
+from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.database import record_blackjack_history
 from discordbot.cogs.games.blackjack import (
     BlackjackRound,
@@ -85,7 +86,6 @@ MAX_BLACKJACK_PLAYERS: Final[int] = 6
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 MAX_DEALER_DECISION_STEPS: Final[int] = 8
 MAX_BOT_TURN_STEPS: Final[int] = 16
-FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 BOT_TURN_EDIT_DELAY_SECONDS: Final[float] = 0.4
 
@@ -1305,7 +1305,7 @@ class BlackjackView(View):
                 message.edit(
                     **_blackjack_table_edit_kwargs(embeds=seat_embeds, view=None, target=message)
                 ),
-                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
+                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         # Broad on purpose: settlement is already committed, so this render must never
         # raise back into the round and skip the cleanup scheduling below.
@@ -1327,7 +1327,9 @@ class BlackjackView(View):
     async def _safe_edit_view_locked(self, message: Message) -> None:
         """Refreshes only the view so disabled buttons are visible immediately."""
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(message.edit(view=self), timeout=FINAL_EDIT_TIMEOUT_SECONDS)
+            await asyncio.wait_for(
+                message.edit(view=self), timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS
+            )
 
     async def _animate_peek_locked(self, message: Message) -> None:
         """Renders the dealer hole-card peek as a 2-stage reveal.
@@ -1348,7 +1350,7 @@ class BlackjackView(View):
                 message.edit(
                     **_blackjack_table_edit_kwargs(embeds=body_hidden, view=self, target=message)
                 ),
-                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
+                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 
@@ -1364,7 +1366,7 @@ class BlackjackView(View):
                 message.edit(
                     **_blackjack_table_edit_kwargs(embeds=reveal_body, view=self, target=message)
                 ),
-                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
+                timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
 

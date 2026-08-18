@@ -27,6 +27,11 @@ import requests
 from requests.exceptions import RequestException
 
 from discordbot.typings.video import VideoQuality
+from discordbot.typings.timeouts import (
+    DOUYIN_DOWNLOAD_MAX_RETRIES,
+    DOUYIN_DOWNLOAD_TIMEOUT_SECONDS,
+    DOUYIN_METADATA_TIMEOUT_SECONDS,
+)
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
 
 # Single source of truth for detecting a Douyin URL, kept module level so the expansion cog,
@@ -347,16 +352,19 @@ class DouyinDownloader(BaseModel):
 
     output_folder: str = Field(..., description="Directory where downloaded files are written.")
     timeout: int = Field(
-        default=15, description="Timeout in seconds for a metadata request.", examples=[15, 30]
+        default=DOUYIN_METADATA_TIMEOUT_SECONDS,
+        description="Timeout in seconds for a metadata request.",
+        examples=[15, 30],
     )
-    # Separate from `timeout` because this one bounds the gap between chunks of a video that can
-    # run to tens of megabytes; the metadata timeout is far too tight for that and was observed
-    # aborting an otherwise healthy transfer.
     download_timeout: int = Field(
-        default=60, description="Per-read timeout in seconds for a media download.", examples=[60]
+        default=DOUYIN_DOWNLOAD_TIMEOUT_SECONDS,
+        description="Per-read timeout in seconds for a media download.",
+        examples=[60],
     )
     max_retries: int = Field(
-        default=3, description="Attempts made per media download before giving up.", examples=[3]
+        default=DOUYIN_DOWNLOAD_MAX_RETRIES,
+        description="Attempts made per media download before giving up.",
+        examples=[3],
     )
     max_redirects: int = Field(
         default=5, description="Maximum redirect hops followed when resolving a short link."

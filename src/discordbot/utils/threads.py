@@ -23,6 +23,12 @@ from pydantic import (
 import requests
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 
+from discordbot.typings.timeouts import (
+    THREADS_PAGE_TIMEOUT_SECONDS,
+    THREADS_MEDIA_READ_TIMEOUT_SECONDS,
+    THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS,
+)
+
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
 # cog (which expands it into embeds) and gen_reply (which self-parses it into answer
 # context). Matches the two shapes that name a post on both threads.net and threads.com: the
@@ -866,14 +872,6 @@ THREADS_EMPTY_PAGE_RETRIES = 2
 # the reply pipeline's critical path, ahead of the media fetch.
 THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS = 0.8
 
-# Ceiling on the whole retry loop, measured from the first attempt, and sized against the reply
-# pipeline rather than against the fetch: a retry that eventually succeeds is followed by the
-# media step, which already claims almost all of `LINK_CONTEXT_GRACE_SECONDS` on its own
-# (`LINK_MEDIA_TIMEOUT_SECONDS`). Two more healthy fetches (~3s each) fit inside this; a run of
-# slow ones stops early instead of pushing the whole block past the grace. A retry that never
-# succeeds costs nothing extra downstream, since an unreadable post skips the media step.
-THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS = 10.0
-
 
 class ThreadsDownloader(BaseModel):
     """A downloader for extracting text and media from Threads posts.
@@ -894,7 +892,7 @@ class ThreadsDownloader(BaseModel):
         """
         headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html"}
         try:
-            response = requests.get(url=url, headers=headers, timeout=15)
+            response = requests.get(url=url, headers=headers, timeout=THREADS_PAGE_TIMEOUT_SECONDS)
             response.raise_for_status()
             return FetchedPage(html=response.text, final_url=response.url)
         except requests.RequestException as e:
@@ -1112,7 +1110,9 @@ class ThreadsDownloader(BaseModel):
             # The CDN serves these signed URLs with any Referer or none (measured), so this
             # only has to stop naming a host the fetch no longer visits.
             headers = {"User-Agent": "Mozilla/5.0", "Referer": f"{_CANONICAL_THREADS_ORIGIN}/"}
-            response = requests.get(url=url, headers=headers, stream=True, timeout=15)
+            response = requests.get(
+                url=url, headers=headers, stream=True, timeout=THREADS_MEDIA_READ_TIMEOUT_SECONDS
+            )
             response.raise_for_status()
 
             with filepath.open("wb") as f:
