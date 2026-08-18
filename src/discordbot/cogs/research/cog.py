@@ -42,6 +42,7 @@ from discordbot.typings.colors import DISCORD_RED
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
+from discordbot.typings.timeouts import THREAD_TITLE_TIMEOUT_SECONDS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.research.agent import (
     ResearchResult,
@@ -149,13 +150,18 @@ class ResearchCogs(commands.Cog):
         Brevity is steered by the prompt (not a token cap); on timeout or failure the brief's
         first line is used, and the result is trimmed to Discord's hard name limit as a safety net.
         """
-        raw = await create_text_or_none(
-            client=self.responses_client,
-            model=self.runtime_models.fast_model,
-            instructions=THREAD_TITLE_PROMPT,
-            user_text=brief,
-            end_user_id="deep-research",
-        )
+        # A product deadline, not a transport one: this runs BEFORE the thread exists, so the
+        # caller sees nothing at all until it returns. Expiry falls through to the fallback below.
+        raw: str | None = None
+        with contextlib.suppress(TimeoutError):
+            async with asyncio.timeout(delay=THREAD_TITLE_TIMEOUT_SECONDS):
+                raw = await create_text_or_none(
+                    client=self.responses_client,
+                    model=self.runtime_models.fast_model,
+                    instructions=THREAD_TITLE_PROMPT,
+                    user_text=brief,
+                    end_user_id="deep-research",
+                )
         title = next(
             (line.strip().strip('"') for line in (raw or "").splitlines() if line.strip()), ""
         )

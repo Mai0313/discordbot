@@ -5,15 +5,17 @@ with. Two of those interactions are load-bearing rather than cosmetic, and both 
 only as prose in two files that could not see each other's number.
 """
 
-import inspect
+import ast
+from pathlib import Path
 
 import pytest
 
-from discordbot.typings import timeouts
 from discordbot.typings.timeouts import (
     DOWNLOAD_TIMEOUT_SECONDS,
     LINK_CONTEXT_GRACE_SECONDS,
     LINK_MEDIA_TIMEOUT_SECONDS,
+    THREAD_TITLE_TIMEOUT_SECONDS,
+    STOCK_NEWS_AI_TIMEOUT_SECONDS,
     LINK_MEDIA_DEGRADE_HEADROOM_SECONDS,
 )
 
@@ -54,25 +56,41 @@ def test_every_link_download_path_shares_one_bound(module_path: str) -> None:
     assert getattr(module, "DOWNLOAD_TIMEOUT_SECONDS", None) is DOWNLOAD_TIMEOUT_SECONDS
 
 
-def test_no_llm_call_bound_survived_the_collection() -> None:
-    """The module holds no LLM call deadline, and that is a decision rather than an omission.
+def test_every_direct_to_google_render_carries_its_own_deadline() -> None:
+    """`genai.Client` is the one surface where "the provider owns it" needs a number from us.
 
-    Every LLM call in the tree lets the provider own its deadline (`AsyncOpenAI` defaults to
-    connect 5s / read 600s and raises `APITimeoutError`, which each call site already degrades
-    through on its broad `except`). A constant named for one of those calls reappearing here
-    means an `asyncio.timeout` came back with it.
+    google-genai leaves `http_options.timeout` at None, so an unbounded `interactions.create` into
+    a black-holed connection never returns and no `except` is ever reached — a hang rather than an
+    error, which for the VIDEO route means no clip and a status reaction stuck forever. The bound
+    rides as the SDK's own per-request `timeout=` rather than an `asyncio.timeout` around it, so
+    this reads the call sites rather than the module.
     """
-    named = {
-        name
-        for name in dir(timeouts)
-        if not name.startswith("_") and not inspect.ismodule(getattr(timeouts, name))
-    }
-    llm_shaped = {
-        name
-        for name in named
-        if any(
-            token in name
-            for token in ("VOICE", "MUSIC", "REFINE", "EXTRACT", "CONSOLIDATE", "COMPARTMENT")
-        )
-    }
-    assert llm_shaped == set()
+    source = (
+        Path(__file__).resolve().parents[1] / "src/discordbot/cogs/gen_reply/generation.py"
+    ).read_text(encoding="utf-8")
+    calls = [
+        node
+        for node in ast.walk(ast.parse(source=source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "create"
+        and isinstance(node.func.value, ast.Attribute)
+        and node.func.value.attr == "interactions"
+    ]
+    assert calls, "no interactions.create call found; this guard is reading the wrong module"
+    unbounded = [
+        call.lineno for call in calls if not any(kw.arg == "timeout" for kw in call.keywords)
+    ]
+    assert unbounded == []
+
+
+def test_the_two_product_deadlines_stayed_short() -> None:
+    """Neither bounds a transport; each bounds how long its feature may block something else.
+
+    The stock one sits under the process-wide news generation lock that the stock views also take,
+    and the research one runs before the thread exists so the caller sees nothing until it returns.
+    Both would be pointless at the provider's own 600s, so the assertion is on the order of
+    magnitude rather than the exact value.
+    """
+    assert STOCK_NEWS_AI_TIMEOUT_SECONDS < 10.0
+    assert THREAD_TITLE_TIMEOUT_SECONDS < 60.0

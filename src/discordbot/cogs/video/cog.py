@@ -108,46 +108,52 @@ class VideoCogs(commands.Cog):
             )
             return
 
-        # Set on the way out so a download that outran the bound aborts at its next yt-dlp
-        # progress tick: `asyncio.to_thread` cannot be cancelled, and this branch writes into the
-        # shared system temp dir with no scratch directory whose teardown would stop it, so an
-        # orphaned worker would otherwise run to completion and leave the finished file behind.
+        # Set on the way out so a download that outran the bound stops promptly at its next yt-dlp
+        # progress tick rather than running the whole transfer to completion inside a directory
+        # that is about to vanish: `asyncio.to_thread` cannot be cancelled, so nothing else ends it.
         stop_signal = threading.Event()
+        # A scratch directory per invocation, like the Douyin branch: aborting the worker leaves
+        # yt-dlp's partial `.part` behind (it is kept for resume, and `get_params` sets no
+        # `nopart`), which the delivered file's own unlink never covers. Cleanup errors are
+        # ignored because the abandoned worker may still be writing in here.
         try:
-            downloader = VideoDownloader(output_folder=tempfile.gettempdir())
-            async with asyncio.timeout(delay=DOWNLOAD_TIMEOUT_SECONDS):
-                result = await asyncio.to_thread(
-                    downloader.download, url=url, quality=quality, stop_signal=stop_signal
-                )
-            with result:
-                file_size_mb = result.filename.stat().st_size / 1024 / 1024
-                item = MediaItem(source=result.filename, filename=result.filename.name)
-                plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
-                if plan.native:
-                    await self._deliver(
-                        interaction=interaction,
-                        file_size_mb=file_size_mb,
-                        file_path=result.filename,
-                        url=url,
+            with tempfile.TemporaryDirectory(
+                prefix="ytdlp-", ignore_cleanup_errors=True
+            ) as download_dir:
+                downloader = VideoDownloader(output_folder=download_dir)
+                async with asyncio.timeout(delay=DOWNLOAD_TIMEOUT_SECONDS):
+                    result = await asyncio.to_thread(
+                        downloader.download, url=url, quality=quality, stop_signal=stop_signal
                     )
-                    return
+                with result:
+                    file_size_mb = result.filename.stat().st_size / 1024 / 1024
+                    item = MediaItem(source=result.filename, filename=result.filename.name)
+                    plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
+                    if plan.native:
+                        await self._deliver(
+                            interaction=interaction,
+                            file_size_mb=file_size_mb,
+                            file_path=result.filename,
+                            url=url,
+                        )
+                        return
 
-                # Too big for native upload: host the original-quality file and post its URL,
-                # rather than downgrading quality. Under ~100 MiB Discord still inline-plays the
-                # link; above that it is a browser-playable link. Hosting moves the file into the
-                # serve dir on a fresh upload (the `with result` exit unlink then no-ops) but leaves
-                # it on a dedup hit, so the exit unlink (missing_ok) cleans it up either way.
-                if plan.hosted_urls:
-                    await self._deliver_url(
-                        interaction=interaction,
-                        file_size_mb=file_size_mb,
-                        public_url=plan.hosted_urls[0],
+                    # Too big for native upload: host the original-quality file and post its URL,
+                    # rather than downgrading quality. Under ~100 MiB Discord still inline-plays the
+                    # link; above that it is a browser-playable link. Hosting moves the file into the
+                    # serve dir on a fresh upload (the `with result` exit unlink then no-ops) but leaves
+                    # it on a dedup hit, so the exit unlink (missing_ok) cleans it up either way.
+                    if plan.hosted_urls:
+                        await self._deliver_url(
+                            interaction=interaction,
+                            file_size_mb=file_size_mb,
+                            public_url=plan.hosted_urls[0],
+                        )
+                        return
+
+                    await interaction.edit_original_message(
+                        content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                     )
-                    return
-
-                await interaction.edit_original_message(
-                    content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
-                )
         except Exception as error:
             stop_signal.set()
             # Broad on purpose: the bot registers no application-command error handler, so

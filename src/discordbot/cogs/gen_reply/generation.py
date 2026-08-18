@@ -66,7 +66,11 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.utils.llm import output_text_or_empty
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
-from discordbot.typings.timeouts import FILES_READY_TIMEOUT_SECONDS
+from discordbot.typings.timeouts import (
+    FILES_READY_TIMEOUT_SECONDS,
+    MUSIC_RENDER_TIMEOUT_SECONDS,
+    VIDEO_RENDER_TIMEOUT_SECONDS,
+)
 
 if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
@@ -606,6 +610,10 @@ class VideoGenerator(BaseModel):
             input=content,
             response_format=response_format,
             generation_config=generation_config,
+            # The SDK's own per-request bound rather than an `asyncio.timeout` around it:
+            # google-genai leaves `http_options.timeout` at None, so an unbounded call into a
+            # black-holed connection never returns and no handler is ever reached.
+            timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
         )
         # No `stream=True`, so this is the interaction rather than an event stream: exclude the
         # stream at runtime, then read the result through the structural `_InteractionResult`
@@ -748,6 +756,9 @@ class MusicGenerator(BaseModel):
                 model=self.music_model.name,
                 input=user_prompt,
                 system_instruction=MUSIC_STYLE_DIRECTIVE,
+                # Bounded for the reason the video render is; unbounded here additionally stalls
+                # the streamer's single media-attach gather, taking the voice and images with it.
+                timeout=MUSIC_RENDER_TIMEOUT_SECONDS,
             )
             # No `stream=True`, so this is the interaction rather than an event stream (read via
             # `_InteractionResult`, see its docstring); the guard lands in the except -> None path.

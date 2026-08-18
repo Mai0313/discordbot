@@ -17,13 +17,22 @@ Retry COUNTS are out too, even where they multiply an effective bound (yt-dlp's 
 `fragment_retries` / `extractor_retries`, Douyin's `max_retries`): a count has no expiry, so it is
 not a bound, and `DOWNLOAD_TIMEOUT_SECONDS` caps the product of all of them anyway.
 
-**LLM calls carry no bound of ours at all**, and that is a decision rather than an omission. The
-provider owns the deadline: `AsyncOpenAI` defaults to connect 5s / read 600s and raises
-`APITimeoutError`, which every call site already degrades through on its broad `except`, exactly as
-it degrades on a proxy `ServiceUnavailableError`. Deep research (`cogs/research/agent.py`) is
-unbounded for the same reason and is the one where it is most visible, the agent settling
-server-side on its own budget. Do not reintroduce an `asyncio.timeout` around an LLM call; a
-product deadline that happens to sit on one belongs here, under the feature it bounds.
+**An LLM call is bounded by its provider, not by an `asyncio.timeout` of ours.** On the proxy that
+needs nothing: `AsyncOpenAI` defaults to connect 5s / read 600s and raises `APITimeoutError`, which
+every call site already degrades through on its broad `except`, exactly as it degrades on a proxy
+`ServiceUnavailableError`. Deep research (`cogs/research/agent.py`) rides that same rule with no
+number of its own, the agent settling server-side on its own budget.
+
+**`genai.Client` is the exception, and it is not optional.** google-genai leaves
+`http_options.timeout` at `None` (measured against 2.13.0; `gen_reply/files_api.py` has the same
+finding from its own investigation), so a direct-to-Google call into a black-holed connection never
+returns and no `except` is ever reached — a hang, not an error. Those calls therefore pass a
+deadline as the SDK's own per-request `timeout=`, which is still the provider owning it rather than
+a wrapper around it, and the number lives here.
+
+The other carve-out is a **product deadline that happens to sit on an LLM call**: a bound on how
+long the feature may block something ELSE, which no provider can know about. Those keep an
+`asyncio.timeout` at their own call site, and this is the whole list.
 """
 
 from typing import Final
@@ -92,6 +101,31 @@ DOWNLOAD_STOP_JOIN_SECONDS: Final[float] = 5.0
 # which already claims almost all of `LINK_CONTEXT_GRACE_SECONDS` on its own. Two more healthy
 # fetches (~3s each) fit inside this; a run of empty pages is a throttle, not a slow link.
 THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS: Final[float] = 10.0
+
+# ----- LLM calls: the provider's deadline, carried here only where it needs a number ---------
+
+# Handed to `interactions.create` as its own per-request timeout on the omni video render. Without
+# it the render is unbounded, and video is the primary deliverable, so a hung provider job would
+# leave the VIDEO route awaiting forever: no clip, no error, the status reaction stuck.
+VIDEO_RENDER_TIMEOUT_SECONDS: Final[float] = 600.0
+
+# The same, for the inline `<generate-music>` Lyria render. Best-effort rather than primary, but an
+# unbounded hang here stalls the streamer's single media-attach gather, so the reply's final
+# reaction and its memory scheduling never run either.
+MUSIC_RENDER_TIMEOUT_SECONDS: Final[float] = 300.0
+
+# ----- product deadlines that sit on an LLM call ---------------------------------------------
+
+# Not a transport bound: `ensure_due_stock_news` holds the process-wide news generation lock across
+# its whole provider fan-out, and `get_stock_detail` / `get_stock_news` / `get_stock_portfolio` take
+# that same lock on the path a user is waiting on. Past ~3s the 近期新聞 button fails outright,
+# since it does not defer before the call. Short because the tier is flash-lite at minimal effort,
+# so this is already the slow end of a healthy call; expiry writes the deterministic template.
+STOCK_NEWS_AI_TIMEOUT_SECONDS: Final[float] = 4.0
+
+# Also not a transport bound: the title is generated BEFORE the research thread exists, so the
+# caller sees nothing at all until it returns. Expiry falls back to the brief's first line.
+THREAD_TITLE_TIMEOUT_SECONDS: Final[float] = 15.0
 
 # ----- link downloads ---------------------------------------------------------------------
 
@@ -176,9 +210,13 @@ __all__ = [
     "LINK_MEDIA_TIMEOUT_SECONDS",
     "MEMORY_SELECT_GRACE_SECONDS",
     "MODEL_PRICE_FETCH_TIMEOUT_SECONDS",
+    "MUSIC_RENDER_TIMEOUT_SECONDS",
     "SHARE_RESOLVE_TIMEOUT_SECONDS",
     "SQLITE_BUSY_TIMEOUT_MS",
+    "STOCK_NEWS_AI_TIMEOUT_SECONDS",
     "THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS",
     "THREADS_REQUEST_TIMEOUT_SECONDS",
+    "THREAD_TITLE_TIMEOUT_SECONDS",
+    "VIDEO_RENDER_TIMEOUT_SECONDS",
     "YTDLP_SOCKET_TIMEOUT_SECONDS",
 ]

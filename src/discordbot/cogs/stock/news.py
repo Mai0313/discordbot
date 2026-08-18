@@ -1,11 +1,14 @@
 """AI-backed news generation for the simulated stock market."""
 
+import asyncio
+
 from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.stock import StockGeneratedNews, StockNewsGenerationContext
 from discordbot.typings.models import ModelSettings
+from discordbot.typings.timeouts import STOCK_NEWS_AI_TIMEOUT_SECONDS
 from discordbot.services.stock.prompts import STOCK_NEWS_PROMPT
 
 
@@ -53,14 +56,19 @@ class StockNewsAI(BaseModel):
             f"Latest previous headline: {context.latest_news_headline or 'None'}\n"
             "Write a plausible fictional event that fits this context."
         )
-        draft = await parse_responses_or_none(
-            client=self.client,
-            model=self.model,
-            instructions=STOCK_NEWS_PROMPT,
-            user_text=user_text,
-            end_user_id="stock_news",
-            text_format=StockNewsDraft,
-        )
+        # A product deadline, not a transport one: `ensure_due_stock_news` holds the news
+        # generation lock across this call, and the stock views take that same lock on the path a
+        # user is waiting on. Expiry raises into that caller's own broad handler, which writes the
+        # deterministic template exactly as it does for any other provider failure.
+        async with asyncio.timeout(delay=STOCK_NEWS_AI_TIMEOUT_SECONDS):
+            draft = await parse_responses_or_none(
+                client=self.client,
+                model=self.model,
+                instructions=STOCK_NEWS_PROMPT,
+                user_text=user_text,
+                end_user_id="stock_news",
+                text_format=StockNewsDraft,
+            )
         if draft is None:
             return None
         return StockGeneratedNews(
