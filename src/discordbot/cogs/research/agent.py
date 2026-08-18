@@ -57,8 +57,11 @@ RESEARCH_TOOLS = [
 # The poll-fallback interval + the re-attach backoff; research is minutes-long so coarse is plenty.
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
 # A transient get() error mid-research (e.g. a server 504 gateway timeout) is retried, not fatal;
-# only this many CONSECUTIVE failures give up. There is no wall-clock timeout: the Gemini SDK
-# bounds each request and the agent settles server-side on its own budget.
+# only this many CONSECUTIVE failures give up. There is no wall-clock timeout anywhere here, and
+# the genai SDK supplies none either (`typings/timeouts.py` has the measurement), so this counter
+# bounds errors and not time: a black-holed connection never returns and never lands here. Deep
+# research can afford that where nothing else can, because `background=True` + `store=True` leave
+# the agent settling server-side and `on_ready` re-attaches after a restart.
 MAX_CONSECUTIVE_POLL_ERRORS = 30
 
 # `_poll_until_terminal`'s optional progress hook: (latest thought summary or None, elapsed
@@ -158,7 +161,8 @@ async def _poll_until_terminal(
 ) -> object:
     """Polls `interactions.get` until the status leaves `in_progress`.
 
-    No wall-clock timeout (the SDK bounds each request; the agent settles server-side). A
+    No wall-clock timeout, from the SDK or from us; the agent settles server-side and the run is
+    resumable, which is why this path is the deliberate exception `typings/timeouts.py` names. A
     transient get() error mid-research is retried so one 504 does not kill a long run; it gives
     up only after `MAX_CONSECUTIVE_POLL_ERRORS` consecutive failures (re-raising the last error).
     """
@@ -188,8 +192,9 @@ async def _poll_until_terminal(
         await asyncio.sleep(poll_interval_seconds)
 
 
-# The SDK can close a create/get(stream=True) SSE request mid-run (each request is bounded) while
-# the agent keeps working server-side; `_StreamDriver` re-attaches via get(stream=True). This caps
+# A create/get(stream=True) SSE request can end mid-run (the server closes it; the SDK sets no
+# deadline of its own) while the agent keeps working server-side; `_StreamDriver` re-attaches via
+# get(stream=True). This caps
 # CONSECUTIVE re-attaches that make no progress so a truly dead stream gives up (mirrors
 # MAX_CONSECUTIVE_POLL_ERRORS), while a healthy long run that just needs periodic re-attach never trips.
 MAX_STREAM_RECONNECTS = 20

@@ -4,10 +4,12 @@ Each helper owns the proxy call surface and the failure handling so a caller onl
 result to its own fallback. Client construction lives at the call sites as inline
 `AsyncOpenAI(...)` / `genai.Client(...)` cached_properties, not here.
 
-Neither helper takes a deadline: the SDK's own (connect 5s / read 600s) is the bound, and the
-`APITimeoutError` it raises lands in the same broad `except` that already absorbs a proxy
-`ServiceUnavailableError`, so every caller's fallback is reached either way. See
-`typings/timeouts.py` for why no LLM call in this tree carries one of ours.
+Neither helper takes a deadline: the SDK's own is the bound, and the `APITimeoutError` it raises
+lands in the same broad `except` that already absorbs a proxy `ServiceUnavailableError`, so every
+caller's fallback is reached either way. Read that bound as 1800s rather than the 600s read
+timeout, since the SDK retries a timeout twice by default; a caller that cannot wait that long has
+a product deadline rather than a transport one and keeps its own `asyncio.timeout`. See
+`typings/timeouts.py` for which ones do and why.
 """
 
 from typing import cast
