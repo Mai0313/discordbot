@@ -1332,7 +1332,7 @@ async def test_voice_too_big_falls_back_to_hosted_url(
     """A voice clip past the upload limit is hosted and its URL appended, not silently dropped."""
     del economy_isolated_db
     message = FakeMessage()
-    # 4-byte ceiling so the fake WAV (larger) exceeds it, like a long WAV in a 10 MiB DM.
+    # 4-byte ceiling so the fake WAV (larger) exceeds it, like a long WAV in a 20 MiB DM.
     message.guild = FakeGuild(filesize_limit=4)
     synthesizer = _FakeVoiceGenerator()
     service = MediaHostingService(

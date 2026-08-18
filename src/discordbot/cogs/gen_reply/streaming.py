@@ -520,10 +520,10 @@ class ResponseStreamer(BaseModel):
         await update_reaction(message=self.message, bot_user=None, emoji=emoji)
 
     def _upload_limit(self) -> int:
-        """The destination's real upload ceiling, falling back to Discord's 10MB base in a DM.
+        """The destination's real upload ceiling, falling back to Discord's 20MB base in a DM.
 
         A boosted guild's 50/100MB is honored via nextcord's `filesize_limit`; a DM has no guild
-        to query, so it falls back to Discord's non-Nitro base of 10MB (shared helper).
+        to query, so it falls back to Discord's non-Nitro base of 20MB (shared helper).
         """
         return upload_limit_for(guild=self.message.guild)
 
