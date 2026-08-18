@@ -22,6 +22,8 @@ import jwt
 import httpx
 from pydantic import Field, BaseModel, PrivateAttr
 
+from discordbot.typings.timeouts import GITHUB_REQUEST_TIMEOUT_SECONDS
+
 _API_ROOT: Final[str] = "https://api.github.com"
 _API_VERSION: Final[str] = "2022-11-28"
 
@@ -66,7 +68,9 @@ class AppCredentials(BaseModel):
     app_id: str = Field(..., description="The GitHub App's numeric id.")
     private_key_path: Path = Field(..., description="Path to the app's private key PEM.")
     repository: str = Field(..., description="The owner/name the app is installed on.")
-    timeout_seconds: float = Field(default=15.0, description="Per-request timeout in seconds.")
+    timeout_seconds: float = Field(
+        default=GITHUB_REQUEST_TIMEOUT_SECONDS, description="Per-request timeout in seconds."
+    )
 
     _installation_id: int | None = PrivateAttr(default=None)
     _token: str = PrivateAttr(default="")

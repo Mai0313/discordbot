@@ -19,6 +19,7 @@ import httpx
 import logfire
 from pydantic import Field, BaseModel, ValidationError
 
+from discordbot.typings.timeouts import GITHUB_REQUEST_TIMEOUT_SECONDS
 from discordbot.cogs.feedback.auth import GitHubAuthError, GitHubCredentials
 
 _API_ROOT: Final[str] = "https://api.github.com"
@@ -135,7 +136,9 @@ class GitHubIssues(BaseModel):
 
     credentials: GitHubCredentials = Field(..., description="How the bot authorizes a call.")
     repository: str = Field(..., description="The owner/name slug reports are filed against.")
-    timeout_seconds: float = Field(default=15.0, description="Per-request timeout in seconds.")
+    timeout_seconds: float = Field(
+        default=GITHUB_REQUEST_TIMEOUT_SECONDS, description="Per-request timeout in seconds."
+    )
 
     async def _authorized_headers(self) -> dict[str, str]:
         """Auth and version headers sent on every request.

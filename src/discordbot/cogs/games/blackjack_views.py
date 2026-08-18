@@ -23,6 +23,7 @@ from discordbot.typings.games import (
 )
 from discordbot.typings.colors import IN_PROGRESS_COLOR
 from discordbot.cogs.games.lobby import BaseGameLobbyView, PrepareParticipant, RefreshParticipants
+from discordbot.typings.timeouts import FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.database import record_blackjack_history
 from discordbot.cogs.games.blackjack import (
     BlackjackRound,
@@ -85,7 +86,6 @@ MAX_BLACKJACK_PLAYERS: Final[int] = 6
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 MAX_DEALER_DECISION_STEPS: Final[int] = 8
 MAX_BOT_TURN_STEPS: Final[int] = 16
-FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 BOT_TURN_EDIT_DELAY_SECONDS: Final[float] = 0.4
 

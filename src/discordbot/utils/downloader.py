@@ -17,10 +17,7 @@ from requests import Session
 from requests.exceptions import RequestException
 
 from discordbot.typings.video import VideoQuality
-
-# Redirect chases for a facebook.com/share/... link. Fixed rather than configurable: it bounds
-# one HEAD/GET against Facebook and nothing has ever needed a different value.
-SHARE_RESOLVE_TIMEOUT_SECONDS = 10
+from discordbot.typings.timeouts import YTDLP_SOCKET_TIMEOUT_SECONDS, SHARE_RESOLVE_TIMEOUT_SECONDS
 
 
 class DownloadStoppedError(Exception):
@@ -231,7 +228,7 @@ class VideoDownloader(BaseModel):
             # Ensure merged output is mp4 when possible (common for Discord uploads)
             "merge_output_format": "mp4",
             "http_headers": http_headers,
-            "socket_timeout": 30,
+            "socket_timeout": YTDLP_SOCKET_TIMEOUT_SECONDS,
             "extractor_retries": 3,
             "geo_bypass": True,
         }

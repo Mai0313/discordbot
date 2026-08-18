@@ -36,13 +36,10 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 
 from discordbot.typings.video import VideoQuality
 from discordbot.utils.bilibili import BILIBILI_URL_RE
+from discordbot.typings.timeouts import DOWNLOAD_STOP_JOIN_SECONDS, LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.downloader import VideoMetadata, DownloadResult, VideoDownloader
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
-from discordbot.cogs.gen_reply.files_api import (
-    FILES_API_MAX_BYTES,
-    LINK_MEDIA_TIMEOUT_SECONDS,
-    upload_as_input_file,
-)
+from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 
 # Resolution asked of yt-dlp for the clip the model reads: the lowest preset (height<=480).
 # Same rationale as the Douyin builder's: the model samples frames at its own media
@@ -64,11 +61,6 @@ MAX_BILIBILI_DESCRIPTION_CHARS = 1000
 # Concurrent Bilibili fetches across the builder. Bounds parallel large downloads on the
 # host's disk and bandwidth, not a WAF (Bilibili does not ban the way Douyin does).
 BILIBILI_FETCH_CONCURRENCY = 2
-
-# How long an abandoned download gets to notice its stop signal before the scratch dir is
-# removed anyway. The signal fires at the next yt-dlp progress tick, typically well under a
-# second; a worker that outlives this window is stalled on the network, not downloading.
-DOWNLOAD_STOP_JOIN_SECONDS = 5.0
 
 bilibili_fetch_semaphore = LoopLocalSemaphore(capacity_provider=lambda: BILIBILI_FETCH_CONCURRENCY)
 

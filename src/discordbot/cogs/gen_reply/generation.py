@@ -66,6 +66,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.utils.llm import output_text_or_empty
 from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.typings.models import ModelSettings
+from discordbot.typings.timeouts import FILES_READY_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
@@ -85,12 +86,6 @@ PROMPT_REFINE_TIMEOUT_SECONDS = 120.0
 # provider job cannot leave the message handler waiting forever. Co-located with the image timeout
 # since it is a property of the render, not of the route that calls it.
 VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
-
-# Bound for waiting on a Files API entry to become usable: the source video uploaded for an omni
-# edit (polled to ACTIVE) and the URI-delivered generated clip (download retried until it lands).
-# Generous because a large clip can sit in PROCESSING a while; the render hard-fails past it, since
-# video is the primary deliverable.
-FILES_READY_TIMEOUT_SECONDS = 180.0
 
 # omni accepts a handful of subject reference images. Shared so the VIDEO route caps the frames it
 # grounds the prompt director on to exactly the set render will send, rather than letting the

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import TYPE_CHECKING, Any, cast
 import asyncio
 
 import logfire
@@ -16,6 +16,7 @@ from discordbot.cogs.games.lobby import (
     RefreshParticipants,
     BaseJackpotLobbyView,
 )
+from discordbot.typings.timeouts import FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.wagers import parse_wager_amount
 from discordbot.utils.number_text import compact_amount
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -67,7 +68,6 @@ if TYPE_CHECKING:
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
-DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 
 
 def _dragon_gate_table_edit_kwargs(
@@ -862,7 +862,7 @@ class DragonGateView(View):
                 message.edit(
                     **_dragon_gate_table_edit_kwargs(embeds=embeds, view=None, target=message)
                 ),
-                timeout=DRAGON_GATE_FINAL_EDIT_TIMEOUT_SECONDS,
+                timeout=FINAL_EDIT_TIMEOUT_SECONDS,
             )
         except nextcord.NotFound:
             # Opener deleted the public table before the round finished; nothing to render.

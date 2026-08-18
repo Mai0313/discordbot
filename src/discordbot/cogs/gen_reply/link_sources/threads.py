@@ -38,7 +38,8 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
-from discordbot.cogs.gen_reply.files_api import LINK_MEDIA_TIMEOUT_SECONDS, upload_as_input_file
+from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
 if TYPE_CHECKING:
