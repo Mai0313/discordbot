@@ -158,6 +158,8 @@ def gen_reply_gemini(user_prompt: str) -> None:
     responses = client.interactions.create(
         model=SLOW_MODEL.name,
         system_instruction=REPLY_PROMPT,
+        # If calling the Gemini API Endpoint directly, `service_tier` should be `standard`, not `auto`.
+        # For the example here, we call it through Litellm Proxy, so `auto` is acceptable.
         service_tier="auto",
         input=[
             TextContentParam(text=user_prompt, type="text")
