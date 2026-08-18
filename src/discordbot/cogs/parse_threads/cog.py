@@ -32,6 +32,7 @@ from nextcord.ext import commands
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
+from discordbot.typings.timeouts import DOWNLOAD_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -41,7 +42,12 @@ from discordbot.utils.media_delivery import (
 )
 
 if TYPE_CHECKING:
+    from asyncio import Task
+    from contextlib import AbstractContextManager
+
     from nextcord.types.embed import Embed as EmbedData
+
+    from discordbot.utils.threads import ThreadsConversation
 
 # Stripe for the post a quote post quotes. Deliberately off the greyscale chain gradient
 # (`_gradient_color`, which spans 0x40-0xC0 and reserves pure black for "no stripe"): a quoted
@@ -79,6 +85,43 @@ class _EmbedPlan(BaseModel):
     omitted_posts: list[ThreadsOutput] = Field(
         ..., description="Posts represented by permalink fallbacks.", examples=[[]]
     )
+
+
+def _discard_scratch_files_when_the_worker_stops(
+    *,
+    parse_cm: "AbstractContextManager[ThreadsConversation]",
+    enter_task: "Task[object]",
+    url: str,
+    message_id: int,
+) -> None:
+    """Runs the parse's `__exit__` once a timed-out worker finally finishes.
+
+    The listener has already given up by the time this is called, but the worker is still
+    downloading into the shared system temp dir — `asyncio.to_thread` cannot be cancelled — and
+    the `finally` that normally deletes those files sits on a path the timeout skipped. Waiting
+    for the worker here would just move the stall back onto the listener, so the exit is deferred
+    onto the worker's own completion and nothing awaits it. A worker that ends by raising wrote
+    nothing to clean up.
+    """
+
+    def _on_worker_done(task: "Task[object]") -> None:
+        if task.cancelled() or task.exception() is not None:
+            return
+        cleanup = asyncio.create_task(asyncio.to_thread(parse_cm.__exit__, None, None, None))
+        cleanup.add_done_callback(
+            lambda done: (
+                logfire.error(
+                    "Could not clean up the Threads scratch files of a timed-out parse",
+                    url=url,
+                    message_id=message_id,
+                    _exc_info=done.exception(),
+                )
+                if not done.cancelled() and done.exception() is not None
+                else None
+            )
+        )
+
+    enter_task.add_done_callback(_on_worker_done)
 
 
 def _utf16_length(value: str) -> int:
@@ -417,6 +460,51 @@ class ThreadsCogs(commands.Cog):
             previous=current_emoji,
         )
 
+    async def _enter_parse(
+        self,
+        *,
+        parse_cm: "AbstractContextManager[ThreadsConversation]",
+        url: str,
+        message: Message,
+        current_emoji: str,
+    ) -> "ThreadsConversation | None":
+        """Enters the parse under the shared download bound; None means it never produced one.
+
+        `parse()` blocks on an HTTP fetch plus media downloads, so its enter runs off the event
+        loop; the reply then runs while the temp files still exist and the caller's matching exit
+        cleans them up. Either failure marks the message ❌ and returns None, so the listener has
+        one exit to check rather than three.
+        """
+        # Shielded so the bound releases the listener without cancelling the worker:
+        # `asyncio.to_thread` cannot be cancelled anyway, and a task left cancelled here would
+        # lose the handle the deferred cleanup needs.
+        enter_task = asyncio.create_task(asyncio.to_thread(parse_cm.__enter__))
+        try:
+            async with asyncio.timeout(delay=DOWNLOAD_TIMEOUT_SECONDS):
+                return await asyncio.shield(enter_task)
+        except TimeoutError:
+            logfire.warn(
+                "Threads parse timed out",
+                url=url,
+                message_id=message.id,
+                timeout_seconds=DOWNLOAD_TIMEOUT_SECONDS,
+            )
+            _discard_scratch_files_when_the_worker_stops(
+                parse_cm=parse_cm, enter_task=enter_task, url=url, message_id=message.id
+            )
+        # Broad on purpose: a fetch failure must not escape into the listener; the ❌ reaction is
+        # the user-visible outcome.
+        except Exception as error:
+            logfire.warn(
+                "Threads parse failed",
+                url=url,
+                message_id=message.id,
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+        await self._mark_failed(message=message, current_emoji=current_emoji)
+        return None
+
     async def _deliver(
         self,
         *,
@@ -606,25 +694,14 @@ class ThreadsCogs(commands.Cog):
         )
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
+        parse_cm = self.downloader.parse(url=url)
+        conversation = await self._enter_parse(
+            parse_cm=parse_cm, url=url, message=message, current_emoji=current_emoji
+        )
+        if conversation is None:
+            return
+
         try:
-            # parse() blocks on HTTP fetch + media downloads, so run its enter
-            # off the event loop; the reply runs while the temp files still exist
-            # and the matching exit cleans them up afterwards.
-            parse_cm = self.downloader.parse(url=url)
-            try:
-                conversation = await asyncio.to_thread(parse_cm.__enter__)
-            # Broad on purpose: a fetch failure must not escape into the listener; the ❌
-            # reaction is the user-visible outcome.
-            except Exception as error:
-                logfire.warn(
-                    "Threads parse failed",
-                    url=url,
-                    message_id=message.id,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
-                await self._mark_failed(message=message, current_emoji=current_emoji)
-                return
             try:
                 # The expansion shows the reply chain only; the comments the parse also carries
                 # are gen_reply's to read, and there is no embed budget left for them here.

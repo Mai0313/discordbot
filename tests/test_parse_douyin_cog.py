@@ -377,7 +377,7 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     about a Douyin link behind it. A timeout is reported as a retryable failure, never as a
     missing post.
     """
-    monkeypatch.setattr(parse_douyin, "DOUYIN_EXPAND_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(parse_douyin, "DOWNLOAD_TIMEOUT_SECONDS", 0.05)
     cog, _ = _cog()
 
     def never_returns(url: str) -> DouyinPost:

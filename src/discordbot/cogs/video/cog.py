@@ -3,6 +3,7 @@
 import asyncio
 from pathlib import Path
 import tempfile
+import threading
 
 import logfire
 import nextcord
@@ -18,6 +19,7 @@ from discordbot.utils.douyin import (
     douyin_failure_message,
 )
 from discordbot.typings.video import VideoQuality
+from discordbot.typings.timeouts import DOWNLOAD_TIMEOUT_SECONDS
 from discordbot.utils.downloader import VideoDownloader
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -106,9 +108,17 @@ class VideoCogs(commands.Cog):
             )
             return
 
+        # Set on the way out so a download that outran the bound aborts at its next yt-dlp
+        # progress tick: `asyncio.to_thread` cannot be cancelled, and this branch writes into the
+        # shared system temp dir with no scratch directory whose teardown would stop it, so an
+        # orphaned worker would otherwise run to completion and leave the finished file behind.
+        stop_signal = threading.Event()
         try:
             downloader = VideoDownloader(output_folder=tempfile.gettempdir())
-            result = await asyncio.to_thread(downloader.download, url=url, quality=quality)
+            async with asyncio.timeout(delay=DOWNLOAD_TIMEOUT_SECONDS):
+                result = await asyncio.to_thread(
+                    downloader.download, url=url, quality=quality, stop_signal=stop_signal
+                )
             with result:
                 file_size_mb = result.filename.stat().st_size / 1024 / 1024
                 item = MediaItem(source=result.filename, filename=result.filename.name)
@@ -139,6 +149,7 @@ class VideoCogs(commands.Cog):
                     content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                 )
         except Exception as error:
+            stop_signal.set()
             # Broad on purpose: the bot registers no application-command error handler, so
             # anything escaping here would strand the user on "正在下載影片..." forever.
             logfire.warn(
@@ -194,9 +205,13 @@ class VideoCogs(commands.Cog):
         try:
             # Capped at the attachment limit so a 48-image gallery does not download 38 files
             # that could never be sent; `omitted_images` reports what the cap left behind.
-            result = await asyncio.to_thread(
-                downloader.download, url=url, quality=quality, max_images=DISCORD_ATTACHMENT_LIMIT
-            )
+            async with asyncio.timeout(delay=DOWNLOAD_TIMEOUT_SECONDS):
+                result = await asyncio.to_thread(
+                    downloader.download,
+                    url=url,
+                    quality=quality,
+                    max_images=DISCORD_ATTACHMENT_LIMIT,
+                )
         except Exception as error:
             # Deliberately catches everything, not just DouyinError: this runs outside the
             # command's own try block and the bot registers no application-command error handler,

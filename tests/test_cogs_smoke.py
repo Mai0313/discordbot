@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from types import TracebackType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
+import asyncio
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
+import threading
 
 import nextcord
 from nextcord import Embed, Guild, Member
@@ -124,8 +127,20 @@ class DownloaderStub:
         self.results = results
         self.calls: list[dict[str, str | bool]] = []
 
-    def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
-        """Records the download request and returns the next queued result."""
+    def download(
+        self,
+        url: str,
+        quality: str,
+        dry_run: bool = False,
+        stop_signal: threading.Event | None = None,
+    ) -> DownloadResultStub:
+        """Records the download request and returns the next queued result.
+
+        `stop_signal` is accepted but unused: the cog passes one so a download that outran the
+        shared bound aborts at its next progress tick, and a stub without it would swallow that
+        call as a TypeError under the cog's broad handler.
+        """
+        del stop_signal
         kwargs: dict[str, str | bool] = {"url": url, "quality": quality, "dry_run": dry_run}
         self.calls.append(kwargs)
         return self.results.pop(0)
@@ -381,6 +396,94 @@ class _RaiseDownloader:
     def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
         """Raises a deterministic download failure."""
         raise RuntimeError("download failed")
+
+
+async def test_a_stalled_download_command_gives_up_instead_of_stranding_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/download_video` had no outer bound at all, so a stalling host never ended the command.
+
+    yt-dlp's own `socket_timeout` is per socket and multiplies by three retry settings and by
+    every fragment, which left the caller on `正在下載影片...` with no failure and no exit. The
+    stop signal is asserted alongside the message because `asyncio.to_thread` cannot be
+    cancelled: without it the abandoned worker runs to completion and leaves the finished file
+    in the shared system temp dir, where nothing deletes it.
+    """
+    monkeypatch.setattr(video, "DOWNLOAD_TIMEOUT_SECONDS", 0.05)
+    cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=make_media_hosting_config(enabled=False, base_url="", serve_dir=str(serve_dir))
+        )
+    )
+    seen: list[threading.Event] = []
+
+    def never_returns(
+        url: str, quality: str, dry_run: bool = False, stop_signal: threading.Event | None = None
+    ) -> DownloadResultStub:
+        """Blocks the worker thread the way a stalling CDN read does."""
+        del url, quality, dry_run
+        assert stop_signal is not None
+        seen.append(stop_signal)
+        time.sleep(1.0)
+        raise AssertionError("should have been abandoned")
+
+    monkeypatch.setattr(
+        video, "VideoDownloader", lambda output_folder: SimpleNamespace(download=never_returns)
+    )
+    interaction = FakeInteraction(filesize_limit=25 * 1024 * 1024)
+    await VideoCogs.download_video.callback(cog, interaction, url="https://x.test", quality="best")
+
+    assert interaction.edits[-1]["content"] == "-# 檔案無法下載"
+    assert [signal.is_set() for signal in seen] == [True]
+
+
+async def test_a_stalled_threads_expansion_gives_up_and_cleans_up_after_the_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Threads expansion had no outer bound while its Douyin sibling did.
+
+    The `requests` calls underneath are per-read only, so a slow-drip CDN could stream for as
+    long as it liked. The scratch cleanup is asserted too: the `finally` that normally deletes
+    those files sits on a path the timeout skips, and this expansion downloads into the shared
+    system temp dir, so a deferred exit is the only thing that removes them.
+    """
+    monkeypatch.setattr(parse_threads, "DOWNLOAD_TIMEOUT_SECONDS", 0.05)
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    stub = ThreadsDownloaderStub(results=[_thread_output()])
+    cleaned_up = threading.Event()
+
+    def slow_enter() -> ThreadsConversation:
+        """Blocks past the bound, then hands back a conversation the listener no longer wants."""
+        time.sleep(0.4)
+        return ThreadsConversation(chain=[_thread_output()])
+
+    def record_exit(
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Stands in for the scratch-file delete the real exit performs."""
+        del exc_type, exc, traceback
+        cleaned_up.set()
+
+    parse_result = stub.parse(url="https://www.threads.net/@alice/post/abc")
+    monkeypatch.setattr(parse_result, "__enter__", slow_enter)
+    monkeypatch.setattr(parse_result, "__exit__", record_exit)
+    cog.downloader = cast("ThreadsDownloader", SimpleNamespace(parse=lambda url: parse_result))
+
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.reactions[-1] == "<:redcross:1517565100838355016>"
+    assert message.replies == []
+    # The worker finishes after the listener gave up; the deferred exit is what deletes its files.
+    assert await asyncio.to_thread(cleaned_up.wait, 5.0)
 
 
 async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) -> None:
