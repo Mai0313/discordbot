@@ -22,11 +22,6 @@ from discordbot.typings.models import ModelSettings
 from discordbot.cogs.feedback.prompts import REPORT_WRITE_UP_PROMPT
 from discordbot.cogs.feedback.database import FeedbackTicket
 
-# No deadline of our own: by the time this runs the reporter already has their issue
-# number and nobody is waiting. This is the `AsyncOpenAI` client's own ceiling, restated
-# so a connection that hangs forever cannot leave the report without a title forever.
-WRITE_UP_TIMEOUT_SECONDS: Final[float] = 600.0
-
 # GitHub caps an issue body at 65536 characters; the drafts stay well under it so the
 # attached original always fits underneath.
 _MAX_BODY_CHARS: Final[int] = 30000
@@ -131,5 +126,4 @@ async def write_up_report(
         user_text=f"<report>\n{ticket.raw_text}\n</report>",
         end_user_id=str(ticket.user_id),
         text_format=ReportWriteUp,
-        timeout_seconds=WRITE_UP_TIMEOUT_SECONDS,
     )

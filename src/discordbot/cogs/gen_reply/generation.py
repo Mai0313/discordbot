@@ -72,29 +72,10 @@ if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-# Bound for the inline-image best-effort path: the render runs after the text reply is already
-# on screen, so the wait only delays this message's own image, never others. Generous (mirrors
-# VOICE_TIMEOUT_SECONDS) so a slower render still has room to land.
-INLINE_IMAGE_TIMEOUT_SECONDS = 300.0
-
-# Bound for the prompt-refinement call: it sits SERIALLY before the image/video render on the
-# IMAGE/VIDEO critical path, so a hung director must not keep the route waiting forever. On
-# timeout the refine falls back to the raw user prompt like any other failure.
-PROMPT_REFINE_TIMEOUT_SECONDS = 120.0
-
-# Hard ceiling on the whole omni video render (a single blocking interactions.create) so a hung
-# provider job cannot leave the message handler waiting forever. Co-located with the image timeout
-# since it is a property of the render, not of the route that calls it.
-VIDEO_RENDER_TIMEOUT_SECONDS = 600.0
-
 # omni accepts a handful of subject reference images. Shared so the VIDEO route caps the frames it
 # grounds the prompt director on to exactly the set render will send, rather than letting the
 # director describe references omni never receives (and uploading those unused bytes on the path).
 MAX_VIDEO_REFERENCE_IMAGES = 3
-
-# Bound for the inline-music best-effort path, mirroring the inline-image timeout: the render
-# runs after the text reply is on screen, so the wait only delays this message's own clip.
-MUSIC_RENDER_TIMEOUT_SECONDS = 300.0
 
 # Tunable voice config (edit here). The style directive fixes the voice age/gender and lets
 # the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and
@@ -108,13 +89,9 @@ TTS_SPEED = 1.5
 # bot's own clip when it later appears in history, instead of re-uploading it as self-input.
 VOICE_REPLY_FILENAME = "reply.wav"
 
-# Bound: a request timeout so a slow/hung clip cannot keep this message's own pipeline (its final
-# status reaction + memory scheduling) waiting. The synthesis is per-message and runs after the text is
-# already on screen, so the wait only delays its own message, never others; it is generous so a
-# longer spoken reply has room to render. There is deliberately no spoken-length cap: the answer
-# model decides how much to say. The upload-size guard lives at the attach site (`streaming.py`),
-# where the guild's real `filesize_limit` is known, not as a hardcoded byte ceiling here.
-VOICE_TIMEOUT_SECONDS = 300.0
+# There is deliberately no spoken-length cap: the answer model decides how much to say. The
+# upload-size guard lives at the attach site (`streaming.py`), where the guild's real
+# `filesize_limit` is known, not as a hardcoded byte ceiling here.
 
 # Fixed musical-style directive sent as the Lyria `system_instruction`. English on purpose (the
 # Lyria prompt surface is documented in English). Lyria picks the lyric language from the prompt
@@ -285,21 +262,19 @@ class ImageGenerator(BaseModel):
     ) -> bytes | None:
         """Renders one image from the description; None on any failure or timeout.
 
-        Best-effort wrapper around `render` for the QA-route `<generate-image>` marker, inside a generous
-        timeout, returning None to disable the inline path for a reply rather than raising into the
-        streamer's path. When `image_bytes_list` is supplied (the user uploaded image(s) the answer
+        Best-effort wrapper around `render` for the QA-route `<generate-image>` marker, returning
+        None to disable the inline path for a reply rather than raising into the streamer's path. When `image_bytes_list` is supplied (the user uploaded image(s) the answer
         model is illustrating), it rides through to `render` as edit source pixels, so an inline
         `<generate-image>` over an attached photo edits it instead of generating a fresh one.
         """
         started = time.monotonic()
         try:
-            async with asyncio.timeout(delay=INLINE_IMAGE_TIMEOUT_SECONDS):
-                image = await self.render(
-                    prompt=user_prompt, end_user_id=end_user_id, image_bytes_list=image_bytes_list
-                )
+            image = await self.render(
+                prompt=user_prompt, end_user_id=end_user_id, image_bytes_list=image_bytes_list
+            )
         except Exception as exc:
             # Broad on purpose: the inline-marker boundary must degrade to "reply without an
-            # image" whether the render timed out, came back empty, or the provider errored.
+            # image" whether the render came back empty or the provider errored.
             logfire.warn(
                 "Inline image generation failed; replying without an image",
                 error_type=type(exc).__name__,
@@ -383,17 +358,16 @@ class PromptGenerator(BaseModel):
         ]
         started = time.monotonic()
         try:
-            async with asyncio.timeout(delay=PROMPT_REFINE_TIMEOUT_SECONDS):
-                with logfire.span("gen_reply prompt refine", model=self.prompt_model.name):
-                    responses = await self.client.responses.create(
-                        model=self.prompt_model.name,
-                        instructions=instructions,
-                        input=cast("ResponseInputParam", director_input),
-                        reasoning=self.prompt_model.reasoning,
-                        tools=list(self.prompt_model.tools),
-                        service_tier="auto",
-                        extra_headers={"x-litellm-end-user-id": end_user_id},
-                    )
+            with logfire.span("gen_reply prompt refine", model=self.prompt_model.name):
+                responses = await self.client.responses.create(
+                    model=self.prompt_model.name,
+                    instructions=instructions,
+                    input=cast("ResponseInputParam", director_input),
+                    reasoning=self.prompt_model.reasoning,
+                    tools=list(self.prompt_model.tools),
+                    service_tier="auto",
+                    extra_headers={"x-litellm-end-user-id": end_user_id},
+                )
             refined = output_text_or_empty(responses=responses).strip()
         except Exception as exc:
             logfire.warn(
@@ -456,7 +430,6 @@ class VoiceGenerator(BaseModel):
                 voice=self.voice,
                 speed=self.speed,
                 extra_headers={"x-litellm-end-user-id": end_user_id},
-                timeout=VOICE_TIMEOUT_SECONDS,
             )
             audio = await responses.aread()
             logfire.debug(
@@ -469,8 +442,8 @@ class VoiceGenerator(BaseModel):
             )
             return VoiceClip(audio=audio, outcome=VoiceOutcome.OK)
         except APITimeoutError:
-            # The clip took longer than VOICE_TIMEOUT_SECONDS to render. The caller marks the
-            # message with a timeout hint and still leaves a plain text reply.
+            # The clip outran the SDK's own request deadline. The caller marks the message with
+            # a timeout hint and still leaves a plain text reply.
             logfire.warn(
                 "Voice synthesis timed out; replying without audio",
                 model=self.model_name,
@@ -628,14 +601,12 @@ class VideoGenerator(BaseModel):
             response_format["aspect_ratio"] = "16:9"
 
         started = time.monotonic()
-        async with asyncio.timeout(delay=VIDEO_RENDER_TIMEOUT_SECONDS):
-            interaction = await self.client.aio.interactions.create(
-                model=self.video_model.name,
-                input=content,
-                response_format=response_format,
-                generation_config=generation_config,
-                timeout=VIDEO_RENDER_TIMEOUT_SECONDS,
-            )
+        interaction = await self.client.aio.interactions.create(
+            model=self.video_model.name,
+            input=content,
+            response_format=response_format,
+            generation_config=generation_config,
+        )
         # No `stream=True`, so this is the interaction rather than an event stream: exclude the
         # stream at runtime, then read the result through the structural `_InteractionResult`
         # view (its docstring has why naming the genai response class is not enough on its own).
@@ -667,8 +638,7 @@ class VideoGenerator(BaseModel):
         the inline video for this reply) instead of raising into the streamer's single media-attach
         gather, so a slow / refused clip never aborts the ready voice / music / images alongside it.
         When the user attached image(s) they ride along as `(bytes, mime)` pairs and omni infers the
-        task (image_to_video / reference_to_video); otherwise it is plain text. `render` already
-        bounds itself with `VIDEO_RENDER_TIMEOUT_SECONDS`, so no extra timeout is needed here.
+        task (image_to_video / reference_to_video); otherwise it is plain text.
         """
         try:
             return await self.render(
@@ -774,12 +744,11 @@ class MusicGenerator(BaseModel):
         # failure, never escape into the streamer's single media-attach gather and abort the
         # already-ready voice / images alongside it.
         try:
-            async with asyncio.timeout(delay=MUSIC_RENDER_TIMEOUT_SECONDS):
-                interaction = await self.client.aio.interactions.create(
-                    model=self.music_model.name,
-                    input=user_prompt,
-                    system_instruction=MUSIC_STYLE_DIRECTIVE,
-                )
+            interaction = await self.client.aio.interactions.create(
+                model=self.music_model.name,
+                input=user_prompt,
+                system_instruction=MUSIC_STYLE_DIRECTIVE,
+            )
             # No `stream=True`, so this is the interaction rather than an event stream (read via
             # `_InteractionResult`, see its docstring); the guard lands in the except -> None path.
             if isinstance(interaction, AsyncIterator):

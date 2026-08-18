@@ -1,12 +1,16 @@
 """Shared best-effort Responses API call surfaces for one-shot LLM calls.
 
-Each helper owns the proxy call surface, the per-call timeout, and the failure handling so a
-caller only maps a None result to its own fallback. Client construction lives at the call
-sites as inline `AsyncOpenAI(...)` / `genai.Client(...)` cached_properties, not here.
+Each helper owns the proxy call surface and the failure handling so a caller only maps a None
+result to its own fallback. Client construction lives at the call sites as inline
+`AsyncOpenAI(...)` / `genai.Client(...)` cached_properties, not here.
+
+Neither helper takes a deadline: the SDK's own (connect 5s / read 600s) is the bound, and the
+`APITimeoutError` it raises lands in the same broad `except` that already absorbs a proxy
+`ServiceUnavailableError`, so every caller's fallback is reached either way. See
+`typings/timeouts.py` for why no LLM call in this tree carries one of ours.
 """
 
 from typing import cast
-import asyncio
 
 from openai import AsyncOpenAI
 import logfire
@@ -44,38 +48,27 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     user_text: str,
     end_user_id: str,
     text_format: type[StructuredT],
-    timeout_seconds: float,
 ) -> StructuredT | None:
     """Runs one best-effort structured Responses.parse call, returning None on any failure.
 
-    Owns the shared proxy call surface, the timeout, and the failure handling so each caller
-    only maps None to its own fallback: a timeout, an empty output or a payload that does
-    not match `text_format` (both surface as `ValidationError`), a refusal (which simply
-    leaves `output_parsed` None), an incomplete (truncated) response, or any other error
-    all degrade to None.
+    Owns the shared proxy call surface and the failure handling so each caller only maps None
+    to its own fallback: a transport timeout, an empty output or a payload that does not match
+    `text_format` (both surface as `ValidationError`), a refusal (which simply leaves
+    `output_parsed` None), an incomplete (truncated) response, or any other error all degrade
+    to None.
     """
     try:
-        async with asyncio.timeout(delay=timeout_seconds):
-            responses = await client.responses.parse(
-                model=model.name,
-                instructions=instructions,
-                input=cast(
-                    "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
-                ),
-                text_format=text_format,
-                reasoning=model.reasoning,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": end_user_id},
-            )
-    except TimeoutError as exc:
-        logfire.warn(
-            "Structured LLM request timed out; skipping",
-            end_user_id=end_user_id,
+        responses = await client.responses.parse(
             model=model.name,
-            timeout_seconds=timeout_seconds,
-            _exc_info=exc,
+            instructions=instructions,
+            input=cast(
+                "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
+            ),
+            text_format=text_format,
+            reasoning=model.reasoning,
+            service_tier="auto",
+            extra_headers={"x-litellm-end-user-id": end_user_id},
         )
-        return None
     except ValidationError as exc:
         logfire.warn(
             "Structured LLM parse returned no text or an off-schema payload; skipping",
@@ -106,42 +99,31 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     return responses.output_parsed
 
 
-async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surface; all params are per-call inputs
+async def create_text_or_none(
     *,
     client: AsyncOpenAI,
     model: ModelSettings,
     instructions: str,
     user_text: str,
     end_user_id: str,
-    timeout_seconds: float,
 ) -> str | None:
     """Runs one best-effort text Responses.create call, returning None on any failure.
 
     Mirrors `parse_responses_or_none` for the non-structured callers: owns the shared proxy
-    call surface, the timeout, and the failure handling, and returns the trimmed output text
-    (or None on timeout / any error) so each caller maps None to its own fallback line.
+    call surface and the failure handling, and returns the trimmed output text (or None on any
+    error) so each caller maps None to its own fallback line.
     """
     try:
-        async with asyncio.timeout(delay=timeout_seconds):
-            responses = await client.responses.create(
-                model=model.name,
-                instructions=instructions,
-                input=cast(
-                    "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
-                ),
-                reasoning=model.reasoning,
-                service_tier="auto",
-                extra_headers={"x-litellm-end-user-id": end_user_id},
-            )
-    except TimeoutError as exc:
-        logfire.warn(
-            "Text LLM request timed out; using fallback",
-            end_user_id=end_user_id,
+        responses = await client.responses.create(
             model=model.name,
-            timeout_seconds=timeout_seconds,
-            _exc_info=exc,
+            instructions=instructions,
+            input=cast(
+                "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
+            ),
+            reasoning=model.reasoning,
+            service_tier="auto",
+            extra_headers={"x-litellm-end-user-id": end_user_id},
         )
-        return None
     # Broad on purpose: this shared surface owns failure handling so every caller only maps
     # None to its own fallback line; proxy, transport and SDK errors share no base class.
     except Exception as exc:

@@ -61,7 +61,6 @@ from discordbot.services.memory.constants import (
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
-    MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
     MEMORY_REGENERATION_COOLDOWN_SECONDS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
@@ -705,47 +704,38 @@ async def _consolidate_locked(
     today = datetime.now(UTC).date().isoformat()
     compartments = _compartments_to_run(scope=scope, buckets=buckets)
     global_reference = ""
-    try:
-        async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
-            for compartment in compartments:
-                if compartment != GLOBAL_COMPARTMENT and not global_reference:
-                    # Read from disk rather than from this run: when the batch carried no
-                    # cross-server evidence there was no global call to take it from, and
-                    # a guild compartment still must not restate what is already shared.
-                    global_reference = render_existing_facts(
-                        facts=read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)
-                    )
-                if cleared_since(scope=scope, started_at=started_at):
-                    return
-                outcome = await _consolidate_compartment(
-                    scope=scope,
-                    compartment=compartment,
-                    flavor=flavor,
-                    owner=owner,
-                    started_at=started_at,
-                    extractor=extractor,
-                    request_parts=_CompartmentInput(
-                        raw_entries=buckets.get(compartment, ""),
-                        recent_detail=detail_buckets.get(compartment, ""),
-                        global_reference=global_reference,
-                        today=today,
-                    ),
-                )
-                if outcome is None or not outcome.applied:
-                    # Keep the whole batch so the next run retries it; a partially
-                    # applied fan-out is fine to replay, an unread bucket is not.
-                    return
-                if compartment == GLOBAL_COMPARTMENT:
-                    global_reference = render_existing_facts(
-                        facts=read_facts(scope=scope, compartment=compartment)
-                    )
-    except TimeoutError:
-        logfire.warn(
-            "Memory consolidation fan-out timed out; keeping raw batch",
+    for compartment in compartments:
+        if compartment != GLOBAL_COMPARTMENT and not global_reference:
+            # Read from disk rather than from this run: when the batch carried no
+            # cross-server evidence there was no global call to take it from, and
+            # a guild compartment still must not restate what is already shared.
+            global_reference = render_existing_facts(
+                facts=read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)
+            )
+        if cleared_since(scope=scope, started_at=started_at):
+            return
+        outcome = await _consolidate_compartment(
             scope=scope,
-            compartments=len(compartments),
+            compartment=compartment,
+            flavor=flavor,
+            owner=owner,
+            started_at=started_at,
+            extractor=extractor,
+            request_parts=_CompartmentInput(
+                raw_entries=buckets.get(compartment, ""),
+                recent_detail=detail_buckets.get(compartment, ""),
+                global_reference=global_reference,
+                today=today,
+            ),
         )
-        return
+        if outcome is None or not outcome.applied:
+            # Keep the whole batch so the next run retries it; a partially
+            # applied fan-out is fine to replay, an unread bucket is not.
+            return
+        if compartment == GLOBAL_COMPARTMENT:
+            global_reference = render_existing_facts(
+                facts=read_facts(scope=scope, compartment=compartment)
+            )
     if cleared_since(scope=scope, started_at=started_at):
         return
     await _update_tone_note(
@@ -1131,77 +1121,57 @@ async def regenerate_main_memory(
         # Every compartment that has evidence, plus every one that still has files, so a
         # compartment whose evidence is gone is emptied rather than left stale.
         compartments = _compartments_to_rebuild(scope=scope, buckets=buckets)
-        try:
-            # Bounded as a whole like the incremental fan-out, so a rebuild of a scope
-            # with several compartments cannot hold the scope lock for the sum of every
-            # per-call timeout (`constants.py` states the nesting as the invariant).
-            async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
-                for compartment in compartments:
-                    raw_bucket = buckets.get(compartment, "")
-                    if not raw_bucket and not read_facts(scope=scope, compartment=compartment):
-                        # A leftover directory with nothing to distil and nothing to keep:
-                        # the model would be handed an empty corpus and could only answer
-                        # with an empty batch, so the prune alone reaches the same state.
-                        # It also removes the emptied directory, which is what stops the
-                        # leftover costing another call — and another way to fail the
-                        # compartments that do have something — on every later rebuild.
-                        unreadable_removed += _prune_rebuilt_compartment(
-                            scope=scope, compartment=compartment, keep=set()
-                        )
-                        continue
-                    result = await extractor.consolidate(
-                        request=ConsolidationRequest(
-                            compartment_note=_compartment_note(
-                                compartment=compartment, flavor=flavor
-                            ),
-                            allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
-                            existing_facts="",
-                            existing_tone="",
-                            raw_entries=raw_bucket,
-                            recent_detail="",
-                            tone_evidence="",
-                            global_reference="",
-                            today=today,
-                            compact=True,
-                            emit_tone=False,
-                        )
-                    )
-                    if result is None:
-                        # The LLM path logs the cause but not the scope, and the command
-                        # already told the user a rebuild was scheduled, so this is its
-                        # only attribution.
-                        logfire.warn(
-                            "Memory regeneration LLM call failed; memory left untouched",
-                            scope=scope,
-                            compartment=compartment,
-                        )
-                        return RegenerationReport(
-                            result="failed", unreadable_removed=unreadable_removed
-                        )
-                    if cleared_since(scope=scope, started_at=started_at):
-                        return RegenerationReport(
-                            result="failed", unreadable_removed=unreadable_removed
-                        )
-                    unreadable_removed += _replace_compartment(
-                        scope=scope,
-                        compartment=compartment,
-                        flavor=flavor,
-                        owner=owner,
-                        result=result,
-                    )
-                await _rebuild_tone_note(
-                    scope=scope,
-                    flavor=flavor,
-                    started_at=started_at,
-                    extractor=extractor,
-                    evidence=evidence,
-                    today=today,
+        for compartment in compartments:
+            raw_bucket = buckets.get(compartment, "")
+            if not raw_bucket and not read_facts(scope=scope, compartment=compartment):
+                # A leftover directory with nothing to distil and nothing to keep:
+                # the model would be handed an empty corpus and could only answer
+                # with an empty batch, so the prune alone reaches the same state.
+                # It also removes the emptied directory, which is what stops the
+                # leftover costing another call — and another way to fail the
+                # compartments that do have something — on every later rebuild.
+                unreadable_removed += _prune_rebuilt_compartment(
+                    scope=scope, compartment=compartment, keep=set()
                 )
-        except TimeoutError:
-            logfire.warn(
-                "Memory regeneration timed out", scope=scope, compartments=len(compartments)
+                continue
+            result = await extractor.consolidate(
+                request=ConsolidationRequest(
+                    compartment_note=_compartment_note(compartment=compartment, flavor=flavor),
+                    allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
+                    existing_facts="",
+                    existing_tone="",
+                    raw_entries=raw_bucket,
+                    recent_detail="",
+                    tone_evidence="",
+                    global_reference="",
+                    today=today,
+                    compact=True,
+                    emit_tone=False,
+                )
             )
-            return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
+            if result is None:
+                # The LLM path logs the cause but not the scope, and the command
+                # already told the user a rebuild was scheduled, so this is its
+                # only attribution.
+                logfire.warn(
+                    "Memory regeneration LLM call failed; memory left untouched",
+                    scope=scope,
+                    compartment=compartment,
+                )
+                return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
+            if cleared_since(scope=scope, started_at=started_at):
+                return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
+            unreadable_removed += _replace_compartment(
+                scope=scope, compartment=compartment, flavor=flavor, owner=owner, result=result
+            )
+        await _rebuild_tone_note(
+            scope=scope,
+            flavor=flavor,
+            started_at=started_at,
+            extractor=extractor,
+            evidence=evidence,
+            today=today,
+        )
         _report_injection_size(scope=scope, flavor=flavor)
         if raw_entries:
             # The rebuild consumed the raw batch; retire it to the cold tier

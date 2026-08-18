@@ -117,17 +117,3 @@ MEMORY_TRANSCRIPT_MAX_CHARS = 100_000
 # reply fills the entire kept tail and the middle-truncation drops the current
 # user message right before it.
 MEMORY_REPLY_MAX_CHARS = 8_000
-
-# Background LLM call timeouts, kept purely as a liveness backstop rather than
-# a latency or cost guard (a slow background update is harmless). A genuinely
-# stuck call would otherwise hold the scope's lock and a global-concurrency
-# permit forever, so that user/server would never get another memory update.
-# The memory models run at high reasoning effort on a Pro tier, so the bound stays
-# well above a legitimately slow rewrite (minutes) and only fires on a truly hung
-# call. Consolidation now fans out over a scope's compartments, so the two bounds
-# nest: each compartment call gets the shorter one and the whole fan-out is wrapped
-# in the longer one, keeping the worst-case lock hold at what it is today rather
-# than multiplying it by the number of compartments.
-MEMORY_EXTRACT_TIMEOUT_SECONDS = 600.0
-MEMORY_CONSOLIDATE_TIMEOUT_SECONDS = 600.0
-MEMORY_COMPARTMENT_TIMEOUT_SECONDS = 300.0

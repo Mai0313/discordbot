@@ -64,8 +64,6 @@ if TYPE_CHECKING:
 RESEARCH_LABEL = "Antigravity"
 # Discord thread names cap at 100 chars; keep margin (a hard-limit safety trim, not length control).
 THREAD_NAME_MAX = 90
-# Bound the small title-generation side call; on timeout/failure the brief's first line is used.
-THREAD_TITLE_TIMEOUT_SECONDS = 15.0
 # The bot's `dino` app emoji, reacted onto the source message when deep research is launched so
 # the activation reads as distinct from the normal QA pipeline reactions.
 DINO_EMOJI = "<:dino:1517560319281594570>"
@@ -157,7 +155,6 @@ class ResearchCogs(commands.Cog):
             instructions=THREAD_TITLE_PROMPT,
             user_text=brief,
             end_user_id="deep-research",
-            timeout_seconds=THREAD_TITLE_TIMEOUT_SECONDS,
         )
         title = next(
             (line.strip().strip('"') for line in (raw or "").splitlines() if line.strip()), ""

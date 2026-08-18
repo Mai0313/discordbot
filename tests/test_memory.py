@@ -9,6 +9,8 @@ from pathlib import Path
 from datetime import UTC, datetime
 import contextlib
 
+import httpx
+from openai import APITimeoutError
 import pytest
 from nextcord import Embed, Locale
 from pydantic import BaseModel, ValidationError
@@ -605,16 +607,19 @@ async def test_extract_evaluator_can_drop_candidates(monkeypatch: pytest.MonkeyP
 
 
 async def test_extract_returns_none_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "discordbot.services.memory.extraction.MEMORY_EXTRACT_TIMEOUT_SECONDS", 0.01
-    )
+    """The SDK's own request deadline degrades to None, exactly like any other failure.
+
+    Extraction carries no `asyncio.timeout` of its own (see `typings/timeouts.py`), so the
+    bound that fires is the client's and it arrives as `APITimeoutError`. This pins that the
+    broad handler in `parse_responses_or_none` still catches it rather than letting a hung
+    provider escape into the fire-and-forget pipeline.
+    """
     extractor, fake_client = _extractor()
 
-    async def hang(**kwargs: object) -> SimpleNamespace:
-        await asyncio.sleep(10)
-        return _parsed(output=None)
+    async def timed_out(**kwargs: object) -> SimpleNamespace:
+        raise APITimeoutError(request=httpx.Request("POST", "https://proxy.invalid/responses"))
 
-    monkeypatch.setattr(fake_client.responses, "parse", hang)
+    monkeypatch.setattr(fake_client.responses, "parse", timed_out)
     assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
 
 

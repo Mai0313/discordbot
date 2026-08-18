@@ -75,7 +75,6 @@ from discordbot.cogs.gen_reply.streaming import (
     ResponseStreamer,
 )
 from discordbot.cogs.gen_reply.generation import (
-    VOICE_TIMEOUT_SECONDS,
     MusicClip,
     VoiceClip,
     VoiceOutcome,
@@ -2189,8 +2188,9 @@ async def test_voice_generator_prepends_style_and_returns_bytes() -> None:
     assert speech.calls[0]["model"] == "tts-test"
     # response_format is intentionally never sent (the proxy 500s on it).
     assert "response_format" not in speech.calls[0]
-    # The per-request timeout is applied so a slow clip cannot stall the message pipeline.
-    assert speech.calls[0]["timeout"] == VOICE_TIMEOUT_SECONDS
+    # No deadline of ours rides the call: the SDK's own request timeout is the bound, and the
+    # `APITimeoutError` it raises is what the ⏱️ hint below already degrades through.
+    assert "timeout" not in speech.calls[0]
 
 
 async def test_voice_generator_swallows_provider_errors() -> None:

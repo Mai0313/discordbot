@@ -14,10 +14,6 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.auto_unmute.prompts import UNMUTE_PROMPT
 
-# Auto-unmute replies are off the critical path; bound the call so a hung provider never
-# leaves the best-effort post-timeout reply pending forever.
-AUTO_UNMUTE_AI_TIMEOUT_SECONDS = 10.0
-
 
 class AutoUnmuteCogs(commands.Cog):
     """Releases the bot from member timeouts and posts an AI reaction.
@@ -201,7 +197,6 @@ class AutoUnmuteCogs(commands.Cog):
             instructions=UNMUTE_PROMPT,
             user_text=user_text,
             end_user_id="auto-unmute",
-            timeout_seconds=AUTO_UNMUTE_AI_TIMEOUT_SECONDS,
         )
 
 

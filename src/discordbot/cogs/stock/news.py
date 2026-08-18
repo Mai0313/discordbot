@@ -8,8 +8,6 @@ from discordbot.typings.stock import StockGeneratedNews, StockNewsGenerationCont
 from discordbot.typings.models import ModelSettings
 from discordbot.services.stock.prompts import STOCK_NEWS_PROMPT
 
-STOCK_NEWS_AI_TIMEOUT_SECONDS = 4.0
-
 
 class StockNewsDraft(BaseModel):
     """Structured LLM output for one generated stock news item."""
@@ -62,7 +60,6 @@ class StockNewsAI(BaseModel):
             user_text=user_text,
             end_user_id="stock_news",
             text_format=StockNewsDraft,
-            timeout_seconds=STOCK_NEWS_AI_TIMEOUT_SECONDS,
         )
         if draft is None:
             return None
@@ -92,4 +89,4 @@ def _pressure_label(pressure_bps: int) -> str:
     return "balanced"
 
 
-__all__ = ["STOCK_NEWS_AI_TIMEOUT_SECONDS", "StockNewsAI", "StockNewsDraft"]
+__all__ = ["StockNewsAI", "StockNewsDraft"]
