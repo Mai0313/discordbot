@@ -30,6 +30,10 @@ if TYPE_CHECKING:
 
     from .service import MapleStoryService
 
+# Idle expiry for the search select, named like every other view's rather than left as a
+# parameter default, so it reads as the designed lifecycle it is and not as a missing bound.
+MAPLESTORY_VIEW_TIMEOUT_SECONDS = 300
+
 
 def _resolve_monster(service: MapleStoryService, name: str, tr: TranslateFn) -> Embed | None:
     """Resolves a monster name to an Embed."""
@@ -109,7 +113,11 @@ class MapleDropSearchView(View):
     """Interactive select menu for Artale search results."""
 
     def __init__(
-        self, service: MapleStoryService, search_type: str, query: str, timeout: float | None = 300
+        self,
+        service: MapleStoryService,
+        search_type: str,
+        query: str,
+        timeout: float | None = MAPLESTORY_VIEW_TIMEOUT_SECONDS,
     ) -> None:
         """Initializes the search view.
 

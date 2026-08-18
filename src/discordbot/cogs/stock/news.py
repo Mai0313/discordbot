@@ -6,9 +6,8 @@ from pydantic import Field, BaseModel, ConfigDict
 from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.stock import StockGeneratedNews, StockNewsGenerationContext
 from discordbot.typings.models import ModelSettings
+from discordbot.typings.timeouts import STOCK_NEWS_AI_TIMEOUT_SECONDS
 from discordbot.services.stock.prompts import STOCK_NEWS_PROMPT
-
-STOCK_NEWS_AI_TIMEOUT_SECONDS = 4.0
 
 
 class StockNewsDraft(BaseModel):
@@ -92,4 +91,4 @@ def _pressure_label(pressure_bps: int) -> str:
     return "balanced"
 
 
-__all__ = ["STOCK_NEWS_AI_TIMEOUT_SECONDS", "StockNewsAI", "StockNewsDraft"]
+__all__ = ["StockNewsAI", "StockNewsDraft"]

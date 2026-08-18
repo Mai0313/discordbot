@@ -18,6 +18,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import MemoryOwner
 from discordbot.services.memory import database as memory_db
+from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry, LoopLocalSemaphore
 from discordbot.services.memory.facts import MemoryFlavor, parse_identity, sections_for_flavor
 from discordbot.services.memory.store import (
@@ -61,7 +62,6 @@ from discordbot.services.memory.constants import (
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
-    MEMORY_CONSOLIDATE_TIMEOUT_SECONDS,
     MEMORY_REGENERATION_COOLDOWN_SECONDS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
@@ -1132,9 +1132,10 @@ async def regenerate_main_memory(
         # compartment whose evidence is gone is emptied rather than left stale.
         compartments = _compartments_to_rebuild(scope=scope, buckets=buckets)
         try:
-            # Bounded as a whole like the incremental fan-out, so a rebuild of a scope
-            # with several compartments cannot hold the scope lock for the sum of every
-            # per-call timeout (`constants.py` states the nesting as the invariant).
+            # Bounded as a whole like the incremental fan-out, and for the same reason: the
+            # individual calls carry no deadline of their own (`constants.py` has why), so
+            # this is the only thing standing between a stuck rebuild and a scope lock held
+            # for as long as the client will keep one compartment's request alive.
             async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
                 for compartment in compartments:
                     raw_bucket = buckets.get(compartment, "")

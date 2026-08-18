@@ -1,8 +1,13 @@
 """Shared best-effort Responses API call surfaces for one-shot LLM calls.
 
-Each helper owns the proxy call surface, the per-call timeout, and the failure handling so a
-caller only maps a None result to its own fallback. Client construction lives at the call
-sites as inline `AsyncOpenAI(...)` / `genai.Client(...)` cached_properties, not here.
+Each helper owns the proxy call surface, the optional per-call deadline, and the failure
+handling so a caller only maps a None result to its own fallback. Client construction lives at
+the call sites as inline `AsyncOpenAI(...)` / `genai.Client(...)` cached_properties, not here.
+
+`timeout_seconds` is optional because most callers should not set one: it is for a caller with
+a deadline of its OWN, not a guard against a hung provider. The client already bounds itself
+(`typings/timeouts.py` carries the measured figures), so a wrapper on background work would
+restate that bound for nothing.
 """
 
 from typing import cast
@@ -44,7 +49,7 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     user_text: str,
     end_user_id: str,
     text_format: type[StructuredT],
-    timeout_seconds: float,
+    timeout_seconds: float | None = None,
 ) -> StructuredT | None:
     """Runs one best-effort structured Responses.parse call, returning None on any failure.
 
@@ -53,6 +58,10 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     not match `text_format` (both surface as `ValidationError`), a refusal (which simply
     leaves `output_parsed` None), an incomplete (truncated) response, or any other error
     all degrade to None.
+
+    `timeout_seconds` is for a caller with a deadline of its OWN -- something downstream that
+    must not wait. Leave it None for background work nobody is waiting on, where the client's
+    own ceiling is the right bound. `typings/timeouts.py` has the whole argument.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):
@@ -113,13 +122,14 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
     instructions: str,
     user_text: str,
     end_user_id: str,
-    timeout_seconds: float,
+    timeout_seconds: float | None = None,
 ) -> str | None:
     """Runs one best-effort text Responses.create call, returning None on any failure.
 
     Mirrors `parse_responses_or_none` for the non-structured callers: owns the shared proxy
     call surface, the timeout, and the failure handling, and returns the trimmed output text
     (or None on timeout / any error) so each caller maps None to its own fallback line.
+    `timeout_seconds` carries the same meaning it does there.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):

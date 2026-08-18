@@ -11,6 +11,8 @@ import base64
 from PIL import Image
 import requests
 
+from discordbot.typings.timeouts import IMAGE_FETCH_TIMEOUT_SECONDS
+
 _DATA_URI_RE = re.compile(pattern=r"^data:image/(?:jpg|jpeg|png|gif|bmp|webp);base64,")
 
 
@@ -31,10 +33,7 @@ def get_pil_image(image_file: str) -> Image.Image:
             what a 404 HTML body from a dead CDN arrives as.
     """
     if image_file.startswith(("http://", "https://")):
-        # 10s caps the history-render I/O tail: a URL taking longer is almost always a
-        # dead/slow CDN that would fail anyway, and a 30s wait let one such source dominate
-        # the whole render. Healthy media.discordapp.net images return well under 1s.
-        response = requests.get(url=image_file, timeout=10)
+        response = requests.get(url=image_file, timeout=IMAGE_FETCH_TIMEOUT_SECONDS)
         image = Image.open(fp=BytesIO(initial_bytes=response.content))
     elif match := _DATA_URI_RE.match(string=image_file):
         payload = base64.b64decode(s=image_file[match.end() :])

@@ -28,6 +28,8 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict, ValidationError
 import requests
 
+from discordbot.typings.timeouts import PRICE_TABLE_FETCH_TIMEOUT_SECONDS
+
 MODEL_INFO_URL = (
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 )
@@ -110,7 +112,7 @@ def _decode_table(payload: str, source: str) -> dict[str, ModelPriceEntry] | Non
 def _fetch_table() -> str | None:
     """Returns the upstream price table as raw text, or None when the fetch fails."""
     try:
-        response = requests.get(url=MODEL_INFO_URL, timeout=5)
+        response = requests.get(url=MODEL_INFO_URL, timeout=PRICE_TABLE_FETCH_TIMEOUT_SECONDS)
         response.raise_for_status()
         return response.text
     except requests.RequestException as exc:

@@ -23,6 +23,7 @@ from google.genai.types import FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.timeouts import ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.attachment.base import (
     RenderedPart,
     AttachmentRenderer,
@@ -287,7 +288,6 @@ class GeminiFileUploader(AttachmentRenderer):
         can reuse the handle until it actually expires (Gemini files live ~48h) instead
         of guessing a fixed TTL.
         """
-        activation_timeout_seconds = 15.0
         poll_interval_seconds = 0.5
         started = time.monotonic()
         logfire.debug(
@@ -329,7 +329,7 @@ class GeminiFileUploader(AttachmentRenderer):
         if file_name is None:
             logfire.warn("upload returned no resource name; dropping", filename=filename)
             return None
-        deadline = time.monotonic() + activation_timeout_seconds
+        deadline = time.monotonic() + ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
         while uploaded.state == FileState.PROCESSING:
             if time.monotonic() >= deadline:
                 logfire.warn(

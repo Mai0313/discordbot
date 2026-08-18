@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import asyncio
 from pathlib import Path
 import tempfile
+import contextlib
 
 import logfire
 from nextcord import Color, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
@@ -32,6 +33,7 @@ from nextcord.ext import commands
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
+from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -41,7 +43,12 @@ from discordbot.utils.media_delivery import (
 )
 
 if TYPE_CHECKING:
+    from asyncio import Task
+    from contextlib import AbstractContextManager
+
     from nextcord.types.embed import Embed as EmbedData
+
+    from discordbot.utils.threads import ThreadsConversation
 
 # Stripe for the post a quote post quotes. Deliberately off the greyscale chain gradient
 # (`_gradient_color`, which spans 0x40-0xC0 and reserves pure black for "no stripe"): a quoted
@@ -220,6 +227,43 @@ class ThreadsCogs(commands.Cog):
         self.output_folder = Path(tempfile.gettempdir())
         self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
         self.media_delivery = build_media_delivery_planner()
+        # Deferred scratch cleanups for walks the expansion gave up waiting on; held so the
+        # loop keeps a strong reference and the task is not collected mid-flight.
+        self._abandoned_parses: set[asyncio.Task[None]] = set()
+
+    def _unlink_when_abandoned(
+        self,
+        *,
+        parse_cm: "AbstractContextManager[ThreadsConversation]",
+        enter_task: "Task[ThreadsConversation]",
+        url: str,
+    ) -> None:
+        """Runs the parse context manager's exit once the abandoned walk finally returns.
+
+        `asyncio.to_thread` cannot cancel its worker, so a timed-out walk keeps fetching and
+        keeps writing media into the scratch folder. Exiting the context manager now would
+        race that worker on a generator it has not finished driving, and skipping the exit
+        would leak the files for good, so the exit waits for the worker instead.
+        """
+
+        async def _drain() -> None:
+            with contextlib.suppress(Exception):
+                await enter_task
+            try:
+                await asyncio.to_thread(parse_cm.__exit__, None, None, None)
+            except Exception as error:
+                # Same reasoning as the delivered path's cleanup guard: these files are
+                # deleted nowhere else, so a failure names an environment to look at.
+                logfire.error(
+                    "Could not clean up the Threads scratch files of an abandoned parse",
+                    url=url,
+                    error_type=type(error).__name__,
+                    _exc_info=error,
+                )
+
+        task = asyncio.create_task(coro=_drain())
+        self._abandoned_parses.add(task)
+        task.add_done_callback(self._abandoned_parses.discard)
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:
@@ -611,11 +655,23 @@ class ThreadsCogs(commands.Cog):
             # off the event loop; the reply runs while the temp files still exist
             # and the matching exit cleans them up afterwards.
             parse_cm = self.downloader.parse(url=url)
+            # Shielded so the timeout below abandons the WAIT without cancelling the walk: the
+            # `requests` calls underneath are per-read only, so a slow-drip CDN can stream for
+            # as long as it likes and one paste would otherwise hold this listener open with
+            # it. A timeout is reported as a plain failure, never as a missing post.
+            enter_task = asyncio.create_task(coro=asyncio.to_thread(parse_cm.__enter__))
             try:
-                conversation = await asyncio.to_thread(parse_cm.__enter__)
+                async with asyncio.timeout(delay=THREADS_EXPAND_TIMEOUT_SECONDS):
+                    conversation = await asyncio.shield(enter_task)
             # Broad on purpose: a fetch failure must not escape into the listener; the ❌
             # reaction is the user-visible outcome.
             except Exception as error:
+                # The walk is still running on its thread and still writing media into the
+                # scratch folder, which is the system temp dir rather than a directory anyone
+                # removes; `conversation.unlink` is the only thing that deletes those files.
+                # So the exit is deferred until the abandoned walk finishes rather than
+                # skipped, or every timeout would leak the post's media permanently.
+                self._unlink_when_abandoned(parse_cm=parse_cm, enter_task=enter_task, url=url)
                 logfire.warn(
                     "Threads parse failed",
                     url=url,

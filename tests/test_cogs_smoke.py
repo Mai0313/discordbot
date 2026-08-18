@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import time
 from types import TracebackType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
+import asyncio
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
@@ -83,6 +85,7 @@ from tests.helpers.discord_mocks import (
 )
 
 if TYPE_CHECKING:
+    import threading
     from collections.abc import Callable, Awaitable, AsyncIterator
 
     import pytest
@@ -124,8 +127,19 @@ class DownloaderStub:
         self.results = results
         self.calls: list[dict[str, str | bool]] = []
 
-    def download(self, url: str, quality: str, dry_run: bool = False) -> DownloadResultStub:
-        """Records the download request and returns the next queued result."""
+    def download(
+        self,
+        url: str,
+        quality: str,
+        dry_run: bool = False,
+        stop_signal: threading.Event | None = None,
+    ) -> DownloadResultStub:
+        """Records the download request and returns the next queued result.
+
+        `stop_signal` is accepted and ignored: the real downloader takes it so a caller can
+        abort a blocking yt-dlp run, and `/download_video` now passes one on every call.
+        """
+        del stop_signal
         kwargs: dict[str, str | bool] = {"url": url, "quality": quality, "dry_run": dry_run}
         self.calls.append(kwargs)
         return self.results.pop(0)
@@ -140,11 +154,15 @@ class ParseResultStub:
     """Context manager stub for Threads parse results."""
 
     def __init__(
-        self, results: list[ThreadsOutput] | BaseException, exit_error: Exception | None = None
+        self,
+        results: list[ThreadsOutput] | BaseException,
+        exit_error: Exception | None = None,
+        enter_delay_seconds: float = 0.0,
     ) -> None:
-        """Stores parsed results, the error to raise on entry, and the one to raise on exit."""
+        """Stores parsed results, the entry and exit errors, and how long the entry blocks."""
         self.results = results
         self.exit_error = exit_error
+        self.enter_delay_seconds = enter_delay_seconds
         self.exited = False
 
     def __enter__(self) -> ThreadsConversation:
@@ -153,7 +171,11 @@ class ParseResultStub:
         A readable post always comes back carrying a comment, because that is what production
         yields now: the expansion is supposed to ignore them, and a stub with no comments in it
         cannot tell "ignores them" apart from "never saw any".
+
+        `enter_delay_seconds` blocks the worker thread the way a slow-drip CDN does, so a test
+        can reach the caller's give-up path with the walk still running.
         """
+        time.sleep(self.enter_delay_seconds)
         if isinstance(self.results, BaseException):
             raise self.results
         return ThreadsConversation(
@@ -181,16 +203,24 @@ class ThreadsDownloaderStub:
     """Fake Threads downloader returning a configured parse context manager."""
 
     def __init__(
-        self, results: list[ThreadsOutput] | BaseException, exit_error: Exception | None = None
+        self,
+        results: list[ThreadsOutput] | BaseException,
+        exit_error: Exception | None = None,
+        enter_delay_seconds: float = 0.0,
     ) -> None:
-        """Stores parsed results, the parse failure, and any scratch-cleanup failure."""
+        """Stores parsed results, both failures, and how long each parse blocks on entry."""
         self.results = results
         self.exit_error = exit_error
+        self.enter_delay_seconds = enter_delay_seconds
         self.parsed: list[ParseResultStub] = []
 
     def parse(self, url: str) -> ParseResultStub:
         """Returns a fake parse context manager, recorded so a test can inspect its exit."""
-        result = ParseResultStub(results=self.results, exit_error=self.exit_error)
+        result = ParseResultStub(
+            results=self.results,
+            exit_error=self.exit_error,
+            enter_delay_seconds=self.enter_delay_seconds,
+        )
         self.parsed.append(result)
         return result
 
@@ -446,6 +476,87 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     )
     await cog.on_message(message=as_message(fake=error_message))
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
+
+
+async def test_threads_cog_still_unlinks_the_scratch_files_of_a_walk_it_gave_up_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A timed-out expansion defers its cleanup rather than skipping it.
+
+    The `requests` calls under `parse` are per-read only, so a slow-drip CDN can hold one paste
+    open indefinitely; the bound is what stops it. But `asyncio.to_thread` cannot cancel the
+    walk, so it keeps writing media into the system temp dir, and `parse_cm.__exit__` is the
+    only thing that ever deletes those files. Skipping it would trade the stall for a permanent
+    leak on every timeout.
+    """
+    monkeypatch.setattr(parse_threads, "THREADS_EXPAND_TIMEOUT_SECONDS", 0.05)
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    downloader = ThreadsDownloaderStub(results=[], enter_delay_seconds=0.3)
+    cog.downloader = cast("ThreadsDownloader", downloader)
+
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.reactions[-1] == "<:redcross:1517565100838355016>"
+    # The walk is still running here, so the exit has not happened yet; that is the whole
+    # reason it is deferred rather than done inline.
+    assert downloader.parsed[0].exited is False
+    await asyncio.gather(*cog._abandoned_parses)
+    assert downloader.parsed[0].exited is True
+
+
+async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    """yt-dlp's own retry budget is not a ceiling, so the command carries one.
+
+    `socket_timeout` applies per socket and each of the three retry settings multiplies it, so
+    without this the user sits on "正在下載影片..." for as long as the host cares to stall. The
+    stop signal is half of it: `asyncio.to_thread` cannot be cancelled, so the bound only ends
+    the download because the worker is watching for it.
+    """
+    monkeypatch.setattr(video, "VIDEO_DOWNLOAD_TIMEOUT_SECONDS", 0.05)
+    cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
+
+    class StallingDownloader:
+        """Drips like a stalling host, and watches the stop signal like yt-dlp's progress hook."""
+
+        def __init__(self) -> None:
+            """Records which way the worker ended."""
+            self.aborted = False
+            self.finished = False
+
+        def download(
+            self,
+            url: str,
+            quality: str,
+            dry_run: bool = False,
+            stop_signal: threading.Event | None = None,
+        ) -> DownloadResultStub:
+            """Outlasts the command's bound by two orders of magnitude unless told to stop."""
+            del url, quality, dry_run
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                if stop_signal is not None and stop_signal.is_set():
+                    self.aborted = True
+                    raise RuntimeError("download stopped")
+                time.sleep(0.01)
+            self.finished = True
+            raise AssertionError("should have been abandoned")
+
+    downloader = StallingDownloader()
+    monkeypatch.setattr(video, "VideoDownloader", lambda output_folder: downloader)
+    interaction = FakeInteraction()
+    await VideoCogs.download_video.callback(
+        cog, as_interaction(fake=interaction), url="https://x.test", quality="best"
+    )
+
+    assert interaction.edits[-1]["content"] == "-# 檔案無法下載"
+    # Any failure prints that same line, so what proves the BOUND fired is which way the worker
+    # ended: aborted on the signal rather than running its stall out.
+    assert downloader.aborted is True
+    assert downloader.finished is False
 
 
 async def test_threads_cog_trims_long_chain_to_the_message_wide_embed_limit() -> None:

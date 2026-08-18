@@ -118,16 +118,13 @@ MEMORY_TRANSCRIPT_MAX_CHARS = 100_000
 # user message right before it.
 MEMORY_REPLY_MAX_CHARS = 8_000
 
-# Background LLM call timeouts, kept purely as a liveness backstop rather than
-# a latency or cost guard (a slow background update is harmless). A genuinely
-# stuck call would otherwise hold the scope's lock and a global-concurrency
-# permit forever, so that user/server would never get another memory update.
-# The memory models run at high reasoning effort on a Pro tier, so the bound stays
-# well above a legitimately slow rewrite (minutes) and only fires on a truly hung
-# call. Consolidation now fans out over a scope's compartments, so the two bounds
-# nest: each compartment call gets the shorter one and the whole fan-out is wrapped
-# in the longer one, keeping the worst-case lock hold at what it is today rather
-# than multiplying it by the number of compartments.
-MEMORY_EXTRACT_TIMEOUT_SECONDS = 600.0
-MEMORY_CONSOLIDATE_TIMEOUT_SECONDS = 600.0
-MEMORY_COMPARTMENT_TIMEOUT_SECONDS = 300.0
+# The individual phase-1 and per-compartment calls carry no bound of their own. Nobody is
+# waiting on a background memory update, and the OpenAI client bounds every request it makes,
+# so the only thing a wrapper here bought was a TIGHTER liveness backstop — and a tighter one
+# is worth nothing when the failure it guards against (a genuinely hung provider) ends in a
+# retryable no-op either way. What it costs while stuck is one scope lock and one of the
+# MEMORY_GLOBAL_CONCURRENCY permits, for the client's own ceiling rather than for 600s.
+# What still needs a bound of its own is the whole consolidation fan-out, which is a LOOP over
+# compartments rather than one call and so is bounded by nothing upstream:
+# `MEMORY_CONSOLIDATE_TIMEOUT_SECONDS` in `typings/timeouts.py`, with the rest of the bot's
+# deadlines. It is also what caps a single stuck compartment now that the inner bound is gone.

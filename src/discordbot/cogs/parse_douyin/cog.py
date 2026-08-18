@@ -47,6 +47,7 @@ from discordbot.utils.douyin import (
 from discordbot.typings.douyin import DouyinConfig
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
+from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -59,12 +60,6 @@ from discordbot.utils.media_delivery import (
 
 # Douyin's own palette, so the expansion reads as a Douyin card at a glance.
 _EMBED_COLOR = 0xFE2C55
-
-# Bound on one expansion's Douyin work. It exists to cap how long a single paste can hold the
-# fetch slot it shares with the reply path, not to hurry the download along: a healthy post
-# finishes in seconds, while a stalling CDN would otherwise retry its way into the tens of
-# minutes. A timeout is reported as a plain failure, never as a missing post.
-DOUYIN_EXPAND_TIMEOUT_SECONDS = 120.0
 
 
 class DouyinCogs(commands.Cog):
