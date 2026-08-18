@@ -1,26 +1,33 @@
 """yt-dlp wrapper utilities shared by `/download_video` and the Bilibili link builder.
 
-The command calls `download` and nothing else; the metadata probe and the stop-signal
-half exist for the link builder, which has to decide whether to fetch at all and has to
-be able to abandon a download that outran the reply's budget.
+`VideoDownloader` itself is synchronous. The metadata probe exists for the link builder,
+which has to decide whether to fetch at all; `download_with_stop_signal` is the asyncio half,
+for either caller having to abandon a download that outran its budget -- the reply's, or the
+command's own deadline. It is here rather than at either call site because both need it and
+neither may import from the other's directory.
 """
 
 import types
 from typing import Any, ClassVar
+import asyncio
 from pathlib import Path
 import threading
+import contextlib
 from urllib.parse import parse_qs, urlparse
 
 from yt_dlp import YoutubeDL
+import logfire
 from pydantic import Field, BaseModel
 from requests import Session
 from requests.exceptions import RequestException
 
 from discordbot.typings.video import VideoQuality
-
-# Redirect chases for a facebook.com/share/... link. Fixed rather than configurable: it bounds
-# one HEAD/GET against Facebook and nothing has ever needed a different value.
-SHARE_RESOLVE_TIMEOUT_SECONDS = 10
+from discordbot.typings.timeouts import (
+    YTDLP_RETRIES,
+    DOWNLOAD_STOP_JOIN_SECONDS,
+    YTDLP_SOCKET_TIMEOUT_SECONDS,
+    SHARE_RESOLVE_TIMEOUT_SECONDS,
+)
 
 
 class DownloadStoppedError(Exception):
@@ -226,13 +233,13 @@ class VideoDownloader(BaseModel):
             "writesubtitles": False,
             "writeautomaticsub": False,
             "ignoreerrors": False,
-            "retries": 3,
-            "fragment_retries": 3,
+            "retries": YTDLP_RETRIES,
+            "fragment_retries": YTDLP_RETRIES,
             # Ensure merged output is mp4 when possible (common for Discord uploads)
             "merge_output_format": "mp4",
             "http_headers": http_headers,
-            "socket_timeout": 30,
-            "extractor_retries": 3,
+            "socket_timeout": YTDLP_SOCKET_TIMEOUT_SECONDS,
+            "extractor_retries": YTDLP_RETRIES,
             "geo_bypass": True,
         }
         if dry_run:
@@ -330,6 +337,57 @@ class VideoDownloader(BaseModel):
             is_live=bool(info.get("is_live") or False),
             from_playlist=from_playlist,
         )
+
+
+def _retrieve_quietly(task: "asyncio.Task[DownloadResult]") -> None:
+    """Retrieves an abandoned task's outcome so asyncio never logs it as never-retrieved."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def download_with_stop_signal(
+    *, downloader: VideoDownloader, url: str, quality: VideoQuality
+) -> DownloadResult:
+    """Runs the blocking download with a stop signal cancellation can actually deliver.
+
+    `asyncio.to_thread` cannot cancel its worker, so an abandoned download (a post-route
+    discard, a media timeout, a command's own deadline) would otherwise leave yt-dlp
+    downloading for minutes — holding a shared thread-pool slot, writing a file nothing will
+    clean up, and even re-creating the scratch dir after its removal (yt-dlp re-makes the
+    output dir before each DASH format). On any interruption the signal makes the worker abort
+    at its next progress tick, and the bounded join keeps the scratch dir alive until the
+    worker has really stopped, so its removal never races a live writer.
+
+    Args:
+        downloader: The downloader to run, already pointed at its scratch directory.
+        url: The URL to download.
+        quality: The requested quality preset.
+
+    Returns:
+        The finished download.
+    """
+    stop_signal = threading.Event()
+    download_task = asyncio.create_task(
+        coro=asyncio.to_thread(
+            downloader.download, url=url, quality=quality, stop_signal=stop_signal
+        )
+    )
+    download_task.add_done_callback(_retrieve_quietly)
+    try:
+        return await asyncio.shield(download_task)
+    except BaseException:
+        stop_signal.set()
+        done, _pending = await asyncio.wait({download_task}, timeout=DOWNLOAD_STOP_JOIN_SECONDS)
+        if done:
+            with contextlib.suppress(BaseException):
+                download_task.result()
+        else:
+            logfire.warn(
+                "Download worker ignored the stop signal within the join window",
+                url=url,
+                join_seconds=DOWNLOAD_STOP_JOIN_SECONDS,
+            )
+        raise
 
 
 if __name__ == "__main__":

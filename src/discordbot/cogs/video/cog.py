@@ -18,7 +18,8 @@ from discordbot.utils.douyin import (
     douyin_failure_message,
 )
 from discordbot.typings.video import VideoQuality
-from discordbot.utils.downloader import VideoDownloader
+from discordbot.typings.timeouts import VIDEO_DOWNLOAD_TIMEOUT_SECONDS
+from discordbot.utils.downloader import DownloadResult, VideoDownloader, download_with_stop_signal
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     DISCORD_ATTACHMENT_LIMIT,
@@ -107,36 +108,21 @@ class VideoCogs(commands.Cog):
             return
 
         try:
-            downloader = VideoDownloader(output_folder=tempfile.gettempdir())
-            result = await asyncio.to_thread(downloader.download, url=url, quality=quality)
-            with result:
-                file_size_mb = result.filename.stat().st_size / 1024 / 1024
-                item = MediaItem(source=result.filename, filename=result.filename.name)
-                plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
-                if plan.native:
-                    await self._deliver(
-                        interaction=interaction,
-                        file_size_mb=file_size_mb,
-                        file_path=result.filename,
-                        url=url,
+            # A scratch dir per invocation rather than the bare temp dir, because the bound
+            # below can abandon a download: yt-dlp keeps writing until its stop signal lands,
+            # and only a directory that goes away takes those bytes with it. On the ordinary
+            # path `with result` already unlinks the file and this removes an empty dir.
+            with tempfile.TemporaryDirectory(prefix="download-video-") as download_dir:
+                downloader = VideoDownloader(output_folder=download_dir)
+                # Bounded because yt-dlp's own `socket_timeout` is per socket and every retry
+                # setting multiplies it, so a stalling host would otherwise leave the user on
+                # "正在下載影片..." indefinitely.
+                async with asyncio.timeout(delay=VIDEO_DOWNLOAD_TIMEOUT_SECONDS):
+                    result = await download_with_stop_signal(
+                        downloader=downloader, url=url, quality=quality
                     )
-                    return
-
-                # Too big for native upload: host the original-quality file and post its URL,
-                # rather than downgrading quality. Under ~100 MiB Discord still inline-plays the
-                # link; above that it is a browser-playable link. Hosting moves the file into the
-                # serve dir on a fresh upload (the `with result` exit unlink then no-ops) but leaves
-                # it on a dedup hit, so the exit unlink (missing_ok) cleans it up either way.
-                if plan.hosted_urls:
-                    await self._deliver_url(
-                        interaction=interaction,
-                        file_size_mb=file_size_mb,
-                        public_url=plan.hosted_urls[0],
-                    )
-                    return
-
-                await interaction.edit_original_message(
-                    content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+                await self._deliver_download(
+                    interaction=interaction, url=url, result=result, upload_limit=upload_limit
                 )
         except Exception as error:
             # Broad on purpose: the bot registers no application-command error handler, so
@@ -149,6 +135,51 @@ class VideoCogs(commands.Cog):
                 _exc_info=error,
             )
             await self._edit_quietly(interaction=interaction, content="-# 檔案無法下載")
+
+    async def _deliver_download(
+        self,
+        interaction: Interaction[commands.Bot],
+        url: str,
+        result: DownloadResult,
+        upload_limit: int,
+    ) -> None:
+        """Attaches, hosts or refuses one finished yt-dlp download.
+
+        Args:
+            interaction: The interaction the command is holding open.
+            url: The source URL, appended only when the file is attached natively.
+            result: The finished download, unlinked when this returns.
+            upload_limit: The destination's attachment ceiling.
+        """
+        with result:
+            file_size_mb = result.filename.stat().st_size / 1024 / 1024
+            item = MediaItem(source=result.filename, filename=result.filename.name)
+            plan = await self.media_delivery.plan(items=[item], upload_limit=upload_limit)
+            if plan.native:
+                await self._deliver(
+                    interaction=interaction,
+                    file_size_mb=file_size_mb,
+                    file_path=result.filename,
+                    url=url,
+                )
+                return
+
+            # Too big for native upload: host the original-quality file and post its URL,
+            # rather than downgrading quality. Under ~100 MiB Discord still inline-plays the
+            # link; above that it is a browser-playable link. Hosting moves the file into the
+            # serve dir on a fresh upload (the `with result` exit unlink then no-ops) but leaves
+            # it on a dedup hit, so the exit unlink (missing_ok) cleans it up either way.
+            if plan.hosted_urls:
+                await self._deliver_url(
+                    interaction=interaction,
+                    file_size_mb=file_size_mb,
+                    public_url=plan.hosted_urls[0],
+                )
+                return
+
+            await interaction.edit_original_message(
+                content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
+            )
 
     async def _handle_douyin(
         self,
@@ -194,9 +225,18 @@ class VideoCogs(commands.Cog):
         try:
             # Capped at the attachment limit so a 48-image gallery does not download 38 files
             # that could never be sent; `omitted_images` reports what the cap left behind.
-            result = await asyncio.to_thread(
-                downloader.download, url=url, quality=quality, max_images=DISCORD_ATTACHMENT_LIMIT
-            )
+            # Bounded on wall-clock too, because a gallery costs `download_timeout` x
+            # `max_retries` per file: a stalling CDN would otherwise hold this command open for
+            # half an hour. The worker keeps running past the timeout (`asyncio.to_thread`
+            # cannot be cancelled), but it writes into the caller's scratch dir, which this
+            # block exits into, so the overshoot is one post rather than a stream.
+            async with asyncio.timeout(delay=VIDEO_DOWNLOAD_TIMEOUT_SECONDS):
+                result = await asyncio.to_thread(
+                    downloader.download,
+                    url=url,
+                    quality=quality,
+                    max_images=DISCORD_ATTACHMENT_LIMIT,
+                )
         except Exception as error:
             # Deliberately catches everything, not just DouyinError: this runs outside the
             # command's own try block and the bot registers no application-command error handler,
