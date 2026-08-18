@@ -183,7 +183,16 @@ class VideoCogs(commands.Cog):
         # two people downloading the same post into one shared temp dir would write the same paths,
         # letting one truncate the other's file and letting either one's cleanup delete a file the
         # other is still uploading. The directory is removed once delivery finishes.
-        with tempfile.TemporaryDirectory(prefix="douyin-") as download_dir:
+        #
+        # Cleanup errors are ignored because a download that outran the bound is still writing in
+        # here — `asyncio.to_thread` cannot be cancelled, and this teardown is what stops it — so
+        # `rmtree` can race a file appearing or vanishing under it. This call sits ahead of the
+        # command's own `try`, so an `OSError` raised here would escape into a dispatcher with no
+        # handler and strand the caller on the progress message, which is the failure the bound
+        # was added to remove.
+        with tempfile.TemporaryDirectory(
+            prefix="douyin-", ignore_cleanup_errors=True
+        ) as download_dir:
             await self._download_and_deliver_douyin(
                 interaction=interaction,
                 url=url,

@@ -87,6 +87,13 @@ class _EmbedPlan(BaseModel):
     )
 
 
+# Strong references to the deferred scratch cleanups below. `asyncio` keeps only a weak one, so a
+# task nothing else holds can be collected before it runs — which for these would silently skip the
+# very delete they exist to perform. Ruff's RUF006 does not catch it: the task IS assigned there,
+# just to a local that goes out of scope immediately.
+_pending_scratch_cleanups: set["Task[bool | None]"] = set()
+
+
 def _discard_scratch_files_when_the_worker_stops(
     *,
     parse_cm: "AbstractContextManager[ThreadsConversation]",
@@ -108,6 +115,8 @@ def _discard_scratch_files_when_the_worker_stops(
         if task.cancelled() or task.exception() is not None:
             return
         cleanup = asyncio.create_task(asyncio.to_thread(parse_cm.__exit__, None, None, None))
+        _pending_scratch_cleanups.add(cleanup)
+        cleanup.add_done_callback(_pending_scratch_cleanups.discard)
         cleanup.add_done_callback(
             lambda done: (
                 logfire.error(
