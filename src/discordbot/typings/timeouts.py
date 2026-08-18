@@ -20,15 +20,25 @@ not a bound, and `DOWNLOAD_TIMEOUT_SECONDS` caps the product of all of them anyw
 **An LLM call is bounded by its provider, not by an `asyncio.timeout` of ours.** On the proxy that
 needs nothing: `AsyncOpenAI` defaults to connect 5s / read 600s and raises `APITimeoutError`, which
 every call site already degrades through on its broad `except`, exactly as it degrades on a proxy
-`ServiceUnavailableError`. Deep research (`cogs/research/agent.py`) rides that same rule with no
-number of its own, the agent settling server-side on its own budget.
+`ServiceUnavailableError`. Read that number as **1800s, not 600s**, before leaning on it: a read
+timeout is retryable and `DEFAULT_MAX_RETRIES` is 2, so the SDK spends the deadline three times
+before it raises, and no client in this tree overrides either default. That is the figure to weigh
+a candidate product deadline against, and it is why a call a user is actually waiting on gets one.
 
 **`genai.Client` is the exception, and it is not optional.** google-genai leaves
 `http_options.timeout` at `None` (measured against 2.13.0; `gen_reply/files_api.py` has the same
-finding from its own investigation), so a direct-to-Google call into a black-holed connection never
-returns and no `except` is ever reached — a hang, not an error. Those calls therefore pass a
-deadline as the SDK's own per-request `timeout=`, which is still the provider owning it rather than
-a wrapper around it, and the number lives here.
+finding from its own investigation), and the httpx client it builds is itself constructed with
+`timeout=None`, so a direct-to-Google call into a black-holed connection never returns and no
+`except` is ever reached — a hang, not an error. Those calls therefore pass a deadline as the SDK's
+own per-request `timeout=`, which is still the provider owning it rather than a wrapper around it,
+and the number lives here. `tests/test_timeouts.py` reads every module that calls
+`interactions.create` and holds them to it.
+
+**Deep research is the one direct-to-Google path deliberately left unbounded** (`cogs/research/`),
+and it is an exception to the paragraph above rather than an instance of the one before it. It can
+afford the hang the others cannot: the interaction runs `background=True` + `store=True`, so the
+agent settles server-side whatever this process does, `on_ready` re-attaches to it after a restart,
+and the report lands in a thread nobody is holding a command open on.
 
 The other carve-out is a **product deadline that happens to sit on an LLM call**: a bound on how
 long the feature may block something ELSE, which no provider can know about. Those keep an
@@ -93,13 +103,17 @@ FILES_READY_TIMEOUT_SECONDS: Final[float] = 180.0
 
 # How long an abandoned download gets to notice its stop signal before the scratch dir is
 # removed anyway. The signal fires at the next yt-dlp progress tick, typically well under a
-# second; a worker that outlives this window is stalled on the network, not downloading.
+# second; a worker that outlives this window is stalled on the network, not downloading. Spent by
+# `download_with_stop_signal`, which is the only thing ordering the worker's stop ahead of the
+# directory's removal: yt-dlp re-makes its output dir before each DASH format, so a removal that
+# does not wait leaves a directory nothing will ever delete.
 DOWNLOAD_STOP_JOIN_SECONDS: Final[float] = 5.0
 
 # Deadline for the Threads empty-page retry: past it the post is given up on as unreadable and the
-# model is told so explicitly. Kept small because it is spent INSIDE the pipeline's media step,
-# which already claims almost all of `LINK_CONTEXT_GRACE_SECONDS` on its own. Two more healthy
-# fetches (~3s each) fit inside this; a run of empty pages is a throttle, not a slow link.
+# model is told so explicitly. Kept small because it is spent in `parse_metadata`, which runs
+# BEFORE the media step rather than inside it, so on the reply path this adds to
+# `LINK_MEDIA_TIMEOUT_SECONDS` instead of fitting under it. Two more healthy fetches (~3s each) fit
+# inside this; a run of empty pages is a throttle, not a slow link.
 THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS: Final[float] = 10.0
 
 # ----- LLM calls: the provider's deadline, carried here only where it needs a number ---------
@@ -114,18 +128,36 @@ VIDEO_RENDER_TIMEOUT_SECONDS: Final[float] = 600.0
 # reaction and its memory scheduling never run either.
 MUSIC_RENDER_TIMEOUT_SECONDS: Final[float] = 300.0
 
+# The same again, for the YouTube answer turn, which swaps ONE answer call to `interactions.create`
+# so Gemini can watch the linked video. Deliberately the `AsyncOpenAI` read default this path
+# replaces: the swap is a backend swap and nothing else, so the deadline a QA reply answers to must
+# not change with it. `stream=True`, so it bounds the gap between SSE chunks rather than the whole
+# answer, and expiry fails the reply the way any other answer-stream error does.
+ANSWER_STREAM_TIMEOUT_SECONDS: Final[float] = 600.0
+
 # ----- product deadlines that sit on an LLM call ---------------------------------------------
 
 # Not a transport bound: `ensure_due_stock_news` holds the process-wide news generation lock across
 # its whole provider fan-out, and `get_stock_detail` / `get_stock_news` / `get_stock_portfolio` take
-# that same lock on the path a user is waiting on. Past ~3s the 近期新聞 button fails outright,
-# since it does not defer before the call. Short because the tier is flash-lite at minimal effort,
-# so this is already the slow end of a healthy call; expiry writes the deterministic template.
+# that same lock on the path a user is waiting on. Short because the tier is flash-lite at minimal
+# effort, so this is already the slow end of a healthy call; expiry writes the deterministic
+# template. It bounds ONE provider call, not the wait: the fan-out gathers at
+# `_NEWS_PROVIDER_CONCURRENCY`, so a backlog of due symbols holds the lock for a multiple of this,
+# and the 近期新聞 button does not defer before taking it, so it can still miss Discord's 3s ack
+# window. Lowering this alone would not close that; deferring the button would.
 STOCK_NEWS_AI_TIMEOUT_SECONDS: Final[float] = 4.0
 
 # Also not a transport bound: the title is generated BEFORE the research thread exists, so the
 # caller sees nothing at all until it returns. Expiry falls back to the brief's first line.
 THREAD_TITLE_TIMEOUT_SECONDS: Final[float] = 15.0
+
+# And not a transport bound either: the refine sits SERIALLY ahead of the render on the IMAGE and
+# VIDEO routes, so until it returns the user has a status reaction and nothing else, with the
+# render not yet started. Wide because a grounded director call is a real search, but far under
+# what the provider would allow, which is what makes it worth having: expiry falls back to the raw
+# user prompt exactly as any other director failure does, so the cost of firing early is small and
+# the cost of not firing is the whole route waiting.
+PROMPT_REFINE_TIMEOUT_SECONDS: Final[float] = 120.0
 
 # ----- link downloads ---------------------------------------------------------------------
 
@@ -137,6 +169,13 @@ THREAD_TITLE_TIMEOUT_SECONDS: Final[float] = 15.0
 # someone else's CDN and a healthy post finishes in seconds; it caps the stall, not the download.
 # It is also what makes yt-dlp's and Douyin's retry counts stop multiplying into the tens of
 # minutes. A timeout is reported as a plain failure, never as a missing post.
+#
+# Wider than the 120.0 the Douyin expansion carried alone, which is a real trade rather than a
+# rounding: that expansion shares `douyin_fetch_semaphore` (capacity 2) and `douyin_url_locks` with
+# the reply path, whose own media step gives up at `LINK_MEDIA_TIMEOUT_SECONDS`. Two stalled pastes
+# can now hold both slots past that, degrading a concurrent AI reply about a Douyin link to
+# caption-only text where 120.0 left it margin. Accepted because the expansion is the surface a
+# user is actually watching and the reply degrades rather than fails; revisit here, not there.
 DOWNLOAD_TIMEOUT_SECONDS: Final[float] = 300.0
 
 # Redirect chase for a facebook.com/share/... link. Expiry falls through to the unresolved short
@@ -181,10 +220,12 @@ GITHUB_REQUEST_TIMEOUT_SECONDS: Final[float] = 15.0
 
 # ----- Discord API ------------------------------------------------------------------------
 
-# Bound on the settled round's last `message.edit`, shared by Blackjack and Dragon Gate. Money is
+# Bound on a table `message.edit` the round cannot afford to hang on, shared by Blackjack and
+# Dragon Gate. It is named for the case that motivated it, the settled round's last edit: money is
 # already committed by then, so expiry leaves the table showing the previous frame while the
-# balances are correct; the bound exists so a hung edit cannot skip the cleanup scheduling behind
-# it.
+# balances are correct, and the bound is what stops a hung edit skipping the cleanup scheduling
+# behind it. Blackjack also spends it on the mid-round view refresh and on both peek-animation
+# frames, where nothing is committed yet and expiry costs only that frame.
 FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 
 # ----- storage ----------------------------------------------------------------------------
@@ -195,6 +236,7 @@ FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 SQLITE_BUSY_TIMEOUT_MS: Final[int] = 5000
 
 __all__ = [
+    "ANSWER_STREAM_TIMEOUT_SECONDS",
     "DOUYIN_DOWNLOAD_TIMEOUT_SECONDS",
     "DOUYIN_METADATA_TIMEOUT_SECONDS",
     "DOWNLOAD_STOP_JOIN_SECONDS",
@@ -211,6 +253,7 @@ __all__ = [
     "MEMORY_SELECT_GRACE_SECONDS",
     "MODEL_PRICE_FETCH_TIMEOUT_SECONDS",
     "MUSIC_RENDER_TIMEOUT_SECONDS",
+    "PROMPT_REFINE_TIMEOUT_SECONDS",
     "SHARE_RESOLVE_TIMEOUT_SECONDS",
     "SQLITE_BUSY_TIMEOUT_MS",
     "STOCK_NEWS_AI_TIMEOUT_SECONDS",

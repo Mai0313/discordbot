@@ -43,6 +43,8 @@ from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_content_param import ResponseInputContentParam
 
+from discordbot.typings.timeouts import ANSWER_STREAM_TIMEOUT_SECONDS
+
 if TYPE_CHECKING:
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
     from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -256,6 +258,11 @@ async def create_interactions_answer_stream(
             GoogleSearch(search_types=["web_search"], type="google_search"),
         ],
         stream=True,
+        # The SDK's own per-request bound rather than an `asyncio.timeout` around it, for the
+        # reason `typings/timeouts.py` gives: google-genai leaves `http_options.timeout` at None,
+        # so an unbounded call into a black-holed connection never returns and no handler is ever
+        # reached. That would hang the whole QA reply here, since this IS the answer turn.
+        timeout=ANSWER_STREAM_TIMEOUT_SECONDS,
     )
     # `stream=True` returns an async event stream; the overload still types it as a union with
     # the non-streaming Interaction, so narrow to the iterator the adapter consumes.

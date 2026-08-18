@@ -70,6 +70,7 @@ from discordbot.typings.timeouts import (
     FILES_READY_TIMEOUT_SECONDS,
     MUSIC_RENDER_TIMEOUT_SECONDS,
     VIDEO_RENDER_TIMEOUT_SECONDS,
+    PROMPT_REFINE_TIMEOUT_SECONDS,
 )
 
 if TYPE_CHECKING:
@@ -362,16 +363,19 @@ class PromptGenerator(BaseModel):
         ]
         started = time.monotonic()
         try:
-            with logfire.span("gen_reply prompt refine", model=self.prompt_model.name):
-                responses = await self.client.responses.create(
-                    model=self.prompt_model.name,
-                    instructions=instructions,
-                    input=cast("ResponseInputParam", director_input),
-                    reasoning=self.prompt_model.reasoning,
-                    tools=list(self.prompt_model.tools),
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": end_user_id},
-                )
+            # A product deadline, not a transport one: this sits serially ahead of the render, so
+            # the route waits on it with nothing on screen. `typings/timeouts.py` has the rest.
+            async with asyncio.timeout(delay=PROMPT_REFINE_TIMEOUT_SECONDS):
+                with logfire.span("gen_reply prompt refine", model=self.prompt_model.name):
+                    responses = await self.client.responses.create(
+                        model=self.prompt_model.name,
+                        instructions=instructions,
+                        input=cast("ResponseInputParam", director_input),
+                        reasoning=self.prompt_model.reasoning,
+                        tools=list(self.prompt_model.tools),
+                        service_tier="auto",
+                        extra_headers={"x-litellm-end-user-id": end_user_id},
+                    )
             refined = output_text_or_empty(responses=responses).strip()
         except Exception as exc:
             logfire.warn(

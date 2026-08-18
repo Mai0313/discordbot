@@ -34,6 +34,7 @@ from discordbot.typings.models import (
 from discordbot.services.memory import database as memory_db
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
+from discordbot.typings.timeouts import ANSWER_STREAM_TIMEOUT_SECONDS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.gen_reply.cog import (
     UNROUTED_REPLY,
@@ -2355,6 +2356,7 @@ class _FakeInteractionsResource:
         generation_config: object,
         tools: list[object],
         stream: bool,
+        timeout: float,  # noqa: ASYNC109 -- the SDK's own transport parameter, recorded not set
     ) -> AsyncIterator[ResponseStreamEvent]:
         """Records the call and returns the fake Interactions event stream."""
         del environment, tools, stream
@@ -2364,6 +2366,7 @@ class _FakeInteractionsResource:
                 system_instruction=system_instruction,
                 input=input,
                 generation_config=generation_config,
+                timeout=timeout,
             )
         )
         return _stream_events_from(events=self._events)
@@ -2429,6 +2432,9 @@ async def test_youtube_qa_uses_interactions_backend(
     assert len(fake.recorder.calls) == 1
     last_step_parts = fake.recorder.calls[0].input[-1]["content"]
     assert {"type": "video", "uri": url} in last_step_parts
+    # The backend swap must not drop the deadline the Responses path gets from its SDK: this is
+    # a direct-to-Google call, where google-genai supplies none of its own.
+    assert fake.recorder.calls[0].timeout == ANSWER_STREAM_TIMEOUT_SECONDS
     # The shared streamer rendered the reply and a footer from the Interactions usage.
     reply_content = message.replies[0].content or ""
     assert "watched it" in reply_content

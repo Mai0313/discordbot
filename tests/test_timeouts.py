@@ -15,6 +15,7 @@ from discordbot.typings.timeouts import (
     LINK_CONTEXT_GRACE_SECONDS,
     LINK_MEDIA_TIMEOUT_SECONDS,
     THREAD_TITLE_TIMEOUT_SECONDS,
+    PROMPT_REFINE_TIMEOUT_SECONDS,
     STOCK_NEWS_AI_TIMEOUT_SECONDS,
     LINK_MEDIA_DEGRADE_HEADROOM_SECONDS,
 )
@@ -56,41 +57,59 @@ def test_every_link_download_path_shares_one_bound(module_path: str) -> None:
     assert getattr(module, "DOWNLOAD_TIMEOUT_SECONDS", None) is DOWNLOAD_TIMEOUT_SECONDS
 
 
+# The one direct-to-Google path deliberately left unbounded. It can afford the hang the others
+# cannot: `background=True` + `store=True` leave the agent settling server-side and `on_ready`
+# re-attaches after a restart, so the cost is a resumable thread rather than a lost reply. Named
+# here rather than assumed, so adding a render anywhere else fails until someone answers for it.
+_UNBOUNDED_BY_DESIGN = {"src/discordbot/cogs/research/agent.py"}
+
+
 def test_every_direct_to_google_render_carries_its_own_deadline() -> None:
     """`genai.Client` is the one surface where "the provider owns it" needs a number from us.
 
-    google-genai leaves `http_options.timeout` at None, so an unbounded `interactions.create` into
-    a black-holed connection never returns and no `except` is ever reached — a hang rather than an
-    error, which for the VIDEO route means no clip and a status reaction stuck forever. The bound
-    rides as the SDK's own per-request `timeout=` rather than an `asyncio.timeout` around it, so
-    this reads the call sites rather than the module.
+    google-genai leaves `http_options.timeout` at None and builds its httpx client with
+    `timeout=None`, so an unbounded `interactions.create` into a black-holed connection never
+    returns and no `except` is ever reached — a hang rather than an error, which for the VIDEO
+    route means no clip and a status reaction stuck forever, and for the YouTube answer turn means
+    the whole reply. The bound rides as the SDK's own per-request `timeout=` rather than an
+    `asyncio.timeout` around it, so this reads the call sites rather than the module.
+
+    It sweeps the whole package rather than the one file that holds two of them: a guard pointed
+    at a single module reads as covering the rule while a render added next door goes unbounded,
+    which is exactly what it did before #531's review.
     """
-    source = (
-        Path(__file__).resolve().parents[1] / "src/discordbot/cogs/gen_reply/generation.py"
-    ).read_text(encoding="utf-8")
-    calls = [
-        node
-        for node in ast.walk(ast.parse(source=source))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "create"
-        and isinstance(node.func.value, ast.Attribute)
-        and node.func.value.attr == "interactions"
-    ]
-    assert calls, "no interactions.create call found; this guard is reading the wrong module"
-    unbounded = [
-        call.lineno for call in calls if not any(kw.arg == "timeout" for kw in call.keywords)
-    ]
+    root = Path(__file__).resolve().parents[1]
+    checked: list[str] = []
+    unbounded: list[str] = []
+    for path in sorted((root / "src/discordbot").rglob("*.py")):
+        relative = path.relative_to(root).as_posix()
+        for node in ast.walk(ast.parse(source=path.read_text(encoding="utf-8"))):
+            if (
+                not isinstance(node, ast.Call)
+                or not isinstance(node.func, ast.Attribute)
+                or node.func.attr != "create"
+                or not isinstance(node.func.value, ast.Attribute)
+                or node.func.value.attr != "interactions"
+            ):
+                continue
+            checked.append(f"{relative}:{node.lineno}")
+            if relative in _UNBOUNDED_BY_DESIGN:
+                continue
+            if not any(keyword.arg == "timeout" for keyword in node.keywords):
+                unbounded.append(f"{relative}:{node.lineno}")
+    assert checked, "no interactions.create call found; this guard is reading the wrong tree"
     assert unbounded == []
 
 
-def test_the_two_product_deadlines_stayed_short() -> None:
+def test_the_product_deadlines_stayed_short() -> None:
     """Neither bounds a transport; each bounds how long its feature may block something else.
 
     The stock one sits under the process-wide news generation lock that the stock views also take,
-    and the research one runs before the thread exists so the caller sees nothing until it returns.
-    Both would be pointless at the provider's own 600s, so the assertion is on the order of
-    magnitude rather than the exact value.
+    the research one runs before the thread exists so the caller sees nothing until it returns, and
+    the refine one sits serially ahead of the IMAGE/VIDEO render. All three would be pointless at
+    what the provider actually allows (600s read, retried twice, so 1800s), so the assertion is on
+    the order of magnitude rather than the exact value.
     """
     assert STOCK_NEWS_AI_TIMEOUT_SECONDS < 10.0
     assert THREAD_TITLE_TIMEOUT_SECONDS < 60.0
+    assert PROMPT_REFINE_TIMEOUT_SECONDS < 300.0
