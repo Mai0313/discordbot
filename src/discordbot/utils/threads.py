@@ -1122,6 +1122,11 @@ class ThreadsDownloader(BaseModel):
                         f.write(chunk)
             return filepath
         except requests.RequestException as e:
+            # The partial goes with the failure, as in `douyin.py::_download_to`. A caller that
+            # abandoned this download has no handle on the file (the path is only ever returned
+            # on success) and `parse()` builds its conversation before its own `finally`, so a
+            # file left here is a file nothing else can reach.
+            filepath.unlink(missing_ok=True)
             raise RuntimeError(f"Failed to download media from {url}: {e}") from e
 
     def extract_post_data(self, url: str) -> ThreadsPage:

@@ -107,8 +107,14 @@ def _discard_scratch_files_when_the_worker_stops(
     downloading into the shared system temp dir — `asyncio.to_thread` cannot be cancelled — and
     the `finally` that normally deletes those files sits on a path the timeout skipped. Waiting
     for the worker here would just move the stall back onto the listener, so the exit is deferred
-    onto the worker's own completion and nothing awaits it. A worker that ends by raising wrote
-    nothing to clean up.
+    onto the worker's own completion and nothing awaits it.
+
+    A worker that ends by raising is skipped instead: `parse()` builds its conversation BEFORE its
+    own `try`, so a raise leaves the generator dead and its `__exit__` a no-op, and there is no
+    conversation to name the files anyway. `download_media` therefore deletes its own partial on
+    the way out, which is what keeps that branch from leaking. What it does not cover is a target
+    post whose second video fails after the first landed; that predates the bound and is the one
+    hole left in this path.
     """
 
     def _on_worker_done(task: "Task[object]") -> None:
