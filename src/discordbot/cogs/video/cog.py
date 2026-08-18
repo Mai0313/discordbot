@@ -3,7 +3,6 @@
 import asyncio
 from pathlib import Path
 import tempfile
-import threading
 
 import logfire
 import nextcord
@@ -20,7 +19,7 @@ from discordbot.utils.douyin import (
 )
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import DOWNLOAD_TIMEOUT_SECONDS
-from discordbot.utils.downloader import VideoDownloader
+from discordbot.utils.downloader import VideoDownloader, download_with_stop_signal
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     DISCORD_ATTACHMENT_LIMIT,
@@ -108,22 +107,21 @@ class VideoCogs(commands.Cog):
             )
             return
 
-        # Set on the way out so a download that outran the bound stops promptly at its next yt-dlp
-        # progress tick rather than running the whole transfer to completion inside a directory
-        # that is about to vanish: `asyncio.to_thread` cannot be cancelled, so nothing else ends it.
-        stop_signal = threading.Event()
         # A scratch directory per invocation, like the Douyin branch: aborting the worker leaves
         # yt-dlp's partial `.part` behind (it is kept for resume, and `get_params` sets no
-        # `nopart`), which the delivered file's own unlink never covers. Cleanup errors are
-        # ignored because the abandoned worker may still be writing in here.
+        # `nopart`), which the delivered file's own unlink never covers. `download_with_stop_signal`
+        # is what makes the abandoned worker stop BEFORE this teardown removes the directory out
+        # from under it; without that join yt-dlp re-creates the directory at its next format and
+        # writes into one nothing will ever delete. Cleanup errors are ignored for the residual
+        # race the join cannot close.
         try:
             with tempfile.TemporaryDirectory(
                 prefix="ytdlp-", ignore_cleanup_errors=True
             ) as download_dir:
                 downloader = VideoDownloader(output_folder=download_dir)
                 async with asyncio.timeout(delay=DOWNLOAD_TIMEOUT_SECONDS):
-                    result = await asyncio.to_thread(
-                        downloader.download, url=url, quality=quality, stop_signal=stop_signal
+                    result = await download_with_stop_signal(
+                        downloader=downloader, url=url, quality=quality
                     )
                 with result:
                     file_size_mb = result.filename.stat().st_size / 1024 / 1024
@@ -155,7 +153,6 @@ class VideoCogs(commands.Cog):
                         content=f"-# 下載失敗\n檔案大小超過 {file_size_mb:.1f}MB"
                     )
         except Exception as error:
-            stop_signal.set()
             # Broad on purpose: the bot registers no application-command error handler, so
             # anything escaping here would strand the user on "正在下載影片..." forever.
             logfire.warn(
@@ -191,11 +188,11 @@ class VideoCogs(commands.Cog):
         # other is still uploading. The directory is removed once delivery finishes.
         #
         # Cleanup errors are ignored because a download that outran the bound is still writing in
-        # here — `asyncio.to_thread` cannot be cancelled, and this teardown is what stops it — so
+        # here (`asyncio.to_thread` cannot be cancelled, and this teardown is what stops it), so
         # `rmtree` can race a file appearing or vanishing under it. This call sits ahead of the
-        # command's own `try`, so an `OSError` raised here would escape into a dispatcher with no
-        # handler and strand the caller on the progress message, which is the failure the bound
-        # was added to remove.
+        # command's own `try`, so an `OSError` raised here escapes into a dispatcher with no
+        # handler: the caller has already been told what happened by then, so it costs an
+        # unhandled-exception log rather than a stranded progress message, and neither is wanted.
         with tempfile.TemporaryDirectory(
             prefix="douyin-", ignore_cleanup_errors=True
         ) as download_dir:

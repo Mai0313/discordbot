@@ -25,8 +25,6 @@ semaphore only bounds concurrent multi-hundred-MB downloads on the host.
 
 import asyncio
 import tempfile
-import threading
-import contextlib
 
 from google import genai
 import logfire
@@ -36,8 +34,8 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 
 from discordbot.typings.video import VideoQuality
 from discordbot.utils.bilibili import BILIBILI_URL_RE
-from discordbot.typings.timeouts import DOWNLOAD_STOP_JOIN_SECONDS, LINK_MEDIA_TIMEOUT_SECONDS
-from discordbot.utils.downloader import VideoMetadata, DownloadResult, VideoDownloader
+from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.utils.downloader import VideoMetadata, VideoDownloader, download_with_stop_signal
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 
@@ -150,46 +148,6 @@ def _render_video_text(metadata: VideoMetadata, url: str) -> str:
     return "\n".join(lines)
 
 
-def _retrieve_quietly(task: "asyncio.Task[DownloadResult]") -> None:
-    """Retrieves an abandoned task's outcome so asyncio never logs it as never-retrieved."""
-    if not task.cancelled():
-        task.exception()
-
-
-async def _download_with_stop_signal(*, downloader: VideoDownloader, url: str) -> DownloadResult:
-    """Runs the blocking download with a stop signal cancellation can actually deliver.
-
-    `asyncio.to_thread` cannot cancel its worker, so an abandoned build (a post-route
-    discard, the media timeout) would otherwise leave yt-dlp downloading for minutes —
-    holding a shared thread-pool slot and even re-creating the scratch dir after its removal
-    (yt-dlp re-makes the output dir before each DASH format). On any interruption the signal
-    makes the worker abort at its next progress tick, and the bounded join keeps the scratch
-    dir alive until the worker has really stopped, so its removal never races a live writer.
-    """
-    stop_signal = threading.Event()
-    download_task = asyncio.create_task(
-        coro=asyncio.to_thread(
-            downloader.download, url=url, quality=AI_INGEST_QUALITY, stop_signal=stop_signal
-        )
-    )
-    download_task.add_done_callback(_retrieve_quietly)
-    try:
-        return await asyncio.shield(download_task)
-    except BaseException:
-        stop_signal.set()
-        done, _pending = await asyncio.wait({download_task}, timeout=DOWNLOAD_STOP_JOIN_SECONDS)
-        if done:
-            with contextlib.suppress(BaseException):
-                download_task.result()
-        else:
-            logfire.warn(
-                "Bilibili download worker ignored the stop signal within the join window",
-                url=url,
-                join_seconds=DOWNLOAD_STOP_JOIN_SECONDS,
-            )
-        raise
-
-
 async def _fetch_and_upload(
     *, url: str, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
@@ -204,7 +162,9 @@ async def _fetch_and_upload(
         # The semaphore covers only the download. Holding it across the upload would block
         # other links for minutes while talking to Google, which is not what it bounds.
         async with bilibili_fetch_semaphore.get():
-            download = await _download_with_stop_signal(downloader=downloader, url=url)
+            download = await download_with_stop_signal(
+                downloader=downloader, url=url, quality=AI_INGEST_QUALITY
+            )
         size_bytes = download.filename.stat().st_size
         if size_bytes > FILES_API_MAX_BYTES:
             logfire.warn(

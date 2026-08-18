@@ -21,6 +21,7 @@ from discordbot.cogs.games import cog as games
 from discordbot.cogs.video import cog as video
 from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
+from discordbot.utils.douyin import douyin_failure_message
 from discordbot.cogs.template import cog as template
 from discordbot.typings.games import GameParticipant
 from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
@@ -404,10 +405,13 @@ async def test_a_stalled_download_command_gives_up_instead_of_stranding_the_call
     """`/download_video` had no outer bound at all, so a stalling host never ended the command.
 
     yt-dlp's own `socket_timeout` is per socket and multiplies by three retry settings and by
-    every fragment, which left the caller on `正在下載影片...` with no failure and no exit. The
-    stop signal is asserted alongside the message because `asyncio.to_thread` cannot be
-    cancelled: without it the abandoned worker runs to completion and leaves the finished file
-    in the shared system temp dir, where nothing deletes it.
+    every fragment, which left the caller on `正在下載影片...` with no failure and no exit.
+
+    The scratch directory is asserted gone because the signal alone does not get it there.
+    `asyncio.to_thread` cannot be cancelled, so the abandoned worker keeps going, and yt-dlp
+    re-makes its output dir before each DASH format: a teardown that does not JOIN the worker
+    first removes an empty directory and the worker then re-creates it, leaving one nothing will
+    ever delete. The stub writes once more after being signalled precisely to catch that.
     """
     monkeypatch.setattr(video, "DOWNLOAD_TIMEOUT_SECONDS", 0.05)
     cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
@@ -419,25 +423,82 @@ async def test_a_stalled_download_command_gives_up_instead_of_stranding_the_call
         )
     )
     seen: list[threading.Event] = []
+    folders: list[Path] = []
+    wrote_again = threading.Event()
 
-    def never_returns(
+    def stalls_then_writes_once_more(
         url: str, quality: str, dry_run: bool = False, stop_signal: threading.Event | None = None
     ) -> DownloadResultStub:
-        """Blocks the worker thread the way a stalling CDN read does."""
+        """Blocks like a stalled read, then writes again the way yt-dlp does per format."""
         del url, quality, dry_run
         assert stop_signal is not None
         seen.append(stop_signal)
-        time.sleep(1.0)
-        raise AssertionError("should have been abandoned")
+        assert stop_signal.wait(timeout=5.0)
+        # A tick's worth of work between the signal and the next write, so the assertion below
+        # decides an ordering rather than a race: without the join the teardown wins this gap.
+        time.sleep(0.3)
+        folders[-1].mkdir(parents=True, exist_ok=True)
+        (folders[-1] / "video.f140.mp4.part").write_bytes(b"partial")
+        wrote_again.set()
+        raise RuntimeError("stopped")
 
-    monkeypatch.setattr(
-        video, "VideoDownloader", lambda output_folder: SimpleNamespace(download=never_returns)
-    )
+    def record_folder(output_folder: str) -> SimpleNamespace:
+        """Captures the per-invocation scratch dir so the test can assert it was removed."""
+        folders.append(Path(output_folder))
+        return SimpleNamespace(download=stalls_then_writes_once_more)
+
+    monkeypatch.setattr(video, "VideoDownloader", record_folder)
     interaction = FakeInteraction(filesize_limit=25 * 1024 * 1024)
     await VideoCogs.download_video.callback(cog, interaction, url="https://x.test", quality="best")
 
     assert interaction.edits[-1]["content"] == "-# 檔案無法下載"
     assert [signal.is_set() for signal in seen] == [True]
+    # Waited for rather than asserted straight away: the leak this pins is the worker writing
+    # AFTER the teardown, so checking before it has written would pass either way.
+    assert await asyncio.to_thread(wrote_again.wait, 5.0)
+    assert not folders[-1].exists()
+
+
+async def test_a_stalled_douyin_download_command_reports_a_plain_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Douyin branch of `/download_video` was unbounded alongside the yt-dlp one.
+
+    It reports through `douyin_failure_message`, which maps a `TimeoutError` to its own line, so
+    a bound firing reads as "Douyin was slow" and never as a deleted post. Its abandoned worker
+    is stopped by the scratch directory going away rather than by a signal, which is why this
+    asserts the directory and not an event.
+    """
+    monkeypatch.setattr(video, "DOWNLOAD_TIMEOUT_SECONDS", 0.05)
+    cog = VideoCogs(bot=as_bot(fake=SimpleNamespace()))
+    serve_dir = tmp_path / "serve"
+    serve_dir.mkdir()
+    cog.media_delivery = MediaDeliveryPlanner(
+        media_hosting=MediaHostingService(
+            config=make_media_hosting_config(enabled=False, base_url="", serve_dir=str(serve_dir))
+        )
+    )
+    folders: list[Path] = []
+
+    def never_returns(url: str, quality: str, max_images: int = 0) -> object:
+        """Blocks the worker thread the way a stalling Douyin CDN read does."""
+        del url, quality, max_images
+        time.sleep(0.5)
+        raise AssertionError("should have been abandoned")
+
+    def record_folder(output_folder: str) -> SimpleNamespace:
+        """Captures the per-invocation scratch dir so the test can assert it was removed."""
+        folders.append(Path(output_folder))
+        return SimpleNamespace(download=never_returns)
+
+    monkeypatch.setattr(video, "DouyinDownloader", record_folder)
+    interaction = FakeInteraction(filesize_limit=25 * 1024 * 1024)
+    await VideoCogs.download_video.callback(
+        cog, interaction, url="https://v.douyin.com/abc/", quality="best"
+    )
+
+    assert interaction.edits[-1]["content"] == douyin_failure_message(error=TimeoutError())
+    assert not folders[-1].exists()
 
 
 async def test_a_stalled_threads_expansion_gives_up_and_cleans_up_after_the_worker(

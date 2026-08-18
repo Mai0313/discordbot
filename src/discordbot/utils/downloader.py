@@ -1,23 +1,31 @@
 """yt-dlp wrapper utilities shared by `/download_video` and the Bilibili link builder.
 
-The command calls `download` and nothing else; the metadata probe and the stop-signal
-half exist for the link builder, which has to decide whether to fetch at all and has to
-be able to abandon a download that outran the reply's budget.
+The metadata probe exists for the link builder, which has to decide whether to fetch at all.
+`download_with_stop_signal` is how every async caller abandons a download that outran its
+budget, and it lives here rather than at either call site because getting it wrong leaks a
+scratch directory rather than failing.
 """
 
 import types
 from typing import Any, ClassVar
+import asyncio
 from pathlib import Path
 import threading
+import contextlib
 from urllib.parse import parse_qs, urlparse
 
 from yt_dlp import YoutubeDL
+import logfire
 from pydantic import Field, BaseModel
 from requests import Session
 from requests.exceptions import RequestException
 
 from discordbot.typings.video import VideoQuality
-from discordbot.typings.timeouts import YTDLP_SOCKET_TIMEOUT_SECONDS, SHARE_RESOLVE_TIMEOUT_SECONDS
+from discordbot.typings.timeouts import (
+    DOWNLOAD_STOP_JOIN_SECONDS,
+    YTDLP_SOCKET_TIMEOUT_SECONDS,
+    SHARE_RESOLVE_TIMEOUT_SECONDS,
+)
 
 
 class DownloadStoppedError(Exception):
@@ -327,6 +335,49 @@ class VideoDownloader(BaseModel):
             is_live=bool(info.get("is_live") or False),
             from_playlist=from_playlist,
         )
+
+
+def _retrieve_quietly(task: "asyncio.Task[DownloadResult]") -> None:
+    """Retrieves an abandoned task's outcome so asyncio never logs it as never-retrieved."""
+    if not task.cancelled():
+        task.exception()
+
+
+async def download_with_stop_signal(
+    *, downloader: VideoDownloader, url: str, quality: VideoQuality
+) -> DownloadResult:
+    """Runs the blocking download so an abandoned worker really stops before its files go.
+
+    `asyncio.to_thread` cannot cancel its worker, so an interrupted download (a bound expiring,
+    a post-route discard) would otherwise leave yt-dlp running: holding a shared thread-pool
+    slot, and re-creating the caller's scratch dir after its removal, since yt-dlp re-makes the
+    output dir before each DASH format. On any interruption the signal makes the worker abort at
+    its next progress tick, and the bounded join keeps that dir alive until the worker has really
+    stopped, so its removal never races a live writer. The join is what makes the two ordered;
+    setting the signal alone only asks, and the ask is answered at a tick that may never come.
+    """
+    stop_signal = threading.Event()
+    download_task = asyncio.create_task(
+        coro=asyncio.to_thread(
+            downloader.download, url=url, quality=quality, stop_signal=stop_signal
+        )
+    )
+    download_task.add_done_callback(_retrieve_quietly)
+    try:
+        return await asyncio.shield(download_task)
+    except BaseException:
+        stop_signal.set()
+        done, _pending = await asyncio.wait({download_task}, timeout=DOWNLOAD_STOP_JOIN_SECONDS)
+        if done:
+            with contextlib.suppress(BaseException):
+                download_task.result()
+        else:
+            logfire.warn(
+                "Download worker ignored the stop signal within the join window",
+                url=url,
+                join_seconds=DOWNLOAD_STOP_JOIN_SECONDS,
+            )
+        raise
 
 
 if __name__ == "__main__":

@@ -150,8 +150,12 @@ class DouyinCogs(commands.Cog):
         # A private directory per invocation, because the filenames are derived from the post id:
         # two expansions of the same post in one shared temp dir would write the same paths,
         # letting one truncate the other's file and letting either one's cleanup delete a file
-        # the other is still uploading.
-        with tempfile.TemporaryDirectory(prefix="douyin-") as download_dir:
+        # the other is still uploading. Cleanup errors are ignored for the same reason the
+        # `/download_video` Douyin branch ignores them: on a timeout the abandoned worker is
+        # still writing in here, so `rmtree` can race a file appearing or vanishing under it.
+        with tempfile.TemporaryDirectory(
+            prefix="douyin-", ignore_cleanup_errors=True
+        ) as download_dir:
             downloader = self.downloader_factory(output_folder=download_dir)
             try:
                 # Both bounds cover only the Douyin-facing work, never the Discord upload that
