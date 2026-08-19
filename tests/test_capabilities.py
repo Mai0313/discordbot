@@ -344,7 +344,7 @@ def _modules_declaring_a_picker_gate() -> list[str]:
 def test_slash_command_scan_resolves_subcommands() -> None:
     """The scan must reach group subcommands, since a silent shrink is what it guards against."""
     paths = _slash_command_paths()
-    assert {"maplestory monster", "credit borrow", "games blackjack_history"} <= paths
+    assert {"credit borrow", "games blackjack_history"} <= paths
     # A nested group: `memory server` is itself a subcommand of `memory`.
     assert "memory server show" in paths
     assert not {"memory", "memory server", "credit"} & paths

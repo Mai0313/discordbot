@@ -96,14 +96,3 @@ button to write back. Only the person who filed a report can see it here.
 
 - `/download_video` — download a video from a supported platform, a Douyin link included; a Douyin photo post comes back as images
 - `/ping` — my response latency
-
-MapleStory database lookup:
-
-- `/maplestory monster` — monster info
-- `/maplestory equip` — equipment
-- `/maplestory scroll` — scrolls
-- `/maplestory npc` — NPCs
-- `/maplestory quest` — quests
-- `/maplestory map` — maps
-- `/maplestory item` — where an item drops
-- `/maplestory stats` — database statistics
