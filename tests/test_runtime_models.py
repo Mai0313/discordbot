@@ -9,9 +9,11 @@ substring for LiteLLM to match, it falls through to the pre-3 branch and sends
 `thinkingBudget: 0`, which a Gemini 3.x model rejects. Neither shows up in tests because both
 only surface against the live API, which is why the floor is pinned here.
 
-`slow_model`'s no-alias rule is the same trap through the other door, so it is guarded here too:
-an alias narrows the `thinking_level` vocabulary the YouTube answer turn may hand to
-`interactions.create`, which is how #459 lost whole replies.
+The no-alias rule is the same trap through the other door, so it is guarded here too, at two
+strengths. No tier may name an alias at all, because the substring is what decides the whole
+translation. `slow_model` additionally may not drift off `high`, since it is the one tier whose
+effort is chosen at runtime and handed to `interactions.create`, where an alias narrows the
+accepted `thinking_level` vocabulary and #459 lost whole replies to it.
 """
 
 from types import SimpleNamespace
@@ -63,6 +65,27 @@ def test_no_tier_asks_for_an_effort_gemini_cannot_honor() -> None:
     )
 
 
+def test_no_tier_dispatches_an_alias() -> None:
+    """Every tier names an explicit snapshot rather than a `*-latest` alias.
+
+    `slow_model` has a hard reason of its own, guarded below. Every other tier has a quieter
+    one: an alias carries no `gemini-3` substring, so LiteLLM translates its effort into a
+    `thinkingBudget` on the pre-3 branch instead of a `thinking_level`, and picks `v1beta`
+    over `v1alpha` while it is there. Nothing fails, the model is simply asked for something
+    other than what the tier says. Pinning keeps that decision in the string written here
+    instead of in LiteLLM's name matching.
+    """
+    offenders = {
+        name: settings.name
+        for name, settings in _catalog_models().items()
+        if "latest" in settings.name
+    }
+    assert offenders == {}, (
+        "A `*-latest` alias moves under the deployment and switches LiteLLM onto its pre-3 "
+        f"translation branch. Name the snapshot instead. Offenders: {offenders}"
+    )
+
+
 def test_the_default_effort_is_the_gemini_floor() -> None:
     """A tier that names no effort still gets one the model can honor."""
     assert ModelSettings(name="gemini-3.7-flash").effort == "minimal"
@@ -78,7 +101,9 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
 
     Every hour of a week is swept rather than one instant per branch the catalog has today: the
     dispatch condition is the catalog's own to change, so a branch added on a second condition
-    would be invisible to a fixed pair of timestamps and the guard would report nothing.
+    would be invisible to a fixed pair of timestamps and the guard would report nothing. That
+    sweep is also why the catalog-wide alias guard above does not replace this one: reading the
+    property once shows only the branch the clock happened to select.
     """
     monday = datetime(year=2026, month=5, day=18, tzinfo=UTC)
     aliases: dict[str, str] = {}
