@@ -7,7 +7,6 @@ from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
-    CheckinResult,
     PortfolioView,
     TransferResult,
     LeaderboardEntry,
@@ -25,7 +24,6 @@ from discordbot.cogs.economy.boards import (
     BALANCE_LEADERBOARD_BOARD_FILENAME,
 )
 from discordbot.services.economy.database import (
-    checkin_reward,
     apply_vip_blackjack_bonus,
     monthly_rate_bps_to_percent,
 )
@@ -44,7 +42,6 @@ CASINO_COLOR = 0xEB459E
 BORROW_COLOR = 0xF1C40F
 REPAY_COLOR = 0x2ECC71
 CENTRAL_BANK_COLOR = 0x1ABC9C
-CHECKIN_COLOR = 0x9B59B6
 VIP_COLOR = 0xF1C40F
 ERROR_COLOR = DISCORD_RED
 
@@ -83,16 +80,11 @@ class LoanParty(BaseModel):
     )
 
 
-def _vip_perk_lines(checkin_streak: int = 1) -> str:
+def _vip_perk_lines() -> str:
     """Formats VIP perks with the base number and the boosted number."""
-    base_checkin = checkin_reward(streak=checkin_streak, is_vip=False)
-    vip_checkin = checkin_reward(streak=checkin_streak, is_vip=True)
     sample_win = 10_000
     boosted_win = apply_vip_blackjack_bonus(delta=sample_win, is_vip=True)
-    checkin_label = "簽到基礎" if checkin_streak == 1 else f"第 {checkin_streak} 天簽到"
     return (
-        f"{checkin_label} {amount_code(amount=base_checkin, compact=True)} → "
-        f"{amount_code(amount=vip_checkin, compact=True)}\n"
         f"Blackjack 贏局例 {amount_code(amount=sample_win, signed=True, compact=True)} → "
         f"{amount_code(amount=boosted_win, signed=True, compact=True)}"
     )
@@ -597,34 +589,6 @@ def build_central_bank_status_embed(*, status: CentralBankStatus) -> Embed:
     return embed
 
 
-def build_checkin_embed(*, actor_name: str, avatar_url: str, result: CheckinResult) -> Embed:
-    """Builds the daily check-in result embed."""
-    vip_badge = " · 👑 VIP 2x" if result.is_vip else ""
-    embed = Embed(
-        title="📅 每日簽到",
-        description=f"## {currency_text(amount=result.amount, signed=True, compact=True)} 入帳",
-        color=CHECKIN_COLOR,
-    )
-    embed.set_author(name=f"{actor_name} 的簽到", icon_url=avatar_url)
-    _set_optional_thumbnail(embed=embed, avatar_url=avatar_url)
-    embed.add_field(name="連續簽到", value=f"第 {result.streak} / 7 天", inline=True)
-    embed.add_field(
-        name="目前餘額", value=amount_code(amount=result.new_balance, compact=True), inline=True
-    )
-    if result.is_vip:
-        base_reward = checkin_reward(streak=result.streak, is_vip=False)
-        embed.add_field(
-            name="👑 VIP加成",
-            value=(
-                f"本日簽到 {amount_code(amount=base_reward, compact=True)} → "
-                f"{amount_code(amount=result.amount, compact=True)}"
-            ),
-            inline=False,
-        )
-    embed.set_footer(text=f"連續 7 天為一個 cycle | 每天 0:00 (Asia/Taipei) 重置{vip_badge}")
-    return embed
-
-
 def build_vip_already_embed(*, actor_name: str, avatar_url: str) -> Embed:
     """Builds the embed shown when a member already owns VIP."""
     embed = Embed(
@@ -659,7 +623,7 @@ def build_vip_success_embed(
         title="👑 升級 VIP 成功",
         description=(
             f"### {currency_text(amount=-result.cost, signed=True, compact=True)} 扣款\n"
-            "簽到與 Blackjack 贏局加成已生效"
+            "Blackjack 贏局加成已生效"
         ),
         color=VIP_COLOR,
     )

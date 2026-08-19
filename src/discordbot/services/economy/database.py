@@ -26,8 +26,8 @@ opens an `AsyncSession` bound to the current `_engine`, so tests can
 monkeypatch `_engine` per-test and every subsequent call sees the swap.
 
 VIP, admin status, and leaderboard visibility are boolean columns on
-`user_account`. VIP bumps daily check-in rewards and the player's winning
-payout from games. The flag is permanent once set. Admin and central-banker
+`user_account`. VIP bumps the player's winning payout from games. The flag is
+permanent once set. Admin and central-banker
 status gate maintenance-only economy commands and are set out-of-band by a
 direct DB write; `set_admin` / `set_central_banker` exist for that path, but
 nothing at runtime calls them. Daily casino counters live on `casino_account` so
@@ -44,7 +44,7 @@ player delta and the house-side mirror in one atomic SQLite transaction.
 """
 
 from time import monotonic
-from typing import TYPE_CHECKING, Any, Final, cast
+from typing import Any, Final
 import asyncio
 from datetime import datetime, timedelta
 from collections.abc import Sequence
@@ -75,15 +75,12 @@ from discordbot.typings.economy import (
     TRANSFER_TAX_BPS,
     MIN_INTEREST_DAYS,
     VIP_PURCHASE_COST,
-    CHECKIN_STREAK_CYCLE,
     MAX_LOAN_MONTHLY_RATE_BPS,
     MIN_LOAN_MONTHLY_RATE_BPS,
-    BASE_CHECKIN_REWARD_AMOUNT,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     AdminAccount,
     CreditResult,
-    CheckinResult,
     PortfolioView,
     LoanLenderType,
     TransferResult,
@@ -116,14 +113,9 @@ from discordbot.utils.stored_integer import StoredInteger
 from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
 
-if TYPE_CHECKING:
-    from sqlalchemy.engine import CursorResult
-    from sqlalchemy.sql.elements import ColumnElement
-
 # SELECT-then-conditional-UPDATE loops keep a small retry budget. With WAL +
 # busy_timeout, contention is rare and resolves on the first or second retry;
 # the bound prevents a degenerate hot-row livelock.
-_CHECKIN_MAX_RETRIES: Final[int] = 8
 _VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
 _CLAMPED_DELTA_MAX_RETRIES: Final[int] = 8
 _JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
@@ -169,12 +161,11 @@ class Base(DeclarativeBase):
 
 
 class UserAccount(Base):
-    """Persistent identity, VIP, admin, and check-in state for a Discord user.
+    """Persistent identity, VIP, and admin state for a Discord user.
 
     Spendable balance and lifetime gross totals live in `user_wallet`. Debt
     state lives in `loan_contract` and daily casino counters live in
-    `casino_account`. `last_checkin_at` is nullable for users who have never
-    checked in.
+    `casino_account`.
 
     Attributes:
         user_id: Discord user ID; primary key.
@@ -182,10 +173,6 @@ class UserAccount(Base):
         avatar_url: Last-seen Discord avatar URL (refreshed on writes that carry it).
         updated_at: Taiwan-local timestamp of the last write.
         is_vip: Permanent VIP flag toggled by a successful `/vip` purchase.
-        last_checkin_at: Timestamp of the latest `/checkin` payout; `None`
-            for users who have never checked in.
-        checkin_streak: Consecutive-day streak (1..`CHECKIN_STREAK_CYCLE`),
-            persisted after the latest `/checkin`. 0 means never checked in.
         is_admin: Whether the user can run Discord-side economy admin commands.
         is_central_banker: Whether the user can decide central-bank loan
             proposals and force collection with `/central_bank call`; separate
@@ -202,10 +189,6 @@ class UserAccount(Base):
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
     is_vip: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    last_checkin_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    checkin_streak: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     is_central_banker: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0", nullable=False
@@ -563,25 +546,6 @@ def open_session() -> AsyncSession:
     return AsyncSession(bind=_engine, expire_on_commit=False)
 
 
-def checkin_reward(streak: int, is_vip: bool) -> int:
-    """Returns the gross check-in payout for a streak day.
-
-    The reward formula is `BASE * (1 + (streak - 1) * 0.5)` where `streak`
-    is the 1..`CHECKIN_STREAK_CYCLE` day in the cycle. VIP doubles the base
-    before the streak bonus.
-
-    Args:
-        streak: Streak counter for this check-in (1..`CHECKIN_STREAK_CYCLE`).
-        is_vip: VIP status of the account at check-in time.
-
-    Returns:
-        Integer reward amount.
-    """
-    base = BASE_CHECKIN_REWARD_AMOUNT * (2 if is_vip else 1)
-    multiplier = 1.0 + (streak - 1) * 0.5
-    return int(base * multiplier)
-
-
 def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
     """Converts a user-facing monthly percent into basis points."""
     return max(
@@ -624,8 +588,6 @@ async def _upsert_user_metadata_in_session(
         avatar_url=avatar_url,
         updated_at=now,
         is_vip=False,
-        last_checkin_at=None,
-        checkin_streak=0,
         is_admin=False,
         is_central_banker=False,
         hide_from_leaderboard=False,
@@ -1745,237 +1707,6 @@ async def apply_jackpot_settlement_batch(
             raise
 
 
-def _next_checkin_streak(
-    last_checkin_at: datetime | None,
-    current_streak: int,
-    today_midnight: datetime,
-    yesterday_midnight: datetime,
-    tomorrow_midnight: datetime,
-) -> int | None:
-    """Returns the streak counter for the next check-in.
-
-    Returns `None` when the user has already checked in today.
-
-    Args:
-        last_checkin_at: Stored `last_checkin_at` (Taipei-naive) or `None`.
-        current_streak: Currently-persisted streak counter.
-        today_midnight: 00:00 Asia/Taipei for the request day.
-        yesterday_midnight: 00:00 Asia/Taipei for the prior day.
-        tomorrow_midnight: 00:00 Asia/Taipei for the next day.
-
-    Returns:
-        The streak number to persist, or `None` if today is already done.
-    """
-    if last_checkin_at is None:
-        return 1
-    last_local = _as_taipei(dt=last_checkin_at)
-    if today_midnight <= last_local < tomorrow_midnight:
-        return None
-    if (
-        yesterday_midnight <= last_local < today_midnight
-        and 0 < current_streak < CHECKIN_STREAK_CYCLE
-    ):
-        return current_streak + 1
-    return 1
-
-
-async def _insert_first_checkin_in_session(
-    session: AsyncSession, user_id: int, name: str, avatar_url: str, now: datetime
-) -> tuple[int, int, int, bool] | None:
-    """Inserts a fresh user row crediting the day-1 check-in reward.
-
-    Returns `None` when another coroutine already inserted the row so
-    the caller retries on the next loop iteration.
-
-    Args:
-        session: Active SQLAlchemy session.
-        user_id: Discord user ID checking in.
-        name: Last-seen Discord username to store on the account.
-        avatar_url: Last-seen Discord avatar URL to store when available.
-        now: `_database_now()` value pinned for this transaction.
-
-    Returns:
-        `(reward, balance_after, streak_after, vip_after)` on success or
-        `None` when `ON CONFLICT DO NOTHING` rejected the insert.
-    """
-    new_streak = 1
-    reward = checkin_reward(streak=new_streak, is_vip=False)
-    insert_stmt = (
-        insert(UserAccount)
-        .values(
-            user_id=user_id,
-            name=name or str(user_id),
-            avatar_url=avatar_url,
-            is_vip=False,
-            last_checkin_at=now,
-            checkin_streak=new_streak,
-            is_admin=False,
-            is_central_banker=False,
-            hide_from_leaderboard=False,
-            updated_at=now,
-        )
-        .on_conflict_do_nothing(index_elements=["user_id"])
-    )
-    insert_result = cast("CursorResult[Any]", await session.execute(statement=insert_stmt))
-    if (insert_result.rowcount or 0) == 0:
-        return None
-    credit_result = await session.execute(
-        statement=_build_credit_upsert(user_id=user_id, name=name, amount=reward, now=now)
-    )
-    balance_after = credit_result.scalar_one()
-    invalidate_economy_leaderboard_cache()
-    return reward, balance_after, new_streak, False
-
-
-async def _update_checkin_row_in_session(  # noqa: PLR0913 -- session helper carries account identity + observed row
-    session: AsyncSession,
-    user_id: int,
-    name: str,
-    avatar_url: str,
-    now: datetime,
-    new_streak: int,
-    row: tuple[datetime | None, int, bool, str],
-) -> tuple[int, int, int, bool] | None:
-    """Performs the conditional UPDATE for an existing account.
-
-    The WHERE clause pins `last_checkin_at` to the observed value so
-    concurrent check-ins cannot double-credit.
-
-    Args:
-        session: Active SQLAlchemy session.
-        user_id: Discord user ID checking in.
-        name: Last-seen Discord username to refresh on the account.
-        avatar_url: Last-seen Discord avatar URL to refresh when set.
-        now: `_database_now()` value pinned for this transaction.
-        new_streak: Streak counter chosen by `_next_checkin_streak`.
-        row: Tuple returned by the prior SELECT.
-
-    Returns:
-        `(reward, balance_after, streak_after, vip_after)` on success or
-        `None` when the conditional UPDATE matched zero rows.
-    """
-    last_checkin_at, _current_streak, is_vip, existing_name = row
-    reward = checkin_reward(streak=new_streak, is_vip=is_vip)
-
-    update_values: dict[str, Any] = {
-        "last_checkin_at": now,
-        "checkin_streak": new_streak,
-        "updated_at": now,
-    }
-    if name and name != existing_name:
-        update_values["name"] = name
-    if avatar_url:
-        update_values["avatar_url"] = avatar_url
-
-    last_checkin_gate: ColumnElement[bool]
-    if last_checkin_at is None:
-        last_checkin_gate = UserAccount.last_checkin_at.is_(None)
-    else:
-        last_checkin_gate = UserAccount.last_checkin_at == last_checkin_at
-
-    stmt = (
-        update(UserAccount)
-        .where(UserAccount.user_id == user_id, last_checkin_gate)
-        .values(**update_values)
-        .returning(UserAccount.checkin_streak, UserAccount.is_vip)
-    )
-    update_result = await session.execute(statement=stmt)
-    updated_row = update_result.one_or_none()
-    if updated_row is None:
-        return None
-    streak_after, vip_after = updated_row
-    credit_result = await session.execute(
-        statement=_build_credit_upsert(user_id=user_id, name=name, amount=reward, now=now)
-    )
-    balance_after = credit_result.scalar_one()
-    invalidate_economy_leaderboard_cache()
-    return reward, balance_after, streak_after, bool(vip_after)
-
-
-async def checkin(user_id: int, name: str, avatar_url: str = "") -> CheckinResult | None:
-    """Records a daily check-in and credits the streak-adjusted reward.
-
-    Returns `None` when the user has already checked in today (Taipei
-    local date), and also when the retry budget below is exhausted; the
-    caller cannot tell the two apart. On first check-in or after a missed
-    day the streak resets to 1; otherwise the streak advances by 1 and
-    cycles back to 1 after reaching `CHECKIN_STREAK_CYCLE`. The reward is
-    computed with `checkin_reward` and persisted alongside the streak
-    counter in the same write. VIP perks (2x base) read the persisted flag
-    inside the same transaction so a freshly-bought VIP immediately applies
-    on the next check-in.
-
-    The SELECT-then-conditional-UPDATE pattern (gated on the
-    observed `last_checkin_at` value) prevents two parallel coroutines
-    from double-crediting. First-sight INSERTs use ``ON CONFLICT DO
-    NOTHING`` to defer to whichever writer landed first; the loser falls
-    through to the next retry with the freshly-visible row.
-
-    Args:
-        user_id: Discord user ID checking in.
-        name: Last-seen Discord username to store on the account.
-        avatar_url: Last-seen Discord avatar URL to store when available.
-
-    Returns:
-        `CheckinResult` describing the credit, or `None` when the user
-        already checked in today or the retry budget ran out.
-    """
-    await _ensure_schema()
-    now = _database_now()
-    today_midnight = _taipei_midnight(now=now)
-    yesterday_midnight = today_midnight - timedelta(days=1)
-    tomorrow_midnight = today_midnight + timedelta(days=1)
-
-    async with open_session() as session:
-        for _ in range(_CHECKIN_MAX_RETRIES):
-            read_result = await session.execute(
-                statement=select(
-                    UserAccount.last_checkin_at,
-                    UserAccount.checkin_streak,
-                    UserAccount.is_vip,
-                    UserAccount.name,
-                ).where(UserAccount.user_id == user_id)
-            )
-            row = read_result.one_or_none()
-
-            if row is None:
-                outcome = await _insert_first_checkin_in_session(
-                    session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
-                )
-            else:
-                new_streak = _next_checkin_streak(
-                    last_checkin_at=row[0],
-                    current_streak=row[1],
-                    today_midnight=today_midnight,
-                    yesterday_midnight=yesterday_midnight,
-                    tomorrow_midnight=tomorrow_midnight,
-                )
-                if new_streak is None:
-                    return None
-                outcome = await _update_checkin_row_in_session(
-                    session=session,
-                    user_id=user_id,
-                    name=name,
-                    avatar_url=avatar_url,
-                    now=now,
-                    new_streak=new_streak,
-                    row=cast("tuple[datetime | None, int, bool, str]", row),
-                )
-
-            if outcome is None:
-                await session.rollback()
-                continue
-
-            reward, balance_after, streak_after, vip_after = outcome
-            await session.commit()
-            invalidate_economy_leaderboard_cache()
-            return CheckinResult(
-                new_balance=balance_after, amount=reward, streak=streak_after, is_vip=vip_after
-            )
-
-        return None
-
-
 async def buy_vip(user_id: int, name: str, avatar_url: str = "") -> VipPurchaseResult | None:
     """Promotes the user to VIP after debiting `VIP_PURCHASE_COST` points.
 
@@ -2137,8 +1868,6 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
                 avatar_url=avatar_url,
                 updated_at=now,
                 is_vip=False,
-                last_checkin_at=None,
-                checkin_streak=0,
                 is_admin=True,
             )
             set_: dict[str, Any] = {"is_admin": True, "updated_at": now}
@@ -2214,8 +1943,6 @@ async def set_central_banker(
                 avatar_url=avatar_url,
                 updated_at=now,
                 is_vip=False,
-                last_checkin_at=None,
-                checkin_streak=0,
                 is_admin=False,
                 is_central_banker=True,
             )

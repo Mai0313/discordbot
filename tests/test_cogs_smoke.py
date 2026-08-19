@@ -59,7 +59,6 @@ from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.services.economy.database import (
     VIP_PURCHASE_COST,
     CreditResult,
-    CheckinResult,
     TransferResult,
     VipPurchaseResult,
     BalanceAdjustmentResult,
@@ -1235,7 +1234,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
     monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", fake_call_central_bank_loans)
-    monkeypatch.setattr(economy, "checkin", fake_checkin)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     cog = EconomyCogs(bot=as_bot(fake=bot))
@@ -1276,9 +1274,8 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="0"
     )
     await EconomyCogs.central_bank_status.callback(cog, interaction)
-    await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 18
+    assert len(interaction.followup.sent) == 17
     assert len(scheduled) == 12
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
@@ -2223,11 +2220,6 @@ async def fake_get_central_bank_status(
     return CentralBankStatus(
         total_positive_user_balance=1_000, outstanding_principal=100, available_credit=900
     )
-
-
-async def fake_checkin(user_id: int, name: str, avatar_url: str) -> CheckinResult:
-    """Returns a successful fake daily check-in result."""
-    return CheckinResult(new_balance=600_000, amount=150_000, streak=2, is_vip=False)
 
 
 async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> VipPurchaseResult:

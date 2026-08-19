@@ -5,7 +5,6 @@ from datetime import datetime
 from pydantic import Field, BaseModel, ConfigDict
 
 BASE_MESSAGE_REWARD_AMOUNT: Final[int] = 10
-BASE_CHECKIN_REWARD_AMOUNT: Final[int] = 500
 VIP_PURCHASE_COST: Final[int] = 50_000
 LOAN_PROPOSAL_TIMEOUT_SECONDS: Final[int] = 180
 DEFAULT_LOAN_MONTHLY_RATE_BPS: Final[int] = 300
@@ -14,8 +13,6 @@ MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
 # Minimum interest a borrower owes on a contract regardless of repayment timing.
 # Prepaid at acceptance so borrow-then-immediately-repay still costs MIN_INTEREST_DAYS worth.
 MIN_INTEREST_DAYS: Final[int] = 30
-# Daily check-in streak cycles through 1..7 then loops back to 1.
-CHECKIN_STREAK_CYCLE: Final[int] = 7
 
 # Anti-inflation guardrails. Faucets are deflated and a few structural caps keep
 # balances from compounding back to pre-reset astronomical levels.
@@ -344,35 +341,6 @@ class TransferResult(BaseModel):
     )
 
 
-class CheckinResult(BaseModel):
-    """Outcome of a successful daily check-in.
-
-    Attributes:
-        new_balance: User balance after the payout.
-        amount: Total amount credited for this check-in (base * streak bonus * VIP multiplier).
-        streak: Streak counter persisted on the account after this check-in
-            (1..`CHECKIN_STREAK_CYCLE`).
-        is_vip: VIP status of the account at check-in time, surfaced so the
-            embed can label the bonus correctly.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    new_balance: int = Field(..., description="User balance after the payout.")
-    amount: int = Field(
-        ...,
-        description="Total amount credited for this check-in (base * streak bonus * VIP multiplier).",
-    )
-    streak: int = Field(
-        ...,
-        description="Streak counter persisted on the account after this check-in (1..CHECKIN_STREAK_CYCLE).",
-    )
-    is_vip: bool = Field(
-        ...,
-        description="VIP status of the account at check-in time, surfaced so the embed can label the bonus correctly.",
-    )
-
-
 class VipPurchaseResult(BaseModel):
     """Outcome of a successful VIP purchase.
 
@@ -506,9 +474,7 @@ class PortfolioView(BaseModel):
 
 
 __all__ = [
-    "BASE_CHECKIN_REWARD_AMOUNT",
     "BASE_MESSAGE_REWARD_AMOUNT",
-    "CHECKIN_STREAK_CYCLE",
     "DEFAULT_LOAN_MONTHLY_RATE_BPS",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MAX_LOAN_MONTHLY_RATE_BPS",
@@ -524,7 +490,6 @@ __all__ = [
     "CasinoDailyStats",
     "CasinoLedgerSnapshot",
     "CentralBankStatus",
-    "CheckinResult",
     "CreditResult",
     "JackpotSettlementBatchResult",
     "JackpotSettlementRequest",

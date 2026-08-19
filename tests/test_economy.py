@@ -23,8 +23,6 @@ from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackHandS
 from discordbot.cogs.games.settlement import settle_wager, settle_blackjack_player
 from discordbot.services.economy.database import (
     VIP_PURCHASE_COST,
-    CHECKIN_STREAK_CYCLE,
-    BASE_CHECKIN_REWARD_AMOUNT,
     UserWallet,
     JackpotPool,
     UserAccount,
@@ -38,7 +36,6 @@ from discordbot.services.economy.database import (
     JackpotSettlementRequest,
     top_n,
     buy_vip,
-    checkin,
     get_vip,
     transfer,
     get_admin,
@@ -52,7 +49,6 @@ from discordbot.services.economy.database import (
     _database_now,
     _ensure_schema,
     adjust_balance,
-    checkin_reward,
     _taipei_midnight,
     get_jackpot_pool,
     get_casino_ledger,
@@ -1466,119 +1462,6 @@ async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:
         player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
     assert await _daily_casino_stats(user_id=99) == (0, 0, 0, None)
-
-
-# Daily check-in ------------------------------------------------------------
-
-
-async def test_checkin_first_time_credits_base_reward() -> None:
-    """A first check-in pays the base reward and persists a streak of 1."""
-    result = await checkin(user_id=1, name="alice")
-    assert result is not None
-    assert result.amount == BASE_CHECKIN_REWARD_AMOUNT
-    assert result.streak == 1
-    assert result.is_vip is False
-    assert result.new_balance == BASE_CHECKIN_REWARD_AMOUNT
-
-
-async def test_checkin_same_day_is_rejected() -> None:
-    """A second check-in within the same Taipei day must return None."""
-    first = await checkin(user_id=1, name="alice")
-    assert first is not None
-    second = await checkin(user_id=1, name="alice")
-    assert second is None
-    assert await get_balance(user_id=1) == first.new_balance
-
-
-async def test_checkin_consecutive_day_advances_streak() -> None:
-    """A check-in on the next calendar day bumps the streak by 1."""
-    first = await checkin(user_id=1, name="alice")
-    assert first is not None
-    # Backdate the previous check-in to yesterday Taipei
-    yesterday = datetime.now(tz=TAIWAN_TIMEZONE) - timedelta(days=1)
-    async with open_session() as session:
-        await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == 1)
-            .values(last_checkin_at=yesterday)
-        )
-        await session.commit()
-    second = await checkin(user_id=1, name="alice")
-    assert second is not None
-    assert second.streak == 2
-    assert second.amount > first.amount
-
-
-async def test_checkin_streak_cycles_back_to_one_after_seven() -> None:
-    """Day 8 in a row resets back to streak 1."""
-    await checkin(user_id=1, name="alice")
-    async with open_session() as session:
-        await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == 1)
-            .values(
-                last_checkin_at=datetime.now(tz=TAIWAN_TIMEZONE) - timedelta(days=1),
-                checkin_streak=CHECKIN_STREAK_CYCLE,
-            )
-        )
-        await session.commit()
-    result = await checkin(user_id=1, name="alice")
-    assert result is not None
-    assert result.streak == 1
-
-
-async def test_checkin_missed_day_resets_streak_to_one() -> None:
-    """Skipping a day resets the streak back to 1."""
-    await checkin(user_id=1, name="alice")
-    async with open_session() as session:
-        await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == 1)
-            .values(
-                last_checkin_at=datetime.now(tz=TAIWAN_TIMEZONE) - timedelta(days=3),
-                checkin_streak=4,
-            )
-        )
-        await session.commit()
-    result = await checkin(user_id=1, name="alice")
-    assert result is not None
-    assert result.streak == 1
-
-
-async def test_checkin_vip_gets_double_base() -> None:
-    """A VIP account starts at 2x base before the streak multiplier."""
-    await _add_balance(user_id=1, name="alice", amount=VIP_PURCHASE_COST)
-    purchase = await buy_vip(user_id=1, name="alice")
-    assert purchase is not None
-    result = await checkin(user_id=1, name="alice")
-    assert result is not None
-    assert result.is_vip is True
-    assert result.amount == 2 * BASE_CHECKIN_REWARD_AMOUNT
-
-
-@pytest.mark.parametrize(
-    argnames=("streak", "is_vip", "expected"),
-    argvalues=[
-        (1, False, 500),
-        (2, False, 750),
-        (7, False, 2_000),
-        (1, True, 1_000),
-        (7, True, 4_000),
-    ],
-)
-def test_checkin_reward_formula(streak: int, is_vip: bool, expected: int) -> None:
-    """Streak + VIP combinations compute to the expected reward."""
-    assert checkin_reward(streak=streak, is_vip=is_vip) == expected
-
-
-async def test_checkin_updates_lifetime_totals() -> None:
-    """A successful check-in counts as earned points."""
-    result = await checkin(user_id=1, name="alice")
-    assert result is not None
-    account = await get_account(user_id=1)
-    assert account == AccountSnapshot(
-        name="alice", balance=result.amount, total_earned=result.amount, total_spent=0
-    )
 
 
 # VIP purchase --------------------------------------------------------------

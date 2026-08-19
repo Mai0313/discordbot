@@ -46,8 +46,7 @@ A link that is only incidental to the question is left alone.
 Everyday:
 
 - `/balance` — your cash, debts, net worth, and VIP status
-- `/checkin` — the daily check-in reward, which builds a streak
-- `/vip` — buy VIP, which boosts check-in and Blackjack payouts
+- `/vip` — buy VIP, which boosts Blackjack payouts
 
 Transfers and boards:
 
