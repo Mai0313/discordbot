@@ -1,11 +1,13 @@
 """Guards the model strings and reasoning-effort values the runtime model catalog ships.
 
 Gemini 3 cannot switch thinking off, so its `thinking_level` vocabulary starts at `minimal`.
-`none` still round-trips through LiteLLM, but only for a model it recognises as Gemini 3 by
-the literal substring `gemini-3`; the `*-latest` aliases this project dispatches on do not
-carry it, so `none` falls through to the pre-3 branch and sends `thinkingBudget: 0`, which a
-Gemini 3.x model rejects. The failure is invisible in tests because it only shows up against
-the live API, which is why it is pinned here.
+`none` still round-trips through LiteLLM, but what it turns into depends on the branch the model
+string picks. On the `thinking_level` branch every name here now takes, it is rewritten to
+minimal / low with `includeThoughts: False`, which ends the reasoning summary the streaming
+preview reads without failing anything; on a `*-latest` alias, which carries no `gemini-3`
+substring for LiteLLM to match, it falls through to the pre-3 branch and sends
+`thinkingBudget: 0`, which a Gemini 3.x model rejects. Neither shows up in tests because both
+only surface against the live API, which is why the floor is pinned here.
 
 `slow_model`'s no-alias rule is the same trap through the other door, so it is guarded here too:
 an alias narrows the `thinking_level` vocabulary the YouTube answer turn may hand to
@@ -63,7 +65,7 @@ def test_no_tier_asks_for_an_effort_gemini_cannot_honor() -> None:
 
 def test_the_default_effort_is_the_gemini_floor() -> None:
     """A tier that names no effort still gets one the model can honor."""
-    assert ModelSettings(name="gemini-flash-latest").effort == "minimal"
+    assert ModelSettings(name="gemini-3.7-flash").effort == "minimal"
 
 
 def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatch) -> None:

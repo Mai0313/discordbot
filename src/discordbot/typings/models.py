@@ -18,16 +18,18 @@ class ModelSettings(BaseModel):
     name: str = Field(
         ...,
         description="LiteLLM model string dispatched on the Responses API.",
-        examples=["gemini-flash-latest", "gemini-3.1-flash-image"],
+        examples=["gemini-3.7-flash", "gemini-3.1-flash-image"],
     )
     # `minimal`, never `none`. Gemini 3 cannot switch thinking off at all, so the API's own
     # vocabulary starts at `minimal` (`thinking_level` accepts minimal / low / medium / high).
-    # LiteLLM does map `none`, but only after recognising the model as Gemini 3 by the literal
-    # substring `gemini-3` in the model string, which the `*-latest` aliases this project
-    # dispatches on do not contain. It therefore falls through to the pre-3 branch and sends
-    # `thinkingBudget: 0`, which a Gemini 3.x model rejects — so `none` silently stopped working
-    # the moment `gemini-flash-latest` began resolving to a 3.x snapshot. `minimal` maps to a
-    # small positive budget on that same branch and is accepted.
+    # Which of LiteLLM's two branches translates the effort is decided by the literal substring
+    # `gemini-3` in the model string, and every name this project sends through the proxy
+    # carries it, so the `thinking_level` branch is the one that runs. There `none` / `disable`
+    # are not rejected but rewritten to minimal / low with `includeThoughts: False`, which
+    # silently ends the reasoning summary the streaming preview is built on; asking for
+    # `minimal` keeps it. On a `*-latest` alias, which carries no `gemini-3`, the same request
+    # instead falls through to the pre-3 branch and sends `thinkingBudget: 0`, which a Gemini
+    # 3.x model rejects outright.
     effort: ReasoningEffort = Field(
         default="minimal",
         description="Reasoning effort passed to the Responses API for this model.",
@@ -157,7 +159,7 @@ class RuntimeModelCatalog(BaseModel):
             Deliberately decoupled from `slow_model` so the refinement tier can be tuned on its
             own (bump to a pro snapshot here if the refined prompts underperform).
         """
-        return ModelSettings(name="gemini-flash-latest", effort="high")
+        return ModelSettings(name="gemini-3.7-flash", effort="high")
 
     @property
     def media_reply_model(self) -> ModelSettings:
@@ -178,7 +180,7 @@ class RuntimeModelCatalog(BaseModel):
             summary so the streaming reasoning preview shows. The media is already on screen,
             so this text streams in after with no added generation latency.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="low")
+        return ModelSettings(name="gemini-3.7-flash", effort="low")
 
     @property
     def tts_model(self) -> ModelSettings:
@@ -210,7 +212,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Fast minimal-thinking settings.
         """
-        return ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
+        return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
 
     @property
     def tool_model(self) -> ModelSettings:
@@ -225,7 +227,7 @@ class RuntimeModelCatalog(BaseModel):
             language skill than the lite tier reliably delivers, while staying far
             below answer-model latency.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="minimal")
+        return ModelSettings(name="gemini-3.7-flash", effort="minimal")
 
     @property
     def slow_model(self) -> ModelSettings:
@@ -268,7 +270,7 @@ class RuntimeModelCatalog(BaseModel):
             writer tier so the recall-oriented first pass can be downgraded on its own if
             the gates behind it prove able to carry the precision.
         """
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
     def memory_writer_model(self) -> ModelSettings:
@@ -287,7 +289,7 @@ class RuntimeModelCatalog(BaseModel):
             consolidator turns that staging into the fact files plus the tone note. A weaker
             model on either loses memory or leaks it, rather than just failing to record it.
         """
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
 
 class RouteClassification(BaseModel):
