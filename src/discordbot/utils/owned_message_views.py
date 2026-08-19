@@ -1,9 +1,9 @@
 """Shared scaffolding for views that own one public Discord message.
 
-Stock and fishing panels share the same UX: one public message edited in place,
-operable only by the user who opened it, and deleted after an idle timeout. The
-base view and the central edit helper live here so each cog only supplies its
-own embeds, controls, and notice text.
+The stock panel has that UX: one public message edited in place, operable only
+by the user who opened it, and deleted after an idle timeout. The base view and
+the central edit helper live here so a cog only supplies its own embeds,
+controls, and notice text.
 """
 
 from io import BytesIO

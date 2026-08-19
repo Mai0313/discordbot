@@ -19,7 +19,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from discordbot.cogs.feedback.database import Base as FeedbackBase
 from discordbot.cogs.research.database import Base as ResearchBase
 from discordbot.services.economy.database import Base
-from discordbot.cogs.games.fishing.database import Base as FishingBase
 
 
 @pytest.fixture
@@ -174,18 +173,3 @@ def feedback_env_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
         "FEEDBACK_SUBMIT_COOLDOWN_SECONDS",
     ):
         monkeypatch.delenv(name=name, raising=False)
-
-
-@pytest.fixture
-async def fishing_isolated_db(
-    economy_isolated_db: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[None]:
-    """Per-test SQLite file with the full fishing schema and an isolated economy DB."""
-    fishing_db_path = tmp_path / "fishing.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{fishing_db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(FishingBase.metadata.create_all)
-    monkeypatch.setattr("discordbot.cogs.games.fishing.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs.games.fishing.database._schema_ready_for", None)
-    yield
-    await engine.dispose()

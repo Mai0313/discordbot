@@ -33,13 +33,6 @@ nav:
                   - views: Reference/discordbot/cogs/feedback/views.md
                   - writeup: Reference/discordbot/cogs/feedback/writeup.md
               - games:
-                  - fishing:
-                      - catch: Reference/discordbot/cogs/games/fishing/catch.md
-                      - database: Reference/discordbot/cogs/games/fishing/database.md
-                      - defaults: Reference/discordbot/cogs/games/fishing/defaults.md
-                      - presentation: Reference/discordbot/cogs/games/fishing/presentation.md
-                      - shop: Reference/discordbot/cogs/games/fishing/shop.md
-                      - views: Reference/discordbot/cogs/games/fishing/views.md
                   - blackjack: Reference/discordbot/cogs/games/blackjack.md
                   - blackjack_ev: Reference/discordbot/cogs/games/blackjack_ev.md
                   - blackjack_views: Reference/discordbot/cogs/games/blackjack_views.md
@@ -141,7 +134,6 @@ nav:
               - config: Reference/discordbot/typings/config.md
               - douyin: Reference/discordbot/typings/douyin.md
               - economy: Reference/discordbot/typings/economy.md
-              - fishing: Reference/discordbot/typings/fishing.md
               - games: Reference/discordbot/typings/games.md
               - llm: Reference/discordbot/typings/llm.md
               - memory: Reference/discordbot/typings/memory.md
@@ -189,7 +181,6 @@ nav:
       - prompt_dev: Scripts/prompt_dev.md
       - regen_memories: Scripts/regen_memories.md
       - route_dev: Scripts/route_dev.md
-      - seed_fishing: Scripts/seed_fishing.md
       - trading: Scripts/trading.md
       - usage_report: Scripts/usage_report.md
       - video_dev: Scripts/video_dev.md

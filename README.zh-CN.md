@@ -45,7 +45,7 @@
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频。抖音也支持，无水印且包含图文贴文。文件太大无法上传时会改以链接提供。
 - **虚拟欢乐豆与金融系统**：用户可从消息获得虚拟欢乐豆，可每日签到、转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
 - **模拟股市**：`/stock` 开启一则公开 market message，内含 DB-managed virtual companies；选股、受 float supply、borrow cap 与单人 49% long holding cap 限制的交易、仓位摘要、近期交易记录、liquidity-based slippage、定期刷新新闻与 7 日图表都在同一则公开 message 内 edit 切换，只有发起 `/stock` 的 user 可以操作 controls。
-- **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身会以玩家身份入桌并由独立的确定性策略 (fractional-Kelly 下注与 EV 决策) 决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。单人 `/games fishing` 则是买钓具抛竿的小游戏，鱼分 N 到 UR 稀有度并有最大单笔渔获排行榜，装备越好，稀有鱼的概率与价值都明显提高。
+- **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身会以玩家身份入桌并由独立的确定性策略 (fractional-Kelly 下注与 EV 决策) 决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
 - **问题反馈**：`/feedback` 打开只有本人看得到的面板，用单号列出自己反馈过的问题，并提供表单把新的反馈开成配置好的 repository 上的 GitHub issue（后台会由 LLM 整理成好读的内容）。开发者在该 issue 上的回复会出现在同一个面板里，也有按钮可以再补一句，让反馈是双向的对话而不是单向信箱。
 - **MapleStory Artale 数据库**：`/maplestory` 子命令可查询怪物、装备、卷轴、NPC、任务、地图、掉落来源与数据库统计。
 - **本地化指令**：slash command metadata 支持英文、繁体中文、日文。AI 回复会跟随用户语言。没有 help 指令：直接问 bot 会做什么，它会读一份英文的功能说明并用你提问的语言回答。
@@ -72,7 +72,6 @@
 | `/admin refund_tax\|collect_tax`                                 | 手动调整成员或 bot 余额；限定 `economy admin` 账号 flag，不是 Discord 身份组。         |
 | `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。                |
 | `/games dragon_gate`                                             | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                                         |
-| `/games fishing`                                                 | 打开个人钓鱼面板，买钓竿与鱼饵抛竿，装备越好越容易钓到稀有鱼。                         |
 | `/casino`                                                        | 显示赌场系统累积 P&L (跨服务器)。                                                      |
 | `/pocat`                                                         | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                                       |
 | `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查询 MapleStory Artale 怪物、装备与卷轴。                                              |
@@ -146,7 +145,7 @@ GEMINI_API_KEY=your_google_ai_studio_key
 - `database/messages.db`：human messages 与 bot 自己的回复，用于聊天历史与摘要。
 - `database/economy.db`：`user_wallet` 存每位用户的可用余额与 gross totals，`user_account` 存 cached Discord account name / avatar URL、VIP、admin、央行成员、签到与 leaderboard flags，另存长期信贷申请与契约、赌场每日统计，以及 bot-wide jackpot pool 与 casino ledger。
 - `database/stock.db`：DB-managed 模拟 stock profile、float supply、price tick、position、trade operation、ordered trade leg 与 AI-or-fallback stock news。
-- `database/games.db`：每位玩家的 Blackjack 对局历史、钓鱼目录与每位用户的装备、鱼饵与渔获记录，以及公开 expiring response 的清理追踪（guild/channel 名称、user name、channel ID 与 message ID），用于 bot 重启后的清理。
+- `database/games.db`：每位玩家的 Blackjack 对局历史，以及公开 expiring response 的清理追踪（guild/channel 名称、user name、channel ID 与 message ID），用于 bot 重启后的清理。
 - 临时 media 下载使用项目根目录的 `tmp/` scratch folder（不在 `data/` 底下），发送完成后即删除。
 - `database/feedback.db`：通过 `/feedback` 送出的问题反馈，包含原封不动的内容、反馈者是谁与从哪里送出、对应的 issue 编号，以及后台整理过的版本。
 - `database/reply.db`：后台 AI 的作业状态，包含某位用户或服务器目前排定的记忆抽取工作（在处理完成前会保留那段对话的文字），以及 deep research session，两者都是为了在重启后还能接着跑。
