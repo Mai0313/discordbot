@@ -158,27 +158,46 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="antigravity-preview-05-2026")
 
     @property
-    def fast_model(self) -> ModelSettings:
-        """The model settings for every short call that is not the answer itself.
+    def triage_model(self) -> ModelSettings:
+        """The model settings for the judgments the reply itself waits on.
 
-        Callers: `_route_classify`, `_grade_effort`, `_select_user_memories`,
-        `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
+        Callers: `_route_classify`, `_grade_effort`, `_select_user_memories`.
+
+        What these three share is not their size but where their output goes: each parses
+        into a structured field nobody ever reads, and each sits on the critical path
+        holding the reply back. Nothing here writes a word a user sees, so the tier is
+        bought on latency alone. That is the whole seam against `fast_model` beside it,
+        whose output is visible and therefore worth waiting a little longer for.
+
+        Returns:
+            Flash-lite at `minimal`, the floor Gemini 3 allows. LiteLLM matches this name as
+            a Gemini 3 flash and forwards `thinking_level: minimal` untouched, which is
+            exactly what `gemini-3.7-flash` rejects; measured 2026-08-20 end to end, this
+            snapshot accepts it and answers under its own name rather than a proxy fallback's.
+        """
+        return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
+
+    @property
+    def fast_model(self) -> ModelSettings:
+        """The model settings for the text a user reads that is not the answer.
+
+        Callers: `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
         `_stream_media_persona_reply` (the persona reply that rides generated media),
         `AutoUnmuteCogs._generate_reply`, `StockNewsAI`, the research thread title.
 
-        This is the difficulty tier, not a purpose: a narrow classification, a nickname
-        match, a generation prompt, a line of throwaway text. One tier for all of them
-        because the seam worth tuning at is between them and `slow_model`, not between each
-        other; a call that needs the answer model's judgment does not belong here at all.
+        Every one of them writes prose somebody reads, and none of them is the deliverable:
+        a weak line here is visible but costs nothing that was being waited on. That is the
+        axis this tier shares with `slow_model`, one difficulty step below it. The structured
+        judgments that used to sit here are `triage_model`'s, and they were never on that
+        axis at all.
 
         Returns:
-            Flash at `medium`, between the `high` the prompt director used to take and the
-            `minimal` the route classifier did. `minimal` is not available on this snapshot:
-            LiteLLM matches the name as a Gemini 3 flash and forwards `thinking_level:
-            minimal`, which the model rejects, leaving the request to survive only on a proxy
-            fallback to a different model.
+            Flash at `medium`, one snapshot back from `gemini-3.7-flash`, which is popular
+            enough to queue behind its own load (observed 2026-08-20). `medium` is what buys
+            a prompt or a persona line that reads like it was written rather than filled in;
+            `minimal` would be the wrong end of the ladder here even where it is accepted.
         """
-        return ModelSettings(name="gemini-3.7-flash", effort="medium")
+        return ModelSettings(name="gemini-3.6-flash", effort="medium")
 
     @property
     def slow_model(self) -> ModelSettings:
@@ -195,7 +214,8 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Slow-path model settings for reply generation and summaries.
         """
-        # Both branches are pinned to explicit snapshots, never a `*-latest` alias. This is the
+        # Both branches, the commented-out one included, are pinned to explicit snapshots and
+        # never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
         # answer turn hands that effort straight to the Interactions API as a `thinking_level`
         # (`gen_reply/interactions.py`), where the enum is per-model: every alias measured
@@ -204,10 +224,13 @@ class RuntimeModelCatalog(BaseModel):
         # that lost whole replies through an alias in #459; the pinning stays because it is what
         # keeps the next vocabulary change from doing it again. Note `minimal` is still a 400 on
         # the pro snapshot; it stays legal only because `EffortGrade` never emits it.
-        # The peak/off-peak split is load-bearing again rather than dormant: Gemini Pro has
-        # historically slowed down during peak hours, so peak takes the flash snapshot.
-        if self.is_peak:
-            return ModelSettings(name="gemini-3.7-flash", effort="high")
+        # The peak/off-peak split is commented out rather than deleted, and `is_peak` stays
+        # exposed for it. It sent peak hours to the flash snapshot because Gemini Pro used to
+        # slow down under load; `gemini-3.7-flash` has since become the popular tier and is
+        # now the one that queues (observed 2026-08-20), so the branch was handing the busiest
+        # hours the slower of the two. Restore it when that inverts back.
+        # if self.is_peak:
+        #     return ModelSettings(name="gemini-3.7-flash", effort="high")
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property

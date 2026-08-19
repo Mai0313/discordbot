@@ -1395,16 +1395,16 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         message_list = [*reference_messages, *current_message]
 
-        fast_model = self.runtime_models.fast_model
+        triage_model = self.runtime_models.triage_model
         started = time.monotonic()
         try:
             with logfire.span("gen_reply route"):
                 responses = await self.openai_client.responses.parse(
-                    model=fast_model.name,
+                    model=triage_model.name,
                     instructions=ROUTE_PROMPT,
                     input=cast("ResponseInputParam", message_list),
                     text_format=RouteClassification,
-                    reasoning=fast_model.reasoning,
+                    reasoning=triage_model.reasoning,
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": message.author.name},
                 )
@@ -1465,15 +1465,15 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         message_list = [*reference_messages, *current_message]
 
-        fast_model = self.runtime_models.fast_model
+        triage_model = self.runtime_models.triage_model
         started = time.monotonic()
         with logfire.span("gen_reply effort"):
             responses = await self.openai_client.responses.parse(
-                model=fast_model.name,
+                model=triage_model.name,
                 instructions=EFFORT_PROMPT,
                 input=cast("ResponseInputParam", message_list),
                 text_format=EffortGrade,
-                reasoning=fast_model.reasoning,
+                reasoning=triage_model.reasoning,
                 service_tier="auto",
                 extra_headers={"x-litellm-end-user-id": message.author.name},
             )
@@ -1594,7 +1594,7 @@ class ReplyGeneratorCogs(commands.Cog):
         so a spoken or misspelled nickname can be mapped to its id. Returns the memories plus
         this request's token usage so the reply footer and chat reward account for the call.
         """
-        fast_model = self.runtime_models.fast_model
+        triage_model = self.runtime_models.triage_model
         # The optional-candidates block stays last so the model reads it right before deciding;
         # the server-memory block (if any) leads as earlier background context. The caller
         # passes an already text-only transcript (attachment markers, no file ids), so this
@@ -1605,10 +1605,10 @@ class ReplyGeneratorCogs(commands.Cog):
             render_callable_users_block(allowed=allowed),
         ]
         responses = await self.openai_client.responses.create(
-            model=fast_model.name,
+            model=triage_model.name,
             instructions=MEMORY_SELECT_PROMPT,
             input=selection_input,
-            reasoning=fast_model.reasoning,
+            reasoning=triage_model.reasoning,
             tools=[GET_USER_MEMORY_TOOL],
             stream=False,
             service_tier="auto",

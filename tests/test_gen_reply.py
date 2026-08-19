@@ -3659,7 +3659,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
-    assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.fast_model.name
+    assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.triage_model.name
 
     async def fake_sleep(delay: float) -> None:
         """Skips video polling delay."""
@@ -4416,7 +4416,7 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
 
     routed = await _route(cog=cog, message=message)
     assert routed.decision == "QA"
-    assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.fast_model.name
+    assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.triage_model.name
 
 
 @pytest.mark.parametrize(
@@ -6722,9 +6722,9 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     # Two requests: selection (non-streaming) then the answer (streaming).
     assert _recorded(cog).responses.create_streams == [False, True]
 
-    # Selection runs on fast_model; only the answer pays for slow_model.
+    # Selection runs on triage_model; only the answer pays for slow_model.
     assert _recorded(cog).responses.create_models == [
-        cog.runtime_models.fast_model.name,
+        cog.runtime_models.triage_model.name,
         cog.runtime_models.slow_model.name,
     ]
 

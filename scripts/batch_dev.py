@@ -19,10 +19,9 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py. slow_model has a time-of-day
-# dispatch in production (gemini-3.7-flash at peak, gemini-3.1-pro-preview off-peak); this
-# pins the peak branch. Swap manually when testing the other one.
-SLOW_MODEL = ModelSettings(name="gemini-3.7-flash", effort="low")
+# Mirror the @property value in typings/models.py. slow_model's time-of-day dispatch is
+# commented out there, so production answers on this one branch at every hour.
+SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="low")
 
 # Both are Literal in the Batch API signature, so they carry the same literal type here.
 BATCH_ENDPOINT: Literal["/v1/responses"] = "/v1/responses"

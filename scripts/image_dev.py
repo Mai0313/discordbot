@@ -18,7 +18,7 @@ config = LLMConfig()
 # Mirror the @property values in typings/models.py. Update here when the bot's
 # image_model / fast_model swap, otherwise this script tests stale models.
 IMAGE_MODEL = ModelSettings(name="gemini-3.1-flash-image")
-MEDIA_REPLY_MODEL = ModelSettings(name="gemini-3.7-flash", effort="medium")
+MEDIA_REPLY_MODEL = ModelSettings(name="gemini-3.6-flash", effort="medium")
 
 
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:
