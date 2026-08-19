@@ -811,14 +811,14 @@ class ReplyGeneratorCogs(commands.Cog):
         """The cached prompt director for the IMAGE and VIDEO routes.
 
         Returns:
-            A director bound to this cog's proxy client and the flash + high + grounding
-            `prompt_model`; each `refine` call is gated by the caller's per-route flag
+            A director bound to this cog's proxy client and the grounding-capable
+            `fast_model`; each `refine` call is gated by the caller's per-route flag
             (`config.image_refine_prompt_enabled` / `config.video_refine_prompt_enabled`) and
             expands the raw request before `render`, best-effort (raw prompt on disable / empty /
             error).
         """
         return PromptGenerator(
-            client=self.openai_client, prompt_model=self.runtime_models.prompt_model
+            client=self.openai_client, prompt_model=self.runtime_models.fast_model
         )
 
     @cached_property
@@ -1167,7 +1167,7 @@ class ReplyGeneratorCogs(commands.Cog):
             message=message,
             reply=reply,
             context_task=context_task,
-            model=self.runtime_models.media_reply_model,
+            model=self.runtime_models.fast_model,
             system_prompt=VIDEO_REPLY_PROMPT,
             focus_part=ResponseInputFileParam(type="input_file", file_id=file_uri),
             media_noun="video",
@@ -1341,7 +1341,7 @@ class ReplyGeneratorCogs(commands.Cog):
             message=message,
             reply=reply,
             context_task=context_task,
-            model=self.runtime_models.media_reply_model,
+            model=self.runtime_models.fast_model,
             system_prompt=IMAGE_REPLY_PROMPT,
             focus_part=ResponseInputImageParam(
                 image_url=convert_base64_to_data_uri(
@@ -1594,7 +1594,7 @@ class ReplyGeneratorCogs(commands.Cog):
         so a spoken or misspelled nickname can be mapped to its id. Returns the memories plus
         this request's token usage so the reply footer and chat reward account for the call.
         """
-        tool_model = self.runtime_models.tool_model
+        fast_model = self.runtime_models.fast_model
         # The optional-candidates block stays last so the model reads it right before deciding;
         # the server-memory block (if any) leads as earlier background context. The caller
         # passes an already text-only transcript (attachment markers, no file ids), so this
@@ -1605,10 +1605,10 @@ class ReplyGeneratorCogs(commands.Cog):
             render_callable_users_block(allowed=allowed),
         ]
         responses = await self.openai_client.responses.create(
-            model=tool_model.name,
+            model=fast_model.name,
             instructions=MEMORY_SELECT_PROMPT,
             input=selection_input,
-            reasoning=tool_model.reasoning,
+            reasoning=fast_model.reasoning,
             tools=[GET_USER_MEMORY_TOOL],
             stream=False,
             service_tier="auto",

@@ -103,4 +103,4 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
 def test_the_catalog_exposes_the_tiers_under_test() -> None:
     """Guards the sweep itself: a catalog that stopped exposing tiers would pass vacuously."""
     models = _catalog_models()
-    assert {"fast_model", "tool_model", "media_reply_model", "slow_model"} <= set(models)
+    assert {"fast_model", "slow_model"} <= set(models)
