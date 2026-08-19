@@ -3,7 +3,6 @@
 from nextcord import Embed
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW, TRANSFER_COLOR
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
@@ -21,12 +20,10 @@ from discordbot.typings.economy import (
     BalanceAdjustmentResult,
     LoanProposalAcceptResult,
 )
-from discordbot.utils.number_text import share_quantity_text
 from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
 )
-from discordbot.services.stock.market import format_price
 from discordbot.services.economy.database import (
     checkin_reward,
     apply_vip_blackjack_bonus,
@@ -50,8 +47,6 @@ CENTRAL_BANK_COLOR = 0x1ABC9C
 CHECKIN_COLOR = 0x9B59B6
 VIP_COLOR = 0xF1C40F
 ERROR_COLOR = DISCORD_RED
-_STOCK_POSITION_LINE_LIMIT = 5
-_STOCK_POSITION_NAME_LIMIT = 20
 
 
 class TransferParticipant(BaseModel):
@@ -107,52 +102,6 @@ def _set_optional_thumbnail(embed: Embed, avatar_url: str) -> None:
     """Sets an embed thumbnail when an avatar URL is available."""
     if avatar_url:
         embed.set_thumbnail(url=avatar_url)
-
-
-def _stock_position_lines(stock_portfolio: StockPortfolioView) -> str:
-    """Formats stock holdings for the private balance embed."""
-    if not stock_portfolio.holdings:
-        return "目前沒有股票部位"
-    lines = [
-        _stock_position_line(holding=holding)
-        for holding in stock_portfolio.holdings[:_STOCK_POSITION_LINE_LIMIT]
-    ]
-    remaining = len(stock_portfolio.holdings) - _STOCK_POSITION_LINE_LIMIT
-    if remaining > 0:
-        lines.append(f"還有 `{remaining:,}` 檔未列出")
-    return "\n".join(lines)
-
-
-def _stock_position_line(holding: StockPortfolioHolding) -> str:
-    """Formats one stock holding into a compact balance line."""
-    position_parts: list[str] = []
-    if holding.long_shares > 0:
-        position_parts.append(
-            f"持股 `{share_quantity_text(shares=holding.long_shares)}` / 市值 "
-            f"{amount_code(amount=holding.long_market_value, compact=True)}"
-        )
-    if holding.short_shares > 0:
-        short_equity = (
-            holding.short_collateral + holding.short_entry_value - holding.short_cover_cost
-        )
-        position_parts.append(
-            f"做空 `{share_quantity_text(shares=holding.short_shares)}` / 淨值 "
-            f"{amount_code(amount=short_equity, compact=True)}"
-        )
-    position_text = " · ".join(position_parts) if position_parts else "無部位"
-    name = _stock_position_name(name=holding.name)
-    return (
-        f"`{holding.symbol}` {name} · 股價 `{format_price(price_cents=holding.price_cents)}` · "
-        f"{position_text} · 未實現 "
-        f"{amount_code(amount=holding.unrealized_pnl, signed=True, compact=True)}"
-    )
-
-
-def _stock_position_name(name: str) -> str:
-    """Keeps long company names from filling the stock field."""
-    if len(name) <= _STOCK_POSITION_NAME_LIMIT:
-        return name
-    return f"{name[:_STOCK_POSITION_NAME_LIMIT]}..."
 
 
 def _debt_summary_text(*, principal: int, interest: int) -> str:
@@ -304,21 +253,16 @@ def build_admin_adjustment_embed(  # noqa: PLR0913 -- mirrors every visible adju
     return embed
 
 
-def build_balance_embed(  # noqa: PLR0913 -- mirrors every financial-overview field
-    *,
-    display_name: str,
-    avatar_url: str,
-    portfolio: PortfolioView,
-    stock_portfolio: StockPortfolioView,
-    is_vip: bool,
-    age_days: int,
+def build_balance_embed(
+    *, display_name: str, avatar_url: str, portfolio: PortfolioView, is_vip: bool, age_days: int
 ) -> Embed:
     """Builds the private financial-overview embed for a member."""
-    net_worth = portfolio.net_worth + stock_portfolio.equity_value
     embed = Embed(
         title="💰 財務總覽",
         color=BALANCE_COLOR,
-        description=(f"## {display_name}\n淨資產 {bold_currency(amount=net_worth, compact=True)}"),
+        description=(
+            f"## {display_name}\n淨資產 {bold_currency(amount=portfolio.net_worth, compact=True)}"
+        ),
     )
     embed.set_author(name=f"{display_name} 的財務總覽", icon_url=avatar_url)
     _set_optional_thumbnail(embed=embed, avatar_url=avatar_url)
@@ -326,25 +270,11 @@ def build_balance_embed(  # noqa: PLR0913 -- mirrors every financial-overview fi
         name="現金", value=amount_code(amount=portfolio.balance, compact=True), inline=True
     )
     embed.add_field(
-        name="股票淨值",
-        value=(
-            f"估值 {amount_code(amount=stock_portfolio.equity_value, compact=True)}\n"
-            f"未實現 "
-            f"{amount_code(amount=stock_portfolio.unrealized_pnl, signed=True, compact=True)}\n"
-            f"已實現 "
-            f"{amount_code(amount=stock_portfolio.realized_pnl, signed=True, compact=True)}"
-        ),
-        inline=True,
-    )
-    embed.add_field(
         name="債務",
         value=_debt_summary_text(
             principal=portfolio.debt_principal, interest=portfolio.debt_interest
         ),
         inline=True,
-    )
-    embed.add_field(
-        name="股票部位", value=_stock_position_lines(stock_portfolio=stock_portfolio), inline=False
     )
     embed.add_field(name="會員狀態", value=_vip_status_text(is_vip=is_vip), inline=False)
     vip_badge = " · 👑 VIP" if is_vip else ""

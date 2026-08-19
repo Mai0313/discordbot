@@ -3,7 +3,6 @@
 from decimal import Decimal
 
 _COMPACT_UNITS = ((1_0000_0000_0000, "兆"), (1_0000_0000, "億"), (1_0000, "萬"))
-_SHARES_PER_LOT = 1_000
 
 
 def compact_number(number: int, signed: bool = False) -> str:
@@ -27,20 +26,6 @@ def compact_number(number: int, signed: bool = False) -> str:
 def compact_amount(amount: int, signed: bool = False) -> str:
     """Formats a large amount with Traditional Chinese scale units."""
     return compact_number(number=amount, signed=signed)
-
-
-def share_quantity_text(shares: int, signed: bool = False) -> str:
-    """Formats stock shares with Taiwan-style lot units."""
-    abs_shares = abs(shares)
-    sign = _number_sign(number=shares, signed=signed)
-    if abs_shares < _SHARES_PER_LOT:
-        return f"{sign}{abs_shares:,}股"
-
-    lots, remaining_shares = divmod(abs_shares, _SHARES_PER_LOT)
-    lot_text = compact_number(number=lots)
-    if remaining_shares:
-        return f"{sign}{lot_text}張 {remaining_shares}股"
-    return f"{sign}{lot_text}張"
 
 
 def _number_sign(number: int, signed: bool) -> str:

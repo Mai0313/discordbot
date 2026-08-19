@@ -44,7 +44,6 @@ Ask it to animate that same picture and it returns a short video.
 - **Bilibili Q&A**: mention the bot with a Bilibili video link and it watches the video and answers about it. A bare link is not auto-expanded; `/download_video` still downloads the file.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites. Douyin is supported too, watermark free and including photo posts. Files too large to upload are served as a link instead.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages, can check in daily, transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
-- **Simulated stock market**: `/stock` opens one public market message with DB-managed virtual companies; selecting a stock, trading with float-supply, borrow, and per-user 49% long holding caps, position summaries, recent trades, liquidity-based slippage, periodically refreshed news, and the 7D chart all update that same public message. Only the opener can operate its controls.
 - **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (deterministic H17), the bot itself joins each round as a player driven by its own deterministic strategy (fractional-Kelly betting and EV-based play), and `/casino` / `/pocat` surface the casino ledger and the bot's wallet.
 - **User reports**: `/feedback` opens a private panel listing that person's own reports by ticket number, with a form that files a new one as a GitHub issue on the configured repository (an LLM tidies the text into it in the background). The maintainer's replies on that issue are readable from the same panel, and a button sends one more line back, so a report is a conversation rather than a write-only mailbox.
 - **Localized commands**: slash command metadata is localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language. There is no help command: ask the bot what it can do and it answers from a single English capability reference, translated into whatever language you asked in.
@@ -59,14 +58,13 @@ Ask it to animate that same picture and it returns a short video.
 | _Bilibili URL + mention_                    | Watches the linked video and answers about it (a bare link is not auto-expanded).                                                                |
 | `/download_video <url> [quality]`           | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                                                        |
 | `/feedback`                                 | Opens your own private report panel: your reports by ticket number, the developer's replies, and a form to file a new one.                       |
-| `/balance [member]`                         | Privately shows a member's 虛擬歡樂豆 balance, debt, stock holdings, net worth, and VIP status.                                                  |
+| `/balance [member]`                         | Privately shows a member's 虛擬歡樂豆 balance, debt, net worth, and VIP status.                                                  |
 | `/checkin`                                  | Claims the daily check-in reward.                                                                                                                |
 | `/vip`                                      | Buys permanent VIP perks.                                                                                                                        |
 | `/leaderboard`                              | Shows the global top balances.                                                                                                                   |
 | `/loss_leaderboard`                         | Shows today's accumulated casino losses.                                                                                                         |
 | `/credit status\|borrow\|call\|repay`       | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.                               |
 | `/central_bank status\|borrow\|call\|repay` | Handles central-bank loan requests, 180-second approval/rejection/cancel buttons, repayment, collection, and capacity.                           |
-| `/stock`                                    | Opens one public stock market message that edits in place for details, trading, news, and history.                                               |
 | `/give <member> <amount>`                   | Transfers 虛擬歡樂豆 to another member or bot.                                                                                                   |
 | `/admin refund_tax\|collect_tax`            | Manual balance adjustments for members or bots; gated on the `economy admin` account flag, not on a Discord role.                                |
 | `/games blackjack <bet>`                    | Opens a multiplayer Blackjack lobby; `bet` accepts comma-formatted numbers, and `0` means all in.                                                |
@@ -134,7 +132,6 @@ This bot stores runtime data locally under `data/`; SQLite databases live in `da
 
 - `database/messages.db`: human messages and this bot's replies, used for chat history and summaries.
 - `database/economy.db`: `user_wallet` spendable balances and gross totals, `user_account` cached Discord account names / avatar URLs plus VIP, admin, central banker, check-in, and leaderboard flags, long-term loan requests / contracts, casino daily counters, plus bot-wide jackpot pools and the casino ledger.
-- `database/stock.db`: DB-managed simulated stock profiles, float supply, price ticks, positions, trade operations, ordered trade legs, and AI-or-fallback stock news.
 - `database/games.db`: per-player Blackjack round history and cleanup tracking (guild/channel names, user names, channel IDs, and message IDs) for public expiring responses that should be removed after restart.
 - Temporary media downloads use the project-root `tmp/` scratch folder (not under `data/`) and are deleted after sending.
 - `database/feedback.db`: user reports filed through `/feedback` — the verbatim text, who filed it and from where, the issue number it became, and the background write-up.

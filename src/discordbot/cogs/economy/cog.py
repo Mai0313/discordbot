@@ -24,7 +24,6 @@ from discordbot.cogs.economy.boards import (
     build_balance_leaderboard_board_image,
 )
 from discordbot.utils.amount_parsing import parse_decimal_amount
-from discordbot.services.stock.database import get_stock_portfolio
 from discordbot.services.economy.database import (
     top_n,
     buy_vip,
@@ -259,11 +258,11 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="balance",
-        description=f"Check a member's {CURRENCY_NAME} balance, loans, stocks, and VIP status.",
+        description=f"Check a member's {CURRENCY_NAME} balance, loans, and VIP status.",
         name_localizations={Locale.zh_TW: "餘額", Locale.ja: "残高"},
         description_localizations={
-            Locale.zh_TW: f"查詢成員的{CURRENCY_NAME}餘額、借貸、股票與 VIP 狀態",
-            Locale.ja: f"member の{CURRENCY_NAME}残高、loan、stock、VIP 状態を確認します。",
+            Locale.zh_TW: f"查詢成員的{CURRENCY_NAME}餘額、借貸與 VIP 狀態",
+            Locale.ja: f"member の{CURRENCY_NAME}残高、loan、VIP 状態を確認します。",
         },
         nsfw=False,
     )
@@ -282,7 +281,7 @@ class EconomyCogs(commands.Cog):
             default=None,
         ),
     ) -> None:
-        """Replies with a member's balance, loans, stocks, and VIP status.
+        """Replies with a member's balance, loans, and VIP status.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -293,14 +292,12 @@ class EconomyCogs(commands.Cog):
             return
         target = member or interaction.user
         portfolio = await get_portfolio(user_id=target.id)
-        stock_portfolio = await get_stock_portfolio(user_id=target.id)
         is_vip = await get_vip(user_id=target.id)
         age_days = (datetime.now(tz=UTC) - target.created_at).days
         embed = embeds.build_balance_embed(
             display_name=target.display_name,
             avatar_url=target.display_avatar.url,
             portfolio=portfolio,
-            stock_portfolio=stock_portfolio,
             is_vip=is_vip,
             age_days=age_days,
         )

@@ -1,8 +1,8 @@
 """Shared Pillow font and text-drawing primitives for board/chart renderers.
 
-The economy ranking boards and the stock market board both render CJK text
-onto PNGs with the same font loading and text-anchoring helpers. This module
-is the single source for those primitives so the two renderers stay aligned.
+The economy ranking boards render CJK text onto PNGs through these font
+loading and text-anchoring helpers. This module is the single source for
+those primitives so every board renderer stays aligned.
 """
 
 from PIL import ImageDraw, ImageFont

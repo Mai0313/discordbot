@@ -22,7 +22,6 @@ from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
 from discordbot.cogs.template import cog as template
 from discordbot.typings.games import GameParticipant
-from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.video.cog import VideoCogs
@@ -1225,7 +1224,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "transfer", fake_transfer)
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance)
     monkeypatch.setattr(economy, "get_portfolio", fake_get_portfolio)
-    monkeypatch.setattr(economy, "get_stock_portfolio", fake_get_stock_portfolio)
     monkeypatch.setattr(economy, "create_personal_loan_request", fake_create_loan_request)
     monkeypatch.setattr(economy, "repay_personal_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_personal_loans", fake_call_personal_loans)
@@ -1301,21 +1299,15 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert interaction.followup.sent[-1].get("ephemeral") is True
     balance_embed = interaction.followup.sent[0]["embed"]
     # Assert the financial summary's structure and the facade values it surfaces, not the exact
-    # localized title/labels: cash 150, debt principal 30, stock net 200, total 315, BCAT position.
+    # localized title/labels: cash 150, debt principal 30, net worth 115.
     assert_embed_title_prefix(embed=balance_embed, prefix="💰")
-    assert "315" in (balance_embed.description or "")
+    assert "115" in (balance_embed.description or "")
     cash_value = assert_embed_has_field(embed=balance_embed, name="現金").value
     assert cash_value is not None
     assert "150" in cash_value
     debt_value = assert_embed_has_field(embed=balance_embed, name="債務").value
     assert debt_value is not None
     assert "30" in debt_value
-    stock_net_value = assert_embed_has_field(embed=balance_embed, name="股票淨值").value
-    assert stock_net_value is not None
-    assert "200" in stock_net_value
-    stock_position_value = assert_embed_has_field(embed=balance_embed, name="股票部位").value
-    assert stock_position_value is not None
-    assert "BCAT" in stock_position_value
     borrow_embed = interaction.followup.sent[8]["embed"]
     # The footer explains the loan-decision timeout; assert the behavioral 180s, not the copy.
     assert "180" in (borrow_embed.footer.text or "")
@@ -2041,33 +2033,6 @@ async def fake_get_portfolio(user_id: int) -> PortfolioView:
         debt_principal=30,
         debt_interest=5,
         net_worth=115,
-    )
-
-
-async def fake_get_stock_portfolio(user_id: int) -> StockPortfolioView:
-    """Returns a stable fake stock portfolio."""
-    return StockPortfolioView(
-        user_id=user_id,
-        holdings=(
-            StockPortfolioHolding(
-                symbol="BCAT",
-                name="破貓科技",
-                price_cents=10_000,
-                long_shares=2,
-                long_cost_basis=200,
-                long_market_value=200,
-                short_shares=0,
-                short_entry_value=0,
-                short_collateral=0,
-                short_cover_cost=0,
-                equity_value=200,
-                unrealized_pnl=0,
-                realized_pnl=25,
-            ),
-        ),
-        equity_value=200,
-        unrealized_pnl=0,
-        realized_pnl=25,
     )
 
 
