@@ -20,7 +20,7 @@
 
 </div>
 
-一个自托管 Discord 机器人，提供 AI 聊天、图片与视频生成、Threads 链接展开、视频下载、虚拟欢乐豆、赌场小游戏，以及 MapleStory Artale 查询。它基于 nextcord 运行，用本地 SQLite 保存 runtime data，并连接 OpenAI-compatible LLM endpoint，例如 LiteLLM。
+一个自托管 Discord 机器人，提供 AI 聊天、图片与视频生成、Threads 链接展开、视频下载、虚拟欢乐豆与赌场小游戏。它基于 nextcord 运行，用本地 SQLite 保存 runtime data，并连接 OpenAI-compatible LLM endpoint，例如 LiteLLM。
 
 ## 功能展示
 
@@ -47,38 +47,34 @@
 - **模拟股市**：`/stock` 开启一则公开 market message，内含 DB-managed virtual companies；选股、受 float supply、borrow cap 与单人 49% long holding cap 限制的交易、仓位摘要、近期交易记录、liquidity-based slippage、定期刷新新闻与 7 日图表都在同一则公开 message 内 edit 切换，只有发起 `/stock` 的 user 可以操作 controls。
 - **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身会以玩家身份入桌并由独立的确定性策略 (fractional-Kelly 下注与 EV 决策) 决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
 - **问题反馈**：`/feedback` 打开只有本人看得到的面板，用单号列出自己反馈过的问题，并提供表单把新的反馈开成配置好的 repository 上的 GitHub issue（后台会由 LLM 整理成好读的内容）。开发者在该 issue 上的回复会出现在同一个面板里，也有按钮可以再补一句，让反馈是双向的对话而不是单向信箱。
-- **MapleStory Artale 数据库**：`/maplestory` 子命令可查询怪物、装备、卷轴、NPC、任务、地图、掉落来源与数据库统计。
 - **本地化指令**：slash command metadata 支持英文、繁体中文、日文。AI 回复会跟随用户语言。没有 help 指令：直接问 bot 会做什么，它会读一份英文的功能说明并用你提问的语言回答。
 
 ## 指令
 
-| 指令                                                             | 功能                                                                                   |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `@bot <message>`                                                 | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。                             |
-| _Threads URL_                                                    | 自动展开 Threads 贴文与媒体；被 tag 时改为连留言一起读过再回答。                       |
-| _抖音 URL_                                                       | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                      |
-| _Bilibili URL + tag_                                             | 看过链接的视频后回答（单独贴链接不会自动展开）。                                       |
-| `/download_video <url> [quality]`                                | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                     |
-| `/feedback`                                                      | 打开只有你看得到的反馈面板：用单号列出你的反馈、开发者的回复，以及开新反馈的表单。     |
-| `/balance [member]`                                              | 私密显示成员的虚拟欢乐豆余额、债务、stock holdings、净资产与 VIP 状态。                |
-| `/checkin`                                                       | 领取每日签到奖励。                                                                     |
-| `/vip`                                                           | 购买永久 VIP 权益。                                                                    |
-| `/leaderboard`                                                   | 显示全域余额排行榜。                                                                   |
-| `/loss_leaderboard`                                              | 显示今日赌场输钱累计排行榜。                                                           |
-| `/credit status\|borrow\|call\|repay`                            | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                         |
-| `/central_bank status\|borrow\|call\|repay`                      | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。                   |
-| `/stock`                                                         | 公开股票市场消息，明细、交易、新闻、记录都在同一则 message edit。                      |
-| `/give <member> <amount>`                                        | 转账虚拟欢乐豆给其他成员或 bot。                                                       |
-| `/admin refund_tax\|collect_tax`                                 | 手动调整成员或 bot 余额；限定 `economy admin` 账号 flag，不是 Discord 身份组。         |
-| `/games blackjack <bet>`                                         | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。                |
-| `/games dragon_gate`                                             | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                                         |
-| `/casino`                                                        | 显示赌场系统累积 P&L (跨服务器)。                                                      |
-| `/pocat`                                                         | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                                       |
-| `/maplestory monster`, `/maplestory equip`, `/maplestory scroll` | 查询 MapleStory Artale 怪物、装备与卷轴。                                              |
-| `/maplestory npc`, `/maplestory quest`, `/maplestory map`        | 查询 NPC、任务与地图。                                                                 |
-| `/maplestory item`, `/maplestory stats`                          | 查询物品掉落来源与数据库统计。                                                         |
-| `/memory show\|regenerate\|clear`                                | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。 |
-| `/ping`                                                          | 检查 bot latency。                                                                     |
+| 指令                                        | 功能                                                                                   |
+| ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `@bot <message>`                            | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。                             |
+| _Threads URL_                               | 自动展开 Threads 贴文与媒体；被 tag 时改为连留言一起读过再回答。                       |
+| _抖音 URL_                                  | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                      |
+| _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                       |
+| `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                     |
+| `/feedback`                                 | 打开只有你看得到的反馈面板：用单号列出你的反馈、开发者的回复，以及开新反馈的表单。     |
+| `/balance [member]`                         | 私密显示成员的虚拟欢乐豆余额、债务、stock holdings、净资产与 VIP 状态。                |
+| `/checkin`                                  | 领取每日签到奖励。                                                                     |
+| `/vip`                                      | 购买永久 VIP 权益。                                                                    |
+| `/leaderboard`                              | 显示全域余额排行榜。                                                                   |
+| `/loss_leaderboard`                         | 显示今日赌场输钱累计排行榜。                                                           |
+| `/credit status\|borrow\|call\|repay`       | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                         |
+| `/central_bank status\|borrow\|call\|repay` | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。                   |
+| `/stock`                                    | 公开股票市场消息，明细、交易、新闻、记录都在同一则 message edit。                      |
+| `/give <member> <amount>`                   | 转账虚拟欢乐豆给其他成员或 bot。                                                       |
+| `/admin refund_tax\|collect_tax`            | 手动调整成员或 bot 余额；限定 `economy admin` 账号 flag，不是 Discord 身份组。         |
+| `/games blackjack <bet>`                    | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。                |
+| `/games dragon_gate`                        | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                                         |
+| `/casino`                                   | 显示赌场系统累积 P&L (跨服务器)。                                                      |
+| `/pocat`                                    | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                                       |
+| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。 |
+| `/ping`                                     | 检查 bot latency。                                                                     |
 
 ## 自托管
 
@@ -111,12 +107,6 @@ uv sync
 cp .env.example .env
 # edit .env
 uv run discordbot
-```
-
-刷新内置的 MapleStory Artale data：
-
-```bash
-uv run python scripts/artale_data.py
 ```
 
 ## 配置
