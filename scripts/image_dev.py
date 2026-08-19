@@ -18,7 +18,7 @@ config = LLMConfig()
 # Mirror the @property values in cogs/gen_reply/cog.py. Update here when the bot's
 # image_model / media_reply_model swap, otherwise this script tests stale models.
 IMAGE_MODEL = ModelSettings(name="gemini-3.1-flash-image")
-MEDIA_REPLY_MODEL = ModelSettings(name="gemini-flash-latest", effort="low")
+MEDIA_REPLY_MODEL = ModelSettings(name="gemini-3.7-flash", effort="low")
 
 
 def gen_image(user_prompt: str, image_path: str | Path | None = None) -> None:

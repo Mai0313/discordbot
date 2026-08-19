@@ -19,7 +19,7 @@ from discordbot.utils.model_pricing import (
     get_supported_modalities,
 )
 
-_MODEL = "gemini-pro-latest"
+_MODEL = "gemini-3.1-pro-preview"
 _TABLE = {
     _MODEL: {
         "input_cost_per_token": 1.0,
