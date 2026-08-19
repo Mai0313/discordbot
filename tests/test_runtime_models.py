@@ -1,15 +1,19 @@
 """Guards the model strings and reasoning-effort values the runtime model catalog ships.
 
 Gemini 3 cannot switch thinking off, so its `thinking_level` vocabulary starts at `minimal`.
-`none` still round-trips through LiteLLM, but only for a model it recognises as Gemini 3 by
-the literal substring `gemini-3`; the `*-latest` aliases this project dispatches on do not
-carry it, so `none` falls through to the pre-3 branch and sends `thinkingBudget: 0`, which a
-Gemini 3.x model rejects. The failure is invisible in tests because it only shows up against
-the live API, which is why it is pinned here.
+`none` still round-trips through LiteLLM, but what it turns into depends on the branch the model
+string picks. On the `thinking_level` branch every name here now takes, it is rewritten to
+minimal / low with `includeThoughts: False`, which ends the reasoning summary the streaming
+preview reads without failing anything; on a `*-latest` alias, which carries no `gemini-3`
+substring for LiteLLM to match, it falls through to the pre-3 branch and sends
+`thinkingBudget: 0`, which a Gemini 3.x model rejects. Neither shows up in tests because both
+only surface against the live API, which is why the floor is pinned here.
 
-`slow_model`'s no-alias rule is the same trap through the other door, so it is guarded here too:
-an alias narrows the `thinking_level` vocabulary the YouTube answer turn may hand to
-`interactions.create`, which is how #459 lost whole replies.
+The no-alias rule is the same trap through the other door, so it is guarded here too, at two
+strengths. No tier may name an alias at all, because the substring is what decides the whole
+translation. `slow_model` additionally may not drift off `high`, since it is the one tier whose
+effort is chosen at runtime and handed to `interactions.create`, where an alias narrows the
+accepted `thinking_level` vocabulary and #459 lost whole replies to it.
 """
 
 from types import SimpleNamespace
@@ -61,9 +65,30 @@ def test_no_tier_asks_for_an_effort_gemini_cannot_honor() -> None:
     )
 
 
+def test_no_tier_dispatches_an_alias() -> None:
+    """Every tier names an explicit snapshot rather than a `*-latest` alias.
+
+    `slow_model` has a hard reason of its own, guarded below. Every other tier has a quieter
+    one: an alias carries no `gemini-3` substring, so LiteLLM translates its effort into a
+    `thinkingBudget` on the pre-3 branch instead of a `thinking_level`, and picks `v1beta`
+    over `v1alpha` while it is there. Nothing fails, the model is simply asked for something
+    other than what the tier says. Pinning keeps that decision in the string written here
+    instead of in LiteLLM's name matching.
+    """
+    offenders = {
+        name: settings.name
+        for name, settings in _catalog_models().items()
+        if "latest" in settings.name
+    }
+    assert offenders == {}, (
+        "A `*-latest` alias moves under the deployment and switches LiteLLM onto its pre-3 "
+        f"translation branch. Name the snapshot instead. Offenders: {offenders}"
+    )
+
+
 def test_the_default_effort_is_the_gemini_floor() -> None:
     """A tier that names no effort still gets one the model can honor."""
-    assert ModelSettings(name="gemini-flash-latest").effort == "minimal"
+    assert ModelSettings(name="gemini-3.7-flash").effort == "minimal"
 
 
 def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,7 +101,9 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
 
     Every hour of a week is swept rather than one instant per branch the catalog has today: the
     dispatch condition is the catalog's own to change, so a branch added on a second condition
-    would be invisible to a fixed pair of timestamps and the guard would report nothing.
+    would be invisible to a fixed pair of timestamps and the guard would report nothing. That
+    sweep is also why the catalog-wide alias guard above does not replace this one: reading the
+    property once shows only the branch the clock happened to select.
     """
     monday = datetime(year=2026, month=5, day=18, tzinfo=UTC)
     aliases: dict[str, str] = {}
@@ -101,4 +128,4 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
 def test_the_catalog_exposes_the_tiers_under_test() -> None:
     """Guards the sweep itself: a catalog that stopped exposing tiers would pass vacuously."""
     models = _catalog_models()
-    assert {"fast_model", "tool_model", "media_reply_model", "slow_model"} <= set(models)
+    assert {"fast_model", "slow_model"} <= set(models)

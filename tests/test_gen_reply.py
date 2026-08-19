@@ -3685,9 +3685,9 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     # The director returns no draft here either, so images.generate gets the raw request.
     assert _recorded(cog).images.generate_prompts == ["image"]
     # The image is delivered first, then a conversational reply streams onto that same
-    # message via the flash media_reply_model with no tools.
+    # message via the flash fast_model with no tools.
     assert message.replies[-1].file is not None
-    assert _recorded(cog).responses.create_models[-1] == cog.runtime_models.media_reply_model.name
+    assert _recorded(cog).responses.create_models[-1] == cog.runtime_models.fast_model.name
     assert _recorded(cog).responses.create_streams[-1] is True
     assert _recorded(cog).responses.create_tools[-1] is None
 
@@ -3856,14 +3856,14 @@ async def test_prompt_generator_refines_with_grounding() -> None:
     """An enabled director expands the request and records model, instructions, and grounding tools."""
     client = FakeClient()
     client.responses.refine_output_text = "a rich, detailed scene"
-    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().fast_model)
 
     refined = await generator.refine(
         user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice", enabled=True
     )
 
     assert refined == "a rich, detailed scene"
-    assert client.responses.create_models == [RuntimeModelCatalog().prompt_model.name]
+    assert client.responses.create_models == [RuntimeModelCatalog().fast_model.name]
     assert client.responses.create_streams == [False]
     assert client.responses.create_instructions == [IMAGE_PROMPT]
     assert client.responses.create_tools == [[{"googleSearch": {}}, {"urlContext": {}}]]
@@ -3875,7 +3875,7 @@ async def test_prompt_generator_refines_with_grounding() -> None:
 async def test_prompt_generator_disabled_returns_raw_without_call() -> None:
     """A disabled director returns the raw prompt and never calls the model."""
     client = FakeClient()
-    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().fast_model)
 
     refined = await generator.refine(
         user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice", enabled=False
@@ -3888,7 +3888,7 @@ async def test_prompt_generator_disabled_returns_raw_without_call() -> None:
 async def test_prompt_generator_empty_draft_falls_back_to_raw() -> None:
     """An empty draft (no output_text) falls back to the raw prompt."""
     client = FakeClient()  # refine_output_text defaults to None
-    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().fast_model)
 
     refined = await generator.refine(
         user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice", enabled=True
@@ -3907,7 +3907,7 @@ async def test_prompt_generator_error_falls_back_to_raw() -> None:
         raise RuntimeError("director boom")
 
     client.responses.__dict__["create"] = _boom  # instance attr shadows the recorder method
-    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().fast_model)
 
     refined = await generator.refine(
         user_prompt="draw a cat", instructions=IMAGE_PROMPT, end_user_id="alice", enabled=True
@@ -3920,7 +3920,7 @@ async def test_prompt_generator_rides_source_images_as_input() -> None:
     """Source bytes ride along as input_image parts so an edit draft is grounded in the picture."""
     client = FakeClient()
     client.responses.refine_output_text = "edited result"
-    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().prompt_model)
+    generator = PromptGenerator(client=client, prompt_model=RuntimeModelCatalog().fast_model)
 
     await generator.refine(
         user_prompt="make it blue",
@@ -3977,8 +3977,8 @@ async def test_handle_image_reply_refines_prompt_before_generate() -> None:
     # Two responses.create calls: the non-streaming director first, then the streaming persona reply.
     assert _recorded(cog).responses.create_streams == [False, True]
     assert _recorded(cog).responses.create_models == [
-        cog.runtime_models.prompt_model.name,
-        cog.runtime_models.media_reply_model.name,
+        cog.runtime_models.fast_model.name,
+        cog.runtime_models.fast_model.name,
     ]
     # The director runs on IMAGE_PROMPT with the grounding tools available.
     assert _recorded(cog).responses.create_instructions[0] == IMAGE_PROMPT
@@ -4000,7 +4000,7 @@ async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
     # The raw prompt reaches images.generate; the only create is the streaming persona reply.
     assert _recorded(cog).images.generate_prompts == ["draw a cat"]
     assert _recorded(cog).responses.create_streams == [True]
-    assert _recorded(cog).responses.create_models == [cog.runtime_models.media_reply_model.name]
+    assert _recorded(cog).responses.create_models == [cog.runtime_models.fast_model.name]
 
 
 async def test_handle_image_reply_injects_only_user_memory() -> None:
@@ -4224,8 +4224,8 @@ async def test_handle_video_reply_refines_prompt_before_render(
     # The director runs on VIDEO_PROMPT first, then the streaming reply about the video.
     assert _recorded(cog).responses.create_streams == [False, True]
     assert _recorded(cog).responses.create_models == [
-        cog.runtime_models.prompt_model.name,
-        cog.runtime_models.media_reply_model.name,
+        cog.runtime_models.fast_model.name,
+        cog.runtime_models.fast_model.name,
     ]
     assert _recorded(cog).responses.create_instructions[0] == VIDEO_PROMPT
     # The reply (the last create) watches the generated video: referenced as an input_file part.
@@ -4267,7 +4267,7 @@ async def test_handle_video_reply_refine_disabled_sends_raw_prompt(
     create_input = _recorded_video(cog).create_inputs[0]
     assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
     assert _recorded(cog).responses.create_streams == [True]
-    assert _recorded(cog).responses.create_models == [cog.runtime_models.media_reply_model.name]
+    assert _recorded(cog).responses.create_models == [cog.runtime_models.fast_model.name]
 
 
 async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6722,9 +6722,9 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     # Two requests: selection (non-streaming) then the answer (streaming).
     assert _recorded(cog).responses.create_streams == [False, True]
 
-    # Selection runs on the fast tool_model; only the answer pays for slow_model.
+    # Selection runs on fast_model; only the answer pays for slow_model.
     assert _recorded(cog).responses.create_models == [
-        cog.runtime_models.tool_model.name,
+        cog.runtime_models.fast_model.name,
         cog.runtime_models.slow_model.name,
     ]
 

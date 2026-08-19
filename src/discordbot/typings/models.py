@@ -18,16 +18,18 @@ class ModelSettings(BaseModel):
     name: str = Field(
         ...,
         description="LiteLLM model string dispatched on the Responses API.",
-        examples=["gemini-flash-latest", "gemini-3.1-flash-image"],
+        examples=["gemini-3.7-flash", "gemini-3.1-flash-image"],
     )
     # `minimal`, never `none`. Gemini 3 cannot switch thinking off at all, so the API's own
     # vocabulary starts at `minimal` (`thinking_level` accepts minimal / low / medium / high).
-    # LiteLLM does map `none`, but only after recognising the model as Gemini 3 by the literal
-    # substring `gemini-3` in the model string, which the `*-latest` aliases this project
-    # dispatches on do not contain. It therefore falls through to the pre-3 branch and sends
-    # `thinkingBudget: 0`, which a Gemini 3.x model rejects — so `none` silently stopped working
-    # the moment `gemini-flash-latest` began resolving to a 3.x snapshot. `minimal` maps to a
-    # small positive budget on that same branch and is accepted.
+    # Which of LiteLLM's two branches translates the effort is decided by the literal substring
+    # `gemini-3` in the model string, and every name this project sends through the proxy
+    # carries it, so the `thinking_level` branch is the one that runs. There `none` / `disable`
+    # are not rejected but rewritten to minimal / low with `includeThoughts: False`, which
+    # silently ends the reasoning summary the streaming preview is built on; asking for
+    # `minimal` keeps it. On a `*-latest` alias, which carries no `gemini-3`, the same request
+    # instead falls through to the pre-3 branch and sends `thinkingBudget: 0`, which a Gemini
+    # 3.x model rejects outright.
     effort: ReasoningEffort = Field(
         default="minimal",
         description="Reasoning effort passed to the Responses API for this model.",
@@ -130,57 +132,6 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="lyria-3-clip-preview")
 
     @property
-    def antigravity_model(self) -> ModelSettings:
-        """The deep-research agent: a one-shot Antigravity managed agent.
-
-        Callers: `ResearchCogs` (the only research tier there is).
-
-        Returns:
-            The Antigravity managed-agent string dispatched on the Gemini Interactions API
-            (direct, not the proxy). `effort` / `tools` are unused on the agent path: the
-            agent runs its own internal tool loop.
-        """
-        return ModelSettings(name="antigravity-preview-05-2026")
-
-    @property
-    def prompt_model(self) -> ModelSettings:
-        """The model settings for the image/video generation prompt director.
-
-        Callers: `PromptGenerator.refine` (via `_handle_image_reply`, `_handle_video_reply`).
-
-        Returns:
-            Flash-with-high-effort settings for the director call that expands a thin user
-            request into a rich, self-contained generation prompt before the image/video model
-            draws it. Flash (not flash-lite) so it reliably CALLS the grounding tools
-            (googleSearch / urlContext) to look up named subjects; effort is the latency lever
-            since this call sits serially on the IMAGE/VIDEO critical path before generation.
-            Deliberately decoupled from `slow_model` so the refinement tier can be tuned on its
-            own (bump to a pro snapshot here if the refined prompts underperform).
-        """
-        return ModelSettings(name="gemini-flash-latest", effort="high")
-
-    @property
-    def media_reply_model(self) -> ModelSettings:
-        """The model settings for the conversational reply that rides generated media.
-
-        Callers: `_stream_media_persona_reply` (via `_handle_image_reply` and
-        `_handle_video_reply`).
-
-        One tier for both routes because they are the same task on the same shared streamer:
-        only the system prompt and the focus part differ per route. Flash, the middle tier
-        between the flash-lite caption it replaces and the gemini-pro answer model, and it
-        ingests video as well as images: it reads conversation history and the selected user
-        memory, then answers in persona while holding the image or clip it just made rather
-        than coldly describing it.
-
-        Returns:
-            Flash with `effort="low"`, which keeps it snappy yet still emits a reasoning
-            summary so the streaming reasoning preview shows. The media is already on screen,
-            so this text streams in after with no added generation latency.
-        """
-        return ModelSettings(name="gemini-flash-latest", effort="low")
-
-    @property
     def tts_model(self) -> ModelSettings:
         """The model settings for spoken-reply text-to-speech.
 
@@ -194,38 +145,40 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="gemini-3.1-flash-tts-preview")
 
     @property
-    def fast_model(self) -> ModelSettings:
-        """The model settings for lightweight, single-shot tasks.
+    def antigravity_model(self) -> ModelSettings:
+        """The deep-research agent: a one-shot Antigravity managed agent.
 
-        Callers: `_route_classify`, `_grade_effort`, `AutoUnmuteCogs._generate_reply`,
-        `StockNewsAI`, the research thread title.
-
-        This is the difficulty tier, not a purpose: everything routed here is one short call
-        whose job is either a narrow classification or a throwaway line of text. The route
-        picks the reply mode and the effort grade decides how hard the answer model should
-        think; both follow simple rules, so flash-lite is enough and the QA critical path
-        stays short (the grade runs in parallel with the route under the same `route_done`
-        gate, so its latency hides behind the route entirely).
+        Callers: `ResearchCogs` (the only research tier there is).
 
         Returns:
-            Fast minimal-thinking settings.
+            The Antigravity managed-agent string dispatched on the Gemini Interactions API
+            (direct, not the proxy). `effort` / `tools` are unused on the agent path: the
+            agent runs its own internal tool loop.
         """
-        return ModelSettings(name="gemini-flash-lite-latest", effort="minimal")
+        return ModelSettings(name="antigravity-preview-05-2026")
 
     @property
-    def tool_model(self) -> ModelSettings:
-        """The model settings for optional oblique-reference memory selection.
+    def fast_model(self) -> ModelSettings:
+        """The model settings for every short call that is not the answer itself.
 
-        Callers: `_select_user_memories`.
+        Callers: `_route_classify`, `_grade_effort`, `_select_user_memories`,
+        `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
+        `_stream_media_persona_reply` (the persona reply that rides generated media),
+        `AutoUnmuteCogs._generate_reply`, `StockNewsAI`, the research thread title.
+
+        This is the difficulty tier, not a purpose: a narrow classification, a nickname
+        match, a generation prompt, a line of throwaway text. One tier for all of them
+        because the seam worth tuning at is between them and `slow_model`, not between each
+        other; a call that needs the answer model's judgment does not belong here at all.
 
         Returns:
-            Fast minimal-thinking settings for matching an obliquely referenced absent
-            member to the public nickname table: flash (not flash-lite)
-            because matching spoken community nicknames to user ids needs more
-            language skill than the lite tier reliably delivers, while staying far
-            below answer-model latency.
+            Flash at `medium`, between the `high` the prompt director used to take and the
+            `minimal` the route classifier did. `minimal` is not available on this snapshot:
+            LiteLLM matches the name as a Gemini 3 flash and forwards `thinking_level:
+            minimal`, which the model rejects, leaving the request to survive only on a proxy
+            fallback to a different model.
         """
-        return ModelSettings(name="gemini-flash-latest", effort="minimal")
+        return ModelSettings(name="gemini-3.7-flash", effort="medium")
 
     @property
     def slow_model(self) -> ModelSettings:
@@ -268,7 +221,7 @@ class RuntimeModelCatalog(BaseModel):
             writer tier so the recall-oriented first pass can be downgraded on its own if
             the gates behind it prove able to carry the precision.
         """
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
     def memory_writer_model(self) -> ModelSettings:
@@ -287,7 +240,7 @@ class RuntimeModelCatalog(BaseModel):
             consolidator turns that staging into the fact files plus the tone note. A weaker
             model on either loses memory or leaks it, rather than just failing to record it.
         """
-        return ModelSettings(name="gemini-pro-latest", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
 
 class RouteClassification(BaseModel):
