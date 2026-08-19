@@ -43,12 +43,11 @@ _BOUND_NAME_SUFFIXES = ("_timeout", "_timeout_seconds", "_deadline_seconds", "_g
 
 # Discord view and modal idle expiry: the timer that closes an untouched panel. Out of scope by
 # the collection's own rule — expiry is the design, not a failure — and deliberately left beside
-# the view it belongs to, which is also why the eight copies of 180 stay eight copies.
+# the view it belongs to, which is also why the seven copies of 180 stay seven copies.
 _VIEW_IDLE_EXPIRY = frozenset({
     "BLACKJACK_ACTION_TIMEOUT_SECONDS",
     "DRAGON_GATE_ACTION_TIMEOUT_SECONDS",
     "FEEDBACK_VIEW_TIMEOUT_SECONDS",
-    "FISHING_ACTION_TIMEOUT_SECONDS",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MAPLESTORY_VIEW_TIMEOUT_SECONDS",
     "MEMORY_VIEW_TIMEOUT_SECONDS",

@@ -39,7 +39,6 @@ A link that is only incidental to the question is left alone.
 
 - `/games blackjack` — open a Blackjack table; a hand of five cards that has not busted wins outright
 - `/games dragon_gate` — open a Dragon Gate table backed by a shared jackpot pool
-- `/games fishing` — open the fishing panel: buy a rod and bait, then cast
 - `/games blackjack_history` — recent Blackjack rounds, optionally for one member
 
 ## 虛擬歡樂豆 and the economy

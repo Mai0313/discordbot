@@ -1,4 +1,4 @@
-"""The `/games` group: Blackjack, 射龍門, the Blackjack history lookup, and fishing."""
+"""The `/games` group: Blackjack, 射龍門, and the Blackjack history lookup."""
 
 from random import SystemRandom
 from functools import partial
@@ -30,7 +30,6 @@ from discordbot.utils.message_cleanup import (
 from discordbot.cogs.games.dragon_gate import ANTE
 from discordbot.cogs.games.history_text import build_blackjack_history_embed
 from discordbot.cogs.games.presentation import ERROR_COLOR, SYSTEM_NARRATOR_NAME
-from discordbot.cogs.games.fishing.views import FishingPanelView
 from discordbot.services.economy.database import get_account, get_balance
 from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.cogs.games.blackjack_views import (
@@ -38,7 +37,6 @@ from discordbot.cogs.games.blackjack_views import (
     BlackjackLobbyView,
     build_blackjack_lobby_embed,
 )
-from discordbot.cogs.games.fishing.database import get_fishing_panel, get_grade_config_map
 from discordbot.utils.interaction_responses import send_expiring_followup
 from discordbot.cogs.games.dragon_gate_views import (
     DragonGateLobbyView,
@@ -46,15 +44,13 @@ from discordbot.cogs.games.dragon_gate_views import (
     fetch_dragon_gate_jackpot_snapshot,
 )
 from discordbot.services.economy.presentation import CURRENCY_NAME, bold_currency
-from discordbot.cogs.games.fishing.presentation import build_panel_embed
 
 
 class GamesCogs(commands.Cog):
     """Slash commands for the `/games` group.
 
     Blackjack and 射龍門 are multiplayer tables played against the casino
-    system; fishing is a single-player panel and blackjack_history only reads
-    stored rounds.
+    system; blackjack_history only reads stored rounds.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -501,37 +497,6 @@ class GamesCogs(commands.Cog):
         records = await fetch_recent_blackjack_rounds(user_id=target.id, limit=count)
         embed = build_blackjack_history_embed(player_name=target_name, records=records)
         await send_expiring_followup(interaction=interaction, embed=embed)
-
-    @games.subcommand(
-        name="fishing",
-        description="Open your fishing panel: buy gear, cast a line, and recycle currency.",
-        name_localizations={Locale.zh_TW: "釣魚", Locale.ja: "釣り"},
-        description_localizations={
-            Locale.zh_TW: "打開釣魚面板：買釣具、拋竿，把歡樂豆釣回來",
-            Locale.ja: "釣りパネルを開いて、道具購入とキャストで遊びます。",
-        },
-    )
-    async def fishing(self, interaction: Interaction[commands.Bot]) -> None:
-        """Opens the personal fishing panel as one public, in-place message.
-
-        Args:
-            interaction: The interaction that triggered the command.
-        """
-        await interaction.response.defer()
-        if interaction.user is None:
-            return
-        panel = await get_fishing_panel(user_id=interaction.user.id)
-        grade_map = await get_grade_config_map()
-        embed = build_panel_embed(panel=panel, grade_map=grade_map)
-        view = FishingPanelView(owner_id=interaction.user.id)
-        message = await interaction.followup.send(
-            embed=embed,
-            view=view,
-            wait=True,
-            **embed_spacer_payload(embeds=[embed], is_edit=False, target=interaction),
-        )
-        await track_public_message(message=message, user_name=interaction.user.name)
-        view.message = message
 
 
 def setup(bot: commands.Bot) -> None:

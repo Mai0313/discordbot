@@ -133,8 +133,8 @@ def test_a_package_init_resolves_relative_imports_against_its_own_package() -> N
     """
     assert _relative_import_base(_COGS / "economy" / "cog.py") == "discordbot.cogs.economy"
     assert _relative_import_base(_COGS / "economy" / "__init__.py") == "discordbot.cogs.economy"
-    assert _relative_import_base(_COGS / "games" / "fishing" / "__init__.py") == (
-        "discordbot.cogs.games.fishing"
+    assert _relative_import_base(_COGS / "gen_reply" / "link_sources" / "__init__.py") == (
+        "discordbot.cogs.gen_reply.link_sources"
     )
 
 
