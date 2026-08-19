@@ -15,7 +15,7 @@ from discordbot.cogs.gen_reply.prompts import IMAGE_REPLY_PROMPT
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property values in cogs/gen_reply/cog.py. Update here when the bot's
+# Mirror the @property values in typings/models.py. Update here when the bot's
 # image_model / fast_model swap, otherwise this script tests stale models.
 IMAGE_MODEL = ModelSettings(name="gemini-3.1-flash-image")
 MEDIA_REPLY_MODEL = ModelSettings(name="gemini-3.7-flash", effort="medium")
