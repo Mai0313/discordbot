@@ -158,27 +158,40 @@ class RuntimeModelCatalog(BaseModel):
         return ModelSettings(name="antigravity-preview-05-2026")
 
     @property
-    def fast_model(self) -> ModelSettings:
-        """The model settings for every short call that is not the answer itself.
+    def triage_model(self) -> ModelSettings:
+        """The model settings for filling a shape the caller has already fixed.
 
-        Callers: `_route_classify`, `_grade_effort`, `_select_user_memories`,
-        `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
-        `_stream_media_persona_reply` (the persona reply that rides generated media),
-        `AutoUnmuteCogs._generate_reply`, `StockNewsAI`, the research thread title.
+        Callers: `_route_classify`, `_grade_effort`, `_select_user_memories`, the research
+        thread title.
 
-        This is the difficulty tier, not a purpose: a narrow classification, a nickname
-        match, a generation prompt, a line of throwaway text. One tier for all of them
-        because the seam worth tuning at is between them and `slow_model`, not between each
-        other; a call that needs the answer model's judgment does not belong here at all.
+        Every one lands in a slot with no room in it: two enums, a list of ids, and a few
+        words in the request's own language. Nothing here decides what to write, which is
+        both the seam against `fast_model` and why `minimal` is enough.
 
         Returns:
-            Flash at `medium`, between the `high` the prompt director used to take and the
-            `minimal` the route classifier did. `minimal` is not available on this snapshot:
-            LiteLLM matches the name as a Gemini 3 flash and forwards `thinking_level:
-            minimal`, which the model rejects, leaving the request to survive only on a proxy
-            fallback to a different model.
+            Flash-lite at `minimal`. LiteLLM forwards that untouched on any `gemini-3` flash
+            name, which is exactly what `gemini-3.7-flash` rejects; measured 2026-08-20, this
+            snapshot accepts it and answers under its own name rather than a fallback's.
         """
-        return ModelSettings(name="gemini-3.7-flash", effort="medium")
+        return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
+
+    @property
+    def fast_model(self) -> ModelSettings:
+        """The model settings for prose the model composes itself, short of the answer.
+
+        Callers: `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
+        `_stream_media_persona_reply` (the persona reply that rides generated media),
+        `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
+
+        Each decides what to say rather than how briefly to say it, which is the thinking
+        `triage_model` does without. None of them is the deliverable, which is what keeps
+        them below `slow_model`.
+
+        Returns:
+            Flash at `medium`, one snapshot back from `gemini-3.7-flash`, popular enough now
+            to queue behind its own load (observed 2026-08-20).
+        """
+        return ModelSettings(name="gemini-3.6-flash", effort="medium")
 
     @property
     def slow_model(self) -> ModelSettings:
@@ -195,7 +208,8 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Slow-path model settings for reply generation and summaries.
         """
-        # Both branches are pinned to explicit snapshots, never a `*-latest` alias. This is the
+        # Both branches, the commented-out one included, are pinned to explicit snapshots and
+        # never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
         # answer turn hands that effort straight to the Interactions API as a `thinking_level`
         # (`gen_reply/interactions.py`), where the enum is per-model: every alias measured
@@ -204,10 +218,12 @@ class RuntimeModelCatalog(BaseModel):
         # that lost whole replies through an alias in #459; the pinning stays because it is what
         # keeps the next vocabulary change from doing it again. Note `minimal` is still a 400 on
         # the pro snapshot; it stays legal only because `EffortGrade` never emits it.
-        # The peak/off-peak split is load-bearing again rather than dormant: Gemini Pro has
-        # historically slowed down during peak hours, so peak takes the flash snapshot.
-        if self.is_peak:
-            return ModelSettings(name="gemini-3.7-flash", effort="high")
+        # The peak split is commented out rather than deleted, and `is_peak` stays exposed for
+        # it: it sent peak hours to flash because Pro used to be the one that slowed down, and
+        # `gemini-3.7-flash` is now the one that queues (observed 2026-08-20). Restore it when
+        # that inverts back.
+        # if self.is_peak:
+        #     return ModelSettings(name="gemini-3.7-flash", effort="high")
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property

@@ -13,7 +13,8 @@ from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT, EFFORT_PROMPT
 console = Console()
 config = LLMConfig()
 
-FAST_MODEL = ModelSettings(name="gemini-3.7-flash", effort="medium")
+# Mirror the @property value in typings/models.py: both calls below are triage_model's.
+TRIAGE_MODEL = ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
 
 
 def _smoke_parse(
@@ -22,11 +23,11 @@ def _smoke_parse(
     """Runs one structured-output parse call and prints the result and latency."""
     start = time.time()
     responses = client.responses.parse(
-        model=FAST_MODEL.name,
+        model=TRIAGE_MODEL.name,
         instructions=instructions,
         input=[{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}],
         text_format=text_format,
-        reasoning=FAST_MODEL.reasoning,
+        reasoning=TRIAGE_MODEL.reasoning,
         service_tier="auto",
         extra_headers={"x-litellm-end-user-id": "route_dev"},
     )
