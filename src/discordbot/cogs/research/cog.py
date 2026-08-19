@@ -145,14 +145,14 @@ class ResearchCogs(commands.Cog):
         return f"{RESEARCH_SYSTEM_INSTRUCTION}\n\nToday's date: {database_now():%Y-%m-%d}."
 
     async def _generate_thread_name(self, *, brief: str) -> str:
-        """Generates a short thread title from the brief via `fast_model`, best-effort.
+        """Generates a short thread title from the brief via `triage_model`, best-effort.
 
         Brevity is steered by the prompt (not a token cap); on timeout or failure the brief's
         first line is used, and the result is trimmed to Discord's hard name limit as a safety net.
         """
         raw = await create_text_or_none(
             client=self.responses_client,
-            model=self.runtime_models.fast_model,
+            model=self.runtime_models.triage_model,
             instructions=THREAD_TITLE_PROMPT,
             user_text=brief,
             end_user_id="deep-research",
