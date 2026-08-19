@@ -1,9 +1,17 @@
 """Shared scaffolding for views that own one public Discord message.
 
-The stock panel has that UX: one public message edited in place, operable only
-by the user who opened it, and deleted after an idle timeout. The base view and
-the central edit helper live here so a cog only supplies its own embeds,
-controls, and notice text.
+A panel owns one public message edited in place, operable only by the user who
+opened it, and deleted after an idle timeout. The base view and the central edit
+helper live here so a cog only supplies its own embeds, controls, and notice
+text.
+
+`send_ephemeral_notice` is the only part a cog still imports (blackjack, dragon
+gate and the lobby). `OwnedPublicView` and `edit_owned_public_message` lost their
+last consumer when the fishing and stock panels went, and are kept on purpose
+rather than left behind: they are the one worked-out answer to owning a public
+message across restarts, deletions and idle expiry, which is a lot to rederive
+for the next panel. Like `games/lobby.py`, do not delete them as dead code.
+`tests/test_owned_message_views.py` is what keeps that answer honest.
 """
 
 from io import BytesIO

@@ -175,8 +175,8 @@ class DiscordBot(commands.Bot):
     async def on_message(self, message: Message) -> None:
         """Awards the cooldown-gated message reward, then dispatches commands.
 
-        This and `/checkin` are the only two faucets that pay an action reward; it is
-        best-effort, so command dispatch runs whether or not the credit lands.
+        This is the only faucet that pays an action reward; it is best-effort, so
+        command dispatch runs whether or not the credit lands.
 
         Args:
             message: The message that was sent.

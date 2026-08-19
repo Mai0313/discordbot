@@ -27,7 +27,7 @@ Replies, images, videos, audio and reports produced by the bot come from third-p
 
 ## Virtual currency and games
 
-The in-bot currency, items, stock positions and game results have **no monetary value**, cannot be bought, sold, or exchanged for anything outside the bot, and are not property. Balances may be adjusted, reset, or wiped at any time, including when a bug or an exploit is corrected. The casino and market features are simulations for entertainment; they are not gambling for money and not investment products.
+The in-bot currency, items and game results have **no monetary value**, cannot be bought, sold, or exchanged for anything outside the bot, and are not property. Balances may be adjusted, reset, or wiped at any time, including when a bug or an exploit is corrected. The casino features are simulations for entertainment; they are not gambling for money and not investment products.
 
 ## Suspension
 

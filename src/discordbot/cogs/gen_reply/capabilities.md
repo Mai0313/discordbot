@@ -45,9 +45,8 @@ A link that is only incidental to the question is left alone.
 
 Everyday:
 
-- `/balance` — your balance, holdings, and net worth
-- `/checkin` — the daily check-in reward, which builds a streak
-- `/vip` — buy VIP, which boosts check-in and Blackjack payouts
+- `/balance` — your cash, debts, net worth, and VIP status
+- `/vip` — buy VIP, which boosts Blackjack payouts
 
 Transfers and boards:
 
@@ -78,10 +77,6 @@ Balance maintenance:
 
 Economy admin and central banker are flags on an account, set by whoever runs me. Neither is a
 Discord role: being a server admin grants neither, and no command hands one out.
-
-## Simulated stock market
-
-- `/stock` — open the market panel: prices, news, your positions, and charts. Buying, shorting, selling, and covering all happen from the panel itself.
 
 ## Telling the developer something
 

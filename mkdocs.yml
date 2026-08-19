@@ -91,12 +91,6 @@ nav:
                   - delivery: Reference/discordbot/cogs/research/delivery.md
                   - prompts: Reference/discordbot/cogs/research/prompts.md
                   - streaming: Reference/discordbot/cogs/research/streaming.md
-              - stock:
-                  - chart: Reference/discordbot/cogs/stock/chart.md
-                  - cog: Reference/discordbot/cogs/stock/cog.md
-                  - news: Reference/discordbot/cogs/stock/news.md
-                  - presentation: Reference/discordbot/cogs/stock/presentation.md
-                  - views: Reference/discordbot/cogs/stock/views.md
               - template:
                   - cog: Reference/discordbot/cogs/template/cog.md
               - usage:
@@ -118,10 +112,6 @@ nav:
                   - prompts: Reference/discordbot/services/memory/prompts.md
                   - server_prompts: Reference/discordbot/services/memory/server_prompts.md
                   - store: Reference/discordbot/services/memory/store.md
-              - stock:
-                  - database: Reference/discordbot/services/stock/database.md
-                  - market: Reference/discordbot/services/stock/market.md
-                  - prompts: Reference/discordbot/services/stock/prompts.md
           - typings:
               - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md
@@ -131,7 +121,6 @@ nav:
               - llm: Reference/discordbot/typings/llm.md
               - memory: Reference/discordbot/typings/memory.md
               - models: Reference/discordbot/typings/models.md
-              - stock: Reference/discordbot/typings/stock.md
               - timeouts: Reference/discordbot/typings/timeouts.md
               - video: Reference/discordbot/typings/video.md
           - utils:
@@ -139,7 +128,6 @@ nav:
               - asyncio_locks: Reference/discordbot/utils/asyncio_locks.md
               - avatars: Reference/discordbot/utils/avatars.md
               - bilibili: Reference/discordbot/utils/bilibili.md
-              - currency: Reference/discordbot/utils/currency.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - douyin: Reference/discordbot/utils/douyin.md
               - downloader: Reference/discordbot/utils/downloader.md

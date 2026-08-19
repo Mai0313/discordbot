@@ -1,4 +1,4 @@
-"""Slash commands for balances, leaderboards, transfers, loans, check-in, VIP, and admin tax."""
+"""Slash commands for balances, leaderboards, transfers, loans, VIP, and admin tax."""
 
 from io import BytesIO
 from datetime import UTC, datetime
@@ -12,7 +12,6 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import EconomyConfig
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
-    BASE_CHECKIN_REWARD_AMOUNT,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LoanLenderType,
 )
@@ -24,11 +23,9 @@ from discordbot.cogs.economy.boards import (
     build_balance_leaderboard_board_image,
 )
 from discordbot.utils.amount_parsing import parse_decimal_amount
-from discordbot.services.stock.database import get_stock_portfolio
 from discordbot.services.economy.database import (
     top_n,
     buy_vip,
-    checkin,
     get_vip,
     transfer,
     get_admin,
@@ -81,7 +78,7 @@ def _parse_collect_amount(raw_amount: str | None) -> tuple[bool, int | None]:
 
 
 class EconomyCogs(commands.Cog):
-    """Point balance, leaderboard, loan, VIP, check-in, and economy-admin commands.
+    """Point balance, leaderboard, loan, VIP, and economy-admin commands.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -259,11 +256,11 @@ class EconomyCogs(commands.Cog):
 
     @nextcord.slash_command(
         name="balance",
-        description=f"Check a member's {CURRENCY_NAME} balance, loans, stocks, and VIP status.",
+        description=f"Check a member's {CURRENCY_NAME} balance, loans, and VIP status.",
         name_localizations={Locale.zh_TW: "餘額", Locale.ja: "残高"},
         description_localizations={
-            Locale.zh_TW: f"查詢成員的{CURRENCY_NAME}餘額、借貸、股票與 VIP 狀態",
-            Locale.ja: f"member の{CURRENCY_NAME}残高、loan、stock、VIP 状態を確認します。",
+            Locale.zh_TW: f"查詢成員的{CURRENCY_NAME}餘額、借貸與 VIP 狀態",
+            Locale.ja: f"member の{CURRENCY_NAME}残高、loan、VIP 状態を確認します。",
         },
         nsfw=False,
     )
@@ -282,7 +279,7 @@ class EconomyCogs(commands.Cog):
             default=None,
         ),
     ) -> None:
-        """Replies with a member's balance, loans, stocks, and VIP status.
+        """Replies with a member's balance, loans, and VIP status.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -293,14 +290,12 @@ class EconomyCogs(commands.Cog):
             return
         target = member or interaction.user
         portfolio = await get_portfolio(user_id=target.id)
-        stock_portfolio = await get_stock_portfolio(user_id=target.id)
         is_vip = await get_vip(user_id=target.id)
         age_days = (datetime.now(tz=UTC) - target.created_at).days
         embed = embeds.build_balance_embed(
             display_name=target.display_name,
             avatar_url=target.display_avatar.url,
             portfolio=portfolio,
-            stock_portfolio=stock_portfolio,
             is_vip=is_vip,
             age_days=age_days,
         )
@@ -1131,62 +1126,15 @@ class EconomyCogs(commands.Cog):
         await send_expiring_followup(interaction=interaction, embed=embed)
 
     @nextcord.slash_command(
-        name="checkin",
-        description=f"Daily {CURRENCY_NAME} check-in with a 7-day streak bonus.",
-        name_localizations={Locale.zh_TW: "簽到", Locale.ja: "デイリーチェックイン"},
-        description_localizations={
-            Locale.zh_TW: (
-                f"每日簽到領 {currency_text(amount=BASE_CHECKIN_REWARD_AMOUNT, compact=True)}, "
-                "連續 7 天加成, VIP 2x"
-            ),
-            Locale.ja: (
-                f"毎日{currency_text(amount=BASE_CHECKIN_REWARD_AMOUNT, compact=True)}, "
-                "7日連続でボーナス。"
-            ),
-        },
-        nsfw=False,
-    )
-    async def checkin_command(self, interaction: Interaction[commands.Bot]) -> None:
-        """Claims today's check-in reward; ephemeral so only the caller sees it.
-
-        Args:
-            interaction: The interaction that triggered the command.
-        """
-        await interaction.response.defer(ephemeral=True)
-        if interaction.user is None:
-            return
-        user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
-        result = await checkin(user_id=user.id, name=user.name, avatar_url=user_avatar_url)
-        if result is None:
-            await send_private_followup(
-                interaction=interaction,
-                embed=embeds.build_error_embed(
-                    title="今天已經簽到過了",
-                    description="### 0:00 (Asia/Taipei) 後再回來簽吧",
-                    author_name=user.display_name,
-                    author_icon_url=user_avatar_url,
-                ),
-            )
-            return
-
-        embed = embeds.build_checkin_embed(
-            actor_name=user.display_name, avatar_url=user_avatar_url, result=result
-        )
-        await send_private_followup(interaction=interaction, embed=embed)
-
-    @nextcord.slash_command(
         name="vip",
         description=(
             f"Buy permanent VIP for {currency_text(amount=VIP_PURCHASE_COST, compact=True)}: "
-            "2x check-in and 1.2x Blackjack wins."
+            "1.2x Blackjack wins."
         ),
         name_localizations={Locale.zh_TW: "購買vip", Locale.ja: "vip購入"},
         description_localizations={
-            Locale.zh_TW: "購買永久 VIP：簽到 2x、Blackjack 贏局 1.2x",
-            Locale.ja: "永久 VIP を購入: check-in 2x、Blackjack 勝利 1.2x。",
+            Locale.zh_TW: "購買永久 VIP：Blackjack 贏局 1.2x",
+            Locale.ja: "永久 VIP を購入: Blackjack 勝利 1.2x。",
         },
         nsfw=False,
     )

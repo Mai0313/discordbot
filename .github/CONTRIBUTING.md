@@ -42,7 +42,7 @@ make gen-docs
 
 - `src/discordbot/cli.py`: bot entry point, intent setup, cog loading, global message reward, and application-command sync.
 - `src/discordbot/cogs/`: nextcord cogs, one directory each. `cogs/<name>/cog.py` is the module the loader imports; everything beside it in that directory is that cog's own code.
-- `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the stock market, the memory store). Discord-free, and never imports from `cogs/`.
+- `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the memory store). Discord-free, and never imports from `cogs/`.
 - `src/discordbot/typings/`: shared Pydantic models, settings, enums, and pure domain types.
 - `src/discordbot/utils/`: generic helpers with no domain state — downloader, image, Threads, LiteLLM pricing.
 - `tests/`: pytest suite.
@@ -139,7 +139,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 
 ## Economy And Games
 
-- `data/database/economy.db`, `data/database/games.db`, `data/database/stock.db`, and `data/database/messages.db` are separate SQLite databases. Keep `economy.db` user-scoped tables keyed by `user_id` and `name`; bot-wide money state such as jackpot pools and the casino ledger also lives in `economy.db` so settlement stays atomic.
+- `data/database/economy.db`, `data/database/games.db`, and `data/database/messages.db` are separate SQLite databases. Keep `economy.db` user-scoped tables keyed by `user_id` and `name`; bot-wide money state such as jackpot pools and the casino ledger also lives in `economy.db` so settlement stays atomic.
 - Economy helpers use a module-level SQLAlchemy engine so tests can monkeypatch the engine object.
 - 虛擬歡樂豆 balances are cross-server. Do not add `guild_id` to the account model.
 - `UserAccount.avatar_url` is a last-seen cache. Discord-facing write paths should pass `guild_avatar_url(...)` with guild context so guild avatars are stored when available, then fall back to the global `display_avatar`. Existing rows are not backfilled; they refresh naturally on later writes.
@@ -151,7 +151,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - Daily casino loss leaderboards read persisted `casino_account` counters. Keep those counters tied to player-side casino settlement deltas only.
 - `UserAccount.hide_from_leaderboard` defaults to `False`. Public balance and daily loss leaderboards omit rows where it is set; maintenance code should opt into hidden rows when it needs a true full-account sweep.
 - Blackjack casino ledger and Dragon Gate jackpot pool are separate counterparties. Do not route Dragon Gate through the casino ledger.
-- Interactive game, public economy, and public stock responses are tracked for restart cleanup and expire after settlement or timeout. Private balance, loan, check-in, VIP, and admin-error replies are not tracked.
+- Interactive game and public economy responses are tracked for restart cleanup and expire after settlement or timeout. Private balance, loan, VIP, and admin-error replies are not tracked.
 
 ## Tests And Quality Gates
 

@@ -22,7 +22,6 @@ from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
 from discordbot.cogs.template import cog as template
 from discordbot.typings.games import GameParticipant
-from discordbot.typings.stock import StockPortfolioView, StockPortfolioHolding
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.video.cog import VideoCogs
@@ -60,7 +59,6 @@ from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.services.economy.database import (
     VIP_PURCHASE_COST,
     CreditResult,
-    CheckinResult,
     TransferResult,
     VipPurchaseResult,
     BalanceAdjustmentResult,
@@ -1225,7 +1223,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "transfer", fake_transfer)
     monkeypatch.setattr(economy, "adjust_balance", fake_adjust_balance)
     monkeypatch.setattr(economy, "get_portfolio", fake_get_portfolio)
-    monkeypatch.setattr(economy, "get_stock_portfolio", fake_get_stock_portfolio)
     monkeypatch.setattr(economy, "create_personal_loan_request", fake_create_loan_request)
     monkeypatch.setattr(economy, "repay_personal_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_personal_loans", fake_call_personal_loans)
@@ -1237,7 +1234,6 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
     monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", fake_call_central_bank_loans)
-    monkeypatch.setattr(economy, "checkin", fake_checkin)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     cog = EconomyCogs(bot=as_bot(fake=bot))
@@ -1278,9 +1274,8 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
         cog, interaction, member=FakeUser(user_id=2, name="bob"), amount="0"
     )
     await EconomyCogs.central_bank_status.callback(cog, interaction)
-    await EconomyCogs.checkin_command.callback(cog, interaction)
     await EconomyCogs.vip_command.callback(cog, interaction)
-    assert len(interaction.followup.sent) == 18
+    assert len(interaction.followup.sent) == 17
     assert len(scheduled) == 12
     assert interaction.followup.sent[0].get("ephemeral") is True
     assert "view" not in interaction.followup.sent[1]
@@ -1301,21 +1296,15 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert interaction.followup.sent[-1].get("ephemeral") is True
     balance_embed = interaction.followup.sent[0]["embed"]
     # Assert the financial summary's structure and the facade values it surfaces, not the exact
-    # localized title/labels: cash 150, debt principal 30, stock net 200, total 315, BCAT position.
+    # localized title/labels: cash 150, debt principal 30, net worth 115.
     assert_embed_title_prefix(embed=balance_embed, prefix="💰")
-    assert "315" in (balance_embed.description or "")
+    assert "115" in (balance_embed.description or "")
     cash_value = assert_embed_has_field(embed=balance_embed, name="現金").value
     assert cash_value is not None
     assert "150" in cash_value
     debt_value = assert_embed_has_field(embed=balance_embed, name="債務").value
     assert debt_value is not None
     assert "30" in debt_value
-    stock_net_value = assert_embed_has_field(embed=balance_embed, name="股票淨值").value
-    assert stock_net_value is not None
-    assert "200" in stock_net_value
-    stock_position_value = assert_embed_has_field(embed=balance_embed, name="股票部位").value
-    assert stock_position_value is not None
-    assert "BCAT" in stock_position_value
     borrow_embed = interaction.followup.sent[8]["embed"]
     # The footer explains the loan-decision timeout; assert the behavioral 180s, not the copy.
     assert "180" in (borrow_embed.footer.text or "")
@@ -2044,33 +2033,6 @@ async def fake_get_portfolio(user_id: int) -> PortfolioView:
     )
 
 
-async def fake_get_stock_portfolio(user_id: int) -> StockPortfolioView:
-    """Returns a stable fake stock portfolio."""
-    return StockPortfolioView(
-        user_id=user_id,
-        holdings=(
-            StockPortfolioHolding(
-                symbol="BCAT",
-                name="破貓科技",
-                price_cents=10_000,
-                long_shares=2,
-                long_cost_basis=200,
-                long_market_value=200,
-                short_shares=0,
-                short_entry_value=0,
-                short_collateral=0,
-                short_cover_cost=0,
-                equity_value=200,
-                unrealized_pnl=0,
-                realized_pnl=25,
-            ),
-        ),
-        equity_value=200,
-        unrealized_pnl=0,
-        realized_pnl=25,
-    )
-
-
 async def fake_get_vip(user_id: int) -> bool:
     """Returns non-VIP status."""
     return False
@@ -2258,11 +2220,6 @@ async def fake_get_central_bank_status(
     return CentralBankStatus(
         total_positive_user_balance=1_000, outstanding_principal=100, available_credit=900
     )
-
-
-async def fake_checkin(user_id: int, name: str, avatar_url: str) -> CheckinResult:
-    """Returns a successful fake daily check-in result."""
-    return CheckinResult(new_balance=600_000, amount=150_000, streak=2, is_vip=False)
 
 
 async def fake_buy_vip(user_id: int, name: str, avatar_url: str) -> VipPurchaseResult:

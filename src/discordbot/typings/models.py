@@ -181,7 +181,7 @@ class RuntimeModelCatalog(BaseModel):
 
         Callers: `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
         `_stream_media_persona_reply` (the persona reply that rides generated media),
-        `AutoUnmuteCogs._generate_reply`, `StockNewsAI`.
+        `AutoUnmuteCogs._generate_reply`.
 
         Each decides what to say rather than how briefly to say it, which is the thinking
         `triage_model` does without. None of them is the deliverable, which is what keeps

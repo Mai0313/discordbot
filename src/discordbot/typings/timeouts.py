@@ -151,10 +151,6 @@ PROMPT_REFINE_TIMEOUT_SECONDS: Final[float] = 120.0
 # backstops this module deliberately does not carry.
 # --------------------------------------------------------------------------------------
 
-# News generation runs on a market tick and must never block settlement behind it; past this
-# the tick falls back to the deterministic `STOCK_NEWS_*_FALLBACK_TEMPLATES`.
-STOCK_NEWS_AI_TIMEOUT_SECONDS: Final[float] = 4.0
-
 # Auto-unmute replies are off the critical path; bound the call so a hung provider never
 # leaves the best-effort post-timeout reply pending forever.
 AUTO_UNMUTE_AI_TIMEOUT_SECONDS: Final[float] = 10.0

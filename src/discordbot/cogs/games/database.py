@@ -6,7 +6,7 @@ rounds for a single player so `/games blackjack_history` can show someone's
 recent hands, bets, dealer hands, and results.
 
 The engine is a module-level `AsyncEngine` singleton, mirroring the economy
-and stock stores. Each operation opens an `AsyncSession` bound to the current
+store. Each operation opens an `AsyncSession` bound to the current
 `_engine`, so tests can monkeypatch `_engine` per-test and every subsequent
 call sees the swap. Money and bet columns use `StoredInteger` decimal text so
 large wagers do not inherit SQLite's 64-bit integer ceiling. The rich per-hand
