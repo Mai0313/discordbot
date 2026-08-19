@@ -181,7 +181,6 @@ exclude = [
 cli = "python ./src/discordbot/cli.py"
 api = "python ./src/discordbot/cli.py"
 main = "python ./src/discordbot/cli.py"
-update = "python ./scripts/artale_data.py"
 
 # Documentation
 docs_gen = "make gen-docs"

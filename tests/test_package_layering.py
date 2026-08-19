@@ -28,16 +28,24 @@ def _relative_import_base(module: Path) -> str:
 
 
 def _imported_modules(module: Path) -> set[str]:
-    """Returns every `discordbot.*` module name a file imports, relative imports resolved.
+    """Returns every `discordbot.*` module name a file imports, relative imports resolved."""
+    return _imports_in(
+        source=module.read_text(encoding="utf-8"), parent=_relative_import_base(module)
+    )
+
+
+def _imports_in(source: str, parent: str) -> set[str]:
+    """Returns every `discordbot.*` module name a source file imports, relative ones resolved.
 
     Reads `TYPE_CHECKING` and function-local imports too: they are still edges in the
     dependency graph, and the one cog-to-cog import this repo ever had was a
     `TYPE_CHECKING` one that never executes and so no test could otherwise see.
-    """
-    parent = _relative_import_base(module)
 
+    Takes the source rather than the path so the relative forms can be asserted directly;
+    no module in the package writes one today.
+    """
     found: set[str] = set()
-    for node in ast.walk(ast.parse(source=module.read_text(encoding="utf-8"))):
+    for node in ast.walk(ast.parse(source=source)):
         if isinstance(node, ast.Import):
             found.update(alias.name for alias in node.names)
             continue
@@ -111,14 +119,25 @@ def test_a_lower_layer_never_imports_a_higher_one(layer: str, forbidden: tuple[s
 
 
 def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:
-    """The scan is only worth its assertions if it sees the forms the tree actually uses.
+    """The scan is only worth its assertions if it sees the forms a violation can be written in.
 
-    `cogs/maplestory/` is the one cog using relative imports, and
-    `cogs/games/blackjack_views.py` imports a cog module under `TYPE_CHECKING`. A scan that
-    silently skipped either would pass the tests above while seeing nothing.
+    No module in the package writes a relative import any more, so that half is asserted on
+    source of its own: a resolver that quietly stopped reading `from ..peer.mod import X`
+    would pass the tests above while seeing nothing, and that form is the one they exist to
+    catch. Pinning it is new rather than preserved — the cog this used to read wrote only the
+    single-dot form, which walks up no levels at all, so `..` had never been exercised.
+    `cogs/games/blackjack_views.py` still supplies the other half, importing a cog module
+    under `TYPE_CHECKING`.
     """
-    relative = _imported_modules(_COGS / "maplestory" / "cog.py")
-    assert "discordbot.cogs.maplestory.views" in relative
+    relative = _imports_in(
+        source="from .own_mod import A\nfrom ..peer.mod import B", parent="discordbot.cogs.own"
+    )
+    assert relative == {
+        "discordbot.cogs.own.own_mod",
+        "discordbot.cogs.own.own_mod.A",
+        "discordbot.cogs.peer.mod",
+        "discordbot.cogs.peer.mod.B",
+    }
 
     type_checking = _imported_modules(_COGS / "games" / "blackjack_views.py")
     assert "discordbot.cogs.games.shoe" in type_checking
