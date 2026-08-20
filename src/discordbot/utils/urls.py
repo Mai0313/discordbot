@@ -19,8 +19,9 @@ from collections.abc import Sequence
 URL_START_ANCHOR = r"(?<![A-Za-z0-9_])"
 
 # Generic fallback. `[^\s<>]` stops at whitespace and at the angle brackets Discord and
-# Markdown wrap links in; it deliberately does NOT stop at CJK, because a site-specific
-# pattern is the right tool for text that runs straight into the link with no space.
+# Markdown wrap links in; it deliberately does NOT stop at CJK, so Chinese written straight
+# after a link is carried into the match. Where a link ENDS is what a site-specific pattern is
+# the right tool for; where it starts is `URL_START_ANCHOR`'s job just above.
 URL_RE = re.compile(rf"(?i){URL_START_ANCHOR}https?://[^\s<>]+")
 
 # Sentence punctuation a URL never really ends on, stripped from the tail of a generic match
