@@ -659,12 +659,13 @@ async def _discard_link_tasks(
     link_tasks.clear()
 
 
-def _log_pre_answer_latency(started: float, decision: str) -> None:
+def _log_pre_answer_latency(started: float, decision: str, message_id: int) -> None:
     """Logs total time from pipeline start to answer dispatch (the user's 'router stage')."""
     logfire.info(
         "gen_reply pre-answer latency",
         elapsed_seconds=time.monotonic() - started,
         decision=decision,
+        message_id=message_id,
     )
 
 
@@ -922,7 +923,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return hist_messages
 
     async def _render_history(
-        self, hist_messages: list[Message], *, text_only: bool
+        self, hist_messages: list[Message], *, text_only: bool, message_id: int
     ) -> list[EasyInputMessageParam]:
         """Renders fetched history in one mode: text-only markers, or full uploaded parts.
 
@@ -948,6 +949,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "gen_reply history render done",
                 elapsed_seconds=time.monotonic() - started,
                 message_count=len(hist_messages),
+                message_id=message_id,
             )
         header = EasyInputMessageParam(
             role="system",
@@ -1242,7 +1244,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 output_tokens=context.selection_output_tokens,
                 model_effort=model.effort or "",
             )
-            with logfire.span(span_name, model=model.name):
+            with logfire.span(span_name, model=model.name, message_id=message.id):
                 responses = await self.openai_client.responses.create(
                     model=model.name,
                     instructions=_build_runtime_instructions(
@@ -1377,6 +1379,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 elapsed_seconds=time.monotonic() - started,
                 reference_count=len(reference_messages),
                 current_count=len(current_message),
+                message_id=message.id,
             )
         return reference_messages, current_message
 
@@ -1400,7 +1403,7 @@ class ReplyGeneratorCogs(commands.Cog):
         triage_model = self.runtime_models.triage_model
         started = time.monotonic()
         try:
-            with logfire.span("gen_reply route"):
+            with logfire.span("gen_reply route", message_id=message.id):
                 responses = await self.openai_client.responses.parse(
                     model=triage_model.name,
                     instructions=ROUTE_PROMPT,
@@ -1469,7 +1472,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         triage_model = self.runtime_models.triage_model
         started = time.monotonic()
-        with logfire.span("gen_reply effort"):
+        with logfire.span("gen_reply effort", message_id=message.id):
             responses = await self.openai_client.responses.parse(
                 model=triage_model.name,
                 instructions=EFFORT_PROMPT,
@@ -1729,7 +1732,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """Awaits the optional selector without letting its failure affect direct memories."""
         started = time.monotonic()
         try:
-            with logfire.span("gen_reply memory selection"):
+            with logfire.span("gen_reply memory selection", message_id=message.id):
                 selection = await _await_gated(
                     task=task,
                     label="memory selection",
@@ -1833,7 +1836,9 @@ class ReplyGeneratorCogs(commands.Cog):
             if optional_allowed and remaining_slots:
                 # Render the text-only history only for a real optional lookup. This request
                 # carries markers instead of file ids, so it never re-reads uploaded payloads.
-                history_text_only = await self._render_history(raw_history, text_only=True)
+                history_text_only = await self._render_history(
+                    raw_history, text_only=True, message_id=message.id
+                )
                 selection_message_list: list[EasyInputMessageParam] = [
                     *history_text_only,
                     *text_reference,
@@ -1855,9 +1860,10 @@ class ReplyGeneratorCogs(commands.Cog):
             # `parts_task` is shielded so cancelling this speculative prep (non-QA routes) never
             # cancels the shared upload task a SUMMARY route still reuses; the full history render
             # rides as an ordinary gather child, so it is cancelled together with prep.
-            with logfire.span("gen_reply context build"):
+            with logfire.span("gen_reply context build", message_id=message.id):
                 hist_messages, (reference_messages, current_message) = await asyncio.gather(
-                    self._render_history(raw_history, text_only=False), asyncio.shield(parts_task)
+                    self._render_history(raw_history, text_only=False, message_id=message.id),
+                    asyncio.shield(parts_task),
                 )
             # Covers the history fetch/render plus waiting on the shared attachment upload, so
             # the log separates pre-answer attachment cost from the route-call cost.
@@ -2044,6 +2050,7 @@ class ReplyGeneratorCogs(commands.Cog):
             "gen_reply answer",
             model=slow_model.name,
             backend="interactions" if use_interactions else "responses",
+            message_id=message.id,
         ):
             responses: AsyncIterator[ResponseStreamEvent]
             if use_interactions and yt_url is not None:
@@ -2291,7 +2298,7 @@ class ReplyGeneratorCogs(commands.Cog):
         link_tasks: dict[str, asyncio.Task[list[EasyInputMessageParam]]] = {}
         link_context_deadline: float | None = None
         try:
-            with logfire.span("gen_reply pipeline") as pipeline_span:
+            with logfire.span("gen_reply pipeline", message_id=message.id) as pipeline_span:
                 pipeline_started = time.monotonic()
                 reactions.advance(emoji="<:flowchart:1517561877973045349>")
                 # The reference + current attachment uploads (and their activation polls)
@@ -2435,7 +2442,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     )
                     effort_task = None
                     pipeline_span.set_attribute(key="effort", value=effort)
-                    _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
+                    _log_pre_answer_latency(
+                        started=pipeline_started, decision=route.decision, message_id=message.id
+                    )
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=SUMMARY_PROMPT,
@@ -2482,7 +2491,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     # about it; the URL itself is taken from the message text or the replied-to
                     # message (never the model) so the answer turn ingests the exact link posted.
                     yt_url = _find_youtube_url(message=message) if route.watch_video else None
-                    _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
+                    _log_pre_answer_latency(
+                        started=pipeline_started, decision=route.decision, message_id=message.id
+                    )
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=REPLY_PROMPT,

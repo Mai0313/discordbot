@@ -3654,7 +3654,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
     current.channel = FakeChannel(history=fake_history)
     raw_history = await cog._fetch_history(message=as_message(fake=current), limit=30)
-    rendered = await cog._render_history(raw_history, text_only=False)
+    rendered = await cog._render_history(raw_history, text_only=False, message_id=current.id)
     assert len(rendered) == 3
     assert rendered[0]["role"] == "system"
     assert [m.content for m in raw_history] == ["hello", "bot answer"]
