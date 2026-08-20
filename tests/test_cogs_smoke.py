@@ -454,7 +454,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     target = _thread_output(
         image_urls=["https://example.test/1.png", "https://example.test/2.png"]
     )
-    embeds = cog._build_embeds(results=[parent, target])
+    embeds = cog._build_embed_plan(results=[parent, target]).embeds
     assert len(embeds) == 3
     first_description = embeds[0].description
     assert first_description is not None
@@ -631,7 +631,7 @@ async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None
         image_urls=["https://example.test/quoted-1.png", "https://example.test/quoted-2.png"],
     )
 
-    embeds = cog._build_embeds(results=[root, parent, target])
+    embeds = cog._build_embed_plan(results=[root, parent, target]).embeds
 
     assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     descriptions = [embed.description or "" for embed in embeds]
@@ -668,7 +668,7 @@ async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
     cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
     chain = [_thread_output(text="😀" * 500, author_name=f"user-{index}") for index in range(10)]
 
-    embeds = cog._build_embeds(results=chain)
+    embeds = cog._build_embed_plan(results=chain).embeds
 
     assert parse_threads._utf16_length(value="😀") == 2
     assert len(embeds) < len(chain)
@@ -876,7 +876,7 @@ async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
     target = _thread_output(text="這根本是胡說", image_urls=["https://example.test/1.png"])
     target.quoted = quoted
 
-    embeds = cog._build_embeds(results=[target])
+    embeds = cog._build_embed_plan(results=[target]).embeds
 
     assert len(embeds) == 2
     # The target owns the message, so it stays first and the quoted post hangs off the end. That
@@ -908,7 +908,7 @@ async def test_threads_cog_keeps_the_commentary_beside_a_quoted_gallery() -> Non
     target = _thread_output(text="一句話評論")
     target.quoted = quoted
 
-    embeds = cog._build_embeds(results=[target])
+    embeds = cog._build_embed_plan(results=[target]).embeds
 
     assert len(embeds) == 10
     assert embeds[0].description == "一句話評論"
@@ -924,7 +924,7 @@ async def test_threads_cog_notes_a_quoted_post_that_is_gone() -> None:
     target = _thread_output(text="回應一下")
     target.quoted_unavailable = True
 
-    embeds = cog._build_embeds(results=[target])
+    embeds = cog._build_embed_plan(results=[target]).embeds
 
     assert len(embeds) == 1
     assert embeds[0].description is not None
@@ -947,7 +947,7 @@ async def test_threads_cog_reserves_the_quoted_posts_slot_against_an_ancestors_g
     target = _thread_output(text="commentary")
     target.quoted = _thread_output(text="the post being argued with", author_name="bob")
 
-    embeds = cog._build_embeds(results=[ancestor, target])
+    embeds = cog._build_embed_plan(results=[ancestor, target]).embeds
 
     assert len(embeds) == 10
     descriptions = [embed.description or "" for embed in embeds]
@@ -968,7 +968,7 @@ async def test_threads_cog_says_nothing_about_an_ancestors_quote() -> None:
     root = _thread_output(text="root commentary", author_name="root")
     root.quoted_unavailable = True
 
-    embeds = cog._build_embeds(results=[root, _thread_output(text="target")])
+    embeds = cog._build_embed_plan(results=[root, _thread_output(text="target")]).embeds
 
     assert embeds[0].description == "root commentary"
     assert all("引用的貼文目前無法瀏覽" not in (embed.description or "") for embed in embeds)
@@ -984,7 +984,7 @@ async def test_threads_cog_measures_the_rendered_description_against_the_embed_l
     target = _thread_output(text="t")
     target.quoted = _thread_output(text="q" * 4096, author_name="bob")
 
-    embeds = cog._build_embeds(results=[target])
+    embeds = cog._build_embed_plan(results=[target]).embeds
 
     # The guard now reads exactly this quantity, so it sees the overflow the raw text hid.
     assert max(len(embed.description or "") for embed in embeds) > 4096

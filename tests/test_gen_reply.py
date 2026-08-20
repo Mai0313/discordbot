@@ -2706,7 +2706,7 @@ def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message(
 ) -> None:
     """The bot's own Threads expansion is not a trigger, because its first permalink is wrong.
 
-    `parse_threads._build_embeds` renders the reply chain root-first with one permalink per
+    `parse_threads._build_embed_plan` renders the reply chain root-first with one permalink per
     post, so a first-match scan of that message would fetch the thread's top post rather than
     the one the human linked. One hop out only what the author actually typed counts.
     """

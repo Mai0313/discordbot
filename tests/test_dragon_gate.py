@@ -574,7 +574,6 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     normal_view = DragonGateView(
         round_state=normal_round,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=100_000,
         final_balances={1: 1_000_000},
     )
@@ -589,7 +588,6 @@ async def test_dragon_gate_controls_hide_unavailable_actions() -> None:
     pair_view = DragonGateView(
         round_state=pair_round,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=100_000,
         final_balances={1: 1_000_000},
     )
@@ -775,7 +773,6 @@ async def test_dragon_gate_view_pair_choice_bet_settles_immediately(
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000},
     )
@@ -821,7 +818,6 @@ async def test_dragon_gate_view_max_bet_is_bounded_by_player_balance(
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 100},
     )
@@ -858,7 +854,6 @@ async def test_dragon_gate_view_sub_min_balance_cannot_bet_above_wallet(
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 15},
     )
@@ -892,7 +887,6 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 500_000},
     )
@@ -959,7 +953,6 @@ async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=10_000,
         jackpot_generation=2,
         final_balances={1: 500_000},
@@ -1002,7 +995,6 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 30},
     )
@@ -1053,7 +1045,6 @@ async def test_dragon_gate_view_zero_balance_withdraws_only_that_player(
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 30, 2: 100_000},
     )
@@ -1097,7 +1088,6 @@ async def test_dragon_gate_view_leave_refunds_running_winnings(
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1144,7 +1134,6 @@ async def test_dragon_gate_view_bet_uses_live_wallet_not_stale_cache(
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000},
     )
@@ -1179,7 +1168,6 @@ async def test_dragon_gate_view_leave_without_winnings_does_not_refund(
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1218,7 +1206,6 @@ async def test_dragon_gate_view_rejects_non_active_and_invalid_custom_bet(
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000, 2: 1_000_000},
     )
@@ -1246,7 +1233,6 @@ async def test_dragon_gate_custom_bet_modal_allows_formatted_maximum() -> None:
     view = DragonGateView(
         round_state=round_state,
         owner=owner,
-        system_name="Dealer",
         jackpot_snapshot=1_000_000,
         final_balances={1: 1_000_000},
     )
@@ -1272,7 +1258,6 @@ async def test_dragon_gate_view_timeout_refunds_remaining_winners(
     view = DragonGateView(
         round_state=round_state,
         owner=alice,
-        system_name="Dealer",
         jackpot_snapshot=state.jackpot,
         final_balances={1: 1_000_000},
     )

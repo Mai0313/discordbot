@@ -686,7 +686,6 @@ async def test_history_persistence_uses_scheduled_dealer_snapshot(
                     vip_bonus=0,
                     is_vip=False,
                     outcome="win",
-                    detail="",
                     hands=[
                         BlackjackHandSettlement(
                             cards=round_state.players[0].hands[0].cards,

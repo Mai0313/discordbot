@@ -12,13 +12,9 @@ from discordbot.cogs.games.blackjack import (
     BlackjackRound,
     BlackjackHandState,
     BlackjackPlayerHand,
-    is_bust,
-    hand_value,
     settle_hand,
     is_blackjack,
     dealer_up_card,
-    is_five_card_win,
-    is_five_card_twenty_one,
 )
 from discordbot.services.economy.database import (
     get_vip,
@@ -26,109 +22,6 @@ from discordbot.services.economy.database import (
     apply_vip_blackjack_bonus,
     apply_blackjack_settlement,
 )
-
-
-def _blackjack_detail_for_hand(cards: list[Card], dealer: list[Card]) -> str:
-    """Builds a concise Blackjack result summary for one settled hand.
-
-    Args:
-        cards: Player sub-hand cards.
-        dealer: Dealer cards at settlement time.
-
-    Returns:
-        A short Chinese summary of the final hand state.
-    """
-    player_total = hand_value(cards=cards)
-    dealer_total = hand_value(cards=dealer)
-    player_blackjack = is_blackjack(cards=cards)
-    dealer_blackjack = is_blackjack(cards=dealer)
-    if player_blackjack and dealer_blackjack:
-        detail = "雙方都是 Blackjack, 平手"
-    elif player_blackjack:
-        detail = f"玩家 21 點 Blackjack, 莊家 {dealer_total} 點"
-    elif is_five_card_twenty_one(cards=cards):
-        if dealer_total == 21:
-            detail = "玩家過五關 21 點, 莊家 21 點, 主局平手"
-        else:
-            detail = f"玩家過五關 21 點, 莊家 {dealer_total} 點"
-    elif is_five_card_win(cards=cards):
-        detail = f"玩家過五關 {player_total} 點, 未爆直接獲勝"
-    elif dealer_blackjack:
-        detail = f"莊家 21 點 Blackjack, 玩家 {player_total} 點"
-    elif is_bust(cards=cards):
-        detail = f"玩家爆牌 {player_total} 點"
-    elif is_bust(cards=dealer):
-        detail = f"莊家爆牌 {dealer_total} 點, 玩家 {player_total} 點"
-    else:
-        detail = f"玩家 {player_total} 點 vs 莊家 {dealer_total} 點"
-    return detail
-
-
-def _blackjack_hand_detail_part(
-    index: int, settlement: BlackjackHandSettlement, dealer_total: int
-) -> str:
-    """Formats one settled Blackjack sub-hand for the multi-hand detail line."""
-    hand_total = hand_value(cards=settlement.cards)
-    prefix = f"手{index}"
-    if settlement.surrendered:
-        detail = f"{prefix} 投降 (-{abs(settlement.delta)})"
-    elif settlement.five_card_twenty_one:
-        bonus = f", 過五關 bonus +{settlement.five_card_bonus}"
-        if settlement.delta == 0:
-            detail = f"{prefix} 過五關 21 (主局平手{bonus})"
-        else:
-            detail = f"{prefix} 過五關 21 ({settlement.delta:+d}{bonus})"
-    elif settlement.outcome == "five_card_win":
-        detail = f"{prefix} 過五關 {hand_total} ({settlement.delta:+d})"
-    elif settlement.outcome == "blackjack":
-        detail = f"{prefix} Blackjack ({settlement.delta:+d})"
-    elif settlement.outcome == "player_bust":
-        detail = f"{prefix} 爆牌 {hand_total} ({settlement.delta:+d})"
-    elif settlement.outcome == "dealer_bust":
-        detail = f"{prefix} {hand_total} 莊家爆牌 ({settlement.delta:+d})"
-    elif settlement.outcome == "push":
-        detail = f"{prefix} {hand_total} 平手"
-    else:
-        detail = f"{prefix} {hand_total} vs 莊家 {dealer_total} ({settlement.delta:+d})"
-    return detail
-
-
-def blackjack_detail_player(
-    player: BlackjackPlayerHand,
-    dealer: list[Card],
-    hand_settlements: list[BlackjackHandSettlement],
-    insurance: BlackjackInsuranceSettlement | None,
-) -> str:
-    """Builds a multi-hand Blackjack summary for `BlackjackPlayerSettlement.detail`.
-
-    Args:
-        player: Player whose hands are being summarized.
-        dealer: Dealer cards at settlement time.
-        hand_settlements: Per-hand results in display order.
-        insurance: Optional insurance side-bet result.
-
-    Returns:
-        Short Chinese summary. A lone hand with no insurance keeps the concise
-        single-hand shape instead.
-    """
-    if len(hand_settlements) == 1 and insurance is None:
-        only = hand_settlements[0]
-        return _blackjack_detail_for_hand(cards=list(only.cards), dealer=dealer)
-    dealer_total = hand_value(cards=dealer)
-    hand_parts: list[str] = []
-    for index, settlement in enumerate(hand_settlements, start=1):
-        hand_parts.append(
-            _blackjack_hand_detail_part(
-                index=index, settlement=settlement, dealer_total=dealer_total
-            )
-        )
-    summary = "; ".join(hand_parts)
-    if insurance is not None:
-        if insurance.won:
-            summary += f"; 保險 {insurance.bet} → 中獎 (+{insurance.delta})"
-        else:
-            summary += f"; 保險 {insurance.bet} → 莊家無 BJ ({insurance.delta:+d})"
-    return summary
 
 
 def blackjack_player_early_finish_note(  # noqa: PLR0911 -- one branch per early-finish reason keeps the mapping explicit
@@ -178,6 +71,11 @@ async def settle_wager(
     player_id: int, player_account_name: str, delta: int, player_avatar_url: str = ""
 ) -> WagerSettlement:
     """Applies player net delta and mirrors the result into the casino ledger.
+
+    Deliberately kept with no production caller (#522). Blackjack settles through
+    `settle_blackjack_player`, which is multi-hand; this is the single-hand shape a
+    future one-hand game would want back, and only the tests exercise it today. Do
+    NOT wire it back under Blackjack: it skips the five-card bonus accounting.
 
     Bets are not deducted when a round starts; unfinished in-memory rounds
     vanish on bot restart without touching balances.
@@ -315,12 +213,6 @@ async def settle_blackjack_player(
     return BlackjackPlayerSettlement(
         outcome=_aggregate_outcome(
             hand_settlements=hand_settlements, insurance=insurance, base_delta=base_delta
-        ),
-        detail=blackjack_detail_player(
-            player=player,
-            dealer=round_state.dealer,
-            hand_settlements=hand_settlements,
-            insurance=insurance,
         ),
         delta=effective_delta,
         payout=max(effective_delta, 0),

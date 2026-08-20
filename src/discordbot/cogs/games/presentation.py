@@ -51,18 +51,6 @@ def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
     return blackjack_result[outcome]
 
 
-def allin_note(is_allin: bool) -> str:
-    """Returns the shared suffix for auto all-in rounds.
-
-    Args:
-        is_allin: Whether the requested bet was clamped to the full balance.
-
-    Returns:
-        The suffix text, or an empty string for non all-in rounds.
-    """
-    return " | all-in" if is_allin else ""
-
-
 def card_line(cards_text: str) -> str:
     """Renders a hand string as an H1 line with doubled inter-card spacing.
 

@@ -403,10 +403,6 @@ class ThreadsCogs(commands.Cog):
         )
         return _EmbedPlan(embeds=embeds, omitted_posts=omitted_posts)
 
-    def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
-        """Builds embeds for callers that do not need permalink fallback metadata."""
-        return self._build_embed_plan(results=results).embeds
-
     async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
         """Swaps the progress reaction for the failure cross."""
         await update_reaction(

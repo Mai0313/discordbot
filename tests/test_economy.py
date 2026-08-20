@@ -78,10 +78,10 @@ pytestmark = pytest.mark.usefixtures("economy_isolated_db")
 def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
     """Default Blackjack hand settlement lists are isolated per model instance."""
     first = BlackjackPlayerSettlement(
-        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push", detail="first"
+        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push"
     )
     second = BlackjackPlayerSettlement(
-        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push", detail="second"
+        delta=0, payout=0, new_balance=100, casino_balance=0, outcome="push"
     )
 
     first.hands.append(BlackjackHandSettlement(cards=[], bet=10, outcome="push", delta=0))
@@ -1065,7 +1065,6 @@ async def test_blackjack_view_locks_actions_while_finalizing(
             payout=50,
             new_balance=150,
             casino_balance=-50,
-            detail="win",
             hands=[
                 BlackjackHandSettlement(
                     cards=[Card(rank="10", suit="♠"), Card(rank="Q", suit="♥")],

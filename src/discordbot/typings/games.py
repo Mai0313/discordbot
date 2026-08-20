@@ -94,15 +94,12 @@ class SystemIdentity(BaseModel):
 
     A label, not a speaker: #303 removed the casino narrator, so nothing built from
     this writes a message. `system_name` is the only part that reaches a render today
-    (the Blackjack dealer seat's embed author); Dragon Gate carries the identity
-    without displaying it.
+    (the Blackjack dealer seat's embed author). `system_avatar_url` is deliberately resolved
+    and never drawn; `blackjack_views.py` records why beside the dealer seat.
     """
 
     model_config = ConfigDict(frozen=True)
 
-    system_id: int = Field(
-        ..., description="Discord user ID of the bot, or 0 when the client user is unavailable."
-    )
     system_name: str = Field(..., description="House label shown on the casino side of a table.")
     system_avatar_url: str = Field(
         default="", description="The bot's guild-aware avatar URL, resolved alongside the label."
@@ -255,7 +252,6 @@ class BlackjackPlayerSettlement(WagerSettlement):
         hands: Per-hand settlements in display order.
         insurance: Insurance side-bet result, or `None` when the player
             never took insurance.
-        detail: Short Chinese round summary built by `blackjack_detail_player`.
         five_card_bonus: Aggregate system-funded five-card 21 bonus.
     """
 
@@ -266,9 +262,6 @@ class BlackjackPlayerSettlement(WagerSettlement):
             "the hand outcome; insurance and multi-hand results collapse to win / lose / push "
             "by net base delta."
         ),
-    )
-    detail: str = Field(
-        ..., description="Short Chinese round summary built by `blackjack_detail_player`."
     )
     hands: list[BlackjackHandSettlement] = Field(
         default_factory=list, description="Per-hand settlements in display order."
