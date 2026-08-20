@@ -21,9 +21,6 @@ has no embed budget to show. It cannot be triggered by replying to the expansion
 
 from typing import TYPE_CHECKING
 import asyncio
-from pathlib import Path
-import tempfile
-import contextlib
 
 import logfire
 from nextcord import Color, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
@@ -34,6 +31,7 @@ from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownl
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
+from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -43,12 +41,7 @@ from discordbot.utils.media_delivery import (
 )
 
 if TYPE_CHECKING:
-    from asyncio import Task
-    from contextlib import AbstractContextManager
-
     from nextcord.types.embed import Embed as EmbedData
-
-    from discordbot.utils.threads import ThreadsConversation
 
 # Stripe for the post a quote post quotes. Deliberately off the greyscale chain gradient
 # (`_gradient_color`, which spans 0x40-0xC0 and reserves pure black for "no stripe"): a quoted
@@ -212,8 +205,8 @@ class ThreadsCogs(commands.Cog):
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
-        output_folder: Directory where downloaded Threads media is stored.
-        downloader: Downloader used to parse Threads posts and fetch media.
+        downloader_factory: Builds the per-invocation downloader, one per scratch directory;
+            the seam a test replaces to keep an expansion off the network.
         media_delivery: Planner deciding whether a downloaded video is attached, hosted or dropped.
     """
 
@@ -224,46 +217,8 @@ class ThreadsCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.output_folder = Path(tempfile.gettempdir())
-        self.downloader = ThreadsDownloader(output_folder=str(self.output_folder))
+        self.downloader_factory = ThreadsDownloader
         self.media_delivery = build_media_delivery_planner()
-        # Deferred scratch cleanups for walks the expansion gave up waiting on; held so the
-        # loop keeps a strong reference and the task is not collected mid-flight.
-        self._abandoned_parses: set[asyncio.Task[None]] = set()
-
-    def _unlink_when_abandoned(
-        self,
-        *,
-        parse_cm: "AbstractContextManager[ThreadsConversation]",
-        enter_task: "Task[ThreadsConversation]",
-        url: str,
-    ) -> None:
-        """Runs the parse context manager's exit once the abandoned walk finally returns.
-
-        `asyncio.to_thread` cannot cancel its worker, so a timed-out walk keeps fetching and
-        keeps writing media into the scratch folder. Exiting the context manager now would
-        race that worker on a generator it has not finished driving, and skipping the exit
-        would leak the files for good, so the exit waits for the worker instead.
-        """
-
-        async def _drain() -> None:
-            with contextlib.suppress(Exception):
-                await enter_task
-            try:
-                await asyncio.to_thread(parse_cm.__exit__, None, None, None)
-            except Exception as error:
-                # Same reasoning as the delivered path's cleanup guard: these files are
-                # deleted nowhere else, so a failure names an environment to look at.
-                logfire.error(
-                    "Could not clean up the Threads scratch files of an abandoned parse",
-                    url=url,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
-
-        task = asyncio.create_task(coro=_drain())
-        self._abandoned_parses.add(task)
-        task.add_done_callback(self._abandoned_parses.discard)
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:
@@ -651,102 +606,115 @@ class ThreadsCogs(commands.Cog):
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
         try:
-            # parse() blocks on HTTP fetch + media downloads, so run its enter
-            # off the event loop; the reply runs while the temp files still exist
-            # and the matching exit cleans them up afterwards.
-            parse_cm = self.downloader.parse(url=url)
-            # Shielded so the timeout below abandons the WAIT without cancelling the walk: the
-            # `requests` calls underneath are per-read only, so a slow-drip CDN can stream for
-            # as long as it likes and one paste would otherwise hold this listener open with
-            # it. A timeout is reported as a plain failure, never as a missing post.
-            enter_task = asyncio.create_task(coro=asyncio.to_thread(parse_cm.__enter__))
-            try:
-                async with asyncio.timeout(delay=THREADS_EXPAND_TIMEOUT_SECONDS):
-                    conversation = await asyncio.shield(enter_task)
-            # Broad on purpose: a fetch failure must not escape into the listener; the ❌
-            # reaction is the user-visible outcome.
-            except Exception as error:
-                # The walk is still running on its thread and still writing media into the
-                # scratch folder, which is the system temp dir rather than a directory anyone
-                # removes; `conversation.unlink` is the only thing that deletes those files.
-                # So the exit is deferred until the abandoned walk finishes rather than
-                # skipped, or every timeout would leak the post's media permanently.
-                self._unlink_when_abandoned(parse_cm=parse_cm, enter_task=enter_task, url=url)
-                logfire.warn(
-                    "Threads parse failed",
-                    url=url,
-                    message_id=message.id,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
-                await self._mark_failed(message=message, current_emoji=current_emoji)
-                return
-            try:
-                # The expansion shows the reply chain only; the comments the parse also carries
-                # are gen_reply's to read, and there is no embed budget left for them here.
-                results = conversation.chain
-                if not results:
-                    logfire.info(
-                        "Threads parse returned no post; treating as unavailable", url=url
-                    )
-                    await update_reaction(
-                        message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
-                    )
-                    return
-
-                target = results[-1]
-                if target.quoted_unavailable:
-                    # A routine user-driven outcome (a removed remote post), so info, not warn.
-                    # Logged because it is common — measured at 15 of 96 live quote relations —
-                    # and otherwise invisible in `data/logs`.
-                    logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
-                embed_plan = self._build_embed_plan(results=results)
-                embeds = embed_plan.embeds
-                # Measured on the RENDERED descriptions rather than on `target.text`: the quoted
-                # post's marker prefix, an ancestor's video hint and the unavailable hint are all
-                # appended by `_build_post_embeds` AFTER any check on the raw body, so a text
-                # sitting just under the limit crossed it and turned a ⚠️ skip into a Discord 400
-                # and a ❌. A body past the limit cannot be rescued by hosting, so it stays the ⚠️
-                # refusal. (Image count is not guarded: _build_embed_plan caps the message at 10
-                # embeds and shows as many images as fit.)
-                longest_text = max(
-                    (_utf16_length(value=embed.description or "") for embed in embeds), default=0
-                )
-                if longest_text > _EMBED_DESCRIPTION_LIMIT:
-                    logfire.info(
-                        "Threads post exceeds the embed description limit; skipping expansion",
-                        url=url,
-                        text_length=longest_text,
-                    )
-                    await update_reaction(
-                        message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
-                    )
-                    return
-
-                await self._deliver(
-                    message=message,
-                    url=url,
-                    results=results,
-                    embed_plan=embed_plan,
-                    current_emoji=current_emoji,
-                )
-            finally:
-                # Guarded here rather than by the outer handler, which would relabel a delivered
-                # expansion ❌ over scratch files the user cannot see; swallowing it also stops a
-                # failing cleanup from replacing whatever the body raised. Broad on purpose: it
-                # is the last step and nothing downstream can act on its failure. Still an error
-                # because these files are deleted nowhere else, so a failure leaks the temp dir
-                # and names an environment someone must look at (read-only or full filesystem).
+            # A private directory per invocation, so two people expanding the same post cannot
+            # write each other's paths, and so the bound below has something to abandon into:
+            # the `requests` calls under `parse` are per-read only, so a slow-drip CDN can stream
+            # for as long as it likes, and `asyncio.to_thread` cannot cancel the walk it holds.
+            # Removing the directory is the only stop signal that reaches it, and only once it
+            # tries to write — a text-only post runs its fetches out either way, costing the
+            # page timeout rather than the stall this bound exists for.
+            with scratch_directory(prefix="parse-threads-") as download_dir:
+                downloader = self.downloader_factory(output_folder=download_dir)
+                # parse() blocks on HTTP fetch + media downloads, so run its enter
+                # off the event loop; the reply runs while the temp files still exist
+                # and the matching exit cleans them up afterwards.
+                parse_cm = downloader.parse(url=url)
                 try:
-                    await asyncio.to_thread(parse_cm.__exit__, None, None, None)
+                    async with asyncio.timeout(delay=THREADS_EXPAND_TIMEOUT_SECONDS):
+                        conversation = await asyncio.to_thread(parse_cm.__enter__)
+                # Broad on purpose: a fetch failure must not escape into the listener; the ❌
+                # reaction is the user-visible outcome. A timeout is reported as a plain
+                # failure, never as a missing post.
                 except Exception as error:
-                    logfire.error(
-                        "Could not clean up the Threads scratch files",
+                    # No exit call here: the walk is still driving that generator on its own
+                    # thread, so throwing into it would be a second driver. Returning removes
+                    # the directory instead, which both deletes whatever it wrote and fails
+                    # its next write.
+                    logfire.warn(
+                        "Threads parse failed",
                         url=url,
                         message_id=message.id,
                         error_type=type(error).__name__,
                         _exc_info=error,
                     )
+                    await self._mark_failed(message=message, current_emoji=current_emoji)
+                    return
+                try:
+                    # The expansion shows the reply chain only; the comments the parse also carries
+                    # are gen_reply's to read, and there is no embed budget left for them here.
+                    results = conversation.chain
+                    if not results:
+                        logfire.info(
+                            "Threads parse returned no post; treating as unavailable", url=url
+                        )
+                        await update_reaction(
+                            message=message,
+                            bot_user=self.bot.user,
+                            emoji="⚠️",
+                            previous=current_emoji,
+                        )
+                        return
+
+                    target = results[-1]
+                    if target.quoted_unavailable:
+                        # A routine user-driven outcome (a removed remote post), so info, not warn.
+                        # Logged because it is common — measured at 15 of 96 live quote relations —
+                        # and otherwise invisible in `data/logs`.
+                        logfire.info(
+                            "A Threads post quotes a post Threads no longer serves", url=url
+                        )
+                    embed_plan = self._build_embed_plan(results=results)
+                    embeds = embed_plan.embeds
+                    # Measured on the RENDERED descriptions rather than on `target.text`: the quoted
+                    # post's marker prefix, an ancestor's video hint and the unavailable hint are all
+                    # appended by `_build_post_embeds` AFTER any check on the raw body, so a text
+                    # sitting just under the limit crossed it and turned a ⚠️ skip into a Discord 400
+                    # and a ❌. A body past the limit cannot be rescued by hosting, so it stays the ⚠️
+                    # refusal. (Image count is not guarded: _build_embed_plan caps the message at 10
+                    # embeds and shows as many images as fit.)
+                    longest_text = max(
+                        (_utf16_length(value=embed.description or "") for embed in embeds),
+                        default=0,
+                    )
+                    if longest_text > _EMBED_DESCRIPTION_LIMIT:
+                        logfire.info(
+                            "Threads post exceeds the embed description limit; skipping expansion",
+                            url=url,
+                            text_length=longest_text,
+                        )
+                        await update_reaction(
+                            message=message,
+                            bot_user=self.bot.user,
+                            emoji="⚠️",
+                            previous=current_emoji,
+                        )
+                        return
+
+                    await self._deliver(
+                        message=message,
+                        url=url,
+                        results=results,
+                        embed_plan=embed_plan,
+                        current_emoji=current_emoji,
+                    )
+                finally:
+                    # Closes the walk's generator and unlinks its media before the directory
+                    # goes, which is the ordinary path. Guarded here rather than by the outer
+                    # handler, which would relabel a delivered expansion ❌ over scratch files
+                    # the user cannot see; swallowing it also stops a failing cleanup from
+                    # replacing whatever the body raised. Broad on purpose: it is the last step
+                    # and nothing downstream can act on its failure. A warning rather than an
+                    # error now that the enclosing scratch directory removes what this missed.
+                    try:
+                        await asyncio.to_thread(parse_cm.__exit__, None, None, None)
+                    except Exception as error:
+                        logfire.warn(
+                            "Could not clean up the Threads scratch files",
+                            url=url,
+                            message_id=message.id,
+                            error_type=type(error).__name__,
+                            _exc_info=error,
+                        )
         # Broad on purpose: the listener's last line of defence, covering the steps between the
         # parse and the delivery so nothing escapes into the dispatcher.
         except Exception as error:

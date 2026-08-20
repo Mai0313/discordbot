@@ -1096,16 +1096,15 @@ class ThreadsDownloader(BaseModel):
 
         Raises:
             RuntimeError: If the HTTP fetch fails.
-            OSError: If the file cannot be written. A caller that removed the scratch dir
-                mid-download gets `FileNotFoundError` here, deliberately: see below.
+            OSError: If the file cannot be written. A caller that removed the scratch dir gets
+                `FileNotFoundError` here, deliberately: see below.
         """
-        # Created before the request, never after: a caller that cancels mid-download cannot stop
-        # the worker thread (`asyncio.to_thread` abandons it), so it may remove the scratch dir
-        # underneath this. Creating it up front lets the open fail instead of quietly rebuilding
-        # a directory nobody will clean up, which turns the removal into the stop signal the
-        # cancellation could not deliver.
+        # `output_folder` is the caller's to create and this never recreates it, which is what
+        # turns its removal into the stop signal a cancellation could not deliver: a caller that
+        # gives up mid-walk cannot stop the worker thread (`asyncio.to_thread` abandons it), so
+        # it removes the directory instead and the open below fails. A `mkdir` here would undo
+        # that between two files and quietly rebuild a directory nobody will clean up.
         filepath = Path(self.output_folder) / filename
-        filepath.parent.mkdir(parents=True, exist_ok=True)
         try:
             # The CDN serves these signed URLs with any Referer or none (measured), so this
             # only has to stop naming a host the fetch no longer visits.
@@ -1313,6 +1312,11 @@ class ThreadsDownloader(BaseModel):
         Yields:
             The parsed conversation. Its `chain` is empty when no post is found.
         """
+        # Once, here, ahead of every fetch, rather than per file inside `download_media`: see
+        # that method's comment for why rebuilding it mid-walk would cost a caller who gave up
+        # its only way to stop this. A caller already handing over a scratch directory of its
+        # own gets a no-op; the standalone use gets a folder it did not have to make.
+        Path(self.output_folder).mkdir(parents=True, exist_ok=True)
         conversation = self._build_conversation(url=url, download=True)
         try:
             yield conversation

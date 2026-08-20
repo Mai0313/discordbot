@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
+import threading
+import contextlib
 
 import nextcord
 from nextcord import Embed, Guild, Member
@@ -22,7 +24,7 @@ from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
 from discordbot.cogs.template import cog as template
 from discordbot.typings.games import GameParticipant
-from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
+from discordbot.utils.threads import ThreadsOutput, ThreadsConversation
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.video.cog import VideoCogs
 from discordbot.typings.config import LoggingConfig
@@ -83,7 +85,6 @@ from tests.helpers.discord_mocks import (
 )
 
 if TYPE_CHECKING:
-    import threading
     from collections.abc import Callable, Awaitable, AsyncIterator
 
     import pytest
@@ -156,12 +157,16 @@ class ParseResultStub:
         results: list[ThreadsOutput] | BaseException,
         exit_error: Exception | None = None,
         enter_delay_seconds: float = 0.0,
+        output_folder: str | None = None,
     ) -> None:
         """Stores parsed results, the entry and exit errors, and how long the entry blocks."""
         self.results = results
         self.exit_error = exit_error
         self.enter_delay_seconds = enter_delay_seconds
+        self.output_folder = output_folder
         self.exited = False
+        self.wrote: Path | None = None
+        self.finished = threading.Event()
 
     def __enter__(self) -> ThreadsConversation:
         """Returns the parsed conversation or raises the configured parsing error.
@@ -171,9 +176,19 @@ class ParseResultStub:
         cannot tell "ignores them" apart from "never saw any".
 
         `enter_delay_seconds` blocks the worker thread the way a slow-drip CDN does, so a test
-        can reach the caller's give-up path with the walk still running.
+        can reach the caller's give-up path with the walk still running. What happens after that
+        delay is `download_media`'s shape: the media write is attempted against the folder the
+        caller handed over, and never against one this rebuilds.
         """
         time.sleep(self.enter_delay_seconds)
+        if self.output_folder is not None:
+            # Named before the write, so an abandoned walk still says where it aimed once the
+            # removal turned that write into a FileNotFoundError. Suppressed for the same
+            # reason production discards it: nothing is awaiting this thread any more.
+            self.wrote = Path(self.output_folder) / "clip.mp4"
+            with contextlib.suppress(OSError):
+                self.wrote.write_bytes(b"clip")
+        self.finished.set()
         if isinstance(self.results, BaseException):
             raise self.results
         return ThreadsConversation(
@@ -211,6 +226,7 @@ class ThreadsDownloaderStub:
         self.exit_error = exit_error
         self.enter_delay_seconds = enter_delay_seconds
         self.parsed: list[ParseResultStub] = []
+        self.output_folders: list[str] = []
 
     def parse(self, url: str) -> ParseResultStub:
         """Returns a fake parse context manager, recorded so a test can inspect its exit."""
@@ -218,9 +234,27 @@ class ThreadsDownloaderStub:
             results=self.results,
             exit_error=self.exit_error,
             enter_delay_seconds=self.enter_delay_seconds,
+            output_folder=self.output_folders[-1] if self.output_folders else None,
         )
         self.parsed.append(result)
         return result
+
+
+def _wire_threads(*, cog: ThreadsCogs, downloader: ThreadsDownloaderStub) -> ThreadsDownloaderStub:
+    """Points the cog's per-invocation factory at one stub, recording the dir it was handed.
+
+    The expansion builds its downloader inside a scratch directory of its own now, so the
+    factory is the seam a test takes over; the same stub answers every invocation so a test can
+    still read back what it was asked to do.
+    """
+
+    def factory(output_folder: str) -> ThreadsDownloaderStub:
+        """Records the scratch dir this invocation was given, then serves the shared stub."""
+        downloader.output_folders.append(output_folder)
+        return downloader
+
+    cog.__dict__["downloader_factory"] = factory
+    return downloader
 
 
 class FakeSendChannel:
@@ -439,9 +473,11 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     success_message.__dict__["author"] = FakeUser(bot=False)
     success_message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
     success_message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-    cog.downloader = cast(
-        "ThreadsDownloader",
-        ThreadsDownloaderStub(results=[_thread_output(video_paths=[video_file], image_urls=[])]),
+    _wire_threads(
+        cog=cog,
+        downloader=ThreadsDownloaderStub(
+            results=[_thread_output(video_paths=[video_file], image_urls=[])]
+        ),
     )
     await cog.on_message(message=as_message(fake=success_message))
     assert success_message.suppressed
@@ -461,7 +497,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     warning_message.__dict__["author"] = FakeUser(bot=False)
     warning_message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
     warning_message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-    cog.downloader = cast("ThreadsDownloader", ThreadsDownloaderStub(results=[]))
+    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=[]))
     await cog.on_message(message=as_message(fake=warning_message))
     assert warning_message.reactions[-1] == "⚠️"
 
@@ -469,28 +505,28 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     error_message.__dict__["author"] = FakeUser(bot=False)
     error_message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
     error_message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-    cog.downloader = cast(
-        "ThreadsDownloader", ThreadsDownloaderStub(results=RuntimeError("parse failed"))
-    )
+    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=RuntimeError("parse failed")))
     await cog.on_message(message=as_message(fake=error_message))
     assert error_message.reactions[-1] == "<:redcross:1517565100838355016>"
 
 
-async def test_threads_cog_still_unlinks_the_scratch_files_of_a_walk_it_gave_up_on(
+async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A timed-out expansion defers its cleanup rather than skipping it.
+    """A timed-out expansion leaves nothing behind, without waiting for the walk.
 
     The `requests` calls under `parse` are per-read only, so a slow-drip CDN can hold one paste
-    open indefinitely; the bound is what stops it. But `asyncio.to_thread` cannot cancel the
-    walk, so it keeps writing media into the system temp dir, and `parse_cm.__exit__` is the
-    only thing that ever deletes those files. Skipping it would trade the stall for a permanent
-    leak on every timeout.
+    open indefinitely; the bound is what stops it. `asyncio.to_thread` cannot cancel the walk,
+    so it is the scratch directory going away that both deletes what it wrote and fails its next
+    write — the same mechanism `parse_douyin` and `/download_video` get from their own `with`
+    block. The exit is deliberately not called on this path: the walk is still driving that
+    generator on its own thread.
     """
     monkeypatch.setattr(parse_threads, "THREADS_EXPAND_TIMEOUT_SECONDS", 0.05)
     cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    downloader = ThreadsDownloaderStub(results=[], enter_delay_seconds=0.3)
-    cog.downloader = cast("ThreadsDownloader", downloader)
+    downloader = _wire_threads(
+        cog=cog, downloader=ThreadsDownloaderStub(results=[], enter_delay_seconds=0.3)
+    )
 
     message = FakeDiscordMessage()
     message.__dict__["author"] = FakeUser(bot=False)
@@ -499,11 +535,16 @@ async def test_threads_cog_still_unlinks_the_scratch_files_of_a_walk_it_gave_up_
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "<:redcross:1517565100838355016>"
-    # The walk is still running here, so the exit has not happened yet; that is the whole
-    # reason it is deferred rather than done inline.
+    scratch = Path(downloader.output_folders[0])
+    assert not await asyncio.to_thread(scratch.exists)
     assert downloader.parsed[0].exited is False
-    await asyncio.gather(*cog._abandoned_parses)
-    assert downloader.parsed[0].exited is True
+    # The abandoned walk runs on past the give-up and writes where it was told to; what it
+    # produces has to be gone with the directory rather than stranded in the system temp dir.
+    assert await asyncio.to_thread(downloader.parsed[0].finished.wait, 5.0)
+    wrote = downloader.parsed[0].wrote
+    assert wrote is not None
+    assert not await asyncio.to_thread(wrote.exists)
+    assert not await asyncio.to_thread(scratch.exists)
 
 
 async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -647,9 +688,7 @@ async def test_threads_cog_delivers_a_trimmed_chain_instead_of_failing() -> None
     """An overflow is delivered with permalink fallbacks and a success reaction."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=as_bot(fake=bot))
-    cog.downloader = cast(
-        "ThreadsDownloader", ThreadsDownloaderStub(results=_long_threads_chain())
-    )
+    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=_long_threads_chain()))
     message = FakeDiscordMessage()
     message.__dict__["author"] = FakeUser(bot=False)
     message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
@@ -714,9 +753,7 @@ async def test_threads_cog_keeps_the_expansion_when_a_notice_reply_fails() -> No
     """A follow-up failure must not relabel an expansion that is already on screen."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=as_bot(fake=bot))
-    cog.downloader = cast(
-        "ThreadsDownloader", ThreadsDownloaderStub(results=_long_threads_chain())
-    )
+    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=_long_threads_chain()))
     message = FakeDiscordMessage()
     message.__dict__["author"] = FakeUser(bot=False)
     message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
@@ -748,9 +785,7 @@ async def test_threads_cog_delivers_when_the_notice_cannot_be_built(
     """A notice-building failure costs the permalinks, never the rendered expansion."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=as_bot(fake=bot))
-    cog.downloader = cast(
-        "ThreadsDownloader", ThreadsDownloaderStub(results=_long_threads_chain())
-    )
+    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=_long_threads_chain()))
     message = FakeDiscordMessage()
     message.__dict__["author"] = FakeUser(bot=False)
     message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
@@ -775,7 +810,7 @@ async def test_threads_cog_keeps_the_expansion_when_the_scratch_cleanup_fails() 
     downloader = ThreadsDownloaderStub(
         results=[_thread_output(text="貼文內容")], exit_error=OSError("read-only file system")
     )
-    cog.downloader = cast("ThreadsDownloader", downloader)
+    _wire_threads(cog=cog, downloader=downloader)
     message = FakeDiscordMessage()
     message.__dict__["author"] = FakeUser(bot=False)
     message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
@@ -799,22 +834,25 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
     downloader = ThreadsDownloaderStub(
         results=[_thread_output(text="貼文內容")], exit_error=OSError("read-only file system")
     )
-    cog.downloader = cast("ThreadsDownloader", downloader)
+    _wire_threads(cog=cog, downloader=downloader)
     message = FakeDiscordMessage()
     message.__dict__["author"] = FakeUser(bot=False)
     message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
     message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
     logged: list[tuple[str, str]] = []
 
-    def record_error(message_text: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
-        """Records the message and error type of each error-level log."""
+    def record(message_text: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the message and error type of each log it is bound to."""
         logged.append((message_text, kwargs["error_type"]))
 
     def exploding_plan(*, results: list[ThreadsOutput]) -> parse_threads._EmbedPlan:
         del results
         raise RuntimeError("the embed plan blew up")
 
-    monkeypatch.setattr(parse_threads.logfire, "error", record_error)
+    monkeypatch.setattr(parse_threads.logfire, "error", record)
+    # The cleanup is a warning rather than an error now: the scratch directory around it removes
+    # what a failing unlink left, so it is a degraded step rather than a leak nobody clears.
+    monkeypatch.setattr(parse_threads.logfire, "warn", record)
     cog._build_embed_plan = exploding_plan  # ty: ignore[invalid-assignment]
     await cog.on_message(message=as_message(fake=message))
 
@@ -959,7 +997,7 @@ async def test_threads_cog_refuses_an_oversize_quoted_post_with_a_warning() -> N
     cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
     target = _thread_output(text="t")
     target.quoted = _thread_output(text="q" * 4096, author_name="bob")
-    cog.downloader = cast("ThreadsDownloader", ThreadsDownloaderStub(results=[target]))
+    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=[target]))
 
     message = FakeDiscordMessage()
     message.__dict__["author"] = FakeUser(bot=False)
@@ -975,8 +1013,8 @@ async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
     """A mention (or a DM) hands the link to gen_reply, so the cog must not also expand it."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=as_bot(fake=bot))
-    cog.downloader = cast(
-        "ThreadsDownloader", ThreadsDownloaderStub(results=RuntimeError("must not be called"))
+    _wire_threads(
+        cog=cog, downloader=ThreadsDownloaderStub(results=RuntimeError("must not be called"))
     )
 
     mentioned = FakeDiscordMessage()
@@ -1017,9 +1055,11 @@ async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
     # The 1 MiB envelope margin alone overshoots this ceiling, so no combined body ever fits
     # and even a 3-byte video is peeled out to a hosted URL.
     message.__dict__["guild"] = SimpleNamespace(filesize_limit=4)
-    cog.downloader = cast(
-        "ThreadsDownloader",
-        ThreadsDownloaderStub(results=[_thread_output(video_paths=[video_file], image_urls=[])]),
+    _wire_threads(
+        cog=cog,
+        downloader=ThreadsDownloaderStub(
+            results=[_thread_output(video_paths=[video_file], image_urls=[])]
+        ),
     )
 
     await cog.on_message(message=as_message(fake=message))
@@ -1054,9 +1094,11 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
     # The ceiling clears the small clip plus the 1 MiB envelope margin but not the 2 MiB clip,
     # so only the big one is peeled to a hosted URL while the small one attaches natively.
     message.__dict__["guild"] = SimpleNamespace(filesize_limit=1024 * 1024 + 200)
-    cog.downloader = cast(
-        "ThreadsDownloader",
-        ThreadsDownloaderStub(results=[_thread_output(video_paths=[small, big], image_urls=[])]),
+    _wire_threads(
+        cog=cog,
+        downloader=ThreadsDownloaderStub(
+            results=[_thread_output(video_paths=[small, big], image_urls=[])]
+        ),
     )
 
     await cog.on_message(message=as_message(fake=message))
@@ -1085,9 +1127,11 @@ async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Pa
     message.__dict__["author"] = FakeUser(bot=False)
     message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
     message.__dict__["guild"] = SimpleNamespace(filesize_limit=4)  # tiny ceiling -> video oversize
-    cog.downloader = cast(
-        "ThreadsDownloader",
-        ThreadsDownloaderStub(results=[_thread_output(video_paths=[video_file], image_urls=[])]),
+    _wire_threads(
+        cog=cog,
+        downloader=ThreadsDownloaderStub(
+            results=[_thread_output(video_paths=[video_file], image_urls=[])]
+        ),
     )
 
     await cog.on_message(message=as_message(fake=message))
