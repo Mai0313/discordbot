@@ -196,7 +196,7 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
                 compartment=compartment,
                 owner_id=owner.owner_id,
                 owner_name=owner.owner_name,
-                subject_id=int(delta.subject_id) if delta.subject_id else None,
+                subject_id=_subject_id_of(delta=delta),
                 node_type=node_type_for(section=delta.section),
                 created=previous.created if previous is not None else now,
                 last_confirmed=now,
@@ -252,7 +252,7 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
     if not delta.summary.strip() or not _delta_body(delta=delta):
         logfire.warn("Memory delta carries no content; dropping", action=delta.action)
         return None
-    if delta.section == "member_alias" and not delta.subject_id.isdigit():
+    if delta.section == "member_alias" and _subject_id_of(delta=delta) is None:
         logfire.warn("Member-alias delta carries no member id; dropping")
         return None
     if known:
@@ -261,6 +261,29 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
     if matched is not None:
         return matched, False
     return mint_fact_id(compartment=compartment, summary=delta.summary), False
+
+
+def _subject_id_of(delta: MemoryFactDelta) -> int | None:
+    """Returns the member id this delta names, or None when it names nothing usable.
+
+    The field is model-authored free text and only `member_alias` renders it
+    (`facts.py::_render_fact_line`), so on every other section a junk id costs the field
+    and nothing else — where casting it unguarded cost the whole fan-out, `apply_deltas`
+    raising past a broad handler that abandons the compartments still queued behind it
+    (#527). An alias row that resolves to None is dropped in `_resolve_delta` instead,
+    because there the id IS the row.
+
+    The test and the cast live in one place so they cannot disagree again, and it takes
+    both halves: `isdigit` accepts a "²" that `int()` refuses, and `isdecimal` alone still
+    accepts a digit string longer than CPython converts.
+    """
+    if not delta.subject_id.isdecimal():
+        return None
+    try:
+        return int(delta.subject_id)
+    except ValueError:
+        # Past the int-conversion limit, the same way `utils/amount_parsing.py` handles it.
+        return None
 
 
 def _delta_body(delta: MemoryFactDelta) -> str:
