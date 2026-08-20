@@ -599,6 +599,32 @@ def test_admin_description_check_reads_every_locale_it_has_to() -> None:
     assert not _names_an_unqualified_admin(text="Central banker forced collection.")
 
 
+def test_the_tests_workflow_reruns_on_an_edit_to_the_capability_document() -> None:
+    """The CI path filter names this document by literal path, and nothing else ties them.
+
+    `.github/workflows/test.yml` skips the suite on a diff that is nothing but Markdown, and
+    pulls this one file back past that rule because the suite reads it. Nothing derives the
+    path it writes down: `capabilities.py` resolves the document relative to itself, so moving
+    the pair would leave production and every other test green while CI quietly stopped running
+    on a Markdown-only edit to it. That is the wrong-signal skip #486 took off the branch name,
+    one door over, and its whole failure mode is a check that never appears.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    document = repo_root / "src" / "discordbot" / "cogs" / "gen_reply" / "capabilities.md"
+    assert document.is_file(), (
+        f"{document} is gone, so the document moved; the re-include in "
+        ".github/workflows/test.yml has to move with it"
+    )
+    assert document.read_text(encoding="utf-8").strip() == CAPABILITIES_DOC, (
+        f"{document} is not the document the package loads any more"
+    )
+    workflow = (repo_root / ".github" / "workflows" / "test.yml").read_text(encoding="utf-8")
+    assert document.relative_to(repo_root).as_posix() in workflow, (
+        "an edit to the capability document can turn this module red, so "
+        ".github/workflows/test.yml must re-include it past its `!**/*.md` rule"
+    )
+
+
 def test_capabilities_block_is_a_low_authority_assistant_note() -> None:
     """The reference rides as the bot's own note, never as a rule that could outrank the user."""
     block = render_capabilities_block()
