@@ -1436,6 +1436,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 # A summary request carrying a URL is really a QA recap of that link, not a
                 # recap of channel history, so steer it back to QA. Preserve both content-read
                 # decisions so the corrected route still ingests what the user asked about.
+                logfire.info(
+                    "gen_reply rerouting a URL-bearing summary to QA", message_id=message.id
+                )
                 route = RouteClassification(
                     decision="QA",
                     watch_video=parsed.watch_video,
@@ -1460,6 +1463,7 @@ class ReplyGeneratorCogs(commands.Cog):
             elapsed_seconds=time.monotonic() - started,
             decision=route.decision,
             link_context_sources=route.link_context_sources,
+            watch_video=route.watch_video,
             message_id=message.id,
         )
         return route
@@ -2042,6 +2046,20 @@ class ReplyGeneratorCogs(commands.Cog):
             and bool(self.config.gemini_api_key.strip())
         )
         backend = "interactions" if use_interactions else "responses"
+        if yt_url is not None and not use_interactions:
+            # The swap is silent to the user, so without this the log shows a Responses answer to
+            # a message the router explicitly asked to watch, with nothing saying which gate said
+            # no. The fallback itself is correct; only the reason was unrecoverable.
+            logfire.info(
+                "gen_reply youtube watch declined; answering on the responses backend",
+                message_id=message.id,
+                reason="model"
+                if "gemini" not in slow_model.name
+                else "kill-switch"
+                if not self.config.youtube_video_enabled
+                else "no-gemini-key",
+                model=slow_model.name,
+            )
         if use_interactions:
             # Persistent marker (added directly, not via the status chain) so it stays after the
             # chain's final reaction to show the reply was grounded in the watched video. The bot's
@@ -2254,6 +2272,10 @@ class ReplyGeneratorCogs(commands.Cog):
         # actively driving: the thread is its workspace until the report lands, so QA must not
         # answer over the live status edits. The skip lifts the moment the run finishes.
         if _in_active_research_thread(bot=self.bot, channel_id=message.channel.id):
+            logfire.debug(
+                "gen_reply skipped: the research cog is still writing into this thread",
+                **_message_log_fields(message=message),
+            )
             return
 
         user_prompt = await self.input_builder.get_user_prompt(content=message.content)
@@ -2411,6 +2433,14 @@ class ReplyGeneratorCogs(commands.Cog):
                             continue
                         link_url = _link_url_for_source(source=link_source, message=message)
                         if link_url is None:
+                            # The router named this source, but its URL is not where the source is
+                            # allowed to look (Threads alone walks the reply chain), so the answer
+                            # silently goes without the post the user was pointing at.
+                            logfire.info(
+                                "gen_reply selected link source has no readable URL; skipping it",
+                                source=link_source.name,
+                                message_id=message.id,
+                            )
                             continue
                         link_tasks[link_source.name] = asyncio.create_task(
                             coro=_run_until_deadline(
@@ -2542,6 +2572,14 @@ class ReplyGeneratorCogs(commands.Cog):
                     # about it; the URL itself is taken from the message text or the replied-to
                     # message (never the model) so the answer turn ingests the exact link posted.
                     yt_url = _find_youtube_url(message=message) if route.watch_video else None
+                    if route.watch_video and yt_url is None:
+                        # The router judged the user is asking about a video, but the URL scan
+                        # found none where it is allowed to look, so the answer is written
+                        # without watching anything and nothing else records that.
+                        logfire.info(
+                            "gen_reply watch_video requested but no YouTube URL was found",
+                            message_id=message.id,
+                        )
                     _log_pre_answer_latency(
                         started=pipeline_started, decision=route.decision, message_id=message.id
                     )
@@ -2559,6 +2597,15 @@ class ReplyGeneratorCogs(commands.Cog):
                         yt_url=yt_url,
                     )
                 reactions.advance(emoji="<:greencheck:1517565102424068226>")
+                # End of the turn on the success path; the failure path is `gen_reply failed`,
+                # which carries the traceback. The console exporter prints no span-end line, so
+                # without this the file holds no total for the turn at all.
+                logfire.info(
+                    "gen_reply pipeline done",
+                    elapsed_seconds=time.monotonic() - pipeline_started,
+                    decision=route.decision,
+                    message_id=message.id,
+                )
         finally:
             if prep_task is not None:
                 await _discard_task(task=prep_task, label="prep", message_id=message.id)

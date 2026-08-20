@@ -2613,6 +2613,13 @@ async def test_youtube_qa_falls_back_to_responses(
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    logged: list[tuple[str, dict[str, object]]] = []
+
+    def record(message_text: str, **fields: object) -> None:
+        """Captures the info records the dispatch path emits."""
+        logged.append((message_text, fields))
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.logfire.info", record)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     yt_url = None if scenario == "no_url" else url
@@ -2627,6 +2634,19 @@ async def test_youtube_qa_falls_back_to_responses(
 
     assert fake.recorder.calls == []
     assert _recorded(cog).responses.create_streams == [True]
+    # The fallback is silent to the user, so the log is the only place the reason survives. A
+    # `no_url` turn never asked for the swap here, so it names no reason.
+    declines = [fields for text, fields in logged if "youtube watch declined" in text]
+    expected_reason = {
+        "non_gemini_model": "model",
+        "kill_switch_off": "kill-switch",
+        "no_key": "no-gemini-key",
+    }.get(scenario)
+    assert [fields.get("reason") for fields in declines] == (
+        [expected_reason] if expected_reason else []
+    )
+    dispatch = next(fields for text, fields in logged if text == "gen_reply answer dispatch")
+    assert dispatch["backend"] == "responses"
 
 
 def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPatch) -> None:
