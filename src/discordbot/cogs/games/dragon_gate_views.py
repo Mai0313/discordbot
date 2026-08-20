@@ -434,7 +434,12 @@ class DragonGateView(View):
         self.sync_controls()
 
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:
-        """Restricts every control to a seated player who has not withdrawn."""
+        """Restricts each control to who may use it, which is not the same set for all of them.
+
+        `dg:leave` is open to any seated player who has not withdrawn, so anyone can walk away
+        without waiting for their turn. Every other control needs the user to BE the active
+        turn holder; a seated player who is not gets 現在輪到 … instead.
+        """
         if self._settled or interaction.user is None:
             return False
         data = (

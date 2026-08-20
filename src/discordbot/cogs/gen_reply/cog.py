@@ -926,11 +926,12 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> list[EasyInputMessageParam]:
         """Renders fetched history in one mode: text-only markers, or full uploaded parts.
 
-        Both modes derive from the same `_fetch_history` result (one Discord call). The
-        text-only twin (no upload) feeds optional memory selection without waiting on the
-        Files API; the full render uploads attachment parts for the answer. History is the only
-        render that opts into the dead-source skip: an expired CDN attachment here re-fails every
-        turn (current / reference do not; see GeminiFileUploader._resolve_file_upload).
+        Both modes derive from the same `_fetch_history` result, so history is walked once
+        however many renders are asked for. The text-only twin (no upload) feeds optional
+        memory selection without waiting on the Files API; the full render uploads attachment
+        parts for the answer. History is the only render that opts into the dead-source skip:
+        an expired CDN attachment here re-fails every turn (current / reference do not; see
+        GeminiFileUploader._resolve_file_upload).
         """
         if not hist_messages:
             return []

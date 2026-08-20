@@ -2107,9 +2107,9 @@ async def top_n(
     """Returns accounts ordered by balance descending.
 
     Hidden accounts are the only thing dropped by default (`include_hidden`).
-    Neither production caller passes `exclude_user_ids`: the bot is an ordinary
-    player here and the casino's own P&L is a `casino_ledger` row, not a
-    wallet. Stored integer values are
+    The one production caller (`cogs/economy/cog.py`, `/leaderboard`) does not pass
+    `exclude_user_ids`: the bot is an ordinary player here and the casino's own P&L
+    is a `casino_ledger` row, not a wallet. Stored integer values are
     sorted in SQL with explicit decimal-text aware order terms so the query
     can still apply `LIMIT` before rows reach Python.
 
