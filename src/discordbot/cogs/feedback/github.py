@@ -13,6 +13,7 @@ A fresh `AsyncClient` per call is deliberate. The volume is a handful of request
 panel open, and a client held on the cog would outlive the event loop it was built on.
 """
 
+import re
 from typing import Any, Final, Literal
 
 import httpx
@@ -40,8 +41,16 @@ _UNPROCESSABLE = 422
 
 # The comments endpoint answers 30 per page by default; 100 is its maximum, and three
 # pages is far past any report thread while keeping a slow issue from stalling the panel.
+# Which three pages is the load-bearing part; `read_conversation` has it, along with why
+# a thread deeper than the bound costs a fourth request the panel waits on.
 _COMMENTS_PER_PAGE = 100
 _MAX_COMMENT_PAGES = 3
+
+# GitHub numbers its pages in the `Link` header rather than counting them in the body, so
+# the entry marked `rel="last"` is where a paged read learns how deep a thread is. The
+# page number is matched anywhere inside that entry's URL rather than at its end, since
+# nothing promises which query parameter comes last.
+_LAST_PAGE_RE: Final[re.Pattern[str]] = re.compile(r'<[^>]*[?&]page=(\d+)[^>]*>;\s*rel="last"')
 
 
 class GitHubIssuesError(RuntimeError):
@@ -159,19 +168,18 @@ class GitHubIssues(BaseModel):
             "X-GitHub-Api-Version": _API_VERSION,
         }
 
-    async def _request(
+    async def _send(
         self, *, method: str, path: str, payload: dict[str, Any] | None = None
-    ) -> Any:  # noqa: ANN401 -- the GitHub REST payload shape differs per endpoint
-        """Runs one REST call and returns its decoded body.
+    ) -> httpx.Response:
+        """Runs one REST call and hands back the answer GitHub gave.
 
-        Decoding is inside the contract, not next to it: every caller treats
-        `GitHubIssuesError` as the one thing this module raises, so a 2xx carrying an
-        HTML error page from something in front of GitHub has to arrive as that too,
-        rather than as a `JSONDecodeError` nobody upstream is catching.
+        Split out of `_request` for the one reader that needs something off the response
+        that is not in its body: the paged comment read, whose `Link` header is where
+        GitHub says how many pages a thread has.
 
         Raises:
-            GitHubIssuesError: The request never reached GitHub, GitHub answered with a
-                non-2xx status, or the answer was not decodable JSON.
+            GitHubIssuesError: The request never reached GitHub, or GitHub answered with
+                a non-2xx status.
         """
         url = f"{_API_ROOT}/repos/{self.repository}{path}"
         headers = await self._authorized_headers()
@@ -187,6 +195,23 @@ class GitHubIssues(BaseModel):
                 f"{method} {path} answered {response.status_code}: {response.text[:500]}",
                 response.status_code,
             )
+        return response
+
+    async def _request(
+        self, *, method: str, path: str, payload: dict[str, Any] | None = None
+    ) -> Any:  # noqa: ANN401 -- the GitHub REST payload shape differs per endpoint
+        """Runs one REST call and returns its decoded body.
+
+        Decoding is inside the contract, not next to it: every caller treats
+        `GitHubIssuesError` as the one thing this module raises, so a 2xx carrying an
+        HTML error page from something in front of GitHub has to arrive as that too,
+        rather than as a `JSONDecodeError` nobody upstream is catching.
+
+        Raises:
+            GitHubIssuesError: The request never reached GitHub, GitHub answered with a
+                non-2xx status, or the answer was not decodable JSON.
+        """
+        response = await self._send(method=method, path=path, payload=payload)
         try:
             return response.json()
         except ValueError as exc:
@@ -268,29 +293,65 @@ class GitHubIssues(BaseModel):
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             raise GitHubIssuesError(f"GET /issues/{number} answered an unreadable issue") from exc
 
+    async def _read_comment_page(self, *, number: int, page: int) -> tuple[list[Any], int]:
+        """Reads one page of an issue's comments, and how many pages there are.
+
+        The page count comes off the `Link` header rather than the body, which is why
+        this goes through `_send`. GitHub leaves `rel="last"` off the last page, so its
+        absence means the page in hand is that one, and the answer is the page asked for.
+
+        Raises:
+            GitHubIssuesError: The page could not be read, or was not a list of comments.
+        """
+        response = await self._send(
+            method="GET",
+            path=f"/issues/{number}/comments?per_page={_COMMENTS_PER_PAGE}&page={page}",
+        )
+        try:
+            comments = response.json()
+        except ValueError as exc:
+            raise GitHubIssuesError(
+                f"GET /issues/{number}/comments answered undecodable content: "
+                f"{response.text[:200]}",
+                response.status_code,
+            ) from exc
+        if not isinstance(comments, list):
+            raise GitHubIssuesError(f"GET /issues/{number}/comments answered a non-list body")
+        last = _LAST_PAGE_RE.search(response.headers.get("link", ""))
+        return comments, int(last.group(1)) if last else page
+
     async def read_conversation(self, *, number: int) -> list[IssueComment]:
         """Reads the comments that belong in the reporter's view of their own report.
 
         Paged rather than one call: the endpoint answers 30 at a time by default, and the
         panel shows the *newest* replies, so a thread past the first page would hide the
         very answer the reporter came to read while the status still said someone had
-        replied. `_MAX_COMMENT_PAGES` bounds it at the first 300 comments; the endpoint
-        orders oldest first, so past that the newest replies are the ones left unread.
+        replied.
+
+        `_MAX_COMMENT_PAGES` bounds that walk, and it is applied at the END of the thread:
+        the endpoint answers oldest first, so a bound counted from page 1 would drop
+        precisely the replies the panel renders. Asking for the other order is not an
+        option — measured 2026-08-20 against api.github.com, this endpoint ignores both
+        `sort` and `direction` and answers ascending whatever it is passed — so the walk
+        starts `_MAX_COMMENT_PAGES` back from the last page instead. A thread inside the
+        bound is read whole in the same requests as before; only a deeper one pays for a
+        fourth, since page 1's body is thrown away and the page is asked for anyway to
+        reach its `Link` header. The issue's own comment count would answer the same
+        question for free — the panel holds one two statements earlier — but it is read
+        before the walk, so one comment landing in between puts the newest on a page the
+        arithmetic then never asks for, which is this bug again through a narrower door.
 
         Raises:
             GitHubIssuesError: The comments could not be read.
         """
+        first, last_page = await self._read_comment_page(number=number, page=1)
+        start = max(1, last_page - _MAX_COMMENT_PAGES + 1)
         collected: list[dict[str, Any]] = []
-        for page in range(1, _MAX_COMMENT_PAGES + 1):
-            comments = await self._request(
-                method="GET",
-                path=f"/issues/{number}/comments?per_page={_COMMENTS_PER_PAGE}&page={page}",
-            )
-            if not isinstance(comments, list):
-                raise GitHubIssuesError(f"GET /issues/{number}/comments answered a non-list body")
+        if start == 1:
+            collected.extend(first)
+        for page in range(max(start, 2), last_page + 1):
+            comments, _ = await self._read_comment_page(number=number, page=page)
             collected.extend(comments)
-            if len(comments) < _COMMENTS_PER_PAGE:
-                break
         return select_conversation(comments=collected)
 
     async def add_comment(self, *, number: int, body: str) -> None:
