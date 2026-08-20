@@ -1,20 +1,29 @@
 name: Tests
 
+# The diff decides whether the suite runs, never the branch name: a conventional-commits type says
+# what a change is for and nothing about what it touched, so `chore/`, `ci/` and `docs/` branches
+# have all carried Python here (#486). `**` first is what makes this fail safe, since a denylist
+# covers a file type the repository grows later while an allowlist quietly stops running as the tree
+# moves. `capabilities.md` is not prose: it is what `tests/test_capabilities.py` reads.
 on:
   push:
     branches:
       - main
       - master
       - release/*
-    paths-ignore:
-      - "**/*.md"
+    paths:
+      - "**"
+      - "!**/*.md"
+      - "src/discordbot/cogs/gen_reply/capabilities.md"
   pull_request:
     branches:
       - main
       - master
       - release/*
-    paths-ignore:
-      - "**/*.md"
+    paths:
+      - "**"
+      - "!**/*.md"
+      - "src/discordbot/cogs/gen_reply/capabilities.md"
 
 permissions: write-all
 
@@ -22,7 +31,6 @@ jobs:
   run_tests:
     name: Run Tests
     runs-on: ubuntu-latest
-    if: ${{ !(startsWith(github.head_ref, 'chore/') || startsWith(github.head_ref, 'ci/') || startsWith(github.head_ref, 'docs/')) }}
 
     strategy:
       fail-fast: false

@@ -161,7 +161,7 @@ The pytest configuration lives in `pyproject.toml`.
 uv run pytest
 ```
 
-Coverage must stay at or above 80%. CI runs tests on Python 3.12 and 3.13 for pushes and pull requests targeting `main`, `master`, or `release/*`, except for documentation, chore, and CI branch prefixes intentionally skipped by the test workflow.
+Coverage must stay at or above 80%. CI runs tests on Python 3.12 and 3.13 for pushes and pull requests targeting `main`, `master`, or `release/*`. What decides whether they run is the diff, never the branch name: the suite is skipped when every changed file is Markdown, and `src/discordbot/cogs/gen_reply/capabilities.md` does not count as Markdown there because `tests/test_capabilities.py` reads it.
 
 Async tests that record nested test-double calls in a list must compare a stable invariant such as a mapping, set, `Counter`, or sorted value. An exact sequence assertion needs an adjacent `# order-contract: <reason>` explaining the production guarantee. When completion order is the behavior under test, control it with an event or barrier instead of relying on scheduler timing.
 
