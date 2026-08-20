@@ -20,6 +20,7 @@ import pytest
 import nextcord
 from nextcord import File, Embed, Message
 import requests
+from xai_sdk.proto import files_pb2
 from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
@@ -684,22 +685,35 @@ class FakeOpenAIClient:
         self.files = files or FakeOpenAIFiles()
 
 
+# The expiry the fake xAI upload reports back. Far future so a rendered part's cache TTL is
+# unambiguously the provider's answer rather than the local fallback.
+XAI_FAKE_EXPIRY = datetime(2099, 1, 1, tzinfo=UTC)
+
+
 class FakeXAIFiles:
     """Fake xAI Files API resource that records uploads."""
 
-    def __init__(self, file_id: str = "file-xai", expires_at: int | None = 4_070_908_800) -> None:
+    def __init__(
+        self, file_id: str = "file-xai", expires_at: datetime | None = XAI_FAKE_EXPIRY
+    ) -> None:
         """Initializes fake upload output fields."""
         self.file_id = file_id
         self.expires_at = expires_at
-        self.create_calls: list[tuple[str, bytes, str, str, dict[str, object]]] = []
+        self.upload_calls: list[tuple[str, bytes, int | None]] = []
 
-    async def create(
-        self, file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
-    ) -> SimpleNamespace:
-        """Records an upload and returns a fake xAI file object."""
-        filename, data, content_type = file
-        self.create_calls.append((filename, data.read(), content_type, purpose, expires_after))
-        return SimpleNamespace(id=self.file_id, expires_at=self.expires_at, purpose=purpose)
+    async def upload(
+        self, file: bytes, filename: str, expires_after: int | None = None
+    ) -> files_pb2.File:
+        """Records an upload and returns a real `File` proto.
+
+        The real proto rather than a stand-in, so the uploader's `HasField` / `ToDatetime`
+        read of a protobuf Timestamp is exercised instead of mocked past.
+        """
+        self.upload_calls.append((filename, file, expires_after))
+        uploaded = files_pb2.File(id=self.file_id, filename=filename, size=len(file))
+        if self.expires_at is not None:
+            uploaded.expires_at.FromDatetime(self.expires_at)
+        return uploaded
 
 
 class FakeXAIClient:
@@ -3449,7 +3463,7 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
     assert file_part["type"] == "input_file"
     assert file_part["file_id"] == "file-xai"
     assert file_part["filename"] == "notes.txt"
-    assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
+    assert file_expiry == XAI_FAKE_EXPIRY
 
     # xAI resolves no file id for image input, so an image is inlined instead of uploaded.
     image_rendered = await renderer.render_image(
@@ -3465,15 +3479,10 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
     assert image_url is not None
     assert image_url.startswith("data:image/")
 
-    assert files.create_calls == [
-        (
-            "notes.txt",
-            b"hello world",
-            "text/plain",
-            "assistants",
-            {"anchor": "created_at", "seconds": 2_592_000},
-        )
-    ]
+    # The whole upload call: a filename, the bytes and a bare TTL in seconds. No `purpose` (xAI
+    # never interprets it) and no `{anchor, seconds}` object, both of which were the OpenAI
+    # client's shapes rather than xAI's.
+    assert files.upload_calls == [("notes.txt", b"hello world", 2_592_000)]
 
 
 async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3486,13 +3495,39 @@ async def test_grok_file_uploader_drops_failed_uploads(monkeypatch: pytest.Monke
     boom = _fake_grok_uploader()
 
     async def _raise(
-        file: tuple[str, BytesIO, str], purpose: str, expires_after: dict[str, object]
-    ) -> SimpleNamespace:
-        del file, purpose, expires_after
+        file: bytes, filename: str, expires_after: int | None = None
+    ) -> files_pb2.File:
+        del file, filename, expires_after
         raise RuntimeError("upload failed")
 
-    monkeypatch.setattr(boom.xai_client.files, "create", _raise)
+    monkeypatch.setattr(boom.xai_client.files, "upload", _raise)
     assert await boom._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+
+
+async def test_grok_file_uploader_drops_an_upload_that_outruns_its_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled upload drops the attachment instead of holding the reply open.
+
+    The bound is this call's only one: `xai-sdk` leaves client-streaming RPCs, which is what an
+    upload is, uncovered by the timeout interceptors it installs for every other shape.
+    """
+    stalled = _fake_grok_uploader()
+
+    async def _hang(
+        file: bytes, filename: str, expires_after: int | None = None
+    ) -> files_pb2.File:
+        del file, filename, expires_after
+        await asyncio.sleep(60)
+        raise AssertionError("the deadline should have fired first")
+
+    monkeypatch.setattr(stalled.xai_client.files, "upload", _hang)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.attachment.grok_file_api.GROK_FILE_UPLOAD_TIMEOUT_SECONDS", 0.01
+    )
+    assert (
+        await stalled._upload_file(filename="x.txt", data=b"x", content_type="text/plain") is None
+    )
 
 
 async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
@@ -3500,9 +3535,6 @@ async def test_grok_file_uploader_without_a_key_reports_a_missing_key(
 ) -> None:
     """An unconfigured xAI key is reported as a missing key, not as an upload failure."""
     monkeypatch.setenv("XAI_API_KEY", "")
-    # The SDK accepts an admin key in place of the missing one, which would let the upload
-    # call be reached (and attempted for real) instead of failing at client construction.
-    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
     logged: list[str] = []
 
     def record_error(message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields

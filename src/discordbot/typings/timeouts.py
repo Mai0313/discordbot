@@ -94,6 +94,17 @@ DOWNLOAD_STOP_JOIN_SECONDS: Final[float] = 5.0
 # only a large one spends any of that window.
 ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 15.0
 
+# Bound on one xAI Files API upload, and the only deadline that call has: `xai-sdk` registers
+# timeout interceptors for unary-unary and unary-stream RPCs only, while `Files.UploadFile` is
+# client-streaming, so the 27-minute default it advertises reaches every RPC except the one this
+# project uses, and the call site passes none of its own. Sized by where it sits rather than by
+# the other Files-API bounds: an attachment renders while the answer input is still being built,
+# so expiry here is dead air in front of a user with nothing on screen, the same position that
+# holds ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS to 15s. Wider than that one because it covers a
+# whole transfer (up to xAI's 48 MB cap) rather than a poll over an upload already sent, and
+# because expiry drops the attachment outright where the Gemini path defers it to a re-poll.
+GROK_FILE_UPLOAD_TIMEOUT_SECONDS: Final[float] = 30.0
+
 # Bound on the whole Files API upload of a generated clip the persona reply then watches:
 # `upload_to_files_api` covers the transfer as well as the ACTIVE poll under this one timeout,
 # started once an upload slot is free. Generous relative to an image because video sits in
