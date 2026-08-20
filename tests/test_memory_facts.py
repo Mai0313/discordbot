@@ -599,6 +599,32 @@ def test_tone_evidence_ignores_compartments() -> None:
     assert "全域偏好" in evidence
 
 
+def test_tone_evidence_carries_the_evidence_kind() -> None:
+    """A stated preference has to reach the note distinguishable from an inferred one.
+
+    Carrying only the summary made both read alike, so the note converged on whichever
+    reading had the most bullets: one stated "address me respectfully" lost to five
+    inferred banter observations and the note came out saying the opposite.
+    """
+    text = (
+        "## 2026-07-01T00:00:00+00:00\n"
+        "### interaction_style\n"
+        "- normalized_key: style.stated\n"
+        "- evidence_kind: explicit_preference\n"
+        "- sharing: source_only\n"
+        "- summary_zh: 要求對本人使用尊敬語氣\n"
+        "\n"
+        "### interaction_style\n"
+        "- normalized_key: style.inferred\n"
+        "- evidence_kind: repeated_behavior\n"
+        "- sharing: global\n"
+        "- summary_zh: 會主動嗆機器人\n"
+    )
+    evidence = tone_evidence_from_raw(raw_text=text)
+    assert "* [explicit_preference] 要求對本人使用尊敬語氣" in evidence
+    assert "* [repeated_behavior] 會主動嗆機器人" in evidence
+
+
 def test_a_create_delta_writes_a_fact(memory_isolated_dir: Path) -> None:
     """The ordinary path: one delta, one file, code-stamped."""
     scope = user_scope(user_id=111)

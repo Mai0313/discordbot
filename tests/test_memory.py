@@ -3212,6 +3212,23 @@ def test_phase2_prompt_binds_the_model_to_one_compartment() -> None:
     assert "## 語氣偏好" in PHASE2_PROMPT
 
 
+def test_phase2_prompt_ranks_a_stated_tone_preference_over_an_inferred_one() -> None:
+    """The note merges many batches, so a majority of inferred bullets must not win.
+
+    `tone_evidence_from_raw` tags every bullet with its kind; this is the half that
+    tells the model what to do with the tag. Without both, a user who stated once that
+    they wanted respect and then trash-talked the bot for weeks got a note saying they
+    wanted trash-talk back, and recency kept it that way.
+    """
+    assert "`explicit_preference` and `correction` are the user stating" in PHASE2_PROMPT
+    assert "is not overturned by recency alone" in PHASE2_PROMPT
+    assert "Never invert an inferred bullet" in PHASE2_PROMPT
+    # The "later ... wins" half of that rule has no clock but the emitted order, and the
+    # tag is code-stamped input like the `source:` line phase 1 tells the model to leave out.
+    assert "oldest first" in PHASE2_PROMPT
+    assert "never copy it into the note" in PHASE2_PROMPT
+
+
 # ---------------------------------------------------------------------------
 # tone note (tone.md)
 # ---------------------------------------------------------------------------
