@@ -206,10 +206,10 @@ class RuntimeModelCatalog(BaseModel):
         link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
-            Flash at `high`, on the snapshot the hour picks: `gemini-3.6-flash` inside the peak
-            window and `gemini-3.7-flash` outside it. 3.7 is the newer answer but the one that
-            queues behind its own popularity (observed 2026-08-20), so the busy hours step a
-            snapshot back rather than wait on it.
+            `high` on the model the hour picks: `gemini-3.1-pro-preview` inside the peak window
+            and `gemini-3.7-flash` outside it. 3.7 is the newer flash answer but the one that
+            queues behind its own popularity (observed 2026-08-20), so the busy hours answer off
+            the flash family altogether rather than wait on it, at pro's own per-token rate.
         """
         # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
@@ -219,14 +219,14 @@ class RuntimeModelCatalog(BaseModel):
         # `medium` as well. The grade is binary since #490, so it no longer reaches the value
         # that lost whole replies through an alias in #459; the pinning stays because it is what
         # keeps the next vocabulary change from doing it again. Note `minimal` is refused on
-        # `gemini-3.7-flash` and unmeasured on `gemini-3.6-flash`, which LiteLLM's
-        # `is_gemini3flash` test matches the same way: the level is forwarded untouched for the
-        # model itself to reject, and the proxy then answers from the fallback deployment, so the
-        # caller sees a 200 naming another model rather than an error (measured 2026-08-19 on
-        # 3.7-flash, where low / medium / high all passed). It stays legal on both branches only
-        # because `EffortGrade` never emits it.
+        # `gemini-3.7-flash`, which LiteLLM's `is_gemini3flash` test matches: the level is
+        # forwarded untouched for the model itself to reject, and the proxy then answers from the
+        # fallback deployment, so the caller sees a 200 naming another model rather than an error
+        # (measured 2026-08-19 on 3.7-flash, where low / medium / high all passed). It is
+        # unmeasured on the pro branch, which that test does not match, and stays legal on both
+        # only because `EffortGrade` never emits it.
         if self.is_peak:
-            return ModelSettings(name="gemini-3.6-flash", effort="high")
+            return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
         return ModelSettings(name="gemini-3.7-flash", effort="high")
 
     @property
