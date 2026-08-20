@@ -45,6 +45,10 @@ CENTRAL_BANK_COLOR = 0x1ABC9C
 VIP_COLOR = 0xF1C40F
 ERROR_COLOR = DISCORD_RED
 
+# Embed description hard limit is 4096; the headroom is what lets the credit-status
+# remainder line be strictly additive, so closing the list can never cost a contract.
+_CREDIT_STATUS_DESCRIPTION_BUDGET = 3800
+
 
 class TransferParticipant(BaseModel):
     """Display identity for one side of a transfer embed."""
@@ -504,7 +508,13 @@ def build_credit_call_embed(
 
 
 def build_credit_status_embed(*, contracts: list[LoanContractView], viewer_id: int) -> Embed:
-    """Builds the caller's active personal credit contracts embed."""
+    """Builds the caller's active personal credit contracts embed.
+
+    Every contract is listed until the description budget runs out, and whatever did not
+    fit is then reported as a count rather than dropped: a debt the borrower cannot see is
+    one they will not repay while the interest keeps accruing. Contracts arrive oldest
+    first, so the ones held back are the newest.
+    """
     lines = [
         (
             f"{'欠 ' + contract.lender_name if contract.borrower_id == viewer_id else contract.borrower_name + ' 欠你'} "
@@ -512,8 +522,14 @@ def build_credit_status_embed(*, contracts: list[LoanContractView], viewer_id: i
             f"利息 {amount_code(amount=contract.interest_due, compact=True)} · "
             f"{rate_text(monthly_rate_bps=contract.monthly_rate_bps)}"
         )
-        for contract in contracts[:10]
+        for contract in contracts
     ]
+    unlisted = 0
+    while len(lines) > 1 and len("\n".join(lines)) > _CREDIT_STATUS_DESCRIPTION_BUDGET:
+        lines.pop()
+        unlisted += 1
+    if unlisted:
+        lines.append(f"-# 還有 {unlisted} 筆未顯示")
     return Embed(title="信貸狀態", description="\n".join(lines), color=BORROW_COLOR)
 
 
