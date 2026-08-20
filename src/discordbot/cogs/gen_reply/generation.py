@@ -284,6 +284,7 @@ class ImageGenerator(BaseModel):
             # image" whether the render timed out, came back empty, or the provider errored.
             logfire.warn(
                 "Inline image generation failed; replying without an image",
+                model=self.image_model.name,
                 error_type=type(exc).__name__,
                 end_user_id=end_user_id,
                 edit=bool(image_bytes_list),
@@ -293,6 +294,7 @@ class ImageGenerator(BaseModel):
         logfire.info(
             "gen_reply inline image generated",
             elapsed_seconds=time.monotonic() - started,
+            model=self.image_model.name,
             image_bytes=len(image),
         )
         return image
@@ -380,6 +382,7 @@ class PromptGenerator(BaseModel):
         except Exception as exc:
             logfire.warn(
                 "Prompt refinement failed; using raw user prompt",
+                model=self.prompt_model.name,
                 error_type=type(exc).__name__,
                 end_user_id=end_user_id,
                 _exc_info=exc,
@@ -388,6 +391,7 @@ class PromptGenerator(BaseModel):
         logfire.info(
             "gen_reply prompt refine done",
             elapsed_seconds=time.monotonic() - started,
+            model=self.prompt_model.name,
             refined=bool(refined),
         )
         return refined or user_prompt
@@ -628,6 +632,7 @@ class VideoGenerator(BaseModel):
         if result.status != "completed" or video is None or video.uri is None:
             logfire.warn(
                 "gen_reply video generation failed",
+                model=self.video_model.name,
                 status=str(result.status),
                 task=task_label,
                 note=result.output_text,
@@ -636,7 +641,10 @@ class VideoGenerator(BaseModel):
                 f"Video generation failed: status={result.status} note={result.output_text!r}"
             )
         logfire.debug(
-            "gen_reply video job done", task=task_label, render_seconds=time.monotonic() - started
+            "gen_reply video job done",
+            model=self.video_model.name,
+            task=task_label,
+            render_seconds=time.monotonic() - started,
         )
         return await self._download_output_video(uri=video.uri)
 
@@ -657,7 +665,11 @@ class VideoGenerator(BaseModel):
                 prompt=user_prompt, reference_image_sources=reference_image_sources or []
             )
         except Exception:
-            logfire.warn("Inline video generation failed; replying without video", _exc_info=True)
+            logfire.warn(
+                "Inline video generation failed; replying without video",
+                model=self.video_model.name,
+                _exc_info=True,
+            )
             return None
 
     async def _download_output_video(self, *, uri: str) -> bytes:
@@ -768,12 +780,16 @@ class MusicGenerator(BaseModel):
                 raise RuntimeError("Music generation returned an event stream, not an interaction")
             audio = cast("_InteractionResult", interaction).output_audio
             if audio is None or not audio.data:
-                logfire.warn("Inline music generation returned no audio; replying without music")
+                logfire.warn(
+                    "Inline music generation returned no audio; replying without music",
+                    model=self.music_model.name,
+                )
                 return None
             clip = base64.b64decode(audio.data)
         except Exception as exc:
             logfire.warn(
                 "Inline music generation failed; replying without music",
+                model=self.music_model.name,
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
@@ -781,6 +797,7 @@ class MusicGenerator(BaseModel):
         logfire.info(
             "gen_reply inline music generated",
             elapsed_seconds=time.monotonic() - started,
+            model=self.music_model.name,
             music_bytes=len(clip),
             mime_type=audio.mime_type,
         )

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 import asyncio
 from functools import cached_property
 import contextlib
+from contextvars import ContextVar
 
 from google import genai
 from openai import AsyncOpenAI
@@ -168,6 +169,16 @@ MEMORY_CONTEXT_TARGET_USERS = 8
 
 # Recorded as a reply's route when the pipeline failed before the router returned one.
 UNROUTED_REPLY = "unrouted"
+
+# The model this turn most recently dispatched on, so `gen_reply failed` can name it: the failure
+# surfaces in `on_message`, several frames above every place that picks a model, and a provider
+# error rarely says which model it refused. A ContextVar rather than an attribute on the cog
+# because many turns are in flight at once — nextcord dispatches each `on_message` as its own
+# task, which copies the context, so a write here can never be read by another user's turn. Set
+# only where the turn itself dispatches (route, answer, image, video); a generator that swallows
+# its own failure logs its own model and never reaches the reader, and None means the turn failed
+# before any model was asked for anything.
+_dispatched_model: ContextVar[str | None] = ContextVar("gen_reply_dispatched_model", default=None)
 
 
 def _message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]:
@@ -1080,7 +1091,11 @@ class ReplyGeneratorCogs(commands.Cog):
         screen so its build overlaps generation.
         """
         started = time.monotonic()
-        logfire.info("gen_reply video generation start", message_id=message.id)
+        logfire.info(
+            "gen_reply video generation start",
+            message_id=message.id,
+            model=self.runtime_models.video_model.name,
+        )
         try:
             source_messages = [message]
             if message.reference and isinstance(message.reference.resolved, Message):
@@ -1094,6 +1109,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 if videos:
                     source_video = videos[0]
                     break
+            # Both branches end in the same omni render, and the director the else branch runs
+            # first is best-effort, so this is the model a failure past here belongs to.
+            _dispatched_model.set(self.runtime_models.video_model.name)
             if source_video is not None:
                 # A source video is edited in place (task=edit): omni ingests the actual clip, so
                 # the prompt is the literal edit instruction. The director is skipped here — it
@@ -1134,6 +1152,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.info(
                 "gen_reply video delivered",
                 message_id=message.id,
+                model=self.runtime_models.video_model.name,
                 total_elapsed_seconds=time.monotonic() - started,
                 bytes=len(video_bytes),
             )
@@ -1278,6 +1297,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "Media persona reply failed; leaving the delivered media without a reply",
                 media=media_noun,
                 message_id=message.id,
+                model=model.name,
                 error_type=type(exc).__name__,
                 _exc_info=True,
             )
@@ -1309,6 +1329,7 @@ class ReplyGeneratorCogs(commands.Cog):
         logfire.info(
             "gen_reply image generation start",
             message_id=message.id,
+            model=self.runtime_models.image_model.name,
             has_source_images=bool(
                 message.reference and isinstance(message.reference.resolved, Message)
             ),
@@ -1333,6 +1354,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 enabled=self.config.image_refine_prompt_enabled,
                 image_bytes_list=image_bytes_list or None,
             )
+            # The director above is best-effort and swallows its own failures, so from here the
+            # image model is the only one a failure can be reported against.
+            _dispatched_model.set(self.runtime_models.image_model.name)
             image_bytes = await self.image_generator.render(
                 prompt=refined_prompt,
                 end_user_id=message.author.name,
@@ -1346,6 +1370,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.info(
                 "gen_reply image delivered",
                 message_id=message.id,
+                model=self.runtime_models.image_model.name,
                 elapsed_seconds=time.monotonic() - started,
             )
         except Exception:
@@ -1417,6 +1442,7 @@ class ReplyGeneratorCogs(commands.Cog):
         message_list = [*reference_messages, *current_message]
 
         triage_model = self.runtime_models.triage_model
+        _dispatched_model.set(triage_model.name)
         started = time.monotonic()
         try:
             with logfire.span("gen_reply route", message_id=message.id):
@@ -1453,6 +1479,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(
                 "RouteClassification parse failed; defaulting to QA",
                 message_id=message.id,
+                model=triage_model.name,
                 _exc_info=exc,
             )
             route = RouteClassification(decision="QA")
@@ -1461,6 +1488,7 @@ class ReplyGeneratorCogs(commands.Cog):
         logfire.info(
             "gen_reply route done",
             elapsed_seconds=time.monotonic() - started,
+            model=triage_model.name,
             decision=route.decision,
             link_context_sources=route.link_context_sources,
             watch_video=route.watch_video,
@@ -1507,6 +1535,7 @@ class ReplyGeneratorCogs(commands.Cog):
         logfire.info(
             "gen_reply effort done",
             elapsed_seconds=time.monotonic() - started,
+            model=triage_model.name,
             effort=grade.effort,
             message_id=message.id,
         )
@@ -1536,6 +1565,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "Effort grading exceeded the post-route grace; defaulting to high effort",
                 grace_seconds=EFFORT_GRACE_SECONDS,
                 message_id=message.id,
+                model=self.runtime_models.triage_model.name,
                 _exc_info=exc,
             )
             return "high"
@@ -1543,6 +1573,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(
                 "Effort grading failed; defaulting to high effort",
                 message_id=message.id,
+                model=self.runtime_models.triage_model.name,
                 error_type=type(e).__name__,
                 _exc_info=True,
             )
@@ -1764,6 +1795,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "Optional memory selection exceeded the post-route grace; retaining deterministic memories",
                 grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
                 message_id=message.id,
+                model=self.runtime_models.triage_model.name,
                 _exc_info=exc,
             )
             return None
@@ -1771,6 +1803,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(
                 "Optional memory selection failed; retaining deterministic memories",
                 message_id=message.id,
+                model=self.runtime_models.triage_model.name,
                 _exc_info=True,
             )
             return None
@@ -1920,6 +1953,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     logfire.info(
                         "gen_reply memory selection done",
                         elapsed_seconds=selection_elapsed,
+                        model=self.runtime_models.triage_model.name,
                         selected=len(selected_memories),
                         selected_ids=[memory.user_id for memory in selected_memories],
                         labels=memory_lookup_labels(memories=selected_memories),
@@ -2010,6 +2044,7 @@ class ReplyGeneratorCogs(commands.Cog):
         if research_offered:
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
+        _dispatched_model.set(slow_model.name)
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
         # low-authority background; the reference message then sits just above the current
         # message so the reply pair (reference -> current) stays adjacent and reads as the
@@ -2321,6 +2356,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.error(
                 "gen_reply failed",
                 **_message_log_fields(message=message),
+                model=_dispatched_model.get(),
                 error_type=type(e).__name__,
                 _exc_info=True,
             )
