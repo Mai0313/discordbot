@@ -161,7 +161,6 @@ nav:
       - prompt_dev: Scripts/prompt_dev.md
       - regen_memories: Scripts/regen_memories.md
       - route_dev: Scripts/route_dev.md
-      - trading: Scripts/trading.md
       - usage_report: Scripts/usage_report.md
       - video_dev: Scripts/video_dev.md
       - voice_dev: Scripts/voice_dev.md
