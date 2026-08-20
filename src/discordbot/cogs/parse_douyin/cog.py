@@ -26,7 +26,6 @@ post: telling someone their working link is dead is the worst failure this featu
 
 from typing import ClassVar
 import asyncio
-import tempfile
 
 import logfire
 from nextcord import Embed, Message, AllowedMentions
@@ -48,6 +47,7 @@ from discordbot.typings.douyin import DouyinConfig
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
+from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
@@ -150,8 +150,10 @@ class DouyinCogs(commands.Cog):
         # A private directory per invocation, because the filenames are derived from the post id:
         # two expansions of the same post in one shared temp dir would write the same paths,
         # letting one truncate the other's file and letting either one's cleanup delete a file
-        # the other is still uploading.
-        with tempfile.TemporaryDirectory(prefix="douyin-") as download_dir:
+        # the other is still uploading. `scratch_directory` rather than `TemporaryDirectory`
+        # because the timeout below leaves a worker writing into it: a removal that loses that
+        # race must not reach `on_message` and repaint what `_report_failure` already said.
+        with scratch_directory(prefix="parse-douyin-") as download_dir:
             downloader = self.downloader_factory(output_folder=download_dir)
             try:
                 # Both bounds cover only the Douyin-facing work, never the Discord upload that

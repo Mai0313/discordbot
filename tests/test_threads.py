@@ -1337,11 +1337,12 @@ def test_post_tolerates_a_null_unavailable_flag() -> None:
 def test_download_media_does_not_rebuild_a_removed_scratch_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A scratch dir removed mid-download stops the worker instead of being recreated.
+    """A scratch dir removed mid-walk stops the worker instead of being recreated.
 
-    The reply pipeline runs this in a thread it cannot cancel, so the caller's `rmtree` is the
-    only stop signal it has. Recreating the directory here would strand the clip in a temp dir
-    nobody will clean up.
+    Both callers run this in a thread they cannot cancel, so the removal is the only stop signal
+    they have — and it has to survive the gap BETWEEN two files as well as the one inside a
+    single fetch, or a post carrying a second clip would rebuild the directory it was just
+    stopped with and download straight through the give-up.
     """
     scratch = tmp_path / "threads-scratch"
     scratch.mkdir()
@@ -1358,9 +1359,9 @@ def test_download_media_does_not_rebuild_a_removed_scratch_dir(
             return [b"clip"]
 
     def fake_get(**kwargs: object) -> _Response:
-        """Removes the scratch dir the way a cancelled caller's rmtree would."""
+        """Removes the scratch dir the way a caller that gave up would, then answers."""
         del kwargs
-        shutil.rmtree(path=scratch)
+        shutil.rmtree(path=scratch, ignore_errors=True)
         return _Response()
 
     monkeypatch.setattr(target=threads_module.requests, name="get", value=fake_get)
@@ -1368,5 +1369,10 @@ def test_download_media_does_not_rebuild_a_removed_scratch_dir(
 
     with pytest.raises(FileNotFoundError):
         downloader.download_media(url="https://cdn.test/v.mp4", filename="clip.mp4")
+
+    assert not scratch.exists()
+
+    with pytest.raises(FileNotFoundError):
+        downloader.download_media(url="https://cdn.test/v2.mp4", filename="clip2.mp4")
 
     assert not scratch.exists()
