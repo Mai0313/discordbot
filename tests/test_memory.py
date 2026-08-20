@@ -746,6 +746,19 @@ def test_phase2_prompt_tells_the_tone_call_its_deltas_are_discarded() -> None:
     assert "Return `deltas` empty; only `tone_markdown` is read from this call." in PHASE2_PROMPT
 
 
+def test_the_tone_schema_names_the_same_trigger_as_the_prompt() -> None:
+    """`ConsolidatedMemory` is passed as `text_format=`, so this description IS prompt text.
+
+    A wording that names a compartment instead contradicts both consolidation prompts at the
+    model: `PHASE2_PROMPT` triggers on `<tone_evidence>`, and every server consolidation is a
+    `global` compartment call that `SERVER_PHASE2_PROMPT` tells to emit nothing (#518).
+    """
+    description = ConsolidatedMemory.model_fields["tone_markdown"].description
+    assert description is not None
+    assert "<tone_evidence>" in description
+    assert "compartment" not in description
+
+
 def test_evaluator_prompt_locks_third_parties_named_in_plain_prose() -> None:
     """The deterministic gate only sees ids and roster names; the evaluator covers the rest."""
     assert "even when nobody is tagged and no user id appears anywhere in the text" in (

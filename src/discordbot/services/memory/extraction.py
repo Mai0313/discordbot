@@ -238,7 +238,8 @@ class ConsolidatedMemory(BaseModel):
         default="",
         description=(
             "Full rewritten per-user tone note starting with `## 語氣偏好`; empty when the "
-            "corpus carries no tone signal. Only the global compartment emits one."
+            "corpus carries no tone signal. Only the request carrying `<tone_evidence>` "
+            "emits one."
         ),
     )
 
