@@ -206,7 +206,10 @@ class RuntimeModelCatalog(BaseModel):
         link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
-            Slow-path model settings for reply generation and summaries.
+            Flash at `high`. This is the snapshot `fast_model` deliberately sits one back from,
+            so the answer tier takes that snapshot's queueing (observed 2026-08-20) where the
+            cheaper tier declines it. The split is intentional rather than one of the two
+            observations being stale.
         """
         # Both branches, the commented-out one included, are pinned to explicit snapshots and
         # never a `*-latest` alias. This is the
@@ -216,15 +219,21 @@ class RuntimeModelCatalog(BaseModel):
         # (flash / pro / flash-lite) accepts only low / high, while every pinned snapshot takes
         # `medium` as well. The grade is binary since #490, so it no longer reaches the value
         # that lost whole replies through an alias in #459; the pinning stays because it is what
-        # keeps the next vocabulary change from doing it again. Note `minimal` is still a 400 on
-        # the pro snapshot; it stays legal only because `EffortGrade` never emits it.
+        # keeps the next vocabulary change from doing it again. Note `minimal` is still refused
+        # on this snapshot, and both the reason and the shape differ from the pro one it
+        # replaced: LiteLLM's `is_gemini3flash` match forwards it untouched as
+        # `thinkingLevel: minimal` for the model itself to reject, and the proxy then answers
+        # from the fallback deployment, so the caller sees a 200 naming another model rather than
+        # an error (measured 2026-08-19; low / medium / high all passed under this name). It
+        # stays legal only because `EffortGrade` never emits it.
         # The peak split is commented out rather than deleted, and `is_peak` stays exposed for
-        # it: it sent peak hours to flash because Pro used to be the one that slowed down, and
-        # `gemini-3.7-flash` is now the one that queues (observed 2026-08-20). Restore it when
-        # that inverts back.
+        # it: it sent peak hours to flash because Pro used to be the one that slowed down. Now
+        # that every hour answers on flash it names the snapshot the live branch already returns,
+        # so uncommenting it as written would dispatch nothing new; the peak-hour mechanism is to
+        # be redesigned rather than restored.
         # if self.is_peak:
         #     return ModelSettings(name="gemini-3.7-flash", effort="high")
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-3.7-flash", effort="high")
 
     @property
     def memory_extractor_model(self) -> ModelSettings:
