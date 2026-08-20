@@ -405,6 +405,21 @@ def test_download_video_drops_sentence_punctuation_after_a_link() -> None:
     )
 
 
+def test_download_video_finds_a_link_typed_flush_against_chinese() -> None:
+    r"""A link with no space in front of it is still a link, but only past a non-ASCII word.
+
+    The generic pattern used to head on `\b`, which counts CJK as a word character, so
+    `這個https://...` found nothing at all (#492). A link glued to the end of an ASCII word is
+    still refused, and falls through to the unchanged-passthrough behaviour below.
+    """
+    assert extract_first_url(text="幫我下載這個https://example.com/a/b", patterns=()) == (
+        "https://example.com/a/b"
+    )
+    assert extract_first_url(text="xhttps://example.com/a/b", patterns=()) == (
+        "xhttps://example.com/a/b"
+    )
+
+
 def test_download_video_passes_unparseable_input_through() -> None:
     """Text with no URL is handed on unchanged, so it fails downstream as it always did."""
     assert extract_first_url(text="  not a url  ", patterns=()) == "not a url"

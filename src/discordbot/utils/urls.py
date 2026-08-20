@@ -9,10 +9,19 @@ find the link rather than fail on it.
 import re
 from collections.abc import Sequence
 
+# Where a URL is allowed to start. `\b` is the natural spelling of "not glued to the end of
+# another token", but Python's `\w` counts every Unicode letter, so it also refuses the `h`
+# after a Chinese character: `看這篇https://example.com` read as no URL at all, which is how a
+# lot of people type (#492). Refusing only an ASCII word character keeps `xhttps://...` out and
+# lets the Chinese in, widening the pattern by one class of characters rather than by a class of
+# strings. Shared with `gen_reply/cog.py::_MESSAGE_URL_RE` so the two generic scanners cannot
+# drift on where a URL begins.
+URL_START_ANCHOR = r"(?<![A-Za-z0-9_])"
+
 # Generic fallback. `[^\s<>]` stops at whitespace and at the angle brackets Discord and
 # Markdown wrap links in; it deliberately does NOT stop at CJK, because a site-specific
 # pattern is the right tool for text that runs straight into the link with no space.
-URL_RE = re.compile(r"(?i)\bhttps?://[^\s<>]+")
+URL_RE = re.compile(rf"(?i){URL_START_ANCHOR}https?://[^\s<>]+")
 
 # Sentence punctuation a URL never really ends on, stripped from the tail of a generic match
 # so `see https://example.com/x.` does not carry the full stop into the URL.
