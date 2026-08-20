@@ -2,7 +2,6 @@
 
 import asyncio
 from pathlib import Path
-import tempfile
 
 import logfire
 import nextcord
@@ -20,6 +19,7 @@ from discordbot.utils.douyin import (
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import VIDEO_DOWNLOAD_TIMEOUT_SECONDS
 from discordbot.utils.downloader import DownloadResult, VideoDownloader, download_with_stop_signal
+from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     DISCORD_ATTACHMENT_LIMIT,
@@ -111,8 +111,12 @@ class VideoCogs(commands.Cog):
             # A scratch dir per invocation rather than the bare temp dir, because the bound
             # below can abandon a download: yt-dlp keeps writing until its stop signal lands,
             # and only a directory that goes away takes those bytes with it. On the ordinary
-            # path `with result` already unlinks the file and this removes an empty dir.
-            with tempfile.TemporaryDirectory(prefix="download-video-") as download_dir:
+            # path `with result` already unlinks the file and this removes an empty dir. The
+            # stop signal itself is `download_with_stop_signal`'s, whose bounded join is what
+            # normally keeps this removal off a live writer; in the one case it logs, where the
+            # worker ignored that window, the removal reports itself rather than reaching the
+            # handler below and relabelling a download already on screen.
+            with scratch_directory(prefix="download-video-") as download_dir:
                 downloader = VideoDownloader(output_folder=download_dir)
                 # Bounded because yt-dlp's own `socket_timeout` is per socket and every retry
                 # setting multiplies it, so a stalling host would otherwise leave the user on
@@ -202,8 +206,11 @@ class VideoCogs(commands.Cog):
         # A private directory per invocation, because the filenames are derived from the post id:
         # two people downloading the same post into one shared temp dir would write the same paths,
         # letting one truncate the other's file and letting either one's cleanup delete a file the
-        # other is still uploading. The directory is removed once delivery finishes.
-        with tempfile.TemporaryDirectory(prefix="douyin-") as download_dir:
+        # other is still uploading. The directory is removed once delivery finishes, and reports a
+        # removal it could not finish rather than raising: this branch runs outside the command's
+        # own handler, so a teardown racing the abandoned worker would escape into nothing and
+        # strand the user on the placeholder.
+        with scratch_directory(prefix="download-video-douyin-") as download_dir:
             await self._download_and_deliver_douyin(
                 interaction=interaction,
                 url=url,

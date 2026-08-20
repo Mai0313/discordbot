@@ -144,6 +144,7 @@ nav:
               - owned_message_views: Reference/discordbot/utils/owned_message_views.md
               - pil_text: Reference/discordbot/utils/pil_text.md
               - reactions: Reference/discordbot/utils/reactions.md
+              - scratch_dir: Reference/discordbot/utils/scratch_dir.md
               - sqlite_config: Reference/discordbot/utils/sqlite_config.md
               - stored_integer: Reference/discordbot/utils/stored_integer.md
               - threads: Reference/discordbot/utils/threads.md

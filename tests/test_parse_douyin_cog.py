@@ -5,10 +5,12 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Unpack, TypedDict, cast
 import asyncio
 from pathlib import Path
+import tempfile
 
 import pytest
 from nextcord import Message
 
+from discordbot.utils import scratch_dir
 from discordbot.utils.douyin import (
     DouyinPost,
     DouyinError,
@@ -397,3 +399,48 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     body = _reply_body(message=message)
     assert "稍後再試" in body
     assert "刪除" not in body
+
+
+async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cleanup losing a race with its own abandoned worker cannot relabel the failure.
+
+    The timeout leaves the download thread running (`asyncio.to_thread` cannot cancel it), so the
+    scratch removal walks a directory something is still writing into and can raise. Raised, that
+    lands in `on_message`'s outer handler, which paints the generic ❌ over the ⚠️ the timeout
+    just explained and logs a defect that never happened.
+    """
+    monkeypatch.setattr(parse_douyin, "DOUYIN_EXPAND_TIMEOUT_SECONDS", 0.05)
+    removed: list[str] = []
+
+    class _RacedTemporaryDirectory(tempfile.TemporaryDirectory[str]):
+        """Loses the race the way a file arriving after the scan makes the closing rmdir lose it."""
+
+        def cleanup(self) -> None:
+            """Removes the tree, then raises what an ENOTEMPTY on the last step raises."""
+            removed.append(self.name)
+            super().cleanup()
+            raise OSError("directory not empty")
+
+    monkeypatch.setattr(
+        scratch_dir, "tempfile", SimpleNamespace(TemporaryDirectory=_RacedTemporaryDirectory)
+    )
+    cog, _ = _cog()
+
+    def never_returns(url: str) -> DouyinPost:
+        """Blocks the worker thread the way a stalling CDN read does."""
+        del url
+        time.sleep(1.0)
+        raise AssertionError("should have been abandoned")
+
+    cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
+        parse_metadata=never_returns, download=never_returns
+    )
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert removed  # the teardown really ran and really failed
+    assert message.reactions[-1] == "⚠️"
+    assert "稍後再試" in _reply_body(message=message)
