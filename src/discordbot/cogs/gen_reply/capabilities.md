@@ -61,7 +61,7 @@ Loans between members:
 - `/credit borrow` — ask another member for a loan; the lender accepts or rejects it with a button, and it is rejected automatically after 180 seconds
 - `/credit repay` — repay a lender
 - `/credit call` — collect from someone who borrowed from you
-- `/credit status` — your active personal contracts
+- `/credit status` — every active personal contract you are on, as borrower or lender
 
 Central bank:
 
