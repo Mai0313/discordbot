@@ -206,7 +206,10 @@ class RuntimeModelCatalog(BaseModel):
         link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
-            Slow-path model settings for reply generation and summaries.
+            Flash at `high`, on the snapshot the hour picks: `gemini-3.6-flash` inside the peak
+            window and `gemini-3.7-flash` outside it. 3.7 is the newer answer but the one that
+            queues behind its own popularity (observed 2026-08-20), so the busy hours step a
+            snapshot back rather than wait on it.
         """
         # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
@@ -215,14 +218,16 @@ class RuntimeModelCatalog(BaseModel):
         # (flash / pro / flash-lite) accepts only low / high, while every pinned snapshot takes
         # `medium` as well. The grade is binary since #490, so it no longer reaches the value
         # that lost whole replies through an alias in #459; the pinning stays because it is what
-        # keeps the next vocabulary change from doing it again. Note `minimal` is still a 400 on
-        # the pro snapshot; it stays legal only because `EffortGrade` never emits it.
-        # The peak split sends peak hours to flash because Pro is the tier that slows down then.
-        # It names `gemini-3.6-flash` rather than the newer `gemini-3.7-flash`, which queues
-        # behind its own load (observed 2026-08-20).
+        # keeps the next vocabulary change from doing it again. Note `minimal` is refused on
+        # `gemini-3.7-flash` and unmeasured on `gemini-3.6-flash`, which LiteLLM's
+        # `is_gemini3flash` test matches the same way: the level is forwarded untouched for the
+        # model itself to reject, and the proxy then answers from the fallback deployment, so the
+        # caller sees a 200 naming another model rather than an error (measured 2026-08-19 on
+        # 3.7-flash, where low / medium / high all passed). It stays legal on both branches only
+        # because `EffortGrade` never emits it.
         if self.is_peak:
             return ModelSettings(name="gemini-3.6-flash", effort="high")
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-3.7-flash", effort="high")
 
     @property
     def memory_extractor_model(self) -> ModelSettings:

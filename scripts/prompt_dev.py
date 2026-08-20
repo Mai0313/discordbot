@@ -45,9 +45,9 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py. slow_model's time-of-day dispatch is
-# commented out there, so production answers on this one branch at every hour.
-SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+# Mirror the @property value in typings/models.py. slow_model dispatches by time of day there;
+# this names its off-peak branch, so a dev run answers on one snapshot whatever the hour.
+SLOW_MODEL = ModelSettings(name="gemini-3.7-flash", effort="high")
 
 
 def gen_reply(user_prompt: str) -> None:
