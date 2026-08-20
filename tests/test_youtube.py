@@ -190,6 +190,10 @@ async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     # Usage is emitted once, on completion, with the Responses field names.
     assert _ns(event=out[-1]).response.usage.input_tokens == 12
     assert _ns(event=out[-1]).response.usage.output_tokens == 34
+    # `output` is None rather than [], so the streamer logs grounding as "not reported" here.
+    # An empty list would count as zero citations and read as an ungrounded answer.
+    assert _ns(event=out[-1]).response.output is None
+    assert _ns(event=out[0]).response.output is None
 
 
 async def test_adapt_interactions_stream_raises_on_error_event() -> None:

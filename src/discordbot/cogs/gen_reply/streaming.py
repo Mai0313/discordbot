@@ -9,7 +9,7 @@ import logfire
 from nextcord import File, Message, NotFound, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
-from openai.types.responses import ResponseStreamEvent
+from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.model_pricing import get_token_rates
@@ -61,6 +61,25 @@ REASONING_PREVIEW_MAX_LINES = 4
 REASONING_PREVIEW_MAX_CHARS = 320
 
 
+def _count_url_citations(*, output: list[ResponseOutputItem]) -> int:
+    """Counts the grounding citations a completed response carried.
+
+    The Responses bridge reports a grounded answer ONLY as `url_citation` annotations hanging off
+    the output text; it carries no `groundingMetadata` anywhere, which is what has repeatedly made
+    a grounded reply read as ungrounded. The walk is guarded on both discriminants because an
+    output item can also be a reasoning item and a content part can also be a refusal.
+    """
+    return sum(
+        1
+        for item in output
+        if item.type == "message"
+        for part in item.content
+        if part.type == "output_text"
+        for annotation in part.annotations
+        if annotation.type == "url_citation"
+    )
+
+
 class ResponseStreamer(BaseModel):
     """Renders one streaming Responses API reply onto a Discord message.
 
@@ -99,6 +118,12 @@ class ResponseStreamer(BaseModel):
     model_effort: str = Field(
         default="",
         description="Route-decided reasoning effort shown next to the model in the footer.",
+    )
+    backend: str = Field(
+        default="responses",
+        description="Which answer surface produced this stream, logged so a metric only one of "
+        "them reports is not read as an absence on the other.",
+        examples=["responses", "interactions"],
     )
     input_tokens: int = Field(default=0, description="Input tokens reported by the stream.")
     output_tokens: int = Field(default=0, description="Output tokens reported by the stream.")
@@ -185,6 +210,14 @@ class ResponseStreamer(BaseModel):
     # Set once the preview editor has reported a failed snapshot write, so the 1s cadence does
     # not repeat the same warn for the rest of the stream.
     _preview_error_logged: bool = PrivateAttr(default=False)
+    # How long the answer call itself took, stamped when the stream is consumed.
+    _answer_seconds: float = PrivateAttr(default=0.0)
+    # Grounding citations the completed response carried, or None when this backend never
+    # reported any. The distinction is the point: only the Responses bridge reports grounding,
+    # and only as `url_citation` annotations, so a zero written for the Interactions path (or for
+    # a stream that ended without `response.completed`) would read as a genuinely ungrounded
+    # answer. See the grounding note in CLAUDE.md's Responses API Gotchas.
+    _url_citations: int | None = PrivateAttr(default=None)
 
     @staticmethod
     def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
@@ -418,6 +451,13 @@ class ResponseStreamer(BaseModel):
                 if response.response.usage:
                     self.input_tokens += response.response.usage.input_tokens
                     self.output_tokens += response.response.usage.output_tokens
+                # `output` is None on the Interactions path, which reports grounding in a shape
+                # this event cannot carry; leaving the counter None there keeps "not reported"
+                # distinct from "reported as zero".
+                if response.response.output is not None:
+                    self._url_citations = (self._url_citations or 0) + _count_url_citations(
+                        output=response.response.output
+                    )
             elif response.type == "response.reasoning_summary_text.delta":
                 self._on_reasoning_delta(delta=response.delta)
             elif response.type == "response.output_text.delta":
@@ -481,10 +521,14 @@ class ResponseStreamer(BaseModel):
             "gen_reply reply finalized",
             message_id=self.message.id,
             model=self.model_name,
+            backend=self.backend,
             effort=self.model_effort,
+            answer_seconds=self._answer_seconds,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cost=cost,
+            url_citations=self._url_citations,
+            reasoning_chars=len(self.reasoning_content),
             reply_chars=reply_chars,
             voice_requested=self.voice_requested,
             image_count=len(self.image_prompts),
@@ -870,5 +914,9 @@ class ResponseStreamer(BaseModel):
         try:
             await self._consume(responses=responses)
         finally:
+            # Stamped here rather than at finalize, which runs after the inline media is
+            # generated: a `<generate-video>` render can take minutes and would otherwise be
+            # reported as answer latency.
+            self._answer_seconds = time.monotonic() - self.created_at
             await self._stop_editor()
         return await self._finalize_reply()

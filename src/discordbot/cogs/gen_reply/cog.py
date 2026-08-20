@@ -669,6 +669,22 @@ def _log_pre_answer_latency(started: float, decision: str, message_id: int) -> N
     )
 
 
+def _count_media_parts(*, answer_input: ResponseInputParam) -> int:
+    """Counts the media parts riding in an assembled answer request.
+
+    An `input_file` (a Files API handle) or an `input_image` (inline base64) is the only shape a
+    picture, clip or document reaches the model in, so this one number answers whether an
+    attachment survived collection, the modality gate, the upload and the render.
+    """
+    total = 0
+    for item in answer_input:
+        content = cast("EasyInputMessageParam", item).get("content", "")
+        if isinstance(content, str):
+            continue
+        total += sum(1 for part in content if part["type"] in ("input_file", "input_image"))
+    return total
+
+
 class _MessageLogFields(TypedDict):
     """Exact key set for `_message_log_fields`, so `**`-spreading it into a logfire call
     keeps statically known keys (none underscore-prefixed) and never collides with logfire's
@@ -1986,7 +2002,8 @@ class ReplyGeneratorCogs(commands.Cog):
         # Advertise the <deep-research> marker only when the feature is on, same reasoning as the
         # image marker: a disabled deployment must not be told about a marker the streamer would
         # strip without producing anything.
-        if allow_research and self.config.deep_research_available:
+        research_offered = allow_research and self.config.deep_research_available
+        if research_offered:
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
@@ -2012,21 +2029,6 @@ class ReplyGeneratorCogs(commands.Cog):
         answer_input.extend(context.link_blocks)
         answer_input.extend(context.current_message)
 
-        # Seed the streamer with the selection request's usage so the footer and chat reward
-        # reflect both LLM calls; the answer stream sums its own usage on top.
-        streamer = ResponseStreamer(
-            message=message,
-            memory_lookups=context.memory_labels,
-            input_tokens=context.selection_input_tokens,
-            output_tokens=context.selection_output_tokens,
-            model_effort=effort,
-            voice_generator=voice_generator,
-            image_generator=image_generator,
-            music_generator=music_generator,
-            video_generator=video_generator,
-            media_delivery=self.media_delivery,
-            input_builder=self.input_builder,
-        )
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is
         # the one backend swap. It is Gemini-only and kill-switchable; otherwise (no video, a
@@ -2039,18 +2041,67 @@ class ReplyGeneratorCogs(commands.Cog):
             and self.config.youtube_video_enabled
             and bool(self.config.gemini_api_key.strip())
         )
+        backend = "interactions" if use_interactions else "responses"
         if use_interactions:
             # Persistent marker (added directly, not via the status chain) so it stays after the
             # chain's final reaction to show the reply was grounded in the watched video. The bot's
             # own application emoji `youtube`, usable as a reaction in any guild the bot is in.
+            # Added BEFORE the streamer is built: its `created_at` is what the answer latency is
+            # measured from, so leaving this REST round trip inside that window would bias the
+            # figure against the one backend that pays for it.
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="<:youtube:1517546722535018596>"
             )
-        with logfire.span(
-            "gen_reply answer",
-            model=slow_model.name,
-            backend="interactions" if use_interactions else "responses",
+        # Seed the streamer with the selection request's usage so the footer and chat reward
+        # reflect both LLM calls; the answer stream sums its own usage on top.
+        streamer = ResponseStreamer(
+            message=message,
+            memory_lookups=context.memory_labels,
+            input_tokens=context.selection_input_tokens,
+            output_tokens=context.selection_output_tokens,
+            model_effort=effort,
+            backend=backend,
+            voice_generator=voice_generator,
+            image_generator=image_generator,
+            music_generator=music_generator,
+            video_generator=video_generator,
+            media_delivery=self.media_delivery,
+            input_builder=self.input_builder,
+        )
+        # The one record of what the answer model was actually handed. Everything here is a count
+        # or a flag: a reply that behaves as if it never saw an attachment, a memory or a linked
+        # post is otherwise indistinguishable in the log from one that had them.
+        logfire.info(
+            "gen_reply answer dispatch",
             message_id=message.id,
+            model=slow_model.name,
+            backend=backend,
+            effort=effort,
+            input_blocks=len(answer_input),
+            history=len(context.hist_messages),
+            reference=len(context.reference_messages),
+            link_blocks=len(context.link_blocks),
+            media_parts=_count_media_parts(answer_input=answer_input),
+            capabilities=describe_capabilities,
+            server_memory=context.server_memory_block is not None,
+            user_memory=context.memory_block is not None,
+            tone=context.tone_block is not None,
+            # Joined rather than a list: the console exporter renders a list one element per
+            # line, and this record fires on every reply.
+            markers=",".join(
+                name
+                for name, offered in (
+                    ("voice", voice_generator is not None),
+                    ("image", image_generator is not None),
+                    ("music", music_generator is not None),
+                    ("video", video_generator is not None),
+                    ("research", research_offered),
+                )
+                if offered
+            ),
+        )
+        with logfire.span(
+            "gen_reply answer", model=slow_model.name, backend=backend, message_id=message.id
         ):
             responses: AsyncIterator[ResponseStreamEvent]
             if use_interactions and yt_url is not None:
@@ -2080,7 +2131,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # A <deep-research> brief the answer model emitted launches a research thread. Done after
         # the stream (and its single media edit) so it never touches the reply's attachment edit;
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
-        if allow_research and self.config.deep_research_available and streamer.research_brief:
+        if research_offered and streamer.research_brief:
             await _maybe_launch_research(
                 bot=self.bot, message=message, anchor=streamer.reply, brief=streamer.research_brief
             )
