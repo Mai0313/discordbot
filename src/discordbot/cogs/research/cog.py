@@ -514,13 +514,32 @@ class ResearchCogs(commands.Cog):
         self._spawn(self._resume_all())
 
     async def _resume_all(self) -> None:
-        """Resumes every session still `researching` when the process came back up."""
+        """Resumes every session still `researching` when the process came back up.
+
+        The kill-switch gates this exactly as it gates `launch` and `/deep_research`: it is
+        flipped over a provider or a cost problem, and a run already open is still work with that
+        provider, so an off switch means the bot re-attaches to nothing and delivers nothing.
+
+        A skipped row is left `researching` rather than failed, which is the truth about it: the
+        interaction runs server-side under `background=True` / `store=True` whether or not the
+        bot is attached, so the next start with the switch on picks it up exactly as a plain
+        restart does, and marking it failed would throw away a report the provider has already
+        produced and billed for. Nothing is posted into the threads either, since this sweep runs
+        on every start and a notice would repeat for as long as the switch stays off.
+        """
         sessions = await db.list_resumable()
+        if not sessions:
+            return
+        if not self.config.deep_research_available:
+            logfire.info(
+                "deep research is off; left in-flight sessions for a later start",
+                count=len(sessions),
+            )
+            return
         for session in sessions:
             self._active_threads.add(session.thread_id)
             self._spawn(self._resume_one(session=session))
-        if sessions:
-            logfire.info("resumed in-flight research sessions", count=len(sessions))
+        logfire.info("resumed in-flight research sessions", count=len(sessions))
 
     async def _resume_one(self, *, session: db.PersistentResearchSession) -> None:
         """Resumes one research session, delivering when it settles."""
