@@ -81,6 +81,7 @@ dependencies = [
     "requests>=2.34.2",
     "rich>=15.0.0",
     "sqlalchemy[asyncio]>=2.0.51",
+    "xai-sdk>=1.19.0",
     "yt-dlp>=2026.7.4",
 ]
 readme = "README.md"
