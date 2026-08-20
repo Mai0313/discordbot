@@ -1233,11 +1233,6 @@ async def _create_auto_unmute_response(  # noqa: PLR0913 -- mirrors Responses AP
     return FakeGeneratedResponse(output_text="not today")
 
 
-async def _append_async[T](container: list[T], item: T) -> None:
-    """Appends an item through an awaitable callback."""
-    container.append(item)
-
-
 async def _async_none() -> None:
     """Async no-op used by fake callbacks."""
 
@@ -2277,13 +2272,12 @@ def ignore_scheduled_public_message(
 
 
 async def fake_game_balance(user_id: int) -> int:
-    """Returns a small fake game balance, and zero for the bot's own id.
+    """Returns a small fake game balance for anyone.
 
-    Zero is not what keeps the bot out of the lobby: `_bot_blackjack_participant` reads
-    `get_account`, so the empty isolated economy DB is what makes it skip its seat.
+    Never asked about the bot's own id: `_bot_blackjack_participant` reads `get_account`, so
+    the empty isolated economy DB is what makes the bot skip its seat, not a balance.
     """
-    if user_id == 999:
-        return 0
+    del user_id
     return 100
 
 
@@ -2293,9 +2287,8 @@ async def _empty_game_balance(user_id: int) -> int:
 
 
 async def _wealthy_game_balance(user_id: int) -> int:
-    """Returns a fake balance large enough for Dragon Gate ante (bot still at 0)."""
-    if user_id == 999:
-        return 0
+    """Returns a fake balance large enough for the Dragon Gate ante."""
+    del user_id
     return 1_000_000
 
 
@@ -2526,9 +2519,8 @@ async def test_blackjack_string_bet_accepts_large_formatted_amount(
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
 
     async def balance_by_user(user_id: int) -> int:
-        """Returns enough balance to cover a large formatted wager (bot stays at 0)."""
-        if user_id == 999:
-            return 0
+        """Returns enough balance to cover a large formatted wager."""
+        del user_id
         return 10_000_000_000_000_000
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)

@@ -768,20 +768,38 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
         written.append(filename)
         return path
 
-    uploaded: list[tuple[str, bytes]] = []
+    class _ByteReadingUploads(_Uploads):
+        """Also keeps the bytes behind each upload, not just the name it was given."""
 
-    async def record_upload(
-        *, client: object, source: object, mime_type: str, filename: str, timeout_seconds: float
-    ) -> dict[str, str]:
-        """Reads the bytes the builder hands over, before it deletes the file again."""
-        del client, mime_type, timeout_seconds
-        # A local read of a temp file the test itself wrote, so blocking here is the point:
-        # awaiting a thread would let the builder unlink it first.
-        uploaded.append((filename, Path(str(source)).read_bytes()))  # noqa: ASYNC240
-        return {"type": "input_file", "file_id": f"https://files.test/{filename}"}
+        def __init__(self) -> None:
+            """Initializes the per-filename payload record beside the base call log."""
+            super().__init__()
+            self.payloads: list[tuple[str, bytes]] = []
 
-    _stub_media(monkeypatch, uploads=_Uploads())
-    monkeypatch.setattr(threads_builder, "upload_as_input_file", record_upload)
+        async def __call__(
+            self,
+            *,
+            client: object,
+            source: object,
+            mime_type: str,
+            filename: str,
+            timeout_seconds: float,
+        ) -> dict[str, str] | None:
+            """Reads the bytes the builder hands over, before it deletes the file again."""
+            # A local read of a temp file the test itself wrote, so blocking here is the point:
+            # awaiting a thread would let the builder unlink it first.
+            self.payloads.append((filename, Path(str(source)).read_bytes()))  # noqa: ASYNC240
+            return await super().__call__(
+                client=client,
+                source=source,
+                mime_type=mime_type,
+                filename=filename,
+                timeout_seconds=timeout_seconds,
+            )
+
+    uploads = _ByteReadingUploads()
+    _stub_media(monkeypatch, uploads=uploads)
+    # The only stub of `_stub_media`'s this test overrides: its clip writer records nothing.
     monkeypatch.setattr(target=ThreadsDownloader, name="download_media", value=fake_download_media)
 
     await build_threads_context_messages(
@@ -794,7 +812,7 @@ async def test_the_quoted_posts_clip_is_uploaded_under_its_own_filename(
     assert sorted(written) == ["threads_quoted_video_0.mp4", "threads_video_0.mp4"]
     # Each part carries ITS OWN clip: one shared filename uploads one post's bytes as the other's,
     # which is wrong content under a confident attribution.
-    assert dict(uploaded) == {
+    assert dict(uploads.payloads) == {
         "threads_video_0.mp4": b"https://cdn.test/target.mp4",
         "threads_quoted_video_0.mp4": b"https://cdn.test/quoted.mp4",
     }
@@ -1164,7 +1182,7 @@ async def test_build_empty_post_returns_unavailable_notice(
 async def test_build_parse_error_degrades_to_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A parse error degrades to the unavailable notice instead of raising into the pipeline."""
 
-    def boom(self: ThreadsDownloader, *, url: str) -> list[ThreadsOutput]:
+    def boom(self: ThreadsDownloader, *, url: str) -> ThreadsConversation:
         """Simulates an HTTP/parse failure."""
         raise RuntimeError("fetch failed")
 

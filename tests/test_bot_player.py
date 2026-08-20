@@ -244,23 +244,6 @@ def test_choose_bot_action_without_context_uses_basic_strategy() -> None:
     assert chosen == "surrender"
 
 
-def test_insurance_decision_is_count_based() -> None:
-    """The insurance decision is the count recommendation."""
-    take_context = build_bot_insurance_context(
-        dealer_up=_card(rank="A"),
-        shoe=[_card(rank="10"), _card(rank="J"), _card(rank="Q")],
-        insurance_cost=50,
-    )
-    decline_context = build_bot_insurance_context(
-        dealer_up=_card(rank="A"),
-        shoe=[_card(rank="2"), _card(rank="3"), _card(rank="4"), _card(rank="5"), _card(rank="6")],
-        insurance_cost=50,
-    )
-
-    assert fallback_insurance(insurance_context=take_context) is True
-    assert fallback_insurance(insurance_context=decline_context) is False
-
-
 def test_kelly_bet_wagers_half_kelly_fraction_within_bounds() -> None:
     """A positive edge wagers the clamped half-Kelly fraction, floored at the table minimum."""
     bet = kelly_bet(

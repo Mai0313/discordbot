@@ -911,12 +911,13 @@ async def test_dragon_gate_view_pool_emptied_replenishes_and_finalises_without_c
     assert len(state.calls) == 1
     assert state.calls[0]["player_delta"] == 10_000
     assert view._settled is True
-    # The pool state above is the invariant; the final embed's replenishment copy is not pinned,
-    # only that the closing render still carries a well-formed history embed.
+    # The pool state above is the invariant, and the closing render has to say WHY the table
+    # ended: the reason rides the final embed's description, and an emptied pool that was
+    # topped back up reads differently from one that simply emptied.
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
-    assert isinstance(embeds[1], Embed)
-    assert isinstance(embeds[1].description, str)
+    assert isinstance(embeds[0], Embed)
+    assert "系統已自動補池" in str(embeds[0].description)
 
 
 async def test_dragon_gate_view_uses_capped_jackpot_settlement_delta(
@@ -1022,12 +1023,10 @@ async def test_dragon_gate_view_single_player_zero_balance_finalizes(
     assert round_state.is_active(user_id=1) is False
     assert round_state.finished is True
     assert view._settled is True
-    # The end-state above is the invariant; the final embed's "all players out" copy is not
-    # pinned, only the clamped delta the history embed below carries.
+    # The end-state above is the invariant; what the render has to carry is the clamped delta,
+    # which the history embed below holds.
     embeds = message.edits[-1]["embeds"]
     assert isinstance(embeds, list)
-    assert isinstance(embeds[1], Embed)
-    assert isinstance(embeds[1].description, str)
     history_embed = embeds[-1]
     assert isinstance(history_embed, Embed)
     assert isinstance(history_embed.description, str)

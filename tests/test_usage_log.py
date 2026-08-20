@@ -279,7 +279,7 @@ async def test_the_listener_ignores_everything_that_is_not_a_command(tmp_path: P
     assert not usage_dir.exists()
 
 
-def test_setup_registers_the_cog(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_setup_registers_the_cog() -> None:
     """The cog loads through the sync `setup` every cog module exposes."""
     added: list[commands.Cog] = []
     bot = SimpleNamespace(add_cog=lambda cog, override: added.append(cog))
