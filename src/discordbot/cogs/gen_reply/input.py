@@ -309,7 +309,9 @@ class MessageInputBuilder(BaseModel):
                 )
         return sources
 
-    def _supported_sources(self, sources: list[AttachmentSource]) -> list[AttachmentSource]:
+    def _supported_sources(
+        self, sources: list[AttachmentSource], message_id: int
+    ) -> list[AttachmentSource]:
         """Drops sources whose required modality the slow model cannot accept.
 
         Gating once on the shared source list keeps the text-only marker render and the
@@ -330,6 +332,7 @@ class MessageInputBuilder(BaseModel):
                     model=model_name,
                     cache_key=loggable_cache_key(cache_key=source.cache_key),
                     content_type=source.content_type,
+                    message_id=message_id,
                 )
                 continue
             supported.append(source)
@@ -385,7 +388,7 @@ class MessageInputBuilder(BaseModel):
                     # next clip, never escape into the VIDEO route's hard-fail path.
                     logfire.warn(
                         "failed to read a source video attachment; trying the next",
-                        source_message_id=message.id,
+                        message_id=message.id,
                         filename=source.handle.filename,
                         error_type=type(exc).__name__,
                         _exc_info=exc,
@@ -495,7 +498,7 @@ class MessageInputBuilder(BaseModel):
         """
         if sources is None:
             sources = self._supported_sources(
-                sources=self.collect_attachment_sources(message=message)
+                sources=self.collect_attachment_sources(message=message), message_id=message.id
             )
         if not sources:
             return []
@@ -615,7 +618,7 @@ class MessageInputBuilder(BaseModel):
         """Renders a message for the route and memory-selection calls without uploading."""
         try:
             sources = self._supported_sources(
-                sources=self.collect_attachment_sources(message=message)
+                sources=self.collect_attachment_sources(message=message), message_id=message.id
             )
             return await self.render_text_only(message=message, sources=sources)
         except Exception:
@@ -642,7 +645,7 @@ class MessageInputBuilder(BaseModel):
         try:
             content = await self.get_cleaned_content(message=message)
             sources = self._supported_sources(
-                sources=self.collect_attachment_sources(message=message)
+                sources=self.collect_attachment_sources(message=message), message_id=message.id
             )
             attachment_parts = await self.get_attachment_parts(
                 message=message, sources=sources, allow_dead_cache=allow_dead_cache

@@ -155,12 +155,12 @@ async def adapt_interactions_stream(
     """Adapts Interactions stream events into the shapes `ResponseStreamer._consume` reads.
 
     `_consume` switches on `response.type` and reads `response.delta` /
-    `response.response.model` / `response.response.usage.{input,output}_tokens`. The
-    Interactions stream uses different names (`event_type`, `delta.text`,
-    `interaction.model`, `interaction.usage.total_*_tokens`), so each event is remapped onto a
-    minimal namespace with the OpenAI-Responses field names. Usage is emitted exactly once on
-    `interaction.completed` because `_consume` accumulates it with `+=` over a token seed from
-    the earlier selection call; a per-step emit would double-count.
+    `response.response.model` / `response.response.usage.{input,output}_tokens` /
+    `response.response.output`. The Interactions stream uses different names (`event_type`,
+    `delta.text`, `interaction.model`, `interaction.usage.total_*_tokens`), so each event is
+    remapped onto a minimal namespace with the OpenAI-Responses field names. Usage is emitted
+    exactly once on `interaction.completed` because `_consume` accumulates it with `+=` over a
+    token seed from the earlier selection call; a per-step emit would double-count.
     """
     model_name = ""
     # Branch on `event.event_type` directly (not a copied local) so the discriminated
@@ -171,7 +171,8 @@ async def adapt_interactions_stream(
             yield cast(
                 "ResponseStreamEvent",
                 SimpleNamespace(
-                    type="response.created", response=SimpleNamespace(model=model_name, usage=None)
+                    type="response.created",
+                    response=SimpleNamespace(model=model_name, usage=None, output=None),
                 ),
             )
         elif event.event_type == "step.delta":
@@ -207,7 +208,12 @@ async def adapt_interactions_stream(
                 SimpleNamespace(
                     type="response.completed",
                     response=SimpleNamespace(
-                        model=(event.interaction.model or model_name), usage=usage_ns
+                        model=(event.interaction.model or model_name),
+                        usage=usage_ns,
+                        # None, not []: this surface reports grounding in a shape the Responses
+                        # event cannot carry, and the streamer logs "not reported" rather than a
+                        # zero that would read as an ungrounded answer.
+                        output=None,
                     ),
                 ),
             )

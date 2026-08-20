@@ -659,13 +659,30 @@ async def _discard_link_tasks(
     link_tasks.clear()
 
 
-def _log_pre_answer_latency(started: float, decision: str) -> None:
+def _log_pre_answer_latency(started: float, decision: str, message_id: int) -> None:
     """Logs total time from pipeline start to answer dispatch (the user's 'router stage')."""
     logfire.info(
         "gen_reply pre-answer latency",
         elapsed_seconds=time.monotonic() - started,
         decision=decision,
+        message_id=message_id,
     )
+
+
+def _count_media_parts(*, answer_input: ResponseInputParam) -> int:
+    """Counts the media parts riding in an assembled answer request.
+
+    An `input_file` (a Files API handle) or an `input_image` (inline base64) is the only shape a
+    picture, clip or document reaches the model in, so this one number answers whether an
+    attachment survived collection, the modality gate, the upload and the render.
+    """
+    total = 0
+    for item in answer_input:
+        content = cast("EasyInputMessageParam", item).get("content", "")
+        if isinstance(content, str):
+            continue
+        total += sum(1 for part in content if part["type"] in ("input_file", "input_image"))
+    return total
 
 
 class _MessageLogFields(TypedDict):
@@ -922,7 +939,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return hist_messages
 
     async def _render_history(
-        self, hist_messages: list[Message], *, text_only: bool
+        self, hist_messages: list[Message], *, text_only: bool, message_id: int
     ) -> list[EasyInputMessageParam]:
         """Renders fetched history in one mode: text-only markers, or full uploaded parts.
 
@@ -948,6 +965,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "gen_reply history render done",
                 elapsed_seconds=time.monotonic() - started,
                 message_count=len(hist_messages),
+                message_id=message_id,
             )
         header = EasyInputMessageParam(
             role="system",
@@ -1242,7 +1260,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 output_tokens=context.selection_output_tokens,
                 model_effort=model.effort or "",
             )
-            with logfire.span(span_name, model=model.name):
+            with logfire.span(span_name, model=model.name, message_id=message.id):
                 responses = await self.openai_client.responses.create(
                     model=model.name,
                     instructions=_build_runtime_instructions(
@@ -1377,6 +1395,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 elapsed_seconds=time.monotonic() - started,
                 reference_count=len(reference_messages),
                 current_count=len(current_message),
+                message_id=message.id,
             )
         return reference_messages, current_message
 
@@ -1400,7 +1419,7 @@ class ReplyGeneratorCogs(commands.Cog):
         triage_model = self.runtime_models.triage_model
         started = time.monotonic()
         try:
-            with logfire.span("gen_reply route"):
+            with logfire.span("gen_reply route", message_id=message.id):
                 responses = await self.openai_client.responses.parse(
                     model=triage_model.name,
                     instructions=ROUTE_PROMPT,
@@ -1417,6 +1436,9 @@ class ReplyGeneratorCogs(commands.Cog):
                 # A summary request carrying a URL is really a QA recap of that link, not a
                 # recap of channel history, so steer it back to QA. Preserve both content-read
                 # decisions so the corrected route still ingests what the user asked about.
+                logfire.info(
+                    "gen_reply rerouting a URL-bearing summary to QA", message_id=message.id
+                )
                 route = RouteClassification(
                     decision="QA",
                     watch_video=parsed.watch_video,
@@ -1441,6 +1463,7 @@ class ReplyGeneratorCogs(commands.Cog):
             elapsed_seconds=time.monotonic() - started,
             decision=route.decision,
             link_context_sources=route.link_context_sources,
+            watch_video=route.watch_video,
             message_id=message.id,
         )
         return route
@@ -1469,7 +1492,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         triage_model = self.runtime_models.triage_model
         started = time.monotonic()
-        with logfire.span("gen_reply effort"):
+        with logfire.span("gen_reply effort", message_id=message.id):
             responses = await self.openai_client.responses.parse(
                 model=triage_model.name,
                 instructions=EFFORT_PROMPT,
@@ -1729,7 +1752,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """Awaits the optional selector without letting its failure affect direct memories."""
         started = time.monotonic()
         try:
-            with logfire.span("gen_reply memory selection"):
+            with logfire.span("gen_reply memory selection", message_id=message.id):
                 selection = await _await_gated(
                     task=task,
                     label="memory selection",
@@ -1833,7 +1856,9 @@ class ReplyGeneratorCogs(commands.Cog):
             if optional_allowed and remaining_slots:
                 # Render the text-only history only for a real optional lookup. This request
                 # carries markers instead of file ids, so it never re-reads uploaded payloads.
-                history_text_only = await self._render_history(raw_history, text_only=True)
+                history_text_only = await self._render_history(
+                    raw_history, text_only=True, message_id=message.id
+                )
                 selection_message_list: list[EasyInputMessageParam] = [
                     *history_text_only,
                     *text_reference,
@@ -1855,9 +1880,10 @@ class ReplyGeneratorCogs(commands.Cog):
             # `parts_task` is shielded so cancelling this speculative prep (non-QA routes) never
             # cancels the shared upload task a SUMMARY route still reuses; the full history render
             # rides as an ordinary gather child, so it is cancelled together with prep.
-            with logfire.span("gen_reply context build"):
+            with logfire.span("gen_reply context build", message_id=message.id):
                 hist_messages, (reference_messages, current_message) = await asyncio.gather(
-                    self._render_history(raw_history, text_only=False), asyncio.shield(parts_task)
+                    self._render_history(raw_history, text_only=False, message_id=message.id),
+                    asyncio.shield(parts_task),
                 )
             # Covers the history fetch/render plus waiting on the shared attachment upload, so
             # the log separates pre-answer attachment cost from the route-call cost.
@@ -1980,7 +2006,8 @@ class ReplyGeneratorCogs(commands.Cog):
         # Advertise the <deep-research> marker only when the feature is on, same reasoning as the
         # image marker: a disabled deployment must not be told about a marker the streamer would
         # strip without producing anything.
-        if allow_research and self.config.deep_research_available:
+        research_offered = allow_research and self.config.deep_research_available
+        if research_offered:
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
         slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
@@ -2006,21 +2033,6 @@ class ReplyGeneratorCogs(commands.Cog):
         answer_input.extend(context.link_blocks)
         answer_input.extend(context.current_message)
 
-        # Seed the streamer with the selection request's usage so the footer and chat reward
-        # reflect both LLM calls; the answer stream sums its own usage on top.
-        streamer = ResponseStreamer(
-            message=message,
-            memory_lookups=context.memory_labels,
-            input_tokens=context.selection_input_tokens,
-            output_tokens=context.selection_output_tokens,
-            model_effort=effort,
-            voice_generator=voice_generator,
-            image_generator=image_generator,
-            music_generator=music_generator,
-            video_generator=video_generator,
-            media_delivery=self.media_delivery,
-            input_builder=self.input_builder,
-        )
         # A linked YouTube video the router asked to watch swaps the answer turn onto the Gemini
         # Interactions API: the Responses bridge cannot make Gemini watch the video, so this is
         # the one backend swap. It is Gemini-only and kill-switchable; otherwise (no video, a
@@ -2033,17 +2045,81 @@ class ReplyGeneratorCogs(commands.Cog):
             and self.config.youtube_video_enabled
             and bool(self.config.gemini_api_key.strip())
         )
+        backend = "interactions" if use_interactions else "responses"
+        if yt_url is not None and not use_interactions:
+            # The swap is silent to the user, so without this the log shows a Responses answer to
+            # a message the router explicitly asked to watch, with nothing saying which gate said
+            # no. The fallback itself is correct; only the reason was unrecoverable.
+            logfire.info(
+                "gen_reply youtube watch declined; answering on the responses backend",
+                message_id=message.id,
+                reason="model"
+                if "gemini" not in slow_model.name
+                else "kill-switch"
+                if not self.config.youtube_video_enabled
+                else "no-gemini-key",
+                model=slow_model.name,
+            )
         if use_interactions:
             # Persistent marker (added directly, not via the status chain) so it stays after the
             # chain's final reaction to show the reply was grounded in the watched video. The bot's
             # own application emoji `youtube`, usable as a reaction in any guild the bot is in.
+            # Added BEFORE the streamer is built: its `created_at` is what the answer latency is
+            # measured from, so leaving this REST round trip inside that window would bias the
+            # figure against the one backend that pays for it.
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="<:youtube:1517546722535018596>"
             )
-        with logfire.span(
-            "gen_reply answer",
+        # Seed the streamer with the selection request's usage so the footer and chat reward
+        # reflect both LLM calls; the answer stream sums its own usage on top.
+        streamer = ResponseStreamer(
+            message=message,
+            memory_lookups=context.memory_labels,
+            input_tokens=context.selection_input_tokens,
+            output_tokens=context.selection_output_tokens,
+            model_effort=effort,
+            backend=backend,
+            voice_generator=voice_generator,
+            image_generator=image_generator,
+            music_generator=music_generator,
+            video_generator=video_generator,
+            media_delivery=self.media_delivery,
+            input_builder=self.input_builder,
+        )
+        # The one record of what the answer model was actually handed. Everything here is a count
+        # or a flag: a reply that behaves as if it never saw an attachment, a memory or a linked
+        # post is otherwise indistinguishable in the log from one that had them.
+        logfire.info(
+            "gen_reply answer dispatch",
+            message_id=message.id,
             model=slow_model.name,
-            backend="interactions" if use_interactions else "responses",
+            backend=backend,
+            effort=effort,
+            input_blocks=len(answer_input),
+            history=len(context.hist_messages),
+            reference=len(context.reference_messages),
+            link_blocks=len(context.link_blocks),
+            media_parts=_count_media_parts(answer_input=answer_input),
+            capabilities=describe_capabilities,
+            server_memory=context.server_memory_block is not None,
+            user_memory=context.memory_block is not None,
+            tone=context.tone_block is not None,
+            # Joined rather than a list: the console exporter renders a list one element per
+            # line, and this record fires on every reply.
+            markers=",".join(
+                name
+                for name, offered in (
+                    ("voice", voice_generator is not None),
+                    ("image", image_generator is not None),
+                    ("music", music_generator is not None),
+                    ("video", video_generator is not None),
+                    ("research", research_offered),
+                )
+                if offered
+            ),
+        )
+        with logfire.span(
+            "gen_reply answer", model=slow_model.name, backend=backend, message_id=message.id
         ):
             responses: AsyncIterator[ResponseStreamEvent]
             if use_interactions and yt_url is not None:
@@ -2073,7 +2149,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # A <deep-research> brief the answer model emitted launches a research thread. Done after
         # the stream (and its single media edit) so it never touches the reply's attachment edit;
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
-        if allow_research and self.config.deep_research_available and streamer.research_brief:
+        if research_offered and streamer.research_brief:
             await _maybe_launch_research(
                 bot=self.bot, message=message, anchor=streamer.reply, brief=streamer.research_brief
             )
@@ -2196,6 +2272,10 @@ class ReplyGeneratorCogs(commands.Cog):
         # actively driving: the thread is its workspace until the report lands, so QA must not
         # answer over the live status edits. The skip lifts the moment the run finishes.
         if _in_active_research_thread(bot=self.bot, channel_id=message.channel.id):
+            logfire.debug(
+                "gen_reply skipped: the research cog is still writing into this thread",
+                **_message_log_fields(message=message),
+            )
             return
 
         user_prompt = await self.input_builder.get_user_prompt(content=message.content)
@@ -2291,7 +2371,7 @@ class ReplyGeneratorCogs(commands.Cog):
         link_tasks: dict[str, asyncio.Task[list[EasyInputMessageParam]]] = {}
         link_context_deadline: float | None = None
         try:
-            with logfire.span("gen_reply pipeline") as pipeline_span:
+            with logfire.span("gen_reply pipeline", message_id=message.id) as pipeline_span:
                 pipeline_started = time.monotonic()
                 reactions.advance(emoji="<:flowchart:1517561877973045349>")
                 # The reference + current attachment uploads (and their activation polls)
@@ -2353,6 +2433,14 @@ class ReplyGeneratorCogs(commands.Cog):
                             continue
                         link_url = _link_url_for_source(source=link_source, message=message)
                         if link_url is None:
+                            # The router named this source, but its URL is not where the source is
+                            # allowed to look (Threads alone walks the reply chain), so the answer
+                            # silently goes without the post the user was pointing at.
+                            logfire.info(
+                                "gen_reply selected link source has no readable URL; skipping it",
+                                source=link_source.name,
+                                message_id=message.id,
+                            )
                             continue
                         link_tasks[link_source.name] = asyncio.create_task(
                             coro=_run_until_deadline(
@@ -2435,7 +2523,9 @@ class ReplyGeneratorCogs(commands.Cog):
                     )
                     effort_task = None
                     pipeline_span.set_attribute(key="effort", value=effort)
-                    _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
+                    _log_pre_answer_latency(
+                        started=pipeline_started, decision=route.decision, message_id=message.id
+                    )
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=SUMMARY_PROMPT,
@@ -2482,7 +2572,17 @@ class ReplyGeneratorCogs(commands.Cog):
                     # about it; the URL itself is taken from the message text or the replied-to
                     # message (never the model) so the answer turn ingests the exact link posted.
                     yt_url = _find_youtube_url(message=message) if route.watch_video else None
-                    _log_pre_answer_latency(started=pipeline_started, decision=route.decision)
+                    if route.watch_video and yt_url is None:
+                        # The router judged the user is asking about a video, but the URL scan
+                        # found none where it is allowed to look, so the answer is written
+                        # without watching anything and nothing else records that.
+                        logfire.info(
+                            "gen_reply watch_video requested but no YouTube URL was found",
+                            message_id=message.id,
+                        )
+                    _log_pre_answer_latency(
+                        started=pipeline_started, decision=route.decision, message_id=message.id
+                    )
                     await self._handle_message_reply(
                         message=message,
                         system_prompt=REPLY_PROMPT,
@@ -2497,6 +2597,15 @@ class ReplyGeneratorCogs(commands.Cog):
                         yt_url=yt_url,
                     )
                 reactions.advance(emoji="<:greencheck:1517565102424068226>")
+                # End of the turn on the success path; the failure path is `gen_reply failed`,
+                # which carries the traceback. The console exporter prints no span-end line, so
+                # without this the file holds no total for the turn at all.
+                logfire.info(
+                    "gen_reply pipeline done",
+                    elapsed_seconds=time.monotonic() - pipeline_started,
+                    decision=route.decision,
+                    message_id=message.id,
+                )
         finally:
             if prep_task is not None:
                 await _discard_task(task=prep_task, label="prep", message_id=message.id)

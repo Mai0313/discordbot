@@ -23,6 +23,9 @@ import requests
 from xai_sdk.proto import files_pb2
 from google.genai.types import FileState
 from openai.types.responses.response_input_param import EasyInputMessageParam
+from openai.types.responses.response_input_file_param import ResponseInputFileParam
+from openai.types.responses.response_input_text_param import ResponseInputTextParam
+from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
@@ -42,6 +45,7 @@ from discordbot.cogs.gen_reply.cog import (
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
+    _count_media_parts,
     _run_until_deadline,
     _can_launch_research,
     _link_url_for_source,
@@ -969,6 +973,7 @@ def _stream_events() -> AsyncIterator[ResponseStreamEvent]:
                     usage=SimpleNamespace(
                         input_tokens=12, output_tokens=34, output_tokens_details=None
                     ),
+                    output=[],
                 ),
             ),
         ]
@@ -1001,6 +1006,7 @@ def _completed_event(input_tokens: int, output_tokens: int) -> SimpleNamespace:
         response=SimpleNamespace(
             model=TEST_LLM_MODEL,
             usage=SimpleNamespace(input_tokens=input_tokens, output_tokens=output_tokens),
+            output=[],
         ),
     )
 
@@ -1034,6 +1040,79 @@ async def test_handle_streaming_allows_missing_output_token_details(
     expected = f"hello from stream\n\n-# {TEST_LLM_MODEL} · ⬆ 12 ⬇ 34 · $0.00000000"
     assert result == expected
     assert message.replies[0].content == result
+
+
+def _annotated_completed_event(annotation_types: list[str]) -> SimpleNamespace:
+    """Builds a completed event whose output text carries the given annotation types."""
+    return SimpleNamespace(
+        type="response.completed",
+        response=SimpleNamespace(
+            model=TEST_LLM_MODEL,
+            usage=SimpleNamespace(input_tokens=1, output_tokens=2),
+            output=[
+                SimpleNamespace(type="reasoning"),
+                SimpleNamespace(
+                    type="message",
+                    content=[
+                        SimpleNamespace(type="refusal"),
+                        SimpleNamespace(
+                            type="output_text",
+                            annotations=[SimpleNamespace(type=kind) for kind in annotation_types],
+                        ),
+                    ],
+                ),
+            ],
+        ),
+    )
+
+
+async def test_streaming_counts_only_url_citation_annotations(economy_isolated_db: None) -> None:
+    """Grounding is counted off the completed output, past the reasoning and refusal shapes."""
+    del economy_isolated_db
+    streamer = ResponseStreamer(message=FakeMessage())
+
+    await streamer.stream(
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="grounded"),
+                _annotated_completed_event(
+                    annotation_types=["url_citation", "file_citation", "url_citation"]
+                ),
+            ]
+        )
+    )
+
+    assert streamer._url_citations == 2
+
+
+async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no_output(
+    economy_isolated_db: None,
+) -> None:
+    """The Interactions path reports grounding in another shape, so it must not log a zero.
+
+    A zero here would read as an ungrounded answer, which is exactly the reading CLAUDE.md
+    records three separate investigations getting wrong.
+    """
+    del economy_isolated_db
+    streamer = ResponseStreamer(message=FakeMessage(), backend="interactions")
+
+    await streamer.stream(
+        responses=_stream_events_from(
+            events=[
+                _text_event(delta="watched"),
+                SimpleNamespace(
+                    type="response.completed",
+                    response=SimpleNamespace(
+                        model=TEST_LLM_MODEL,
+                        usage=SimpleNamespace(input_tokens=1, output_tokens=2),
+                        output=None,
+                    ),
+                ),
+            ]
+        )
+    )
+
+    assert streamer._url_citations is None
 
 
 @pytest.fixture
@@ -1080,6 +1159,7 @@ async def test_handle_streaming_continues_long_reply_as_reply_chain(
                     response=SimpleNamespace(
                         model=TEST_LLM_MODEL,
                         usage=SimpleNamespace(input_tokens=1, output_tokens=2),
+                        output=[],
                     ),
                 ),
             ]
@@ -2265,6 +2345,7 @@ async def test_voice_config_gate_controls_synthesizer(
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
+            backend: str = "responses",
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
@@ -2273,7 +2354,7 @@ async def test_voice_config_gate_controls_synthesizer(
             input_builder: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
-            del message, memory_lookups, input_tokens, output_tokens, model_effort
+            del message, memory_lookups, input_tokens, output_tokens, model_effort, backend
             del image_generator, music_generator, video_generator, media_delivery, input_builder
             captured.append(voice_generator)
 
@@ -2318,6 +2399,7 @@ async def test_image_config_gate_controls_generator(
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
+            backend: str = "responses",
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
@@ -2326,7 +2408,7 @@ async def test_image_config_gate_controls_generator(
             input_builder: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
-            del message, memory_lookups, input_tokens, output_tokens, model_effort
+            del message, memory_lookups, input_tokens, output_tokens, model_effort, backend
             del voice_generator, music_generator, video_generator, media_delivery, input_builder
             captured.append(image_generator)
 
@@ -2481,6 +2563,34 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
     assert fake.recorder.calls[0].generation_config["thinking_level"] == "low"
 
 
+def test_count_media_parts_counts_only_the_shapes_media_reaches_the_model_in() -> None:
+    """`media_parts` is the one number saying an attachment survived into the request.
+
+    A silent zero would be worse than no field, so the walk is pinned against the shapes the
+    assembled input actually mixes: string shorthand, text parts, and both media parts.
+    """
+    answer_input = cast(
+        "ResponseInputParam",
+        [
+            EasyInputMessageParam(role="user", content="string shorthand carries no parts"),
+            EasyInputMessageParam(
+                role="user",
+                content=[
+                    ResponseInputTextParam(type="input_text", text="look at this"),
+                    ResponseInputImageParam(type="input_image", detail="auto", image_url="data:"),
+                    ResponseInputFileParam(type="input_file", file_id="https://x/files/a"),
+                ],
+            ),
+            EasyInputMessageParam(
+                role="user",
+                content=[ResponseInputFileParam(type="input_file", file_id="https://x/files/b")],
+            ),
+        ],
+    )
+
+    assert _count_media_parts(answer_input=answer_input) == 3
+
+
 @pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url", "no_key"])
 async def test_youtube_qa_falls_back_to_responses(
     economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch, scenario: str
@@ -2503,6 +2613,13 @@ async def test_youtube_qa_falls_back_to_responses(
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
     cog.__dict__["gemini_client"] = fake
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    logged: list[tuple[str, dict[str, object]]] = []
+
+    def record(message_text: str, **fields: object) -> None:
+        """Captures the info records the dispatch path emits."""
+        logged.append((message_text, fields))
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.logfire.info", record)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     yt_url = None if scenario == "no_url" else url
@@ -2517,6 +2634,19 @@ async def test_youtube_qa_falls_back_to_responses(
 
     assert fake.recorder.calls == []
     assert _recorded(cog).responses.create_streams == [True]
+    # The fallback is silent to the user, so the log is the only place the reason survives. A
+    # `no_url` turn never asked for the swap here, so it names no reason.
+    declines = [fields for text, fields in logged if "youtube watch declined" in text]
+    expected_reason = {
+        "non_gemini_model": "model",
+        "kill_switch_off": "kill-switch",
+        "no_key": "no-gemini-key",
+    }.get(scenario)
+    assert [fields.get("reason") for fields in declines] == (
+        [expected_reason] if expected_reason else []
+    )
+    dispatch = next(fields for text, fields in logged if text == "gen_reply answer dispatch")
+    assert dispatch["backend"] == "responses"
 
 
 def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3654,7 +3784,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
     current.channel = FakeChannel(history=fake_history)
     raw_history = await cog._fetch_history(message=as_message(fake=current), limit=30)
-    rendered = await cog._render_history(raw_history, text_only=False)
+    rendered = await cog._render_history(raw_history, text_only=False, message_id=current.id)
     assert len(rendered) == 3
     assert rendered[0]["role"] == "system"
     assert [m.content for m in raw_history] == ["hello", "bot answer"]
@@ -3731,6 +3861,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
+            backend: str = "responses",
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
@@ -3739,7 +3870,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort
+            del memory_lookups, input_tokens, output_tokens, model_effort, backend
             del (
                 voice_generator,
                 image_generator,
@@ -4927,6 +5058,7 @@ class _ThreadsStreamer:
         input_tokens: int = 0,
         output_tokens: int = 0,
         model_effort: str = "",
+        backend: str = "responses",
         voice_generator: object | None = None,
         image_generator: object | None = None,
         music_generator: object | None = None,
@@ -4935,7 +5067,7 @@ class _ThreadsStreamer:
         input_builder: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
-        del memory_lookups, input_tokens, output_tokens, model_effort
+        del memory_lookups, input_tokens, output_tokens, model_effort, backend
         del (
             voice_generator,
             image_generator,
@@ -6682,6 +6814,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
+            backend: str = "responses",
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
@@ -6690,7 +6823,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort
+            del memory_lookups, input_tokens, output_tokens, model_effort, backend
             del (
                 voice_generator,
                 image_generator,
@@ -6787,6 +6920,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
+            backend: str = "responses",
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
@@ -6795,7 +6929,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort
+            del memory_lookups, input_tokens, output_tokens, model_effort, backend
             del (
                 voice_generator,
                 image_generator,
@@ -6852,6 +6986,7 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
+            backend: str = "responses",
             voice_generator: object | None = None,
             image_generator: object | None = None,
             music_generator: object | None = None,
@@ -6860,7 +6995,7 @@ async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort
+            del memory_lookups, input_tokens, output_tokens, model_effort, backend
             del (
                 voice_generator,
                 image_generator,
