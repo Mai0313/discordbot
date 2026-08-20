@@ -102,7 +102,8 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
         post: DouyinPost | None = None,
     ) -> DouyinDownload:
         """Writes canned files into the builder's scratch dir, or raises."""
-        del url, quality
+        del url
+        recorded["quality"] = quality
         recorded["max_images"] = max_images
         recorded["max_bytes"] = max_bytes
         recorded["post"] = post
@@ -171,6 +172,7 @@ async def test_the_clip_is_uploaded_and_referenced_by_files_uri(
     # A fail-fast Content-Length guard, not a quality lever: the resolution is chosen separately
     # by `quality=AI_INGEST_QUALITY`, deliberately below what the human-facing expansion posts.
     assert recorded["max_bytes"] == douyin_builder.FILES_API_MAX_BYTES
+    assert recorded["quality"] == douyin_builder.AI_INGEST_QUALITY
 
 
 async def test_the_parsed_post_is_handed_to_the_download(monkeypatch: pytest.MonkeyPatch) -> None:

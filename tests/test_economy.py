@@ -240,6 +240,13 @@ async def _daily_casino_stats(user_id: int) -> tuple[int, int, int, datetime | N
     )
 
 
+async def _casino_account_ids() -> list[int]:
+    """Every user id holding a daily casino counter row, sorted."""
+    async with open_session() as session:
+        result = await session.execute(statement=select(CasinoAccount.user_id))
+        return sorted(row[0] for row in result.all())
+
+
 async def _economy_schema_details() -> tuple[
     set[str], set[str], set[str], dict[str, set[str]], dict[str, dict[str, str]]
 ]:
@@ -1461,7 +1468,10 @@ async def test_daily_casino_counters_skip_push_and_house_ledger() -> None:
     await apply_round_settlement(
         player_id=1, player_account_name="alice", player_delta=-40, casino_delta=40
     )
-    assert await _daily_casino_stats(user_id=99) == (0, 0, 0, None)
+    # The player's own loss lands. The casino's mirrored +40 goes to `casino_ledger`, so it
+    # neither becomes a win here nor opens a counter row under some house id of its own.
+    await assert_daily_casino_stats(user_id=1, loss=40, win=0, net=-40)
+    assert await _casino_account_ids() == [1]
 
 
 # VIP purchase --------------------------------------------------------------
@@ -1554,13 +1564,17 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
 
 
 async def test_top_losers_excludes_specified_users() -> None:
-    """An excluded user id never appears in the daily loss report."""
+    """An excluded account is filtered out even when its loss would top the board."""
     await _add_balance(user_id=1, name="alice", amount=500)
+    await _add_balance(user_id=99, name="house", amount=900)
     await apply_round_settlement(
         player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
     )
+    await apply_round_settlement(
+        player_id=99, player_account_name="house", player_delta=-900, casino_delta=900
+    )
     rows = await top_losers(limit=10, exclude_user_ids=(99,))
-    assert all(row.user_id != 99 for row in rows)
+    assert [row.user_id for row in rows] == [1]
 
 
 async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> None:

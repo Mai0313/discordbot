@@ -18,13 +18,19 @@ from nextcord.ui import Button
 
 from discordbot.cogs.games import blackjack_views
 from discordbot.typings.games import (
+    BotAction,
     GameParticipant,
     BlackjackPlayerResult,
     BlackjackHandSettlement,
     BlackjackPlayerSettlement,
 )
 from discordbot.cogs.games.shoe import BlackjackShoeStore
-from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackHandState
+from discordbot.cogs.games.blackjack import (
+    Card,
+    BlackjackRound,
+    BlackjackHandState,
+    BlackjackPlayerHand,
+)
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.cogs.games.blackjack_views import BlackjackView, build_in_progress_embeds
 
@@ -153,7 +159,7 @@ async def test_player_actions_ace_ten_hides_split() -> None:
     assert "bj:surrender" in ids
 
 
-async def test_player_actions_after_hit_disables_double_split_surrender() -> None:
+async def test_player_actions_after_hit_removes_double_split_surrender() -> None:
     """After a Hit the first-action-only controls leave the view instead of being disabled."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="5", suit="♠"), Card(rank="6", suit="♥")],
@@ -168,7 +174,7 @@ async def test_player_actions_after_hit_disables_double_split_surrender() -> Non
     assert all(disabled is False for disabled in _button_states(view=view).values())
 
 
-async def test_player_actions_is_split_hand_disables_double_split_surrender() -> None:
+async def test_player_actions_is_split_hand_removes_double_split_surrender() -> None:
     """A hand born out of Split cannot be doubled (no DAS), re-split, or surrendered."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="8", suit="♠"), Card(rank="3", suit="♥")],
@@ -182,7 +188,7 @@ async def test_player_actions_is_split_hand_disables_double_split_surrender() ->
     assert all(disabled is False for disabled in _button_states(view=view).values())
 
 
-async def test_split_aces_subhand_disables_hit_and_stand() -> None:
+async def test_split_aces_subhand_removes_hit_and_stand() -> None:
     """Split Aces removes Hit and Stand with `finished` still False; Split removed the rest."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
@@ -205,7 +211,7 @@ async def test_split_aces_subhand_disables_hit_and_stand() -> None:
     assert _button_ids(view=view) == set()
 
 
-async def test_player_actions_low_balance_disables_double_and_split() -> None:
+async def test_player_actions_low_balance_removes_double_and_split() -> None:
     """Insufficient balance for the extra wager hides Double and Split affordances."""
     round_state = BlackjackRound.from_participants(
         rng=Random(x=0),
@@ -234,7 +240,7 @@ async def test_player_actions_low_balance_disables_double_and_split() -> None:
     assert "bj:surrender" in ids
 
 
-async def test_player_actions_peeked_blackjack_disables_surrender() -> None:
+async def test_player_actions_peeked_blackjack_removes_surrender() -> None:
     """A revealed dealer Blackjack closes the Surrender window."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="9", suit="♠"), Card(rank="9", suit="♥")],
@@ -564,16 +570,41 @@ async def test_bot_action_plays_ev_action(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 async def test_apply_bot_action_routes_known_actions() -> None:
-    """An allowed action is routed to its `BlackjackRound` method and reported applied."""
+    """Every allowed action reaches its own `BlackjackRound` method and is reported applied."""
+
+    def _apply(*, action: BotAction, player_cards: list[Card]) -> BlackjackPlayerHand:
+        """Runs one action against a fresh round and returns the seat it acted on."""
+        round_state = _round_with_two_cards(
+            # A copy: the hand holds the list itself, so a `hit` would grow the caller's.
+            player_cards=list(player_cards),
+            dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+        )
+        view = _make_view(round_state=round_state)
+        assert view._apply_bot_action(user_id=1, action=action, allowed=(action,)) is True
+        return round_state.players[0]
+
+    stiff = [Card(rank="10", suit="♠"), Card(rank="7", suit="♥")]
+    pair = [Card(rank="8", suit="♠"), Card(rank="8", suit="♥")]
+
+    assert len(_apply(action="hit", player_cards=stiff).hands[0].cards) == 3
+    assert _apply(action="stand", player_cards=stiff).hands[0].finished is True
+    doubled = _apply(action="double", player_cards=stiff).hands[0]
+    assert (doubled.doubled, doubled.bet) == (True, 200)
+    assert len(_apply(action="split", player_cards=pair).hands) == 2
+    assert _apply(action="surrender", player_cards=stiff).hands[0].surrendered is True
+
+
+async def test_apply_bot_action_reports_a_refused_round_call_as_unapplied() -> None:
+    """A `ValueError` out of `BlackjackRound` is caught, so the caller can fall back to a stand."""
     round_state = _round_with_two_cards(
         player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
         dealer_cards=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
     )
     view = _make_view(round_state=round_state)
 
-    applied = view._apply_bot_action(user_id=1, action="stand", allowed=("hit", "stand"))
-    assert applied is True
-    assert round_state.players[0].hands[0].finished is True
+    # Offered by the caller but refused by the round itself: 10/7 is not a pair.
+    assert view._apply_bot_action(user_id=1, action="split", allowed=("split",)) is False
+    assert len(round_state.players[0].hands) == 1
 
 
 async def test_apply_bot_action_rejects_action_not_in_allowed() -> None:

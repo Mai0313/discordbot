@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 
 import pytest
+from requests.exceptions import RequestException
 
 from discordbot.utils import downloader as downloader_module
 from discordbot.utils.urls import extract_first_url
@@ -124,7 +125,9 @@ def test_facebook_share_resolution_never_downloads_the_page(
     """Only where the request landed is wanted, so the body is left on the wire.
 
     Every other test stubs the resolver out, so without this one a request that downloads a
-    full Facebook page just to learn where it landed stays green forever.
+    full Facebook page just to learn where it landed stays green forever. The HEAD is failed
+    on purpose: it has no body whatever it is sent, so the GET fallback below it is the only
+    attempt that could ever pull a page down, and therefore the only one worth pinning.
     """
     requests_made: list[dict[str, object]] = []
 
@@ -152,9 +155,9 @@ def test_facebook_share_resolution_never_downloads_the_page(
             """Matches requests.Session's context-manager shape."""
 
         def head(self, url: str, **kwargs: object) -> _Response:
-            """Records a HEAD attempt."""
+            """Records a HEAD attempt, then refuses it so the GET fallback runs."""
             requests_made.append({"method": "head", "url": url, **kwargs})
-            return _Response()
+            raise RequestException("share links often refuse HEAD")
 
         def get(self, url: str, **kwargs: object) -> _Response:
             """Records a GET attempt."""
@@ -169,7 +172,7 @@ def test_facebook_share_resolution_never_downloads_the_page(
     )
 
     assert resolved == "https://www.facebook.com/watch?v=828357636228730"
-    assert [request["method"] for request in requests_made] == ["head"]
+    assert [request["method"] for request in requests_made] == ["head", "get"]
     assert all(request["stream"] for request in requests_made)
     assert all(request["allow_redirects"] for request in requests_made)
 

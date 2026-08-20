@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 import threading
 import contextlib
 
@@ -22,7 +23,6 @@ from discordbot.cogs.games import cog as games
 from discordbot.cogs.video import cog as video
 from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
-from discordbot.cogs.template import cog as template
 from discordbot.typings.games import GameParticipant
 from discordbot.utils.threads import ThreadsOutput, ThreadsConversation
 from discordbot.cogs.games.cog import GamesCogs
@@ -48,7 +48,6 @@ from discordbot.typings.economy import (
 from discordbot.cogs.auto_unmute import cog as auto_unmute
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.games.wagers import parse_wager_amount
-from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.cogs.template.cog import TemplateCogs
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.cogs.parse_threads import cog as parse_threads
@@ -56,7 +55,6 @@ from discordbot.cogs.auto_unmute.cog import AutoUnmuteCogs
 from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.cogs.parse_douyin.cog import DouyinCogs
 from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.services.economy.database import (
     VIP_PURCHASE_COST,
@@ -2686,50 +2684,38 @@ async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.Mon
 
 
 def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies each cog setup function listed here registers the expected cog type."""
-    added: list[
-        tuple[
-            VideoCogs
-            | GamesCogs
-            | EconomyCogs
-            | TemplateCogs
-            | ThreadsCogs
-            | DouyinCogs
-            | AutoUnmuteCogs,
-            bool | None,
-        ]
-    ] = []
+    """EVERY cog directory's sync `setup` adds its own cog, with `override=True`.
 
-    def record_cog(
-        cog: VideoCogs
-        | GamesCogs
-        | EconomyCogs
-        | TemplateCogs
-        | ThreadsCogs
-        | DouyinCogs
-        | AutoUnmuteCogs,
-        override: bool | None = None,
-    ) -> None:
+    Swept off the same directory scan `_load_cogs_sync` performs rather than a hand-written
+    list, which is what left half the cogs uncovered before: `setup` is the one function in
+    a cog module the loader calls by name, and an `async def setup` here returns a coroutine
+    nothing awaits, breaking the first command sync with nothing raised.
+    """
+    added: list[tuple[commands.Cog, bool | None]] = []
+
+    def record_cog(cog: commands.Cog, override: bool | None = None) -> None:
         """Records the cog instance and override flag passed to add_cog."""
         added.append((cog, override))
 
     bot = SimpleNamespace(add_cog=record_cog)
-    for module in [video, games, economy, template, parse_threads, parse_douyin, auto_unmute]:
-        monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
-        monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    cogs_dir = Path(cli.__file__).resolve().parent / "cogs"
+    names = sorted(entry.name for entry in cogs_dir.iterdir() if (entry / "cog.py").is_file())
+
+    assert names  # a scan that found nothing would pass every assertion below
+    for name in names:
+        module = import_module(f"discordbot.cogs.{name}.cog")
         module.setup(bot=as_bot(fake=bot))
-    assert [type(item[0]) for item in added] == [
-        VideoCogs,
-        GamesCogs,
-        EconomyCogs,
-        TemplateCogs,
-        ThreadsCogs,
-        DouyinCogs,
-        AutoUnmuteCogs,
-    ]
+        cog, override = added[-1]
+        # `override=True` is what lets a reload replace the cog instead of colliding, and
+        # the module check is what stops a re-export standing in for a missing cog.
+        assert override is True, name
+        assert type(cog).__module__ == module.__name__, name
+    assert len(added) == len(names)
 
 
-def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
+def test_cli_load_cogs_sync_discovers_exactly_the_cog_directories(tmp_path: Path) -> None:
     """Verifies synchronous cog loading discovers exactly the cog directories."""
     loaded: list[tuple[list[str], bool]] = []
 

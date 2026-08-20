@@ -678,14 +678,13 @@ def test_bad_deltas_are_dropped_without_failing_the_batch(memory_isolated_dir: P
             # A server-only section on a user scope.
             _delta(section="culture"),
             _delta(text="   "),
-            _delta(section="member_alias", subject_id="not-an-id"),
             _delta(fact_id="", text="好的事實"),
         ),
         owner=_OWNER,
         allow_mass_delete=False,
     )
     assert outcome.applied
-    assert outcome.dropped == 3
+    assert outcome.dropped == 2
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 1
 
 

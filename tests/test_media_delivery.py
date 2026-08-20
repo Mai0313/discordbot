@@ -39,8 +39,8 @@ def _service(
 
 
 def _hosted_files(serve_dir: Path) -> list[str]:
-    """The final hosted filenames in a serve dir (excluding in-flight `.tmp-*` temps)."""
-    return [p.name for p in serve_dir.iterdir() if not p.name.startswith(".tmp-")]
+    """The final hosted filenames in a serve dir (excluding the service's in-flight temps)."""
+    return [p.name for p in serve_dir.iterdir() if not p.name.startswith(_TEMP_PREFIX)]
 
 
 def _host(service: MediaHostingService, *, data: bytes, suffix: str = ".png") -> str:
@@ -78,7 +78,7 @@ def test_publish_bytes_writes_content_addressed_name(tmp_path: Path) -> None:
     name = url.removeprefix("https://media.test/")
     assert re.fullmatch(r"[0-9a-f]{32}\.wav", name)  # content hash + allowlisted suffix
     assert (tmp_path / name).read_bytes() == b"fake-wav"
-    assert not any(p.name.startswith(".tmp-") for p in tmp_path.iterdir())  # no leftover temp
+    assert not any(p.name.startswith(_TEMP_PREFIX) for p in tmp_path.iterdir())  # no leftover temp
 
 
 def test_publish_bytes_dedups_identical_content(tmp_path: Path) -> None:
@@ -285,8 +285,13 @@ def test_size_cap_protects_files_within_grace(tmp_path: Path) -> None:
     assert set(_hosted_files(tmp_path)) == {n1, n2}  # disk sits temporarily over cap
 
 
-def test_size_cap_keeps_single_file_larger_than_cap(tmp_path: Path) -> None:
-    """A delivered file alone exceeding the cap is kept; the loop terminates without thrashing."""
+def test_size_cap_stops_once_no_evictable_candidate_is_left(tmp_path: Path) -> None:
+    """Eviction reaps what it may and stops, leaving disk over cap rather than thrashing.
+
+    The just-delivered file here is over the cap on its own, but what protects it is the
+    eviction grace, not its size: the loop runs out of candidates and returns with the dir
+    still over budget instead of reaping a URL that was handed out a moment ago.
+    """
     service = _service(serve_dir=tmp_path, max_bytes=30, retention_hours=0)
     n1 = _host(service, data=b"A" * 20)
     _age(tmp_path / n1, seconds=1000)
@@ -295,6 +300,7 @@ def test_size_cap_keeps_single_file_larger_than_cap(tmp_path: Path) -> None:
     remaining = _hosted_files(tmp_path)
     assert n2 in remaining  # the delivered file survives
     assert n1 not in remaining  # the only evictable candidate was reaped
+    assert sum((tmp_path / f).stat().st_size for f in remaining) > 30  # left over cap on purpose
 
 
 def test_age_cap_reaps_old_keeps_recent(tmp_path: Path) -> None:
