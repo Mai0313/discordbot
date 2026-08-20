@@ -117,8 +117,20 @@ def tone_evidence_from_raw(raw_text: str) -> str:
 
     Tone is the one tier that is cross-server safe by construction, so it must not be
     partitioned: nearly half of all observations are `source_only`, and a bucket-gated
-    tone note would simply stop updating for those conversations. Only the summary line
-    is carried over, and the prompt is explicit that this block feeds the note alone.
+    tone note would simply stop updating for those conversations. Each line carries its
+    `evidence_kind` and then the summary, in the order the entries were appended, and
+    the prompt is explicit that this block feeds the note alone, that the ordering is
+    oldest-first (its "a later stated preference wins" rule has no other clock) and
+    that the tag is not to be copied into the note.
+
+    The kind is what tells a preference the user stated apart from one inferred off
+    their own behaviour, and the note is a merge of many batches, so without it every
+    bullet reads alike and the note converges on whichever reading has the most bullets.
+    That is not hypothetical: a user who asked in DM to be addressed respectfully, then
+    trash-talked the bot across a guild for weeks, ended up with a note saying they
+    wanted trash-talk back. The one stated preference lost to five inferred ones, and
+    the compartment calls never had this problem because `<raw_entries>` carries the
+    kind to them already.
     """
     lines: list[str] = []
     for _, block in _iter_observations(text=raw_text):
@@ -126,9 +138,10 @@ def tone_evidence_from_raw(raw_text: str) -> str:
         header = _OBSERVATION_HEADER_RE.match(block)
         if header is None or header.group("category") not in _TONE_CATEGORIES:
             continue
-        summary = _fields_of(block=block).get("summary_zh", "")
+        fields = _fields_of(block=block)
+        summary = fields.get("summary_zh", "")
         if summary:
-            lines.append(f"* {summary}")
+            lines.append(f"* [{fields.get('evidence_kind', 'unknown')}] {summary}")
     return "\n".join(lines)
 
 
