@@ -385,8 +385,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         view = DragonGateView(
             round_state=round_state,
             owner=self.owner,
-            system_name=self.system_name,
-            system_avatar_url=self.system_avatar_url,
             jackpot_snapshot=self._jackpot_snapshot,
             jackpot_generation=self._jackpot_generation,
             final_balances=final_balances,
@@ -405,22 +403,18 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
 class DragonGateView(View):
     """High / low buttons, bet select, and leave button for an active 射龍門 table."""
 
-    def __init__(  # noqa: PLR0913 -- view needs round, jackpot, and initial balances
+    def __init__(
         self,
         round_state: DragonGateRound,
         owner: GameParticipant,
-        system_name: str,
         jackpot_snapshot: int,
         final_balances: dict[int, int],
-        system_avatar_url: str = "",
         jackpot_generation: int | None = None,
     ) -> None:
         """Initializes the active 射龍門 table view."""
         super().__init__(timeout=DRAGON_GATE_ACTION_TIMEOUT_SECONDS)
         self.round_state = round_state
         self.owner = owner
-        self.system_name = system_name
-        self.system_avatar_url = system_avatar_url
         self.message: Message | None = None
         self._round_lock = asyncio.Lock()
         self._settled = False
@@ -440,7 +434,12 @@ class DragonGateView(View):
         self.sync_controls()
 
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:
-        """Restricts every control to a seated player who has not withdrawn."""
+        """Restricts each control to who may use it, which is not the same set for all of them.
+
+        `dg:leave` is open to any seated player who has not withdrawn, so anyone can walk away
+        without waiting for their turn. Every other control needs the user to BE the active
+        turn holder; a seated player who is not gets 現在輪到 … instead.
+        """
         if self._settled or interaction.user is None:
             return False
         data = (
@@ -885,14 +884,6 @@ class DragonGateView(View):
             if participant.user_id == user_id:
                 return participant
         return None
-
-    def _button(self, custom_id: str) -> Button[DragonGateView]:
-        """Returns a button component by custom ID."""
-        return self._buttons[custom_id]
-
-    def _select(self, custom_id: str) -> StringSelect[DragonGateView]:
-        """Returns a string select component by custom ID."""
-        return self._selects[custom_id]
 
     def _current_turn_notice(self) -> str:
         """Returns the ephemeral notice for users acting out of turn."""

@@ -1109,13 +1109,28 @@ async def test_the_sweep_survives_a_failure_and_runs_again(
     nextcord only retries a short list of connection errors; anything else ends the task
     and nothing restarts it, so every queued report would sit there until the next deploy.
     """
-    cog = _cog(issues=FakeIssues())
+    cog = _cog(issues=FakeIssues(fail_create=True))
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.write_up_report", _tidy_write_up)
+    interaction = FakeInteraction(user=FakeUser(user_id=7))
+    await cog.submit_report(interaction=cast("Any", interaction), text="壞掉了", outstanding=0)
+    await _drain(cog=cog)
 
     async def _boom(**_kwargs: object) -> list[FeedbackTicket]:
         raise RuntimeError("database is locked")
 
     monkeypatch.setattr("discordbot.cogs.feedback.cog.tickets_awaiting_issue", _boom)
     await cog.retry_unfiled_reports()
+
+    # The failure cost this report one cycle, not the loop: the next pass still files it.
+    monkeypatch.setattr(
+        "discordbot.cogs.feedback.cog.tickets_awaiting_issue", tickets_awaiting_issue
+    )
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.RETRY_MIN_AGE_SECONDS", 0)
+    recovered = FakeIssues()
+    cog.issues = cast("Any", recovered)
+    await cog.retry_unfiled_reports()
+    assert len(recovered.created) == 1
+    assert await tickets_awaiting_issue(limit=10, min_age_seconds=0) == []
 
 
 async def test_a_report_that_cannot_be_stored_says_so(

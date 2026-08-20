@@ -597,7 +597,7 @@ class FeedbackCogs(commands.Cog):
         # below turns the placeholder into the panel itself.
         await interaction.response.defer(ephemeral=True)
         panel = await self.load_rows(user_id=interaction.user.id)
-        view = FeedbackPanelView(host=self, rows=panel.rows, total=panel.total)
+        view = FeedbackPanelView(host=self, rows=panel.rows)
         await interaction.edit_original_message(
             embed=build_panel_embed(rows=panel.rows, total=panel.total), view=view
         )

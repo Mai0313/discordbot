@@ -2706,7 +2706,7 @@ def test_link_url_for_source_ignores_an_embed_card_in_the_replied_to_message(
 ) -> None:
     """The bot's own Threads expansion is not a trigger, because its first permalink is wrong.
 
-    `parse_threads._build_embeds` renders the reply chain root-first with one permalink per
+    `parse_threads._build_embed_plan` renders the reply chain root-first with one permalink per
     post, so a first-match scan of that message would fetch the thread's top post rather than
     the one the human linked. One hop out only what the author actually typed counts.
     """
@@ -3661,10 +3661,6 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
     assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.triage_model.name
 
-    async def fake_sleep(delay: float) -> None:
-        """Skips video polling delay."""
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     await cog._handle_video_reply(
         message=as_message(fake=message),
         user_prompt="video",
@@ -4173,12 +4169,6 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
         media_hosting=_hosting_service(serve_dir=tmp_path)
     )
 
-    async def _fast_sleep(delay: float) -> None:
-        """Skips the video generation polling delay."""
-        del delay
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", _fast_sleep)
-
     async def _no_upload(data: bytes) -> None:
         """Simulates the post-delivery Files-API upload failing."""
         del data
@@ -4202,17 +4192,11 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
     )
 
 
-async def test_handle_video_reply_refines_prompt_before_render(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_handle_video_reply_refines_prompt_before_render() -> None:
     """The prompt director expands the raw request and the refined prompt reaches omni."""
     cog = _cog()
     _recorded(cog).responses.refine_output_text = "a cat leaping in slow motion, camera pan"
 
-    async def fake_sleep(delay: float) -> None:
-        """Skips video polling delay."""
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await cog._handle_video_reply(
@@ -4243,17 +4227,11 @@ async def test_handle_video_reply_refines_prompt_before_render(
     assert message.replies[-1].file is not None
 
 
-async def test_handle_video_reply_refine_disabled_sends_raw_prompt(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_handle_video_reply_refine_disabled_sends_raw_prompt() -> None:
     """With VIDEO_REFINE_PROMPT_ENABLED off, the raw request reaches omni with no director call."""
     cog = _cog()
     cog.config.video_refine_prompt_enabled = False
 
-    async def fake_sleep(delay: float) -> None:
-        """Skips video polling delay."""
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await cog._handle_video_reply(
@@ -4274,15 +4252,11 @@ async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyP
     """A source video is edited in place: uploaded and sent to omni with task=edit, no director."""
     cog = _cog()
 
-    async def fake_sleep(delay: float) -> None:
-        """Skips any polling delay."""
-
     async def fake_video_sources(builder: object, message: object) -> list[tuple[bytes, str]]:
         """Returns a fake raw source clip for the message."""
         del builder, message
         return [(b"clip", "video/mp4")]
 
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", fake_video_sources
     )
@@ -4334,14 +4308,10 @@ async def test_download_output_video_retries_until_ready(monkeypatch: pytest.Mon
     assert calls["n"] == 2
 
 
-async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_handle_video_reply_passes_reference_images() -> None:
     """Attached images ride as reference images (capped at three) with a real mime; task inferred."""
     cog = _cog()
 
-    async def fake_sleep(delay: float) -> None:
-        """Skips video polling delay."""
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="把這些做成影片", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(
@@ -4368,16 +4338,10 @@ async def test_handle_video_reply_passes_reference_images(monkeypatch: pytest.Mo
     assert _recorded_video(cog).create_configs[0] is None
 
 
-async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio() -> None:
     """A lone image (the reported crash case) sends a real mime, no aspect ratio, task inferred."""
     cog = _cog()
 
-    async def fake_sleep(delay: float) -> None:
-        """Skips video polling delay."""
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.asyncio.sleep", fake_sleep)
     message = FakeMessage(content="讓這張動起來", author=FakeAuthor(user_id=1))
     message.attachments = [
         FakeAttachment(
@@ -5885,9 +5849,11 @@ async def test_on_message_skips_threads_context_without_url(
     cog.config = _link_config()
     called: list[str] = []
 
-    async def fake_builder(*, url: str, answer_model_is_gemini: bool) -> list[dict[str, object]]:
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object
+    ) -> list[dict[str, object]]:
         """Records any call so the test can assert it never runs."""
-        del answer_model_is_gemini
+        del answer_model_is_gemini, gemini_client
         called.append(url)
         return _threads_block()
 
@@ -8194,7 +8160,7 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
     assert attachment.read_count == 2
 
 
-async def test_attachment_cache_reuploads_expired_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_attachment_cache_reuploads_expired_handle() -> None:
     """A cached file_id past its real expiry is re-rendered, not served stale."""
     cog = _cog()
     builder = cog.input_builder

@@ -50,10 +50,6 @@ _RANK_ORDER: Final[tuple[str, ...]] = (
 _TEN_VALUE_RANKS: Final[frozenset[str]] = frozenset({"10", "J", "Q", "K"})
 _LOW_RANKS: Final[frozenset[str]] = frozenset({"2", "3", "4", "5", "6"})
 _NEUTRAL_RANKS: Final[frozenset[str]] = frozenset({"7", "8", "9"})
-_INFO_BOUNDARY: Final[str] = (
-    "server_true_remaining_shoe_counts_and_dealer_up_card; no hole card, "
-    "no next-card field, and no ordered future shoe"
-)
 _PAIR_SPLIT_DEALERS: Final[dict[int, frozenset[int]]] = {
     11: frozenset(range(2, 12)),
     8: frozenset(range(2, 12)),
@@ -177,10 +173,6 @@ class BotPlayerActionContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    information_boundary: str = Field(
-        ...,
-        description="Text describing exactly which table information the bot is allowed to see.",
-    )
     shoe_summary: ShoeSummary = Field(
         ..., description="Rank-level summary of the true remaining shoe."
     )
@@ -202,10 +194,6 @@ class BotPlayerInsuranceContext(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    information_boundary: str = Field(
-        ...,
-        description="Text describing exactly which table information the bot is allowed to see.",
-    )
     shoe_summary: ShoeSummary = Field(
         ..., description="Rank-level summary of the true remaining shoe."
     )
@@ -609,7 +597,6 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
             f"Surrender locks in a half-bet loss of {(bet + 1) // 2} {CURRENCY_NAME}."
         )
     return BotPlayerActionContext(
-        information_boundary=_INFO_BOUNDARY,
         shoe_summary=build_shoe_summary(shoe=shoe),
         dealer=dealer,
         action_analysis=ActionAnalysis(
@@ -678,7 +665,6 @@ def build_bot_insurance_context(
     expected_value = insurance_cost * (3.0 * ten_probability - 1.0)
     recommendation = "take" if ten_probability > break_even else "decline"
     return BotPlayerInsuranceContext(
-        information_boundary=_INFO_BOUNDARY,
         shoe_summary=build_shoe_summary(shoe=shoe),
         dealer=build_dealer_knowledge(dealer_up=dealer_up),
         insurance_cost=insurance_cost,

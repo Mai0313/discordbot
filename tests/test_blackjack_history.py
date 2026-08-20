@@ -79,7 +79,6 @@ def _result(  # noqa: PLR0913 -- settlement result needs every per-round field
         vip_bonus=0,
         is_vip=is_vip,
         outcome=outcome,
-        detail="",
         hands=hands,
         insurance=insurance,
     )

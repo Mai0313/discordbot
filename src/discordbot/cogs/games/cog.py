@@ -72,21 +72,15 @@ class GamesCogs(commands.Cog):
         """Returns the casino system identity that labels the house in game embeds.
 
         Slash commands only fire after the gateway has connected, so
-        `self.bot.user` is guaranteed non-None at call time. We still fall back
-        to a synthetic id / SYSTEM_NARRATOR_NAME to keep type narrowing clean
-        and to avoid blowing up the round if Discord briefly returns no client
-        user (e.g. mid-reconnect).
+        `self.bot.user` is guaranteed non-None at call time. The None branch
+        still exists to keep type narrowing clean and to avoid blowing up the
+        round if Discord briefly returns no client user (e.g. mid-reconnect);
+        it costs only the avatar, since the label does not come from the user.
         """
         if self.bot.user is None:
-            return SystemIdentity(
-                system_id=0, system_name=SYSTEM_NARRATOR_NAME, system_avatar_url=""
-            )
+            return SystemIdentity(system_name=SYSTEM_NARRATOR_NAME, system_avatar_url="")
         avatar_url = await guild_avatar_url(user=self.bot.user, guild=guild)
-        return SystemIdentity(
-            system_id=self.bot.user.id,
-            system_name=SYSTEM_NARRATOR_NAME,
-            system_avatar_url=avatar_url,
-        )
+        return SystemIdentity(system_name=SYSTEM_NARRATOR_NAME, system_avatar_url=avatar_url)
 
     async def _bot_blackjack_participant(
         self, *, guild: Guild | None, table_bet: int, channel_id: int

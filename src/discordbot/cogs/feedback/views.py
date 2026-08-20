@@ -409,12 +409,11 @@ class FeedbackPanelView(View):
         rows: The reports currently listed, newest first.
     """
 
-    def __init__(self, *, host: FeedbackHost, rows: list[TicketRow], total: int = 0) -> None:
+    def __init__(self, *, host: FeedbackHost, rows: list[TicketRow]) -> None:
         """Initializes the panel, adding the picker only when there is something to pick."""
         super().__init__(timeout=FEEDBACK_VIEW_TIMEOUT_SECONDS)
         self.host = host
         self.rows = rows
-        self.total = total or len(rows)
         self._origin: Interaction[commands.Bot] | None = None
         if rows:
             self.add_item(_TicketSelect(rows=rows, host=host))
@@ -481,7 +480,7 @@ class TicketDetailView(View):
         await interaction.response.defer()
         self.stop()
         panel = await self.host.load_rows(user_id=self.detail.row.ticket.user_id)
-        view = FeedbackPanelView(host=self.host, rows=panel.rows, total=panel.total)
+        view = FeedbackPanelView(host=self.host, rows=panel.rows)
         await interaction.edit_original_message(
             embed=build_panel_embed(rows=panel.rows, total=panel.total), view=view
         )

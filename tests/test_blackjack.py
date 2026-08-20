@@ -26,7 +26,6 @@ from discordbot.cogs.games.blackjack import (
     can_surrender,
     is_soft_total,
     is_five_card_win,
-    dealer_visible_value,
     is_five_card_twenty_one,
 )
 from discordbot.cogs.games.settlement import blackjack_player_early_finish_note
@@ -453,13 +452,6 @@ def test_render_hand_hides_first_card() -> None:
     assert "🂠" in rendered
     assert "A" not in rendered
     assert "K" in rendered
-
-
-def test_dealer_visible_value_uses_up_card() -> None:
-    """The visible value matches the card not hidden from the player."""
-    assert dealer_visible_value(dealer=[Card(rank="A", suit="♠"), Card(rank="K", suit="♥")]) == 10
-    assert dealer_visible_value(dealer=[Card(rank="K", suit="♠"), Card(rank="A", suit="♥")]) == 11
-    assert dealer_visible_value(dealer=[Card(rank="7", suit="♠")]) == 7
 
 
 def test_blackjack_in_progress_dealer_seat_hides_hole_card() -> None:

@@ -57,9 +57,6 @@ class _RankingBoardSpec(BaseModel):
     title: str = Field(..., description="Board title text.")
     subtitle: str = Field(..., description="Subtitle line under the title.")
     amount_header: str = Field(..., description="Amount column header text.")
-    amount_label: str = Field(
-        ..., description="Label prefixed to each amount cell, empty for none."
-    )
     accent: tuple[int, int, int] = Field(
         ...,
         description=(
@@ -92,7 +89,6 @@ def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> b
             title=f"{CURRENCY_NAME} 排行榜",
             subtitle="Top 10 public balances",
             amount_header="餘額",
-            amount_label="",
             accent=_BALANCE_ACCENT,
             rows=tuple((row.name, row.balance) for row in rows),
         )
@@ -106,7 +102,6 @@ def build_loss_leaderboard_board_image(rows: Sequence[LossLeaderboardEntry]) -> 
             title="今日輸錢榜",
             subtitle="Gross casino loss · Asia/Taipei 00:00 reset",
             amount_header="累計輸",
-            amount_label="",
             accent=_LOSS_ACCENT,
             rows=tuple((row.name, row.loss_amount) for row in rows),
         )
@@ -255,7 +250,7 @@ def _draw_rank_row(
     )
     draw.text(
         xy=(_RANK_X, y + 13),
-        text=_rank_text(position=position),
+        text=str(position),
         font=fonts.rank,
         fill=spec.accent if position <= 3 else _MUTED,
     )
@@ -265,7 +260,7 @@ def _draw_rank_row(
     draw.text(xy=(_NAME_X, y + 13), text=display_name, font=fonts.body, fill=_TEXT)
     draw_text_right(
         draw=draw,
-        text=_ranking_amount_text(spec=spec, amount=row.amount),
+        text=compact_amount(amount=row.amount),
         xy=(_AMOUNT_RIGHT, y + 13),
         font=fonts.body,
         fill=_TEXT,
@@ -278,17 +273,3 @@ def _draw_empty_row(draw: ImageDraw.ImageDraw, fonts: _BoardFonts, y: int) -> No
         xy=(_BOARD_MARGIN, y, _BOARD_WIDTH - _BOARD_MARGIN, y + _ROW_HEIGHT), fill=_SURFACE
     )
     draw.text(xy=(_RANK_X, y + 16), text="目前沒有排行資料", font=fonts.body, fill=_MUTED)
-
-
-def _ranking_amount_text(spec: _RankingBoardSpec, amount: int) -> str:
-    """Formats the amount column for one ranking row."""
-    amount_text = compact_amount(amount=amount)
-    if not spec.amount_label:
-        return amount_text
-    return f"{spec.amount_label} {amount_text}"
-
-
-def _rank_text(position: int) -> str:
-    """Formats a ranking number."""
-    medals = {1: "1", 2: "2", 3: "3"}
-    return medals.get(position, str(position))

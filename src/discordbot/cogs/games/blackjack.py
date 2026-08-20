@@ -857,10 +857,6 @@ class BlackjackRound(BaseModel):
         """Returns the current best total for the dealer hand."""
         return hand_value(cards=self.dealer)
 
-    def dealer_visible_value(self) -> int:
-        """Returns the Blackjack value of the dealer's visible up-card."""
-        return dealer_visible_value(dealer=self.dealer)
-
     def dealer_is_soft_17(self) -> bool:
         """Returns whether the dealer hand is currently a soft 17."""
         return is_soft_17(cards=self.dealer)
@@ -997,25 +993,3 @@ def render_hand(cards: list[Card], hide_first: bool = False) -> str:
         rest = " ".join(str(card) for card in cards[1:])
         return f"🂠 {rest}".strip()
     return " ".join(str(card) for card in cards)
-
-
-def dealer_visible_value(dealer: list[Card]) -> int:
-    """Returns the numeric value of the dealer's visible card.
-
-    The second dealer card is visible while the first card is hidden. If only
-    one card exists, that card is treated as visible.
-
-    Args:
-        dealer: Dealer cards in draw order.
-
-    Returns:
-        The visible card's Blackjack value, or 0 when the dealer has no cards.
-    """
-    up = dealer_up_card(dealer=dealer)
-    if up is None:
-        return 0
-    if up.rank == "A":
-        return 11
-    if up.rank in ("J", "Q", "K"):
-        return 10
-    return int(up.rank)

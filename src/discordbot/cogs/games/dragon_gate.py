@@ -76,11 +76,6 @@ def card_value(card: Card) -> int:
     return int(card.rank)
 
 
-def render_cards(cards: list[Card]) -> str:
-    """Formats cards for display."""
-    return " ".join(str(card) for card in cards)
-
-
 def has_open_gate(pillars: list[Card]) -> bool:
     """Returns whether the pillars produce a playable gate."""
     values = sorted(card_value(card=card) for card in pillars)
@@ -418,5 +413,4 @@ __all__ = [
     "card_value",
     "draw_card",
     "has_open_gate",
-    "render_cards",
 ]

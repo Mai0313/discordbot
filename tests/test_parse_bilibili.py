@@ -485,9 +485,10 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     """A slow upload must not keep another link waiting on the Bilibili bound.
 
     The bound exists for the host's disk and bandwidth; the upload talks to Google, so holding
-    it across the upload would throttle unrelated links for no protective reason. Capacity 1 is
-    set so a bound still held would show, but the second link here takes no media and so never
-    reaches the bound: what this actually pins is that a stalled upload blocks nothing behind it.
+    it across the upload would throttle unrelated links for no protective reason. Capacity 1
+    and a second link that ingests its own media are what make that visible: only the first
+    upload stalls, so a bound held across it would leave the second link waiting on the
+    semaphore until the test released the first, and the wait_for below would fail.
     """
     monkeypatch.setattr(bilibili_builder, "BILIBILI_FETCH_CONCURRENCY", 1)
     _stub_bilibili(monkeypatch)
@@ -495,6 +496,8 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     release = asyncio.Event()
 
     class _SlowUploads(_Uploads):
+        """Stalls the FIRST upload only, so the second link's own upload can finish."""
+
         async def __call__(
             self,
             *,
@@ -504,9 +507,11 @@ async def test_the_fetch_bound_is_released_before_the_upload(
             filename: str,
             timeout_seconds: float,
         ) -> dict[str, str] | None:
-            """Blocks inside the upload until the test lets it finish."""
+            """Blocks inside the first upload until the test lets it finish."""
+            first = not started.is_set()
             started.set()
-            await release.wait()
+            if first:
+                await release.wait()
             return await super().__call__(
                 client=client,
                 source=source,
@@ -520,19 +525,20 @@ async def test_the_fetch_bound_is_released_before_the_upload(
     try:
         await asyncio.wait_for(started.wait(), timeout=5.0)
 
-        # A different link must get through while the first build sits in its upload.
+        # A different link, ingesting media of its own, must take the bound and get all the
+        # way through while the first build sits in its upload.
         other = step_dicts(
             steps=await asyncio.wait_for(
                 build_bilibili_context_messages(
                     url="https://www.bilibili.com/video/av170001",
                     answer_model_is_gemini=True,
                     gemini_client=make_stub_gemini_client(),
-                    allow_media_ingest=False,
+                    allow_media_ingest=True,
                 ),
                 timeout=5.0,
             )
         )
-        assert other[0]["content"][0]["text"] == BILIBILI_TEXT_ONLY_SEPARATOR
+        assert other[0]["content"][0]["text"] == BILIBILI_CONTEXT_SEPARATOR
     finally:
         release.set()
         await asyncio.wait_for(slow, timeout=5.0)

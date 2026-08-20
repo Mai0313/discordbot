@@ -20,7 +20,7 @@ from discordbot.cogs.research.delivery import (
     deliver_report,
     split_report_by_sections,
 )
-from discordbot.cogs.research.streaming import ResearchProgressStreamer
+from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT, ResearchProgressStreamer
 
 from tests.helpers.casting import (
     as_client,
@@ -495,6 +495,18 @@ def test_streamer_render_preview_windows_and_escapes_mentions() -> None:
     assert preview.startswith("-# Researching... (Antigravity,")
     assert "@everyone" not in preview  # agent text is escaped so the thinking can never ping
     assert "last line" in preview
+
+    # Two windows narrow a long think and each drops what the other would have kept: the
+    # renderer sees only the last 1500 characters, then keeps only the newest of THOSE lines
+    # that fit one Discord message. The lines are short so the second window bites too.
+    lines = [f"t{index:03d}" for index in range(500)]
+    streamer.reasoning = "\n".join(["oldest thought", *lines])
+    preview = streamer._render_preview()
+    assert "oldest thought" not in preview  # outside the character tail
+    assert lines[-1] in preview  # the newest thought always survives
+    assert len(preview) <= DISCORD_MESSAGE_LIMIT
+    # Fewer lines than the character tail holds: the per-line budget dropped the rest.
+    assert 0 < preview.count("\n-# ") < len(streamer.reasoning[-1500:].splitlines())
 
 
 async def test_streamer_write_snapshot_edits_and_skips_unchanged() -> None:

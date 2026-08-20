@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
 import threading
 import contextlib
 
@@ -22,7 +23,6 @@ from discordbot.cogs.games import cog as games
 from discordbot.cogs.video import cog as video
 from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
-from discordbot.cogs.template import cog as template
 from discordbot.typings.games import GameParticipant
 from discordbot.utils.threads import ThreadsOutput, ThreadsConversation
 from discordbot.cogs.games.cog import GamesCogs
@@ -48,7 +48,6 @@ from discordbot.typings.economy import (
 from discordbot.cogs.auto_unmute import cog as auto_unmute
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.games.wagers import parse_wager_amount
-from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.cogs.template.cog import TemplateCogs
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.cogs.parse_threads import cog as parse_threads
@@ -56,7 +55,6 @@ from discordbot.cogs.auto_unmute.cog import AutoUnmuteCogs
 from discordbot.cogs.games.blackjack import Card
 from discordbot.utils.discord_embeds import DEFAULT_EMBED_SPACER_FILENAME, embed_spacer_url
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.cogs.parse_douyin.cog import DouyinCogs
 from discordbot.cogs.parse_threads.cog import ThreadsCogs
 from discordbot.services.economy.database import (
     VIP_PURCHASE_COST,
@@ -456,7 +454,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     target = _thread_output(
         image_urls=["https://example.test/1.png", "https://example.test/2.png"]
     )
-    embeds = cog._build_embeds(results=[parent, target])
+    embeds = cog._build_embed_plan(results=[parent, target]).embeds
     assert len(embeds) == 3
     first_description = embeds[0].description
     assert first_description is not None
@@ -633,7 +631,7 @@ async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None
         image_urls=["https://example.test/quoted-1.png", "https://example.test/quoted-2.png"],
     )
 
-    embeds = cog._build_embeds(results=[root, parent, target])
+    embeds = cog._build_embed_plan(results=[root, parent, target]).embeds
 
     assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     descriptions = [embed.description or "" for embed in embeds]
@@ -670,7 +668,7 @@ async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
     cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
     chain = [_thread_output(text="😀" * 500, author_name=f"user-{index}") for index in range(10)]
 
-    embeds = cog._build_embeds(results=chain)
+    embeds = cog._build_embed_plan(results=chain).embeds
 
     assert parse_threads._utf16_length(value="😀") == 2
     assert len(embeds) < len(chain)
@@ -878,7 +876,7 @@ async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
     target = _thread_output(text="這根本是胡說", image_urls=["https://example.test/1.png"])
     target.quoted = quoted
 
-    embeds = cog._build_embeds(results=[target])
+    embeds = cog._build_embed_plan(results=[target]).embeds
 
     assert len(embeds) == 2
     # The target owns the message, so it stays first and the quoted post hangs off the end. That
@@ -910,7 +908,7 @@ async def test_threads_cog_keeps_the_commentary_beside_a_quoted_gallery() -> Non
     target = _thread_output(text="一句話評論")
     target.quoted = quoted
 
-    embeds = cog._build_embeds(results=[target])
+    embeds = cog._build_embed_plan(results=[target]).embeds
 
     assert len(embeds) == 10
     assert embeds[0].description == "一句話評論"
@@ -926,7 +924,7 @@ async def test_threads_cog_notes_a_quoted_post_that_is_gone() -> None:
     target = _thread_output(text="回應一下")
     target.quoted_unavailable = True
 
-    embeds = cog._build_embeds(results=[target])
+    embeds = cog._build_embed_plan(results=[target]).embeds
 
     assert len(embeds) == 1
     assert embeds[0].description is not None
@@ -949,7 +947,7 @@ async def test_threads_cog_reserves_the_quoted_posts_slot_against_an_ancestors_g
     target = _thread_output(text="commentary")
     target.quoted = _thread_output(text="the post being argued with", author_name="bob")
 
-    embeds = cog._build_embeds(results=[ancestor, target])
+    embeds = cog._build_embed_plan(results=[ancestor, target]).embeds
 
     assert len(embeds) == 10
     descriptions = [embed.description or "" for embed in embeds]
@@ -970,7 +968,7 @@ async def test_threads_cog_says_nothing_about_an_ancestors_quote() -> None:
     root = _thread_output(text="root commentary", author_name="root")
     root.quoted_unavailable = True
 
-    embeds = cog._build_embeds(results=[root, _thread_output(text="target")])
+    embeds = cog._build_embed_plan(results=[root, _thread_output(text="target")]).embeds
 
     assert embeds[0].description == "root commentary"
     assert all("引用的貼文目前無法瀏覽" not in (embed.description or "") for embed in embeds)
@@ -986,7 +984,7 @@ async def test_threads_cog_measures_the_rendered_description_against_the_embed_l
     target = _thread_output(text="t")
     target.quoted = _thread_output(text="q" * 4096, author_name="bob")
 
-    embeds = cog._build_embeds(results=[target])
+    embeds = cog._build_embed_plan(results=[target]).embeds
 
     # The guard now reads exactly this quantity, so it sees the overflow the raw text hid.
     assert max(len(embed.description or "") for embed in embeds) > 4096
@@ -1233,11 +1231,6 @@ async def _create_auto_unmute_response(  # noqa: PLR0913 -- mirrors Responses AP
 ) -> FakeGeneratedResponse:
     """Returns a deterministic auto-unmute response."""
     return FakeGeneratedResponse(output_text="not today")
-
-
-async def _append_async[T](container: list[T], item: T) -> None:
-    """Appends an item through an awaitable callback."""
-    container.append(item)
 
 
 async def _async_none() -> None:
@@ -2279,13 +2272,12 @@ def ignore_scheduled_public_message(
 
 
 async def fake_game_balance(user_id: int) -> int:
-    """Returns a small fake game balance, and zero for the bot's own id.
+    """Returns a small fake game balance for anyone.
 
-    Zero is not what keeps the bot out of the lobby: `_bot_blackjack_participant` reads
-    `get_account`, so the empty isolated economy DB is what makes it skip its seat.
+    Never asked about the bot's own id: `_bot_blackjack_participant` reads `get_account`, so
+    the empty isolated economy DB is what makes the bot skip its seat, not a balance.
     """
-    if user_id == 999:
-        return 0
+    del user_id
     return 100
 
 
@@ -2295,9 +2287,8 @@ async def _empty_game_balance(user_id: int) -> int:
 
 
 async def _wealthy_game_balance(user_id: int) -> int:
-    """Returns a fake balance large enough for Dragon Gate ante (bot still at 0)."""
-    if user_id == 999:
-        return 0
+    """Returns a fake balance large enough for the Dragon Gate ante."""
+    del user_id
     return 1_000_000
 
 
@@ -2528,9 +2519,8 @@ async def test_blackjack_string_bet_accepts_large_formatted_amount(
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
 
     async def balance_by_user(user_id: int) -> int:
-        """Returns enough balance to cover a large formatted wager (bot stays at 0)."""
-        if user_id == 999:
-            return 0
+        """Returns enough balance to cover a large formatted wager."""
+        del user_id
         return 10_000_000_000_000_000
 
     monkeypatch.setattr(games, "get_balance", balance_by_user)
@@ -2686,50 +2676,38 @@ async def test_games_on_ready_cleans_stale_messages_once(monkeypatch: pytest.Mon
 
 
 def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verifies each cog setup function listed here registers the expected cog type."""
-    added: list[
-        tuple[
-            VideoCogs
-            | GamesCogs
-            | EconomyCogs
-            | TemplateCogs
-            | ThreadsCogs
-            | DouyinCogs
-            | AutoUnmuteCogs,
-            bool | None,
-        ]
-    ] = []
+    """EVERY cog directory's sync `setup` adds its own cog, with `override=True`.
 
-    def record_cog(
-        cog: VideoCogs
-        | GamesCogs
-        | EconomyCogs
-        | TemplateCogs
-        | ThreadsCogs
-        | DouyinCogs
-        | AutoUnmuteCogs,
-        override: bool | None = None,
-    ) -> None:
+    Swept off the same directory scan `_load_cogs_sync` performs rather than a hand-written
+    list, which is what left half the cogs uncovered before: `setup` is the one function in
+    a cog module the loader calls by name, and an `async def setup` here returns a coroutine
+    nothing awaits, breaking the first command sync with nothing raised.
+    """
+    added: list[tuple[commands.Cog, bool | None]] = []
+
+    def record_cog(cog: commands.Cog, override: bool | None = None) -> None:
         """Records the cog instance and override flag passed to add_cog."""
         added.append((cog, override))
 
     bot = SimpleNamespace(add_cog=record_cog)
-    for module in [video, games, economy, template, parse_threads, parse_douyin, auto_unmute]:
-        monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
-        monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
+    monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
+    cogs_dir = Path(cli.__file__).resolve().parent / "cogs"
+    names = sorted(entry.name for entry in cogs_dir.iterdir() if (entry / "cog.py").is_file())
+
+    assert names  # a scan that found nothing would pass every assertion below
+    for name in names:
+        module = import_module(f"discordbot.cogs.{name}.cog")
         module.setup(bot=as_bot(fake=bot))
-    assert [type(item[0]) for item in added] == [
-        VideoCogs,
-        GamesCogs,
-        EconomyCogs,
-        TemplateCogs,
-        ThreadsCogs,
-        DouyinCogs,
-        AutoUnmuteCogs,
-    ]
+        cog, override = added[-1]
+        # `override=True` is what lets a reload replace the cog instead of colliding, and
+        # the module check is what stops a re-export standing in for a missing cog.
+        assert override is True, name
+        assert type(cog).__module__ == module.__name__, name
+    assert len(added) == len(names)
 
 
-def test_cli_loads_cogs_and_handles_command_errors(tmp_path: Path) -> None:
+def test_cli_load_cogs_sync_discovers_exactly_the_cog_directories(tmp_path: Path) -> None:
     """Verifies synchronous cog loading discovers exactly the cog directories."""
     loaded: list[tuple[list[str], bool]] = []
 
