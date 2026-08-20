@@ -19,6 +19,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.douyin import DOUYIN_URL_RE, is_douyin_post_url
 from discordbot.utils.images import convert_base64_to_data_uri
@@ -158,7 +159,7 @@ if TYPE_CHECKING:
     from openai.types.responses import ResponseStreamEvent
 
 
-_MESSAGE_URL_RE = re.compile(pattern=r"(?i)\b(?:https?://|www\.)\S+")
+_MESSAGE_URL_RE = re.compile(pattern=rf"(?i){URL_START_ANCHOR}(?:https?://|www\.)\S+")
 
 # Preserve the existing eight-user context target for optional model-selected additions.
 # Deterministic participants are never displaced: if they fill or exceed the target, the
@@ -225,9 +226,9 @@ def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str
 def _carries_url(message: Message) -> bool:
     """Whether the message's own rendered text carries any URL.
 
-    Read by the SUMMARY -> QA reroute guard. `_MESSAGE_URL_RE` anchors on a word boundary, and
-    CJK is a word character, so a URL typed flush against Chinese ("看這篇https://...") is
-    missed; the reroute degrades softly on that and stays put.
+    Read by the SUMMARY -> QA reroute guard. `_MESSAGE_URL_RE` takes its head from
+    `URL_START_ANCHOR`, so a URL typed flush against Chinese ("看這篇https://...") counts here
+    the same as one with a space in front of it, and the two generic scanners agree on it.
     """
     return (
         _first_url_match(

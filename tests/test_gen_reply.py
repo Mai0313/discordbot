@@ -4407,6 +4407,9 @@ async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio(
     argvalues=[
         "整理懶人包 https://example.test/post",
         "這裡面又在說啥 整理給我聽 https://example.test/post",
+        # No space in front of the link, which is how a lot of people type (#492). The old
+        # `\b` head counted the Chinese as a word character and found no URL here at all.
+        "整理懶人包https://example.test/post",
     ],
 )
 async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None:
