@@ -4970,6 +4970,48 @@ async def test_on_message_commented_forward_merges_forwarded_text(
     assert calls == [(message, "please\ndraw a cat")]
 
 
+async def test_a_failed_turn_records_the_model_it_dispatched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`gen_reply failed` names the model the turn was on when it broke.
+
+    The failure surfaces in `on_message`, frames above every place that picks a model, and a
+    provider error rarely names the model it refused ("This model is currently experiencing
+    high demand" names none). With many turns interleaved in one log file, re-deriving it from
+    a neighbouring record means trusting that nothing else wrote between them.
+    """
+    cog = _cog()
+    monkeypatch.setattr(
+        RuntimeModelCatalog,
+        "slow_model",
+        property(lambda _self: ModelSettings(name="gemini-answer-tier", effort="high")),
+    )
+
+    async def failing_create(**kwargs: object) -> object:
+        """Fails the answer turn the way a provider outage does."""
+        del kwargs
+        raise RuntimeError("This model is currently experiencing high demand")
+
+    monkeypatch.setattr(_recorded(cog).responses, "create", failing_create)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+    failures: list[dict[str, object]] = []
+
+    def record_error(message_text: str, **fields: object) -> None:
+        """Captures the failure record the turn's outer handler emits."""
+        failures.append({"text": message_text, **fields})
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.logfire.error", record_error)
+
+    # The default route is SUMMARY, so the answer is the turn's only `responses.create`.
+    message = FakeMessage(content="<@999> 幫我總結", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=as_message(fake=message))
+
+    # The answer tier, not the triage tier the route ran on a moment earlier.
+    assert [
+        fields.get("model") for fields in failures if fields["text"] == "gen_reply failed"
+    ] == ["gemini-answer-tier"]
+
+
 async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.MonkeyPatch) -> None:
     """Advance schedules ordered swaps without blocking; flush waits for the tail."""
     events: list[tuple[str, str | None]] = []
