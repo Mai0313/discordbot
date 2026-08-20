@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
+import httpx
 from openai import AsyncOpenAI
 import pytest
 from nextcord import Interaction
@@ -34,6 +35,7 @@ from discordbot.cogs.feedback.views import (
     build_detail_embed,
 )
 from discordbot.cogs.feedback.github import (
+    _COMMENTS_PER_PAGE,
     REPORTER_COMMENT_MARKER,
     GitHubIssues,
     IssueComment,
@@ -861,23 +863,61 @@ def _scripted(*, fail_status: int = 0) -> "_ScriptedIssues":
 
 
 class _PagingIssues(GitHubIssues):
-    """A client whose scripted transport answers a conversation longer than one page."""
+    """A client whose scripted transport answers a conversation longer than one page.
 
-    async def _request(
+    Scripted after the endpoint rather than after what the reader wants from it: the
+    comments come back oldest first however they are asked for, and how deep the thread
+    goes is only in the `Link` header, whose `rel="last"` entry sits behind a `rel="next"`
+    pointing at a different page and is absent on the last page altogether. All of it was
+    measured against api.github.com, and each part earns its place — a fake answering the
+    newest first would let the bug this file pins go unnoticed, and one emitting a lone
+    `rel="last"` would never exercise the entry the header parser has to pick it out of.
+
+    Attributes:
+        total: How many comments the scripted thread holds.
+        requested: The pages the reader asked for, in order.
+    """
+
+    total: int = Field(default=120, description="How many comments the scripted thread holds.")
+    requested: list[int] = Field(
+        default_factory=list, description="The pages the reader asked for, in order."
+    )
+
+    async def _send(
         self, *, method: str, path: str, payload: dict[str, Any] | None = None
-    ) -> Any:  # noqa: ANN401 -- mirrors the signature it overrides
-        """Answers 100 comments on the first page and 20 on the second."""
+    ) -> httpx.Response:
+        """Answers one page of the thread, with the header that says how many there are."""
         page = int(path.rsplit("page=", maxsplit=1)[1])
-        start, count = ((0, 100) if page == 1 else (100, 20)) if page <= 2 else (0, 0)
-        return [
+        self.requested.append(page)
+        last_page = max(1, -(-self.total // _COMMENTS_PER_PAGE))
+        start = (page - 1) * _COMMENTS_PER_PAGE
+        body = [
             {
                 "user": {"login": "mai", "type": "User"},
                 "author_association": "OWNER",
-                "body": f"第 {start + index} 則",
+                "body": f"第 {index} 則",
                 "created_at": "2026-02-04T10:00:00Z",
             }
-            for index in range(count)
+            for index in range(start, min(start + _COMMENTS_PER_PAGE, self.total))
         ]
+        entries = (
+            ([(page - 1, "prev")] if page > 1 else [])
+            + ([(page + 1, "next"), (last_page, "last")] if page < last_page else [])
+            + ([(1, "first")] if page > 1 else [])
+        )
+        link = ", ".join(
+            f"<https://api.github.com/repositories/1/issues/460/comments"
+            f'?per_page={_COMMENTS_PER_PAGE}&page={target}>; rel="{relation}"'
+            for target, relation in entries
+        )
+        return httpx.Response(status_code=200, json=body, headers={"Link": link} if link else {})
+
+
+def _paging(*, total: int) -> _PagingIssues:
+    """Builds a paging client over a scripted thread of `total` comments."""
+    return _PagingIssues(
+        credentials=TokenCredentials(token=_FAKE_TOKEN), repository="owner/name", total=total
+    )
 
 
 # ---------------------------------------------------------------------- view wiring
@@ -1112,12 +1152,65 @@ async def test_nobody_can_read_someone_elses_report(feedback_isolated_db: None) 
 
 async def test_every_comment_page_is_read() -> None:
     """The newest reply is the one being looked for, and it is on the last page."""
-    client = _PagingIssues(
-        credentials=TokenCredentials(token=_FAKE_TOKEN), repository="owner/name"
-    )
+    client = _paging(total=120)
     conversation = await client.read_conversation(number=460)
     assert len(conversation) == 120
     assert conversation[-1].body == "第 119 則"
+    assert client.requested == [1, 2]
+
+
+async def test_the_comment_bound_drops_the_oldest_end_and_not_the_newest() -> None:
+    """A thread past the bound has to lose something, and it must not be what is shown.
+
+    The endpoint answers oldest first and ignores `direction`, so a bound counted from
+    page 1 keeps the opening of the thread and drops the reply the reporter came back to
+    read — while the status line beside it, derived from the issue's own comment count,
+    still says someone answered.
+    """
+    client = _paging(total=450)
+    conversation = await client.read_conversation(number=460)
+    assert conversation[-1].body == "第 449 則"
+    assert conversation[0].body == "第 200 則"
+    assert client.requested == [1, 3, 4, 5]
+
+
+async def test_the_panel_shows_the_newest_end_of_what_was_read(feedback_isolated_db: None) -> None:
+    """Which end the screen takes is why the read has to keep that end, so it is pinned.
+
+    This is the panel half alone: the conversation is handed to the cog rather than
+    fetched, so nothing here can go red over the page bound. What it fixes in place is
+    the premise that bound is chosen for — `build_detail_embed` renders the LAST few
+    comments, so a reader that dropped the newest ones would be dropping the screen.
+    """
+    issues = FakeIssues()
+    issues.conversation = [
+        IssueComment(
+            author="mai",
+            body=f"第 {index} 則",
+            created_at="2026-02-04T10:00:00Z",
+            from_reporter=False,
+        )
+        for index in range(9)
+    ]
+    ticket = await create_ticket(
+        user_id=7,
+        user_name="alice",
+        display_name="Alice",
+        guild_id=None,
+        guild_name="",
+        channel_id=None,
+        locale="",
+        raw_text="壞掉了",
+    )
+    await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=460)
+    detail = await _cog(issues=issues).load_detail(ticket_id=ticket.ticket_id, viewer_id=7)
+    assert detail is not None
+    assert detail.comments == issues.conversation
+    embed = build_detail_embed(detail=detail)
+    values = [str(field.value) for field in embed.fields]
+    assert "第 8 則" in values
+    assert "第 3 則" not in values
+    assert "上面還有 4 則比較早的對話" in [str(field.name) for field in embed.fields]
 
 
 # ------------------------------------------------------------- before a token exists
