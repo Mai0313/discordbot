@@ -47,7 +47,7 @@ config = LLMConfig()
 
 # Mirror the @property value in typings/models.py. slow_model's time-of-day dispatch is
 # commented out there, so production answers on this one branch at every hour.
-SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+SLOW_MODEL = ModelSettings(name="gemini-3.7-flash", effort="high")
 
 
 def gen_reply(user_prompt: str) -> None:
