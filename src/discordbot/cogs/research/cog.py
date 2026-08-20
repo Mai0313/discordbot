@@ -516,9 +516,10 @@ class ResearchCogs(commands.Cog):
     async def _resume_all(self) -> None:
         """Resumes every session still `researching` when the process came back up.
 
-        The kill-switch gates this exactly as it gates `launch` and `/deep_research`: it is
-        flipped over a provider or a cost problem, and a run already open is still work with that
-        provider, so an off switch means the bot re-attaches to nothing and delivers nothing.
+        `deep_research_available` gates this exactly as it gates `launch` and `/deep_research`,
+        so a missing key is refused here rather than at `genai.Client` inside the resume's own
+        try. The switch is flipped over a provider or a cost problem, and a run already open is
+        still work with that provider, so off means the bot re-attaches to nothing.
 
         A skipped row is left `researching` rather than failed, which is the truth about it: the
         interaction runs server-side under `background=True` / `store=True` whether or not the
@@ -532,7 +533,7 @@ class ResearchCogs(commands.Cog):
             return
         if not self.config.deep_research_available:
             logfire.info(
-                "deep research is off; left in-flight sessions for a later start",
+                "deep research is unavailable; left in-flight sessions for a later start",
                 count=len(sessions),
             )
             return
