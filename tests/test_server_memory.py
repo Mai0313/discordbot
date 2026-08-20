@@ -330,6 +330,13 @@ def test_a_member_alias_delta_without_a_member_id_is_dropped(memory_isolated_dir
             _alias_delta(
                 summary="猜出來的 id", display_name="阿華", aliases=("華哥",), subject_id="阿華"
             ),
+            # Two ids `int()` refuses; the gate reads them the way the cast does.
+            _alias_delta(
+                summary="上標的 id", display_name="阿光", aliases=("光哥",), subject_id="²"
+            ),
+            _alias_delta(
+                summary="過長的 id", display_name="阿強", aliases=("強哥",), subject_id="9" * 4400
+            ),
         ),
         owner=SERVER_OWNER,
         allow_mass_delete=False,
@@ -337,7 +344,7 @@ def test_a_member_alias_delta_without_a_member_id_is_dropped(memory_isolated_dir
     # The batch still lands: a whole-batch rejection would freeze the scope for good.
     assert outcome.applied
     assert outcome.created == 1
-    assert outcome.dropped == 2
+    assert outcome.dropped == 4
     stored = read_facts(scope=SERVER_SCOPE, compartment=GLOBAL_COMPARTMENT)
     assert [fact.subject_id for fact in stored] == [4242]
     assert allowlist_ids_from_server_memory(memory=_server_document()) == {

@@ -689,6 +689,35 @@ def test_bad_deltas_are_dropped_without_failing_the_batch(memory_isolated_dir: P
     assert len(read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)) == 1
 
 
+def test_an_unusable_subject_id_costs_the_field_and_not_the_run(memory_isolated_dir: Path) -> None:
+    """The id used to be cast unguarded here, and raising abandons the rest of the fan-out.
+
+    A user scope is where that bites: `member_alias` is a server-only section, so the guard
+    that reads this field never fires on one and every delta reached the cast.
+    """
+    scope = user_scope(user_id=111)
+    outcome = apply_deltas(
+        scope=scope,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="user",
+        deltas=(
+            _delta(section="fact", summary="猜出來的 id", subject_id="阿華"),
+            # `isdigit` accepts a superscript and `int()` refuses it, which is the same raise.
+            _delta(summary="上標數字", subject_id="²"),
+            # And `isdecimal` accepts a digit string longer than CPython will convert.
+            _delta(summary="過長的 id", subject_id="9" * 4400),
+        ),
+        owner=_OWNER,
+        allow_mass_delete=False,
+    )
+    assert outcome.applied
+    # Nothing outside `member_alias` renders the id, so the fact itself is still worth keeping.
+    assert outcome.dropped == 0
+    stored = read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)
+    assert sorted(fact.summary for fact in stored) == ["上標數字", "猜出來的 id", "過長的 id"]
+    assert {fact.subject_id for fact in stored} == {None}
+
+
 def test_a_median_merge_is_not_mistaken_for_a_wipe(memory_isolated_dir: Path) -> None:
     """Four deletes plus one create is consolidation working, not losing data."""
     scope = user_scope(user_id=111)
