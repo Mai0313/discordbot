@@ -208,8 +208,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Slow-path model settings for reply generation and summaries.
         """
-        # Both branches, the commented-out one included, are pinned to explicit snapshots and
-        # never a `*-latest` alias. This is the
+        # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
         # answer turn hands that effort straight to the Interactions API as a `thinking_level`
         # (`gen_reply/interactions.py`), where the enum is per-model: every alias measured
@@ -218,12 +217,11 @@ class RuntimeModelCatalog(BaseModel):
         # that lost whole replies through an alias in #459; the pinning stays because it is what
         # keeps the next vocabulary change from doing it again. Note `minimal` is still a 400 on
         # the pro snapshot; it stays legal only because `EffortGrade` never emits it.
-        # The peak split is commented out rather than deleted, and `is_peak` stays exposed for
-        # it: it sent peak hours to flash because Pro used to be the one that slowed down, and
-        # `gemini-3.7-flash` is now the one that queues (observed 2026-08-20). Restore it when
-        # that inverts back.
-        # if self.is_peak:
-        #     return ModelSettings(name="gemini-3.7-flash", effort="high")
+        # The peak split sends peak hours to flash because Pro is the tier that slows down then.
+        # It names `gemini-3.6-flash` rather than the newer `gemini-3.7-flash`, which queues
+        # behind its own load (observed 2026-08-20).
+        if self.is_peak:
+            return ModelSettings(name="gemini-3.6-flash", effort="high")
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
