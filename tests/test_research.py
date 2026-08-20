@@ -3,8 +3,10 @@
 from types import SimpleNamespace
 import base64
 from typing import TYPE_CHECKING, cast
+import asyncio
 from pathlib import Path
 
+import pytest
 from nextcord import AllowedMentions
 
 from discordbot.typings.llm import LLMConfig
@@ -836,3 +838,97 @@ async def test_delivery_attaches_both_files_when_each_fits_but_combined_over() -
     assert isinstance(files, list)
     assert len(files) == 2  # research.md AND research.png both attached, neither dropped
     assert "https://" not in str(edit["content"])  # nothing was hosted
+
+
+# ----- restart resume sweep -----------------------------------------------------------------
+
+
+def _research_cog(*, enabled: bool) -> research_cog.ResearchCogs:
+    """A cog carrying only what the resume sweep touches: no bot, no client, no gateway.
+
+    The key is always present so the switch alone decides `deep_research_available`, and neither
+    field is left to a deployment's `.env`.
+    """
+    cog = research_cog.ResearchCogs.__new__(research_cog.ResearchCogs)
+    config = LLMConfig()
+    config.deep_research_enabled = enabled
+    config.gemini_api_key = "AIza-key"
+    cog.config = config
+    cog._active_threads = set()
+    cog._tasks = set()
+    return cog
+
+
+async def _seed_researching(*, thread_id: int, owner_id: int) -> None:
+    """Seeds one in-flight row, as a launch that never reached a terminal phase left it."""
+    await rdb.upsert_session(
+        thread_id=thread_id,
+        owner_id=owner_id,
+        channel_id=1,
+        guild_id=1,
+        source_message_id=1,
+        agent="antigravity-preview-05-2026",
+        interaction_id=f"int_{thread_id}",
+        brief="b",
+        phase="researching",
+    )
+
+
+async def test_resume_sweep_reattaches_to_nothing_while_the_switch_is_off(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(**_kwargs: object) -> None:
+        raise AssertionError("the resume must not reach the provider while the switch is off")
+
+    monkeypatch.setattr(research_cog, "resume_research_stream", _boom)
+    cog = _research_cog(enabled=False)
+    await _seed_researching(thread_id=30, owner_id=300)
+
+    await cog._resume_all()
+
+    # Nothing is attached and nothing is delivered, and the row stays `researching` because that
+    # is what it is: the interaction runs server-side and a later start with the switch on may
+    # still deliver it.
+    assert not cog._tasks
+    assert cog._active_threads == set()
+    assert [session.thread_id for session in await rdb.list_resumable()] == [30]
+
+
+async def test_resume_sweep_stays_off_without_a_gemini_key(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def _boom(**_kwargs: object) -> None:
+        raise AssertionError("a keyless deployment must not reach the provider either")
+
+    monkeypatch.setattr(research_cog, "resume_research_stream", _boom)
+    # The gate is `deep_research_available`, so a switched-on deployment with no key is refused
+    # here rather than at `genai.Client` inside the resume's own try.
+    cog = _research_cog(enabled=True)
+    cog.config.gemini_api_key = "   "
+    await _seed_researching(thread_id=35, owner_id=350)
+
+    await cog._resume_all()
+
+    assert not cog._tasks
+    assert [session.thread_id for session in await rdb.list_resumable()] == [35]
+
+
+async def test_resume_sweep_still_resumes_when_the_switch_is_on(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cog = _research_cog(enabled=True)
+    resumed: list[int] = []
+
+    async def _fake_resume_one(*, session: rdb.PersistentResearchSession) -> None:
+        resumed.append(session.thread_id)
+
+    monkeypatch.setattr(cog, "_resume_one", _fake_resume_one)
+    await _seed_researching(thread_id=40, owner_id=400)
+
+    await cog._resume_all()
+    await asyncio.gather(*cog._tasks)
+
+    assert resumed == [40]
+    assert cog._active_threads == {40}
+    # The sweep leaves the phase alone: the resumed run decides its own terminal phase.
+    assert [session.thread_id for session in await rdb.list_resumable()] == [40]

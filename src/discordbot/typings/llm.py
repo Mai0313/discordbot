@@ -37,7 +37,8 @@ class LLMConfig(BaseSettings):
             description still ride as context but the model is told plainly that it has not
             watched the clip.
         deep_research_enabled: Kill-switch for the deep-research feature; when false the QA
-            answer model's `<deep-research>` marker is still stripped but no research runs.
+            answer model's `<deep-research>` marker is still stripped but no research runs, and
+            a restart leaves whatever was in flight alone instead of re-attaching to it.
         image_refine_prompt_enabled: Kill-switch for the IMAGE-route prompt director; when false
             the raw user request goes straight to the image model with no refinement step.
         video_refine_prompt_enabled: Kill-switch for the VIDEO-route prompt director; when false
