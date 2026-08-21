@@ -5,15 +5,44 @@ test here, so a checkout with three real keys configured cannot decide any outco
 Each test sets the exact key set it is about.
 """
 
+from datetime import datetime
+
 import pytest
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
+from discordbot.utils.timezone import TAIWAN_TIMEZONE
+from discordbot.services.gemini_keys.balancer import pick_gemini_key, reset_balancer_state
+from discordbot.services.gemini_keys.database import read_day_counts
 
 
 def _keys(config: LLMConfig) -> list[tuple[int, str]]:
     """Flattens the configured slots to (index, key) pairs for comparison."""
     return [(slot.index, slot.api_key) for slot in config.gemini_keys]
+
+
+def _configure(monkeypatch: pytest.MonkeyPatch, count: int) -> LLMConfig:
+    """Configures `count` Gemini keys and returns the config that sees them."""
+    monkeypatch.setenv(name="GEMINI_API_KEY", value="key-1")
+    for number in range(2, count + 1):
+        monkeypatch.setenv(name=f"GEMINI_API_KEY_{number}", value=f"key-{number}")
+    return LLMConfig()
+
+
+def _pin_day(monkeypatch: pytest.MonkeyPatch, day: str) -> None:
+    """Pins the balancer's day window to `day` (a `YYYY-MM-DD` date)."""
+    stamped = datetime.fromisoformat(day).replace(tzinfo=TAIWAN_TIMEZONE)
+    monkeypatch.setattr("discordbot.services.gemini_keys.balancer.database_now", lambda: stamped)
+
+
+async def _pick_indexes(config: LLMConfig, times: int) -> list[int]:
+    """Picks `times` keys in a row and returns the numbers handed out."""
+    picked: list[int] = []
+    for _ in range(times):
+        slot = await pick_gemini_key(config=config)
+        assert slot is not None
+        picked.append(slot.index)
+    return picked
 
 
 def test_the_numbered_keys_follow_the_unsuffixed_one(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -125,3 +154,87 @@ def test_the_pin_never_reaches_the_provider_test() -> None:
     pinned = ModelSettings(name="gemini-3.7-flash", effort="high", key_index=3)
 
     assert pinned.tools == [{"googleSearch": {}}, {"urlContext": {}}]
+
+
+async def test_three_keys_take_an_equal_share(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nine replies split three ways, which is the whole point of the feature."""
+    config = _configure(monkeypatch=monkeypatch, count=3)
+
+    picked = await _pick_indexes(config=config, times=9)
+
+    assert sorted(picked) == [1, 1, 1, 2, 2, 2, 3, 3, 3]
+
+
+async def test_a_tie_goes_to_the_lowest_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """From zero every key ties, so the order is deterministic rather than arbitrary."""
+    config = _configure(monkeypatch=monkeypatch, count=3)
+
+    assert await _pick_indexes(config=config, times=3) == [1, 2, 3]
+
+
+async def test_a_key_added_later_catches_up_rather_than_alternating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new key absorbs replies until it is level, which round-robin would never do.
+
+    Round-robin would resume alternating and leave the existing gap in place for good, so
+    the key added at noon would stay permanently behind the ones that ran all morning.
+    """
+    config = _configure(monkeypatch=monkeypatch, count=2)
+    await _pick_indexes(config=config, times=4)
+
+    widened = _configure(monkeypatch=monkeypatch, count=3)
+    caught_up = await _pick_indexes(config=widened, times=2)
+
+    assert caught_up == [3, 3]
+
+
+async def test_a_new_day_starts_every_key_at_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The window is what bounds how far behind a newly added key can start.
+
+    Without it a lifetime counter would hand a fourth key every reply for as long as it took
+    to catch up with months of history.
+    """
+    config = _configure(monkeypatch=monkeypatch, count=2)
+    _pin_day(monkeypatch=monkeypatch, day="2026-08-21")
+    await _pick_indexes(config=config, times=3)
+
+    _pin_day(monkeypatch=monkeypatch, day="2026-08-22")
+
+    assert await _pick_indexes(config=config, times=2) == [1, 2]
+
+
+async def test_an_unconfigured_deployment_picks_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No key is a supported state: the caller runs unpinned, as the bot did before."""
+    monkeypatch.setenv(name="GEMINI_API_KEY", value="")
+
+    assert await pick_gemini_key(config=LLMConfig()) is None
+
+
+async def test_the_counts_survive_a_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A restart resumes the day's split instead of putting every key back at zero."""
+    config = _configure(monkeypatch=monkeypatch, count=3)
+    _pin_day(monkeypatch=monkeypatch, day="2026-08-22")
+    await _pick_indexes(config=config, times=2)
+
+    reset_balancer_state()
+
+    assert await _pick_indexes(config=config, times=1) == [3]
+    assert await read_day_counts(day="2026-08-22") == {1: 1, 2: 1, 3: 1}
+
+
+async def test_an_unreachable_database_still_balances(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The in-memory counts are the authoritative side, so a dead database costs history only.
+
+    A balancer that refused to hand out a key when its bookkeeping was unavailable would turn
+    a cosmetic outage into a total one, on the path every single reply goes through.
+    """
+    config = _configure(monkeypatch=monkeypatch, count=3)
+
+    async def _explode(day: str) -> dict[int, int]:
+        """Stands in for a database that cannot be read."""
+        raise RuntimeError(f"llm_keys.db unavailable for {day}")
+
+    monkeypatch.setattr("discordbot.services.gemini_keys.balancer.read_day_counts", _explode)
+
+    assert sorted(await _pick_indexes(config=config, times=6)) == [1, 1, 2, 2, 3, 3]

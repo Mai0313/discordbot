@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from discordbot.cogs.feedback.database import Base as FeedbackBase
 from discordbot.cogs.research.database import Base as ResearchBase
 from discordbot.services.economy.database import Base
+from discordbot.services.gemini_keys.balancer import reset_balancer_state
 
 
 @pytest.fixture
@@ -192,3 +193,26 @@ def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     for name in [name for name in os.environ if name.startswith("GEMINI_API_KEY_")]:
         monkeypatch.delenv(name=name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def gemini_key_balancer_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Points the key balancer's counts at a throwaway database and empties its window.
+
+    Autouse rather than opt-in, unlike the four `*_isolated_db` fixtures above: those engines
+    are reached only by tests that asked for the feature, while this one sits under every
+    reply, so a pipeline test that never mentions keys would still write the live
+    `data/database/llm_keys.db` (which in a worktree does not even have a directory to live
+    in). Resetting the in-memory window matters as much as the file, since the counts are the
+    authoritative side and would otherwise accumulate across the whole session.
+
+    `NullPool` so the engine holds no connection between operations: an autouse fixture
+    cannot dispose an async engine, and a pooled aiosqlite connection would outlive the test
+    that opened it.
+    """
+    keys_db_path = tmp_path / "llm_keys.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{keys_db_path}", poolclass=NullPool)
+    monkeypatch.setattr("discordbot.services.gemini_keys.database._engine", engine)
+    monkeypatch.setattr("discordbot.services.gemini_keys.database._schema_ready_for", None)
+    reset_balancer_state()
+    return keys_db_path
