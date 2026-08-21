@@ -8,6 +8,7 @@ fixtures are the other half of that isolation, keeping a real deployment's `.env
 out of every test whether or not it asked for them.
 """
 
+import os
 from pathlib import Path
 from itertools import count
 from collections.abc import AsyncIterator
@@ -172,4 +173,22 @@ def feedback_env_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
         "FEEDBACK_MAX_OPEN_REPORTS",
         "FEEDBACK_SUBMIT_COOLDOWN_SECONDS",
     ):
+        monkeypatch.delenv(name=name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leaves every test a single-key deployment whatever the checkout has configured.
+
+    Autouse for the reason `feedback_env_isolated` is, with one extra edge: `gemini_keys`
+    reads the numbered variables straight from the environment rather than through a field,
+    so `LLMConfig.model_validate` cannot shut them out the way it can a named credential.
+    On a machine with three keys configured, every balanced test would then see three
+    whatever it asked for. `GEMINI_API_KEY` itself is deliberately left alone, since a long
+    tail of tests reads it as the "is Gemini configured at all" signal.
+
+    The prefix match is wider than `gemini_keys`' own pattern on purpose: isolation should
+    not have to track which spellings that property happens to accept today.
+    """
+    for name in [name for name in os.environ if name.startswith("GEMINI_API_KEY_")]:
         monkeypatch.delenv(name=name, raising=False)
