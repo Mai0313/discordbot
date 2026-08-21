@@ -834,7 +834,7 @@ class ReplyGeneratorCogs(commands.Cog):
             caller still gates it on `allow_voice` and `config.inline_voice_enabled`.
         """
         return VoiceGenerator(
-            client=self.openai_client, model_name=self.runtime_models.tts_model.name
+            client=self.openai_client, model_name=self.runtime_models.tts_model.deployment_name
         )
 
     @cached_property
@@ -1296,7 +1296,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             with logfire.span(span_name, model=model.name, message_id=message.id):
                 responses = await self.openai_client.responses.create(
-                    model=model.name,
+                    model=model.deployment_name,
                     instructions=_build_runtime_instructions(
                         system_prompt=system_prompt, message=message
                     ),
@@ -1462,7 +1462,7 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             with logfire.span("gen_reply route", message_id=message.id):
                 responses = await self.openai_client.responses.parse(
-                    model=triage_model.name,
+                    model=triage_model.deployment_name,
                     instructions=ROUTE_PROMPT,
                     input=cast("ResponseInputParam", message_list),
                     text_format=RouteClassification,
@@ -1522,7 +1522,7 @@ class ReplyGeneratorCogs(commands.Cog):
         started = time.monotonic()
         with logfire.span("gen_reply effort", message_id=message.id):
             responses = await self.openai_client.responses.parse(
-                model=triage_model.name,
+                model=triage_model.deployment_name,
                 instructions=EFFORT_PROMPT,
                 input=cast("ResponseInputParam", message_list),
                 text_format=EffortGrade,
@@ -1661,7 +1661,7 @@ class ReplyGeneratorCogs(commands.Cog):
             render_callable_users_block(allowed=allowed),
         ]
         responses = await self.openai_client.responses.create(
-            model=triage_model.name,
+            model=triage_model.deployment_name,
             instructions=MEMORY_SELECT_PROMPT,
             input=selection_input,
             reasoning=triage_model.reasoning,
@@ -2161,7 +2161,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
             else:
                 responses = await self.openai_client.responses.create(
-                    model=slow_model.name,
+                    model=slow_model.deployment_name,
                     instructions=_build_runtime_instructions(
                         system_prompt=system_prompt, message=message
                     ),

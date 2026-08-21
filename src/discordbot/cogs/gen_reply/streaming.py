@@ -11,6 +11,7 @@ from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.utils import escape_mentions
 from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
+from discordbot.typings.models import strip_key_suffix
 from discordbot.utils.reactions import update_reaction
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -465,7 +466,11 @@ class ResponseStreamer(BaseModel):
 
     async def _finalize_reply(self) -> str:
         """Writes the usage footer and final reply once the stream is consumed."""
-        input_rate, output_rate = get_token_rates(model_name=self.model_name)
+        # The stream reports the deployment it answered from, so both the price lookup and
+        # the label a human reads take the model out of it. `self.model_name` itself stays
+        # whole, because the logfire record below is where a LiteLLM fallback is spotted.
+        reported_model = strip_key_suffix(deployment_name=self.model_name)
+        input_rate, output_rate = get_token_rates(model_name=reported_model)
         cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
@@ -505,7 +510,7 @@ class ResponseStreamer(BaseModel):
         # Footer format must stay matchable by `utils/llm_transcript.py::USAGE_FOOTER_RE`; the
         # ⬆/⬇ icons are its anchor.
         model_label = (
-            f"{self.model_name} ({self.model_effort})" if self.model_effort else self.model_name
+            f"{reported_model} ({self.model_effort})" if self.model_effort else reported_model
         )
         usage_footer = f"\n\n-# {model_label} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f}{memory_line}"
 

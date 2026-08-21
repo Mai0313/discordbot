@@ -1,3 +1,4 @@
+import re
 from typing import Literal, cast
 from datetime import UTC, datetime
 
@@ -5,6 +6,28 @@ from pydantic import Field, BaseModel, computed_field
 from openai.types.responses.tool_param import ToolParam
 from openai.types.shared.reasoning_effort import ReasoningEffort
 from openai.types.shared_params.reasoning import Reasoning
+
+# The two halves of the key pin, kept side by side so they cannot drift: `deployment_name`
+# writes the suffix and `strip_key_suffix` takes it back off. A name that reached a price or
+# modality lookup still wearing one fails silently, so the reverse has to be exact.
+_KEY_SUFFIX_RE = re.compile(r"-key\d+$")
+
+
+def strip_key_suffix(deployment_name: str) -> str:
+    """Returns a deployment name with any `-key<n>` pin removed.
+
+    For the two things that must see the model rather than the deployment: the price table,
+    keyed on real model names, and the usage footer, which is read by people. Both take the
+    name off the response rather than off the request (that is how a LiteLLM fallback is
+    spotted at all), so neither can simply reuse the `ModelSettings` that was dispatched.
+
+    Args:
+        deployment_name: A dispatched or reported deployment name.
+
+    Returns:
+        The same string without a trailing `-key<n>`, unchanged when it carries none.
+    """
+    return _KEY_SUFFIX_RE.sub("", deployment_name)
 
 
 class ModelSettings(BaseModel):
@@ -386,4 +409,10 @@ class EffortGrade(BaseModel):
     )
 
 
-__all__ = ["EffortGrade", "ModelSettings", "RouteClassification", "RuntimeModelCatalog"]
+__all__ = [
+    "EffortGrade",
+    "ModelSettings",
+    "RouteClassification",
+    "RuntimeModelCatalog",
+    "strip_key_suffix",
+]
