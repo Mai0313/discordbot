@@ -1,19 +1,23 @@
 """Guards the model strings and reasoning-effort values the runtime model catalog ships.
 
-Gemini 3 cannot switch thinking off, so its `thinking_level` vocabulary starts at `minimal`.
-`none` still round-trips through LiteLLM, but what it turns into depends on the branch the model
-string picks. On the `thinking_level` branch every name here now takes, it is rewritten to
-minimal / low with `includeThoughts: False`, which ends the reasoning summary the streaming
-preview reads without failing anything; on a `*-latest` alias, which carries no `gemini-3`
-substring for LiteLLM to match, it falls through to the pre-3 branch and sends
-`thinkingBudget: 0`, which a Gemini 3.x model rejects. Neither shows up in tests because both
-only surface against the live API, which is why the floor is pinned here.
+What this file can check and what it cannot is the thing to hold on to. Whether a given model
+accepts a given effort is a fact about that model, it changes the moment a tier is repointed, and
+no test here can know it — look it up in openrouter's list instead (`ModelSettings.effort` carries
+the lookup). So nothing below asserts that a pairing is legal.
 
-The no-alias rule is the same trap through the other door, so it is guarded here too, at two
-strengths. No tier may name an alias at all, because the substring is what decides the whole
-translation. `slow_model` additionally may not drift off `high`, since it is the one tier whose
-effort is chosen at runtime and handed to `interactions.create`, where an alias narrows the
-accepted `thinking_level` vocabulary and #459 lost whole replies to it.
+What is checkable is the shape of the values the catalog ships, and both rules exist because their
+failure only surfaces against the live API. No tier may ask for `none` / `disable`: that is not a
+universal rule (openrouter lists 38 models that do accept `none`, and OpenAI's are among them) but
+it holds for every tier here, because all of them are Gemini, where thinking cannot be switched
+off at all. LiteLLM does not reject the ask but rewrites it to minimal / low with
+`includeThoughts: False`, ending the reasoning summary the streaming preview reads without failing
+anything. Point a tier at a non-Gemini model and this guard is the one to revisit rather than
+route around.
+
+And no tier may name a `*-latest` alias, because an alias moves under the deployment, so the
+effort set it accepts can change with nothing in this repo changing; `slow_model` additionally may
+not drift off `high`, since it is the one tier whose effort is chosen at runtime and handed to
+`interactions.create`, where #459 lost whole replies to it.
 """
 
 from types import SimpleNamespace
@@ -23,8 +27,9 @@ import pytest
 
 from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 
-# Everything below `minimal` is unrepresentable on Gemini 3; `disable` and `none` both mean
-# "no thinking", which the model cannot honor.
+# `disable` and `none` both mean "no thinking", which no Gemini model can honor. Every tier the
+# catalog ships is Gemini, which is what makes this a guard rather than a preference; it is not a
+# property of the field, and other providers do accept `none` (see the module docstring).
 _REFUSED_EFFORTS = frozenset({"none", "disable"})
 
 
@@ -86,16 +91,24 @@ def test_no_tier_dispatches_an_alias() -> None:
     )
 
 
-def test_the_default_effort_is_the_gemini_floor() -> None:
-    """A tier that names no effort still gets one the model can honor."""
-    assert ModelSettings(name="gemini-3.7-flash").effort == "minimal"
+def test_the_default_effort_is_not_one_gemini_refuses() -> None:
+    """A tier that names no effort still gets one no Gemini model has to refuse outright.
+
+    Deliberately not an equality assertion. No single default can be right for every model that
+    relies on it, because the accepted set is per-model and the vocabulary is per-provider (see
+    `ModelSettings.effort`); all it has to be is outside the pair every Gemini model refuses.
+    The tiers that lean on it today dispatch no effort at all, so the value only has to stay
+    harmless.
+    """
+    assert ModelSettings(name="gemini-3.7-flash").effort not in _REFUSED_EFFORTS
 
 
 def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every slow-model branch stays on a pinned snapshot at high effort.
 
     The one tier whose effort is decided at runtime is also the one dispatched direct to Google,
-    where the accepted `thinking_level` set is per-model and an alias's is the narrowest measured.
+    where the accepted `thinking_level` set is per-model and a rejection costs the whole reply.
+    A pinned snapshot's set can at least be looked up; an alias resolves elsewhere, so it cannot.
     Which snapshot a branch names is free to change and two branches may legitimately be equal;
     that none of them is an alias is not free, and nothing else in the tree reports it.
 
@@ -118,9 +131,9 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
             wrong_effort.setdefault(str(settings.effort), when)
 
     assert aliases == {}, (
-        "A `*-latest` alias narrows the thinking levels this tier can be dispatched with to "
-        "low / high. `EffortGrade` emits only those two today, so this guards the next "
-        f"vocabulary change rather than today's traffic, which #459 was. Aliases: {aliases}"
+        "A `*-latest` alias resolves under the deployment, so the thinking levels this tier can "
+        "be dispatched with cannot be looked up for it and can change without this repo "
+        f"changing. Name the snapshot, which can. #459 was that failure. Aliases: {aliases}"
     )
     assert wrong_effort == {}, f"Every slow-model branch ships `high`. Offenders: {wrong_effort}"
 

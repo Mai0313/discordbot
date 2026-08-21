@@ -20,16 +20,24 @@ class ModelSettings(BaseModel):
         description="LiteLLM model string dispatched on the Responses API.",
         examples=["gemini-3.7-flash", "gemini-3.1-flash-image"],
     )
-    # `minimal`, never `none`. Gemini 3 cannot switch thinking off at all, so the API's own
-    # vocabulary starts at `minimal` (`thinking_level` accepts minimal / low / medium / high).
-    # Which of LiteLLM's two branches translates the effort is decided by the literal substring
-    # `gemini-3` in the model string, and every name this project sends through the proxy
-    # carries it, so the `thinking_level` branch is the one that runs. There `none` / `disable`
-    # are not rejected but rewritten to minimal / low with `includeThoughts: False`, which
-    # silently ends the reasoning summary the streaming preview is built on; asking for
-    # `minimal` keeps it. On a `*-latest` alias, which carries no `gemini-3`, the same request
-    # instead falls through to the pre-3 branch and sends `thinkingBudget: 0`, which a Gemini
-    # 3.x model rejects outright.
+    # Which efforts a model accepts is per-model and NOT derivable from its name, its family, or
+    # a sibling snapshot. The vocabulary itself differs by provider, so a guess is not even wrong
+    # in a consistent direction: Gemini has `minimal` and no `xhigh`, OpenAI has `xhigh` and on
+    # some models `none`, Anthropic has `max`. Look the model up in openrouter's list
+    # (https://openrouter.ai/api/v1/models) under its `<provider>/<name>` id, where `reasoning`
+    # carries `supported_efforts`, `default_effort` and `mandatory` (whether thinking can be
+    # switched off at all). Sending an effort outside a model's own set is a hard failure rather
+    # than a downgrade, so do that lookup instead of trusting a list written down in this tree.
+    #
+    # Every tier this catalog ships today is Gemini, where `mandatory` is true and `none` /
+    # `disable` are therefore never legal. LiteLLM does not reject them but rewrites them to
+    # minimal / low with `includeThoughts: False`, silently ending the reasoning summary the
+    # streaming preview is built on; on a `*-latest` alias, which carries no `gemini-3`
+    # substring, it instead sends `thinkingBudget: 0`, which a Gemini 3.x model refuses. Both
+    # are facts about these models and this proxy, not about the field.
+    #
+    # The `minimal` default serves only the tiers that dispatch no effort at all (the image /
+    # video / music / TTS / agent models below); every conversational tier states its own.
     effort: ReasoningEffort = Field(
         default="minimal",
         description="Reasoning effort passed to the Responses API for this model.",
@@ -169,9 +177,9 @@ class RuntimeModelCatalog(BaseModel):
         both the seam against `fast_model` and why `minimal` is enough.
 
         Returns:
-            Flash-lite at `minimal`. LiteLLM forwards that untouched on any `gemini-3` flash
-            name, which is exactly what `gemini-3.7-flash` rejects; measured 2026-08-20, this
-            snapshot accepts it and answers under its own name rather than a fallback's.
+            Flash-lite at `minimal`, which is this snapshot's own default effort. Confirm any
+            repointed name still lists `minimal` before carrying the effort across (see
+            `ModelSettings.effort`).
         """
         return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
 
@@ -214,17 +222,17 @@ class RuntimeModelCatalog(BaseModel):
         # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
         # answer turn hands that effort straight to the Interactions API as a `thinking_level`
-        # (`gen_reply/interactions.py`), where the enum is per-model: every alias measured
-        # (flash / pro / flash-lite) accepts only low / high, while every pinned snapshot takes
-        # `medium` as well. The grade is binary since #490, so it no longer reaches the value
-        # that lost whole replies through an alias in #459; the pinning stays because it is what
-        # keeps the next vocabulary change from doing it again. Note `minimal` is refused on
-        # `gemini-3.7-flash`, which LiteLLM's `is_gemini3flash` test matches: the level is
-        # forwarded untouched for the model itself to reject, and the proxy then answers from the
-        # fallback deployment, so the caller sees a 200 naming another model rather than an error
-        # (measured 2026-08-19 on 3.7-flash, where low / medium / high all passed). It is
-        # unmeasured on the pro branch, which that test does not match, and stays legal on both
-        # only because `EffortGrade` never emits it.
+        # (`gen_reply/interactions.py`), where a level the model does not list is a hard failure
+        # that loses the whole reply (#459). An alias is the worse end of that: it moves under the
+        # deployment, so the set it accepts can change without this file changing. Look the
+        # snapshot up (see `ModelSettings.effort`) before repointing either branch, and check its
+        # set covers every value `EffortGrade` can emit — including across a provider change,
+        # where the effort vocabulary itself differs and a value can stop existing.
+        #
+        # Through the proxy that rejection does not surface as an error. LiteLLM forwards the
+        # level for the model itself to refuse and then answers from the fallback deployment, so
+        # the caller sees an HTTP 200 whose `model` field names a different model. A status code
+        # proves nothing here; only the response's own `model` does.
         if self.is_peak:
             return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
         return ModelSettings(name="gemini-3.7-flash", effort="high")
@@ -301,8 +309,10 @@ class EffortGrade(BaseModel):
     Deliberately binary, with `high` as the grade an ordinary message gets and `low` as the
     exception that has to be earned (#490): the grader reads text-only parts, so it never sees
     an attachment's content, a linked post, or the history behind a short message, and every
-    one of those blind spots hides work rather than inventing it. `{low, high}` is also the one
-    set every model and surface measured in #461 accepts as a `thinking_level`.
+    one of those blind spots hides work rather than inventing it. Both values still have to exist
+    on whatever `slow_model` names, and no effort is universal — not even `high`, which 134 of the
+    138 reasoning models openrouter lists happen to carry — so repointing that tier or widening
+    this grade is checked against the snapshot first (see `ModelSettings.effort`).
 
     Attributes:
         effort: Reasoning effort the answer model should spend on this message.
