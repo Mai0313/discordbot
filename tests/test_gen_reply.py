@@ -44,6 +44,7 @@ from discordbot.cogs.gen_reply.cog import (
     HISTORY_CHAR_BUDGET,
     LINK_CONTEXT_SOURCES,
     HISTORY_MESSAGE_LIMIT,
+    MAX_HISTORY_MEDIA_PARTS,
     HISTORY_PER_MESSAGE_OVERHEAD,
     ReplyGeneratorCogs,
     _discard_task,
@@ -54,6 +55,7 @@ from discordbot.cogs.gen_reply.cog import (
     _link_url_for_source,
     _trim_history_to_budget,
     _await_deadline_bound_task,
+    _history_media_over_budget,
     _build_runtime_instructions,
 )
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -3846,6 +3848,75 @@ def test_trim_history_charges_an_attachment_only_message() -> None:
     kept = _trim_history_to_budget(messages=[as_message(fake=m) for m in blanks])
 
     assert len(kept) <= HISTORY_CHAR_BUDGET // HISTORY_PER_MESSAGE_OVERHEAD
+
+
+def _image_post(index: int, count: int) -> FakeMessage:
+    """A history message carrying `count` image attachments with distinct ids."""
+    message = FakeMessage(content=f"post {index}", author=FakeAuthor(user_id=1))
+    message.id = 7000 + index
+    message.attachments = [
+        FakeAttachment(
+            filename=f"{index}-{n}.png", content_type="image/png", attachment_id=index * 100 + n
+        )
+        for n in range(count)
+    ]
+    return message
+
+
+def test_history_media_budget_refuses_every_older_post_once_one_is_refused() -> None:
+    """The files that survive are an unbroken run ending at the newest post.
+
+    The oldest post here needs one part and would fit the single slot the newest two leave
+    unspent, so a budget that kept looking for something small enough would admit it. That is
+    the case being pinned: admitting it would show the model an older attachment while a newer
+    one rendered as a marker, which reads as files going missing at random rather than as a cap.
+    """
+    posts = [
+        _image_post(index=0, count=1),
+        _image_post(index=1, count=5),
+        _image_post(index=2, count=9),
+    ]
+
+    over = _history_media_over_budget(
+        builder=_cog().input_builder, hist_messages=[as_message(fake=m) for m in posts]
+    )
+
+    assert over == {posts[0].id: 1, posts[1].id: 5}
+
+
+def test_history_media_budget_exempts_the_newest_post_that_carries_attachments() -> None:
+    """One post of many images keeps its files rather than spending nothing at all."""
+    post = _image_post(index=0, count=MAX_HISTORY_MEDIA_PARTS + 5)
+
+    over = _history_media_over_budget(
+        builder=_cog().input_builder, hist_messages=[as_message(fake=post)]
+    )
+
+    assert over == {}
+
+
+async def test_render_history_degrades_over_budget_attachments_to_markers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past the cap a history post renders as the route's marker, not as uploaded files."""
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image"},
+    )
+    cog = _cog()
+    posts = [_image_post(index=i, count=6) for i in range(3)]
+
+    rendered = await cog._render_history(
+        [as_message(fake=m) for m in posts], text_only=False, message_id=1
+    )
+
+    # rendered[0] is the history header; the rest follow the posts in order.
+    oldest, newest = rendered[1]["content"], rendered[3]["content"]
+    assert isinstance(oldest, list)
+    assert isinstance(newest, list)
+    assert [part["type"] for part in oldest[1:]] == ["input_text"] * 6
+    assert {part.get("text") for part in oldest[1:]} == {"[attachment: image]"}
+    assert all(part["type"] != "input_text" for part in newest[1:])
 
 
 async def test_gen_reply_routes_and_handlers_without_api(
