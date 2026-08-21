@@ -15,13 +15,14 @@ from unittest.mock import MagicMock
 
 from PIL import Image
 import httpx
-from openai import APITimeoutError
+from openai import APITimeoutError, BadRequestError
 import pytest
 import nextcord
 from nextcord import File, Embed, Message
 import requests
 from xai_sdk.proto import files_pb2
 from google.genai.types import FileState
+from google.genai.errors import ClientError
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -3159,6 +3160,32 @@ def test_extract_friendly_error_prefers_nested_provider_message() -> None:
     assert extract_friendly_error(exc=RuntimeError(raw)) == "quota exceeded"
     assert extract_friendly_error(exc=RuntimeError("plain failure")) == "plain failure"
     assert extract_friendly_error(exc=RuntimeError("bad b'not json'")) == "bad b'not json'"
+
+
+def test_extract_friendly_error_reads_a_decoded_400_body() -> None:
+    """A plain provider 400 is read off the exception, not out of its dict-repr string."""
+    refusal = "Input blocked: Sorry, we can't create videos with real people's names."
+    body = {"error": {"message": refusal, "code": "invalid_request"}}
+
+    # `_make_status_error` unwraps the `error` object into `.body` before raising, and renders
+    # the whole document into the message as a Python dict repr.
+    request = httpx.Request(method="POST", url="http://proxy/v1/images/generations")
+    response = httpx.Response(status_code=400, request=request, json=body)
+    proxied = BadRequestError(f"Error code: 400 - {body}", response=response, body=body["error"])
+    assert extract_friendly_error(exc=proxied) == refusal
+
+    # The direct-to-Google path keeps the whole document on `.details` instead.
+    assert extract_friendly_error(exc=ClientError(400, body, None)) == refusal
+
+    # A non-streaming LiteLLM 400 needs both steps: the dict repr escapes the wrapped chain's
+    # quotes to `b\'...\'`, so the bytes literal is only reachable once `.body` has replaced the
+    # text being scanned.
+    chain = """litellm.BadRequestError: VertexAIException - b'{"error": {"message": "quota"}}'"""
+    wrapped_body = {"error": {"message": chain, "code": "400"}}
+    wrapped = BadRequestError(
+        f"Error code: 400 - {wrapped_body}", response=response, body=wrapped_body["error"]
+    )
+    assert extract_friendly_error(exc=wrapped) == "quota"
 
 
 def test_required_modality_gate_keeps_code_and_text() -> None:
