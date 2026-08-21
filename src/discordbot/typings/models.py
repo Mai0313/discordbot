@@ -211,7 +211,7 @@ class RuntimeModelCatalog(BaseModel):
     def tts_model(self) -> ModelSettings:
         """The model settings for spoken-reply text-to-speech.
 
-        Callers: `VoiceGenerator` (via `ReplyGeneratorCogs.voice_generator`).
+        Callers: `VoiceGenerator` (via `GeminiKeyToolkit.voice_generator`).
 
         Returns:
             Model settings whose name is dispatched on the `audio.speech` endpoint. Only
@@ -282,7 +282,7 @@ class RuntimeModelCatalog(BaseModel):
         route-decided level) and by `write_up_report` (the background rewrite of a
         `/feedback` report into an issue, which nobody waits on). Three more read only
         the model NAME and dispatch nothing: `_supported_sources` gates attachment
-        modalities on it, `ReplyGeneratorCogs.input_builder` picks the attachment handler
+        modalities on it, `GeminiKeyToolkit.input_builder` picks the attachment handler
         off it through `build_attachment_handler`, and `_run_reply_pipeline` derives each
         link-context builder's `answer_model_is_gemini` from it.
 

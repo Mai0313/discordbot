@@ -857,9 +857,7 @@ class ReplyGeneratorCogs(commands.Cog):
         cached = self._toolkits.get(index)
         if cached is not None:
             return cached
-        toolkit = GeminiKeyToolkit(
-            bot=self.bot, config=self.config, openai_client=self.openai_client, slot=slot
-        )
+        toolkit = GeminiKeyToolkit(bot=self.bot, openai_client=self.openai_client, slot=slot)
         self._toolkits[index] = toolkit
         return toolkit
 

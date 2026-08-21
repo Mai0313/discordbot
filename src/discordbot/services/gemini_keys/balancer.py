@@ -92,9 +92,10 @@ async def pick_gemini_key(config: LLMConfig) -> GeminiKeySlot | None:
         chosen = min(keys, key=lambda slot: (_counts.get(slot.index, 0), slot.index))
         count = _counts.get(chosen.index, 0) + 1
         _counts[chosen.index] = count
-    # Outside the lock: the reply path must not wait on a database write, and the write
-    # carries an absolute count rather than an increment, so two picks landing out of order
-    # cost at most a momentarily stale row that the next pick corrects.
+    # Outside the lock so a slow write cannot queue the next reply's pick behind it; this
+    # reply does still await it, which is fine at SQLite-on-WAL latency. The write carries an
+    # absolute count rather than an increment, so two picks landing out of order cost at most
+    # a momentarily stale row that the next pick corrects.
     await _persist(day=day, key_index=chosen.index, count=count)
     return chosen
 

@@ -23,7 +23,7 @@ from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ext import commands
 
-from discordbot.typings.llm import LLMConfig, GeminiKeySlot
+from discordbot.typings.llm import GeminiKeySlot
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.cogs.gen_reply.generation import (
@@ -47,7 +47,6 @@ class GeminiKeyToolkit(BaseModel):
 
     Attributes:
         bot: The Discord bot instance, passed through to the input builder.
-        config: Runtime LLM config, for the kill-switches the generators are gated on.
         openai_client: The shared proxy client; the key rides in the model name, not here.
         slot: The leased key, or None when the deployment has no Gemini key configured. None
             leaves every tier unpinned and every direct-to-Google path unavailable, which is
@@ -59,7 +58,6 @@ class GeminiKeyToolkit(BaseModel):
     bot: SkipValidation[commands.Bot] = Field(
         ..., description="The Discord bot instance, passed through to the input builder."
     )
-    config: LLMConfig = Field(..., description="Runtime LLM config for the feature switches.")
     openai_client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Shared LiteLLM-proxy client; the key rides in the model name."
     )

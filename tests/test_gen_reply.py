@@ -806,10 +806,7 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     # here; the autouse `usage_log_isolated_dir` fixture keeps it off the live file.
     cog.usage_recorder = UsageRecorder()
     toolkit = GeminiKeyToolkit(
-        bot=cast("commands.Bot", cog.bot),
-        config=cog.config,
-        openai_client=cog.openai_client,
-        slot=None,
+        bot=cast("commands.Bot", cog.bot), openai_client=cog.openai_client, slot=None
     )
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = toolkit.input_builder.attachment_handler
@@ -8914,7 +8911,6 @@ def test_a_toolkit_binds_every_piece_to_one_key() -> None:
     cog = _cog()
     toolkit = GeminiKeyToolkit(
         bot=cog.bot,
-        config=cog.config,
         openai_client=cog.openai_client,
         slot=GeminiKeySlot(index=2, api_key="second-key"),
     )
@@ -8971,3 +8967,37 @@ async def test_consecutive_replies_lease_different_keys(monkeypatch: pytest.Monk
     # The third comes back to key 1, and to the very same toolkit, because the caches inside
     # it hold that key's Files API uris.
     assert third is first
+
+
+async def test_a_pinned_reply_dispatches_the_answer_on_that_key(
+    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The leased key survives all the way from the toolkit to the model the proxy is asked for.
+
+    The AST scan proves each dispatch reads `deployment_name` and the catalog sweep proves
+    every tier carries the pin, but neither runs the two together. This does, so a pin lost
+    between `lease_toolkit` and `responses.create` fails a test rather than quietly landing
+    the reply on the pooled deployment while its uploads sit on another project.
+    """
+    del economy_isolated_db
+    cog = _cog()
+    cog.config = _config_stub(inline_voice_enabled=False, inline_image_enabled=False)
+    pinned = GeminiKeyToolkit(
+        bot=cog.bot,
+        openai_client=cog.openai_client,
+        slot=GeminiKeySlot(index=2, api_key="second-key"),
+    )
+    cog._toolkits = {2: pinned}
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await cog._handle_message_reply(
+        toolkit=pinned,
+        message=as_message(fake=message),
+        system_prompt="SYS",
+        context=ReplyContext(),
+    )
+
+    dispatched = _recorded(cog).responses.create_models
+    assert dispatched == [RuntimeModelCatalog(key_index=2).slow_model.deployment_name]
+    assert dispatched[0].endswith("-key2")
