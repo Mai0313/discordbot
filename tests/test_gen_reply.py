@@ -7120,11 +7120,10 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
-    # Which snapshot each branch names is the catalog's to change; that neither may be a
-    # `*-latest` alias is guarded in `tests/test_runtime_models.py`. What this test owns is
-    # that the window is read correctly and that a branch answers the same on every hour in it.
-    assert peak_start[0] == peak_end[0]
-    assert before_peak[0] == after_peak[0] == weekend[0]
+    # The peak branch is parked, so every hour answers on the same model. Asserted across all
+    # five rather than per branch, because the per-branch form passes either way once there is
+    # one branch; the window itself is still guarded above.
+    assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
 async def test_handle_message_reply_selection_offers_tool_then_answers_with_builtins(

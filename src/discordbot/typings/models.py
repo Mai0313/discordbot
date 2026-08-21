@@ -161,6 +161,8 @@ class RuntimeModelCatalog(BaseModel):
     def is_peak(self) -> bool:
         """Whether runtime model selection is in the peak-hour window.
 
+        No tier reads this today; `slow_model`'s branch on it is parked (see there).
+
         Returns:
             True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
         """
@@ -287,10 +289,8 @@ class RuntimeModelCatalog(BaseModel):
         link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
-            `high` on the model the hour picks: `gemini-3.1-pro-preview` inside the peak window
-            and `gemini-3.7-flash` outside it. 3.7 is the newer flash answer but the one that
-            queues behind its own popularity (observed 2026-08-20), so the busy hours answer off
-            the flash family altogether rather than wait on it, at pro's own per-token rate.
+            `gemini-3.7-flash` at `high`, on every hour. The peak-hour split below is parked,
+            not deleted: see the comment there.
         """
         # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
@@ -306,10 +306,13 @@ class RuntimeModelCatalog(BaseModel):
         # level for the model itself to refuse and then answers from the fallback deployment, so
         # the caller sees an HTTP 200 whose `model` field names a different model. A status code
         # proves nothing here; only the response's own `model` does.
-        if self.is_peak:
-            return ModelSettings(
-                name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index
-            )
+        # Peak-hour branch parked 2026-08-22: it routed around 3.7 queueing in the busy hours,
+        # which is what balancing the keys attacks, so it is held back to see if it is still
+        # needed. Uncomment to restore.
+        # if self.is_peak:
+        #     return ModelSettings(
+        #         name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index
+        #     )
         return ModelSettings(name="gemini-3.7-flash", effort="high", key_index=self.key_index)
 
     @property
