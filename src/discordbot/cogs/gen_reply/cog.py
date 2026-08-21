@@ -166,6 +166,19 @@ MEMORY_CONTEXT_TARGET_USERS = 8
 # Recorded as a reply's route when the pipeline failed before the router returned one.
 UNROUTED_REPLY = "unrouted"
 
+# How much channel history one answer reads, bounded on two axes because either alone is the
+# wrong shape. Discord conversation here is overwhelmingly one-line messages — measured across
+# 10M logged messages, the median is 6 characters and the busiest channel's last 200 come to
+# 1.5k — so a message count alone lets a chatty channel hand the model almost nothing while a
+# channel of long posts blows the input up. Whichever bound binds first wins.
+HISTORY_MESSAGE_LIMIT = 500
+HISTORY_CHAR_BUDGET = 8000
+
+# What a history message costs beyond its own text: the rendered form carries an author header,
+# and an attachment-only message has empty `content` but still renders a marker standing in for
+# it. Without a floor per message a run of image posts would count as free and overshoot.
+HISTORY_PER_MESSAGE_OVERHEAD = 40
+
 # The model this turn most recently dispatched on, so `gen_reply failed` can name it: the failure
 # surfaces in `on_message`, several frames above every place that picks a model, and a provider
 # error rarely says which model it refused. A ContextVar rather than an attribute on the cog
@@ -219,6 +232,28 @@ def _authored_link_texts(message: Message) -> list[str]:
     """
     spans = [message.content or "", *(snapshot.content for snapshot in message.snapshots)]
     return [USAGE_FOOTER_RE.sub("", span).strip() for span in spans]
+
+
+def _trim_history_to_budget(messages: list[Message]) -> list[Message]:
+    """Keeps the newest history messages that fit `HISTORY_CHAR_BUDGET`, cut on a boundary.
+
+    `_fetch_history` returns oldest-first, so this walks from the end and reverses back: what
+    survives is the conversation closest to the question being answered, and the oldest context
+    is what gets dropped. Cutting between messages rather than mid-text is the point — half a
+    sentence with no author and no end reads as corrupted context rather than as less of it.
+
+    The newest message is always kept even when it alone exceeds the budget, so a single long
+    post can never reduce history to nothing.
+    """
+    kept: list[Message] = []
+    spent = 0
+    for candidate in reversed(messages):
+        spent += len(candidate.content or "") + HISTORY_PER_MESSAGE_OVERHEAD
+        if spent > HISTORY_CHAR_BUDGET and kept:
+            break
+        kept.append(candidate)
+    kept.reverse()
+    return kept
 
 
 def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str] | None:
@@ -919,7 +954,7 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     async def _fetch_history(self, message: Message, limit: int) -> list[Message]:
-        """Fetches up to `limit` channel-history messages once.
+        """Fetches up to `limit` channel-history messages once, trimmed to the char budget.
 
         Returned raw so both the optional selector's text-only render and the answer's
         uploaded render derive from one fetch, without a second walk of history.
@@ -927,7 +962,7 @@ class ReplyGeneratorCogs(commands.Cog):
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
             hist_messages.append(m)
-        return hist_messages
+        return _trim_history_to_budget(messages=hist_messages)
 
     async def _render_history(
         self, hist_messages: list[Message], *, text_only: bool, message_id: int
@@ -2392,7 +2427,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 prep_task = asyncio.create_task(
                     coro=self._prepare_reply_context(
                         message=message,
-                        history_limit=30,
+                        history_limit=HISTORY_MESSAGE_LIMIT,
                         memory_enabled=True,
                         parts_task=parts_task,
                         text_parts=(text_reference, text_current),

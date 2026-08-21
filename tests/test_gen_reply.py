@@ -41,7 +41,10 @@ from discordbot.utils.usage_log import UsageRecorder
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.gen_reply.cog import (
     UNROUTED_REPLY,
+    HISTORY_CHAR_BUDGET,
     LINK_CONTEXT_SOURCES,
+    HISTORY_MESSAGE_LIMIT,
+    HISTORY_PER_MESSAGE_OVERHEAD,
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
@@ -49,6 +52,7 @@ from discordbot.cogs.gen_reply.cog import (
     _run_until_deadline,
     _can_launch_research,
     _link_url_for_source,
+    _trim_history_to_budget,
     _await_deadline_bound_task,
     _build_runtime_instructions,
 )
@@ -3816,6 +3820,45 @@ async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
     assert "你的審美跟 <@999> 一樣 這樣算誇獎嗎" in rendered
 
 
+def test_trim_history_keeps_the_newest_messages_within_the_budget() -> None:
+    """The budget drops the oldest context first and never cuts inside a message.
+
+    Ordering is the contract being checked here, not just the count: `_fetch_history` hands
+    over oldest-first and the answer needs the conversation nearest the question, so a trim
+    that kept the wrong end would still pass a length assertion.
+    """
+    per_message = 100
+    body = "x" * (per_message - HISTORY_PER_MESSAGE_OVERHEAD)
+    fits = HISTORY_CHAR_BUDGET // per_message
+    messages = [
+        FakeMessage(content=f"{i}:{body}", author=FakeAuthor(user_id=1)) for i in range(fits + 20)
+    ]
+
+    kept = _trim_history_to_budget(messages=[as_message(fake=m) for m in messages])
+
+    assert len(kept) <= fits
+    # order-contract: history is fed to the model oldest-first, and the tail is what is kept.
+    assert [m.content for m in kept] == [m.content for m in messages[len(messages) - len(kept) :]]
+
+
+def test_trim_history_keeps_one_message_that_alone_exceeds_the_budget() -> None:
+    """A single oversized post must not reduce history to nothing."""
+    huge = FakeMessage(content="y" * (HISTORY_CHAR_BUDGET * 3), author=FakeAuthor(user_id=1))
+
+    kept = _trim_history_to_budget(messages=[as_message(fake=huge)])
+
+    assert len(kept) == 1
+
+
+def test_trim_history_charges_an_attachment_only_message() -> None:
+    """Empty `content` still costs, so a run of image posts cannot overshoot the budget."""
+    blanks = [FakeMessage(content="", author=FakeAuthor(user_id=1)) for _ in range(2000)]
+
+    kept = _trim_history_to_budget(messages=[as_message(fake=m) for m in blanks])
+
+    assert len(kept) <= HISTORY_CHAR_BUDGET // HISTORY_PER_MESSAGE_OVERHEAD
+
+
 async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
@@ -4542,12 +4585,12 @@ async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio() -> N
         "expected_capabilities",
     ),
     argvalues=[
-        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], [], [], [], []),
-        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], [], [], [], []),
+        ("IMAGE", "_handle_image_reply", [(HISTORY_MESSAGE_LIMIT, True)], [], [], [], [], [], []),
+        ("VIDEO", "_handle_video_reply", [(HISTORY_MESSAGE_LIMIT, True)], [], [], [], [], [], []),
         (
             "QA",
             "_handle_message_reply",
-            [(30, True)],
+            [(HISTORY_MESSAGE_LIMIT, True)],
             [True],
             [True],
             [True],
