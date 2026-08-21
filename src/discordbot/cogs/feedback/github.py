@@ -70,6 +70,30 @@ class GitHubIssuesError(RuntimeError):
         self.status_code = status_code
 
 
+# What a closed issue means to the person who reported it. GitHub's own vocabulary is
+# `IssueClosedStateReason`, which is exactly `COMPLETED` / `NOT_PLANNED` / `DUPLICATE`.
+CloseOutcome = Literal["completed", "not_planned", "duplicate"]
+
+
+def close_outcome(*, state_reason: str | None) -> CloseOutcome:
+    """Maps GitHub's close reason onto what it means for the reporter.
+
+    Anything unrecognised reads as completed, which is what a plain Close has always
+    produced: the UI's default button sets `completed`, and an issue closed before GitHub
+    recorded a reason at all carries `None`. The two that are named here are the ones that
+    would otherwise be reported as work that got done, and neither of them is.
+
+    One function rather than a branch in each caller, because the panel and the close
+    notice describe the same issue to the same person; two independent readings of one
+    `state_reason` is how they end up saying different things about it.
+    """
+    if state_reason == "not_planned":
+        return "not_planned"
+    if state_reason == "duplicate":
+        return "duplicate"
+    return "completed"
+
+
 class IssueSnapshot(BaseModel):
     """The state of one issue as the panel needs it."""
 
