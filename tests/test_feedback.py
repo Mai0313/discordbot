@@ -1566,9 +1566,16 @@ def _notice_cog(*, issues: FakeIssues, reporter: _FakeReporter | None) -> Feedba
     return cog
 
 
-def _closed_now() -> str:
-    """The close timestamp GitHub would report for an issue closed a moment ago."""
-    return datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+def _github_stamp(*, ago: timedelta = timedelta()) -> str:
+    """A GitHub timestamp that far in the past, in the shape its API answers with.
+
+    Relative to now on purpose. Both windows this feeds are measured against the real
+    clock (`_CLOSING_WINDOW` from the close, `BACKFILL_CUTOFF` from today), so an absolute
+    date here is a test that goes red on a calendar date with nobody having touched the
+    code. What each case actually asserts is a distance between two moments, and that is
+    what this expresses.
+    """
+    return (datetime.now(tz=UTC) - ago).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 async def _filed_report(
@@ -1593,15 +1600,15 @@ async def _filed_report(
             state="closed",
             state_reason=state_reason,
             comment_count=1,
-            closed_at=closed_at or _closed_now(),
+            closed_at=closed_at or _github_stamp(),
         )
     return ticket
 
 
-def _maintainer_said(*, body: str) -> IssueComment:
-    """One closing comment from the developer."""
+def _maintainer_said(*, body: str, ago: timedelta = timedelta()) -> IssueComment:
+    """One comment from the developer, written that long before now."""
     return IssueComment(
-        author="maintainer", body=body, created_at="2026-08-21T09:00:00Z", from_reporter=False
+        author="maintainer", body=body, created_at=_github_stamp(ago=ago), from_reporter=False
     )
 
 
@@ -1805,7 +1812,7 @@ async def test_a_question_the_reporter_already_answered_is_not_the_verdict(
     issues.conversation = [
         _maintainer_said(body="Can you try again after restarting your client?"),
         IssueComment(
-            author="alice", body="還是不行", created_at="2026-08-21T09:30:00Z", from_reporter=True
+            author="alice", body="還是不行", created_at=_github_stamp(), from_reporter=True
         ),
     ]
     reporter = _FakeReporter()
@@ -1825,11 +1832,10 @@ async def test_a_comment_from_long_before_the_close_is_not_the_verdict(
 ) -> None:
     """Nobody spoke after it, but it still predates the close by months."""
     issues = FakeIssues()
-    issues.conversation = [_maintainer_said(body="Taking a look.")]
+    issues.conversation = [_maintainer_said(body="Taking a look.", ago=timedelta(days=90))]
     reporter = _FakeReporter()
     cog = _notice_cog(issues=issues, reporter=reporter)
-    # The comment helper stamps 2026-08-21; closing three months later makes it history.
-    await _filed_report(issues=issues, state_reason="completed", closed_at="2026-11-21T09:00:00Z")
+    await _filed_report(issues=issues, state_reason="completed")
     monkeypatch.setattr("discordbot.cogs.feedback.cog.CLOSE_NOTICE_MIN_AGE_SECONDS", 0)
     monkeypatch.setattr("discordbot.cogs.feedback.cog.translate_comment", _translates_verbatim)
 
@@ -1847,7 +1853,9 @@ async def test_reports_closed_long_ago_are_not_announced_on_the_first_sweep(
     issues.conversation = [_maintainer_said(body="Fixed.")]
     reporter = _FakeReporter()
     cog = _notice_cog(issues=issues, reporter=reporter)
-    await _filed_report(issues=issues, state_reason="completed", closed_at="2020-03-01T09:00:00Z")
+    await _filed_report(
+        issues=issues, state_reason="completed", closed_at=_github_stamp(ago=timedelta(days=400))
+    )
     monkeypatch.setattr("discordbot.cogs.feedback.cog.CLOSE_NOTICE_MIN_AGE_SECONDS", 0)
     monkeypatch.setattr("discordbot.cogs.feedback.cog.translate_comment", _translates_verbatim)
 
@@ -1914,7 +1922,7 @@ async def test_a_report_reopened_during_the_wait_is_not_announced(
         state="closed",
         state_reason="completed",
         comment_count=1,
-        closed_at=_closed_now(),
+        closed_at=_github_stamp(),
     )
     await cog.notify_closed_reports()
     assert len(reporter.embeds) == 1

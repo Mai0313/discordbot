@@ -742,9 +742,7 @@ class FeedbackCogs(commands.Cog):
             outcome = close_outcome(state_reason=snapshot.state_reason)
             stale = closed_too_long_ago(closed_at=snapshot.closed_at)
             await record_close_observed(
-                ticket_id=ticket.ticket_id,
-                state_reason=snapshot.state_reason or "",
-                notified=outcome == "duplicate" or stale,
+                ticket_id=ticket.ticket_id, notified=outcome == "duplicate" or stale
             )
             logfire.info(
                 "A report's issue was closed",

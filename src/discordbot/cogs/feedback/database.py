@@ -130,9 +130,13 @@ class FeedbackCloseNoticeRow(Base):
     the next pass. The other order trades that for losing the message outright, and a
     duplicate the reporter can see beats a silence nobody can.
 
+    What is deliberately NOT here is why the issue was closed. The delivery pass reads
+    the issue again rather than trusting what discovery saw, so a reason stored here would
+    have no reader, and `create_all` never alters a table: a column that ships is a column
+    the deployed database keeps forever.
+
     Attributes:
         ticket_id: The report this is about; one notice per report, so it is the key.
-        state_reason: Why GitHub said the issue was closed, as of when it was first seen.
         observed_at: When the close was first seen. The delivery pass waits on this, and
             past `CLOSE_NOTICE_STALLED_AFTER_SECONDS` it is also what says a notice has
             been failing to go out for far too long.
@@ -143,7 +147,6 @@ class FeedbackCloseNoticeRow(Base):
     __tablename__ = "feedback_close_notice"
 
     ticket_id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    state_reason: Mapped[str] = mapped_column(String(length=32), default="", nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
     notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -407,7 +410,6 @@ class PendingCloseNotice(BaseModel):
     """A report whose close was seen and whose reporter has not been told yet."""
 
     ticket: FeedbackTicket = Field(..., description="The report the close belongs to.")
-    state_reason: str = Field(..., description="Why GitHub said the issue was closed.")
     observed_at: datetime = Field(..., description="When the close was first seen.")
 
 
@@ -435,7 +437,7 @@ async def tickets_awaiting_close_check() -> list[FeedbackTicket]:
         return [_row_to_model(row=row) for row in result.scalars().all()]
 
 
-async def record_close_observed(*, ticket_id: int, state_reason: str, notified: bool) -> None:
+async def record_close_observed(*, ticket_id: int, notified: bool) -> None:
     """Records that a report's issue was seen closed, and whether that settles it.
 
     `notified=True` is for a close nobody is told about, which finishes the report here
@@ -452,9 +454,7 @@ async def record_close_observed(*, ticket_id: int, state_reason: str, notified: 
             return
         session.add(
             FeedbackCloseNoticeRow(
-                ticket_id=ticket_id,
-                state_reason=state_reason,
-                notified_at=_database_now() if notified else None,
+                ticket_id=ticket_id, notified_at=_database_now() if notified else None
             )
         )
         await session.commit()
@@ -483,11 +483,7 @@ async def close_notices_awaiting_delivery(*, min_age_seconds: float) -> list[Pen
             .order_by(FeedbackCloseNoticeRow.ticket_id.asc())
         )
         return [
-            PendingCloseNotice(
-                ticket=_row_to_model(row=ticket),
-                state_reason=notice.state_reason,
-                observed_at=notice.observed_at,
-            )
+            PendingCloseNotice(ticket=_row_to_model(row=ticket), observed_at=notice.observed_at)
             for notice, ticket in result.all()
         ]
 
