@@ -166,18 +166,35 @@ MEMORY_CONTEXT_TARGET_USERS = 8
 # Recorded as a reply's route when the pipeline failed before the router returned one.
 UNROUTED_REPLY = "unrouted"
 
-# How much channel history one answer reads, bounded on two axes because either alone is the
-# wrong shape. Discord conversation here is overwhelmingly one-line messages — measured across
-# 10M logged messages, the median is 6 characters and the busiest channel's last 200 come to
-# 1.5k — so a message count alone lets a chatty channel hand the model almost nothing while a
-# channel of long posts blows the input up. Whichever bound binds first wins.
+# How much channel history one answer reads, bounded on three axes (the third is
+# `MAX_HISTORY_MEDIA_PARTS` below) because no one of them is the right shape alone. Discord
+# conversation here is overwhelmingly one-line messages — measured across 10M logged messages,
+# the median is 6 characters and the busiest channel's last 200 come to 1.5k — so a message
+# count alone lets a chatty channel hand the model almost nothing while a channel of long posts
+# blows the input up. Whichever bound binds first wins, and in practice that has only ever been
+# the char budget: it alone held history to 107-119 messages at 8000, so the message limit is a
+# backstop rather than the working bound.
 HISTORY_MESSAGE_LIMIT = 500
-HISTORY_CHAR_BUDGET = 8000
+# Doubled from 8000 once the media cap landed. Text was never the expensive half — the whole
+# budget is worth ~4k input tokens against 1.3k to 1.9k for a single attachment — so what made
+# widening it unsafe was that more messages meant proportionally more files, which the cap now
+# decouples.
+HISTORY_CHAR_BUDGET = 16000
 
 # What a history message costs beyond its own text: the rendered form carries an author header,
 # and an attachment-only message has empty `content` but still renders a marker standing in for
 # it. Without a floor per message a run of image posts would count as free and overshoot.
 HISTORY_PER_MESSAGE_OVERHEAD = 40
+
+# How many history attachments ride as real uploaded files. The char budget cannot see this cost
+# at all: an attachment-only message spends `HISTORY_PER_MESSAGE_OVERHEAD` there while re-sending
+# every one of its files to the model on every single reply, and the Files-API cache in `input.py`
+# only saves the re-upload, never the tokens. Measured over one day's replies on 2026-08-21, a
+# media part cost 1.3k to 1.9k input tokens against ~4k for the entire text budget, so 44 of them
+# made a 76k-token request that was 82% re-sent history. Past this many the older attachments
+# degrade to the `[attachment: ...]` markers the route already reads, which keeps the model aware
+# a file was posted without paying to re-read it.
+MAX_HISTORY_MEDIA_PARTS = 10
 
 # The model this turn most recently dispatched on, so `gen_reply failed` can name it: the failure
 # surfaces in `on_message`, several frames above every place that picks a model, and a provider
@@ -254,6 +271,57 @@ def _trim_history_to_budget(messages: list[Message]) -> list[Message]:
         kept.append(candidate)
     kept.reverse()
     return kept
+
+
+def _history_media_over_budget(
+    builder: MessageInputBuilder, hist_messages: list[Message]
+) -> dict[int, int]:
+    """History message ids to how many attachments each renders as markers, newest kept first.
+
+    The count rides along because it is what tells an operator the cap did anything: `media_parts`
+    on the dispatch record stops at the cap by construction, so only the number held back says
+    whether this turn was trimmed by one file or by thirty.
+
+    Walks from the newest message back, the same direction and for the same reason as
+    `_trim_history_to_budget`: what keeps its real files is the conversation closest to the
+    question being asked. Once one message is refused every older one is too, so the files the
+    model gets are always an unbroken run ending at the present. Letting a later small message
+    slip into the leftover budget would put an older attachment on screen while a newer one
+    showed only a marker, which reads as the pipeline losing files at random.
+
+    Counting is off `collect_attachment_sources` rather than the modality-gated list, so it
+    stays free of the per-message log the gate emits; the gate dropped nothing at all across
+    the day this was measured, and over-counting can only refuse an attachment the answer was
+    never going to be sent.
+
+    The newest message carrying attachments is exempt, so a single post of many images is
+    never reduced to nothing but markers while the budget sits unspent. That makes the cap a
+    soft one on exactly that message: a source is not only an upload, it is also every sticker
+    and every embed image and thumbnail, snapshots included, so one post of ten files carrying
+    a few unfurled link cards can exempt well past `MAX_HISTORY_MEDIA_PARTS`. Everything older
+    than it is still bounded.
+    """
+    over: dict[int, int] = {}
+    spent = 0
+    for candidate in reversed(hist_messages):
+        try:
+            count = len(builder.collect_attachment_sources(message=candidate))
+        except Exception:  # noqa: S112
+            # Broad for the same reason `process_single_message` is, and load-bearing here for a
+            # different one: this runs inside `_prepare_reply_context`'s gather, which has no
+            # except of its own, so an unexpected nextcord shape would take the whole reply out
+            # through the generic error path rather than costing one message its attachments.
+            # Silent against S112 on purpose: the message is left out of the refusal set, so its
+            # own render re-collects a moment later, fails the same way, and that handler logs it
+            # with the message id and the traceback. Logging here would double every such failure.
+            continue
+        if not count:
+            continue
+        if over or (spent and spent + count > MAX_HISTORY_MEDIA_PARTS):
+            over[candidate.id] = count
+            continue
+        spent += count
+    return over
 
 
 def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str] | None:
@@ -975,12 +1043,23 @@ class ReplyGeneratorCogs(commands.Cog):
         parts for the answer. History is the only render that opts into the dead-source skip:
         an expired CDN attachment here re-fails every turn (current / reference do not; see
         GeminiFileUploader._resolve_file_upload).
+
+        The full render is additionally capped at `MAX_HISTORY_MEDIA_PARTS` uploaded files: a
+        message past the cap takes the text-only render, which is exactly the marker form the
+        route already reads, so the degradation needs no second render path of its own.
         """
         if not hist_messages:
             return []
+        over_budget = (
+            {}
+            if text_only
+            else _history_media_over_budget(
+                builder=self.input_builder, hist_messages=hist_messages
+            )
+        )
         tasks: list[Awaitable[EasyInputMessageParam]] = [
             self.input_builder.process_single_message_text_only(message=m)
-            if text_only
+            if text_only or m.id in over_budget
             else self.input_builder.process_single_message(message=m, allow_dead_cache=True)
             for m in hist_messages
         ]
@@ -991,6 +1070,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "gen_reply history render done",
                 elapsed_seconds=time.monotonic() - started,
                 message_count=len(hist_messages),
+                media_capped=sum(over_budget.values()),
                 message_id=message_id,
             )
         header = EasyInputMessageParam(
