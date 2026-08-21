@@ -1881,7 +1881,12 @@ async def test_memory_regenerate_command_schedules_in_background(
 ) -> None:
     cog = _memory_cog()
     extractor_sentinel = object()
-    cog.__dict__["memory_extractor"] = extractor_sentinel
+
+    async def fake_build_extractor() -> object:
+        """Stands in for the extractor the command builds on a freshly leased key."""
+        return extractor_sentinel
+
+    monkeypatch.setattr(cog, "build_memory_extractor", fake_build_extractor)
     calls: dict[str, object] = {}
 
     def fake_schedule(scope: str, extractor: object, identity: str) -> bool:

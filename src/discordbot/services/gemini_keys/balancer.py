@@ -18,6 +18,7 @@ spreads its own traffic evenly. Every database call here is therefore best-effor
 import logfire
 
 from discordbot.typings.llm import LLMConfig, GeminiKeySlot
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.services.gemini_keys.database import record_pick, read_day_counts
@@ -98,6 +99,23 @@ async def pick_gemini_key(config: LLMConfig) -> GeminiKeySlot | None:
     return chosen
 
 
+async def lease_model_catalog(config: LLMConfig) -> RuntimeModelCatalog:
+    """Leases a key and returns a model catalog with every tier pinned to it.
+
+    For the callers that need nothing else from the key: no Files API upload, no direct
+    Gemini client, just their own model tier on a balanced deployment. `gen_reply` does not
+    use this, because a reply needs the clients and caches too and gets a whole toolkit.
+
+    Args:
+        config: Runtime LLM config supplying the configured keys.
+
+    Returns:
+        A catalog pinned to the leased key, or an unpinned one when none is configured.
+    """
+    slot = await pick_gemini_key(config=config)
+    return RuntimeModelCatalog(key_index=slot.index if slot is not None else None)
+
+
 def reset_balancer_state() -> None:
     """Drops the in-memory day window and counts. For tests only."""
     global _counted_day  # noqa: PLW0603 -- test-only reset of the module-level window
@@ -105,4 +123,4 @@ def reset_balancer_state() -> None:
     _counts.clear()
 
 
-__all__ = ["pick_gemini_key", "reset_balancer_state"]
+__all__ = ["lease_model_catalog", "pick_gemini_key", "reset_balancer_state"]
