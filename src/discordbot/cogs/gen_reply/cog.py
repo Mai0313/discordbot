@@ -1691,15 +1691,15 @@ class ReplyGeneratorCogs(commands.Cog):
             memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
-    def _read_server_memory(self, *, message: Message, memory_enabled: bool) -> str:
+    def _read_server_memory(self, *, message: Message) -> str:
         """Reads the current guild's raw server memory, or "" when there is none.
 
         Unlike user memory there is exactly one server memory per guild, so it needs no
         selection phase, allowlist, or function tool: it is read directly with zero extra
-        LLM latency. Returns "" for a DM (no guild), a caller that disabled memory, or an empty one.
-        Read once per reply and shared by the selection and answer phases.
+        LLM latency. Returns "" for a DM (no guild) or an empty memory. Read once per reply
+        and shared by the selection and answer phases.
         """
-        if not memory_enabled or message.guild is None:
+        if message.guild is None:
             return ""
         return read_memory_document(
             scope=server_scope(server_id=message.guild.id),
@@ -1809,11 +1809,10 @@ class ReplyGeneratorCogs(commands.Cog):
             return None
         return selection, time.monotonic() - started
 
-    async def _prepare_reply_context(  # noqa: PLR0913, PLR0915 -- speculative prep needs the turn payload plus the route-done signal, and builds history/memory/tone/selection in sequence
+    async def _prepare_reply_context(
         self,
         message: Message,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
@@ -1837,7 +1836,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # The bot's own per-server memory is read once here and shared by both phases: it
         # primes selection (a `## 成員稱呼` nickname table maps spoken aliases to ids) and
         # rides into the answer as background context. One file read, no extra LLM call.
-        server_memory = self._read_server_memory(message=message, memory_enabled=memory_enabled)
+        server_memory = self._read_server_memory(message=message)
         server_memory_block = (
             render_server_memory_block(memory=server_memory) if server_memory else None
         )
@@ -1860,22 +1859,17 @@ class ReplyGeneratorCogs(commands.Cog):
         selection_input_tokens = 0
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
-        memories: list[UserMemory] = []
-        optional_allowed: dict[int, MemoryCandidate] = {}
-        deterministic_candidate_count = 0
-        deterministic_memory_count = 0
         remaining_slots = 0
         selection_task: asyncio.Task[MemorySelection] | None = None
-        if memory_enabled:
-            memories, optional_allowed, deterministic_candidate_count = (
-                self._resolve_reply_memory_candidates(
-                    message=message, server_memory=server_memory, read_context=read_context
-                )
+        memories, optional_allowed, deterministic_candidate_count = (
+            self._resolve_reply_memory_candidates(
+                message=message, server_memory=server_memory, read_context=read_context
             )
-            deterministic_memory_count = len(memories)
-            if memories:
-                memory_block = render_memory_context_block(memories=memories)
-                memory_labels = memory_lookup_labels(memories=memories)
+        )
+        deterministic_memory_count = len(memories)
+        if memories:
+            memory_block = render_memory_context_block(memories=memories)
+            memory_labels = memory_lookup_labels(memories=memories)
 
             remaining_slots = max(0, MEMORY_CONTEXT_TARGET_USERS - len(memories))
             logfire.debug(
@@ -1986,7 +1980,6 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         system_prompt: str,
         context: ReplyContext,
-        memory_enabled: bool = True,
         effort: Literal["low", "high"] = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
@@ -1998,9 +1991,8 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates.
 
-        The per-user update is gated by `memory_enabled`; the per-server update always runs
-        (subject to its own guild / public-channel guards), so a caller carrying
-        `memory_enabled=False` still records community memory. `allow_voice` enables a
+        Both the per-user and the per-server update are scheduled here; the per-server one
+        carries its own guild / public-channel guards. `allow_voice` enables a
         spoken clip, `allow_image` an inline generated image, `allow_music` an inline generated
         music clip, and `allow_video` an inline generated video clip when the answer model marks
         the reply for it (image / music / video are QA only; the media persona replies get voice
@@ -2188,33 +2180,30 @@ class ReplyGeneratorCogs(commands.Cog):
             await _maybe_launch_research(
                 bot=self.bot, message=message, anchor=streamer.reply, brief=streamer.research_brief
             )
-        if memory_enabled:
-            memory_message_list = target_centered_memory_messages(
-                hist_messages=context.hist_messages,
-                reference_messages=context.reference_messages,
-                current_message=context.current_message,
-                target_user_id=message.author.id,
-            )
-            # The second subject line names where this conversation happened (guild id
-            # or DM); it survives the memory_job round-trip so the pipeline can stamp
-            # each observation's source deterministically.
-            source_line = subject_source_line(guild_id=message.guild.id if message.guild else None)
-            schedule_memory_update(
-                scope=user_scope(user_id=message.author.id),
-                subject=f"target_user_id: {message.author.id}\n{source_line}",
-                message_list=memory_message_list,
-                full_reply=full_reply,
-                extractor=self.memory_extractor,
-                identity=render_author_identity(
-                    display_name=message.author.display_name,
-                    username=message.author.name,
-                    user_id=message.author.id,
-                ),
-            )
-        # Server memory is not gated by `memory_enabled`: a caller may run with per-user
-        # memory off and still be reading a channel's conversation, which is high-quality
-        # community signal worth recording. DMs and non-public channels are dropped by the
-        # guards inside `_schedule_server_memory_update`.
+        memory_message_list = target_centered_memory_messages(
+            hist_messages=context.hist_messages,
+            reference_messages=context.reference_messages,
+            current_message=context.current_message,
+            target_user_id=message.author.id,
+        )
+        # The second subject line names where this conversation happened (guild id
+        # or DM); it survives the memory_job round-trip so the pipeline can stamp
+        # each observation's source deterministically.
+        source_line = subject_source_line(guild_id=message.guild.id if message.guild else None)
+        schedule_memory_update(
+            scope=user_scope(user_id=message.author.id),
+            subject=f"target_user_id: {message.author.id}\n{source_line}",
+            message_list=memory_message_list,
+            full_reply=full_reply,
+            extractor=self.memory_extractor,
+            identity=render_author_identity(
+                display_name=message.author.display_name,
+                username=message.author.name,
+                user_id=message.author.id,
+            ),
+        )
+        # The per-server update carries its own guards rather than riding the per-user one:
+        # DMs and non-public channels are dropped inside `_schedule_server_memory_update`.
         self._schedule_server_memory_update(
             message=message, message_list=context.message_list, full_reply=full_reply
         )
@@ -2428,7 +2417,6 @@ class ReplyGeneratorCogs(commands.Cog):
                     coro=self._prepare_reply_context(
                         message=message,
                         history_limit=HISTORY_MESSAGE_LIMIT,
-                        memory_enabled=True,
                         parts_task=parts_task,
                         text_parts=(text_reference, text_current),
                         route_done=route_done,
