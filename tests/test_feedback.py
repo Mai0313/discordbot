@@ -43,6 +43,7 @@ from discordbot.cogs.feedback.github import (
     GitHubIssuesError,
     select_conversation,
 )
+from discordbot.cogs.feedback.notice import closing_comment
 from discordbot.cogs.feedback.writeup import (
     ReportWriteUp,
     stored_draft,
@@ -1856,6 +1857,33 @@ async def test_reports_closed_long_ago_are_not_announced_on_the_first_sweep(
     # Marked rather than skipped, or it would be rediscovered on every later pass.
     assert await close_notices_awaiting_delivery(min_age_seconds=0) == []
     assert await tickets_awaiting_close_check() == []
+
+
+@pytest.mark.parametrize(
+    ("closed_at", "comment_at", "expects_comment"),
+    [
+        # GitHub's own shape, on both sides.
+        ("2026-08-21T09:05:00Z", "2026-08-21T09:00:00Z", True),
+        # A timestamp without a zone would be naive, and comparing it against an aware one
+        # raises TypeError inside a sweep whose broad except would swallow it whole.
+        ("2026-08-21T09:05:00", "2026-08-21T09:00:00Z", True),
+        ("2026-08-21T09:05:00Z", "2026-08-21T09:00:00", True),
+        # Unreadable: the ordering rule still stands on its own.
+        ("not a timestamp", "2026-08-21T09:00:00Z", True),
+        (None, "2026-08-21T09:00:00Z", True),
+        # Readable on both sides, and months apart.
+        ("2026-11-21T09:00:00Z", "2026-08-21T09:00:00Z", False),
+    ],
+)
+def test_the_closing_comment_survives_every_timestamp_shape(
+    closed_at: str | None, comment_at: str, expects_comment: bool
+) -> None:
+    """A timestamp nobody can parse must cost the comment, never the whole notice."""
+    comment = IssueComment(
+        author="maintainer", body="Fixed.", created_at=comment_at, from_reporter=False
+    )
+    found = closing_comment(comments=[comment], closed_at=closed_at)
+    assert (found is not None) is expects_comment
 
 
 async def test_a_report_reopened_during_the_wait_is_not_announced(

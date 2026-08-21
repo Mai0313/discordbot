@@ -74,17 +74,23 @@ def _clipped(*, text: str, limit: int) -> str:
 
 
 def _moment(*, stamp: str | None) -> datetime | None:
-    """Parses one GitHub ISO-8601 timestamp, or None when it is missing or malformed.
+    """Parses one GitHub ISO-8601 timestamp into an aware UTC datetime.
 
     Never raises. A stamp this cannot read costs the notice its comment, not the notice
-    itself, and the caller reads None as "cannot tell" rather than as "no comment".
+    itself, and every caller reads None as "cannot tell" rather than as "no comment".
+
+    Always aware, even though GitHub's own stamps all carry `Z`. Everything these are
+    compared against is aware, and subtracting a naive one raises `TypeError` inside a
+    sweep whose broad `except` would swallow it: the failure mode is not a wrong answer but
+    a sweep that logs every ten minutes and silently never delivers anything.
     """
     if not stamp:
         return None
     try:
-        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     except ValueError:
         return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def closed_too_long_ago(*, closed_at: str | None) -> bool:
