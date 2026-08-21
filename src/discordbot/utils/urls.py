@@ -14,8 +14,8 @@ from collections.abc import Sequence
 # after a Chinese character: `看這篇https://example.com` read as no URL at all, which is how a
 # lot of people type (#492). Refusing only an ASCII word character keeps `xhttps://...` out and
 # lets the Chinese in, widening the pattern by one class of characters rather than by a class of
-# strings. Shared with `gen_reply/cog.py::_MESSAGE_URL_RE` so the two generic scanners cannot
-# drift on where a URL begins.
+# strings. Every generic scanner takes its head from here so they cannot drift on where a URL
+# begins.
 URL_START_ANCHOR = r"(?<![A-Za-z0-9_])"
 
 # Generic fallback. `[^\s<>]` stops at whitespace and at the angle brackets Discord and

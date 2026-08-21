@@ -20,7 +20,6 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.douyin import DOUYIN_URL_RE, is_douyin_post_url
 from discordbot.utils.images import convert_base64_to_data_uri
@@ -75,7 +74,6 @@ from discordbot.cogs.gen_reply.prompts import (
     ROUTE_PROMPT,
     VIDEO_PROMPT,
     EFFORT_PROMPT,
-    SUMMARY_PROMPT,
     MUSIC_INSTRUCTION,
     VIDEO_INSTRUCTION,
     IMAGE_REPLY_PROMPT,
@@ -160,8 +158,6 @@ if TYPE_CHECKING:
     from openai.types.responses import ResponseStreamEvent
 
 
-_MESSAGE_URL_RE = re.compile(pattern=rf"(?i){URL_START_ANCHOR}(?:https?://|www\.)\S+")
-
 # Preserve the existing eight-user context target for optional model-selected additions.
 # Deterministic participants are never displaced: if they fill or exceed the target, the
 # selector is skipped; otherwise it can use only the remaining slots.
@@ -169,6 +165,19 @@ MEMORY_CONTEXT_TARGET_USERS = 8
 
 # Recorded as a reply's route when the pipeline failed before the router returned one.
 UNROUTED_REPLY = "unrouted"
+
+# How much channel history one answer reads, bounded on two axes because either alone is the
+# wrong shape. Discord conversation here is overwhelmingly one-line messages — measured across
+# 10M logged messages, the median is 6 characters and the busiest channel's last 200 come to
+# 1.5k — so a message count alone lets a chatty channel hand the model almost nothing while a
+# channel of long posts blows the input up. Whichever bound binds first wins.
+HISTORY_MESSAGE_LIMIT = 500
+HISTORY_CHAR_BUDGET = 8000
+
+# What a history message costs beyond its own text: the rendered form carries an author header,
+# and an attachment-only message has empty `content` but still renders a marker standing in for
+# it. Without a floor per message a run of image posts would count as free and overshoot.
+HISTORY_PER_MESSAGE_OVERHEAD = 40
 
 # The model this turn most recently dispatched on, so `gen_reply failed` can name it: the failure
 # surfaces in `on_message`, several frames above every place that picks a model, and a provider
@@ -225,6 +234,28 @@ def _authored_link_texts(message: Message) -> list[str]:
     return [USAGE_FOOTER_RE.sub("", span).strip() for span in spans]
 
 
+def _trim_history_to_budget(messages: list[Message]) -> list[Message]:
+    """Keeps the newest history messages that fit `HISTORY_CHAR_BUDGET`, cut on a boundary.
+
+    `_fetch_history` returns oldest-first, so this walks from the end and reverses back: what
+    survives is the conversation closest to the question being answered, and the oldest context
+    is what gets dropped. Cutting between messages rather than mid-text is the point — half a
+    sentence with no author and no end reads as corrupted context rather than as less of it.
+
+    The newest message is always kept even when it alone exceeds the budget, so a single long
+    post can never reduce history to nothing.
+    """
+    kept: list[Message] = []
+    spent = 0
+    for candidate in reversed(messages):
+        spent += len(candidate.content or "") + HISTORY_PER_MESSAGE_OVERHEAD
+        if spent > HISTORY_CHAR_BUDGET and kept:
+            break
+        kept.append(candidate)
+    kept.reverse()
+    return kept
+
+
 def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str] | None:
     """First match of a URL pattern across one message's already-rendered text spans."""
     for text in texts:
@@ -232,22 +263,6 @@ def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str
         if match:
             return match
     return None
-
-
-def _carries_url(message: Message) -> bool:
-    """Whether the message's own rendered text carries any URL.
-
-    Read by the SUMMARY -> QA reroute guard. `_MESSAGE_URL_RE` takes its head from
-    `URL_START_ANCHOR`, so a URL typed flush against Chinese ("看這篇https://...") counts here
-    the same as one with a space in front of it, and the two generic scanners agree on it.
-    """
-    return (
-        _first_url_match(
-            pattern=_MESSAGE_URL_RE,
-            texts=_message_link_texts(message=message, strip_usage_footer=False),
-        )
-        is not None
-    )
 
 
 def _link_url_for_source(source: LinkContextSource, message: Message) -> str | None:
@@ -939,7 +954,7 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     async def _fetch_history(self, message: Message, limit: int) -> list[Message]:
-        """Fetches up to `limit` channel-history messages once.
+        """Fetches up to `limit` channel-history messages once, trimmed to the char budget.
 
         Returned raw so both the optional selector's text-only render and the answer's
         uploaded render derive from one fetch, without a second walk of history.
@@ -947,7 +962,7 @@ class ReplyGeneratorCogs(commands.Cog):
         hist_messages: list[Message] = []
         async for m in message.channel.history(limit=limit, before=message, oldest_first=True):
             hist_messages.append(m)
-        return hist_messages
+        return _trim_history_to_budget(messages=hist_messages)
 
     async def _render_history(
         self, hist_messages: list[Message], *, text_only: bool, message_id: int
@@ -1456,22 +1471,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     extra_headers={"x-litellm-end-user-id": message.author.name},
                 )
             parsed = responses.output_parsed
-            if parsed is None:
-                route = RouteClassification(decision="QA")
-            elif parsed.decision == "SUMMARY" and _carries_url(message=message):
-                # A summary request carrying a URL is really a QA recap of that link, not a
-                # recap of channel history, so steer it back to QA. Preserve both content-read
-                # decisions so the corrected route still ingests what the user asked about.
-                logfire.info(
-                    "gen_reply rerouting a URL-bearing summary to QA", message_id=message.id
-                )
-                route = RouteClassification(
-                    decision="QA",
-                    watch_video=parsed.watch_video,
-                    link_context_sources=parsed.link_context_sources,
-                )
-            else:
-                route = parsed
+            route = parsed if parsed is not None else RouteClassification(decision="QA")
         except ValidationError as exc:
             # `responses.parse` validates before `output_parsed` is reachable, so an empty /
             # safety-filtered response and a genuine schema mismatch both land here; the
@@ -1505,7 +1505,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """Grades how much reasoning effort the answer model should spend on this message.
 
         Runs in parallel with the route under the shared `route_done` gate (`_await_gated`);
-        the grade is consumed only on the QA and SUMMARY paths, while IMAGE and VIDEO cancel
+        the grade is consumed only on the QA path, while IMAGE and VIDEO cancel
         this task. The parts arrive already text-only, so grading never waits on uploads.
         Raises on any provider/parse failure so the caller (`_resolve_effort`) can fall back.
 
@@ -1691,15 +1691,15 @@ class ReplyGeneratorCogs(commands.Cog):
             memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
-    def _read_server_memory(self, *, message: Message, memory_enabled: bool) -> str:
+    def _read_server_memory(self, *, message: Message) -> str:
         """Reads the current guild's raw server memory, or "" when there is none.
 
         Unlike user memory there is exactly one server memory per guild, so it needs no
         selection phase, allowlist, or function tool: it is read directly with zero extra
-        LLM latency. Returns "" for DMs (no guild), the SUMMARY route, or an empty memory.
-        Read once per reply and shared by the selection and answer phases.
+        LLM latency. Returns "" for a DM (no guild) or an empty memory. Read once per reply
+        and shared by the selection and answer phases.
         """
-        if not memory_enabled or message.guild is None:
+        if message.guild is None:
             return ""
         return read_memory_document(
             scope=server_scope(server_id=message.guild.id),
@@ -1809,11 +1809,10 @@ class ReplyGeneratorCogs(commands.Cog):
             return None
         return selection, time.monotonic() - started
 
-    async def _prepare_reply_context(  # noqa: PLR0913, PLR0915 -- speculative prep needs the turn payload plus the route-done signal, and builds history/memory/tone/selection in sequence
+    async def _prepare_reply_context(
         self,
         message: Message,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
@@ -1837,7 +1836,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # The bot's own per-server memory is read once here and shared by both phases: it
         # primes selection (a `## 成員稱呼` nickname table maps spoken aliases to ids) and
         # rides into the answer as background context. One file read, no extra LLM call.
-        server_memory = self._read_server_memory(message=message, memory_enabled=memory_enabled)
+        server_memory = self._read_server_memory(message=message)
         server_memory_block = (
             render_server_memory_block(memory=server_memory) if server_memory else None
         )
@@ -1847,8 +1846,8 @@ class ReplyGeneratorCogs(commands.Cog):
 
         # The message author's tone-preference note is read directly for that one author
         # (their own preference for how the bot should sound, cross-server safe by
-        # construction) and injected on every reply with no selection phase — even on the
-        # SUMMARY route, which skips user memory. One file read, no extra LLM call.
+        # construction) and injected on every reply with no selection phase, including one
+        # that runs with user memory off. One file read, no extra LLM call.
         author_tone = read_tone(scope=user_scope(user_id=message.author.id))
         tone_block = render_tone_block(tone=author_tone) if author_tone else None
 
@@ -1860,22 +1859,17 @@ class ReplyGeneratorCogs(commands.Cog):
         selection_input_tokens = 0
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
-        memories: list[UserMemory] = []
-        optional_allowed: dict[int, MemoryCandidate] = {}
-        deterministic_candidate_count = 0
-        deterministic_memory_count = 0
         remaining_slots = 0
         selection_task: asyncio.Task[MemorySelection] | None = None
-        if memory_enabled:
-            memories, optional_allowed, deterministic_candidate_count = (
-                self._resolve_reply_memory_candidates(
-                    message=message, server_memory=server_memory, read_context=read_context
-                )
+        memories, optional_allowed, deterministic_candidate_count = (
+            self._resolve_reply_memory_candidates(
+                message=message, server_memory=server_memory, read_context=read_context
             )
-            deterministic_memory_count = len(memories)
-            if memories:
-                memory_block = render_memory_context_block(memories=memories)
-                memory_labels = memory_lookup_labels(memories=memories)
+        )
+        deterministic_memory_count = len(memories)
+        if memories:
+            memory_block = render_memory_context_block(memories=memories)
+            memory_labels = memory_lookup_labels(memories=memories)
 
             remaining_slots = max(0, MEMORY_CONTEXT_TARGET_USERS - len(memories))
             logfire.debug(
@@ -1910,8 +1904,8 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             # The answer needs the uploaded renders; await the full history render and the shared
             # reference/current uploads here, concurrently with any in-flight selection above.
-            # `parts_task` is shielded so cancelling this speculative prep (non-QA routes) never
-            # cancels the shared upload task a SUMMARY route still reuses; the full history render
+            # `parts_task` is shielded so cancelling this speculative prep (IMAGE / VIDEO) never
+            # cancels the shared upload task those routes still reuse; the full history render
             # rides as an ordinary gather child, so it is cancelled together with prep.
             with logfire.span("gen_reply context build", message_id=message.id):
                 hist_messages, (reference_messages, current_message) = await asyncio.gather(
@@ -1986,7 +1980,6 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         system_prompt: str,
         context: ReplyContext,
-        memory_enabled: bool = True,
         effort: Literal["low", "high"] = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
@@ -1998,15 +1991,14 @@ class ReplyGeneratorCogs(commands.Cog):
     ) -> None:
         """Streams the answer from a pre-built reply context, then schedules memory updates.
 
-        The per-user update is gated by `memory_enabled`; the per-server update always runs
-        (subject to its own guild / public-channel guards), so the SUMMARY route still records
-        community memory even though it carries `memory_enabled=False`. `allow_voice` enables a
+        Both the per-user and the per-server update are scheduled here; the per-server one
+        carries its own guild / public-channel guards. `allow_voice` enables a
         spoken clip, `allow_image` an inline generated image, `allow_music` an inline generated
         music clip, and `allow_video` an inline generated video clip when the answer model marks
-        the reply for it (image / music / video are QA only; voice also rides SUMMARY, which
-        otherwise stays text). `describe_capabilities` injects the feature reference that replaced
-        `/help`, QA only since SUMMARY is recapping a channel rather than fielding a question about
-        the bot. `yt_url`, set only when the router asked
+        the reply for it (image / music / video are QA only; the media persona replies get voice
+        alone). `describe_capabilities` injects the feature reference that replaced
+        `/help`, carried by QA alone since a persona reply riding generated media is not fielding
+        a question about the bot. `yt_url`, set only when the router asked
         to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
         (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
@@ -2188,33 +2180,30 @@ class ReplyGeneratorCogs(commands.Cog):
             await _maybe_launch_research(
                 bot=self.bot, message=message, anchor=streamer.reply, brief=streamer.research_brief
             )
-        if memory_enabled:
-            memory_message_list = target_centered_memory_messages(
-                hist_messages=context.hist_messages,
-                reference_messages=context.reference_messages,
-                current_message=context.current_message,
-                target_user_id=message.author.id,
-            )
-            # The second subject line names where this conversation happened (guild id
-            # or DM); it survives the memory_job round-trip so the pipeline can stamp
-            # each observation's source deterministically.
-            source_line = subject_source_line(guild_id=message.guild.id if message.guild else None)
-            schedule_memory_update(
-                scope=user_scope(user_id=message.author.id),
-                subject=f"target_user_id: {message.author.id}\n{source_line}",
-                message_list=memory_message_list,
-                full_reply=full_reply,
-                extractor=self.memory_extractor,
-                identity=render_author_identity(
-                    display_name=message.author.display_name,
-                    username=message.author.name,
-                    user_id=message.author.id,
-                ),
-            )
-        # Server memory is not gated by `memory_enabled`: the SUMMARY route runs with it
-        # off (no per-user memory) yet its 200-message digest is high-quality community
-        # signal worth recording. DMs and non-public channels are dropped by the guards
-        # inside `_schedule_server_memory_update`.
+        memory_message_list = target_centered_memory_messages(
+            hist_messages=context.hist_messages,
+            reference_messages=context.reference_messages,
+            current_message=context.current_message,
+            target_user_id=message.author.id,
+        )
+        # The second subject line names where this conversation happened (guild id
+        # or DM); it survives the memory_job round-trip so the pipeline can stamp
+        # each observation's source deterministically.
+        source_line = subject_source_line(guild_id=message.guild.id if message.guild else None)
+        schedule_memory_update(
+            scope=user_scope(user_id=message.author.id),
+            subject=f"target_user_id: {message.author.id}\n{source_line}",
+            message_list=memory_message_list,
+            full_reply=full_reply,
+            extractor=self.memory_extractor,
+            identity=render_author_identity(
+                display_name=message.author.display_name,
+                username=message.author.name,
+                user_id=message.author.id,
+            ),
+        )
+        # The per-server update carries its own guards rather than riding the per-user one:
+        # DMs and non-public channels are dropped inside `_schedule_server_memory_update`.
         self._schedule_server_memory_update(
             message=message, message_list=context.message_list, full_reply=full_reply
         )
@@ -2427,16 +2416,15 @@ class ReplyGeneratorCogs(commands.Cog):
                 prep_task = asyncio.create_task(
                     coro=self._prepare_reply_context(
                         message=message,
-                        history_limit=30,
-                        memory_enabled=True,
+                        history_limit=HISTORY_MESSAGE_LIMIT,
                         parts_task=parts_task,
                         text_parts=(text_reference, text_current),
                         route_done=route_done,
                     )
                 )
                 # Effort grading rides the same route_done gate as memory selection: it runs
-                # in parallel with the route and only the answer model (QA/SUMMARY) consumes
-                # it, so IMAGE/VIDEO cancel it below.
+                # in parallel with the route and only the QA answer model consumes it, so
+                # IMAGE/VIDEO cancel it below.
                 effort_task = asyncio.create_task(
                     coro=self._grade_effort(
                         message=message,
@@ -2533,43 +2521,6 @@ class ReplyGeneratorCogs(commands.Cog):
                             user_prompt=user_prompt,
                             context_task=media_context_task,
                         )
-                elif route.decision == "SUMMARY":
-                    await _discard_task(task=prep_task, label="prep", message_id=message.id)
-                    prep_task = None
-                    # A digest recaps channel history, not one linked post, so intent-gated link
-                    # builders never start here. A URL-bearing SUMMARY is already rerouted to QA.
-                    reactions.advance(emoji="<:stacks:1517562531365912607>")
-                    # A digest reads 200 channel messages, so it is rebuilt with per-user memory
-                    # off: it neither biases the digest nor floods extraction, but the
-                    # per-server memory is still recorded since the digest is rich
-                    # community signal. Cancelling the speculative prep leaves `parts_task`
-                    # running (prep awaits it through asyncio.shield), so the shared
-                    # reference/current parts are still reused here.
-                    context = await self._prepare_reply_context(
-                        message=message,
-                        history_limit=200,
-                        memory_enabled=False,
-                        parts_task=parts_task,
-                        text_parts=(text_reference, text_current),
-                        route_done=route_done,
-                    )
-                    parts_task = None
-                    effort = await self._resolve_effort(
-                        message=message, effort_task=effort_task, route_done=route_done
-                    )
-                    effort_task = None
-                    pipeline_span.set_attribute(key="effort", value=effort)
-                    _log_pre_answer_latency(
-                        started=pipeline_started, decision=route.decision, message_id=message.id
-                    )
-                    await self._handle_message_reply(
-                        message=message,
-                        system_prompt=SUMMARY_PROMPT,
-                        context=context,
-                        memory_enabled=False,
-                        effort=effort,
-                        allow_voice=True,
-                    )
                 else:
                     reactions.advance(emoji="<:message:1517560873000898860>")
                     # Selection still gates the answer here; if this wait ever needs to go,

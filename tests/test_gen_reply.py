@@ -41,7 +41,10 @@ from discordbot.utils.usage_log import UsageRecorder
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.gen_reply.cog import (
     UNROUTED_REPLY,
+    HISTORY_CHAR_BUDGET,
     LINK_CONTEXT_SOURCES,
+    HISTORY_MESSAGE_LIMIT,
+    HISTORY_PER_MESSAGE_OVERHEAD,
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
@@ -49,6 +52,7 @@ from discordbot.cogs.gen_reply.cog import (
     _run_until_deadline,
     _can_launch_research,
     _link_url_for_source,
+    _trim_history_to_budget,
     _await_deadline_bound_task,
     _build_runtime_instructions,
 )
@@ -417,7 +421,7 @@ class FakeResponses:
         self.parse_inputs: list[object] = []
         # parse() serves both the route classifier and the effort grader; each picks its
         # own parsed output by the requested text_format.
-        self.output_parsed: RouteClassification | None = RouteClassification(decision="SUMMARY")
+        self.output_parsed: RouteClassification | None = RouteClassification(decision="QA")
         self.effort_parsed: EffortGrade | None = EffortGrade(effort="high")
         # Each entry is the event list for one streaming create(); popped in order.
         self.stream_queue: list[list[SimpleNamespace]] = []
@@ -891,7 +895,6 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
     message: FakeMessage,
     system_prompt: str = "SYS",
     history_limit: int = 2,
-    memory_enabled: bool = True,
     effort: Literal["low", "high"] = "high",
     describe_capabilities: bool = False,
 ) -> None:
@@ -904,7 +907,6 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
     context = await cog._prepare_reply_context(
         message=msg,
         history_limit=history_limit,
-        memory_enabled=memory_enabled,
         parts_task=parts_task,
         text_parts=text_parts,
         route_done=route_done,
@@ -913,7 +915,6 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
         message=msg,
         system_prompt=system_prompt,
         context=context,
-        memory_enabled=memory_enabled,
         effort=effort,
         describe_capabilities=describe_capabilities,
     )
@@ -2371,7 +2372,6 @@ async def test_voice_config_gate_controls_synthesizer(
         message=as_message(fake=message),
         system_prompt="SYS",
         context=ReplyContext(),
-        memory_enabled=False,
         allow_voice=True,
     )
 
@@ -2425,7 +2425,6 @@ async def test_image_config_gate_controls_generator(
         message=as_message(fake=message),
         system_prompt="SYS",
         context=ReplyContext(),
-        memory_enabled=False,
         allow_image=True,
     )
 
@@ -2513,11 +2512,7 @@ async def test_youtube_qa_uses_interactions_backend(
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(
-        message=as_message(fake=message),
-        system_prompt="SYS",
-        context=ReplyContext(),
-        memory_enabled=False,
-        yt_url=url,
+        message=as_message(fake=message), system_prompt="SYS", context=ReplyContext(), yt_url=url
     )
 
     # The Responses answer stream was never used; the Interactions one was, with the video part.
@@ -2555,7 +2550,6 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
         message=as_message(fake=message),
         system_prompt="SYS",
         context=ReplyContext(),
-        memory_enabled=False,
         effort="low",
         yt_url=url,
     )
@@ -2628,7 +2622,6 @@ async def test_youtube_qa_falls_back_to_responses(
         message=as_message(fake=message),
         system_prompt="SYS",
         context=ReplyContext(),
-        memory_enabled=False,
         yt_url=yt_url,
     )
 
@@ -3816,11 +3809,53 @@ async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
     assert "你的審美跟 <@999> 一樣 這樣算誇獎嗎" in rendered
 
 
-async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trim_history_keeps_the_newest_messages_within_the_budget() -> None:
+    """The budget drops the oldest context first and never cuts inside a message.
+
+    Ordering is the contract being checked here, not just the count: `_fetch_history` hands
+    over oldest-first and the answer needs the conversation nearest the question, so a trim
+    that kept the wrong end would still pass a length assertion.
+    """
+    per_message = 100
+    body = "x" * (per_message - HISTORY_PER_MESSAGE_OVERHEAD)
+    fits = HISTORY_CHAR_BUDGET // per_message
+    messages = [
+        FakeMessage(content=f"{i}:{body}", author=FakeAuthor(user_id=1)) for i in range(fits + 20)
+    ]
+
+    kept = _trim_history_to_budget(messages=[as_message(fake=m) for m in messages])
+
+    assert len(kept) <= fits
+    # order-contract: history is fed to the model oldest-first, and the tail is what is kept.
+    assert [m.content for m in kept] == [m.content for m in messages[len(messages) - len(kept) :]]
+
+
+def test_trim_history_keeps_one_message_that_alone_exceeds_the_budget() -> None:
+    """A single oversized post must not reduce history to nothing."""
+    huge = FakeMessage(content="y" * (HISTORY_CHAR_BUDGET * 3), author=FakeAuthor(user_id=1))
+
+    kept = _trim_history_to_budget(messages=[as_message(fake=huge)])
+
+    assert len(kept) == 1
+
+
+def test_trim_history_charges_an_attachment_only_message() -> None:
+    """Empty `content` still costs, so a run of image posts cannot overshoot the budget."""
+    blanks = [FakeMessage(content="", author=FakeAuthor(user_id=1)) for _ in range(2000)]
+
+    kept = _trim_history_to_budget(messages=[as_message(fake=m) for m in blanks])
+
+    assert len(kept) <= HISTORY_CHAR_BUDGET // HISTORY_PER_MESSAGE_OVERHEAD
+
+
+async def test_gen_reply_routes_and_handlers_without_api(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
+    del memory_isolated_dir
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
-    assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
+    assert (await _route(cog=cog, message=message)).decision == "QA"
     assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.triage_model.name
 
     await cog._handle_video_reply(
@@ -3888,11 +3923,9 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
             return "done"
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
-    # memory_enabled=False keeps this routing test off the real memory path,
-    # which is not isolated here.
-    await _reply_via_pipeline(
-        cog=cog, message=message, system_prompt="system", memory_enabled=False
-    )
+    # The reply path now always reads memory, so this test takes `memory_isolated_dir` to
+    # keep it off the live store rather than relying on a caller-side switch.
+    await _reply_via_pipeline(cog=cog, message=message, system_prompt="system")
     assert _recorded(cog).responses.create_streams[-1] is True
     assert streamed[-1] is message
 
@@ -4530,31 +4563,10 @@ async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio() -> N
 
 
 @pytest.mark.parametrize(
-    argnames="content",
-    argvalues=[
-        "整理懶人包 https://example.test/post",
-        "這裡面又在說啥 整理給我聽 https://example.test/post",
-        # No space in front of the link, which is how a lot of people type (#492). The old
-        # `\b` head counted the Chinese as a word character and found no URL here at all.
-        "整理懶人包https://example.test/post",
-    ],
-)
-async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None:
-    """Regression: URL summaries should use the normal QA route, not chat SUMMARY."""
-    cog = _cog()
-    message = FakeMessage(content=content, author=FakeAuthor(user_id=1))
-
-    routed = await _route(cog=cog, message=message)
-    assert routed.decision == "QA"
-    assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.triage_model.name
-
-
-@pytest.mark.parametrize(
     argnames=(
         "route",
         "expected_call",
         "expected_prep",
-        "expected_flags",
         "expected_voice",
         "expected_image",
         "expected_music",
@@ -4562,24 +4574,12 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
         "expected_capabilities",
     ),
     argvalues=[
-        ("IMAGE", "_handle_image_reply", [(30, True)], [], [], [], [], [], []),
-        ("VIDEO", "_handle_video_reply", [(30, True)], [], [], [], [], [], []),
-        (
-            "SUMMARY",
-            "_handle_message_reply",
-            [(30, True), (200, False)],
-            [False],
-            [True],
-            [False],
-            [False],
-            [False],
-            [False],
-        ),
+        ("IMAGE", "_handle_image_reply", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
+        ("VIDEO", "_handle_video_reply", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
         (
             "QA",
             "_handle_message_reply",
-            [(30, True)],
-            [True],
+            [HISTORY_MESSAGE_LIMIT],
             [True],
             [True],
             [True],
@@ -4590,10 +4590,9 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
     monkeypatch: pytest.MonkeyPatch,
-    route: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"],
+    route: Literal["IMAGE", "VIDEO", "QA"],
     expected_call: str,
-    expected_prep: list[tuple[int, bool]],
-    expected_flags: list[bool],
+    expected_prep: list[int],
     expected_voice: list[bool],
     expected_image: list[bool],
     expected_music: list[bool],
@@ -4607,7 +4606,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
     calls: list[str] = []
     prompts: list[str] = []
-    prep_requests: list[tuple[int, bool]] = []
+    prep_requests: list[int] = []
     prepared_context = ReplyContext()
 
     async def fake_route(
@@ -4619,17 +4618,16 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         await asyncio.sleep(0)
         return RouteClassification(decision=route)
 
-    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def fake_prepare(
         message: FakeMessage,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: object,
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
         """Records context requests while staying off the memory and history paths."""
         del message, parts_task, text_parts, route_done
-        prep_requests.append((history_limit, memory_enabled))
+        prep_requests.append(history_limit)
         return prepared_context
 
     async def fake_reaction(
@@ -4657,7 +4655,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         prompts.append(user_prompt)
         calls.append("_handle_video_reply")
 
-    memory_flags: list[bool] = []
     voice_flags: list[bool] = []
     image_flags: list[bool] = []
     music_flags: list[bool] = []
@@ -4670,7 +4667,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         message: FakeMessage,
         system_prompt: str,
         context: ReplyContext,
-        memory_enabled: bool = True,
         effort: str = "high",
         allow_voice: bool = False,
         allow_image: bool = False,
@@ -4683,7 +4679,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         """Records slow message handler dispatch."""
         del yt_url, allow_research
         calls.append("_handle_message_reply")
-        memory_flags.append(memory_enabled)
         voice_flags.append(allow_voice)
         image_flags.append(allow_image)
         music_flags.append(allow_music)
@@ -4703,28 +4698,27 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     await cog.on_message(message=as_message(fake=message))
     assert expected_call in calls
     assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
-    # The speculative QA context always builds first; SUMMARY rebuilds at its own
-    # history depth without memory, and QA consumes the speculative context as-is.
-    # order-contract: speculative context starts before the SUMMARY rebuild.
-    assert prep_requests == expected_prep
-    assert Counter(memory_flags) == Counter(expected_flags)
-    # Voice is enabled on QA and SUMMARY (both stream a reply); IMAGE/VIDEO never reach here.
+    # QA consumes the speculative context as-is; IMAGE/VIDEO discard it after their media is
+    # on screen. Every route now issues exactly one prep request, so what is asserted is which
+    # request was made, not the order two of them arrived in.
+    assert Counter(prep_requests) == Counter(expected_prep)
+    # Voice is enabled on QA (the only route that streams a reply here); IMAGE/VIDEO never do.
     assert Counter(voice_flags) == Counter(expected_voice)
-    # Inline image is QA-only; SUMMARY stays text and IMAGE/VIDEO never reach here.
+    # Inline image is QA-only; IMAGE/VIDEO never reach here.
     assert Counter(image_flags) == Counter(expected_image)
-    # Inline music is QA-only, like inline image; SUMMARY stays text.
+    # Inline music is QA-only, like inline image.
     assert Counter(music_flags) == Counter(expected_music)
-    # Inline video is QA-only, like inline image/music; SUMMARY stays text.
+    # Inline video is QA-only, like inline image/music.
     assert Counter(video_flags) == Counter(expected_video)
-    # The feature reference that replaced /help is QA-only: SUMMARY is recapping a channel,
-    # not fielding a question about what the bot can do.
+    # The feature reference that replaced /help rides QA alone; a media persona reply is not
+    # fielding a question about what the bot can do.
     assert Counter(capability_flags) == Counter(expected_capabilities)
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
     else:
         assert contexts == [prepared_context]
-        # The parallel grade flows end-to-end into the answer model on QA and SUMMARY.
+        # The parallel grade flows end-to-end into the QA answer model.
         assert effort_flags == ["low"]
 
 
@@ -4733,9 +4727,9 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 ) -> None:
     """Cancelling the speculative prep must not cancel the shared upload task.
 
-    A SUMMARY route cancels the speculative prep while still reusing `parts_task`; an
-    unshielded `await parts_task` inside prep would propagate the cancellation and make
-    the rebuilt summary context fail with CancelledError.
+    IMAGE and VIDEO cancel the speculative prep while their media persona reply still reuses
+    `parts_task`; an unshielded `await parts_task` inside prep would propagate the cancellation
+    and make that reply fail with CancelledError.
     """
     cog = _cog()
     release = asyncio.Event()
@@ -4758,7 +4752,6 @@ async def test_prepare_reply_context_shields_shared_parts_task(
                 fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
             ),
             history_limit=100,
-            memory_enabled=False,
             parts_task=parts_task,
             text_parts=([], []),
             route_done=asyncio.Event(),
@@ -4801,16 +4794,15 @@ async def test_gen_reply_on_message_early_returns_and_errors(
         del reference_messages, current_message
         raise RuntimeError("boom")
 
-    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def fake_prepare(
         message: FakeMessage,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: object,
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        del message, history_limit, parts_task, text_parts, route_done
         return ReplyContext()
 
     monkeypatch.setattr(cog, "_route_classify", boom)
@@ -4836,20 +4828,19 @@ async def test_a_reply_records_the_route_it_took(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Routes every message to SUMMARY."""
+        """Routes every message to QA."""
         del message, reference_messages, current_message
-        return RouteClassification(decision="SUMMARY")
+        return RouteClassification(decision="QA")
 
-    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def fake_prepare(
         message: FakeMessage,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: object,
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        del message, history_limit, parts_task, text_parts, route_done
         return ReplyContext()
 
     async def fake_message_handler(**kwargs: object) -> None:
@@ -4864,7 +4855,7 @@ async def test_a_reply_records_the_route_it_took(
     await cog.on_message(message=as_message(fake=message))
 
     (record,) = _usage_records(directory=usage_log_isolated_dir)
-    assert (record["kind"], record["name"]) == ("reply", "SUMMARY")
+    assert (record["kind"], record["name"]) == ("reply", "QA")
     assert record["user_id"] == 7
     assert message.guild is not None
     assert record["guild_id"] == message.guild.id
@@ -4891,16 +4882,15 @@ async def test_a_failed_reply_records_that_it_never_routed(
         del message, reference_messages, current_message
         raise RuntimeError("boom")
 
-    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def fake_prepare(
         message: FakeMessage,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: object,
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        del message, history_limit, parts_task, text_parts, route_done
         return ReplyContext()
 
     monkeypatch.setattr(cog, "_route_classify", boom)
@@ -5002,7 +4992,7 @@ async def test_a_failed_turn_records_the_model_it_dispatched(
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.logfire.error", record_error)
 
-    # The default route is SUMMARY, so the answer is the turn's only `responses.create`.
+    # The route fake answers QA, so the answer is the turn's only `responses.create`.
     message = FakeMessage(content="<@999> 幫我總結", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
 
@@ -5054,16 +5044,15 @@ async def test_on_message_consumes_speculative_context_on_image_route(
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE")
 
-    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def fake_prepare(
         message: FakeMessage,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: object,
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
         """Returns the prepared context the image handler should consume."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        del message, history_limit, parts_task, text_parts, route_done
         return prepared
 
     async def fake_image_handler(
@@ -5490,10 +5479,9 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     prepare = cog._prepare_reply_context
     cancelled: list[bool] = []
 
-    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def delayed_prepare(
         message: Message,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
@@ -5504,7 +5492,6 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
         return await prepare(
             message=message,
             history_limit=history_limit,
-            memory_enabled=memory_enabled,
             parts_task=parts_task,
             text_parts=text_parts,
             route_done=route_done,
@@ -5552,10 +5539,9 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
     prepare = cog._prepare_reply_context
 
-    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def delayed_prepare(
         message: Message,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
@@ -5566,7 +5552,6 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
         return await prepare(
             message=message,
             history_limit=history_limit,
-            memory_enabled=memory_enabled,
             parts_task=parts_task,
             text_parts=text_parts,
             route_done=route_done,
@@ -5613,10 +5598,9 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     second_cancellation = asyncio.Event()
     cancellation_count = 0
 
-    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def delayed_prepare(
         message: Message,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
@@ -5627,7 +5611,6 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         return await prepare(
             message=message,
             history_limit=history_limit,
-            memory_enabled=memory_enabled,
             parts_task=parts_task,
             text_parts=text_parts,
             route_done=route_done,
@@ -5695,10 +5678,9 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
     second_cancellation = asyncio.Event()
     cancellation_count = 0
 
-    async def delayed_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def delayed_prepare(
         message: Message,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
         text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
         route_done: asyncio.Event,
@@ -5709,7 +5691,6 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
         return await prepare(
             message=message,
             history_limit=history_limit,
-            memory_enabled=memory_enabled,
             parts_task=parts_task,
             text_parts=text_parts,
             route_done=route_done,
@@ -6349,16 +6330,15 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
         await asyncio.sleep(0)
         return RouteClassification(decision="QA", link_context_sources=["bilibili"])
 
-    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def fake_prepare(
         message: FakeMessage,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: object,
         text_parts: object,
         route_done: asyncio.Event,
     ) -> ReplyContext:
         """Fails after routing and yields once so the selected builder is in flight."""
-        del message, history_limit, memory_enabled, parts_task, text_parts
+        del message, history_limit, parts_task, text_parts
         await route_done.wait()
         await asyncio.sleep(0)
         raise RuntimeError("prep exploded")
@@ -6418,16 +6398,15 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
         del message, reference_messages, current_message
         return RouteClassification(decision="QA", link_context_sources=["bilibili"])
 
-    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def fake_prepare(
         message: FakeMessage,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: object,
         text_parts: object,
         route_done: asyncio.Event,
     ) -> ReplyContext:
         """Fails while the selected builder still owns its deadline cancellation cleanup."""
-        del message, history_limit, memory_enabled, parts_task, text_parts
+        del message, history_limit, parts_task, text_parts
         await route_done.wait()
         await cleanup_started.wait()
         raise RuntimeError("prep exploded")
@@ -6611,8 +6590,8 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
     """The feature reference leads the answer input, and only when the route asked for it.
 
     It is the one block that is byte-identical on every reply, so it rides in front of history
-    where it costs the least against a prefix cache. SUMMARY leaves the flag off and must get
-    none of it.
+    where it costs the least against a prefix cache. A caller that leaves the flag off must
+    get none of it.
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
@@ -6753,10 +6732,10 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
     assert server_index < memory_index < tone_index < current_index
 
 
-async def test_summary_route_still_injects_tone_block(
+async def test_reply_context_always_injects_the_author_tone_block(
     economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """memory_enabled=False (SUMMARY) skips user memory but still injects the author's tone note."""
+    """The author's tone note rides every reply, with no selection phase of its own."""
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆")
@@ -6769,7 +6748,7 @@ async def test_summary_route_still_injects_tone_block(
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert not has_memory_context_block(request=answer)
@@ -7009,69 +6988,6 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         responses=_recorded(cog).responses, n=answer_idx
     )
     assert Counter(scheduled) == Counter((user_scope(user_id=1), server_scope(server_id=1)))
-
-
-async def test_handle_message_reply_memory_disabled_arg_skips_user_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Verifies memory_enabled=False (summary route) skips user memory but still records server."""
-    cog = _cog()
-    _seed_fact(scope=user_scope(user_id=1), text="不該被注入")
-
-    class FakeResponder:
-        """Stands in for the answer-phase streamer without real streaming."""
-
-        def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
-            self,
-            message: FakeMessage,
-            memory_lookups: list[str] | None = None,
-            input_tokens: int = 0,
-            output_tokens: int = 0,
-            model_effort: str = "",
-            backend: str = "responses",
-            voice_generator: object | None = None,
-            image_generator: object | None = None,
-            music_generator: object | None = None,
-            video_generator: object | None = None,
-            media_delivery: object | None = None,
-            input_builder: object | None = None,
-        ) -> None:
-            """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, backend
-            del (
-                voice_generator,
-                image_generator,
-                music_generator,
-                video_generator,
-                media_delivery,
-                input_builder,
-            )
-            self.message = message
-
-        async def stream(self, *, responses: object) -> str:
-            """Returns placeholder reply content."""
-            del responses
-            return "回覆"
-
-    scheduled: list[object] = []
-
-    def fake_schedule(**kwargs: object) -> None:
-        """Records that a memory update was scheduled."""
-        scheduled.append(kwargs["scope"])
-
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", fake_schedule)
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False)
-
-    # memory_enabled=False runs no selection phase: a single answer request, no tool, no memory.
-    assert _recorded(cog).responses.create_streams == [True]
-    answer = request_input(responses=_recorded(cog).responses, phase="answer")
-    assert not has_memory_context_block(request=answer)
-    assert "get_user_memory" not in tool_names_for_call(responses=_recorded(cog).responses, n=0)
-    # The per-user update is skipped, but the server-scope update still runs in a public guild.
-    assert scheduled == [server_scope(server_id=1)]
 
 
 async def test_process_single_message_neutralizes_spoofed_identity(
@@ -7851,29 +7767,18 @@ def test_usage_footer_re_strips_memory_credit_second_line() -> None:
 
 
 @pytest.mark.parametrize(
-    ("memory_enabled", "has_guild", "channel_public", "expect_server_read", "expect_scopes"),
+    ("has_guild", "channel_public", "expect_server_read", "expect_scopes"),
     [
-        (True, True, True, True, ["user", "server"]),
-        (True, True, False, True, ["user"]),
-        (True, False, True, False, ["user"]),
-        (False, True, True, False, ["server"]),
-        (False, False, True, False, []),
-        (False, True, False, False, []),
+        (True, True, True, ["user", "server"]),
+        (True, False, True, ["user"]),
+        (False, True, False, ["user"]),
     ],
-    ids=[
-        "qa-guild-public",
-        "qa-guild-private",
-        "qa-dm",
-        "summary-guild-public",
-        "summary-dm",
-        "summary-guild-private",
-    ],
+    ids=["guild-public", "guild-private", "dm"],
 )
 async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- parametrized columns
     economy_isolated_db: None,
     memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
-    memory_enabled: bool,
     has_guild: bool,
     channel_public: bool,
     expect_server_read: bool,
@@ -7881,10 +7786,10 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
 ) -> None:
     """Server memory is read on a guild QA turn and written only from a public guild channel.
 
-    One matrix over (route, guild/DM, public/private): the read block rides the answer only on
-    a memory-enabled guild turn; the per-user write follows memory_enabled; the per-server
-    write needs a public guild channel. This server memory has no nickname table, so the
-    optional selector must always be skipped.
+    One matrix over (guild/DM, public/private): the read block rides the answer only on a
+    guild turn, the per-user write always runs, and the per-server write additionally needs a
+    public guild channel. This server memory has no nickname table, so the optional selector
+    must always be skipped.
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
@@ -7906,7 +7811,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=memory_enabled)
+    await _reply_via_pipeline(cog=cog, message=message)
 
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert (extract_server_memory_block(request=answer) is not None) == expect_server_read
@@ -8134,20 +8039,6 @@ async def test_route_classify_carries_decision_and_defaults_qa() -> None:
     assert fallback.link_context_sources == []
 
 
-async def test_route_url_summary_downgrades_to_qa() -> None:
-    """A URL SUMMARY becomes QA without losing either content-ingestion decision."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="SUMMARY", watch_video=True, link_context_sources=["threads"]
-    )
-    message = FakeMessage(content="整理 https://example.test/a", author=FakeAuthor(user_id=1))
-
-    routed = await _route(cog=cog, message=message)
-    assert routed.decision == "QA"
-    assert routed.watch_video is True
-    assert routed.link_context_sources == ["threads"]
-
-
 async def test_grade_effort_carries_grade_and_defaults_high() -> None:
     """The effort grader returns the model's grade; unparsed output falls back to high."""
     cog = _cog()
@@ -8265,16 +8156,15 @@ async def test_on_message_cancels_effort_task_on_image_route(
             raise
         return EffortGrade(effort="low")
 
-    async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
+    async def fake_prepare(
         message: FakeMessage,
         history_limit: int,
-        memory_enabled: bool,
         parts_task: object,
         text_parts: object,
         route_done: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del message, history_limit, memory_enabled, parts_task, text_parts, route_done
+        del message, history_limit, parts_task, text_parts, route_done
         return ReplyContext()
 
     async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
@@ -8305,7 +8195,7 @@ async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None)
     cog = _cog()
     message = FakeMessage(content="<@999> why", author=FakeAuthor(user_id=1))
 
-    await _reply_via_pipeline(cog=cog, message=message, memory_enabled=False, effort="low")
+    await _reply_via_pipeline(cog=cog, message=message, effort="low")
 
     assert _recorded(cog).responses.create_reasonings[-1]["effort"] == "low"
 
@@ -8456,7 +8346,6 @@ async def _prepare_context_with_hanging_selection(
     return await cog._prepare_reply_context(
         message=msg,
         history_limit=2,
-        memory_enabled=True,
         parts_task=parts_task,
         text_parts=text_parts,
         route_done=route_done,
