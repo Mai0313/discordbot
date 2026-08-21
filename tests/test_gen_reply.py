@@ -3177,6 +3177,16 @@ def test_extract_friendly_error_reads_a_decoded_400_body() -> None:
     # The direct-to-Google path keeps the whole document on `.details` instead.
     assert extract_friendly_error(exc=ClientError(400, body, None)) == refusal
 
+    # A non-streaming LiteLLM 400 needs both steps: the dict repr escapes the wrapped chain's
+    # quotes to `b\'...\'`, so the bytes literal is only reachable once `.body` has replaced the
+    # text being scanned.
+    chain = """litellm.BadRequestError: VertexAIException - b'{"error": {"message": "quota"}}'"""
+    wrapped_body = {"error": {"message": chain, "code": "400"}}
+    wrapped = BadRequestError(
+        f"Error code: 400 - {wrapped_body}", response=response, body=wrapped_body["error"]
+    )
+    assert extract_friendly_error(exc=wrapped) == "quota"
+
 
 def test_required_modality_gate_keeps_code_and_text() -> None:
     """The MIME gate drops unknown binaries but keeps source-code / structured-text types."""
