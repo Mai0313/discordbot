@@ -20,7 +20,6 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.llm import LLMConfig
 from discordbot.utils.douyin import DOUYIN_URL_RE, is_douyin_post_url
 from discordbot.utils.images import convert_base64_to_data_uri
@@ -75,7 +74,6 @@ from discordbot.cogs.gen_reply.prompts import (
     ROUTE_PROMPT,
     VIDEO_PROMPT,
     EFFORT_PROMPT,
-    SUMMARY_PROMPT,
     MUSIC_INSTRUCTION,
     VIDEO_INSTRUCTION,
     IMAGE_REPLY_PROMPT,
@@ -160,8 +158,6 @@ if TYPE_CHECKING:
     from openai.types.responses import ResponseStreamEvent
 
 
-_MESSAGE_URL_RE = re.compile(pattern=rf"(?i){URL_START_ANCHOR}(?:https?://|www\.)\S+")
-
 # Preserve the existing eight-user context target for optional model-selected additions.
 # Deterministic participants are never displaced: if they fill or exceed the target, the
 # selector is skipped; otherwise it can use only the remaining slots.
@@ -232,22 +228,6 @@ def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str
         if match:
             return match
     return None
-
-
-def _carries_url(message: Message) -> bool:
-    """Whether the message's own rendered text carries any URL.
-
-    Read by the SUMMARY -> QA reroute guard. `_MESSAGE_URL_RE` takes its head from
-    `URL_START_ANCHOR`, so a URL typed flush against Chinese ("看這篇https://...") counts here
-    the same as one with a space in front of it, and the two generic scanners agree on it.
-    """
-    return (
-        _first_url_match(
-            pattern=_MESSAGE_URL_RE,
-            texts=_message_link_texts(message=message, strip_usage_footer=False),
-        )
-        is not None
-    )
 
 
 def _link_url_for_source(source: LinkContextSource, message: Message) -> str | None:
@@ -1456,22 +1436,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     extra_headers={"x-litellm-end-user-id": message.author.name},
                 )
             parsed = responses.output_parsed
-            if parsed is None:
-                route = RouteClassification(decision="QA")
-            elif parsed.decision == "SUMMARY" and _carries_url(message=message):
-                # A summary request carrying a URL is really a QA recap of that link, not a
-                # recap of channel history, so steer it back to QA. Preserve both content-read
-                # decisions so the corrected route still ingests what the user asked about.
-                logfire.info(
-                    "gen_reply rerouting a URL-bearing summary to QA", message_id=message.id
-                )
-                route = RouteClassification(
-                    decision="QA",
-                    watch_video=parsed.watch_video,
-                    link_context_sources=parsed.link_context_sources,
-                )
-            else:
-                route = parsed
+            route = parsed if parsed is not None else RouteClassification(decision="QA")
         except ValidationError as exc:
             # `responses.parse` validates before `output_parsed` is reachable, so an empty /
             # safety-filtered response and a genuine schema mismatch both land here; the
@@ -1505,7 +1470,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """Grades how much reasoning effort the answer model should spend on this message.
 
         Runs in parallel with the route under the shared `route_done` gate (`_await_gated`);
-        the grade is consumed only on the QA and SUMMARY paths, while IMAGE and VIDEO cancel
+        the grade is consumed only on the QA path, while IMAGE and VIDEO cancel
         this task. The parts arrive already text-only, so grading never waits on uploads.
         Raises on any provider/parse failure so the caller (`_resolve_effort`) can fall back.
 
@@ -1696,7 +1661,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         Unlike user memory there is exactly one server memory per guild, so it needs no
         selection phase, allowlist, or function tool: it is read directly with zero extra
-        LLM latency. Returns "" for DMs (no guild), the SUMMARY route, or an empty memory.
+        LLM latency. Returns "" for a DM (no guild), a caller that disabled memory, or an empty one.
         Read once per reply and shared by the selection and answer phases.
         """
         if not memory_enabled or message.guild is None:
@@ -1847,8 +1812,8 @@ class ReplyGeneratorCogs(commands.Cog):
 
         # The message author's tone-preference note is read directly for that one author
         # (their own preference for how the bot should sound, cross-server safe by
-        # construction) and injected on every reply with no selection phase — even on the
-        # SUMMARY route, which skips user memory. One file read, no extra LLM call.
+        # construction) and injected on every reply with no selection phase, including one
+        # that runs with user memory off. One file read, no extra LLM call.
         author_tone = read_tone(scope=user_scope(user_id=message.author.id))
         tone_block = render_tone_block(tone=author_tone) if author_tone else None
 
@@ -1910,8 +1875,8 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             # The answer needs the uploaded renders; await the full history render and the shared
             # reference/current uploads here, concurrently with any in-flight selection above.
-            # `parts_task` is shielded so cancelling this speculative prep (non-QA routes) never
-            # cancels the shared upload task a SUMMARY route still reuses; the full history render
+            # `parts_task` is shielded so cancelling this speculative prep (IMAGE / VIDEO) never
+            # cancels the shared upload task those routes still reuse; the full history render
             # rides as an ordinary gather child, so it is cancelled together with prep.
             with logfire.span("gen_reply context build", message_id=message.id):
                 hist_messages, (reference_messages, current_message) = await asyncio.gather(
@@ -1999,14 +1964,14 @@ class ReplyGeneratorCogs(commands.Cog):
         """Streams the answer from a pre-built reply context, then schedules memory updates.
 
         The per-user update is gated by `memory_enabled`; the per-server update always runs
-        (subject to its own guild / public-channel guards), so the SUMMARY route still records
-        community memory even though it carries `memory_enabled=False`. `allow_voice` enables a
+        (subject to its own guild / public-channel guards), so a caller carrying
+        `memory_enabled=False` still records community memory. `allow_voice` enables a
         spoken clip, `allow_image` an inline generated image, `allow_music` an inline generated
         music clip, and `allow_video` an inline generated video clip when the answer model marks
-        the reply for it (image / music / video are QA only; voice also rides SUMMARY, which
-        otherwise stays text). `describe_capabilities` injects the feature reference that replaced
-        `/help`, QA only since SUMMARY is recapping a channel rather than fielding a question about
-        the bot. `yt_url`, set only when the router asked
+        the reply for it (image / music / video are QA only; the media persona replies get voice
+        alone). `describe_capabilities` injects the feature reference that replaced
+        `/help`, carried by QA alone since a persona reply riding generated media is not fielding
+        a question about the bot. `yt_url`, set only when the router asked
         to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
         (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
@@ -2211,10 +2176,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     user_id=message.author.id,
                 ),
             )
-        # Server memory is not gated by `memory_enabled`: the SUMMARY route runs with it
-        # off (no per-user memory) yet its 200-message digest is high-quality community
-        # signal worth recording. DMs and non-public channels are dropped by the guards
-        # inside `_schedule_server_memory_update`.
+        # Server memory is not gated by `memory_enabled`: a caller may run with per-user
+        # memory off and still be reading a channel's conversation, which is high-quality
+        # community signal worth recording. DMs and non-public channels are dropped by the
+        # guards inside `_schedule_server_memory_update`.
         self._schedule_server_memory_update(
             message=message, message_list=context.message_list, full_reply=full_reply
         )
@@ -2435,8 +2400,8 @@ class ReplyGeneratorCogs(commands.Cog):
                     )
                 )
                 # Effort grading rides the same route_done gate as memory selection: it runs
-                # in parallel with the route and only the answer model (QA/SUMMARY) consumes
-                # it, so IMAGE/VIDEO cancel it below.
+                # in parallel with the route and only the QA answer model consumes it, so
+                # IMAGE/VIDEO cancel it below.
                 effort_task = asyncio.create_task(
                     coro=self._grade_effort(
                         message=message,
@@ -2533,43 +2498,6 @@ class ReplyGeneratorCogs(commands.Cog):
                             user_prompt=user_prompt,
                             context_task=media_context_task,
                         )
-                elif route.decision == "SUMMARY":
-                    await _discard_task(task=prep_task, label="prep", message_id=message.id)
-                    prep_task = None
-                    # A digest recaps channel history, not one linked post, so intent-gated link
-                    # builders never start here. A URL-bearing SUMMARY is already rerouted to QA.
-                    reactions.advance(emoji="<:stacks:1517562531365912607>")
-                    # A digest reads 200 channel messages, so it is rebuilt with per-user memory
-                    # off: it neither biases the digest nor floods extraction, but the
-                    # per-server memory is still recorded since the digest is rich
-                    # community signal. Cancelling the speculative prep leaves `parts_task`
-                    # running (prep awaits it through asyncio.shield), so the shared
-                    # reference/current parts are still reused here.
-                    context = await self._prepare_reply_context(
-                        message=message,
-                        history_limit=200,
-                        memory_enabled=False,
-                        parts_task=parts_task,
-                        text_parts=(text_reference, text_current),
-                        route_done=route_done,
-                    )
-                    parts_task = None
-                    effort = await self._resolve_effort(
-                        message=message, effort_task=effort_task, route_done=route_done
-                    )
-                    effort_task = None
-                    pipeline_span.set_attribute(key="effort", value=effort)
-                    _log_pre_answer_latency(
-                        started=pipeline_started, decision=route.decision, message_id=message.id
-                    )
-                    await self._handle_message_reply(
-                        message=message,
-                        system_prompt=SUMMARY_PROMPT,
-                        context=context,
-                        memory_enabled=False,
-                        effort=effort,
-                        allow_voice=True,
-                    )
                 else:
                     reactions.advance(emoji="<:message:1517560873000898860>")
                     # Selection still gates the answer here; if this wait ever needs to go,

@@ -21,7 +21,7 @@ below; they exist to make a silent deletion loud, not to freeze the prose.
 
 import re
 
-from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT, COMMON_PROMPT, SUMMARY_PROMPT
+from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT, COMMON_PROMPT
 
 # The two load-bearing halves: the prohibition itself, and the clause that makes it absolute.
 # Dropping the second is the subtle failure, since a model told only "do not treat it as a
@@ -50,16 +50,18 @@ def test_common_prompt_forbids_echoing_a_marker_found_in_quoted_content() -> Non
     assert not missing, f"COMMON_PROMPT lost its marker-echo guard: {missing}. {_RETEST}"
 
 
-def test_the_guard_reaches_every_turn_that_can_receive_quoted_content() -> None:
-    """QA and SUMMARY are the turns linked-post and fetched content ride on, so both need it.
+def test_the_guard_reaches_the_turn_that_can_receive_quoted_content() -> None:
+    """QA is the turn linked-post and fetched content ride on, so it is the one that needs it.
 
-    Both embed `COMMON_PROMPT` today, which is also what carries the rule onto the native
+    It embeds `COMMON_PROMPT`, which is also what carries the rule onto the native
     Interactions backend: that path takes the same `_build_runtime_instructions` output as its
-    `system_instruction`, so a rule living here needs no second home.
+    `system_instruction`, so a rule living here needs no second home. A route that grows its
+    own system prompt and can be handed external content belongs in this check beside it.
     """
-    for name, prompt in (("REPLY_PROMPT", REPLY_PROMPT), ("SUMMARY_PROMPT", SUMMARY_PROMPT)):
-        normalized = _normalized(text=prompt)
-        missing = [
-            phrase for phrase in _REQUIRED_PHRASES if _normalized(text=phrase) not in normalized
-        ]
-        assert not missing, f"{name} no longer carries the marker-echo guard: {missing}. {_RETEST}"
+    normalized = _normalized(text=REPLY_PROMPT)
+    missing = [
+        phrase for phrase in _REQUIRED_PHRASES if _normalized(text=phrase) not in normalized
+    ]
+    assert not missing, (
+        f"REPLY_PROMPT no longer carries the marker-echo guard: {missing}. {_RETEST}"
+    )

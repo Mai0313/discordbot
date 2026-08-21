@@ -279,7 +279,7 @@ class RouteClassification(BaseModel):
         link_context_sources: Linked-post sources whose content the QA answer should ingest.
     """
 
-    decision: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"] = Field(
+    decision: Literal["IMAGE", "VIDEO", "QA"] = Field(
         ..., description="Reply mode selected for the incoming Discord message."
     )
     watch_video: bool = Field(
@@ -304,7 +304,7 @@ class EffortGrade(BaseModel):
     """Structured answer-effort grade returned by the effort model.
 
     Graded by a call that runs in parallel with the route; the answer model's effort is
-    overridden with it on the QA and SUMMARY paths.
+    overridden with it on the QA path.
 
     Deliberately binary, with `high` as the grade an ordinary message gets and `low` as the
     exception that has to be earned (#490): the grader reads text-only parts, so it never sees

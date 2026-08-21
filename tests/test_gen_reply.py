@@ -417,7 +417,7 @@ class FakeResponses:
         self.parse_inputs: list[object] = []
         # parse() serves both the route classifier and the effort grader; each picks its
         # own parsed output by the requested text_format.
-        self.output_parsed: RouteClassification | None = RouteClassification(decision="SUMMARY")
+        self.output_parsed: RouteClassification | None = RouteClassification(decision="QA")
         self.effort_parsed: EffortGrade | None = EffortGrade(effort="high")
         # Each entry is the event list for one streaming create(); popped in order.
         self.stream_queue: list[list[SimpleNamespace]] = []
@@ -3820,7 +3820,7 @@ async def test_gen_reply_routes_and_handlers_without_api(monkeypatch: pytest.Mon
     """Verifies route, video, image, and slow-reply handlers using fake APIs."""
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
-    assert (await _route(cog=cog, message=message)).decision == "SUMMARY"
+    assert (await _route(cog=cog, message=message)).decision == "QA"
     assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.triage_model.name
 
     await cog._handle_video_reply(
@@ -4530,26 +4530,6 @@ async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio() -> N
 
 
 @pytest.mark.parametrize(
-    argnames="content",
-    argvalues=[
-        "整理懶人包 https://example.test/post",
-        "這裡面又在說啥 整理給我聽 https://example.test/post",
-        # No space in front of the link, which is how a lot of people type (#492). The old
-        # `\b` head counted the Chinese as a word character and found no URL here at all.
-        "整理懶人包https://example.test/post",
-    ],
-)
-async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None:
-    """Regression: URL summaries should use the normal QA route, not chat SUMMARY."""
-    cog = _cog()
-    message = FakeMessage(content=content, author=FakeAuthor(user_id=1))
-
-    routed = await _route(cog=cog, message=message)
-    assert routed.decision == "QA"
-    assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.triage_model.name
-
-
-@pytest.mark.parametrize(
     argnames=(
         "route",
         "expected_call",
@@ -4565,17 +4545,6 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
         ("IMAGE", "_handle_image_reply", [(30, True)], [], [], [], [], [], []),
         ("VIDEO", "_handle_video_reply", [(30, True)], [], [], [], [], [], []),
         (
-            "SUMMARY",
-            "_handle_message_reply",
-            [(30, True), (200, False)],
-            [False],
-            [True],
-            [False],
-            [False],
-            [False],
-            [False],
-        ),
-        (
             "QA",
             "_handle_message_reply",
             [(30, True)],
@@ -4590,7 +4559,7 @@ async def test_gen_reply_routes_url_summary_requests_to_qa(content: str) -> None
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
     monkeypatch: pytest.MonkeyPatch,
-    route: Literal["IMAGE", "VIDEO", "QA", "SUMMARY"],
+    route: Literal["IMAGE", "VIDEO", "QA"],
     expected_call: str,
     expected_prep: list[tuple[int, bool]],
     expected_flags: list[bool],
@@ -4703,28 +4672,28 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     await cog.on_message(message=as_message(fake=message))
     assert expected_call in calls
     assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
-    # The speculative QA context always builds first; SUMMARY rebuilds at its own
-    # history depth without memory, and QA consumes the speculative context as-is.
-    # order-contract: speculative context starts before the SUMMARY rebuild.
-    assert prep_requests == expected_prep
+    # QA consumes the speculative context as-is; IMAGE/VIDEO discard it after their media is
+    # on screen. Every route now issues exactly one prep request, so what is asserted is which
+    # request was made, not the order two of them arrived in.
+    assert Counter(prep_requests) == Counter(expected_prep)
     assert Counter(memory_flags) == Counter(expected_flags)
-    # Voice is enabled on QA and SUMMARY (both stream a reply); IMAGE/VIDEO never reach here.
+    # Voice is enabled on QA (the only route that streams a reply here); IMAGE/VIDEO never do.
     assert Counter(voice_flags) == Counter(expected_voice)
-    # Inline image is QA-only; SUMMARY stays text and IMAGE/VIDEO never reach here.
+    # Inline image is QA-only; IMAGE/VIDEO never reach here.
     assert Counter(image_flags) == Counter(expected_image)
-    # Inline music is QA-only, like inline image; SUMMARY stays text.
+    # Inline music is QA-only, like inline image.
     assert Counter(music_flags) == Counter(expected_music)
-    # Inline video is QA-only, like inline image/music; SUMMARY stays text.
+    # Inline video is QA-only, like inline image/music.
     assert Counter(video_flags) == Counter(expected_video)
-    # The feature reference that replaced /help is QA-only: SUMMARY is recapping a channel,
-    # not fielding a question about what the bot can do.
+    # The feature reference that replaced /help rides QA alone; a media persona reply is not
+    # fielding a question about what the bot can do.
     assert Counter(capability_flags) == Counter(expected_capabilities)
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
     else:
         assert contexts == [prepared_context]
-        # The parallel grade flows end-to-end into the answer model on QA and SUMMARY.
+        # The parallel grade flows end-to-end into the QA answer model.
         assert effort_flags == ["low"]
 
 
@@ -4733,9 +4702,9 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 ) -> None:
     """Cancelling the speculative prep must not cancel the shared upload task.
 
-    A SUMMARY route cancels the speculative prep while still reusing `parts_task`; an
-    unshielded `await parts_task` inside prep would propagate the cancellation and make
-    the rebuilt summary context fail with CancelledError.
+    IMAGE and VIDEO cancel the speculative prep while their media persona reply still reuses
+    `parts_task`; an unshielded `await parts_task` inside prep would propagate the cancellation
+    and make that reply fail with CancelledError.
     """
     cog = _cog()
     release = asyncio.Event()
@@ -4836,9 +4805,9 @@ async def test_a_reply_records_the_route_it_took(
     async def fake_route(
         message: FakeMessage, reference_messages: list[object], current_message: list[object]
     ) -> RouteClassification:
-        """Routes every message to SUMMARY."""
+        """Routes every message to QA."""
         del message, reference_messages, current_message
-        return RouteClassification(decision="SUMMARY")
+        return RouteClassification(decision="QA")
 
     async def fake_prepare(  # noqa: PLR0913 -- mirrors _prepare_reply_context's signature
         message: FakeMessage,
@@ -4864,7 +4833,7 @@ async def test_a_reply_records_the_route_it_took(
     await cog.on_message(message=as_message(fake=message))
 
     (record,) = _usage_records(directory=usage_log_isolated_dir)
-    assert (record["kind"], record["name"]) == ("reply", "SUMMARY")
+    assert (record["kind"], record["name"]) == ("reply", "QA")
     assert record["user_id"] == 7
     assert message.guild is not None
     assert record["guild_id"] == message.guild.id
@@ -5002,7 +4971,7 @@ async def test_a_failed_turn_records_the_model_it_dispatched(
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.logfire.error", record_error)
 
-    # The default route is SUMMARY, so the answer is the turn's only `responses.create`.
+    # The route fake answers QA, so the answer is the turn's only `responses.create`.
     message = FakeMessage(content="<@999> 幫我總結", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
 
@@ -6611,8 +6580,8 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
     """The feature reference leads the answer input, and only when the route asked for it.
 
     It is the one block that is byte-identical on every reply, so it rides in front of history
-    where it costs the least against a prefix cache. SUMMARY leaves the flag off and must get
-    none of it.
+    where it costs the least against a prefix cache. A caller that leaves the flag off must
+    get none of it.
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
@@ -6753,10 +6722,10 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
     assert server_index < memory_index < tone_index < current_index
 
 
-async def test_summary_route_still_injects_tone_block(
+async def test_memory_disabled_context_still_injects_tone_block(
     economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """memory_enabled=False (SUMMARY) skips user memory but still injects the author's tone note."""
+    """memory_enabled=False skips user memory but still injects the author's tone note."""
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆")
@@ -8132,20 +8101,6 @@ async def test_route_classify_carries_decision_and_defaults_qa() -> None:
     fallback = await _route(cog=cog, message=message)
     assert fallback.decision == "QA"
     assert fallback.link_context_sources == []
-
-
-async def test_route_url_summary_downgrades_to_qa() -> None:
-    """A URL SUMMARY becomes QA without losing either content-ingestion decision."""
-    cog = _cog()
-    _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="SUMMARY", watch_video=True, link_context_sources=["threads"]
-    )
-    message = FakeMessage(content="整理 https://example.test/a", author=FakeAuthor(user_id=1))
-
-    routed = await _route(cog=cog, message=message)
-    assert routed.decision == "QA"
-    assert routed.watch_video is True
-    assert routed.link_context_sources == ["threads"]
 
 
 async def test_grade_effort_carries_grade_and_defaults_high() -> None:
