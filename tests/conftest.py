@@ -184,13 +184,19 @@ def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
     Autouse for the reason `feedback_env_isolated` is, with one extra edge: `gemini_keys`
     reads the numbered variables straight from the environment rather than through a field,
     so `LLMConfig.model_validate` cannot shut them out the way it can a named credential.
-    On a machine with three keys configured, every balanced test would then see three
-    whatever it asked for. `GEMINI_API_KEY` itself is deliberately left alone, since a long
-    tail of tests reads it as the "is Gemini configured at all" signal.
+    On a machine with three keys configured, every balanced test would otherwise see three
+    whatever it asked for, and the key a reply leased would depend on the checkout.
+
+    `GEMINI_API_KEY` goes too, which makes the default deployment an unconfigured one. That
+    is what the reply tests are built for — they set the key explicitly when they are about a
+    Gemini-only path — and leaving it in place made a leased key depend on whether the
+    developer's `.env` happened to be visible, which in a git worktree is the parent
+    checkout's file.
 
     The prefix match is wider than `gemini_keys`' own pattern on purpose: isolation should
     not have to track which spellings that property happens to accept today.
     """
+    monkeypatch.delenv(name="GEMINI_API_KEY", raising=False)
     for name in [name for name in os.environ if name.startswith("GEMINI_API_KEY_")]:
         monkeypatch.delenv(name=name, raising=False)
 

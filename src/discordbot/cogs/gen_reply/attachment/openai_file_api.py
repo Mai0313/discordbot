@@ -22,6 +22,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply.attachment.base import (
     RenderedPart,
     AttachmentRenderer,
+    media_semaphore,
     loggable_cache_key,
 )
 from discordbot.cogs.gen_reply.attachment.loaders import (
@@ -116,7 +117,7 @@ class OpenAIFileUploader(AttachmentRenderer):
         """Returns an uploaded OpenAI file id and its cache expiry."""
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
-        async with self._media_semaphore:
+        async with media_semaphore.get():
             try:
                 data, content_type = await load_data()
             except Exception as exc:

@@ -26,13 +26,9 @@ from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
 from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.typings.colors import DISCORD_RED
-from discordbot.typings.models import (
-    EffortGrade,
-    ModelSettings,
-    RouteClassification,
-    RuntimeModelCatalog,
-)
+from discordbot.typings.models import EffortGrade, ModelSettings, RouteClassification
 from discordbot.utils.bilibili import BILIBILI_URL_RE
+from discordbot.utils.mentions import has_bot_mention
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.utils.usage_log import UsageRecorder
@@ -84,6 +80,7 @@ from discordbot.cogs.gen_reply.prompts import (
     REQUEST_TIME_CONTEXT_PROMPT,
     REQUEST_LOCATION_CONTEXT_PROMPT,
 )
+from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
 from discordbot.cogs.gen_reply.streaming import ResponseStreamer
 from discordbot.services.memory.pipeline import (
@@ -94,14 +91,7 @@ from discordbot.services.memory.pipeline import (
     consolidate_if_needed,
     schedule_memory_update,
 )
-from discordbot.cogs.gen_reply.generation import (
-    MAX_VIDEO_REFERENCE_IMAGES,
-    ImageGenerator,
-    MusicGenerator,
-    VideoGenerator,
-    VoiceGenerator,
-    PromptGenerator,
-)
+from discordbot.cogs.gen_reply.generation import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     GET_USER_MEMORY_TOOL,
@@ -122,7 +112,6 @@ from discordbot.cogs.gen_reply.memory_tool import (
     allowlist_ids_from_server_memory,
 )
 from discordbot.services.memory.extraction import (
-    MemoryExtractorAI,
     subject_source_line,
     target_centered_memory_messages,
 )
@@ -133,12 +122,7 @@ from discordbot.cogs.gen_reply.interactions import (
 )
 from discordbot.cogs.gen_reply.link_sources import LinkContextSource
 from discordbot.services.memory.git_history import memory_git
-from discordbot.services.memory.server_prompts import (
-    SERVER_PHASE1_PROMPT,
-    SERVER_PHASE2_PROMPT,
-    SERVER_PHASE1_EVALUATOR_PROMPT,
-)
-from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
+from discordbot.services.gemini_keys.balancer import pick_gemini_key
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     build_douyin_context_messages,
     douyin_timeout_context_messages,
@@ -764,8 +748,12 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         self.bot = bot
         self.config = LLMConfig()
-        self.runtime_models = RuntimeModelCatalog()
         self.usage_recorder = UsageRecorder()
+        # One toolkit per Gemini key, built on first use and kept for the life of the process.
+        # Keyed by the key number, with None for the unconfigured deployment. Long-lived on
+        # purpose: the caches inside hold Files API uris only that key can read, so rebuilding
+        # per reply would re-upload the whole history window every time.
+        self._toolkits: dict[int | None, GeminiKeyToolkit] = {}
         # Tracked background tasks for the one-shot restart memory resume.
         self._tasks: set[asyncio.Task[None]] = set()
         self._resume_started = False
@@ -785,112 +773,27 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
-    @cached_property
-    def gemini_client(self) -> genai.Client:
-        """The cached native Gemini client for every DIRECT-to-Google runtime path.
+    async def lease_toolkit(self) -> GeminiKeyToolkit:
+        """Leases the least-used Gemini key and returns the toolkit bound to it.
 
-        DIRECT to Google (`gemini_api_key`, no proxy): it serves the runtime paths the LiteLLM
-        proxy cannot.
-
-        - native omni video generation / editing (`interactions.create`, delivery=uri + Files
-          download), for both the VIDEO route and the inline `<generate-video>` marker;
-        - the inline `<generate-music>` Lyria render, also on the Interactions API;
-        - Files API uploads, so a generated clip (and, through
-          `gemini_client_if_configured`, a linked post's media) can be referenced by uri; and
-        - the YouTube-aware QA answer turn that streams through the native Interactions API (the
-          only path that can actually watch a linked video). That last swap only ever fires when
-          the answer model is already Gemini, so the direct credential is always the right one.
-
-        All of them forgo proxy-side cost/usage tracking, like the deep-research direct path. An
-        empty key raises at construction, so a caller that is reachable without one must go
-        through `gemini_client_if_configured` instead of touching this.
+        One call per unit of work that must not cross keys: a reply, or one background job.
+        Everything downstream then reads its clients and models off the returned toolkit
+        rather than off this cog, which is what keeps a reply's Files API uploads and the
+        request naming them on one Google project.
 
         Returns:
-            A Gemini client for native media generation and the Interactions answer turn.
+            The toolkit for the leased key, or the unpinned one when no key is configured.
         """
-        return genai.Client(api_key=self.config.gemini_api_key)
-
-    @property
-    def gemini_client_if_configured(self) -> genai.Client | None:
-        """The direct Gemini client, or None when no key is configured.
-
-        For the paths that stay useful without a key: a linked post still contributes its text,
-        it just carries no uploaded media. Reading `gemini_client` there would raise before the
-        feature's own kill-switch was ever consulted.
-
-        Returns:
-            The client, or None when `GEMINI_API_KEY` is unset.
-        """
-        if not self.config.gemini_api_key.strip():
-            return None
-        return self.gemini_client
-
-    @cached_property
-    def voice_generator(self) -> VoiceGenerator:
-        """The cached text-to-speech engine for spoken QA replies.
-
-        Returns:
-            A generator bound to this cog's proxy client and the catalog's TTS model; the
-            caller still gates it on `allow_voice` and `config.inline_voice_enabled`.
-        """
-        return VoiceGenerator(
-            client=self.openai_client, model_name=self.runtime_models.tts_model.deployment_name
+        slot = await pick_gemini_key(config=self.config)
+        index = slot.index if slot is not None else None
+        cached = self._toolkits.get(index)
+        if cached is not None:
+            return cached
+        toolkit = GeminiKeyToolkit(
+            bot=self.bot, config=self.config, openai_client=self.openai_client, slot=slot
         )
-
-    @cached_property
-    def image_generator(self) -> ImageGenerator:
-        """The cached image renderer shared by the IMAGE route and the QA-route `<generate-image>` marker.
-
-        Returns:
-            A generator bound to this cog's proxy client and the image model; the route calls
-            `render` (raises) while the inline path calls `generate` (best-effort, gated on
-            `allow_image` and `config.inline_image_enabled`).
-        """
-        return ImageGenerator(
-            client=self.openai_client, image_model=self.runtime_models.image_model
-        )
-
-    @cached_property
-    def prompt_generator(self) -> PromptGenerator:
-        """The cached prompt director for the IMAGE and VIDEO routes.
-
-        Returns:
-            A director bound to this cog's proxy client and the grounding-capable
-            `fast_model`; each `refine` call is gated by the caller's per-route flag
-            (`config.image_refine_prompt_enabled` / `config.video_refine_prompt_enabled`) and
-            expands the raw request before `render`, best-effort (raw prompt on disable / empty /
-            error).
-        """
-        return PromptGenerator(
-            client=self.openai_client, prompt_model=self.runtime_models.fast_model
-        )
-
-    @cached_property
-    def video_generator(self) -> VideoGenerator:
-        """The cached video renderer shared by the VIDEO route and the QA-route `<generate-video>` marker.
-
-        Returns:
-            A generator bound to this cog's DIRECT-to-Google Gemini client and the video model
-            (the Interactions API is Gemini-only, not reachable via the proxy); the route calls
-            `render` (raises) while the inline path calls `generate` (best-effort, gated on
-            `allow_video` and `config.video_available`).
-        """
-        return VideoGenerator(
-            client=self.gemini_client, video_model=self.runtime_models.video_model
-        )
-
-    @cached_property
-    def music_generator(self) -> MusicGenerator:
-        """The cached music renderer for the QA-route `<generate-music>` marker.
-
-        Returns:
-            A generator bound to this cog's DIRECT-to-Google Gemini client (Lyria runs on the
-            Interactions API, not the proxy) and the music model; the inline path calls
-            `generate` (best-effort, gated on `allow_music` and `config.music_available`).
-        """
-        return MusicGenerator(
-            client=self.gemini_client, music_model=self.runtime_models.music_model
-        )
+        self._toolkits[index] = toolkit
+        return toolkit
 
     @cached_property
     def media_delivery(self) -> MediaDeliveryPlanner:
@@ -902,56 +805,6 @@ class ReplyGeneratorCogs(commands.Cog):
             unconfigured, so every oversize item then degrades to the route's host-free path.
         """
         return build_media_delivery_planner()
-
-    @cached_property
-    def memory_extractor(self) -> MemoryExtractorAI:
-        """The cached per-user memory extraction service.
-
-        Returns:
-            An extractor bound to this cog's client and the phase-1/phase-2
-            memory models.
-        """
-        return MemoryExtractorAI(
-            client=self.openai_client,
-            extract_model=self.runtime_models.memory_extractor_model,
-            evaluate_model=self.runtime_models.memory_writer_model,
-            consolidate_model=self.runtime_models.memory_writer_model,
-        )
-
-    @cached_property
-    def server_memory_extractor(self) -> MemoryExtractorAI:
-        """The cached per-server (bot self) memory extraction service.
-
-        Returns:
-            An extractor sharing the per-user models and client but driving the
-            server-flavor prompts, so the bot builds community-level memory per
-            guild through the same engine.
-        """
-        return MemoryExtractorAI(
-            client=self.openai_client,
-            extract_model=self.runtime_models.memory_extractor_model,
-            evaluate_model=self.runtime_models.memory_writer_model,
-            consolidate_model=self.runtime_models.memory_writer_model,
-            phase1_prompt=SERVER_PHASE1_PROMPT,
-            evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
-            consolidate_prompt=SERVER_PHASE2_PROMPT,
-        )
-
-    @cached_property
-    def input_builder(self) -> MessageInputBuilder:
-        """The cached Discord-message-to-Responses-API input builder.
-
-        Returns:
-            A builder bound to this bot, runtime model catalog, and the attachment
-            handler matching the answer model's provider.
-        """
-        return MessageInputBuilder(
-            bot=self.bot,
-            runtime_models=self.runtime_models,
-            attachment_handler=build_attachment_handler(
-                model_name=self.runtime_models.slow_model.name
-            ),
-        )
 
     async def _fetch_history(self, message: Message, limit: int) -> list[Message]:
         """Fetches up to `limit` channel-history messages once, trimmed to the char budget.
@@ -965,7 +818,12 @@ class ReplyGeneratorCogs(commands.Cog):
         return _trim_history_to_budget(messages=hist_messages)
 
     async def _render_history(
-        self, hist_messages: list[Message], *, text_only: bool, message_id: int
+        self,
+        toolkit: GeminiKeyToolkit,
+        hist_messages: list[Message],
+        *,
+        text_only: bool,
+        message_id: int,
     ) -> list[EasyInputMessageParam]:
         """Renders fetched history in one mode: text-only markers, or full uploaded parts.
 
@@ -979,9 +837,9 @@ class ReplyGeneratorCogs(commands.Cog):
         if not hist_messages:
             return []
         tasks: list[Awaitable[EasyInputMessageParam]] = [
-            self.input_builder.process_single_message_text_only(message=m)
+            toolkit.input_builder.process_single_message_text_only(message=m)
             if text_only
-            else self.input_builder.process_single_message(message=m, allow_dead_cache=True)
+            else toolkit.input_builder.process_single_message(message=m, allow_dead_cache=True)
             for m in hist_messages
         ]
         started = time.monotonic()
@@ -1005,7 +863,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return [header, *processed]
 
     async def _get_reference_message(
-        self, message: Message, text_only: bool = False
+        self, toolkit: GeminiKeyToolkit, message: Message, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
         """Walks the reference chain up to depth 3 and renders each link as context.
 
@@ -1019,9 +877,9 @@ class ReplyGeneratorCogs(commands.Cog):
         tasks: list[Awaitable[EasyInputMessageParam]] = []
         for ref in chain:
             if text_only:
-                tasks.append(self.input_builder.process_single_message_text_only(message=ref))
+                tasks.append(toolkit.input_builder.process_single_message_text_only(message=ref))
             else:
-                tasks.append(self.input_builder.process_single_message(message=ref))
+                tasks.append(toolkit.input_builder.process_single_message(message=ref))
         processed: list[EasyInputMessageParam] = await asyncio.gather(*tasks)
 
         messages: list[EasyInputMessageParam] = []
@@ -1031,7 +889,7 @@ class ReplyGeneratorCogs(commands.Cog):
         return messages
 
     async def _get_current_message(
-        self, message: Message, text_only: bool = False
+        self, toolkit: GeminiKeyToolkit, message: Message, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
         """Processes the current message that needs to be answered."""
         has_reference = bool(_walk_reference_chain(message=message))
@@ -1039,11 +897,11 @@ class ReplyGeneratorCogs(commands.Cog):
             _current_header(message=message, has_reference=has_reference)
         ]
         if text_only:
-            current_msg = await self.input_builder.process_single_message_text_only(
+            current_msg = await toolkit.input_builder.process_single_message_text_only(
                 message=message
             )
         else:
-            current_msg = await self.input_builder.process_single_message(message=message)
+            current_msg = await toolkit.input_builder.process_single_message(message=message)
         messages.append(current_msg)
         return messages
 
@@ -1091,7 +949,11 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     async def _handle_video_reply(
-        self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
+        self,
+        toolkit: GeminiKeyToolkit,
+        message: Message,
+        user_prompt: str,
+        context_task: "asyncio.Task[ReplyContext]",
     ) -> None:
         """Generates a video via the native Gemini (omni) Interactions API, delivers it, then replies.
 
@@ -1109,7 +971,7 @@ class ReplyGeneratorCogs(commands.Cog):
         logfire.info(
             "gen_reply video generation start",
             message_id=message.id,
-            model=self.runtime_models.video_model.name,
+            model=toolkit.runtime_models.video_model.name,
         )
         try:
             source_messages = [message]
@@ -1120,20 +982,20 @@ class ReplyGeneratorCogs(commands.Cog):
             # download reference images, so an edit is never delayed by media it discards.
             source_video: tuple[bytes, str] | None = None
             for source_message in source_messages:
-                videos = await self.input_builder.get_video_sources(message=source_message)
+                videos = await toolkit.input_builder.get_video_sources(message=source_message)
                 if videos:
                     source_video = videos[0]
                     break
             # Both branches end in the same omni render, and the director the else branch runs
             # first is best-effort, so this is the model a failure past here belongs to.
-            _dispatched_model.set(self.runtime_models.video_model.name)
+            _dispatched_model.set(toolkit.runtime_models.video_model.name)
             if source_video is not None:
                 # A source video is edited in place (task=edit): omni ingests the actual clip, so
                 # the prompt is the literal edit instruction. The director is skipped here — it
                 # only grounds on image parts (a video-only edit would run it blind) and it sits
                 # serially on the time-to-video path; the user's edit request is already specific.
                 # omni takes a single input here, so any accompanying reference images are dropped.
-                video_bytes = await self.video_generator.render(
+                video_bytes = await toolkit.video_generator.render(
                     prompt=user_prompt, reference_image_sources=[], source_video=source_video
                 )
             else:
@@ -1142,7 +1004,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 # on exactly those frames and no unused bytes ride the path.
                 image_groups = await asyncio.gather(
                     *(
-                        self.input_builder.get_image_sources_with_mime(message=m)
+                        toolkit.input_builder.get_image_sources_with_mime(message=m)
                         for m in source_messages
                     )
                 )
@@ -1151,14 +1013,14 @@ class ReplyGeneratorCogs(commands.Cog):
                 ]
                 # Refine the raw request into a full motion/camera prompt first (best-effort, raw
                 # prompt on disable / failure); the reference frames ride along as grounding.
-                refined_prompt = await self.prompt_generator.refine(
+                refined_prompt = await toolkit.prompt_generator.refine(
                     user_prompt=user_prompt,
                     instructions=VIDEO_PROMPT,
                     end_user_id=message.author.name,
                     enabled=self.config.video_refine_prompt_enabled,
                     image_bytes_list=[raw for raw, _ in images] or None,
                 )
-                video_bytes = await self.video_generator.render(
+                video_bytes = await toolkit.video_generator.render(
                     prompt=refined_prompt, reference_image_sources=images
                 )
             reply = await self._deliver_generated_media(
@@ -1167,7 +1029,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.info(
                 "gen_reply video delivered",
                 message_id=message.id,
-                model=self.runtime_models.video_model.name,
+                model=toolkit.runtime_models.video_model.name,
                 total_elapsed_seconds=time.monotonic() - started,
                 bytes=len(video_bytes),
             )
@@ -1180,10 +1042,14 @@ class ReplyGeneratorCogs(commands.Cog):
         # The video is already delivered, so from here a failure must never surface as an error:
         # the conversational reply is best-effort and leaves the delivered video untouched.
         await self._reply_about_video(
-            message=message, reply=reply, video_bytes=video_bytes, context_task=context_task
+            toolkit=toolkit,
+            message=message,
+            reply=reply,
+            video_bytes=video_bytes,
+            context_task=context_task,
         )
 
-    async def _upload_video_for_reply(self, data: bytes) -> str | None:
+    async def _upload_video_for_reply(self, toolkit: GeminiKeyToolkit, data: bytes) -> str | None:
         """Uploads a generated video to the Gemini Files API, polling to ACTIVE; None on failure.
 
         The bound is generous because video processing is slower than an image's. The reply
@@ -1191,7 +1057,7 @@ class ReplyGeneratorCogs(commands.Cog):
         not the clip's own URL.
         """
         return await upload_to_files_api(
-            client=self.gemini_client,
+            client=toolkit.gemini_client,
             source=data,
             mime_type="video/mp4",
             display_name="generated.mp4",
@@ -1200,6 +1066,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _reply_about_video(
         self,
+        toolkit: GeminiKeyToolkit,
         message: Message,
         reply: Message | None,
         video_bytes: bytes,
@@ -1213,15 +1080,16 @@ class ReplyGeneratorCogs(commands.Cog):
         upload succeeds, so a failed upload leaves no orphaned message. Any failure leaves the
         delivered video untouched.
         """
-        file_uri = await self._upload_video_for_reply(data=video_bytes)
+        file_uri = await self._upload_video_for_reply(toolkit=toolkit, data=video_bytes)
         if file_uri is None:
             await _discard_task(task=context_task, label="prep", message_id=message.id)
             return
         await self._stream_media_persona_reply(
+            toolkit=toolkit,
             message=message,
             reply=reply,
             context_task=context_task,
-            model=self.runtime_models.fast_model,
+            model=toolkit.runtime_models.fast_model,
             system_prompt=VIDEO_REPLY_PROMPT,
             focus_part=ResponseInputFileParam(type="input_file", file_id=file_uri),
             media_noun="video",
@@ -1230,6 +1098,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the prompt / focus part / noun / span differ per route
         self,
+        toolkit: GeminiKeyToolkit,
         *,
         message: Message,
         reply: Message | None,
@@ -1328,7 +1197,11 @@ class ReplyGeneratorCogs(commands.Cog):
                     await base.delete()
 
     async def _handle_image_reply(
-        self, message: Message, user_prompt: str, context_task: "asyncio.Task[ReplyContext]"
+        self,
+        toolkit: GeminiKeyToolkit,
+        message: Message,
+        user_prompt: str,
+        context_task: "asyncio.Task[ReplyContext]",
     ) -> None:
         """Generates or edits an image, then replies about it in persona.
 
@@ -1344,7 +1217,7 @@ class ReplyGeneratorCogs(commands.Cog):
         logfire.info(
             "gen_reply image generation start",
             message_id=message.id,
-            model=self.runtime_models.image_model.name,
+            model=toolkit.runtime_models.image_model.name,
             has_source_images=bool(
                 message.reference and isinstance(message.reference.resolved, Message)
             ),
@@ -1352,17 +1225,21 @@ class ReplyGeneratorCogs(commands.Cog):
         try:
             if message.reference and isinstance(message.reference.resolved, Message):
                 own_bytes, ref_bytes = await asyncio.gather(
-                    self.input_builder.get_image_source_bytes(message=message),
-                    self.input_builder.get_image_source_bytes(message=message.reference.resolved),
+                    toolkit.input_builder.get_image_source_bytes(message=message),
+                    toolkit.input_builder.get_image_source_bytes(
+                        message=message.reference.resolved
+                    ),
                 )
                 image_bytes_list = own_bytes + ref_bytes
             else:
-                image_bytes_list = await self.input_builder.get_image_source_bytes(message=message)
+                image_bytes_list = await toolkit.input_builder.get_image_source_bytes(
+                    message=message
+                )
 
             # Refine the raw request into a full generation/edit prompt first (best-effort, raw
             # prompt on disable / failure); the source bytes ride along so an edit prompt is
             # grounded in the actual image without a re-download.
-            refined_prompt = await self.prompt_generator.refine(
+            refined_prompt = await toolkit.prompt_generator.refine(
                 user_prompt=user_prompt,
                 instructions=IMAGE_PROMPT,
                 end_user_id=message.author.name,
@@ -1371,8 +1248,8 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             # The director above is best-effort and swallows its own failures, so from here the
             # image model is the only one a failure can be reported against.
-            _dispatched_model.set(self.runtime_models.image_model.name)
-            image_bytes = await self.image_generator.render(
+            _dispatched_model.set(toolkit.runtime_models.image_model.name)
+            image_bytes = await toolkit.image_generator.render(
                 prompt=refined_prompt,
                 end_user_id=message.author.name,
                 image_bytes_list=image_bytes_list or None,
@@ -1385,7 +1262,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.info(
                 "gen_reply image delivered",
                 message_id=message.id,
-                model=self.runtime_models.image_model.name,
+                model=toolkit.runtime_models.image_model.name,
                 elapsed_seconds=time.monotonic() - started,
             )
         except Exception:
@@ -1398,10 +1275,11 @@ class ReplyGeneratorCogs(commands.Cog):
         # error: the conversational reply is best-effort and leaves the image untouched. The
         # image rides as inline base64 (provider-agnostic), unlike the video's Files API handle.
         await self._stream_media_persona_reply(
+            toolkit=toolkit,
             message=message,
             reply=reply,
             context_task=context_task,
-            model=self.runtime_models.fast_model,
+            model=toolkit.runtime_models.fast_model,
             system_prompt=IMAGE_REPLY_PROMPT,
             focus_part=ResponseInputImageParam(
                 image_url=convert_base64_to_data_uri(
@@ -1415,7 +1293,7 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
     async def _get_reference_and_current(
-        self, message: Message, text_only: bool = False
+        self, toolkit: GeminiKeyToolkit, message: Message, text_only: bool = False
     ) -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
         """Renders the reference chain and the current message together.
 
@@ -1426,8 +1304,8 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         started = time.monotonic()
         reference_messages, current_message = await asyncio.gather(
-            self._get_reference_message(message=message, text_only=text_only),
-            self._get_current_message(message=message, text_only=text_only),
+            self._get_reference_message(toolkit=toolkit, message=message, text_only=text_only),
+            self._get_current_message(toolkit=toolkit, message=message, text_only=text_only),
         )
         if not text_only:
             logfire.info(
@@ -1441,6 +1319,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _route_classify(
         self,
+        toolkit: GeminiKeyToolkit,
         message: Message,
         reference_messages: list[EasyInputMessageParam],
         current_message: list[EasyInputMessageParam],
@@ -1456,7 +1335,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         message_list = [*reference_messages, *current_message]
 
-        triage_model = self.runtime_models.triage_model
+        triage_model = toolkit.runtime_models.triage_model
         _dispatched_model.set(triage_model.name)
         started = time.monotonic()
         try:
@@ -1498,6 +1377,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _grade_effort(
         self,
+        toolkit: GeminiKeyToolkit,
         message: Message,
         reference_messages: list[EasyInputMessageParam],
         current_message: list[EasyInputMessageParam],
@@ -1518,7 +1398,7 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         message_list = [*reference_messages, *current_message]
 
-        triage_model = self.runtime_models.triage_model
+        triage_model = toolkit.runtime_models.triage_model
         started = time.monotonic()
         with logfire.span("gen_reply effort", message_id=message.id):
             responses = await self.openai_client.responses.parse(
@@ -1543,6 +1423,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _resolve_effort(
         self,
+        toolkit: GeminiKeyToolkit,
         *,
         message: Message,
         effort_task: "asyncio.Task[EffortGrade]",
@@ -1565,7 +1446,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "Effort grading exceeded the post-route grace; defaulting to high effort",
                 grace_seconds=EFFORT_GRACE_SECONDS,
                 message_id=message.id,
-                model=self.runtime_models.triage_model.name,
+                model=toolkit.runtime_models.triage_model.name,
                 _exc_info=exc,
             )
             return "high"
@@ -1573,7 +1454,7 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(
                 "Effort grading failed; defaulting to high effort",
                 message_id=message.id,
-                model=self.runtime_models.triage_model.name,
+                model=toolkit.runtime_models.triage_model.name,
                 error_type=type(e).__name__,
                 _exc_info=True,
             )
@@ -1633,8 +1514,9 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         return blocks
 
-    async def _select_user_memories(
+    async def _select_user_memories(  # noqa: PLR0913 -- the leased key plus the selection's own inputs
         self,
+        toolkit: GeminiKeyToolkit,
         *,
         message: Message,
         message_list: list[EasyInputMessageParam],
@@ -1650,7 +1532,7 @@ class ReplyGeneratorCogs(commands.Cog):
         so a spoken or misspelled nickname can be mapped to its id. Returns the memories plus
         this request's token usage so the reply footer and chat reward account for the call.
         """
-        triage_model = self.runtime_models.triage_model
+        triage_model = toolkit.runtime_models.triage_model
         # The optional-candidates block stays last so the model reads it right before deciding;
         # the server-memory block (if any) leads as earlier background context. The caller
         # passes an already text-only transcript (attachment markers, no file ids), so this
@@ -1753,7 +1635,12 @@ class ReplyGeneratorCogs(commands.Cog):
         return memories, optional_allowed, len(deterministic_allowed)
 
     def _schedule_server_memory_update(
-        self, *, message: Message, message_list: list[EasyInputMessageParam], full_reply: str
+        self,
+        toolkit: GeminiKeyToolkit,
+        *,
+        message: Message,
+        message_list: list[EasyInputMessageParam],
+        full_reply: str,
     ) -> None:
         """Schedules the bot's per-server memory update for a guild message.
 
@@ -1771,14 +1658,19 @@ class ReplyGeneratorCogs(commands.Cog):
             subject=f"target_server_id: {message.guild.id}",
             message_list=message_list,
             full_reply=full_reply,
-            extractor=self.server_memory_extractor,
+            extractor=toolkit.server_memory_extractor,
             identity=render_server_identity(
                 server_name=message.guild.name, server_id=message.guild.id
             ),
         )
 
     async def _await_optional_memory_selection(
-        self, *, task: asyncio.Task[MemorySelection], message: Message, route_done: asyncio.Event
+        self,
+        toolkit: GeminiKeyToolkit,
+        *,
+        task: asyncio.Task[MemorySelection],
+        message: Message,
+        route_done: asyncio.Event,
     ) -> tuple[MemorySelection, float] | None:
         """Awaits the optional selector without letting its failure affect direct memories."""
         started = time.monotonic()
@@ -1795,7 +1687,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 "Optional memory selection exceeded the post-route grace; retaining deterministic memories",
                 grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
                 message_id=message.id,
-                model=self.runtime_models.triage_model.name,
+                model=toolkit.runtime_models.triage_model.name,
                 _exc_info=exc,
             )
             return None
@@ -1803,14 +1695,15 @@ class ReplyGeneratorCogs(commands.Cog):
             logfire.warn(
                 "Optional memory selection failed; retaining deterministic memories",
                 message_id=message.id,
-                model=self.runtime_models.triage_model.name,
+                model=toolkit.runtime_models.triage_model.name,
                 _exc_info=True,
             )
             return None
         return selection, time.monotonic() - started
 
-    async def _prepare_reply_context(
+    async def _prepare_reply_context(  # noqa: PLR0913 -- the leased key plus the speculative build's inputs
         self,
+        toolkit: GeminiKeyToolkit,
         message: Message,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
@@ -1884,7 +1777,10 @@ class ReplyGeneratorCogs(commands.Cog):
                 # Render the text-only history only for a real optional lookup. This request
                 # carries markers instead of file ids, so it never re-reads uploaded payloads.
                 history_text_only = await self._render_history(
-                    raw_history, text_only=True, message_id=message.id
+                    toolkit=toolkit,
+                    hist_messages=raw_history,
+                    text_only=True,
+                    message_id=message.id,
                 )
                 selection_message_list: list[EasyInputMessageParam] = [
                     *history_text_only,
@@ -1893,6 +1789,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 ]
                 selection_task = asyncio.create_task(
                     coro=self._select_user_memories(
+                        toolkit=toolkit,
                         message=message,
                         message_list=selection_message_list,
                         allowed=optional_allowed,
@@ -1909,7 +1806,12 @@ class ReplyGeneratorCogs(commands.Cog):
             # rides as an ordinary gather child, so it is cancelled together with prep.
             with logfire.span("gen_reply context build", message_id=message.id):
                 hist_messages, (reference_messages, current_message) = await asyncio.gather(
-                    self._render_history(raw_history, text_only=False, message_id=message.id),
+                    self._render_history(
+                        toolkit=toolkit,
+                        hist_messages=raw_history,
+                        text_only=False,
+                        message_id=message.id,
+                    ),
                     asyncio.shield(parts_task),
                 )
             # Covers the history fetch/render plus waiting on the shared attachment upload, so
@@ -1926,7 +1828,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 # route_done gate: it usually already finished during the upload wait above, so
                 # this returns immediately; a slow one gets only the post-route grace.
                 selection_result = await self._await_optional_memory_selection(
-                    task=selection_task, message=message, route_done=route_done
+                    toolkit=toolkit, task=selection_task, message=message, route_done=route_done
                 )
                 if selection_result is not None:
                     selection, selection_elapsed = selection_result
@@ -1947,7 +1849,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     logfire.info(
                         "gen_reply memory selection done",
                         elapsed_seconds=selection_elapsed,
-                        model=self.runtime_models.triage_model.name,
+                        model=toolkit.runtime_models.triage_model.name,
                         selected=len(selected_memories),
                         selected_ids=[memory.user_id for memory in selected_memories],
                         labels=memory_lookup_labels(memories=selected_memories),
@@ -1977,6 +1879,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
     async def _handle_message_reply(  # noqa: PLR0913 -- per-call reply inputs plus the route's memory/effort/voice gates
         self,
+        toolkit: GeminiKeyToolkit,
         message: Message,
         system_prompt: str,
         context: ReplyContext,
@@ -2003,16 +1906,16 @@ class ReplyGeneratorCogs(commands.Cog):
         (which can ingest the video) while reusing the same streamer / footer / memory path.
         """
         voice_generator = (
-            self.voice_generator if allow_voice and self.config.inline_voice_enabled else None
+            toolkit.voice_generator if allow_voice and self.config.inline_voice_enabled else None
         )
         image_generator = (
-            self.image_generator if allow_image and self.config.inline_image_enabled else None
+            toolkit.image_generator if allow_image and self.config.inline_image_enabled else None
         )
         music_generator = (
-            self.music_generator if allow_music and self.config.music_available else None
+            toolkit.music_generator if allow_music and self.config.music_available else None
         )
         video_generator = (
-            self.video_generator if allow_video and self.config.video_available else None
+            toolkit.video_generator if allow_video and self.config.video_available else None
         )
         # Only advertise the inline `<generate-image>` marker when the renderer is actually active; with
         # it disabled the streamer would strip the block and produce nothing, silently dropping
@@ -2035,7 +1938,7 @@ class ReplyGeneratorCogs(commands.Cog):
         research_offered = allow_research and self.config.deep_research_available
         if research_offered:
             system_prompt = f"{system_prompt}\n{DEEP_RESEARCH_INSTRUCTION}"
-        slow_model = self.runtime_models.slow_model.model_copy(update={"effort": effort})
+        slow_model = toolkit.runtime_models.slow_model.model_copy(update={"effort": effort})
         _dispatched_model.set(slow_model.name)
         # Keep the current user message LAST so the model answers it. Memory rides earliest as
         # low-authority background; the reference message then sits just above the current
@@ -2111,7 +2014,7 @@ class ReplyGeneratorCogs(commands.Cog):
             music_generator=music_generator,
             video_generator=video_generator,
             media_delivery=self.media_delivery,
-            input_builder=self.input_builder,
+            input_builder=toolkit.input_builder,
         )
         # The one record of what the answer model was actually handed. Everything here is a count
         # or a flag: a reply that behaves as if it never saw an attachment, a memory or a linked
@@ -2151,7 +2054,7 @@ class ReplyGeneratorCogs(commands.Cog):
             responses: AsyncIterator[ResponseStreamEvent]
             if use_interactions and yt_url is not None:
                 responses = create_interactions_answer_stream(
-                    client=self.gemini_client,
+                    client=toolkit.gemini_client,
                     model=slow_model.name,
                     system_instruction=_build_runtime_instructions(
                         system_prompt=system_prompt, message=message
@@ -2195,7 +2098,7 @@ class ReplyGeneratorCogs(commands.Cog):
             subject=f"target_user_id: {message.author.id}\n{source_line}",
             message_list=memory_message_list,
             full_reply=full_reply,
-            extractor=self.memory_extractor,
+            extractor=toolkit.memory_extractor,
             identity=render_author_identity(
                 display_name=message.author.display_name,
                 username=message.author.name,
@@ -2205,7 +2108,10 @@ class ReplyGeneratorCogs(commands.Cog):
         # The per-server update carries its own guards rather than riding the per-user one:
         # DMs and non-public channels are dropped inside `_schedule_server_memory_update`.
         self._schedule_server_memory_update(
-            message=message, message_list=context.message_list, full_reply=full_reply
+            toolkit=toolkit,
+            message=message,
+            message_list=context.message_list,
+            full_reply=full_reply,
         )
 
     @commands.Cog.listener()
@@ -2241,8 +2147,15 @@ class ReplyGeneratorCogs(commands.Cog):
         for job in jobs:
             if job.transcript is None:
                 continue
+            # Leased per job rather than once for the sweep: this is the burstiest moment in
+            # the process's life, and one lease would land all of it on a single key. Nothing
+            # here is bound to a key (memory extraction reaches no Files API), so the lease is
+            # only about the count.
+            toolkit = await self.lease_toolkit()
             extractor = (
-                self.server_memory_extractor if job.flavor == "server" else self.memory_extractor
+                toolkit.server_memory_extractor
+                if job.flavor == "server"
+                else toolkit.memory_extractor
             )
             resume_memory_update(
                 scope=job.scope,
@@ -2258,10 +2171,11 @@ class ReplyGeneratorCogs(commands.Cog):
         for scope in iter_scopes():
             if not needs_consolidation(scope=scope):
                 continue
+            swept_toolkit = await self.lease_toolkit()
             extractor = (
-                self.server_memory_extractor
+                swept_toolkit.server_memory_extractor
                 if flavor_of(scope=scope) == "server"
-                else self.memory_extractor
+                else swept_toolkit.memory_extractor
             )
             self._spawn(
                 consolidate_if_needed(
@@ -2289,7 +2203,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # the bot to mentions and would trigger on replies to functional bot
         # posts (e.g. Threads embeds, video downloads).
         is_dm = message.guild is None
-        if not is_dm and not self.input_builder.has_bot_mention(content=message.content):
+        if not is_dm and not has_bot_mention(content=message.content, bot_user=self.bot.user):
             return
 
         # Skip a (mentioned) message typed inside a research thread the ResearchCogs cog is
@@ -2302,7 +2216,8 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             return
 
-        user_prompt = await self.input_builder.get_user_prompt(content=message.content)
+        toolkit = await self.lease_toolkit()
+        user_prompt = await toolkit.input_builder.get_user_prompt(content=message.content)
         has_attachment = bool(message.attachments or message.stickers)
         # A forward leaves content/attachments/stickers empty and puts the payload in
         # `message.snapshots`, so it must not be gated out as an empty message here, or the
@@ -2314,7 +2229,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # just an empty fallback) is what lets an IMAGE/VIDEO route render the forwarded "draw a
         # cat" even when the trigger comment ("@bot please") survives mention-stripping.
         if is_forward and (
-            forwarded := self.input_builder.forwarded_request_text(message=message)
+            forwarded := toolkit.input_builder.forwarded_request_text(message=message)
         ):
             user_prompt = f"{user_prompt}\n{forwarded}".strip() if user_prompt else forwarded
 
@@ -2339,13 +2254,14 @@ class ReplyGeneratorCogs(commands.Cog):
         reactions = ReactionStatusChain(message=message, bot_user=self.bot.user)
         try:
             await self._run_reply_pipeline(
-                message=message, user_prompt=user_prompt, reactions=reactions
+                toolkit=toolkit, message=message, user_prompt=user_prompt, reactions=reactions
             )
         except Exception as e:
             logfire.error(
                 "gen_reply failed",
                 **_message_log_fields(message=message),
                 model=_dispatched_model.get(),
+                key_index=toolkit.key_index,
                 error_type=type(e).__name__,
                 _exc_info=True,
             )
@@ -2382,7 +2298,11 @@ class ReplyGeneratorCogs(commands.Cog):
             await reactions.flush()
 
     async def _run_reply_pipeline(  # noqa: PLR0915, C901, PLR0912 -- orchestrates route, speculative prep, threads context, and per-route dispatch in sequence
-        self, message: Message, user_prompt: str, reactions: ReactionStatusChain
+        self,
+        toolkit: GeminiKeyToolkit,
+        message: Message,
+        user_prompt: str,
+        reactions: ReactionStatusChain,
     ) -> None:
         """Routes the message and dispatches the matching handler with speculative QA context."""
         # Named in the usage record below, which is written from this method's `finally`
@@ -2405,16 +2325,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 # API. The QA context builds speculatively in parallel with the route call
                 # since QA is the dominant route — non-QA routes discard it.
                 parts_task = asyncio.create_task(
-                    coro=self._get_reference_and_current(message=message)
+                    coro=self._get_reference_and_current(toolkit=toolkit, message=message)
                 )
                 text_reference, text_current = await self._get_reference_and_current(
-                    message=message, text_only=True
+                    toolkit=toolkit, message=message, text_only=True
                 )
                 # Signals optional memory selection that the route has returned: selection runs
                 # unbounded while this is clear and gets only a short grace once it is set.
                 route_done = asyncio.Event()
                 prep_task = asyncio.create_task(
                     coro=self._prepare_reply_context(
+                        toolkit=toolkit,
                         message=message,
                         history_limit=HISTORY_MESSAGE_LIMIT,
                         parts_task=parts_task,
@@ -2427,12 +2348,14 @@ class ReplyGeneratorCogs(commands.Cog):
                 # IMAGE/VIDEO cancel it below.
                 effort_task = asyncio.create_task(
                     coro=self._grade_effort(
+                        toolkit=toolkit,
                         message=message,
                         reference_messages=text_reference,
                         current_message=text_current,
                     )
                 )
                 route = await self._route_classify(
+                    toolkit=toolkit,
                     message=message,
                     reference_messages=text_reference,
                     current_message=text_current,
@@ -2471,9 +2394,9 @@ class ReplyGeneratorCogs(commands.Cog):
                                 awaitable=link_source.build(
                                     url=link_url,
                                     answer_model_is_gemini=(
-                                        "gemini" in self.runtime_models.slow_model.name
+                                        "gemini" in toolkit.runtime_models.slow_model.name
                                     ),
-                                    gemini_client=self.gemini_client_if_configured,
+                                    gemini_client=toolkit.gemini_client_if_configured,
                                     allow_media_ingest=link_source.media_ingest_allowed(
                                         config=self.config
                                     ),
@@ -2511,12 +2434,14 @@ class ReplyGeneratorCogs(commands.Cog):
                     prep_task = None
                     if route.decision == "IMAGE":
                         await self._handle_image_reply(
+                            toolkit=toolkit,
                             message=message,
                             user_prompt=user_prompt,
                             context_task=media_context_task,
                         )
                     else:
                         await self._handle_video_reply(
+                            toolkit=toolkit,
                             message=message,
                             user_prompt=user_prompt,
                             context_task=media_context_task,
@@ -2530,7 +2455,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     prep_task = None
                     parts_task = None
                     effort = await self._resolve_effort(
-                        message=message, effort_task=effort_task, route_done=route_done
+                        toolkit=toolkit,
+                        message=message,
+                        effort_task=effort_task,
+                        route_done=route_done,
                     )
                     effort_task = None
                     # The selected builds overlapped the remaining reply preparation. Resolve
@@ -2571,6 +2499,7 @@ class ReplyGeneratorCogs(commands.Cog):
                         started=pipeline_started, decision=route.decision, message_id=message.id
                     )
                     await self._handle_message_reply(
+                        toolkit=toolkit,
                         message=message,
                         system_prompt=REPLY_PROMPT,
                         context=context,

@@ -27,7 +27,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.typings.llm import LLMConfig
+from discordbot.typings.llm import LLMConfig, GeminiKeySlot
 from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
 from discordbot.typings.models import (
     EffortGrade,
@@ -77,6 +77,7 @@ from discordbot.cogs.gen_reply.markers import (
     scrub_markers_for_preview,
 )
 from discordbot.cogs.gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
+from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.streaming import (
     DISCORD_MESSAGE_LIMIT,
     REASONING_PREVIEW_MAX_CHARS,
@@ -149,6 +150,7 @@ if TYPE_CHECKING:
 
     from aiohttp import ClientResponse
     from nextcord import Attachment
+    from nextcord.ext import commands
     from openai.types.responses import ResponseStreamEvent
     from openai.types.responses.response_input_param import ResponseInputParam
 
@@ -769,9 +771,10 @@ def _fake_uploader(files: FakeGeminiFiles | None = None) -> GeminiFileUploader:
     """A GeminiFileUploader with its lazy Gemini client pre-seeded to a fake.
 
     `gemini_client` is a cached_property, so seeding `__dict__` bypasses the real
-    factory and the upload path runs against the fake instead.
+    factory and the upload path runs against the fake instead; the key it would have
+    built from is therefore never read.
     """
-    uploader = GeminiFileUploader()
+    uploader = GeminiFileUploader(api_key="test-key")
     uploader.__dict__["gemini_client"] = FakeGeminiClient(files=files)
     return uploader
 
@@ -794,17 +797,30 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     """Builds a ReplyGeneratorCogs instance with a fake client."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
-    cog.runtime_models = RuntimeModelCatalog()
     cog.config = LLMConfig()
     cog.__dict__["openai_client"] = FakeClient()
-    cog.__dict__["gemini_client"] = FakeGeminiVideoClient()
     # `__new__` skips `__init__`, so the pipeline's usage record needs its recorder wired
     # here; the autouse `usage_log_isolated_dir` fixture keeps it off the live file.
     cog.usage_recorder = UsageRecorder()
-    handler = cog.input_builder.attachment_handler
+    toolkit = GeminiKeyToolkit(
+        bot=cast("commands.Bot", cog.bot),
+        config=cog.config,
+        openai_client=cog.openai_client,
+        slot=None,
+    )
+    toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
+    handler = toolkit.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
         handler.__dict__["gemini_client"] = FakeGeminiClient()
+    # Keyed on None because the test deployment configures no Gemini key, so `lease_toolkit`
+    # picks no slot and lands on exactly this entry.
+    cog._toolkits = {None: toolkit}
     return cog
+
+
+def _toolkit(cog: ReplyGeneratorCogs) -> GeminiKeyToolkit:
+    """The seeded toolkit `_cog` built, which every path in these tests leases."""
+    return cog._toolkits[None]
 
 
 def _recorded(cog: ReplyGeneratorCogs) -> FakeClient:
@@ -813,12 +829,17 @@ def _recorded(cog: ReplyGeneratorCogs) -> FakeClient:
 
 
 def _recorded_video(cog: ReplyGeneratorCogs) -> FakeGeminiVideoClient:
-    """Reads the recorder video client back off the cog's typed gemini_client slot."""
-    return cast("FakeGeminiVideoClient", cog.gemini_client)
+    """Reads the recorder video client back off the seeded toolkit's gemini_client slot."""
+    return cast("FakeGeminiVideoClient", _toolkit(cog=cog).gemini_client)
 
 
 def _config_stub(**flags: object) -> LLMConfig:
-    """Views a namespace carrying just the flags a test toggles as the cog's LLMConfig."""
+    """Views a namespace carrying just the flags a test toggles as the cog's LLMConfig.
+
+    `gemini_keys` is always present because `lease_toolkit` reads it on every reply; empty
+    unless a test says otherwise, which is the unconfigured deployment `_cog` is built for.
+    """
+    flags.setdefault("gemini_keys", [])
     return cast("LLMConfig", SimpleNamespace(**flags))
 
 
@@ -872,10 +893,13 @@ async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteClassifi
     """Classifies a message after building the shared text-only reference/current parts."""
     msg = as_message(fake=message)
     reference_messages, current_message = await cog._get_reference_and_current(
-        message=msg, text_only=True
+        toolkit=_toolkit(cog=cog), message=msg, text_only=True
     )
     return await cog._route_classify(
-        message=msg, reference_messages=reference_messages, current_message=current_message
+        toolkit=_toolkit(cog=cog),
+        message=msg,
+        reference_messages=reference_messages,
+        current_message=current_message,
     )
 
 
@@ -883,10 +907,13 @@ async def _grade(cog: ReplyGeneratorCogs, message: FakeMessage) -> EffortGrade:
     """Grades a message's answer effort after building the shared text-only parts."""
     msg = as_message(fake=message)
     reference_messages, current_message = await cog._get_reference_and_current(
-        message=msg, text_only=True
+        toolkit=_toolkit(cog=cog), message=msg, text_only=True
     )
     return await cog._grade_effort(
-        message=msg, reference_messages=reference_messages, current_message=current_message
+        toolkit=_toolkit(cog=cog),
+        message=msg,
+        reference_messages=reference_messages,
+        current_message=current_message,
     )
 
 
@@ -900,11 +927,16 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route."""
     msg = as_message(fake=message)
-    parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=msg))
-    text_parts = await cog._get_reference_and_current(message=msg, text_only=True)
+    parts_task = asyncio.create_task(
+        coro=cog._get_reference_and_current(toolkit=_toolkit(cog=cog), message=msg)
+    )
+    text_parts = await cog._get_reference_and_current(
+        toolkit=_toolkit(cog=cog), message=msg, text_only=True
+    )
     route_done = asyncio.Event()
     route_done.set()
     context = await cog._prepare_reply_context(
+        toolkit=_toolkit(cog=cog),
         message=msg,
         history_limit=history_limit,
         parts_task=parts_task,
@@ -912,6 +944,7 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
         route_done=route_done,
     )
     await cog._handle_message_reply(
+        toolkit=_toolkit(cog=cog),
         message=msg,
         system_prompt=system_prompt,
         context=context,
@@ -2369,6 +2402,7 @@ async def test_voice_config_gate_controls_synthesizer(
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         system_prompt="SYS",
         context=ReplyContext(),
@@ -2422,6 +2456,7 @@ async def test_image_config_gate_controls_generator(
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         system_prompt="SYS",
         context=ReplyContext(),
@@ -2506,13 +2541,17 @@ async def test_youtube_qa_uses_interactions_backend(
         gemini_api_key="key",
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
-    cog.__dict__["gemini_client"] = fake
+    _toolkit(cog=cog).__dict__["gemini_client"] = fake
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> 總結這影片 {url}", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(
-        message=as_message(fake=message), system_prompt="SYS", context=ReplyContext(), yt_url=url
+        toolkit=_toolkit(cog=cog),
+        message=as_message(fake=message),
+        system_prompt="SYS",
+        context=ReplyContext(),
+        yt_url=url,
     )
 
     # The Responses answer stream was never used; the Interactions one was, with the video part.
@@ -2541,12 +2580,13 @@ async def test_youtube_interactions_passes_effort_as_thinking_level(
         gemini_api_key="key",
     )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
-    cog.__dict__["gemini_client"] = fake
+    _toolkit(cog=cog).__dict__["gemini_client"] = fake
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
 
     url = "https://youtu.be/jNQXAC9IVRw"
     message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         system_prompt="SYS",
         context=ReplyContext(),
@@ -2605,7 +2645,7 @@ async def test_youtube_qa_falls_back_to_responses(
             property(lambda _self: ModelSettings(name="gpt-5-mini", effort="high")),
         )
     fake = _FakeInteractionsClient(events=_interactions_turn_events())
-    cog.__dict__["gemini_client"] = fake
+    _toolkit(cog=cog).__dict__["gemini_client"] = fake
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **_: None)
     logged: list[tuple[str, dict[str, object]]] = []
 
@@ -2619,6 +2659,7 @@ async def test_youtube_qa_falls_back_to_responses(
     yt_url = None if scenario == "no_url" else url
     message = FakeMessage(content=f"<@999> {url}", author=FakeAuthor(user_id=1))
     await cog._handle_message_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         system_prompt="SYS",
         context=ReplyContext(),
@@ -3123,14 +3164,18 @@ async def test_non_history_render_does_not_dead_cache_transient_failure(
     assert url not in uploader._dead_sources
 
 
-async def test_media_semaphore_bounds_media_io_concurrency() -> None:
+async def test_media_semaphore_bounds_media_io_concurrency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The shared semaphore caps the whole download+upload sequence, not just the upload.
 
     Counting concurrency in the byte loader proves non-image downloads (which run before the
     Gemini upload) are bounded too, so concurrent pipelines cannot buffer every file at once.
     """
+    # The cap is module-level now, shared by the one renderer each Gemini key holds, and the
+    # loop-local holder reads it fresh on this test's own loop.
+    monkeypatch.setattr("discordbot.cogs.gen_reply.attachment.base.MEDIA_CONCURRENCY", 2)
     uploader = _fake_uploader()
-    uploader._media_semaphore = asyncio.Semaphore(2)
     state = {"active": 0, "peak": 0}
 
     async def _slow_load() -> tuple[bytes, str]:
@@ -3194,15 +3239,15 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     embed.add_field(name="Field", value="Value")
     embed.set_footer(text="Footer")
 
-    assert await cog.input_builder.get_user_prompt(content="hi <@999>") == "hi"
-    assert await cog.input_builder.get_user_prompt(content="hi <@!999>") == "hi"
-    assert cog.input_builder.has_bot_mention(content="hi <@999>")
-    assert cog.input_builder.has_bot_mention(content="hi <@!999>")
-    assert "Author" in cog.input_builder.extract_embed_text(embeds=[embed])
+    assert await _toolkit(cog=cog).input_builder.get_user_prompt(content="hi <@999>") == "hi"
+    assert await _toolkit(cog=cog).input_builder.get_user_prompt(content="hi <@!999>") == "hi"
+    assert "Author" in _toolkit(cog=cog).input_builder.extract_embed_text(embeds=[embed])
 
     self_mention = FakeMessage(content="你的審美跟 <@999> 一樣", author=FakeAuthor(user_id=1))
     assert (
-        await cog.input_builder.get_cleaned_content(message=as_message(fake=self_mention))
+        await _toolkit(cog=cog).input_builder.get_cleaned_content(
+            message=as_message(fake=self_mention)
+        )
         == self_mention.content
     )
 
@@ -3211,32 +3256,44 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         author=FakeAuthor(bot=True, user_id=999),
     )
     assert (
-        await cog.input_builder.get_cleaned_content(message=as_message(fake=bot_message))
+        await _toolkit(cog=cog).input_builder.get_cleaned_content(
+            message=as_message(fake=bot_message)
+        )
         == "answer"
     )
     assert USAGE_FOOTER_RE.search(string=bot_message.content)
     bot_message.content = "\n\n-# model · ⬆ 1 ⬇ 2 · $0.0 · +3"
     bot_message.embeds = [Embed(url="https://youtu.be/jNQXAC9IVRw")]
-    assert await cog.input_builder.get_cleaned_content(message=as_message(fake=bot_message)) == ""
+    assert (
+        await _toolkit(cog=cog).input_builder.get_cleaned_content(
+            message=as_message(fake=bot_message)
+        )
+        == ""
+    )
 
     embed_message = FakeMessage()
     embed_message.embeds = [embed]
-    assert "Title" in await cog.input_builder.get_cleaned_content(
+    assert "Title" in await _toolkit(cog=cog).input_builder.get_cleaned_content(
         message=as_message(fake=embed_message)
     )
 
     system_message = FakeMessage()
     system_message.system_content = "joined"
     assert (
-        await cog.input_builder.get_cleaned_content(message=as_message(fake=system_message))
+        await _toolkit(cog=cog).input_builder.get_cleaned_content(
+            message=as_message(fake=system_message)
+        )
         == "joined"
     )
 
-    assert cog.input_builder.required_modality(content_type="video/mp4") == "video"
-    assert cog.input_builder.required_modality(content_type="audio/mpeg") == "audio"
-    assert cog.input_builder.required_modality(content_type="application/pdf") == "image"
+    assert _toolkit(cog=cog).input_builder.required_modality(content_type="video/mp4") == "video"
+    assert _toolkit(cog=cog).input_builder.required_modality(content_type="audio/mpeg") == "audio"
+    assert (
+        _toolkit(cog=cog).input_builder.required_modality(content_type="application/pdf")
+        == "image"
+    )
 
-    file_rendered = await cog.input_builder.attachment_handler.render_file(
+    file_rendered = await _toolkit(cog=cog).input_builder.attachment_handler.render_file(
         attachment=_att(filename="note.txt", content_type="text/plain", payload=b"abc"),
         cache_key="note.txt",
     )
@@ -3246,7 +3303,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
     assert file_part["file_id"] == "https://files.test/note.txt"
     assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
 
-    image_rendered = await cog.input_builder.attachment_handler.render_image(
+    image_rendered = await _toolkit(cog=cog).input_builder.attachment_handler.render_image(
         source=_att(
             filename="pixel.png", content_type="image/png", payload=base64.b64decode(_png_b64())
         ),
@@ -3279,7 +3336,9 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         "discordbot.cogs.gen_reply.attachment.loaders.get_image_data",
         lambda image_file: base64.b64decode(_png_b64()),
     )
-    parts = await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
+    parts = await _toolkit(cog=cog).input_builder.get_attachment_parts(
+        message=as_message(fake=message)
+    )
     assert [part["type"] for part in parts] == ["input_file", "input_file", "input_file"]
 
 
@@ -3509,17 +3568,24 @@ async def test_openai_file_uploader_drops_failed_uploads(monkeypatch: pytest.Mon
 
 def test_gpt_attachment_handler_path_stays_disabled() -> None:
     """GPT models still use inline attachments until the OpenAI uploader branch is enabled."""
-    assert isinstance(build_attachment_handler(model_name="gpt-5.1"), InlineRenderer)
+    assert isinstance(
+        build_attachment_handler(model_name="gpt-5.1", gemini_api_key="test-key"), InlineRenderer
+    )
 
 
 def test_grok_attachment_handler_path_stays_disabled() -> None:
     """Grok models still use inline attachments until the xAI uploader branch is enabled."""
-    assert isinstance(build_attachment_handler(model_name="grok-4.5"), InlineRenderer)
+    assert isinstance(
+        build_attachment_handler(model_name="grok-4.5", gemini_api_key="test-key"), InlineRenderer
+    )
 
 
 def test_gemini_attachments_upload_while_the_file_api_is_enabled() -> None:
     """The Gemini branch uploads to the Files API while the switch is on."""
-    assert isinstance(build_attachment_handler(model_name="gemini-3.7-flash"), GeminiFileUploader)
+    assert isinstance(
+        build_attachment_handler(model_name="gemini-3.7-flash", gemini_api_key="test-key"),
+        GeminiFileUploader,
+    )
 
 
 def test_the_file_api_kill_switch_inlines_gemini_attachments(
@@ -3527,7 +3593,10 @@ def test_the_file_api_kill_switch_inlines_gemini_attachments(
 ) -> None:
     """With the switch off, even a Gemini answer model gets inlined attachments."""
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
-    assert isinstance(build_attachment_handler(model_name="gemini-3.7-flash"), InlineRenderer)
+    assert isinstance(
+        build_attachment_handler(model_name="gemini-3.7-flash", gemini_api_key="test-key"),
+        InlineRenderer,
+    )
 
 
 async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
@@ -3753,13 +3822,13 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     with_attachment = FakeMessage(content="see file", author=FakeAuthor(user_id=2))
     with_attachment.attachments = [FakeAttachment(filename="note.txt", content_type="text/plain")]
 
-    bot_processed = await cog.input_builder.process_single_message(
+    bot_processed = await _toolkit(cog=cog).input_builder.process_single_message(
         message=as_message(fake=bot_msg)
     )
-    user_processed = await cog.input_builder.process_single_message(
+    user_processed = await _toolkit(cog=cog).input_builder.process_single_message(
         message=as_message(fake=user_msg)
     )
-    attachment_processed = await cog.input_builder.process_single_message(
+    attachment_processed = await _toolkit(cog=cog).input_builder.process_single_message(
         message=as_message(fake=with_attachment)
     )
     assert bot_processed["role"] == "assistant"
@@ -3777,7 +3846,12 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
     current.channel = FakeChannel(history=fake_history)
     raw_history = await cog._fetch_history(message=as_message(fake=current), limit=30)
-    rendered = await cog._render_history(raw_history, text_only=False, message_id=current.id)
+    rendered = await cog._render_history(
+        toolkit=_toolkit(cog=cog),
+        hist_messages=raw_history,
+        text_only=False,
+        message_id=current.id,
+    )
     assert len(rendered) == 3
     assert rendered[0]["role"] == "system"
     assert [m.content for m in raw_history] == ["hello", "bot answer"]
@@ -3789,10 +3863,19 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     parent.reference = FakeReference(resolved=grandparent)
     current.reference = FakeReference(resolved=parent)
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
-    reference = await cog._get_reference_message(message=as_message(fake=current))
+    reference = await cog._get_reference_message(
+        toolkit=_toolkit(cog=cog), message=as_message(fake=current)
+    )
     assert len(reference) == 4
     assert reference[0]["role"] == "system"
-    assert len(await cog._get_current_message(message=as_message(fake=current))) == 2
+    assert (
+        len(
+            await cog._get_current_message(
+                toolkit=_toolkit(cog=cog), message=as_message(fake=current)
+            )
+        )
+        == 2
+    )
 
 
 async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
@@ -3802,7 +3885,9 @@ async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
         content="你的審美跟 <@999> 一樣 這樣算誇獎嗎", author=FakeAuthor(user_id=1)
     )
 
-    processed = await cog.input_builder.process_single_message(message=as_message(fake=message))
+    processed = await _toolkit(cog=cog).input_builder.process_single_message(
+        message=as_message(fake=message)
+    )
     rendered = processed["content"]
 
     assert isinstance(rendered, str)
@@ -3856,9 +3941,13 @@ async def test_gen_reply_routes_and_handlers_without_api(
     cog = _cog()
     message = FakeMessage(content="make a summary", author=FakeAuthor(user_id=1))
     assert (await _route(cog=cog, message=message)).decision == "QA"
-    assert _recorded(cog).responses.parse_models[0] == cog.runtime_models.triage_model.name
+    assert (
+        _recorded(cog).responses.parse_models[0]
+        == _toolkit(cog=cog).runtime_models.triage_model.name
+    )
 
     await cog._handle_video_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="video",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -3870,6 +3959,7 @@ async def test_gen_reply_routes_and_handlers_without_api(
     assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
 
     await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="image",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -3880,7 +3970,10 @@ async def test_gen_reply_routes_and_handlers_without_api(
     # The image is delivered first, then a conversational reply streams onto that same
     # message via the flash fast_model with no tools.
     assert message.replies[-1].file is not None
-    assert _recorded(cog).responses.create_models[-1] == cog.runtime_models.fast_model.name
+    assert (
+        _recorded(cog).responses.create_models[-1]
+        == _toolkit(cog=cog).runtime_models.fast_model.name
+    )
     assert _recorded(cog).responses.create_streams[-1] is True
     assert _recorded(cog).responses.create_tools[-1] is None
 
@@ -3949,7 +4042,7 @@ async def test_uploaded_image_without_extension_marks_as_image(
     ]
 
     # Classification is by content_type, not filename, so the marker render needs no upload.
-    rendered = await cog.input_builder.process_single_message_text_only(
+    rendered = await _toolkit(cog=cog).input_builder.process_single_message_text_only(
         message=as_message(fake=message)
     )
     parts = rendered["content"]
@@ -3975,7 +4068,7 @@ async def test_text_only_render_names_a_sticker_instead_of_calling_it_an_image(
         )
     ]
 
-    rendered = await cog.input_builder.process_single_message_text_only(
+    rendered = await _toolkit(cog=cog).input_builder.process_single_message_text_only(
         message=as_message(fake=message)
     )
     parts = rendered["content"]
@@ -3999,10 +4092,12 @@ async def test_text_only_and_full_render_agree_on_attachment_count(
         FakeAttachment(filename="clip.mp4", content_type="video/mp4", payload=b"v"),
     ]
 
-    text_only = await cog.input_builder.process_single_message_text_only(
+    text_only = await _toolkit(cog=cog).input_builder.process_single_message_text_only(
         message=as_message(fake=message)
     )
-    full = await cog.input_builder.process_single_message(message=as_message(fake=message))
+    full = await _toolkit(cog=cog).input_builder.process_single_message(
+        message=as_message(fake=message)
+    )
 
     text_markers = [
         part
@@ -4034,7 +4129,7 @@ async def test_text_only_render_degrades_when_the_modality_gate_raises(
         FakeAttachment(filename="pic.png", content_type="image/png", payload=b"x")
     ]
 
-    rendered = await cog.input_builder.process_single_message_text_only(
+    rendered = await _toolkit(cog=cog).input_builder.process_single_message_text_only(
         message=as_message(fake=message)
     )
 
@@ -4141,6 +4236,7 @@ async def test_handle_image_reply_edits_attached_image(monkeypatch: pytest.Monke
     ]
 
     await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="make it blue",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4157,6 +4253,7 @@ async def test_handle_image_reply_refines_prompt_before_generate() -> None:
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
     await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="draw a cat",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4169,8 +4266,8 @@ async def test_handle_image_reply_refines_prompt_before_generate() -> None:
     # Two responses.create calls: the non-streaming director first, then the streaming persona reply.
     assert _recorded(cog).responses.create_streams == [False, True]
     assert _recorded(cog).responses.create_models == [
-        cog.runtime_models.fast_model.name,
-        cog.runtime_models.fast_model.name,
+        _toolkit(cog=cog).runtime_models.fast_model.name,
+        _toolkit(cog=cog).runtime_models.fast_model.name,
     ]
     # The director runs on IMAGE_PROMPT with the grounding tools available.
     assert _recorded(cog).responses.create_instructions[0] == IMAGE_PROMPT
@@ -4184,6 +4281,7 @@ async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
     message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
 
     await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="draw a cat",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4192,7 +4290,9 @@ async def test_handle_image_reply_refine_disabled_sends_raw_prompt() -> None:
     # The raw prompt reaches images.generate; the only create is the streaming persona reply.
     assert _recorded(cog).images.generate_prompts == ["draw a cat"]
     assert _recorded(cog).responses.create_streams == [True]
-    assert _recorded(cog).responses.create_models == [cog.runtime_models.fast_model.name]
+    assert _recorded(cog).responses.create_models == [
+        _toolkit(cog=cog).runtime_models.fast_model.name
+    ]
 
 
 async def test_handle_image_reply_injects_only_user_memory() -> None:
@@ -4210,6 +4310,7 @@ async def test_handle_image_reply_injects_only_user_memory() -> None:
         return context
 
     await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="draw a cat",
         context_task=asyncio.create_task(_ready()),
@@ -4247,6 +4348,7 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", BoomResponder)
 
     await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="draw a cat",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4268,6 +4370,7 @@ async def test_handle_image_reply_hosts_oversized_image_on_separate_message(
     message.guild = FakeGuild(filesize_limit=4)  # tiny ceiling -> the generated PNG is oversized
 
     await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="draw a cat",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4314,6 +4417,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", _BoomStreamer)
 
     await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="draw a cat",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4350,6 +4454,7 @@ async def test_handle_image_reply_raises_when_oversized_and_hosting_off() -> Non
 
     with pytest.raises(nextcord.HTTPException):
         await cog._handle_image_reply(
+            toolkit=_toolkit(cog=cog),
             message=as_message(fake=message),
             user_prompt="draw a cat",
             context_task=asyncio.create_task(_ready_reply_context()),
@@ -4365,7 +4470,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
         media_hosting=_hosting_service(serve_dir=tmp_path)
     )
 
-    async def _no_upload(data: bytes) -> None:
+    async def _no_upload(toolkit: object, data: bytes) -> None:
         """Simulates the post-delivery Files-API upload failing."""
         del data
 
@@ -4374,6 +4479,7 @@ async def test_handle_video_reply_oversized_upload_failure_leaves_no_orphan(
     message.guild = FakeGuild(filesize_limit=1)  # below the 3-byte fake clip -> oversized
 
     await cog._handle_video_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="video",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4396,6 +4502,7 @@ async def test_handle_video_reply_refines_prompt_before_render() -> None:
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await cog._handle_video_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="video",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4404,8 +4511,8 @@ async def test_handle_video_reply_refines_prompt_before_render() -> None:
     # The director runs on VIDEO_PROMPT first, then the streaming reply about the video.
     assert _recorded(cog).responses.create_streams == [False, True]
     assert _recorded(cog).responses.create_models == [
-        cog.runtime_models.fast_model.name,
-        cog.runtime_models.fast_model.name,
+        _toolkit(cog=cog).runtime_models.fast_model.name,
+        _toolkit(cog=cog).runtime_models.fast_model.name,
     ]
     assert _recorded(cog).responses.create_instructions[0] == VIDEO_PROMPT
     # The reply (the last create) watches the generated video: referenced as an input_file part.
@@ -4431,6 +4538,7 @@ async def test_handle_video_reply_refine_disabled_sends_raw_prompt() -> None:
     message = FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1))
 
     await cog._handle_video_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="video",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4441,7 +4549,9 @@ async def test_handle_video_reply_refine_disabled_sends_raw_prompt() -> None:
     create_input = _recorded_video(cog).create_inputs[0]
     assert [part["text"] for part in create_input if part["type"] == "text"] == ["video"]
     assert _recorded(cog).responses.create_streams == [True]
-    assert _recorded(cog).responses.create_models == [cog.runtime_models.fast_model.name]
+    assert _recorded(cog).responses.create_models == [
+        _toolkit(cog=cog).runtime_models.fast_model.name
+    ]
 
 
 async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -4459,6 +4569,7 @@ async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyP
     message = FakeMessage(content="把這部影片做成新的", author=FakeAuthor(user_id=1))
 
     await cog._handle_video_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="make it snowy",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4519,6 +4630,7 @@ async def test_handle_video_reply_passes_reference_images() -> None:
     ]
 
     await cog._handle_video_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="video",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4546,6 +4658,7 @@ async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio() -> N
     ]
 
     await cog._handle_video_reply(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         user_prompt="video",
         context_task=asyncio.create_task(_ready_reply_context()),
@@ -4610,7 +4723,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     prepared_context = ReplyContext()
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Returns the parametrized route."""
         del reference_messages, current_message
@@ -4618,7 +4734,8 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         await asyncio.sleep(0)
         return RouteClassification(decision=route)
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: object,
         message: FakeMessage,
         history_limit: int,
         parts_task: object,
@@ -4638,7 +4755,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         return emoji
 
     async def fake_image_handler(
-        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        toolkit: object,
+        message: FakeMessage,
+        user_prompt: str,
+        context_task: asyncio.Task[ReplyContext],
     ) -> None:
         """Records image handler dispatch and drains the handed-over context task."""
         del message
@@ -4647,7 +4767,10 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         calls.append("_handle_image_reply")
 
     async def fake_video_handler(
-        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        toolkit: object,
+        message: FakeMessage,
+        user_prompt: str,
+        context_task: asyncio.Task[ReplyContext],
     ) -> None:
         """Records video handler dispatch and drains the handed-over context task."""
         del message
@@ -4664,6 +4787,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     contexts: list[ReplyContext] = []
 
     async def fake_message_handler(  # noqa: PLR0913 -- stub mirrors _handle_message_reply's signature
+        toolkit: object,
         message: FakeMessage,
         system_prompt: str,
         context: ReplyContext,
@@ -4748,6 +4872,7 @@ async def test_prepare_reply_context_shields_shared_parts_task(
     parts_task = asyncio.create_task(coro=slow_parts())
     prep_task = asyncio.create_task(
         coro=cog._prepare_reply_context(
+            toolkit=_toolkit(cog=cog),
             message=as_message(
                 fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
             ),
@@ -4788,13 +4913,17 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert dm_empty.replies[0].content == "?"
 
     async def boom(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> str:
         """Raises to exercise error handling."""
         del reference_messages, current_message
         raise RuntimeError("boom")
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: object,
         message: FakeMessage,
         history_limit: int,
         parts_task: object,
@@ -4826,13 +4955,17 @@ async def test_a_reply_records_the_route_it_took(
     cog = _cog()
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Routes every message to QA."""
         del message, reference_messages, current_message
         return RouteClassification(decision="QA")
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: object,
         message: FakeMessage,
         history_limit: int,
         parts_task: object,
@@ -4876,13 +5009,17 @@ async def test_a_failed_reply_records_that_it_never_routed(
     cog = _cog()
 
     async def boom(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Fails the way a router outage would."""
         del message, reference_messages, current_message
         raise RuntimeError("boom")
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: object,
         message: FakeMessage,
         history_limit: int,
         parts_task: object,
@@ -4919,7 +5056,9 @@ async def test_on_message_forward_not_gated_as_empty(monkeypatch: pytest.MonkeyP
 
     pipeline_calls: list[tuple[FakeMessage, str]] = []
 
-    async def record_pipeline(message: FakeMessage, user_prompt: str, reactions: object) -> None:
+    async def record_pipeline(
+        toolkit: object, message: FakeMessage, user_prompt: str, reactions: object
+    ) -> None:
         """Records that the reply pipeline was reached instead of the empty-message `?` reply."""
         del reactions
         pipeline_calls.append((message, user_prompt))
@@ -4944,7 +5083,9 @@ async def test_on_message_commented_forward_merges_forwarded_text(
 
     calls: list[tuple[FakeMessage, str]] = []
 
-    async def record_pipeline(message: FakeMessage, user_prompt: str, reactions: object) -> None:
+    async def record_pipeline(
+        toolkit: object, message: FakeMessage, user_prompt: str, reactions: object
+    ) -> None:
         """Records the prompt the pipeline receives for the media route."""
         del reactions
         calls.append((message, user_prompt))
@@ -5036,7 +5177,10 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     received: list[ReplyContext] = []
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Routes every message to IMAGE."""
         del reference_messages, current_message
@@ -5044,7 +5188,8 @@ async def test_on_message_consumes_speculative_context_on_image_route(
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE")
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: object,
         message: FakeMessage,
         history_limit: int,
         parts_task: object,
@@ -5056,7 +5201,10 @@ async def test_on_message_consumes_speculative_context_on_image_route(
         return prepared
 
     async def fake_image_handler(
-        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        toolkit: object,
+        message: FakeMessage,
+        user_prompt: str,
+        context_task: asyncio.Task[ReplyContext],
     ) -> None:
         """Records the context the dispatch handed over."""
         del message, user_prompt
@@ -5401,7 +5549,10 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
         return []
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Selects Douyin while routing the request to the image handler."""
         del reference_messages, current_message
@@ -5409,7 +5560,10 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
         return RouteClassification(decision="IMAGE", link_context_sources=["douyin"])
 
     async def fake_image_handler(
-        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        toolkit: object,
+        message: FakeMessage,
+        user_prompt: str,
+        context_task: asyncio.Task[ReplyContext],
     ) -> None:
         """Accepts the dispatched image request."""
         del message, user_prompt
@@ -5479,7 +5633,8 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
     prepare = cog._prepare_reply_context
     cancelled: list[bool] = []
 
-    async def delayed_prepare(
+    async def delayed_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: GeminiKeyToolkit,
         message: Message,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
@@ -5490,6 +5645,7 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
         await route_done.wait()
         await asyncio.sleep(0.18)
         return await prepare(
+            toolkit=toolkit,
             message=message,
             history_limit=history_limit,
             parts_task=parts_task,
@@ -5539,7 +5695,8 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.LINK_CONTEXT_GRACE_SECONDS", 0.12)
     prepare = cog._prepare_reply_context
 
-    async def delayed_prepare(
+    async def delayed_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: GeminiKeyToolkit,
         message: Message,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
@@ -5550,6 +5707,7 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
         await route_done.wait()
         await asyncio.sleep(0.18)
         return await prepare(
+            toolkit=toolkit,
             message=message,
             history_limit=history_limit,
             parts_task=parts_task,
@@ -5598,7 +5756,8 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
     second_cancellation = asyncio.Event()
     cancellation_count = 0
 
-    async def delayed_prepare(
+    async def delayed_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: GeminiKeyToolkit,
         message: Message,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
@@ -5609,6 +5768,7 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         await route_done.wait()
         await asyncio.sleep(0.1)
         return await prepare(
+            toolkit=toolkit,
             message=message,
             history_limit=history_limit,
             parts_task=parts_task,
@@ -5678,7 +5838,8 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
     second_cancellation = asyncio.Event()
     cancellation_count = 0
 
-    async def delayed_prepare(
+    async def delayed_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: GeminiKeyToolkit,
         message: Message,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
@@ -5689,6 +5850,7 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
         await route_done.wait()
         await asyncio.sleep(0.1)
         return await prepare(
+            toolkit=toolkit,
             message=message,
             history_limit=history_limit,
             parts_task=parts_task,
@@ -5997,7 +6159,10 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
         return []
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Selects Threads while routing the request to the image handler."""
         del reference_messages, current_message
@@ -6005,7 +6170,10 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
         return RouteClassification(decision="IMAGE", link_context_sources=["threads"])
 
     async def fake_image_handler(
-        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        toolkit: object,
+        message: FakeMessage,
+        user_prompt: str,
+        context_task: asyncio.Task[ReplyContext],
     ) -> None:
         """Accepts the dispatched image request."""
         del message, user_prompt
@@ -6232,7 +6400,10 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
         return []
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Selects Bilibili while routing the request to the image handler."""
         del reference_messages, current_message
@@ -6240,7 +6411,10 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
         return RouteClassification(decision="IMAGE", link_context_sources=["bilibili"])
 
     async def fake_image_handler(
-        message: FakeMessage, user_prompt: str, context_task: asyncio.Task[ReplyContext]
+        toolkit: object,
+        message: FakeMessage,
+        user_prompt: str,
+        context_task: asyncio.Task[ReplyContext],
     ) -> None:
         """Accepts the dispatched image request."""
         del message, user_prompt
@@ -6323,14 +6497,18 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
         return []
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Selects Bilibili on QA so its builder starts after routing."""
         del reference_messages, current_message
         await asyncio.sleep(0)
         return RouteClassification(decision="QA", link_context_sources=["bilibili"])
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: object,
         message: FakeMessage,
         history_limit: int,
         parts_task: object,
@@ -6392,13 +6570,17 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
         return []
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Selects Bilibili so the deadline-owned builder starts."""
         del message, reference_messages, current_message
         return RouteClassification(decision="QA", link_context_sources=["bilibili"])
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: object,
         message: FakeMessage,
         history_limit: int,
         parts_task: object,
@@ -6763,7 +6945,9 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     catalog = RuntimeModelCatalog()
     cog = ReplyGeneratorCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    assert cog.runtime_models.fast_model == catalog.fast_model
+    # A real cog builds no toolkit until a reply leases a key, which is what keeps an
+    # unconfigured deployment from constructing a Gemini client it can never use.
+    assert cog._toolkits == {}
     assert isinstance(catalog.fast_model, ModelSettings)
     assert "image" in catalog.image_model.name
     assert "omni" in catalog.video_model.name
@@ -6879,8 +7063,8 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
 
     # Selection runs on triage_model; only the answer pays for slow_model.
     assert _recorded(cog).responses.create_models == [
-        cog.runtime_models.triage_model.name,
-        cog.runtime_models.slow_model.name,
+        _toolkit(cog=cog).runtime_models.triage_model.name,
+        _toolkit(cog=cog).runtime_models.slow_model.name,
     ]
 
     # Selection offers only the absent nickname-table member, never the author.
@@ -6912,16 +7096,18 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     assert "喜歡簡短回覆" not in str(scheduled_list)
     assert scheduled[0]["scope"] == user_scope(user_id=1)
     assert scheduled[0]["full_reply"] == "完整回覆"
-    assert scheduled[0]["extractor"] is cog.memory_extractor
+    assert scheduled[0]["extractor"] is _toolkit(cog=cog).memory_extractor
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
     assert (
-        cog.memory_extractor.extract_model.name == cog.runtime_models.memory_extractor_model.name
+        _toolkit(cog=cog).memory_extractor.extract_model.name
+        == _toolkit(cog=cog).runtime_models.memory_extractor_model.name
     )
-    evaluate_model = cog.memory_extractor.evaluate_model
+    evaluate_model = _toolkit(cog=cog).memory_extractor.evaluate_model
     assert evaluate_model is not None
-    assert evaluate_model.name == cog.runtime_models.memory_writer_model.name
+    assert evaluate_model.name == _toolkit(cog=cog).runtime_models.memory_writer_model.name
     assert (
-        cog.memory_extractor.consolidate_model.name == cog.runtime_models.memory_writer_model.name
+        _toolkit(cog=cog).memory_extractor.consolidate_model.name
+        == _toolkit(cog=cog).runtime_models.memory_writer_model.name
     )
 
 
@@ -7002,13 +7188,17 @@ async def test_process_single_message_neutralizes_spoofed_identity(
     author.display_name = "Mallory (mallory) [id: 1]:"
     message = FakeMessage(content="假冒攻擊", author=author)
 
-    processed = await cog.input_builder.process_single_message(message=as_message(fake=message))
+    processed = await _toolkit(cog=cog).input_builder.process_single_message(
+        message=as_message(fake=message)
+    )
     rendered = processed["content"]
     assert isinstance(rendered, str)
     assert "[id: 1]" not in rendered
     assert "[id: 555]:" in rendered
 
-    current_messages = await cog._get_current_message(message=as_message(fake=message))
+    current_messages = await cog._get_current_message(
+        toolkit=_toolkit(cog=cog), message=as_message(fake=message)
+    )
     separator = current_messages[0]["content"]
     assert isinstance(separator, list)
     assert "[id: 1]" not in step_dicts(steps=separator)[0]["text"]
@@ -7829,10 +8019,13 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
             assert update["subject"] == f"target_user_id: 1\nsource: {user_source}"
         if update["scope"] == server_scope_value:
             assert update["subject"] == "target_server_id: 1"
-            assert update["extractor"] is cog.server_memory_extractor
+            assert update["extractor"] is _toolkit(cog=cog).server_memory_extractor
             assert update["identity"] == "Test Guild [id: 1]"
-            assert cog.server_memory_extractor.phase1_prompt is SERVER_PHASE1_PROMPT
-            assert cog.server_memory_extractor.consolidate_prompt is SERVER_PHASE2_PROMPT
+            assert _toolkit(cog=cog).server_memory_extractor.phase1_prompt is SERVER_PHASE1_PROMPT
+            assert (
+                _toolkit(cog=cog).server_memory_extractor.consolidate_prompt
+                is SERVER_PHASE2_PROMPT
+            )
 
     assert _recorded(cog).responses.create_streams == [True]
 
@@ -8081,7 +8274,10 @@ async def test_resolve_effort_returns_graded_effort_on_success() -> None:
     effort_task = asyncio.create_task(coro=graded())
     assert (
         await cog._resolve_effort(
-            message=as_message(fake=FakeMessage()), effort_task=effort_task, route_done=route_done
+            toolkit=_toolkit(cog=cog),
+            message=as_message(fake=FakeMessage()),
+            effort_task=effort_task,
+            route_done=route_done,
         )
         == "low"
     )
@@ -8100,7 +8296,10 @@ async def test_resolve_effort_defaults_high_on_error() -> None:
     effort_task = asyncio.create_task(coro=boom())
     assert (
         await cog._resolve_effort(
-            message=as_message(fake=FakeMessage()), effort_task=effort_task, route_done=route_done
+            toolkit=_toolkit(cog=cog),
+            message=as_message(fake=FakeMessage()),
+            effort_task=effort_task,
+            route_done=route_done,
         )
         == "high"
     )
@@ -8123,7 +8322,10 @@ async def test_resolve_effort_defaults_high_on_grace_timeout(
     effort_task = asyncio.create_task(coro=slow())
     assert (
         await cog._resolve_effort(
-            message=as_message(fake=FakeMessage()), effort_task=effort_task, route_done=route_done
+            toolkit=_toolkit(cog=cog),
+            message=as_message(fake=FakeMessage()),
+            effort_task=effort_task,
+            route_done=route_done,
         )
         == "high"
     )
@@ -8137,7 +8339,10 @@ async def test_on_message_cancels_effort_task_on_image_route(
     cancelled: list[bool] = []
 
     async def fake_route(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> RouteClassification:
         """Routes every message to IMAGE after yielding so the effort task starts."""
         del reference_messages, current_message
@@ -8145,7 +8350,10 @@ async def test_on_message_cancels_effort_task_on_image_route(
         return RouteClassification(decision="IMAGE")
 
     async def fake_grade(
-        message: FakeMessage, reference_messages: list[object], current_message: list[object]
+        toolkit: object,
+        message: FakeMessage,
+        reference_messages: list[object],
+        current_message: list[object],
     ) -> EffortGrade:
         """Blocks until cancelled, recording the cancellation."""
         del message, reference_messages, current_message
@@ -8156,7 +8364,8 @@ async def test_on_message_cancels_effort_task_on_image_route(
             raise
         return EffortGrade(effort="low")
 
-    async def fake_prepare(
+    async def fake_prepare(  # noqa: PLR0913 -- stub mirrors _prepare_reply_context's signature
+        toolkit: object,
         message: FakeMessage,
         history_limit: int,
         parts_task: object,
@@ -8167,7 +8376,7 @@ async def test_on_message_cancels_effort_task_on_image_route(
         del message, history_limit, parts_task, text_parts, route_done
         return ReplyContext()
 
-    async def fake_image_handler(message: FakeMessage, user_prompt: str) -> None:
+    async def fake_image_handler(toolkit: object, message: FakeMessage, user_prompt: str) -> None:
         """Accepts the dispatched image request."""
         del message, user_prompt
 
@@ -8229,6 +8438,7 @@ async def test_select_user_memories_uses_text_only_transcript() -> None:
 
     message = FakeMessage()
     await cog._select_user_memories(
+        toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         message_list=message_list,
         allowed={1: MemoryCandidate(prompt_label="u", credit_label="u")},
@@ -8248,21 +8458,25 @@ async def test_attachment_parts_cached_until_message_changes() -> None:
     attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
     message.attachments = [attachment]
 
-    first = await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
-    again = await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
+    first = await _toolkit(cog=cog).input_builder.get_attachment_parts(
+        message=as_message(fake=message)
+    )
+    again = await _toolkit(cog=cog).input_builder.get_attachment_parts(
+        message=as_message(fake=message)
+    )
 
     assert attachment.read_count == 1
     assert again == first
 
     message.edited_at = datetime.now(tz=UTC)
-    await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
+    await _toolkit(cog=cog).input_builder.get_attachment_parts(message=as_message(fake=message))
     assert attachment.read_count == 2
 
 
 async def test_attachment_cache_reuploads_expired_handle() -> None:
     """A cached file_id past its real expiry is re-rendered, not served stale."""
     cog = _cog()
-    builder = cog.input_builder
+    builder = _toolkit(cog=cog).input_builder
     message = FakeMessage(content="doc", author=FakeAuthor(user_id=2))
     attachment = FakeAttachment(filename="note.txt", content_type="text/plain")
     message.attachments = [attachment]
@@ -8307,13 +8521,13 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
         return SimpleNamespace(image=SimpleNamespace(proxy_url=url, url=url), thumbnail=None)
 
     message.embeds = [cast("Embed", _embed("https://media.test/a.png"))]
-    await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
-    await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
+    await _toolkit(cog=cog).input_builder.get_attachment_parts(message=as_message(fake=message))
+    await _toolkit(cog=cog).input_builder.get_attachment_parts(message=as_message(fake=message))
     assert rendered_urls == ["https://media.test/a.png"]
 
     # Same embed count, different image URL: the cache must not serve the stale part.
     message.embeds = [cast("Embed", _embed("https://media.test/b.png"))]
-    await cog.input_builder.get_attachment_parts(message=as_message(fake=message))
+    await _toolkit(cog=cog).input_builder.get_attachment_parts(message=as_message(fake=message))
     # order-contract: each awaited cache lookup renders its source before returning.
     assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
 
@@ -8338,12 +8552,17 @@ async def _prepare_context_with_hanging_selection(
 
     monkeypatch.setattr(cog, "_select_user_memories", slow_selection)
     msg = as_message(fake=message)
-    parts_task = asyncio.create_task(coro=cog._get_reference_and_current(message=msg))
-    text_parts = await cog._get_reference_and_current(message=msg, text_only=True)
+    parts_task = asyncio.create_task(
+        coro=cog._get_reference_and_current(toolkit=_toolkit(cog=cog), message=msg)
+    )
+    text_parts = await cog._get_reference_and_current(
+        toolkit=_toolkit(cog=cog), message=msg, text_only=True
+    )
     # The route has already returned, so selection gets only the tiny grace before it times out.
     route_done = asyncio.Event()
     route_done.set()
     return await cog._prepare_reply_context(
+        toolkit=_toolkit(cog=cog),
         message=msg,
         history_limit=2,
         parts_task=parts_task,
@@ -8460,8 +8679,8 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     cog._resume_started = False
     user_sentinel = object()
     server_sentinel = object()
-    cog.__dict__["memory_extractor"] = user_sentinel
-    cog.__dict__["server_memory_extractor"] = server_sentinel
+    _toolkit(cog=cog).__dict__["memory_extractor"] = user_sentinel
+    _toolkit(cog=cog).__dict__["server_memory_extractor"] = server_sentinel
 
     user_job_scope = user_scope(user_id=1)
     server_job_scope = server_scope(server_id=2)
@@ -8547,3 +8766,73 @@ async def test_on_ready_resume_runs_once(
     while cog._tasks:
         await asyncio.gather(*list(cog._tasks))
     assert calls == 1
+
+
+def test_a_toolkit_binds_every_piece_to_one_key() -> None:
+    """Every part of one reply's toolkit names the same key, dispatch and upload alike.
+
+    Swept rather than spot-checked because the two halves fail differently and only one of
+    them is loud. A tier left unpinned dispatches on the pooled deployment, which the proxy
+    answers from whichever key it likes; an uploader left on another key uploads a file the
+    answer's project cannot read, which fails the whole request. Both are invisible in a diff.
+    """
+    cog = _cog()
+    toolkit = GeminiKeyToolkit(
+        bot=cog.bot,
+        config=cog.config,
+        openai_client=cog.openai_client,
+        slot=GeminiKeySlot(index=2, api_key="second-key"),
+    )
+
+    catalog = toolkit.runtime_models
+    dispatched = [
+        catalog.slow_model.deployment_name,
+        catalog.fast_model.deployment_name,
+        catalog.triage_model.deployment_name,
+        catalog.image_model.deployment_name,
+        toolkit.voice_generator.model_name,
+        toolkit.image_generator.image_model.deployment_name,
+        toolkit.prompt_generator.prompt_model.deployment_name,
+        toolkit.memory_extractor.extract_model.deployment_name,
+        toolkit.server_memory_extractor.consolidate_model.deployment_name,
+    ]
+    unpinned = [name for name in dispatched if not name.endswith("-key2")]
+    assert unpinned == [], f"Every dispatch runs on the leased key. Offenders: {unpinned}"
+
+    handler = toolkit.input_builder.attachment_handler
+    assert isinstance(handler, GeminiFileUploader)
+    assert handler.api_key == "second-key"
+
+
+def test_an_unpinned_toolkit_dispatches_and_uploads_as_before() -> None:
+    """No key configured leaves every name bare and the direct client unavailable."""
+    cog = _cog()
+    toolkit = _toolkit(cog=cog)
+
+    assert toolkit.key_index is None
+    assert toolkit.runtime_models.slow_model.deployment_name == (
+        toolkit.runtime_models.slow_model.name
+    )
+    assert toolkit.gemini_client_if_configured is None
+
+
+async def test_consecutive_replies_lease_different_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The second reply of a burst runs on a different key from the first.
+
+    This is the behaviour the whole change exists for: a peak-hour 503 is per project, so two
+    replies landing on one key is the failure mode being designed out.
+    """
+    monkeypatch.setenv(name="GEMINI_API_KEY", value="first")
+    monkeypatch.setenv(name="GEMINI_API_KEY_2", value="second")
+    cog = _cog()
+    cog.config = LLMConfig()
+    cog._toolkits = {}
+
+    first = await cog.lease_toolkit()
+    second = await cog.lease_toolkit()
+    third = await cog.lease_toolkit()
+
+    assert (first.key_index, second.key_index) == (1, 2)
+    # The third comes back to key 1, and to the very same toolkit, because the caches inside
+    # it hold that key's Files API uris.
+    assert third is first
