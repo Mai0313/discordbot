@@ -87,6 +87,13 @@ report goes to the developer as a public ticket carrying the reporter's Discord 
 can be found and answered; the developer's replies show up in the same panel, and there is a
 button to write back. Only the person who filed a report can see it here.
 
+When a report is settled I send the person who filed it a direct message saying whether it was
+done or will not be done, carrying whatever the developer wrote when settling it, translated
+into the language they reported in. That happens once per report, and only when it is settled;
+replies while it is still being worked on wait in the panel. A report merged into another one
+sends nothing, because its own outcome is not decided yet. If direct messages from me are
+turned off, the panel is still where everything can be read.
+
 ## Tools
 
 - `/download_video` — download a video from a supported platform, a Douyin link included; a Douyin photo post comes back as images

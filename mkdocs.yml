@@ -29,6 +29,7 @@ nav:
                   - cog: Reference/discordbot/cogs/feedback/cog.md
                   - database: Reference/discordbot/cogs/feedback/database.md
                   - github: Reference/discordbot/cogs/feedback/github.md
+                  - notice: Reference/discordbot/cogs/feedback/notice.md
                   - prompts: Reference/discordbot/cogs/feedback/prompts.md
                   - views: Reference/discordbot/cogs/feedback/views.md
                   - writeup: Reference/discordbot/cogs/feedback/writeup.md

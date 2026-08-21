@@ -19,7 +19,12 @@ from nextcord.ui import View, Modal, Button, TextInput, StringSelect
 from nextcord.ext import commands
 
 from discordbot.typings.colors import NEUTRAL_BLUE, NEUTRAL_GREY, DISCORD_GREEN, DISCORD_YELLOW
-from discordbot.cogs.feedback.github import IssueComment, IssueSnapshot
+from discordbot.cogs.feedback.github import (
+    CloseOutcome,
+    IssueComment,
+    IssueSnapshot,
+    close_outcome,
+)
 from discordbot.cogs.feedback.database import FeedbackTicket
 
 FEEDBACK_VIEW_TIMEOUT_SECONDS = 180
@@ -63,6 +68,16 @@ class TicketStatus(BaseModel):
     )
 
 
+# How each way of closing an issue reads in the panel. A table rather than a branch each,
+# because `outstanding=False` is true of all three and stating it once is what says the cap
+# is about the maintainer's inbox rather than about whether the work is finished.
+_CLOSED_STATUS: dict[CloseOutcome, tuple[str, int]] = {
+    "completed": ("✅ 已處理", DISCORD_GREEN),
+    "not_planned": ("⚪ 不處理", NEUTRAL_GREY),
+    "duplicate": ("🔁 併入其他單", NEUTRAL_BLUE),
+}
+
+
 class TicketRow(BaseModel):
     """One stored report together with whatever GitHub currently says about it."""
 
@@ -88,15 +103,18 @@ class TicketRow(BaseModel):
         alternative reads better on paper and is wrong in practice: GitHub having a bad
         minute would turn three long-closed reports into a cap that refuses to accept a
         new one, in the exact situation this whole design exists to keep working.
+
+        A duplicate is not outstanding either, even though the work it describes is still
+        somewhere in the queue. What the cap protects is the maintainer's inbox, and a
+        report already merged into another issue costs that inbox nothing.
         """
         if self.snapshot is None:
             if self.ticket.issue_number is None:
                 return TicketStatus(text="⏳ 建立中", color=DISCORD_YELLOW, outstanding=True)
             return TicketStatus(text="❔ 讀不到狀態", color=NEUTRAL_GREY, outstanding=False)
         if self.snapshot.state == "closed":
-            if self.snapshot.state_reason == "not_planned":
-                return TicketStatus(text="⚪ 不處理", color=NEUTRAL_GREY, outstanding=False)
-            return TicketStatus(text="✅ 已處理", color=DISCORD_GREEN, outstanding=False)
+            text, color = _CLOSED_STATUS[close_outcome(state_reason=self.snapshot.state_reason)]
+            return TicketStatus(text=text, color=color, outstanding=False)
         if self.snapshot.comment_count > self.ticket.relayed_replies:
             return TicketStatus(text="🟢 處理中", color=NEUTRAL_BLUE, outstanding=True)
         return TicketStatus(text="🟡 還沒回覆", color=DISCORD_YELLOW, outstanding=True)

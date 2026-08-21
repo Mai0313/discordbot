@@ -70,6 +70,30 @@ class GitHubIssuesError(RuntimeError):
         self.status_code = status_code
 
 
+# What a closed issue means to the person who reported it. GitHub's own vocabulary is
+# `IssueClosedStateReason`, which is exactly `COMPLETED` / `NOT_PLANNED` / `DUPLICATE`.
+CloseOutcome = Literal["completed", "not_planned", "duplicate"]
+
+
+def close_outcome(*, state_reason: str | None) -> CloseOutcome:
+    """Maps GitHub's close reason onto what it means for the reporter.
+
+    Anything unrecognised reads as completed, which is what a plain Close has always
+    produced: the UI's default button sets `completed`, and an issue closed before GitHub
+    recorded a reason at all carries `None`. The two that are named here are the ones that
+    would otherwise be reported as work that got done, and neither of them is.
+
+    One function rather than a branch in each caller, because the panel and the close
+    notice describe the same issue to the same person; two independent readings of one
+    `state_reason` is how they end up saying different things about it.
+    """
+    if state_reason == "not_planned":
+        return "not_planned"
+    if state_reason == "duplicate":
+        return "duplicate"
+    return "completed"
+
+
 class IssueSnapshot(BaseModel):
     """The state of one issue as the panel needs it."""
 
@@ -77,9 +101,13 @@ class IssueSnapshot(BaseModel):
     title: str = Field(..., description="Current issue title.")
     state: Literal["open", "closed"] = Field(..., description="Whether the issue is still open.")
     state_reason: str | None = Field(
-        ..., description="Why it was closed: completed, not_planned, reopened, or None."
+        ..., description="Why it was closed: completed, not_planned, duplicate, reopened, or None."
     )
     comment_count: int = Field(..., description="Total comments, maintainer or not.")
+    closed_at: str | None = Field(
+        default=None,
+        description="ISO-8601 timestamp of the close, or None while the issue is open.",
+    )
 
 
 class IssueComment(BaseModel):
@@ -277,11 +305,17 @@ class GitHubIssues(BaseModel):
         own error, for the same reason decoding is: the panel catches one type, and a
         `KeyError` from here would sail past it and take the whole list down.
 
+        `closed_at` is carried as GitHub's own string rather than parsed here. Its one
+        reader compares it against comment timestamps, which arrive in the same shape from
+        the same API, so parsing both at the point of comparison keeps the two readings
+        from drifting apart.
+
         Raises:
             GitHubIssuesError: The issue could not be read or did not parse.
         """
         issue = await self._request(method="GET", path=f"/issues/{number}")
         state = "closed" if issue.get("state") == "closed" else "open"
+        closed_at = issue.get("closed_at")
         try:
             return IssueSnapshot(
                 number=int(issue["number"]),
@@ -289,6 +323,7 @@ class GitHubIssues(BaseModel):
                 state=state,
                 state_reason=issue.get("state_reason"),
                 comment_count=int(issue.get("comments") or 0),
+                closed_at=str(closed_at) if closed_at else None,
             )
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             raise GitHubIssuesError(f"GET /issues/{number} answered an unreadable issue") from exc

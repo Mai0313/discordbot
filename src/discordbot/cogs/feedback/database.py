@@ -22,7 +22,7 @@ from typing import Any, cast
 from datetime import datetime, timedelta
 
 from pydantic import Field, BaseModel
-from sqlalchemy import String, Integer, DateTime, CursorResult, func, event, select, update
+from sqlalchemy import String, Integer, DateTime, CursorResult, func, event, delete, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -110,6 +110,45 @@ class FeedbackTicketRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_database_now, onupdate=_database_now
     )
+
+
+class FeedbackCloseNoticeRow(Base):
+    """One report's progress towards telling its reporter that it was closed.
+
+    A table rather than two more columns on `feedback_ticket`, because `_ensure_schema`
+    builds the schema with `create_all`: it is `checkfirst`, so it creates a table that is
+    missing and never alters one that is already there. A new column would simply be
+    absent from a deployed database and every read of it would raise `no such column`,
+    while a new table costs no migration at all.
+
+    A row means the close has been seen. `notified_at` means the report is finished with
+    and is never looked at again, which is what keeps a report from being announced twice
+    over.
+
+    It is at-least-once, not exactly-once, and deliberately so: the message is sent before
+    this row records that it was, so a process that dies in between sends a second copy on
+    the next pass. The other order trades that for losing the message outright, and a
+    duplicate the reporter can see beats a silence nobody can.
+
+    What is deliberately NOT here is why the issue was closed. The delivery pass reads
+    the issue again rather than trusting what discovery saw, so a reason stored here would
+    have no reader, and `create_all` never alters a table: a column that ships is a column
+    the deployed database keeps forever.
+
+    Attributes:
+        ticket_id: The report this is about; one notice per report, so it is the key.
+        observed_at: When the close was first seen. The delivery pass waits on this, and
+            past `CLOSE_NOTICE_STALLED_AFTER_SECONDS` it is also what says a notice has
+            been failing to go out for far too long.
+        notified_at: When the report was finished with, whether that meant sending a
+            message or deciding not to send one. `None` while it is still owed.
+    """
+
+    __tablename__ = "feedback_close_notice"
+
+    ticket_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
+    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class FeedbackTicket(BaseModel):
@@ -365,6 +404,121 @@ async def seconds_since_last_ticket(*, user_id: int) -> float | None:
     if latest.tzinfo is None:
         latest = latest.replace(tzinfo=reference.tzinfo)
     return max((reference - latest) / timedelta(seconds=1), 0.0)
+
+
+class PendingCloseNotice(BaseModel):
+    """A report whose close was seen and whose reporter has not been told yet."""
+
+    ticket: FeedbackTicket = Field(..., description="The report the close belongs to.")
+    observed_at: datetime = Field(..., description="When the close was first seen.")
+
+
+async def tickets_awaiting_close_check() -> list[FeedbackTicket]:
+    """Returns reports whose issue is filed and whose close has not been seen yet.
+
+    These are the ones the discovery pass has to ask GitHub about, so the set is every
+    report that is still open plus any that closed since the last pass. It is deliberately
+    unbounded: a report that stays open never leaves the set, so a batch cap would starve
+    the tail of the list rather than spread the work out. The repository holds a handful of
+    reports against a 5000-per-hour credential, and the sweep runs every ten minutes.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        seen = (
+            select(FeedbackCloseNoticeRow.ticket_id)
+            .where(FeedbackCloseNoticeRow.ticket_id == FeedbackTicketRow.ticket_id)
+            .exists()
+        )
+        result = await session.execute(
+            statement=select(FeedbackTicketRow)
+            .where(FeedbackTicketRow.issue_number.is_not(None), ~seen)
+            .order_by(FeedbackTicketRow.ticket_id.asc())
+        )
+        return [_row_to_model(row=row) for row in result.scalars().all()]
+
+
+async def record_close_observed(*, ticket_id: int, notified: bool) -> None:
+    """Records that a report's issue was seen closed, and whether that settles it.
+
+    `notified=True` is for a close nobody is told about, which finishes the report here
+    rather than leaving a row the delivery pass would keep picking up and re-deciding.
+
+    Writing is conditional on there being no row yet, so a second discovery pass that
+    overlaps the first cannot reset an `observed_at` the delivery pass is already waiting
+    on, nor overwrite a `notified_at` that is already set.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        existing = await session.get(entity=FeedbackCloseNoticeRow, ident=ticket_id)
+        if existing is not None:
+            return
+        session.add(
+            FeedbackCloseNoticeRow(
+                ticket_id=ticket_id, notified_at=_database_now() if notified else None
+            )
+        )
+        await session.commit()
+
+
+async def close_notices_awaiting_delivery(*, min_age_seconds: float) -> list[PendingCloseNotice]:
+    """Returns the closes that have waited long enough to be told to their reporter.
+
+    The wait is what catches a closing comment written after the close: they are separate
+    actions on GitHub, and the comment is the whole point of the message. Anchoring it on
+    `observed_at` rather than on the tick that follows discovery keeps that true across a
+    restart, which a tick counter would not survive.
+    """
+    await _ensure_schema()
+    cutoff = _database_now() - timedelta(seconds=min_age_seconds)
+    async with open_session() as session:
+        result = await session.execute(
+            statement=select(FeedbackCloseNoticeRow, FeedbackTicketRow)
+            .join(
+                FeedbackTicketRow, FeedbackTicketRow.ticket_id == FeedbackCloseNoticeRow.ticket_id
+            )
+            .where(
+                FeedbackCloseNoticeRow.notified_at.is_(None),
+                FeedbackCloseNoticeRow.observed_at <= cutoff,
+            )
+            .order_by(FeedbackCloseNoticeRow.ticket_id.asc())
+        )
+        return [
+            PendingCloseNotice(ticket=_row_to_model(row=ticket), observed_at=notice.observed_at)
+            for notice, ticket in result.all()
+        ]
+
+
+async def mark_close_notified(*, ticket_id: int) -> None:
+    """Finishes a report off, so its close is never announced a second time."""
+    await _ensure_schema()
+    async with open_session() as session:
+        await session.execute(
+            statement=update(FeedbackCloseNoticeRow)
+            .where(FeedbackCloseNoticeRow.ticket_id == ticket_id)
+            .values(notified_at=_database_now())
+        )
+        await session.commit()
+
+
+async def forget_close_notice(*, ticket_id: int) -> None:
+    """Drops a recorded close, putting the report back to never having been closed.
+
+    For a report reopened during the wait between discovery and delivery. Marking it
+    finished would spend the one message it gets on a close that was taken back, so the row
+    goes instead and a later close is discovered from scratch.
+
+    Conditional on nothing having been sent yet, because that is the whole distinction:
+    once a message has gone out, a reopen must not hand the report a second one.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        await session.execute(
+            statement=delete(FeedbackCloseNoticeRow).where(
+                FeedbackCloseNoticeRow.ticket_id == ticket_id,
+                FeedbackCloseNoticeRow.notified_at.is_(None),
+            )
+        )
+        await session.commit()
 
 
 async def tickets_awaiting_issue(
