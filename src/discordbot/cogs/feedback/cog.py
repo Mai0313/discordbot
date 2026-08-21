@@ -188,11 +188,22 @@ class FeedbackCogs(commands.Cog):
         self._background.add(task)
         task.add_done_callback(self._background.discard)
 
-    async def _read_snapshot(self, *, ticket: FeedbackTicket) -> IssueSnapshot | None:
+    async def _read_snapshot(
+        self, *, ticket: FeedbackTicket, context: str
+    ) -> IssueSnapshot | None:
         """Reads one report's issue, returning None when there is nothing to read.
 
         An unreadable issue is an ordinary outcome here (it has no number yet, or GitHub
         is having a bad minute); the panel says so rather than failing the whole list.
+
+        `context` names which read this was, because the four are not the same event to
+        whoever reads the log. A panel read failing is one person seeing one report without
+        a status; a sweep read failing is a report whose issue was deleted or transferred,
+        repeating every ten minutes with nobody watching a screen.
+
+        Args:
+            ticket: The report whose issue to read.
+            context: Where the read came from, recorded on the failure.
         """
         if ticket.issue_number is None:
             return None
@@ -200,9 +211,10 @@ class FeedbackCogs(commands.Cog):
             return await self.issues.read_issue(number=ticket.issue_number)
         except GitHubIssuesError as exc:
             logfire.warn(
-                "Could not read a report's issue; showing it without a status",
+                "Could not read a report's issue",
                 ticket_id=ticket.ticket_id,
                 issue_number=ticket.issue_number,
+                context=context,
                 _exc_info=exc,
             )
             return None
@@ -212,7 +224,7 @@ class FeedbackCogs(commands.Cog):
         tickets = await list_user_tickets(user_id=user_id, limit=MAX_PANEL_TICKETS)
         total = await count_user_tickets(user_id=user_id)
         snapshots = await asyncio.gather(
-            *(self._read_snapshot(ticket=ticket) for ticket in tickets)
+            *(self._read_snapshot(ticket=ticket, context="panel list") for ticket in tickets)
         )
         return PanelRows(
             rows=[
@@ -239,7 +251,7 @@ class FeedbackCogs(commands.Cog):
                 viewer_id=viewer_id,
             )
             return None
-        snapshot = await self._read_snapshot(ticket=ticket)
+        snapshot = await self._read_snapshot(ticket=ticket, context="panel detail")
         comments: list[IssueComment] | None = []
         if ticket.issue_number is not None:
             try:
@@ -736,7 +748,7 @@ class FeedbackCogs(commands.Cog):
         announce months-old outcomes as news.
         """
         for ticket in await tickets_awaiting_close_check():
-            snapshot = await self._read_snapshot(ticket=ticket)
+            snapshot = await self._read_snapshot(ticket=ticket, context="close discovery")
             if snapshot is None or snapshot.state != "closed":
                 continue
             outcome = close_outcome(state_reason=snapshot.state_reason)
@@ -771,7 +783,7 @@ class FeedbackCogs(commands.Cog):
         ticket = notice.ticket
         if ticket.issue_number is None:
             return
-        snapshot = await self._read_snapshot(ticket=ticket)
+        snapshot = await self._read_snapshot(ticket=ticket, context="close delivery")
         if snapshot is None:
             return
         if snapshot.state != "closed":
@@ -834,9 +846,16 @@ class FeedbackCogs(commands.Cog):
         Two passes, because the first only records what it found. What separates them is
         `CLOSE_NOTICE_MIN_AGE_SECONDS`, measured from when the close was seen rather than
         counted in ticks, so a restart between the passes does not reset the wait.
+
+        Unlike `retry_unfiled_reports`, this one stops on `FEEDBACK_ENABLED`. The two are
+        not the same kind of work: that loop finishes a promise already made to somebody
+        who filed a report, which the switch going off does not retract, while this one
+        starts an unsolicited message and sends its reader to a `/feedback` that would then
+        turn them away. Nothing is lost by waiting either, since a close nobody has been
+        told about is still owed once the feature is back on.
         """
         try:
-            if not self.config.github_ready:
+            if not self.config.enabled or not self.config.github_ready:
                 return
             await self._discover_closed_reports()
             pending = await close_notices_awaiting_delivery(

@@ -1928,6 +1928,26 @@ async def test_a_report_reopened_during_the_wait_is_not_announced(
     assert len(reporter.embeds) == 1
 
 
+async def test_the_close_sweep_stops_when_the_feature_is_switched_off(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unsolicited message must not send its reader to a command that will refuse them."""
+    issues = FakeIssues()
+    issues.conversation = [_maintainer_said(body="Fixed.")]
+    reporter = _FakeReporter()
+    cog = _notice_cog(issues=issues, reporter=reporter)
+    cog.config = _config(FEEDBACK_ENABLED=False)
+    await _filed_report(issues=issues, state_reason="completed")
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.CLOSE_NOTICE_MIN_AGE_SECONDS", 0)
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.translate_comment", _translates_verbatim)
+
+    await cog.notify_closed_reports()
+
+    assert reporter.embeds == []
+    # Owed rather than dropped: switching the feature back on still tells them.
+    assert len(await tickets_awaiting_close_check()) == 1
+
+
 async def test_the_close_sweep_waits_while_the_token_is_still_missing(
     feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
