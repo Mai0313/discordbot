@@ -15,13 +15,14 @@ from unittest.mock import MagicMock
 
 from PIL import Image
 import httpx
-from openai import APITimeoutError
+from openai import APITimeoutError, BadRequestError
 import pytest
 import nextcord
 from nextcord import File, Embed, Message
 import requests
 from xai_sdk.proto import files_pb2
 from google.genai.types import FileState
+from google.genai.errors import ClientError
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -44,6 +45,7 @@ from discordbot.cogs.gen_reply.cog import (
     HISTORY_CHAR_BUDGET,
     LINK_CONTEXT_SOURCES,
     HISTORY_MESSAGE_LIMIT,
+    MAX_HISTORY_MEDIA_PARTS,
     HISTORY_PER_MESSAGE_OVERHEAD,
     ReplyGeneratorCogs,
     _discard_task,
@@ -54,6 +56,7 @@ from discordbot.cogs.gen_reply.cog import (
     _link_url_for_source,
     _trim_history_to_budget,
     _await_deadline_bound_task,
+    _history_media_over_budget,
     _build_runtime_instructions,
 )
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
@@ -3204,6 +3207,32 @@ def test_extract_friendly_error_prefers_nested_provider_message() -> None:
     assert extract_friendly_error(exc=RuntimeError("bad b'not json'")) == "bad b'not json'"
 
 
+def test_extract_friendly_error_reads_a_decoded_400_body() -> None:
+    """A plain provider 400 is read off the exception, not out of its dict-repr string."""
+    refusal = "Input blocked: Sorry, we can't create videos with real people's names."
+    body = {"error": {"message": refusal, "code": "invalid_request"}}
+
+    # `_make_status_error` unwraps the `error` object into `.body` before raising, and renders
+    # the whole document into the message as a Python dict repr.
+    request = httpx.Request(method="POST", url="http://proxy/v1/images/generations")
+    response = httpx.Response(status_code=400, request=request, json=body)
+    proxied = BadRequestError(f"Error code: 400 - {body}", response=response, body=body["error"])
+    assert extract_friendly_error(exc=proxied) == refusal
+
+    # The direct-to-Google path keeps the whole document on `.details` instead.
+    assert extract_friendly_error(exc=ClientError(400, body, None)) == refusal
+
+    # A non-streaming LiteLLM 400 needs both steps: the dict repr escapes the wrapped chain's
+    # quotes to `b\'...\'`, so the bytes literal is only reachable once `.body` has replaced the
+    # text being scanned.
+    chain = """litellm.BadRequestError: VertexAIException - b'{"error": {"message": "quota"}}'"""
+    wrapped_body = {"error": {"message": chain, "code": "400"}}
+    wrapped = BadRequestError(
+        f"Error code: 400 - {wrapped_body}", response=response, body=wrapped_body["error"]
+    )
+    assert extract_friendly_error(exc=wrapped) == "quota"
+
+
 def test_required_modality_gate_keeps_code_and_text() -> None:
     """The MIME gate drops unknown binaries but keeps source-code / structured-text types."""
     modality = MessageInputBuilder.required_modality
@@ -3931,6 +3960,112 @@ def test_trim_history_charges_an_attachment_only_message() -> None:
     kept = _trim_history_to_budget(messages=[as_message(fake=m) for m in blanks])
 
     assert len(kept) <= HISTORY_CHAR_BUDGET // HISTORY_PER_MESSAGE_OVERHEAD
+
+
+def _image_post(index: int, count: int) -> FakeMessage:
+    """A history message carrying `count` image attachments with distinct ids."""
+    message = FakeMessage(content=f"post {index}", author=FakeAuthor(user_id=1))
+    message.id = 7000 + index
+    message.attachments = [
+        FakeAttachment(
+            filename=f"{index}-{n}.png", content_type="image/png", attachment_id=index * 100 + n
+        )
+        for n in range(count)
+    ]
+    return message
+
+
+def test_history_media_budget_refuses_every_older_post_once_one_is_refused() -> None:
+    """The files that survive are an unbroken run ending at the newest post.
+
+    The oldest post here needs one part and would fit the single slot the newest two leave
+    unspent, so a budget that kept looking for something small enough would admit it. That is
+    the case being pinned: admitting it would show the model an older attachment while a newer
+    one rendered as a marker, which reads as files going missing at random rather than as a cap.
+    """
+    posts = [
+        _image_post(index=0, count=1),
+        _image_post(index=1, count=5),
+        _image_post(index=2, count=9),
+    ]
+
+    over = _history_media_over_budget(
+        builder=_toolkit(cog=_cog()).input_builder,
+        hist_messages=[as_message(fake=m) for m in posts],
+    )
+
+    assert over == {posts[0].id: 1, posts[1].id: 5}
+
+
+def test_history_media_budget_exempts_the_newest_post_that_carries_attachments() -> None:
+    """One post of many images keeps its files rather than spending nothing at all."""
+    post = _image_post(index=0, count=MAX_HISTORY_MEDIA_PARTS + 5)
+
+    over = _history_media_over_budget(
+        builder=_toolkit(cog=_cog()).input_builder, hist_messages=[as_message(fake=post)]
+    )
+
+    assert over == {}
+
+
+async def test_render_history_survives_a_message_the_collector_chokes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected message shape costs that message its files, never the whole reply.
+
+    The budget walk runs inside `_prepare_reply_context`'s gather, which has no except of its
+    own, so anything raised here would reach `on_message`'s generic error path and lose the
+    answer. Both renders already swallow this same collect step for exactly that reason.
+    """
+    cog = _cog()
+    posts = [_image_post(index=i, count=2) for i in range(2)]
+    # Patched on the class: `MessageInputBuilder` is a pydantic model, so an instance rejects a
+    # setattr of anything that is not one of its fields.
+    collect = MessageInputBuilder.collect_attachment_sources
+
+    def explode(self: MessageInputBuilder, message: Message) -> object:
+        if message.id == posts[0].id:
+            raise RuntimeError("unexpected nextcord shape")
+        return collect(self, message=message)
+
+    monkeypatch.setattr(MessageInputBuilder, "collect_attachment_sources", explode)
+
+    rendered = await cog._render_history(
+        toolkit=_toolkit(cog=cog),
+        hist_messages=[as_message(fake=m) for m in posts],
+        text_only=False,
+        message_id=1,
+    )
+
+    # Header plus both messages: the broken one degrades to empty text, the other is untouched.
+    assert len(rendered) == 3
+
+
+async def test_render_history_degrades_over_budget_attachments_to_markers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Past the cap a history post renders as the route's marker, not as uploaded files."""
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.input.get_supported_modalities",
+        lambda model_name: {"text", "image"},
+    )
+    cog = _cog()
+    posts = [_image_post(index=i, count=6) for i in range(3)]
+
+    rendered = await cog._render_history(
+        toolkit=_toolkit(cog=cog),
+        hist_messages=[as_message(fake=m) for m in posts],
+        text_only=False,
+        message_id=1,
+    )
+
+    # rendered[0] is the history header; the rest follow the posts in order.
+    oldest, newest = rendered[1]["content"], rendered[3]["content"]
+    assert isinstance(oldest, list)
+    assert isinstance(newest, list)
+    assert [part["type"] for part in oldest[1:]] == ["input_text"] * 6
+    assert {part.get("text") for part in oldest[1:]} == {"[attachment: image]"}
+    assert all(part["type"] != "input_text" for part in newest[1:])
 
 
 async def test_gen_reply_routes_and_handlers_without_api(
