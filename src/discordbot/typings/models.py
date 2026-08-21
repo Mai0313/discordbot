@@ -13,6 +13,9 @@ class ModelSettings(BaseModel):
     Attributes:
         name: LiteLLM model string dispatched on the Responses API.
         effort: Reasoning effort passed to the Responses API for this model.
+        key_index: Gemini key this tier is pinned to for the current reply, or None when
+            unpinned. Only `deployment_name` reads it; see there for why the pin never
+            reaches `name`.
     """
 
     name: str = Field(
@@ -42,6 +45,36 @@ class ModelSettings(BaseModel):
         default="minimal",
         description="Reasoning effort passed to the Responses API for this model.",
     )
+    key_index: int | None = Field(
+        default=None,
+        description="Gemini key this tier is pinned to for the current reply; None is unpinned.",
+        examples=[None, 1, 2],
+    )
+
+    @property
+    def deployment_name(self) -> str:
+        """The name to dispatch on, which is `name` plus the reply's key pin.
+
+        Every call that goes through the LiteLLM proxy uses this and never `name`. The
+        suffix picks the deployment holding one specific Gemini credential, which is what
+        keeps a reply's Files API uploads and the request naming them on one Google project;
+        a file is readable only by the project that uploaded it, and a request mixing two
+        fails outright rather than partially.
+
+        The direct-to-Google paths are the exception and must keep using `name`: they carry
+        the key on the client instead, and Google has never heard of `-key2`.
+
+        `name` also stays the only name that reaches a lookup or a comparison. A suffixed
+        name in `get_token_rates` prices the reply at `$0.00000000`, and in
+        `get_supported_modalities` it collapses to the `{"text", "image"}` baseline and drops
+        every audio and video attachment, both without raising anything.
+
+        Returns:
+            `name` when unpinned, otherwise `name` with the `-key<n>` suffix.
+        """
+        if self.key_index is None:
+            return self.name
+        return f"{self.name}-key{self.key_index}"
 
     @property
     def reasoning(self) -> Reasoning:
@@ -86,7 +119,19 @@ class RuntimeModelCatalog(BaseModel):
     """Runtime model settings used by Discord bot LLM paths.
 
     Keep caller lists in sync when moving runtime model usage.
+
+    Attributes:
+        key_index: Gemini key every tier below is pinned to, or None for an unpinned
+            catalog. A caller that has leased a key builds its own catalog with the index
+            set, so a whole reply dispatches on one key without any tier having to be asked
+            for it twice; see `ModelSettings.deployment_name` for what the pin does. None is
+            the default because the paths that do not balance (deep research, the dev
+            scripts, the offline memory rebuild) are the ones that construct a bare catalog.
     """
+
+    key_index: int | None = Field(
+        default=None, description="Gemini key every tier is pinned to; None is unpinned."
+    )
 
     @computed_field
     @property
@@ -109,7 +154,7 @@ class RuntimeModelCatalog(BaseModel):
         Returns:
             Model settings used with `images.generate` and `images.edit`.
         """
-        return ModelSettings(name="gemini-3.1-flash-image")
+        return ModelSettings(name="gemini-3.1-flash-image", key_index=self.key_index)
 
     @property
     def video_model(self) -> ModelSettings:
@@ -125,7 +170,7 @@ class RuntimeModelCatalog(BaseModel):
             via the proxy). omni unifies text/image/reference/edit video generation, so the same
             model backs plain generation and true source-video editing (`task="edit"`).
         """
-        return ModelSettings(name="gemini-omni-flash-preview")
+        return ModelSettings(name="gemini-omni-flash-preview", key_index=self.key_index)
 
     @property
     def music_model(self) -> ModelSettings:
@@ -137,7 +182,7 @@ class RuntimeModelCatalog(BaseModel):
             Model settings used with the native Gemini (Lyria) Interactions API (a bare model
             name, no provider prefix, since the call goes direct to Google not via the proxy).
         """
-        return ModelSettings(name="lyria-3-clip-preview")
+        return ModelSettings(name="lyria-3-clip-preview", key_index=self.key_index)
 
     @property
     def tts_model(self) -> ModelSettings:
@@ -150,7 +195,7 @@ class RuntimeModelCatalog(BaseModel):
             the reply's `<generate-voice>` segments are synthesized, concatenated into one
             clip; the rest of the reply is never spoken. `effort` is unused for TTS.
         """
-        return ModelSettings(name="gemini-3.1-flash-tts-preview")
+        return ModelSettings(name="gemini-3.1-flash-tts-preview", key_index=self.key_index)
 
     @property
     def antigravity_model(self) -> ModelSettings:
@@ -163,7 +208,7 @@ class RuntimeModelCatalog(BaseModel):
             (direct, not the proxy). `effort` / `tools` are unused on the agent path: the
             agent runs its own internal tool loop.
         """
-        return ModelSettings(name="antigravity-preview-05-2026")
+        return ModelSettings(name="antigravity-preview-05-2026", key_index=self.key_index)
 
     @property
     def triage_model(self) -> ModelSettings:
@@ -181,7 +226,9 @@ class RuntimeModelCatalog(BaseModel):
             repointed name still lists `minimal` before carrying the effort across (see
             `ModelSettings.effort`).
         """
-        return ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
+        return ModelSettings(
+            name="gemini-3.5-flash-lite", effort="minimal", key_index=self.key_index
+        )
 
     @property
     def fast_model(self) -> ModelSettings:
@@ -202,7 +249,7 @@ class RuntimeModelCatalog(BaseModel):
             Flash at `medium`, one snapshot back from `gemini-3.7-flash`, popular enough now
             to queue behind its own load (observed 2026-08-20).
         """
-        return ModelSettings(name="gemini-3.6-flash", effort="medium")
+        return ModelSettings(name="gemini-3.6-flash", effort="medium", key_index=self.key_index)
 
     @property
     def slow_model(self) -> ModelSettings:
@@ -237,8 +284,10 @@ class RuntimeModelCatalog(BaseModel):
         # the caller sees an HTTP 200 whose `model` field names a different model. A status code
         # proves nothing here; only the response's own `model` does.
         if self.is_peak:
-            return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
-        return ModelSettings(name="gemini-3.7-flash", effort="high")
+            return ModelSettings(
+                name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index
+            )
+        return ModelSettings(name="gemini-3.7-flash", effort="high", key_index=self.key_index)
 
     @property
     def memory_extractor_model(self) -> ModelSettings:
@@ -251,7 +300,9 @@ class RuntimeModelCatalog(BaseModel):
             writer tier so the recall-oriented first pass can be downgraded on its own if
             the gates behind it prove able to carry the precision.
         """
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(
+            name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index
+        )
 
     @property
     def memory_writer_model(self) -> ModelSettings:
@@ -270,7 +321,9 @@ class RuntimeModelCatalog(BaseModel):
             consolidator turns that staging into the fact files plus the tone note. A weaker
             model on either loses memory or leaks it, rather than just failing to record it.
         """
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(
+            name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index
+        )
 
 
 class RouteClassification(BaseModel):

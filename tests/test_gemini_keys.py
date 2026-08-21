@@ -8,6 +8,7 @@ Each test sets the exact key set it is about.
 import pytest
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.models import ModelSettings
 
 
 def _keys(config: LLMConfig) -> list[tuple[int, str]]:
@@ -97,3 +98,30 @@ def test_key_one_follows_the_field_rather_than_the_environment(
     config.gemini_api_key = "overridden"
 
     assert _keys(config=config) == [(1, "overridden")]
+
+
+def test_a_pinned_tier_dispatches_on_the_key_deployment() -> None:
+    """The pin appends the proxy's `-key<n>` suffix and leaves `name` alone."""
+    pinned = ModelSettings(name="gemini-3.7-flash", effort="high", key_index=2)
+
+    assert pinned.deployment_name == "gemini-3.7-flash-key2"
+    assert pinned.name == "gemini-3.7-flash"
+
+
+def test_an_unpinned_tier_dispatches_on_its_own_name() -> None:
+    """No pin means no suffix, so an unbalanced path reaches the deployment it always did."""
+    unpinned = ModelSettings(name="gemini-3.7-flash", effort="high")
+
+    assert unpinned.deployment_name == "gemini-3.7-flash"
+
+
+def test_the_pin_never_reaches_the_provider_test() -> None:
+    """`tools` still reads `name`, so a pinned Gemini tier keeps its grounding tools.
+
+    The provider tests are substring matches that happen to survive a suffix, but the ones
+    that do not survive it (`get_token_rates`, `get_supported_modalities`) fail silently, so
+    this pins the rule rather than the one case that would have been noticed.
+    """
+    pinned = ModelSettings(name="gemini-3.7-flash", effort="high", key_index=3)
+
+    assert pinned.tools == [{"googleSearch": {}}, {"urlContext": {}}]
