@@ -25,6 +25,7 @@ also where the panel reads status from, so the developer keeps one inbox instead
 from typing import Any
 import asyncio
 from pathlib import Path
+from datetime import datetime
 from functools import cached_property
 from collections.abc import Coroutine
 
@@ -56,6 +57,12 @@ from discordbot.cogs.feedback.github import (
     IssueComment,
     IssueSnapshot,
     GitHubIssuesError,
+    close_outcome,
+)
+from discordbot.cogs.feedback.notice import (
+    closing_comment,
+    translate_comment,
+    build_close_notice_embed,
 )
 from discordbot.cogs.feedback.writeup import (
     stored_draft,
@@ -66,6 +73,7 @@ from discordbot.cogs.feedback.writeup import (
 )
 from discordbot.cogs.feedback.database import (
     FeedbackTicket,
+    PendingCloseNotice,
     get_ticket,
     create_ticket,
     store_write_up,
@@ -73,8 +81,12 @@ from discordbot.cogs.feedback.database import (
     count_user_tickets,
     attach_issue_number,
     count_relayed_reply,
+    mark_close_notified,
+    record_close_observed,
     tickets_awaiting_issue,
     seconds_since_last_ticket,
+    tickets_awaiting_close_check,
+    close_notices_awaiting_delivery,
 )
 
 # How often the sweep tries again for reports whose issue was never opened, and how many
@@ -91,6 +103,21 @@ RETRY_MIN_AGE_SECONDS = 120
 # so one report GitHub will never accept holds up every report behind it.
 RETRY_STALLED_AFTER_SECONDS = 24 * 60 * 60
 
+# How often the sweep looks for reports whose issue has been closed. The same cadence as the
+# retry sweep and for the same reason: nobody is waiting on either, and a report that closed
+# a few minutes ago is not news that goes stale.
+CLOSE_NOTICE_INTERVAL_MINUTES = 10
+
+# How long a close waits before its reporter is told. Closing an issue and explaining why are
+# two separate actions on GitHub, and the explanation is as often written just after the close
+# as just before it, so announcing the moment the close is seen would send the result without
+# the reason. One message per report means there is no second chance to carry it.
+CLOSE_NOTICE_MIN_AGE_SECONDS = 600
+
+# Past this a notice is not waiting out a bad minute at a provider. Every failure here leaves
+# the row for the next pass, so without this the retry is silent and unbounded.
+CLOSE_NOTICE_STALLED_AFTER_SECONDS = 24 * 60 * 60
+
 
 def _locale_text(*, interaction: Interaction[commands.Bot]) -> str:
     """The reporter's Discord locale as a plain string, or empty when unknown."""
@@ -100,10 +127,9 @@ def _locale_text(*, interaction: Interaction[commands.Bot]) -> str:
     return str(locale or "")
 
 
-def _age_seconds(*, ticket: FeedbackTicket) -> float:
-    """How long ago a report was filed, in seconds."""
-    created = as_taipei(dt=ticket.created_at)
-    return max((database_now() - created).total_seconds(), 0.0)
+def _age_seconds(*, moment: datetime) -> float:
+    """How long ago something happened, in seconds."""
+    return max((database_now() - as_taipei(dt=moment)).total_seconds(), 0.0)
 
 
 class FeedbackCogs(commands.Cog):
@@ -638,7 +664,7 @@ class FeedbackCogs(commands.Cog):
             stalled = [
                 ticket
                 for ticket in pending
-                if _age_seconds(ticket=ticket) > RETRY_STALLED_AFTER_SECONDS
+                if _age_seconds(moment=ticket.created_at) > RETRY_STALLED_AFTER_SECONDS
             ]
             if stalled:
                 # Past this age it is no longer an outage waiting to clear, and the queue
@@ -669,17 +695,165 @@ class FeedbackCogs(commands.Cog):
                 _exc_info=exc,
             )
 
+    async def _dm_reporter(self, *, ticket: FeedbackTicket, embed: Embed) -> None:
+        """Sends one reporter the news about their own report.
+
+        `fetch_user` rather than `get_user`: this bot runs without the `members` intent, so
+        the cache cannot be relied on to hold someone who filed a report days ago.
+
+        Broad on purpose, and never raised to the caller: a closed DM, a reporter who has
+        left every shared server, and a transport hiccup all mean the same thing here, and
+        none of them is a reason to keep the report open and try again. Retrying would only
+        re-run the translation for a mailbox that is still shut.
+        """
+        try:
+            # Positional because nextcord declares `fetch_user(user_id, /)`; there is no
+            # keyword form of this call to prefer.
+            user = await self.bot.fetch_user(ticket.user_id)
+            await user.send(embed=embed)
+        except Exception as exc:
+            logfire.warn(
+                "Could not tell a reporter their report was closed",
+                ticket_id=ticket.ticket_id,
+                issue_number=ticket.issue_number,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+
+    async def _discover_closed_reports(self) -> None:
+        """Records which reports have been closed since the last pass.
+
+        Nothing is announced here. The row this writes is what starts the wait that lets a
+        closing comment written after the close still ride along.
+
+        A `duplicate` is finished with on the spot instead: that report has been merged into
+        another issue, its own outcome is not decided yet, and there is nothing to tell
+        anyone. Marking it is what keeps it from being rediscovered on every later pass.
+        """
+        for ticket in await tickets_awaiting_close_check():
+            snapshot = await self._read_snapshot(ticket=ticket)
+            if snapshot is None or snapshot.state != "closed":
+                continue
+            outcome = close_outcome(state_reason=snapshot.state_reason)
+            await record_close_observed(
+                ticket_id=ticket.ticket_id,
+                state_reason=snapshot.state_reason or "",
+                notified=outcome == "duplicate",
+            )
+            logfire.info(
+                "A report's issue was closed",
+                ticket_id=ticket.ticket_id,
+                issue_number=ticket.issue_number,
+                outcome=outcome,
+                announced=outcome != "duplicate",
+            )
+
+    async def _deliver_close_notice(self, *, notice: PendingCloseNotice) -> None:
+        """Tells one reporter their report was closed, or leaves it for the next pass.
+
+        Every failure returns without marking the report, so the next pass repeats the
+        whole thing. That is why a failed translation costs nothing: the alternative was
+        sending the English to somebody who may not read it, and the report is not going
+        anywhere.
+        """
+        ticket = notice.ticket
+        if ticket.issue_number is None:
+            return
+        try:
+            comments = await self.issues.read_conversation(number=ticket.issue_number)
+        except GitHubIssuesError as exc:
+            logfire.warn(
+                "Could not read a closed report's replies; the notice waits for the next pass",
+                ticket_id=ticket.ticket_id,
+                issue_number=ticket.issue_number,
+                _exc_info=exc,
+            )
+            return
+        comment = closing_comment(comments=comments)
+        text = ""
+        if comment is not None:
+            translated = await translate_comment(
+                client=self.client,
+                model=self.runtime_models.fast_model,
+                ticket=ticket,
+                comment=comment,
+            )
+            if translated is None:
+                logfire.warn(
+                    "Could not translate a closing comment; the notice waits for the next pass",
+                    ticket_id=ticket.ticket_id,
+                    issue_number=ticket.issue_number,
+                )
+                return
+            text = translated
+        embed = build_close_notice_embed(
+            ticket=ticket,
+            outcome=close_outcome(state_reason=notice.state_reason),
+            comment=comment,
+            text=text,
+        )
+        await self._dm_reporter(ticket=ticket, embed=embed)
+        await mark_close_notified(ticket_id=ticket.ticket_id)
+
+    @tasks.loop(minutes=CLOSE_NOTICE_INTERVAL_MINUTES)
+    async def notify_closed_reports(self) -> None:
+        """Tells reporters when the reports they filed are closed.
+
+        Its own loop rather than another branch of `retry_unfiled_reports`. That loop wraps
+        its whole body in a broad `except` that reports "the report retry sweep failed", so
+        a failure in this work would be filed under the wrong name, and worse, would stop
+        the loop that is the entire mechanism behind the promise a reporter was given.
+
+        Wrapped whole for the same reason that one is: an exception escaping a `tasks.loop`
+        stops it for the rest of the process.
+
+        Two passes, because the first only records what it found. What separates them is
+        `CLOSE_NOTICE_MIN_AGE_SECONDS`, measured from when the close was seen rather than
+        counted in ticks, so a restart between the passes does not reset the wait.
+        """
+        try:
+            if not self.config.github_ready:
+                return
+            await self._discover_closed_reports()
+            pending = await close_notices_awaiting_delivery(
+                min_age_seconds=CLOSE_NOTICE_MIN_AGE_SECONDS
+            )
+            stalled = [
+                notice
+                for notice in pending
+                if _age_seconds(moment=notice.observed_at) > CLOSE_NOTICE_STALLED_AFTER_SECONDS
+            ]
+            if stalled:
+                # Every failure in here is a silent retry, so without this a notice nothing
+                # will ever manage to send would keep failing with nobody the wiser.
+                logfire.error(
+                    "Reports have been waiting to tell their reporter for far too long",
+                    stalled=len(stalled),
+                    oldest_ticket_id=stalled[0].ticket.ticket_id,
+                )
+            for notice in pending:
+                await self._deliver_close_notice(notice=notice)
+        # Broad on purpose, see the docstring.
+        except Exception as exc:
+            logfire.error(
+                "The close-notice sweep failed; it will run again next interval",
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+
     @commands.Cog.listener()
     async def on_ready(self) -> None:
-        """Starts the retry sweep once, on the first gateway ready."""
+        """Starts both sweeps once, on the first gateway ready."""
         if self._started:
             return
         self._started = True
         self.retry_unfiled_reports.start()
+        self.notify_closed_reports.start()
 
     def cog_unload(self) -> None:
-        """Stops the retry sweep when the cog is unloaded or reloaded."""
+        """Stops both sweeps when the cog is unloaded or reloaded."""
         self.retry_unfiled_reports.cancel()
+        self.notify_closed_reports.cancel()
 
 
 def setup(bot: commands.Bot) -> None:
