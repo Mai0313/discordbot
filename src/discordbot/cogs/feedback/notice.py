@@ -12,6 +12,8 @@ finished with, so the next sweep tries the whole thing again, which costs one mo
 call and gets the reporter a message they can read instead of one they cannot.
 """
 
+from datetime import UTC, datetime, timedelta
+
 from openai import AsyncOpenAI
 from nextcord import Embed
 from pydantic import Field, BaseModel
@@ -29,6 +31,24 @@ from discordbot.cogs.feedback.database import FeedbackTicket
 _MAX_COMMENT_CHARS = 900
 _MAX_QUOTED_CHARS = 300
 _TRUNCATED_SUFFIX = "…"
+
+# How long before a close a comment can have been written and still be read as the reason
+# for it. A day is generous on purpose: "fixed, shipping with the next release" is written
+# when the work lands and the issue is closed whenever the maintainer next tidies up. What
+# it excludes is the far more damaging case, an unanswered question from weeks earlier
+# being handed to the reporter as the verdict on their report.
+_CLOSING_WINDOW = timedelta(days=1)
+
+# How long after a close it is still worth telling anyone. This exists for one moment: the
+# first sweep after this feature ships, which finds every report ever closed sitting there
+# with no notice row and would otherwise mail all of them at once, announcing outcomes from
+# months ago as news. It keeps working afterwards for a bot that was down for a fortnight.
+BACKFILL_CUTOFF = timedelta(days=7)
+
+# What the reporter's own words are for: telling the model which language to translate
+# into. Enough to read the language off, short enough not to crowd out the text being
+# translated, and cut from the front because that is where people state the problem.
+_LANGUAGE_SAMPLE_CHARS = 200
 
 _TITLES: dict[CloseOutcome, str] = {"completed": "✅ 已完成", "not_planned": "⚪ 不列入計劃"}
 _COLORS: dict[CloseOutcome, int] = {"completed": DISCORD_GREEN, "not_planned": NEUTRAL_GREY}
@@ -53,41 +73,88 @@ def _clipped(*, text: str, limit: int) -> str:
     return text[: limit - len(_TRUNCATED_SUFFIX)].rstrip() + _TRUNCATED_SUFFIX
 
 
-def closing_comment(*, comments: list[IssueComment]) -> IssueComment | None:
-    """The maintainer's last word on the report, or None when they wrote nothing.
+def _moment(*, stamp: str | None) -> datetime | None:
+    """Parses one GitHub ISO-8601 timestamp, or None when it is missing or malformed.
 
-    `read_conversation` has already dropped passers-by and bots, and marks the lines this
-    bot relayed for the reporter, so what is left of somebody else's is the answer itself.
-    The last one rather than the one nearest the close: closing and commenting are separate
-    actions, so the explanation is as often written just after the close as just before it,
-    and in either order it is the newest thing the maintainer said.
+    Never raises. A stamp this cannot read costs the notice its comment, not the notice
+    itself, and the caller reads None as "cannot tell" rather than as "no comment".
     """
-    theirs = [comment for comment in comments if not comment.from_reporter]
-    return theirs[-1] if theirs else None
+    if not stamp:
+        return None
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def closed_too_long_ago(*, closed_at: str | None) -> bool:
+    """Whether a close is old enough that announcing it would read as a mistake.
+
+    A close this cannot date is treated as recent. The alternative silently swallows a
+    notice on the strength of a timestamp nobody could read, and the far more common reason
+    for an unreadable one is a stub or an API change rather than genuine age.
+    """
+    closed = _moment(stamp=closed_at)
+    if closed is None:
+        return False
+    return datetime.now(tz=UTC) - closed > BACKFILL_CUTOFF
+
+
+def closing_comment(*, comments: list[IssueComment], closed_at: str | None) -> IssueComment | None:
+    """The maintainer's explanation for closing the report, or None when there is none.
+
+    `read_conversation` has already dropped passers-by and bots and marked the lines this
+    bot relayed for the reporter, so anything left that is not theirs is the maintainer's.
+    But being the maintainer's newest line does not make it the closing explanation, and
+    handing over the wrong one is worse than handing over nothing: the reporter reads it as
+    the answer to a report that it may predate by weeks.
+
+    Two things have to hold. **Nobody spoke after it**, which is what separates an
+    explanation from a question the reporter has since answered through the panel, the
+    common shape of a thread that ends in a close with nothing further said. And it was
+    **written around the close** rather than at some point in the issue's past, since
+    closing and commenting are separate actions on GitHub and the explanation lands on
+    either side of the close. `_CLOSING_WINDOW` is how far before it still counts; there is
+    no bound on the other side, because the delivery pass is already waiting a fixed time
+    and cannot see past it anyway.
+
+    An unreadable or absent `closed_at` keeps the ordering rule and drops the window one.
+    Losing the timing evidence is not a reason to also forget who spoke last.
+    """
+    if not comments or comments[-1].from_reporter:
+        return None
+    candidate = comments[-1]
+    closed = _moment(stamp=closed_at)
+    written = _moment(stamp=candidate.created_at)
+    if closed is None or written is None:
+        return candidate
+    return candidate if written >= closed - _CLOSING_WINDOW else None
 
 
 async def translate_comment(
     *, client: AsyncOpenAI, model: ModelSettings, ticket: FeedbackTicket, comment: IssueComment
 ) -> str | None:
-    """Translates one closing comment into the reporter's language.
+    """Translates one closing comment into the language the reporter wrote in.
 
     Returns None when the call fails, and the caller must treat that as "not yet" rather
     than falling back to the English: the whole reason this runs is that the reporter may
     not read it.
 
-    A report with no locale skips the model entirely and keeps the original. There is
-    nothing to translate *into*, and guessing from the bot's own default language would be
-    wrong for exactly the people this exists for.
+    The report's own text is what says which language that is. `locale` rides along, but
+    it cannot be trusted alone: it is the Discord client's UI language, read off
+    `interaction.locale` when the report was filed, and somebody running an English client
+    while writing Chinese is exactly the person this feature exists for. It is also allowed
+    to be empty, which would leave nothing to aim at at all.
     """
     body = comment.body.strip()
-    if not ticket.locale:
-        return body
+    sample = ticket.raw_text.strip()[:_LANGUAGE_SAMPLE_CHARS]
     translated = await parse_responses_or_none(
         client=client,
         model=model,
         instructions=CLOSE_NOTICE_TRANSLATION_PROMPT,
         user_text=(
-            f"<target_locale>{ticket.locale}</target_locale>\n"
+            f"<reporter_wording>\n{sample}\n</reporter_wording>\n"
+            f"<reporter_client_locale>{ticket.locale or 'unknown'}</reporter_client_locale>\n"
             f"<maintainer_message>\n{body}\n</maintainer_message>"
         ),
         end_user_id=str(ticket.user_id),

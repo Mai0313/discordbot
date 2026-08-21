@@ -62,6 +62,7 @@ from discordbot.cogs.feedback.github import (
 from discordbot.cogs.feedback.notice import (
     closing_comment,
     translate_comment,
+    closed_too_long_ago,
     build_close_notice_embed,
 )
 from discordbot.cogs.feedback.writeup import (
@@ -81,6 +82,7 @@ from discordbot.cogs.feedback.database import (
     count_user_tickets,
     attach_issue_number,
     count_relayed_reply,
+    forget_close_notice,
     mark_close_notified,
     record_close_observed,
     tickets_awaiting_issue,
@@ -726,26 +728,31 @@ class FeedbackCogs(commands.Cog):
         Nothing is announced here. The row this writes is what starts the wait that lets a
         closing comment written after the close still ride along.
 
-        A `duplicate` is finished with on the spot instead: that report has been merged into
-        another issue, its own outcome is not decided yet, and there is nothing to tell
-        anyone. Marking it is what keeps it from being rediscovered on every later pass.
+        Two kinds of close are finished with on the spot instead, both recorded so they are
+        not rediscovered on every later pass. A `duplicate` has been merged into another
+        issue, so its own outcome is not decided yet and there is nothing to tell anyone.
+        A close older than `BACKFILL_CUTOFF` is history: every report ever closed is in this
+        set on the first sweep after this ships, and mailing all of them at once would
+        announce months-old outcomes as news.
         """
         for ticket in await tickets_awaiting_close_check():
             snapshot = await self._read_snapshot(ticket=ticket)
             if snapshot is None or snapshot.state != "closed":
                 continue
             outcome = close_outcome(state_reason=snapshot.state_reason)
+            stale = closed_too_long_ago(closed_at=snapshot.closed_at)
             await record_close_observed(
                 ticket_id=ticket.ticket_id,
                 state_reason=snapshot.state_reason or "",
-                notified=outcome == "duplicate",
+                notified=outcome == "duplicate" or stale,
             )
             logfire.info(
                 "A report's issue was closed",
                 ticket_id=ticket.ticket_id,
                 issue_number=ticket.issue_number,
                 outcome=outcome,
-                announced=outcome != "duplicate",
+                closed_at=snapshot.closed_at,
+                announced=outcome != "duplicate" and not stale,
             )
 
     async def _deliver_close_notice(self, *, notice: PendingCloseNotice) -> None:
@@ -755,9 +762,31 @@ class FeedbackCogs(commands.Cog):
         whole thing. That is why a failed translation costs nothing: the alternative was
         sending the English to somebody who may not read it, and the report is not going
         anywhere.
+
+        The issue is read again rather than trusted from discovery, because the wait
+        between the two is long enough for the answer to change. Reopened, and the row goes
+        so a later close is discovered afresh; announcing a close that was taken back would
+        spend the one message the report gets, and would say the opposite of the panel
+        sitting beside it. Reclassified as a duplicate, and it is finished with unannounced,
+        exactly as discovery would have done.
         """
         ticket = notice.ticket
         if ticket.issue_number is None:
+            return
+        snapshot = await self._read_snapshot(ticket=ticket)
+        if snapshot is None:
+            return
+        if snapshot.state != "closed":
+            logfire.info(
+                "A closed report was reopened before its reporter was told",
+                ticket_id=ticket.ticket_id,
+                issue_number=ticket.issue_number,
+            )
+            await forget_close_notice(ticket_id=ticket.ticket_id)
+            return
+        outcome = close_outcome(state_reason=snapshot.state_reason)
+        if outcome == "duplicate":
+            await mark_close_notified(ticket_id=ticket.ticket_id)
             return
         try:
             comments = await self.issues.read_conversation(number=ticket.issue_number)
@@ -769,7 +798,7 @@ class FeedbackCogs(commands.Cog):
                 _exc_info=exc,
             )
             return
-        comment = closing_comment(comments=comments)
+        comment = closing_comment(comments=comments, closed_at=snapshot.closed_at)
         text = ""
         if comment is not None:
             translated = await translate_comment(
@@ -787,10 +816,7 @@ class FeedbackCogs(commands.Cog):
                 return
             text = translated
         embed = build_close_notice_embed(
-            ticket=ticket,
-            outcome=close_outcome(state_reason=notice.state_reason),
-            comment=comment,
-            text=text,
+            ticket=ticket, outcome=outcome, comment=comment, text=text
         )
         await self._dm_reporter(ticket=ticket, embed=embed)
         await mark_close_notified(ticket_id=ticket.ticket_id)
@@ -825,11 +851,14 @@ class FeedbackCogs(commands.Cog):
             ]
             if stalled:
                 # Every failure in here is a silent retry, so without this a notice nothing
-                # will ever manage to send would keep failing with nobody the wiser.
+                # will ever manage to send would keep failing with nobody the wiser. Named
+                # by the oldest rather than the first: the list is ordered by ticket id, and
+                # an old report can be the last one to be closed.
+                oldest = min(stalled, key=lambda notice: notice.observed_at)
                 logfire.error(
                     "Reports have been waiting to tell their reporter for far too long",
                     stalled=len(stalled),
-                    oldest_ticket_id=stalled[0].ticket.ticket_id,
+                    oldest_ticket_id=oldest.ticket.ticket_id,
                 )
             for notice in pending:
                 await self._deliver_close_notice(notice=notice)

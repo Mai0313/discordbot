@@ -22,7 +22,7 @@ from typing import Any, cast
 from datetime import datetime, timedelta
 
 from pydantic import Field, BaseModel
-from sqlalchemy import String, Integer, DateTime, CursorResult, func, event, select, update
+from sqlalchemy import String, Integer, DateTime, CursorResult, func, event, delete, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -122,8 +122,13 @@ class FeedbackCloseNoticeRow(Base):
     while a new table costs no migration at all.
 
     A row means the close has been seen. `notified_at` means the report is finished with
-    and is never looked at again, which is what makes one message per report a property
-    of the schema rather than of the code reading it.
+    and is never looked at again, which is what keeps a report from being announced twice
+    over.
+
+    It is at-least-once, not exactly-once, and deliberately so: the message is sent before
+    this row records that it was, so a process that dies in between sends a second copy on
+    the next pass. The other order trades that for losing the message outright, and a
+    duplicate the reporter can see beats a silence nobody can.
 
     Attributes:
         ticket_id: The report this is about; one notice per report, so it is the key.
@@ -495,6 +500,27 @@ async def mark_close_notified(*, ticket_id: int) -> None:
             statement=update(FeedbackCloseNoticeRow)
             .where(FeedbackCloseNoticeRow.ticket_id == ticket_id)
             .values(notified_at=_database_now())
+        )
+        await session.commit()
+
+
+async def forget_close_notice(*, ticket_id: int) -> None:
+    """Drops a recorded close, putting the report back to never having been closed.
+
+    For a report reopened during the wait between discovery and delivery. Marking it
+    finished would spend the one message it gets on a close that was taken back, so the row
+    goes instead and a later close is discovered from scratch.
+
+    Conditional on nothing having been sent yet, because that is the whole distinction:
+    once a message has gone out, a reopen must not hand the report a second one.
+    """
+    await _ensure_schema()
+    async with open_session() as session:
+        await session.execute(
+            statement=delete(FeedbackCloseNoticeRow).where(
+                FeedbackCloseNoticeRow.ticket_id == ticket_id,
+                FeedbackCloseNoticeRow.notified_at.is_(None),
+            )
         )
         await session.commit()
 

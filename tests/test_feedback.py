@@ -1565,7 +1565,14 @@ def _notice_cog(*, issues: FakeIssues, reporter: _FakeReporter | None) -> Feedba
     return cog
 
 
-async def _filed_report(*, issues: FakeIssues, state_reason: str | None = None) -> FeedbackTicket:
+def _closed_now() -> str:
+    """The close timestamp GitHub would report for an issue closed a moment ago."""
+    return datetime.now(tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def _filed_report(
+    *, issues: FakeIssues, state_reason: str | None = None, closed_at: str | None = None
+) -> FeedbackTicket:
     """Stores one report with an issue behind it, closed for the given reason."""
     ticket = await create_ticket(
         user_id=7,
@@ -1580,7 +1587,12 @@ async def _filed_report(*, issues: FakeIssues, state_reason: str | None = None) 
     await attach_issue_number(ticket_id=ticket.ticket_id, issue_number=460)
     if state_reason is not None:
         issues.snapshots[460] = IssueSnapshot(
-            number=460, title="t", state="closed", state_reason=state_reason, comment_count=1
+            number=460,
+            title="t",
+            state="closed",
+            state_reason=state_reason,
+            comment_count=1,
+            closed_at=closed_at or _closed_now(),
         )
     return ticket
 
@@ -1777,6 +1789,107 @@ async def test_an_unreadable_conversation_leaves_the_notice_for_the_next_pass(
 
     assert reporter.embeds == []
     assert len(await close_notices_awaiting_delivery(min_age_seconds=0)) == 1
+
+
+async def test_a_question_the_reporter_already_answered_is_not_the_verdict(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Being the developer's newest line does not make it the reason the report was closed.
+
+    The shape this guards is common: the developer asks something, the reporter answers
+    through the panel, and the report is closed later with nothing further said. Handing
+    that question over as the verdict is worse than saying there was no comment.
+    """
+    issues = FakeIssues()
+    issues.conversation = [
+        _maintainer_said(body="Can you try again after restarting your client?"),
+        IssueComment(
+            author="alice", body="還是不行", created_at="2026-08-21T09:30:00Z", from_reporter=True
+        ),
+    ]
+    reporter = _FakeReporter()
+    cog = _notice_cog(issues=issues, reporter=reporter)
+    await _filed_report(issues=issues, state_reason="not_planned")
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.CLOSE_NOTICE_MIN_AGE_SECONDS", 0)
+
+    await cog.notify_closed_reports()
+
+    assert len(reporter.embeds) == 1
+    assert "沒有另外留話" in str(reporter.embeds[0].description)
+    assert reporter.embeds[0].fields == []
+
+
+async def test_a_comment_from_long_before_the_close_is_not_the_verdict(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nobody spoke after it, but it still predates the close by months."""
+    issues = FakeIssues()
+    issues.conversation = [_maintainer_said(body="Taking a look.")]
+    reporter = _FakeReporter()
+    cog = _notice_cog(issues=issues, reporter=reporter)
+    # The comment helper stamps 2026-08-21; closing three months later makes it history.
+    await _filed_report(issues=issues, state_reason="completed", closed_at="2026-11-21T09:00:00Z")
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.CLOSE_NOTICE_MIN_AGE_SECONDS", 0)
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.translate_comment", _translates_verbatim)
+
+    await cog.notify_closed_reports()
+
+    assert len(reporter.embeds) == 1
+    assert reporter.embeds[0].fields == []
+
+
+async def test_reports_closed_long_ago_are_not_announced_on_the_first_sweep(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every report ever closed is in this set the first time the sweep runs."""
+    issues = FakeIssues()
+    issues.conversation = [_maintainer_said(body="Fixed.")]
+    reporter = _FakeReporter()
+    cog = _notice_cog(issues=issues, reporter=reporter)
+    await _filed_report(issues=issues, state_reason="completed", closed_at="2020-03-01T09:00:00Z")
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.CLOSE_NOTICE_MIN_AGE_SECONDS", 0)
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.translate_comment", _translates_verbatim)
+
+    await cog.notify_closed_reports()
+
+    assert reporter.embeds == []
+    # Marked rather than skipped, or it would be rediscovered on every later pass.
+    assert await close_notices_awaiting_delivery(min_age_seconds=0) == []
+    assert await tickets_awaiting_close_check() == []
+
+
+async def test_a_report_reopened_during_the_wait_is_not_announced(
+    feedback_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Announcing a close that was taken back would spend the one message it gets."""
+    issues = FakeIssues()
+    issues.conversation = [_maintainer_said(body="Fixed.")]
+    reporter = _FakeReporter()
+    cog = _notice_cog(issues=issues, reporter=reporter)
+    ticket = await _filed_report(issues=issues, state_reason="completed")
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.translate_comment", _translates_verbatim)
+
+    await cog.notify_closed_reports()
+    issues.snapshots[460] = IssueSnapshot(
+        number=460, title="t", state="open", state_reason="reopened", comment_count=1
+    )
+    monkeypatch.setattr("discordbot.cogs.feedback.cog.CLOSE_NOTICE_MIN_AGE_SECONDS", 0)
+    await cog.notify_closed_reports()
+
+    assert reporter.embeds == []
+    # Forgotten rather than marked, so closing it for real still reaches the reporter.
+    assert [row.ticket_id for row in await tickets_awaiting_close_check()] == [ticket.ticket_id]
+
+    issues.snapshots[460] = IssueSnapshot(
+        number=460,
+        title="t",
+        state="closed",
+        state_reason="completed",
+        comment_count=1,
+        closed_at=_closed_now(),
+    )
+    await cog.notify_closed_reports()
+    assert len(reporter.embeds) == 1
 
 
 async def test_the_close_sweep_waits_while_the_token_is_still_missing(
