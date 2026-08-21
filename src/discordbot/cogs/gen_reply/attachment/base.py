@@ -1,14 +1,15 @@
 """The attachment renderer strategy interface and its shared rendered-part type."""
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 from collections import OrderedDict
 
 from nextcord import Attachment, StickerItem
-from pydantic import BaseModel, ConfigDict, PrivateAttr, SkipValidation
+from pydantic import BaseModel, ConfigDict, PrivateAttr
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
+
+from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 
 # A rendered attachment content part. The Gemini answer model reads a Files-API handle
 # (input_file with a file URI); non-Gemini answer models cannot resolve that URI, so their
@@ -20,11 +21,18 @@ type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseI
 # history scrollback) is skipped for this long so it is not re-fetched and re-warned on every
 # reply; after the window it is retried once so a transient blip self-heals.
 DEAD_SOURCE_TTL = timedelta(minutes=30)
-# Bounds concurrent media fetch + Files-API upload work across all in-flight pipelines (the
-# input builder is a shared singleton). Above the typical per-message attachment count so a
-# single request stays fully parallel, while two concurrent pipelines cannot launch dozens of
-# simultaneous uploads and starve each other (the source of the worst observed render tail).
+# Bounds concurrent media fetch + Files-API upload work across all in-flight pipelines. Above
+# the typical per-message attachment count so a single request stays fully parallel, while two
+# concurrent pipelines cannot launch dozens of simultaneous uploads and starve each other (the
+# source of the worst observed render tail).
 MEDIA_CONCURRENCY = 8
+
+# Module-level rather than per renderer, because there is one renderer per Gemini key now and
+# a per-instance semaphore would multiply the cap by the key count — restoring exactly the
+# starvation the number above was measured against. Loop-local because a module-level
+# `asyncio.Semaphore` binds to the first loop that waits on it and every test runs a fresh one
+# (`utils/asyncio_locks.py` has the mechanism).
+media_semaphore = LoopLocalSemaphore(capacity_provider=lambda: MEDIA_CONCURRENCY)
 
 
 def loggable_cache_key(cache_key: int | str) -> int | str:
@@ -60,14 +68,6 @@ class AttachmentRenderer(BaseModel):
     # and the source retried once. Bounded at 128 entries. A stateless renderer (InlineRenderer)
     # inherits but never touches it.
     _dead_sources: OrderedDict[int | str, datetime] = PrivateAttr(default_factory=OrderedDict)
-    # Caps concurrent media fetch + upload work; see MEDIA_CONCURRENCY. A plain Semaphore is safe
-    # here only because a renderer never outlives one loop: it is reachable solely through one
-    # cog instance's `input_builder` cached_property, and there is one cog per process and a
-    # fresh one per test. It binds to the loop of the first call that WAITS on it, not the one it
-    # was built on, so anything shared more widely needs `utils/asyncio_locks.py` instead.
-    _media_semaphore: SkipValidation[asyncio.Semaphore] = PrivateAttr(
-        default_factory=lambda: asyncio.Semaphore(MEDIA_CONCURRENCY)
-    )
 
     async def render_image(
         self,

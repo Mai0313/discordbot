@@ -8,6 +8,7 @@ fixtures are the other half of that isolation, keeping a real deployment's `.env
 out of every test whether or not it asked for them.
 """
 
+import os
 from pathlib import Path
 from itertools import count
 from collections.abc import AsyncIterator
@@ -19,6 +20,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from discordbot.cogs.feedback.database import Base as FeedbackBase
 from discordbot.cogs.research.database import Base as ResearchBase
 from discordbot.services.economy.database import Base
+from discordbot.services.gemini_keys.balancer import reset_balancer_state
 
 
 @pytest.fixture
@@ -173,3 +175,50 @@ def feedback_env_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
         "FEEDBACK_SUBMIT_COOLDOWN_SECONDS",
     ):
         monkeypatch.delenv(name=name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leaves every test a single-key deployment whatever the checkout has configured.
+
+    Autouse for the reason `feedback_env_isolated` is, with one extra edge: `gemini_keys`
+    reads the numbered variables straight from the environment rather than through a field,
+    so `LLMConfig.model_validate` cannot shut them out the way it can a named credential.
+    On a machine with three keys configured, every balanced test would otherwise see three
+    whatever it asked for, and the key a reply leased would depend on the checkout.
+
+    `GEMINI_API_KEY` goes too, which makes the default deployment an unconfigured one. That
+    is what the reply tests are built for — they set the key explicitly when they are about a
+    Gemini-only path — and leaving it in place made a leased key depend on whether the
+    developer's `.env` happened to be visible, which in a git worktree is the parent
+    checkout's file.
+
+    The prefix match is wider than `gemini_keys`' own pattern on purpose: isolation should
+    not have to track which spellings that property happens to accept today.
+    """
+    monkeypatch.delenv(name="GEMINI_API_KEY", raising=False)
+    for name in [name for name in os.environ if name.startswith("GEMINI_API_KEY_")]:
+        monkeypatch.delenv(name=name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def gemini_key_balancer_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Points the key balancer's counts at a throwaway database and empties its window.
+
+    Autouse rather than opt-in, unlike the four `*_isolated_db` fixtures above: those engines
+    are reached only by tests that asked for the feature, while this one sits under every
+    reply, so a pipeline test that never mentions keys would still write the live
+    `data/database/llm_keys.db` (which in a worktree does not even have a directory to live
+    in). Resetting the in-memory window matters as much as the file, since the counts are the
+    authoritative side and would otherwise accumulate across the whole session.
+
+    `NullPool` so the engine holds no connection between operations: an autouse fixture
+    cannot dispose an async engine, and a pooled aiosqlite connection would outlive the test
+    that opened it.
+    """
+    keys_db_path = tmp_path / "llm_keys.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{keys_db_path}", poolclass=NullPool)
+    monkeypatch.setattr("discordbot.services.gemini_keys.database._engine", engine)
+    monkeypatch.setattr("discordbot.services.gemini_keys.database._schema_ready_for", None)
+    reset_balancer_state()
+    return keys_db_path

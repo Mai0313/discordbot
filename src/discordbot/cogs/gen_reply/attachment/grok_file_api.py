@@ -57,6 +57,7 @@ from discordbot.typings.timeouts import GROK_FILE_UPLOAD_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.attachment.base import (
     RenderedPart,
     AttachmentRenderer,
+    media_semaphore,
     loggable_cache_key,
 )
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
@@ -152,7 +153,7 @@ class GrokFileUploader(AttachmentRenderer):
         """Returns an uploaded xAI file id and its expiry."""
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
-        async with self._media_semaphore:
+        async with media_semaphore.get():
             try:
                 data, content_type = await load_data()
             except Exception as exc:

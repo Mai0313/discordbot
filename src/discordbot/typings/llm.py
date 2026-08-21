@@ -1,8 +1,40 @@
+import os
+import re
+
 import dotenv
-from pydantic import Field, AliasChoices
+from pydantic import Field, BaseModel, AliasChoices
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 dotenv.load_dotenv()
+
+# The keys past the first are numbered rather than named, because the count is open-ended:
+# a deployment adds a key by adding `GEMINI_API_KEY_4` here and its `-key4` deployments to
+# the proxy, with no code change. That open end is why `LLMConfig.gemini_keys` is a property
+# reading the environment rather than a field with a `validation_alias` per key.
+_NUMBERED_GEMINI_KEY_RE = re.compile(r"^GEMINI_API_KEY_(\d+)$")
+
+
+class GeminiKeySlot(BaseModel):
+    """One configured Gemini API key, identified by the number the deployment gave it.
+
+    The number is the whole point of this type. It ties three things that have to agree
+    across the deployment: the `GEMINI_API_KEY` / `GEMINI_API_KEY_<n>` environment variable
+    the key came from, the `-key<n>` LiteLLM deployment that holds the same credential, and
+    the Google project whose Files API will accept a file uploaded with this key. A reply
+    that mixes two of them fails outright rather than degrading, so the index travels with
+    the key instead of being recomputed from a list position.
+
+    Attributes:
+        index: 1-based key number, matching both the env var suffix and the `-key<n>` alias.
+        api_key: The Google AI Studio key itself.
+    """
+
+    index: int = Field(
+        ...,
+        description="1-based key number, matching the env var suffix and the `-key<n>` alias.",
+        examples=[1, 2, 3],
+    )
+    api_key: str = Field(..., description="The Google AI Studio key itself.", examples=["AIza..."])
 
 
 class LLMConfig(BaseSettings):
@@ -12,7 +44,9 @@ class LLMConfig(BaseSettings):
         base_url: The base URL for the OpenAI API or compatible endpoint.
         api_key: The API key for authentication.
         gemini_api_key: The Google AI Studio key used to upload attachments to
-            the Gemini Files API directly, so uploads can be polled to ACTIVE.
+            the Gemini Files API directly, so uploads can be polled to ACTIVE. Also key 1
+            of the balanced set; see `gemini_keys` for the rest and for what the numbering
+            is tied to.
         anthropic_api_key: The Anthropic key used to upload attachments to the
             Anthropic Files API directly (the side-channel for Claude answer models).
         xai_api_key: The xAI key used to upload attachments to the xAI Files API
@@ -139,6 +173,41 @@ class LLMConfig(BaseSettings):
     )
 
     @property
+    def gemini_keys(self) -> list[GeminiKeySlot]:
+        """Every configured Gemini key, ordered by its number.
+
+        Key 1 is `gemini_api_key` itself, taken off the field rather than the environment so
+        a test that overrides the field is honoured. The rest come from `GEMINI_API_KEY_<n>`
+        read straight from the environment, which is the only place an open-ended count can
+        come from; `_1` is deliberately not one of them, since key 1 is the unsuffixed
+        variable and a second spelling of the same number could only disagree with it.
+
+        A blank value is dropped instead of occupying its number, so emptying a variable
+        retires that key without renumbering the ones after it (the numbers are shared with
+        the proxy's `-key<n>` deployments, so they must not shift). An unconfigured
+        deployment gets an empty list.
+
+        Returns:
+            The configured keys in number order, blanks removed.
+        """
+        slots: list[GeminiKeySlot] = []
+        if self.gemini_api_key.strip():
+            slots.append(GeminiKeySlot(index=1, api_key=self.gemini_api_key.strip()))
+        numbered: list[tuple[int, str]] = []
+        for name, value in os.environ.items():
+            matched = _NUMBERED_GEMINI_KEY_RE.match(string=name)
+            if matched is None or not value.strip():
+                continue
+            number = int(matched.group(1))
+            if number < 2:
+                continue
+            numbered.append((number, value.strip()))
+        slots.extend(
+            GeminiKeySlot(index=number, api_key=value) for number, value in sorted(numbered)
+        )
+        return slots
+
+    @property
     def deep_research_available(self) -> bool:
         """Whether deep research can actually run: enabled AND a direct Gemini key is configured.
 
@@ -170,4 +239,4 @@ class LLMConfig(BaseSettings):
         return self.inline_video_enabled and bool(self.gemini_api_key.strip())
 
 
-__all__ = ["LLMConfig"]
+__all__ = ["GeminiKeySlot", "LLMConfig"]

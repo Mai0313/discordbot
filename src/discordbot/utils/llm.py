@@ -66,7 +66,7 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     try:
         async with asyncio.timeout(delay=timeout_seconds):
             responses = await client.responses.parse(
-                model=model.name,
+                model=model.deployment_name,
                 instructions=instructions,
                 input=cast(
                     "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]
@@ -134,7 +134,7 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
     try:
         async with asyncio.timeout(delay=timeout_seconds):
             responses = await client.responses.create(
-                model=model.name,
+                model=model.deployment_name,
                 instructions=instructions,
                 input=cast(
                     "ResponseInputParam", [EasyInputMessageParam(role="user", content=user_text)]

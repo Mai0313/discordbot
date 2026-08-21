@@ -37,7 +37,7 @@ from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 FILES_API_MAX_BYTES = 2 * 1024**3
 
 # Caps concurrent link-media uploads across all in-flight pipelines. Deliberately NOT the
-# attachment renderer's `_media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can hold its
+# attachment renderers' shared `media_semaphore` (`MEDIA_CONCURRENCY`): a linked video can hold its
 # slot for minutes, which would starve the ordinary per-message attachment renders that share
 # that pool. Small on purpose — these uploads are large and few.
 LINK_MEDIA_UPLOAD_CONCURRENCY = 2

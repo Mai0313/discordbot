@@ -33,9 +33,9 @@ from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 _REFUSED_EFFORTS = frozenset({"none", "disable"})
 
 
-def _catalog_models() -> dict[str, ModelSettings]:
+def _catalog_models(catalog: RuntimeModelCatalog | None = None) -> dict[str, ModelSettings]:
     """Every ModelSettings the catalog exposes, keyed by its property name."""
-    catalog = RuntimeModelCatalog()
+    catalog = catalog if catalog is not None else RuntimeModelCatalog()
     names = [
         name
         for name in dir(type(catalog))
@@ -142,3 +142,31 @@ def test_the_catalog_exposes_the_tiers_under_test() -> None:
     """Guards the sweep itself: a catalog that stopped exposing tiers would pass vacuously."""
     models = _catalog_models()
     assert {"triage_model", "fast_model", "slow_model"} <= set(models)
+
+
+def test_a_pinned_catalog_pins_every_tier_it_exposes() -> None:
+    """A leased key reaches every tier, so nothing in a reply escapes onto another key.
+
+    Swept rather than spot-checked for the reason the alias guard is: a tier added later
+    that forgets to pass the index would dispatch on the unsuffixed pooled name, which the
+    proxy answers from whichever key it likes. That reply's uploaded files are then on one
+    Google project and the request naming them on another, which fails outright.
+    """
+    unpinned = {
+        name: settings.deployment_name
+        for name, settings in _catalog_models(catalog=RuntimeModelCatalog(key_index=2)).items()
+        if settings.key_index != 2
+    }
+    assert unpinned == {}, f"Every tier carries the catalog's key. Offenders: {unpinned}"
+
+
+def test_an_unpinned_catalog_dispatches_the_bare_name() -> None:
+    """The default catalog is unchanged by the pin, which is what keeps deep research and
+    the offline scripts on the plain deployment they have always used.
+    """
+    suffixed = {
+        name: settings.deployment_name
+        for name, settings in _catalog_models().items()
+        if settings.deployment_name != settings.name
+    }
+    assert suffixed == {}, f"An unpinned catalog names no deployment. Offenders: {suffixed}"

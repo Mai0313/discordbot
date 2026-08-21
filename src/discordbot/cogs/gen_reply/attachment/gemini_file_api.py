@@ -22,11 +22,11 @@ from pydantic import Field, BaseModel, PrivateAttr
 from google.genai.types import FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.typings.llm import LLMConfig
 from discordbot.typings.timeouts import ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.attachment.base import (
     RenderedPart,
     AttachmentRenderer,
+    media_semaphore,
     loggable_cache_key,
 )
 from discordbot.cogs.gen_reply.attachment.loaders import (
@@ -70,15 +70,19 @@ class PendingUpload(BaseModel):
 class GeminiFileUploader(AttachmentRenderer):
     """Uploads attachments to the Gemini Files API and references them by URI.
 
+    One uploader per Gemini key, because a file is readable only by the project that
+    uploaded it: the `_pending_uploads` re-poll cache below, and the render cache in
+    `input.py` above, both hand back a uri that is worthless to any other key. Sharing one
+    uploader across keys would therefore hand a key-1 uri to a key-2 request, which fails the
+    whole answer rather than dropping the attachment.
+
     Attributes:
-        config: Runtime LLM config supplying the Gemini Files API key for the lazily
-            built upload client.
+        api_key: The Gemini key this uploader uploads with. Required rather than defaulted,
+            so a caller that forgot to say which key fails at construction instead of
+            silently uploading to the first one while the answer dispatches on another.
     """
 
-    config: LLMConfig = Field(
-        default_factory=LLMConfig,
-        description="Runtime LLM config supplying the Gemini Files API key for the upload client.",
-    )
+    api_key: str = Field(..., description="The Gemini key this uploader uploads with.")
     # Uploads that timed out while still PROCESSING, keyed by attachment source cache_key
     # (attachment/sticker id or embed url). The next reference to that source re-polls the
     # same file (usually ACTIVE by then) instead of re-uploading. Kept until the file's
@@ -94,14 +98,14 @@ class GeminiFileUploader(AttachmentRenderer):
         The client uploads attachments directly (not through the LiteLLM proxy) so each
         upload can be polled to an ACTIVE `state` before it is referenced. Built here, not
         at the cog: this uploader is only constructed on the Gemini answer-model path, so a
-        non-Gemini deployment never builds it. An empty `GEMINI_API_KEY` raises here, and
+        non-Gemini deployment never builds it. An empty key raises here, and
         because construction is lazy that surfaces at the upload call, where `_upload_file`
         catches it and drops the attachment while the text reply still goes out.
 
         Returns:
             A Gemini client reused across uploads.
         """
-        return genai.Client(api_key=self.config.gemini_api_key)
+        return genai.Client(api_key=self.api_key)
 
     async def render_image(
         self,
@@ -230,7 +234,7 @@ class GeminiFileUploader(AttachmentRenderer):
         # attachment type, so concurrent pipelines cannot launch dozens of CDN downloads or
         # uploads at once and buffer all their bytes while waiting for an upload slot.
         wait_started = time.monotonic()
-        async with self._media_semaphore:
+        async with media_semaphore.get():
             logfire.debug(
                 "gemini media slot acquired",
                 cache_key=loggable_cache_key(cache_key=cache_key),

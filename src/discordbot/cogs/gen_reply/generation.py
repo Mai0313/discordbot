@@ -231,7 +231,7 @@ class ImageGenerator(BaseModel):
                 result = await self.client.images.edit(
                     image=image_bytes_list,
                     prompt=prompt or "請依照附件內容進行編輯或優化。",
-                    model=self.image_model.name,
+                    model=self.image_model.deployment_name,
                     n=1,
                     response_format="b64_json",
                     quality="auto",
@@ -241,7 +241,7 @@ class ImageGenerator(BaseModel):
             else:
                 result = await self.client.images.generate(
                     prompt=prompt,
-                    model=self.image_model.name,
+                    model=self.image_model.deployment_name,
                     n=1,
                     response_format="b64_json",
                     quality="auto",
@@ -370,7 +370,7 @@ class PromptGenerator(BaseModel):
             async with asyncio.timeout(delay=PROMPT_REFINE_TIMEOUT_SECONDS):
                 with logfire.span("gen_reply prompt refine", model=self.prompt_model.name):
                     responses = await self.client.responses.create(
-                        model=self.prompt_model.name,
+                        model=self.prompt_model.deployment_name,
                         instructions=instructions,
                         input=cast("ResponseInputParam", director_input),
                         reasoning=self.prompt_model.reasoning,
@@ -416,7 +416,12 @@ class VoiceGenerator(BaseModel):
     client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Shared LiteLLM-proxy client used for the audio.speech call."
     )
-    model_name: str = Field(..., description="TTS model string dispatched on the proxy.")
+    # Already the key-pinned deployment name, resolved by the caller. This generator holds a
+    # bare string rather than a `ModelSettings` (TTS dispatches no effort and offers no tools),
+    # so the pin cannot be applied here and the caller owes it.
+    model_name: str = Field(
+        ..., description="TTS deployment string dispatched on the proxy, key pin included."
+    )
     voice: str = Field(
         default=TTS_VOICE, description="Fixed voice timbre name for spoken replies."
     )
