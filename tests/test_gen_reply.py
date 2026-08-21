@@ -3895,6 +3895,36 @@ def test_history_media_budget_exempts_the_newest_post_that_carries_attachments()
     assert over == {}
 
 
+async def test_render_history_survives_a_message_the_collector_chokes_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected message shape costs that message its files, never the whole reply.
+
+    The budget walk runs inside `_prepare_reply_context`'s gather, which has no except of its
+    own, so anything raised here would reach `on_message`'s generic error path and lose the
+    answer. Both renders already swallow this same collect step for exactly that reason.
+    """
+    cog = _cog()
+    posts = [_image_post(index=i, count=2) for i in range(2)]
+    # Patched on the class: `MessageInputBuilder` is a pydantic model, so an instance rejects a
+    # setattr of anything that is not one of its fields.
+    collect = MessageInputBuilder.collect_attachment_sources
+
+    def explode(self: MessageInputBuilder, message: Message) -> object:
+        if message.id == posts[0].id:
+            raise RuntimeError("unexpected nextcord shape")
+        return collect(self, message=message)
+
+    monkeypatch.setattr(MessageInputBuilder, "collect_attachment_sources", explode)
+
+    rendered = await cog._render_history(
+        [as_message(fake=m) for m in posts], text_only=False, message_id=1
+    )
+
+    # Header plus both messages: the broken one degrades to empty text, the other is untouched.
+    assert len(rendered) == 3
+
+
 async def test_render_history_degrades_over_budget_attachments_to_markers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -166,12 +166,19 @@ MEMORY_CONTEXT_TARGET_USERS = 8
 # Recorded as a reply's route when the pipeline failed before the router returned one.
 UNROUTED_REPLY = "unrouted"
 
-# How much channel history one answer reads, bounded on two axes because either alone is the
-# wrong shape. Discord conversation here is overwhelmingly one-line messages — measured across
-# 10M logged messages, the median is 6 characters and the busiest channel's last 200 come to
-# 1.5k — so a message count alone lets a chatty channel hand the model almost nothing while a
-# channel of long posts blows the input up. Whichever bound binds first wins.
+# How much channel history one answer reads, bounded on three axes (the third is
+# `MAX_HISTORY_MEDIA_PARTS` below) because no one of them is the right shape alone. Discord
+# conversation here is overwhelmingly one-line messages — measured across 10M logged messages,
+# the median is 6 characters and the busiest channel's last 200 come to 1.5k — so a message
+# count alone lets a chatty channel hand the model almost nothing while a channel of long posts
+# blows the input up. Whichever bound binds first wins, and in practice that has only ever been
+# the char budget: it alone held history to 107-119 messages at 8000, so the message limit is a
+# backstop rather than the working bound.
 HISTORY_MESSAGE_LIMIT = 500
+# Doubled from 8000 once the media cap landed. Text was never the expensive half — the whole
+# budget is worth ~4k input tokens against 1.3k to 1.9k for a single attachment — so what made
+# widening it unsafe was that more messages meant proportionally more files, which the cap now
+# decouples.
 HISTORY_CHAR_BUDGET = 16000
 
 # What a history message costs beyond its own text: the rendered form carries an author header,
@@ -288,13 +295,26 @@ def _history_media_over_budget(
     never going to be sent.
 
     The newest message carrying attachments is exempt, so a single post of many images is
-    never reduced to nothing but markers while the budget sits unspent. Discord caps a message
-    at 10 attachments, which bounds what that exemption can add.
+    never reduced to nothing but markers while the budget sits unspent. That makes the cap a
+    soft one on exactly that message: a source is not only an upload, it is also every sticker
+    and every embed image and thumbnail, snapshots included, so one post of ten files carrying
+    a few unfurled link cards can exempt well past `MAX_HISTORY_MEDIA_PARTS`. Everything older
+    than it is still bounded.
     """
     over: dict[int, int] = {}
     spent = 0
     for candidate in reversed(hist_messages):
-        count = len(builder.collect_attachment_sources(message=candidate))
+        try:
+            count = len(builder.collect_attachment_sources(message=candidate))
+        except Exception:  # noqa: S112
+            # Broad for the same reason `process_single_message` is, and load-bearing here for a
+            # different one: this runs inside `_prepare_reply_context`'s gather, which has no
+            # except of its own, so an unexpected nextcord shape would take the whole reply out
+            # through the generic error path rather than costing one message its attachments.
+            # Silent against S112 on purpose: the message is left out of the refusal set, so its
+            # own render re-collects a moment later, fails the same way, and that handler logs it
+            # with the message id and the traceback. Logging here would double every such failure.
+            continue
         if not count:
             continue
         if over or (spent and spent + count > MAX_HISTORY_MEDIA_PARTS):
