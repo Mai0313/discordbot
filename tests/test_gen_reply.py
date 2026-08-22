@@ -3341,11 +3341,11 @@ def _paced_stream_events(
 def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Makes the answer retry sleepless.
 
-    Both halves are needed: `wait_exponential_jitter` adds `random.uniform(0, jitter)` on top
-    of the base, independent of it, so zeroing the base alone still sleeps up to a second per
-    attempt and the test only looks instant.
+    Both halves are needed: the jitter is a `wait_random` added on top of the fixed interval,
+    independent of it, so zeroing the interval alone still sleeps up to a second per attempt
+    and the test only looks instant.
     """
-    monkeypatch.setattr(streaming_module, "ANSWER_RETRY_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(streaming_module, "ANSWER_RETRY_INTERVAL_SECONDS", 0.0)
     monkeypatch.setattr(streaming_module, "ANSWER_RETRY_JITTER_SECONDS", 0.0)
 
 

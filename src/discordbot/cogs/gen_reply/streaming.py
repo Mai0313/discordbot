@@ -11,7 +11,7 @@ import logfire
 from nextcord import File, Embed, Message, NotFound, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
-from tenacity.wait import wait_exponential_jitter
+from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
 from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
@@ -62,17 +62,16 @@ CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 DISCORD_MESSAGE_LIMIT = 2000
 
 # Spacing between answer-stream attempts. A cadence rather than a bound, which is why it stays
-# here while `ANSWER_STREAM_MAX_ATTEMPTS` lives in `typings/timeouts.py`. Short on purpose: the
-# user spends it watching a thinking preview that has already stalled once, so it only has to
-# outlast a burst. The jitter is spelled rather than left to tenacity's default because it is
-# the half that stops a busy channel's replies retrying in lockstep, and because it is ADDITIVE
-# and independent of the base -- a test zeroing the base alone still sleeps.
-ANSWER_RETRY_BACKOFF_SECONDS = 2.0
+# here while `ANSWER_STREAM_MAX_ATTEMPTS` lives in `typings/timeouts.py`. Flat rather than
+# doubling, and wide enough that the wait is the point: a provider 5xx burst is what this retry
+# exists for, and re-opening the stream a second or two after one started reaches the same
+# unhealthy deployment, so the attempts are spent rather than spaced. Every attempt costs the
+# same, so the worst case for one reply is (`ANSWER_STREAM_MAX_ATTEMPTS` - 1) of these. The
+# jitter is spelled rather than left to tenacity's default because it is the half that stops a
+# busy channel's replies retrying in lockstep, and because it is ADDITIVE and independent of the
+# interval -- a test zeroing the interval alone still sleeps.
+ANSWER_RETRY_INTERVAL_SECONDS = 5.0
 ANSWER_RETRY_JITTER_SECONDS = 1.0
-# Ceiling on one wait. At three attempts it never binds (the waits are ~2s then ~4s); it is
-# here so that raising the attempt count cannot silently turn the doubling into a 30s stall in
-# front of a user who is already waiting.
-ANSWER_RETRY_BACKOFF_MAX_SECONDS = 10.0
 
 # Shown on both retry surfaces, so the reaction on the source message and the notice on the
 # reply read as the same event rather than two unrelated hints.
@@ -1191,11 +1190,8 @@ async def stream_answer_with_retry(
 
     retrying = AsyncRetrying(
         retry=retry_if_exception(is_retryable_llm_error),
-        wait=wait_exponential_jitter(
-            initial=ANSWER_RETRY_BACKOFF_SECONDS,
-            max=ANSWER_RETRY_BACKOFF_MAX_SECONDS,
-            jitter=ANSWER_RETRY_JITTER_SECONDS,
-        ),
+        wait=wait_fixed(wait=ANSWER_RETRY_INTERVAL_SECONDS)
+        + wait_random(min=0, max=ANSWER_RETRY_JITTER_SECONDS),
         stop=stop_after_attempt(ANSWER_STREAM_MAX_ATTEMPTS),
         before_sleep=_before_retry,
         reraise=True,
