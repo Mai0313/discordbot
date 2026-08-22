@@ -1034,7 +1034,11 @@ type AnswerStreamFactory = Callable[[], Awaitable[AsyncIterator[ResponseStreamEv
 
 
 async def stream_answer_with_retry(
-    *, streamer: ResponseStreamer, open_stream: AnswerStreamFactory, message_id: int
+    *,
+    streamer: ResponseStreamer,
+    open_stream: AnswerStreamFactory,
+    message_id: int,
+    announce: bool = True,
 ) -> str:
     """Streams one answer turn, re-opening the stream on a transient upstream failure.
 
@@ -1060,6 +1064,12 @@ async def stream_answer_with_retry(
             to the same Discord message.
         open_stream: Issues the request and returns its event stream.
         message_id: The turn's triggering message, so a retry is greppable with the rest of it.
+        announce: Whether a retry is shown to the user. Off for a media persona reply, whose
+            streamer renders onto the DELIVERED media message: its caption is not a status
+            surface, so a notice there would caption a finished image with a promise of more
+            to come, and on the failing path nothing would ever take it back. That route is
+            also silent to the user by design -- the deliverable already landed and nobody is
+            waiting on the words about it.
 
     Returns:
         The finished reply text.
@@ -1072,7 +1082,8 @@ async def stream_answer_with_retry(
     async def _before_retry(retry_state: RetryCallState) -> None:
         failure = retry_state.outcome.exception() if retry_state.outcome else None
         streamer.reset_for_retry()
-        await streamer.announce_retry()
+        if announce:
+            await streamer.announce_retry()
         logfire.warn(
             "gen_reply answer stream retry",
             message_id=message_id,

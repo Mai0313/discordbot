@@ -4740,6 +4740,40 @@ async def test_handle_image_reply_injects_only_user_memory() -> None:
     assert "SERVER_MEM_MARKER" not in contents
 
 
+async def test_handle_image_reply_retries_the_persona_stream_without_captioning_the_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The persona streamer renders onto the DELIVERED image, which is not a status surface.
+
+    A retry notice there captions a finished image with a promise of more to come, and on the
+    path where every attempt is spent the failure is swallowed, so nothing would ever take it
+    back. This route is silent to the user by design; only the retry itself belongs to it.
+    """
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1))
+    _recorded(cog).responses.stream_queue = [
+        _mid_stream_unavailable(),
+        list(_default_turn_events()),
+    ]
+
+    await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
+        message=as_message(fake=message),
+        user_prompt="draw a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # The retry happened (two streaming dispatches) and the persona reply still landed.
+    assert _recorded(cog).responses.create_streams.count(True) == 2
+    delivered = message.replies[0]
+    assert (delivered.content or "").startswith("done")
+    # But nothing announced it: not on the image, and not on the user's message.
+    written = [delivered.content or "", *delivered.edits]
+    assert all(streaming_module.RETRY_HINT_EMOJI not in text for text in written)
+    assert streaming_module.RETRY_HINT_EMOJI not in message.added_reactions
+
+
 async def test_handle_image_reply_best_effort_when_reply_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

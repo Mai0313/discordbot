@@ -219,13 +219,14 @@ async def adapt_interactions_stream(
                 ),
             )
         elif event.event_type == "error":
-            # Typed rather than a bare RuntimeError, for two readers downstream: the answer
-            # retry can only classify an SDK error, and `extract_friendly_error` shows the
-            # user the provider's own message instead of this event's repr. `Error.code` is an
-            # optional STRING whose vocabulary Google does not document, so it is forwarded as
-            # a status only when it is a decimal one; anything else lands unclassifiable and
-            # is not retried, which is the same conservative default the predicate applies to
-            # every other unreadable failure.
+            # Typed rather than a bare RuntimeError so `extract_friendly_error` can show the
+            # user what the provider actually said instead of this event's repr. What it does
+            # NOT buy is a retry: the SDK documents `Error.code` as "A URI that identifies the
+            # error type", not a status, so an in-band failure here carries no HTTP status at
+            # all and `is_retryable_llm_error` leaves it alone. Passing a decimal one through
+            # is a hedge against the payload diverging from that doc, not a path anything has
+            # been seen to take -- on this backend only a failure `interactions.create` itself
+            # raises as a typed genai error is actually retried today.
             failure = event.error
             code = failure.code if failure is not None else None
             raise APIError(

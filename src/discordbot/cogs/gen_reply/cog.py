@@ -1258,7 +1258,12 @@ class ReplyGeneratorCogs(commands.Cog):
                     )
 
                 await stream_answer_with_retry(
-                    streamer=streamer, open_stream=open_stream, message_id=message.id
+                    streamer=streamer,
+                    open_stream=open_stream,
+                    message_id=message.id,
+                    # The streamer renders onto the delivered media message itself, so a retry
+                    # notice would caption a finished image with a promise of more to come.
+                    announce=False,
                 )
         except Exception as exc:
             logfire.warn(

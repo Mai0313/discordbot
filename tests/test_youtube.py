@@ -222,9 +222,9 @@ async def test_adapt_interactions_stream_raises_a_classifiable_error_event() -> 
     assert extract_friendly_error(exc=transient) == "high demand"
     assert is_retryable_llm_error(exc=transient) is True
 
-    # `Error.code` is an optional string whose vocabulary Google does not document, so only a
-    # decimal one is forwarded as a status; anything else stays unclassifiable and is not
-    # retried rather than guessed at.
+    # What the SDK actually documents that field as is a URI identifying the error type, so
+    # this is the shape a real in-band failure takes: unclassifiable, and left alone rather
+    # than guessed at. The decimal case above is a hedge, not an observed path.
     opaque = await _raise_from_error_event(
         error=SimpleNamespace(code="UNAVAILABLE", message="high demand")
     )
