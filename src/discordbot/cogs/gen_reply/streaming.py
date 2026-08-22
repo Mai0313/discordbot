@@ -523,12 +523,29 @@ class ResponseStreamer(BaseModel):
         await update_reaction(message=self.message, bot_user=None, emoji=RETRY_HINT_EMOJI)
         if self.reply is None:
             return
-        notice = (
-            f"-# {RETRY_HINT_EMOJI} Retrying... ({self.attempts}/{ANSWER_STREAM_MAX_ATTEMPTS})"
-        )
+        notice = self._retry_notice()
         with contextlib.suppress(HTTPException):
             await self.reply.edit(content=notice)
             self.displayed_content = notice
+
+    def _retry_notice(self) -> str:
+        """The text a reply carries while the next attempt is in flight."""
+        return f"-# {RETRY_HINT_EMOJI} Retrying... ({self.attempts}/{ANSWER_STREAM_MAX_ATTEMPTS})"
+
+    async def withdraw_retry_notice(self) -> None:
+        """Removes a reply left showing nothing but the notice, once the attempts are spent.
+
+        The notice promises another attempt, so with none left it has to go: otherwise the turn
+        ends with one message saying work is still in flight sitting beside the error the
+        pipeline posts to say it is not. Only a message whose WHOLE content is still the notice
+        is removed -- once the last attempt put real text on screen, that text is the better
+        residue and the error is what says it is incomplete.
+        """
+        if self.reply is None or self.displayed_content != self._retry_notice():
+            return
+        with contextlib.suppress(HTTPException):
+            await self.reply.delete()
+        self.reply = None
 
     async def _consume(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> None:
         """Streams the reply, accumulating text and usage onto the instance.
@@ -1107,4 +1124,9 @@ async def stream_answer_with_retry(
         before_sleep=_before_retry,
         reraise=True,
     )
-    return await retrying(_attempt)
+    try:
+        return await retrying(_attempt)
+    except Exception:
+        if announce:
+            await streamer.withdraw_retry_notice()
+        raise

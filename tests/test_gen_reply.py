@@ -3301,13 +3301,19 @@ def _mid_stream_unavailable() -> APIError:
 
 
 def _stream_events_then_raise(
-    events: list[SimpleNamespace], error: Exception
+    events: list[SimpleNamespace], error: Exception, pause: float = 0.0
 ) -> AsyncIterator[ResponseStreamEvent]:
-    """Yields the given events and then dies, as a stream carrying an SSE error frame does."""
+    """Yields the given events and then dies, as a stream carrying an SSE error frame does.
+
+    `pause` holds the stream open before the raise, which is the only way to let the preview
+    editor get a tick in on an attempt that then fails.
+    """
 
     async def _iter() -> AsyncIterator[SimpleNamespace]:
         for event in events:
             yield event
+        if pause:
+            await asyncio.sleep(pause)
         raise error
 
     return cast("AsyncIterator[ResponseStreamEvent]", _iter())
@@ -3463,6 +3469,61 @@ async def test_a_retry_tells_the_user_it_is_retrying(
     assert reply.edits[0] == f"-# {streaming_module.RETRY_HINT_EMOJI} Retrying... (2/3)"
     # And the notice is transient: the finished answer takes the message back.
     assert (reply.content or "").startswith("done")
+
+
+async def test_a_spent_retry_takes_its_own_notice_back(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
+    """`Retrying...` promises another attempt; with none left it must not outlive the turn.
+
+    Otherwise the turn ends with one message saying work is in flight beside the error embed
+    saying it is not.
+    """
+    del economy_isolated_db
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    message = FakeMessage()
+    reply = FakeReply()
+    streamer = ResponseStreamer(message=message, reply=cast("Message", reply))
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
+
+    with pytest.raises(APIError):
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert reply.deleted is True
+    assert streamer.reply is None
+
+
+async def test_a_spent_retry_keeps_text_the_last_attempt_managed_to_stream(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
+    """Only a message that is still nothing but the notice goes; real text is the better residue."""
+    del economy_isolated_db
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    message = FakeMessage()
+    reply = FakeReply()
+    streamer = ResponseStreamer(
+        message=message, reply=cast("Message", reply), preview_interval_seconds=0.01
+    )
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        # Paints text, gives the editor a tick, then dies -- on every attempt.
+        return _stream_events_then_raise(
+            events=[_text_event(delta="partial answer")],
+            error=_mid_stream_unavailable(),
+            pause=0.05,
+        )
+
+    with pytest.raises(APIError):
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert reply.deleted is False
+    assert "partial answer" in (reply.edits[-1] if reply.edits else "")
 
 
 async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
