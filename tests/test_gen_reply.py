@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 from PIL import Image
 import httpx
-from openai import APITimeoutError, BadRequestError
+from openai import APIError, APITimeoutError, BadRequestError, APIConnectionError
 import pytest
 import nextcord
 from nextcord import File, Embed, Message
@@ -29,6 +29,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig, GeminiKeySlot
+from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
 from discordbot.typings.models import (
     EffortGrade,
@@ -39,7 +40,12 @@ from discordbot.typings.models import (
 from discordbot.services.memory import database as memory_db
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
-from discordbot.utils.llm_errors import extract_friendly_error
+from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
+from discordbot.utils.llm_errors import (
+    llm_status_code,
+    extract_friendly_error,
+    is_retryable_llm_error,
+)
 from discordbot.cogs.gen_reply.cog import (
     UNROUTED_REPLY,
     HISTORY_CHAR_BUDGET,
@@ -86,6 +92,7 @@ from discordbot.cogs.gen_reply.streaming import (
     REASONING_PREVIEW_MAX_CHARS,
     REASONING_PREVIEW_MAX_LINES,
     ResponseStreamer,
+    stream_answer_with_retry,
 )
 from discordbot.cogs.gen_reply.generation import (
     VOICE_TIMEOUT_SECONDS,
@@ -428,8 +435,10 @@ class FakeResponses:
         # own parsed output by the requested text_format.
         self.output_parsed: RouteClassification | None = RouteClassification(decision="QA")
         self.effort_parsed: EffortGrade | None = EffortGrade(effort="high")
-        # Each entry is the event list for one streaming create(); popped in order.
-        self.stream_queue: list[list[SimpleNamespace]] = []
+        # Each entry is the event list for one streaming create(), popped in order. An entry
+        # may instead be an Exception, which makes that stream raise instead of yielding, as a
+        # provider error frame does -- the only way to drive the answer turn's retry end to end.
+        self.stream_queue: list[list[SimpleNamespace] | Exception] = []
         # Each entry is the `.output` item list for one non-streaming (memory selection)
         # create(); popped in order.
         self.select_queue: list[list[SimpleNamespace]] = []
@@ -462,6 +471,8 @@ class FakeResponses:
             events = (
                 self.stream_queue.pop(0) if self.stream_queue else list(_default_turn_events())
             )
+            if isinstance(events, Exception):
+                return _stream_events_then_raise(events=[], error=events)
             return _stream_events_from(events=events)
         output = self.select_queue.pop(0) if self.select_queue else []
         if self.refine_output_text is not None:
@@ -3230,6 +3241,277 @@ def test_extract_friendly_error_reads_a_decoded_400_body() -> None:
     assert extract_friendly_error(exc=wrapped) == "quota"
 
 
+def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() -> None:
+    """A transient upstream failure is retried; a refusal and an unreadable one are not."""
+    request = httpx.Request(method="POST", url="http://proxy/v1/responses")
+
+    # The shape this exists for. LiteLLM reports a mid-stream provider failure as an SSE error
+    # frame holding `ProxyException.to_dict()`, whose `code` is a decimal STRING, and openai's
+    # streaming layer re-raises it as a bare APIError carrying that frame as its body. Nothing
+    # here is typed, so a check reading `.status_code` alone sees no status at all.
+    frame = {
+        "message": "litellm.MidStreamFallbackError: litellm.ServiceUnavailableError: ...",
+        "type": "None",
+        "param": "None",
+        "code": "503",
+    }
+    mid_stream = APIError(message=str(frame["message"]), request=request, body=frame)
+    assert llm_status_code(exc=mid_stream) == 503
+    assert is_retryable_llm_error(exc=mid_stream) is True
+
+    # Same wrapper, a refusal underneath: re-sending it only makes the user wait for the same
+    # answer three times.
+    refusal = APIError(message="blocked", request=request, body={**frame, "code": "400"})
+    assert is_retryable_llm_error(exc=refusal) is False
+
+    # A status the SDK typed wins over the body, and an unreadable failure is not retried:
+    # a status that cannot be read is as likely to be a refusal as an outage.
+    response = httpx.Response(status_code=400, request=request, json={})
+    assert is_retryable_llm_error(exc=BadRequestError("no", response=response, body=None)) is False
+    assert is_retryable_llm_error(exc=APIError(message="?", request=request, body=None)) is False
+    assert is_retryable_llm_error(exc=RuntimeError("boom")) is False
+
+    # A Discord write failure escaping the streamer must never re-run the answer. It carries a
+    # plain int `code` of its own -- 50035 is what an oversized final write raises -- which the
+    # status read would otherwise take for a 5xx.
+    assert llm_status_code(exc=_deleted_source_error()) == 50035
+    assert is_retryable_llm_error(exc=_deleted_source_error()) is False
+
+    # Transport failures carry no status of any kind; `APITimeoutError` rides in as a subclass.
+    assert is_retryable_llm_error(exc=APIConnectionError(request=request)) is True
+    assert is_retryable_llm_error(exc=APITimeoutError(request=request)) is True
+
+    # The YouTube answer backend is direct-to-Google, where the status is an int on `.code`.
+    assert llm_status_code(exc=ClientError(429, {"error": {"message": "slow down"}}, None)) == 429
+    assert (
+        is_retryable_llm_error(exc=ClientError(429, {"error": {"message": "slow"}}, None)) is True
+    )
+    assert (
+        is_retryable_llm_error(exc=ClientError(400, {"error": {"message": "bad"}}, None)) is False
+    )
+
+
+def _mid_stream_unavailable() -> APIError:
+    """The exact exception a Vertex 503 reaches the bot as, through LiteLLM and openai."""
+    return APIError(
+        message="litellm.MidStreamFallbackError: litellm.ServiceUnavailableError: ...",
+        request=httpx.Request(method="POST", url="http://proxy/v1/responses"),
+        body={"message": "high demand", "type": "None", "param": "None", "code": "503"},
+    )
+
+
+def _stream_events_then_raise(
+    events: list[SimpleNamespace], error: Exception
+) -> AsyncIterator[ResponseStreamEvent]:
+    """Yields the given events and then dies, as a stream carrying an SSE error frame does."""
+
+    async def _iter() -> AsyncIterator[SimpleNamespace]:
+        for event in events:
+            yield event
+        raise error
+
+    return cast("AsyncIterator[ResponseStreamEvent]", _iter())
+
+
+def _paced_stream_events(
+    events: list[SimpleNamespace], pause: float
+) -> AsyncIterator[ResponseStreamEvent]:
+    """Yields the given events with a gap between them, so the preview editor gets a tick."""
+
+    async def _iter() -> AsyncIterator[SimpleNamespace]:
+        for index, event in enumerate(events):
+            if index:
+                await asyncio.sleep(pause)
+            yield event
+
+    return cast("AsyncIterator[ResponseStreamEvent]", _iter())
+
+
+def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Makes the answer retry sleepless.
+
+    Both halves are needed: `wait_exponential_jitter` adds `random.uniform(0, jitter)` on top
+    of the base, independent of it, so zeroing the base alone still sleeps up to a second per
+    attempt and the test only looks instant.
+    """
+    monkeypatch.setattr(streaming_module, "ANSWER_RETRY_BACKOFF_SECONDS", 0.0)
+    monkeypatch.setattr(streaming_module, "ANSWER_RETRY_JITTER_SECONDS", 0.0)
+
+
+async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previewing(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
+    """A 503 mid-answer re-opens the stream onto the same message without doubling the text.
+
+    Both halves matter. The dead attempt's partial text must not survive into the finished
+    reply, and the preview editor must live through the reset -- `stream`'s finally stops it by
+    SETTING an event that `_preview_editor` reads before its first tick, so without clearing it
+    the retry streams blind and the stale preview sits frozen until the final write.
+    """
+    del economy_isolated_db
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message, preview_interval_seconds=0.01)
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        if opened == 1:
+            return _stream_events_then_raise(
+                events=[_text_event(delta="half a sentence")], error=_mid_stream_unavailable()
+            )
+        # Paced so the editor gets at least one tick to write on the SECOND attempt.
+        return _paced_stream_events(
+            events=[_text_event(delta="the whole answer"), _completed_event(1, 2)], pause=0.05
+        )
+
+    reply = await stream_answer_with_retry(
+        streamer=streamer, open_stream=open_stream, message_id=message.id
+    )
+
+    assert opened == 2
+    assert streamer.attempts == 2
+    assert reply.startswith("the whole answer")
+    assert "half a sentence" not in reply
+    # One Discord message rather than a second one beside the dead attempt's text, and it was
+    # created by a PREVIEW write and edited afterwards. An empty `edits` would mean the final
+    # write created it, i.e. the retry streamed with a dead editor while the user watched a
+    # frozen message the whole way through.
+    assert len(message.replies) == 1
+    assert message.replies[0].edits
+
+
+async def test_a_non_retryable_answer_failure_never_re_opens_the_stream(
+    economy_isolated_db: None,
+) -> None:
+    """A refusal is the provider answering, so it surfaces on the first attempt."""
+    del economy_isolated_db
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    opened = 0
+    request = httpx.Request(method="POST", url="http://proxy/v1/responses")
+    refusal = BadRequestError(
+        "blocked", response=httpx.Response(status_code=400, request=request, json={}), body=None
+    )
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        return _stream_events_then_raise(events=[], error=refusal)
+
+    with pytest.raises(BadRequestError):
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert opened == 1
+    assert streamer.attempts == 1
+
+
+async def test_an_exhausted_answer_retry_raises_the_provider_error_itself(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
+    """`reraise` keeps the outer error path showing the provider failure, not a retry wrapper."""
+    del economy_isolated_db
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
+
+    with pytest.raises(APIError, match="MidStreamFallbackError"):
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert opened == ANSWER_STREAM_MAX_ATTEMPTS
+    assert streamer.attempts == ANSWER_STREAM_MAX_ATTEMPTS
+
+
+async def test_a_retry_tells_the_user_it_is_retrying(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
+    """A silent retry is indistinguishable from a model that is just thinking slowly.
+
+    The reaction is the half that always lands; the notice only takes over a reply that is
+    already on screen, where what it replaces is the dead attempt's half-sentence.
+    """
+    del economy_isolated_db
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message, reply=cast("Message", FakeReply()))
+    opened = 0
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        nonlocal opened
+        opened += 1
+        if opened == 1:
+            return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
+        return _stream_events_from(events=[_text_event(delta="done"), _completed_event(1, 2)])
+
+    await stream_answer_with_retry(
+        streamer=streamer, open_stream=open_stream, message_id=message.id
+    )
+
+    assert streaming_module.RETRY_HINT_EMOJI in message.added_reactions
+    reply = cast("FakeReply", streamer.reply)
+    assert reply.edits[0] == f"-# {streaming_module.RETRY_HINT_EMOJI} Retrying... (2/3)"
+    # And the notice is transient: the finished answer takes the message back.
+    assert (reply.content or "").startswith("done")
+
+
+async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
+    """Creating a reply just to say "Retrying" would orphan it on the turns that then fail."""
+    del economy_isolated_db
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        return _stream_events_then_raise(events=[], error=_mid_stream_unavailable())
+
+    with pytest.raises(APIError):
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    assert streaming_module.RETRY_HINT_EMOJI in message.added_reactions
+    assert message.replies == []
+
+
+async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None, memory_isolated_dir: None
+) -> None:
+    """Pins the wiring, not the helper: the QA answer path must go through the retry.
+
+    Both the helper's own tests and this one would stay green if `_handle_message_reply` were
+    quietly put back on a bare `streamer.stream(...)`, except for the second `create` this
+    asserts on.
+    """
+    del economy_isolated_db, memory_isolated_dir
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage(content="hi")
+    _recorded(cog).responses.stream_queue = [
+        _mid_stream_unavailable(),
+        list(_default_turn_events()),
+    ]
+
+    await _reply_via_pipeline(cog=cog, message=message)
+
+    # Two streaming dispatches for one answer, and the reply still landed.
+    assert _recorded(cog).responses.create_streams.count(True) == 2
+    assert message.replies
+    assert (message.replies[0].content or "").startswith("done")
+
+
 def test_required_modality_gate_keeps_code_and_text() -> None:
     """The MIME gate drops unknown binaries but keeps source-code / structured-text types."""
     modality = MessageInputBuilder.required_modality
@@ -4535,7 +4817,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
     class _BoomStreamer:
         """Stands in for ResponseStreamer and fails while streaming the persona reply."""
 
-        content_started = False
+        content_ever_started = False
 
         def __init__(self, **kwargs: object) -> None:
             """Ignores the streamer kwargs."""
