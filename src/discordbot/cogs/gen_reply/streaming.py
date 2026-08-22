@@ -3,16 +3,21 @@
 import re
 import time
 import asyncio
-from collections.abc import AsyncIterator
+import contextlib
+from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
 from nextcord import File, Message, NotFound, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
+from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
+from tenacity.wait import wait_exponential_jitter
 from nextcord.utils import escape_mentions
 from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
 from discordbot.typings.models import strip_key_suffix
 from discordbot.utils.reactions import update_reaction
+from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
+from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.media_delivery import (
@@ -53,6 +58,23 @@ INLINE_VIDEO_FILENAME = "generated.mp4"
 # before sending; matches user (<@id>, <@!id>), role (<@&id>) and channel (<#id>) mentions.
 CODED_MENTION_RE = re.compile(r"`(<(?:@[!&]?|#)\d+>)`")
 DISCORD_MESSAGE_LIMIT = 2000
+
+# Spacing between answer-stream attempts. A cadence rather than a bound, which is why it stays
+# here while `ANSWER_STREAM_MAX_ATTEMPTS` lives in `typings/timeouts.py`. Short on purpose: the
+# user spends it watching a thinking preview that has already stalled once, so it only has to
+# outlast a burst. The jitter is spelled rather than left to tenacity's default because it is
+# the half that stops a busy channel's replies retrying in lockstep, and because it is ADDITIVE
+# and independent of the base -- a test zeroing the base alone still sleeps.
+ANSWER_RETRY_BACKOFF_SECONDS = 2.0
+ANSWER_RETRY_JITTER_SECONDS = 1.0
+# Ceiling on one wait. At three attempts it never binds (the waits are ~2s then ~4s); it is
+# here so that raising the attempt count cannot silently turn the doubling into a 30s stall in
+# front of a user who is already waiting.
+ANSWER_RETRY_BACKOFF_MAX_SECONDS = 10.0
+
+# Shown on both retry surfaces, so the reaction on the source message and the notice on the
+# reply read as the same event rather than two unrelated hints.
+RETRY_HINT_EMOJI = "🔁"
 
 # The thinking preview is a live glance, not a transcript: keep only the newest few subtext
 # lines so a long think never grows into a wall of text above the reply. The char budget is
@@ -108,7 +130,19 @@ class ResponseStreamer(BaseModel):
         default="", description="The text last written to the Discord reply."
     )
     content_started: bool = Field(
-        default=False, description="Whether the first non-newline text delta has been seen."
+        default=False,
+        description="Whether THIS attempt has seen its first non-newline text delta.",
+    )
+    content_ever_started: bool = Field(
+        default=False,
+        description=(
+            "Whether any attempt put reply text on screen. Survives a retry reset, so it "
+            "answers 'was anything ever written here' where `content_started` answers 'is "
+            "this attempt past its leading newlines'."
+        ),
+    )
+    attempts: int = Field(
+        default=1, description="How many times the answer stream was opened for this reply."
     )
     preview_interval_seconds: float = Field(
         default=1.0, description="Cadence of the snapshot editor's Discord edits while streaming."
@@ -209,8 +243,13 @@ class ResponseStreamer(BaseModel):
     # difference between "never sent" (a real problem, worth a hint) and "sent then deleted".
     _reply_deleted: bool = PrivateAttr(default=False)
     # Set once the preview editor has reported a failed snapshot write, so the 1s cadence does
-    # not repeat the same warn for the rest of the stream.
+    # not repeat the same warn for the rest of the stream. Deliberately survives a retry reset:
+    # a Discord edit that failed on one attempt fails on the next for the same reason.
     _preview_error_logged: bool = PrivateAttr(default=False)
+    # Set once the first-reasoning-delta latency has been logged. Separate from
+    # `reasoning_content`, which a retry clears: the record is per TURN (#568), so a retried
+    # answer must not emit a second one carrying the failed attempt's wait as its elapsed.
+    _reasoning_logged: bool = PrivateAttr(default=False)
     # How long the answer call itself took, stamped when the stream is consumed.
     _answer_seconds: float = PrivateAttr(default=0.0)
     # Grounding citations the completed response carried, or None when this backend never
@@ -406,12 +445,14 @@ class ResponseStreamer(BaseModel):
             delta = delta.lstrip("\n")
             if not delta:
                 return
-            logfire.info(
-                "gen_reply first reasoning delta",
-                elapsed_seconds=time.monotonic() - self.created_at,
-                model=self.model_name,
-                message_id=self.message.id,
-            )
+            if not self._reasoning_logged:
+                self._reasoning_logged = True
+                logfire.info(
+                    "gen_reply first reasoning delta",
+                    elapsed_seconds=time.monotonic() - self.created_at,
+                    model=self.model_name,
+                    message_id=self.message.id,
+                )
         self.reasoning_content += delta
         self._ensure_editor_started()
 
@@ -422,14 +463,89 @@ class ResponseStreamer(BaseModel):
             if not delta:
                 return
             self.content_started = True
-            logfire.info(
-                "gen_reply first content delta",
-                elapsed_seconds=time.monotonic() - self.created_at,
-                model=self.model_name,
-                message_id=self.message.id,
-            )
+            if not self.content_ever_started:
+                self.content_ever_started = True
+                logfire.info(
+                    "gen_reply first content delta",
+                    elapsed_seconds=time.monotonic() - self.created_at,
+                    model=self.model_name,
+                    message_id=self.message.id,
+                )
         self.stored_content += delta
         self._ensure_editor_started()
+
+    def reset_for_retry(self) -> None:
+        """Drops what one failed attempt accumulated so the next one starts clean.
+
+        Only the text of the attempt goes. What stays, stays for a reason:
+
+        - `input_tokens` / `output_tokens`, because usage arrives on `response.completed`
+          alone, which a failed attempt never reached, and because they are seeded with the
+          memory-selection call's usage. The consequence is deliberate but real -- upstream
+          billed the failed attempt and the footer cannot see it, so `attempts` rides out on
+          `gen_reply reply finalized` to make an under-reported cost visible in the log.
+        - `reply`, so the retry edits the message already on screen instead of posting a
+          second one beside the first attempt's half-written text.
+        - `created_at`, so the footer and the latency logs report the wait the user actually
+          had, retries and backoff included.
+        - `content_ever_started` and `_reasoning_logged`, which are per-turn rather than
+          per-attempt (see their own notes).
+
+        The editor is the one piece that needs work rather than none: `stream`'s finally
+        stopped it by SETTING `_editor_stop`, and `_preview_editor` reads that before its
+        first tick, so a task started by the retry's first delta would exit immediately and
+        the whole retry would stream with no live preview. Clearing it is what keeps the
+        stale preview being replaced as the new text arrives rather than sitting frozen until
+        the final write.
+        """
+        self.attempts += 1
+        self.stored_content = ""
+        self.reasoning_content = ""
+        self.content_started = False
+        self._editor_stop.clear()
+
+    async def announce_retry(self) -> None:
+        """Tells the user the answer stalled and is being tried again.
+
+        Two surfaces because neither covers both cases. The reaction always lands, and is the
+        only signal when the stall came before anything was written; it rides the source
+        message independently of the pipeline's status chain, the same way a dropped-media
+        hint does. The notice takes over the reply's text because that is where someone
+        waiting is actually looking, and because what sits there otherwise is the dead
+        attempt's half-sentence, which reads as an answer that got cut off rather than as a
+        stall. It is written only onto a reply that already exists: creating one here would
+        leave a bare "Retrying" message behind on the turns that go on to fail anyway.
+
+        Both writes are best-effort. This is a hint about a failure and must never become one:
+        `update_reaction` suppresses its own, and a reply deleted mid-answer (or a rate-limited
+        edit) must not cost the retry it is announcing.
+        """
+        await update_reaction(message=self.message, bot_user=None, emoji=RETRY_HINT_EMOJI)
+        if self.reply is None:
+            return
+        notice = self._retry_notice()
+        with contextlib.suppress(HTTPException):
+            await self.reply.edit(content=notice)
+            self.displayed_content = notice
+
+    def _retry_notice(self) -> str:
+        """The text a reply carries while the next attempt is in flight."""
+        return f"-# {RETRY_HINT_EMOJI} Retrying... ({self.attempts}/{ANSWER_STREAM_MAX_ATTEMPTS})"
+
+    async def withdraw_retry_notice(self) -> None:
+        """Removes a reply left showing nothing but the notice, once the attempts are spent.
+
+        The notice promises another attempt, so with none left it has to go: otherwise the turn
+        ends with one message saying work is still in flight sitting beside the error the
+        pipeline posts to say it is not. Only a message whose WHOLE content is still the notice
+        is removed -- once the last attempt put real text on screen, that text is the better
+        residue and the error is what says it is incomplete.
+        """
+        if self.reply is None or self.displayed_content != self._retry_notice():
+            return
+        with contextlib.suppress(HTTPException):
+            await self.reply.delete()
+        self.reply = None
 
     async def _consume(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> None:
         """Streams the reply, accumulating text and usage onto the instance.
@@ -529,6 +645,7 @@ class ResponseStreamer(BaseModel):
             backend=self.backend,
             effort=self.model_effort,
             answer_seconds=self._answer_seconds,
+            attempts=self.attempts,
             input_tokens=self.input_tokens,
             output_tokens=self.output_tokens,
             cost=cost,
@@ -925,3 +1042,91 @@ class ResponseStreamer(BaseModel):
             self._answer_seconds = time.monotonic() - self.created_at
             await self._stop_editor()
         return await self._finalize_reply()
+
+
+# Opens one answer stream. A factory rather than the stream itself, because the request has to
+# be re-issued per attempt, and async because the Responses backend awaits `responses.create`
+# while the Interactions one returns its generator directly.
+type AnswerStreamFactory = Callable[[], Awaitable[AsyncIterator[ResponseStreamEvent]]]
+
+
+async def stream_answer_with_retry(
+    *,
+    streamer: ResponseStreamer,
+    open_stream: AnswerStreamFactory,
+    message_id: int,
+    announce: bool = True,
+) -> str:
+    """Streams one answer turn, re-opening the stream on a transient upstream failure.
+
+    This is the only LLM call in the process with no retry anywhere beneath it. LiteLLM's
+    router applies `num_retries` and its configured fallbacks to the non-streaming paths,
+    which is why the triage and fast one-shots degrade instead of failing, but a provider 5xx
+    that arrives as an SSE error frame mid-stream reaches the client untouched -- and that is
+    the one turn whose failure a user watches happen.
+
+    Re-issuing the request is safe because an answer turn is a pure read: nothing is written
+    before the stream completes, and the retry stays on the same client, the same model and
+    the same leased Gemini key, so a Files API uri named in the input keeps resolving. Between
+    attempts `reset_for_retry` drops the dead attempt's text and revives the preview editor,
+    and `announce_retry` says so on screen, since a silent retry is indistinguishable from a
+    model that is simply thinking slowly.
+
+    The provider error reaches the caller only once every attempt is spent (`reraise=True`),
+    so the pipeline's error embed and its ❌ stay a single end-of-turn event rather than one
+    per attempt.
+
+    Args:
+        streamer: The streamer rendering this reply; retried in place so every attempt writes
+            to the same Discord message.
+        open_stream: Issues the request and returns its event stream.
+        message_id: The turn's triggering message, so a retry is greppable with the rest of it.
+        announce: Whether a retry is shown to the user. Off for a media persona reply, whose
+            streamer renders onto the DELIVERED media message: its caption is not a status
+            surface, so a notice there would caption a finished image with a promise of more
+            to come, and on the failing path nothing would ever take it back. That route is
+            also silent to the user by design -- the deliverable already landed and nobody is
+            waiting on the words about it.
+
+    Returns:
+        The finished reply text.
+
+    Raises:
+        Exception: Whatever the last attempt raised, unwrapped -- a caller's error path sees
+            the provider failure rather than a tenacity wrapper.
+    """
+
+    async def _before_retry(retry_state: RetryCallState) -> None:
+        failure = retry_state.outcome.exception() if retry_state.outcome else None
+        streamer.reset_for_retry()
+        if announce:
+            await streamer.announce_retry()
+        logfire.warn(
+            "gen_reply answer stream retry",
+            message_id=message_id,
+            attempt=retry_state.attempt_number,
+            error_type=type(failure).__name__ if failure else None,
+            status_code=llm_status_code(exc=failure) if failure else None,
+            _exc_info=failure,
+        )
+
+    async def _attempt() -> str:
+        return await streamer.stream(responses=await open_stream())
+
+    retrying = AsyncRetrying(
+        retry=retry_if_exception(is_retryable_llm_error),
+        wait=wait_exponential_jitter(
+            initial=ANSWER_RETRY_BACKOFF_SECONDS,
+            max=ANSWER_RETRY_BACKOFF_MAX_SECONDS,
+            jitter=ANSWER_RETRY_JITTER_SECONDS,
+        ),
+        stop=stop_after_attempt(ANSWER_STREAM_MAX_ATTEMPTS),
+        before_sleep=_before_retry,
+        reraise=True,
+    )
+    try:
+        return await retrying(_attempt)
+    except Exception:
+        if announce:
+            await streamer.withdraw_retry_notice()
+        raise

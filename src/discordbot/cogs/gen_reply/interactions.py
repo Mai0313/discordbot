@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from collections.abc import AsyncIterator
 
 from google import genai
+from google.genai.errors import APIError
 from openai.types.responses import ResponseStreamEvent
 from google.genai.interactions import (
     StepParam,
@@ -218,7 +219,26 @@ async def adapt_interactions_stream(
                 ),
             )
         elif event.event_type == "error":
-            raise RuntimeError(f"Gemini interactions stream error: {event!r}")
+            # Typed rather than a bare RuntimeError so `extract_friendly_error` can show the
+            # user what the provider actually said instead of this event's repr. What it does
+            # NOT buy is a retry: the SDK documents `Error.code` as "A URI that identifies the
+            # error type", not a status, so an in-band failure here carries no HTTP status at
+            # all and `is_retryable_llm_error` leaves it alone. Passing a decimal one through
+            # is a hedge against the payload diverging from that doc, not a path anything has
+            # been seen to take -- on this backend only a failure `interactions.create` itself
+            # raises as a typed genai error is actually retried today.
+            failure = event.error
+            code = failure.code if failure is not None else None
+            raise APIError(
+                code=int(code) if code is not None and code.isdigit() else 0,
+                response_json={
+                    "error": {
+                        "message": (failure.message if failure is not None else None)
+                        or f"Gemini interactions stream error: {event!r}",
+                        "code": code,
+                    }
+                },
+            )
 
 
 async def create_interactions_answer_stream(

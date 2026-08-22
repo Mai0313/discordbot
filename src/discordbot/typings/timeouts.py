@@ -60,6 +60,15 @@ MEMORY_SELECT_GRACE_SECONDS: Final[float] = 2.0
 # route. Tune against the `gen_reply effort done` latency log.
 EFFORT_GRACE_SECONDS: Final[float] = 5.0
 
+# How many times the streaming answer turn is opened before the reply gives up on a transient
+# upstream failure. A count rather than a cadence, which is why it sits here while the backoff
+# between the attempts stays beside the retry in `gen_reply/streaming.py`: it multiplies the
+# `openai` client's own ceiling that this module's docstring measures and deliberately does not
+# restate, so the worst case for one reply is this many times that, and reading either half
+# alone gives the wrong answer. Deliberately small: every attempt after the first is spent with
+# the user watching a thinking preview that has already stalled once.
+ANSWER_STREAM_MAX_ATTEMPTS: Final[int] = 3
+
 # An intent-selected linked-post context build gets this grace once the QA path resolves it.
 # Far wider than memory/effort because it fetches the post's media and uploads it to the Files
 # API, and because answering blind about a link the user explicitly pointed at is the failure

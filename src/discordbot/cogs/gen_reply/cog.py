@@ -8,6 +8,7 @@ import asyncio
 from functools import cached_property
 import contextlib
 from contextvars import ContextVar
+from collections.abc import AsyncIterator
 
 from google import genai
 from openai import AsyncOpenAI
@@ -15,6 +16,7 @@ import logfire
 from nextcord import Embed, Message, NotFound, TextChannel, HTTPException, AllowedMentions
 from pydantic import ValidationError
 from nextcord.ext import commands
+from openai.types.responses import ResponseStreamEvent
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -82,7 +84,7 @@ from discordbot.cogs.gen_reply.prompts import (
 )
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
-from discordbot.cogs.gen_reply.streaming import ResponseStreamer
+from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
 from discordbot.services.memory.pipeline import (
     flavor_of,
     needs_consolidation,
@@ -137,9 +139,7 @@ from discordbot.cogs.gen_reply.link_sources.bilibili import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Awaitable, Coroutine, AsyncIterator
-
-    from openai.types.responses import ResponseStreamEvent
+    from collections.abc import Callable, Awaitable, Coroutine
 
 
 # Preserve the existing eight-user context target for optional model-selected additions.
@@ -1242,18 +1242,29 @@ class ReplyGeneratorCogs(commands.Cog):
                 model_effort=model.effort or "",
             )
             with logfire.span(span_name, model=model.name, message_id=message.id):
-                responses = await self.openai_client.responses.create(
-                    model=model.deployment_name,
-                    instructions=_build_runtime_instructions(
-                        system_prompt=system_prompt, message=message
-                    ),
-                    input=response_input,
-                    reasoning=model.reasoning,
-                    stream=True,
-                    service_tier="auto",
-                    extra_headers={"x-litellm-end-user-id": message.author.name},
+
+                async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+                    """Issues the persona-reply request; called again per retry attempt."""
+                    return await self.openai_client.responses.create(
+                        model=model.deployment_name,
+                        instructions=_build_runtime_instructions(
+                            system_prompt=system_prompt, message=message
+                        ),
+                        input=response_input,
+                        reasoning=model.reasoning,
+                        stream=True,
+                        service_tier="auto",
+                        extra_headers={"x-litellm-end-user-id": message.author.name},
+                    )
+
+                await stream_answer_with_retry(
+                    streamer=streamer,
+                    open_stream=open_stream,
+                    message_id=message.id,
+                    # The streamer renders onto the delivered media message itself, so a retry
+                    # notice would caption a finished image with a promise of more to come.
+                    announce=False,
                 )
-                await streamer.stream(responses=responses)
         except Exception as exc:
             logfire.warn(
                 "Media persona reply failed; leaving the delivered media without a reply",
@@ -1265,11 +1276,13 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             # A fresh hosted-case base (reply was None) that never received content is a bare ping;
             # delete it so a failed persona reply leaves no orphan. A native media message
-            # (reply is not None) is the deliverable itself and is always kept.
+            # (reply is not None) is the deliverable itself and is always kept. Reads
+            # `content_ever_started`, not `content_started`: a retry clears the latter, so text an
+            # earlier attempt already wrote here would otherwise read as a bare ping and be deleted.
             if (
                 reply is None
                 and base is not None
-                and (streamer is None or not streamer.content_started)
+                and (streamer is None or not streamer.content_ever_started)
             ):
                 with contextlib.suppress(Exception):
                     await base.delete()
@@ -2129,19 +2142,20 @@ class ReplyGeneratorCogs(commands.Cog):
         with logfire.span(
             "gen_reply answer", model=slow_model.name, backend=backend, message_id=message.id
         ):
-            responses: AsyncIterator[ResponseStreamEvent]
-            if use_interactions and yt_url is not None:
-                responses = create_interactions_answer_stream(
-                    client=toolkit.gemini_client,
-                    model=slow_model.name,
-                    system_instruction=_build_runtime_instructions(
-                        system_prompt=system_prompt, message=message
-                    ),
-                    steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
-                    effort=slow_model.effort,
-                )
-            else:
-                responses = await self.openai_client.responses.create(
+
+            async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+                """Issues the answer request; called again per retry attempt."""
+                if use_interactions and yt_url is not None:
+                    return create_interactions_answer_stream(
+                        client=toolkit.gemini_client,
+                        model=slow_model.name,
+                        system_instruction=_build_runtime_instructions(
+                            system_prompt=system_prompt, message=message
+                        ),
+                        steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
+                        effort=slow_model.effort,
+                    )
+                return await self.openai_client.responses.create(
                     model=slow_model.deployment_name,
                     instructions=_build_runtime_instructions(
                         system_prompt=system_prompt, message=message
@@ -2153,7 +2167,10 @@ class ReplyGeneratorCogs(commands.Cog):
                     service_tier="auto",
                     extra_headers={"x-litellm-end-user-id": message.author.name},
                 )
-            full_reply = await streamer.stream(responses=responses)
+
+            full_reply = await stream_answer_with_retry(
+                streamer=streamer, open_stream=open_stream, message_id=message.id
+            )
         # A <deep-research> brief the answer model emitted launches a research thread. Done after
         # the stream (and its single media edit) so it never touches the reply's attachment edit;
         # best-effort, gated, and a no-op when the feature is off or no brief was emitted.
