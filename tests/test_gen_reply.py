@@ -263,20 +263,25 @@ class FakeReply:
         """Records that this reply was deleted (e.g. the orphaned persona-base cleanup)."""
         self.deleted = True
 
-    async def edit(
+    async def edit(  # noqa: PLR0913 -- one keyword per field of `Message.edit` a caller writes
         self,
         content: str | None = None,
         file: File | None = None,
         files: list[File] | None = None,
+        embed: Embed | None = None,
+        attachments: list[object] | None = None,
         allowed_mentions: object | None = None,
     ) -> None:
-        """Records edited content and/or newly attached media (voice clip / inline image)."""
+        """Records edited content, embed and/or newly attached media (voice clip / inline image)."""
+        del attachments
         if self.edit_error is not None:
             raise self.edit_error
         self.allowed_mentions_seen.append(allowed_mentions)
         if content is not None:
             self.content = content
             self.edits.append(content)
+        if embed is not None:
+            self.embed = embed
         if file is not None:
             self.file = file
         if files is not None:
@@ -3495,6 +3500,9 @@ async def test_a_spent_retry_takes_its_own_notice_back(
 
     assert reply.deleted is True
     assert streamer.reply is None
+    # And with the notice gone there is nothing left to land the failure on, so the pipeline's
+    # error path is told to post it fresh.
+    assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is False
 
 
 async def test_a_spent_retry_keeps_text_the_last_attempt_managed_to_stream(
@@ -3571,6 +3579,142 @@ async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
     assert _recorded(cog).responses.create_streams.count(True) == 2
     assert message.replies
     assert (message.replies[0].content or "").startswith("done")
+
+
+async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_into(
+    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+) -> None:
+    """A turn that painted something before it died ends as ONE message, not two.
+
+    The failure surfaces in `on_message`, several frames above the streamer that owns the
+    reply handle, so this drives the real helper under the real error path: the pipeline is
+    stubbed down to the one answer stream, and everything between the publish and the edit is
+    the production code.
+    """
+    del economy_isolated_db
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage(content="<@999> explain", author=FakeAuthor(user_id=1))
+    reply = FakeReply()
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        # Paced so the preview editor gets a tick in: text nobody ever saw is a withdrawn
+        # retry notice, which is the other case entirely.
+        return _stream_events_then_raise(
+            events=[_text_event(delta="half a sentence")],
+            error=_mid_stream_unavailable(),
+            pause=0.05,
+        )
+
+    async def failing_answer(**kwargs: object) -> None:
+        """Streams half an answer onto a reply already on screen, then fails every attempt."""
+        del kwargs
+        streamer = ResponseStreamer(
+            message=cast("Message", message),
+            reply=cast("Message", reply),
+            preview_interval_seconds=0.01,
+        )
+        await stream_answer_with_retry(
+            streamer=streamer, open_stream=open_stream, message_id=message.id
+        )
+
+    monkeypatch.setattr(cog, "_run_reply_pipeline", failing_answer)
+    await cog.on_message(message=as_message(fake=message))
+
+    # No second message beside the half-written one...
+    assert message.replies == []
+    # ...which keeps what the model managed to say, with the embed under it saying it is
+    # incomplete -- the truncated text alone reads as an answer that simply stopped.
+    assert reply.content == "half a sentence"
+    assert reply.embed is not None
+    assert reply.embed.title == "Something went wrong"
+
+
+async def test_a_failure_over_a_thinking_preview_clears_it(economy_isolated_db: None) -> None:
+    """The preview is a live glance at a model that has now stopped thinking, so it goes.
+
+    Frozen above the error it reads as work still in flight, and unlike a partial answer there
+    is nothing in it the user was reading. The empty string is the load-bearing half: the
+    error embed rides a spacer file, and nextcord drops a `content=None` out of a multipart
+    edit instead of clearing it, which would leave the preview exactly where it was.
+    """
+    del economy_isolated_db
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.content = "-# <:message:1517560873000898860> Thinking..."
+    streamer = ResponseStreamer(message=cast("Message", message), reply=cast("Message", reply))
+    streamer.reasoning_content = "weighing the options"
+
+    assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is True
+
+    assert reply.content == ""
+    assert reply.embed is not None
+
+
+async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_message(
+    economy_isolated_db: None,
+) -> None:
+    """Discord turning the edit down must not cost the user the error entirely."""
+    del economy_isolated_db
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = _unknown_message_notfound()
+    streamer = ResponseStreamer(message=cast("Message", message), reply=cast("Message", reply))
+
+    assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is False
+
+
+async def test_a_delivered_answer_stops_being_the_failure_paths_target(
+    economy_isolated_db: None,
+) -> None:
+    """A failure after the answer landed is a separate event, not the reason one is truncated.
+
+    The take-back happens as the footer is written rather than when the stream helper returns,
+    because everything past that point -- the inline media attach, a hosted-URL follow-up -- can
+    still raise, and an error landing on the finished reply would take its attachments with it.
+    """
+    del economy_isolated_db
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=cast("Message", message))
+
+    async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
+        return _stream_events_from(events=[_text_event(delta="done"), _completed_event(1, 2)])
+
+    await stream_answer_with_retry(
+        streamer=streamer, open_stream=open_stream, message_id=message.id
+    )
+
+    assert streaming_module.current_answer_streamer.get() is None
+
+
+async def test_a_media_persona_reply_never_offers_the_deliverable_to_the_error_path(
+    monkeypatch: pytest.MonkeyPatch, memory_isolated_dir: None
+) -> None:
+    """The IMAGE route's streamer renders onto the delivered image, so it publishes nothing.
+
+    Its own failure is swallowed, but a later one in the same turn reaches `on_message`, and
+    the picture the user was handed must not be the message that gets an error embed written
+    over it.
+    """
+    del memory_isolated_dir
+    _no_retry_backoff(monkeypatch=monkeypatch)
+    cog = _cog()
+    message = FakeMessage(content="draw a cat", author=FakeAuthor(user_id=1))
+    _recorded(cog).responses.stream_queue = [
+        _mid_stream_unavailable()
+    ] * ANSWER_STREAM_MAX_ATTEMPTS
+
+    await cog._handle_image_reply(
+        toolkit=_toolkit(cog=cog),
+        message=as_message(fake=message),
+        user_prompt="a cat",
+        context_task=asyncio.create_task(_ready_reply_context()),
+    )
+
+    # The image was delivered and every persona attempt then died on it.
+    assert message.replies[-1].file is not None
+    assert _recorded(cog).responses.create_streams.count(True) == ANSWER_STREAM_MAX_ATTEMPTS
+    assert streaming_module.current_answer_streamer.get() is None
 
 
 def test_required_modality_gate_keeps_code_and_text() -> None:
@@ -4845,6 +4989,8 @@ async def test_handle_image_reply_best_effort_when_reply_fails(
     class BoomResponder:
         """Stands in for ResponseStreamer and fails while streaming the reply."""
 
+        carries_turn_notices = False
+
         def __init__(self, **kwargs: object) -> None:
             """Ignores the streamer kwargs."""
             del kwargs
@@ -4912,6 +5058,7 @@ async def test_handle_image_reply_hosted_persona_failure_deletes_orphan_base(
     class _BoomStreamer:
         """Stands in for ResponseStreamer and fails while streaming the persona reply."""
 
+        carries_turn_notices = False
         content_ever_started = False
 
         def __init__(self, **kwargs: object) -> None:

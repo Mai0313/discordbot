@@ -4,10 +4,11 @@ import re
 import time
 import asyncio
 import contextlib
+from contextvars import ContextVar
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
-from nextcord import File, Message, NotFound, HTTPException, AllowedMentions
+from nextcord import File, Embed, Message, NotFound, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from tenacity import AsyncRetrying, RetryCallState, retry_if_exception, stop_after_attempt
 from tenacity.wait import wait_exponential_jitter
@@ -20,6 +21,7 @@ from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.utils.model_pricing import get_token_rates
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
+from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
@@ -125,6 +127,17 @@ class ResponseStreamer(BaseModel):
     )
     reply: SkipValidation[Message | None] = Field(
         default=None, description="The Discord reply message, created lazily on the first delta."
+    )
+    carries_turn_notices: bool = Field(
+        default=True,
+        description=(
+            "Whether `reply` is the turn's own surface, so the turn's notices belong on it: a "
+            "`Retrying...` notice while an attempt is in flight, and the error embed once every "
+            "attempt is spent. False for a media persona reply, which renders onto the DELIVERED "
+            "image or video -- a notice there would caption a finished picture with a promise of "
+            "more to come and nothing would take it back on the failing path, and the "
+            "deliverable itself must never be overwritten by an error."
+        ),
     )
     displayed_content: str = Field(
         default="", description="The text last written to the Discord reply."
@@ -547,6 +560,55 @@ class ResponseStreamer(BaseModel):
             await self.reply.delete()
         self.reply = None
 
+    async def land_failure(self, *, embed: Embed) -> bool:
+        """Puts the turn's error onto the reply this answer was streaming into.
+
+        The half-written reply is what the user is already looking at, so the error belongs on
+        it: left beside it, that reply carries no usage footer and reads as a complete answer
+        that got cut off, with an unrelated-looking embed under it. What the message keeps is
+        what it was showing. A partial answer stays, and the embed under it is what says the
+        answer is incomplete; a thinking preview is cleared instead, being a live glance at a
+        model that has stopped thinking rather than anything the user was reading.
+
+        Clearing it takes an explicit empty string, never None: the embed brings a spacer file,
+        which sends the edit as multipart, and `http.py::get_message_payload` drops a None
+        content out of that body altogether instead of clearing it (it clears on the JSON path,
+        which is exactly what makes the difference easy to miss).
+
+        Returns False when the caller must post a fresh message instead: no reply was ever
+        created (every pre-answer failure, and every attempt that died before its first delta),
+        the retry notice was withdrawn just above, or Discord turned the edit down.
+        """
+        if self.reply is None:
+            return False
+        try:
+            await self.reply.edit(
+                content=self._render_preview() if self.content_started else "",
+                embed=embed,
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.reply),
+            )
+        except NotFound:
+            # Someone removed the half-written reply while the answer was failing: a routine
+            # end rather than a defect, and the caller's fresh message is the whole repair.
+            logfire.info(
+                "The streamed reply is gone; posting the failure fresh",
+                message_id=self.message.id,
+                reply_id=self.reply.id,
+            )
+            return False
+        except HTTPException as exc:
+            # Anything else is Discord refusing the edit (a rejected spacer upload, an edit
+            # rate limit), which costs the user the single-message shape this method exists for.
+            logfire.warn(
+                "Could not land the failure on the streamed reply; posting it fresh",
+                message_id=self.message.id,
+                reply_id=self.reply.id,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            return False
+        return True
+
     async def _consume(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> None:
         """Streams the reply, accumulating text and usage onto the instance.
 
@@ -636,6 +698,12 @@ class ResponseStreamer(BaseModel):
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
         self.stored_content += usage_footer
         self._usage_footer = usage_footer
+        # The answer is on screen in full, so the turn's failure path lets go of it here rather
+        # than when the caller returns: the media attach below is unprotected, and an error
+        # landing on a finished reply would take its attachments with it, the spacer payload
+        # retaining none of them.
+        if self.carries_turn_notices:
+            current_answer_streamer.set(None)
 
         await self._attach_generated_media()
         logfire.info(
@@ -1033,6 +1101,8 @@ class ResponseStreamer(BaseModel):
 
     async def stream(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""
+        if self.carries_turn_notices:
+            current_answer_streamer.set(self)
         try:
             await self._consume(responses=responses)
         finally:
@@ -1044,6 +1114,19 @@ class ResponseStreamer(BaseModel):
         return await self._finalize_reply()
 
 
+# The turn's UNFINISHED answer, so the pipeline's failure path can land its error on the reply
+# already on screen. A ContextVar for the same reason `_dispatched_model` is one: the failure
+# surfaces in `on_message`, several frames above the streamer that owns the reply handle, and
+# nextcord dispatches each `on_message` as its own task, so a context copy can never be read by
+# another user's turn. It holds the streamer rather than the message because what the error path
+# needs is decided at failure time -- whether a reply exists at all (`withdraw_retry_notice` and a
+# mid-stream delete each drop it) and what it is showing. Published by `stream` for a
+# `carries_turn_notices` streamer, and taken back the moment its answer is written in full.
+current_answer_streamer: ContextVar[ResponseStreamer | None] = ContextVar(
+    "gen_reply_answer_streamer", default=None
+)
+
+
 # Opens one answer stream. A factory rather than the stream itself, because the request has to
 # be re-issued per attempt, and async because the Responses backend awaits `responses.create`
 # while the Interactions one returns its generator directly.
@@ -1051,11 +1134,7 @@ type AnswerStreamFactory = Callable[[], Awaitable[AsyncIterator[ResponseStreamEv
 
 
 async def stream_answer_with_retry(
-    *,
-    streamer: ResponseStreamer,
-    open_stream: AnswerStreamFactory,
-    message_id: int,
-    announce: bool = True,
+    *, streamer: ResponseStreamer, open_stream: AnswerStreamFactory, message_id: int
 ) -> str:
     """Streams one answer turn, re-opening the stream on a transient upstream failure.
 
@@ -1074,19 +1153,16 @@ async def stream_answer_with_retry(
 
     The provider error reaches the caller only once every attempt is spent (`reraise=True`),
     so the pipeline's error embed and its ❌ stay a single end-of-turn event rather than one
-    per attempt.
+    per attempt. Whether the user is told anything at all is the streamer's own
+    `carries_turn_notices`, not a parameter here: a media persona reply renders onto the
+    delivered image or video, which is nobody's status surface, and that route is silent to the
+    user by design -- the deliverable already landed and nobody is waiting on the words about it.
 
     Args:
         streamer: The streamer rendering this reply; retried in place so every attempt writes
             to the same Discord message.
         open_stream: Issues the request and returns its event stream.
         message_id: The turn's triggering message, so a retry is greppable with the rest of it.
-        announce: Whether a retry is shown to the user. Off for a media persona reply, whose
-            streamer renders onto the DELIVERED media message: its caption is not a status
-            surface, so a notice there would caption a finished image with a promise of more
-            to come, and on the failing path nothing would ever take it back. That route is
-            also silent to the user by design -- the deliverable already landed and nobody is
-            waiting on the words about it.
 
     Returns:
         The finished reply text.
@@ -1099,7 +1175,7 @@ async def stream_answer_with_retry(
     async def _before_retry(retry_state: RetryCallState) -> None:
         failure = retry_state.outcome.exception() if retry_state.outcome else None
         streamer.reset_for_retry()
-        if announce:
+        if streamer.carries_turn_notices:
             await streamer.announce_retry()
         logfire.warn(
             "gen_reply answer stream retry",
@@ -1127,6 +1203,8 @@ async def stream_answer_with_retry(
     try:
         return await retrying(_attempt)
     except Exception:
-        if announce:
+        # The streamer stays published on the way out: the caller's error path is what lands
+        # the failure on whatever this reply is still showing.
+        if streamer.carries_turn_notices:
             await streamer.withdraw_retry_notice()
         raise

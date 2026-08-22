@@ -84,7 +84,11 @@ from discordbot.cogs.gen_reply.prompts import (
 )
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
-from discordbot.cogs.gen_reply.streaming import ResponseStreamer, stream_answer_with_retry
+from discordbot.cogs.gen_reply.streaming import (
+    ResponseStreamer,
+    current_answer_streamer,
+    stream_answer_with_retry,
+)
 from discordbot.services.memory.pipeline import (
     flavor_of,
     needs_consolidation,
@@ -1236,6 +1240,9 @@ class ReplyGeneratorCogs(commands.Cog):
             streamer = ResponseStreamer(
                 message=message,
                 reply=base,
+                # This streamer renders onto the delivered media message itself, so no notice
+                # belonging to the turn -- a retry, the failure embed -- may touch it.
+                carries_turn_notices=False,
                 memory_lookups=context.memory_labels,
                 input_tokens=context.selection_input_tokens,
                 output_tokens=context.selection_output_tokens,
@@ -1258,12 +1265,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     )
 
                 await stream_answer_with_retry(
-                    streamer=streamer,
-                    open_stream=open_stream,
-                    message_id=message.id,
-                    # The streamer renders onto the delivered media message itself, so a retry
-                    # notice would caption a finished image with a promise of more to come.
-                    announce=False,
+                    streamer=streamer, open_stream=open_stream, message_id=message.id
                 )
         except Exception as exc:
             logfire.warn(
@@ -2283,6 +2285,31 @@ class ReplyGeneratorCogs(commands.Cog):
         if swept:
             logfire.info("scheduled memory consolidation sweep", count=swept)
 
+    async def _deliver_failure_notice(self, *, message: Message, error_embed: Embed) -> None:
+        """Shows the turn's failure, on the reply it was streaming into where there is one.
+
+        Half the turns that fail here already painted something (23 of 46 in one 2026-08-21 log),
+        and left beside that reply the embed reads as unrelated while the reply itself, carrying
+        no usage footer, reads as an answer that merely stopped. So the streamer is asked first
+        and takes the error onto its own message. Everything it turns down -- every failure
+        before the answer, and a retry notice already withdrawn -- gets a fresh message here.
+        """
+        streamer = current_answer_streamer.get()
+        if streamer is not None and await streamer.land_failure(embed=error_embed):
+            return
+        spacer = embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message)
+        try:
+            await message.reply(content=None, embed=error_embed, **spacer)
+        except HTTPException as send_error:
+            # Source deleted before the error landed (50035): send it unparented. Rebuild
+            # the spacer; the failed reply already consumed the single-use spacer file.
+            if send_error.code != 50035 and not isinstance(send_error, NotFound):
+                raise
+            fresh_spacer = embed_spacer_payload(
+                embeds=[error_embed], is_edit=False, target=message
+            )
+            await message.channel.send(content=None, embed=error_embed, **fresh_spacer)
+
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
         """Listens for messages and handles AI reply generation.
@@ -2368,18 +2395,7 @@ class ReplyGeneratorCogs(commands.Cog):
                     color=DISCORD_RED,
                 )
                 error_embed.set_footer(text=type(e).__name__)
-                spacer = embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message)
-                try:
-                    await message.reply(content=None, embed=error_embed, **spacer)
-                except HTTPException as send_error:
-                    # Source deleted before the error landed (50035): send it unparented. Rebuild
-                    # the spacer; the failed reply already consumed the single-use spacer file.
-                    if send_error.code != 50035 and not isinstance(send_error, NotFound):
-                        raise
-                    fresh_spacer = embed_spacer_payload(
-                        embeds=[error_embed], is_edit=False, target=message
-                    )
-                    await message.channel.send(content=None, embed=error_embed, **fresh_spacer)
+                await self._deliver_failure_notice(message=message, error_embed=error_embed)
             except Exception as report_error:
                 # Broad on purpose: this is the last-resort user notice; nothing above it can
                 # recover, and it must not displace the original failure.
