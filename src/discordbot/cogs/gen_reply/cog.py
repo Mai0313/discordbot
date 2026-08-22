@@ -177,11 +177,21 @@ HISTORY_PER_MESSAGE_OVERHEAD = 40
 # How many history attachments ride as real uploaded files. The char budget cannot see this cost
 # at all: an attachment-only message spends `HISTORY_PER_MESSAGE_OVERHEAD` there while re-sending
 # every one of its files to the model on every single reply, and the Files-API cache in `input.py`
-# only saves the re-upload, never the tokens. Measured over one day's replies on 2026-08-21, a
-# media part cost 1.3k to 1.9k input tokens against ~4k for the entire text budget, so 44 of them
-# made a 76k-token request that was 82% re-sent history. Past this many the older attachments
-# degrade to the `[attachment: ...]` markers the route already reads, which keeps the model aware
-# a file was posted without paying to re-read it.
+# only saves the re-upload, never the tokens. A media part costs ~1.1k input tokens, measured as
+# the median over consecutive replies in one channel, where the history text barely moves between
+# the two; the naive slope across all replies reads 2.3k and is measuring the channels that post
+# many files rather than the part. Past this many the older attachments degrade to the
+# `[attachment: ...]` markers the route already reads, which keeps the model aware a file was
+# posted without paying to re-read it.
+#
+# Ten was a judgement call when it landed and 249 post-deploy replies say to keep it, because what
+# a reply WOULD send uncapped is bimodal rather than graded: just over half want five parts or
+# fewer and never reach the cap, while the p90 is 92 and the worst 128. There is no bulge just
+# above ten to buy, so raising the cap to 20 un-caps 21 more of them and leaves 82 still capped,
+# and every further step buys less for more. Latency says the same: the answer awaits this render,
+# which runs a median 6s when the cap binds against 0s when it does not, and the uploads under it
+# share `MEDIA_CONCURRENCY` slots with every other reply in flight, so the cost of a raise is not
+# confined to the reply that asked for it.
 MAX_HISTORY_MEDIA_PARTS = 10
 
 # The model this turn most recently dispatched on, so `gen_reply failed` can name it: the failure
