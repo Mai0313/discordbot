@@ -66,10 +66,11 @@ DISCORD_MESSAGE_LIMIT = 2000
 # doubling, and wide enough that the wait is the point: a provider 5xx burst is what this retry
 # exists for, and re-opening the stream a second or two after one started reaches the same
 # unhealthy deployment, so the attempts are spent rather than spaced. Every attempt costs the
-# same, so the worst case for one reply is (`ANSWER_STREAM_MAX_ATTEMPTS` - 1) of these. The
-# jitter is spelled rather than left to tenacity's default because it is the half that stops a
-# busy channel's replies retrying in lockstep, and because it is ADDITIVE and independent of the
-# interval -- a test zeroing the interval alone still sleeps.
+# same, so the worst case for one reply is (`ANSWER_STREAM_MAX_ATTEMPTS` - 1) of these. The jitter
+# is a whole `wait_random` added beside the interval rather than a parameter of it, so dropping
+# that half removes jitter outright rather than falling back to a library default: it is what
+# stops a busy channel's replies retrying in lockstep, and being ADDITIVE and independent of the
+# interval is why a test zeroing the interval alone still sleeps.
 ANSWER_RETRY_INTERVAL_SECONDS = 5.0
 ANSWER_RETRY_JITTER_SECONDS = 1.0
 
