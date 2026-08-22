@@ -5,8 +5,10 @@ from typing import TYPE_CHECKING, cast
 from collections.abc import AsyncIterator
 
 import pytest
+from google.genai.errors import APIError
 
 from discordbot.utils.youtube import YOUTUBE_URL_RE
+from discordbot.utils.llm_errors import extract_friendly_error, is_retryable_llm_error
 from discordbot.cogs.gen_reply.interactions import to_interactions_input, adapt_interactions_stream
 
 from tests.helpers.casting import step_dicts, as_interaction_event_stream
@@ -196,12 +198,35 @@ async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     assert _ns(event=out[0]).response.output is None
 
 
-async def test_adapt_interactions_stream_raises_on_error_event() -> None:
-    """An error event surfaces as an exception for the pipeline's outer handler."""
-    events = [SimpleNamespace(event_type="error", error="boom")]
-
-    with pytest.raises(RuntimeError):
+async def _raise_from_error_event(error: object) -> APIError:
+    """Drives the adapter over one error event and returns what it raised."""
+    events = [SimpleNamespace(event_type="error", error=error)]
+    with pytest.raises(APIError) as raised:
         async for _ in adapt_interactions_stream(
             stream=as_interaction_event_stream(fake=_aiter(events=events))
         ):
             pass
+    return raised.value
+
+
+async def test_adapt_interactions_stream_raises_a_classifiable_error_event() -> None:
+    """An in-band error surfaces as an SDK error the answer retry and the user can both read.
+
+    A bare exception here would leave the YouTube answer backend sitting inside
+    `stream_answer_with_retry` while never being retryable, and would show the user this
+    event's repr instead of what the provider actually said.
+    """
+    transient = await _raise_from_error_event(
+        error=SimpleNamespace(code="503", message="high demand")
+    )
+    assert extract_friendly_error(exc=transient) == "high demand"
+    assert is_retryable_llm_error(exc=transient) is True
+
+    # `Error.code` is an optional string whose vocabulary Google does not document, so only a
+    # decimal one is forwarded as a status; anything else stays unclassifiable and is not
+    # retried rather than guessed at.
+    opaque = await _raise_from_error_event(
+        error=SimpleNamespace(code="UNAVAILABLE", message="high demand")
+    )
+    assert is_retryable_llm_error(exc=opaque) is False
+    assert is_retryable_llm_error(exc=await _raise_from_error_event(error=None)) is False

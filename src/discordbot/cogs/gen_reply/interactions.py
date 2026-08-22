@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal, cast
 from collections.abc import AsyncIterator
 
 from google import genai
+from google.genai.errors import APIError
 from openai.types.responses import ResponseStreamEvent
 from google.genai.interactions import (
     StepParam,
@@ -218,7 +219,25 @@ async def adapt_interactions_stream(
                 ),
             )
         elif event.event_type == "error":
-            raise RuntimeError(f"Gemini interactions stream error: {event!r}")
+            # Typed rather than a bare RuntimeError, for two readers downstream: the answer
+            # retry can only classify an SDK error, and `extract_friendly_error` shows the
+            # user the provider's own message instead of this event's repr. `Error.code` is an
+            # optional STRING whose vocabulary Google does not document, so it is forwarded as
+            # a status only when it is a decimal one; anything else lands unclassifiable and
+            # is not retried, which is the same conservative default the predicate applies to
+            # every other unreadable failure.
+            failure = event.error
+            code = failure.code if failure is not None else None
+            raise APIError(
+                code=int(code) if code is not None and code.isdigit() else 0,
+                response_json={
+                    "error": {
+                        "message": (failure.message if failure is not None else None)
+                        or f"Gemini interactions stream error: {event!r}",
+                        "code": code,
+                    }
+                },
+            )
 
 
 async def create_interactions_answer_stream(
