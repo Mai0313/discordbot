@@ -48,14 +48,11 @@ from discordbot.utils.llm_errors import (
 )
 from discordbot.cogs.gen_reply.cog import (
     UNROUTED_REPLY,
-    HISTORY_CHAR_BUDGET,
     LINK_CONTEXT_SOURCES,
-    HISTORY_MESSAGE_LIMIT,
-    MAX_HISTORY_MEDIA_PARTS,
-    HISTORY_PER_MESSAGE_OVERHEAD,
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
+    _reference_header,
     _count_media_parts,
     _run_until_deadline,
     _can_launch_research,
@@ -85,8 +82,19 @@ from discordbot.cogs.gen_reply.markers import (
     extract_inline_markers,
     scrub_markers_for_preview,
 )
-from discordbot.cogs.gen_reply.prompts import IMAGE_PROMPT, VIDEO_PROMPT, MEMORY_SELECT_PROMPT
+from discordbot.cogs.gen_reply.prompts import (
+    IMAGE_PROMPT,
+    REPLY_PROMPT,
+    VIDEO_PROMPT,
+    MEMORY_SELECT_PROMPT,
+)
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.typings.context_budgets import (
+    HISTORY_CHAR_BUDGET,
+    HISTORY_MESSAGE_LIMIT,
+    MAX_HISTORY_MEDIA_PARTS,
+    HISTORY_PER_MESSAGE_OVERHEAD,
+)
 from discordbot.cogs.gen_reply.streaming import (
     DISCORD_MESSAGE_LIMIT,
     REASONING_PREVIEW_MAX_CHARS,
@@ -7507,6 +7515,87 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     assert memory_index < reference_index < current_index
     assert "directly replying to this message" in blocks[reference_index][1]
     assert "reply to the Reference Message above" in blocks[current_index][1]
+
+
+async def test_the_history_separator_names_the_block_without_inviting_an_answer_from_it(
+    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The history separator is a label; where the subject may come from is a developer rule.
+
+    The old separator read "Chat History that might be helpful for answering", an invitation
+    that competed with the Reference Message's own claim to be the primary context. Behaviour
+    rules belong in `instructions`, which outranks anything in `input`, so the rule moved there
+    and the separator kept only the naming. This render also feeds memory selection, the media
+    persona reply and the phase-1 extraction transcript, none of which is answering a question,
+    which is the second reason the rule cannot live on the block itself.
+    """
+    del economy_isolated_db, memory_isolated_dir
+    cog = _cog()
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.cog.schedule_memory_update", lambda **kwargs: None
+    )
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
+
+    older = FakeMessage(content="舊話題", author=FakeAuthor(user_id=2))
+
+    async def fake_history(
+        limit: int, before: FakeMessage, oldest_first: bool
+    ) -> AsyncIterator[FakeMessage]:
+        """Yields one older message so the history block is rendered at all."""
+        yield older
+
+    message = FakeMessage(content="<@999> 真假", author=FakeAuthor(user_id=1))
+    message.channel = FakeChannel(history=fake_history)
+    _recorded(cog).responses.stream_queue = [
+        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
+    ]
+
+    await _reply_via_pipeline(cog=cog, message=message)
+
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    history_header = next(
+        text
+        for _role, text in iter_text_blocks(request=answer)
+        if text.startswith("==== Chat History")
+    )
+    assert history_header == "==== Chat History: earlier messages in this channel. ===="
+
+
+def test_the_subject_rule_rides_the_developer_prompt_with_its_recap_exception() -> None:
+    """The rule the history separator no longer carries lives in `REPLY_PROMPT`.
+
+    `REPLY_PROMPT` reaches the answer through `instructions`, which has developer authority
+    and outranks everything in `input`, so this is where a behaviour rule belongs. The recap
+    carve-out is pinned with it: without that sentence the rule forbids answering the one
+    question whose subject genuinely is the history.
+    """
+    assert "take the subject of your answer only from the Current Message" in REPLY_PROMPT
+    assert "a question about the channel's own conversation" in REPLY_PROMPT
+    # The invitation this replaced must not come back on the block itself.
+    assert "might be helpful for answering" not in REPLY_PROMPT
+
+
+def test_only_the_replied_to_message_claims_the_current_message_is_about_it() -> None:
+    """The attachment sentence rides the direct link alone, not every link in the chain.
+
+    A chain runs to `MAX_REFERENCE_CHAIN_DEPTH`, so on every link it would leave three blocks
+    each asserting they are what the Current Message is about, which is the ambiguity the
+    sentence was added to remove.
+    """
+    direct = _reference_header(
+        ref=as_message(fake=FakeMessage(content="原訊息", author=FakeAuthor(user_id=4))),
+        is_direct=True,
+    )
+    ancestor = _reference_header(
+        ref=as_message(fake=FakeMessage(content="更早的", author=FakeAuthor(user_id=5))),
+        is_direct=False,
+    )
+
+    direct_text = next(text for _role, text in iter_text_blocks(request=[direct]))
+    ancestor_text = next(text for _role, text in iter_text_blocks(request=[ancestor]))
+    assert "that something is here, this message's attachments included" in direct_text
+    assert "attachments included" not in ancestor_text
+    assert "An earlier message in the reply thread" in ancestor_text
 
 
 async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(

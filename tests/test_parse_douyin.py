@@ -16,12 +16,12 @@ from discordbot.utils.douyin import (
     DouyinTooLargeError,
     DouyinUnavailableError,
 )
+from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
 from discordbot.cogs.gen_reply.link_sources import douyin as douyin_builder
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_BLOCKED_NOTICE,
     DOUYIN_CONTEXT_SEPARATOR,
     DOUYIN_UNREADABLE_NOTICE,
-    MAX_DOUYIN_INGEST_IMAGES,
     DOUYIN_UNAVAILABLE_NOTICE,
     DOUYIN_TEXT_ONLY_SEPARATOR,
     build_douyin_context_messages,

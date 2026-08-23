@@ -74,6 +74,7 @@ nav:
                   - memory_tool: Reference/discordbot/cogs/gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/gen_reply/prompts.md
                   - streaming: Reference/discordbot/cogs/gen_reply/streaming.md
+                  - toolkit: Reference/discordbot/cogs/gen_reply/toolkit.md
               - log_msg:
                   - cog: Reference/discordbot/cogs/log_msg/cog.md
               - media_cleanup:
@@ -102,6 +103,9 @@ nav:
               - economy:
                   - database: Reference/discordbot/services/economy/database.md
                   - presentation: Reference/discordbot/services/economy/presentation.md
+              - gemini_keys:
+                  - balancer: Reference/discordbot/services/gemini_keys/balancer.md
+                  - database: Reference/discordbot/services/gemini_keys/database.md
               - memory:
                   - constants: Reference/discordbot/services/memory/constants.md
                   - database: Reference/discordbot/services/memory/database.md
@@ -116,6 +120,7 @@ nav:
           - typings:
               - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md
+              - context_budgets: Reference/discordbot/typings/context_budgets.md
               - douyin: Reference/discordbot/typings/douyin.md
               - economy: Reference/discordbot/typings/economy.md
               - games: Reference/discordbot/typings/games.md

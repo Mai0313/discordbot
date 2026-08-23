@@ -54,14 +54,16 @@ from discordbot.services.memory.deltas import (
     render_existing_facts,
     tone_evidence_from_raw,
 )
+from discordbot.typings.context_budgets import (
+    MEMORY_INJECTION_MAX_CHARS,
+    MEMORY_INJECTION_WARN_CHARS,
+    MEMORY_DETAIL_CONTEXT_MAX_CHARS,
+)
 from discordbot.services.memory.constants import (
     COMPACTION_TRIGGER_CHARS,
     MEMORY_GLOBAL_CONCURRENCY,
-    MEMORY_INJECTION_MAX_CHARS,
-    MEMORY_INJECTION_WARN_CHARS,
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
-    MEMORY_DETAIL_CONTEXT_MAX_CHARS,
     MEMORY_REGENERATION_COOLDOWN_SECONDS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
