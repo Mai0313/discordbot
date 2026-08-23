@@ -38,6 +38,7 @@ from discordbot.utils.douyin import (
 )
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 
 # Resolution asked of Douyin for the clip the model reads: the lowest preset (540p).
@@ -46,11 +47,6 @@ from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_i
 # upload time on the reply's critical path. A human watching the expansion does notice, which
 # is why that path still asks for the best available.
 AI_INGEST_QUALITY: VideoQuality = "low"
-
-# Cap on images ingested from a photo post. Each costs a download plus an upload, and a model
-# reading eight frames of a gallery already has the gist; the cog's Discord-side cap is
-# separate and larger, because attaching a file is far cheaper than tokenizing it.
-MAX_DOUYIN_INGEST_IMAGES = 8
 
 # Leads the injected blocks when the media really is attached. The wording is load-bearing on
 # two fronts: it tells the model the link is ALREADY fetched below (so it answers about the

@@ -46,12 +46,12 @@ from discordbot.services.memory.facts import (
     render_fact_file,
     render_memory_document,
 )
+from discordbot.typings.context_budgets import MEMORY_INJECTION_MAX_CHARS
 from discordbot.services.memory.constants import (
     RAW_FILE_MAX_BYTES,
     TONE_FILE_MAX_BYTES,
     DETAIL_FILE_MAX_BYTES,
     RENDER_CACHE_MAX_ENTRIES,
-    MEMORY_INJECTION_MAX_CHARS,
     DETAIL_FILE_TRIM_TARGET_BYTES,
 )
 

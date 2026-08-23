@@ -24,6 +24,7 @@ from discordbot.typings.models import ModelSettings
 from discordbot.cogs.feedback.github import CloseOutcome, IssueComment
 from discordbot.cogs.feedback.prompts import CLOSE_NOTICE_TRANSLATION_PROMPT
 from discordbot.cogs.feedback.database import FeedbackTicket
+from discordbot.typings.context_budgets import CLOSE_NOTICE_LANGUAGE_SAMPLE_CHARS
 
 # Discord allows 1024 per field value and 4096 per description. Both caps here sit under
 # those with room, and a cut is marked rather than silent: a maintainer's answer that just
@@ -44,11 +45,6 @@ _CLOSING_WINDOW = timedelta(days=1)
 # with no notice row and would otherwise mail all of them at once, announcing outcomes from
 # months ago as news. It keeps working afterwards for a bot that was down for a fortnight.
 BACKFILL_CUTOFF = timedelta(days=7)
-
-# What the reporter's own words are for: telling the model which language to translate
-# into. Enough to read the language off, short enough not to crowd out the text being
-# translated, and cut from the front because that is where people state the problem.
-_LANGUAGE_SAMPLE_CHARS = 200
 
 _TITLES: dict[CloseOutcome, str] = {"completed": "✅ 已完成", "not_planned": "⚪ 不列入計劃"}
 _COLORS: dict[CloseOutcome, int] = {"completed": DISCORD_GREEN, "not_planned": NEUTRAL_GREY}
@@ -153,7 +149,7 @@ async def translate_comment(
     to be empty, which would leave nothing to aim at at all.
     """
     body = comment.body.strip()
-    sample = ticket.raw_text.strip()[:_LANGUAGE_SAMPLE_CHARS]
+    sample = ticket.raw_text.strip()[:CLOSE_NOTICE_LANGUAGE_SAMPLE_CHARS]
     translated = await parse_responses_or_none(
         client=client,
         model=model,

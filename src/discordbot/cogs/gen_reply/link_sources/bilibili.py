@@ -37,6 +37,7 @@ from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.downloader import VideoMetadata, VideoDownloader, download_with_stop_signal
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
+from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 
 # Resolution asked of yt-dlp for the clip the model reads: the lowest preset (height<=480).
@@ -51,10 +52,6 @@ AI_INGEST_QUALITY: VideoQuality = "low"
 # probe alone is instant, deterministic, and earns honest wording instead of a generic
 # "could not retrieve this time" after minutes of silence.
 MAX_BILIBILI_INGEST_DURATION_SECONDS = 30 * 60
-
-# Render-time cap on the description injected as text. Bilibili descriptions can run to
-# thousands of characters of tags and sponsor text; the head is where the signal lives.
-MAX_BILIBILI_DESCRIPTION_CHARS = 1000
 
 # Concurrent Bilibili fetches across the builder. Bounds parallel large downloads on the
 # host's disk and bandwidth, not a WAF (Bilibili does not ban the way Douyin does).

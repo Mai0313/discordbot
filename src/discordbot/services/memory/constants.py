@@ -58,17 +58,6 @@ STABLE_FRESHNESS_WINDOW_DAYS = 45
 # deterministic date beats a rule the rewrite had to re-apply correctly every pass.
 RECENT_CONTEXT_TTL_DAYS = 30
 
-# Ceiling on one rendered memory document (the merged compartments injected for one
-# reply). Measured against the live store, today's documents run to a median of
-# ~800 bytes and a maximum of 25 KB, so this is a backstop that fires on nobody: it
-# exists so a runaway scope degrades to its newest facts plus an explicit notice
-# instead of silently bloating every request. The warn threshold is the operator's
-# signal that the prompt-side budget stopped working. Rendering stops at the cap;
-# nothing is deleted, so the cap can never fight the next consolidation over
-# content it would immediately write back.
-MEMORY_INJECTION_MAX_CHARS = 30_000
-MEMORY_INJECTION_WARN_CHARS = 24_000
-
 # Bound on the rendered-document cache. One live entry per (scope, reading context)
 # is the working set, so this is only here to stop a long-lived process holding keys
 # for scopes it will never serve again; the whole cache is dropped when it is hit.
@@ -88,35 +77,16 @@ MAX_NET_FACT_DELETIONS_FLOOR = 3
 # misbehaving rewrite from growing the always-read tier unbounded.
 TONE_FILE_MAX_BYTES = 4_096
 
-# Tail window of the detail file fed to consolidation as low-trust provenance.
-# Effectively the whole evidence log for any realistic user: this bot injects
-# memory exactly once per reply with no on-demand retrieval (unlike codex), so the
-# stored facts must be distilled from the full evidence base in the background. The
-# bound only keeps a pathological log inside the consolidation input window
-# (~500k zh-TW chars stays well under the 1M-token window with the stored facts
-# and raw batch on top).
-MEMORY_DETAIL_CONTEXT_MAX_CHARS = 500_000
-
 # Hard cap for the cold-tier detail file. Content past the consolidation read
-# window (MEMORY_DETAIL_CONTEXT_MAX_CHARS * 4 bytes) is unreachable by every
-# consumer, so trimming the oldest entries once the file outgrows the cap
+# window (`typings/context_budgets.py::MEMORY_DETAIL_CONTEXT_MAX_CHARS` * 4 bytes;
+# it sits there because the read window bounds a request while this bounds a file)
+# is unreachable by every consumer, so trimming the oldest once the file outgrows it
 # costs nothing functionally and keeps disk bounded. The gap between cap and
 # trim target amortizes the O(file) rewrite to roughly once per megabyte of
 # new evidence; the cap must stay above the read window so a trim can never
-# cut into reachable content.
+# cut into reachable content, which `tests/test_context_budgets.py` pins.
 DETAIL_FILE_MAX_BYTES = 4_194_304
 DETAIL_FILE_TRIM_TARGET_BYTES = 3_145_728
-
-# Phase-1 transcript truncation (keeps head and tail, drops the middle). Large
-# on purpose: the reply history window should reach extraction whole, and the
-# memory models accept 1M-token inputs.
-MEMORY_TRANSCRIPT_MAX_CHARS = 100_000
-
-# Cap for the bot's own reply inside the transcript. The reply is secondary
-# evidence and is appended last, so without this cap a long (e.g. SUMMARY)
-# reply fills the entire kept tail and the middle-truncation drops the current
-# user message right before it.
-MEMORY_REPLY_MAX_CHARS = 8_000
 
 # The individual phase-1 and per-compartment calls carry no bound of their own. Nobody is
 # waiting on a background memory update, and the OpenAI client bounds every request it makes,

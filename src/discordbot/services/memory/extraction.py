@@ -29,10 +29,7 @@ from discordbot.services.memory.prompts import (
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
-from discordbot.services.memory.constants import (
-    MEMORY_REPLY_MAX_CHARS,
-    MEMORY_TRANSCRIPT_MAX_CHARS,
-)
+from discordbot.typings.context_budgets import MEMORY_REPLY_MAX_CHARS, MEMORY_TRANSCRIPT_MAX_CHARS
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_text_param import ResponseInputTextParam

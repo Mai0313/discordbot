@@ -39,30 +39,16 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.typings.context_budgets import (
+    MAX_THREADS_POSTS,
+    MAX_THREADS_REPLIES,
+    MAX_THREADS_MEDIA_PARTS,
+)
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_image_param import ResponseInputImageParam
-
-# Cap on media parts injected for the whole block, shared by the linked post and the post it
-# quotes (`_media_plan` splits it, target first). Mirrors the parse_threads cog's 10-embed
-# ceiling so a huge carousel cannot bloat the answer input — and, now that each part costs a
-# fetch plus an upload, cannot blow the media budget either.
-MAX_THREADS_MEDIA_PARTS = 10
-
-# Cap on posts rendered from a reply chain, mirroring the cog's deep-chain trim
-# (`results[-_MAX_EMBEDS_PER_MESSAGE:]`): a linked reply deep in a long Threads thread would
-# otherwise render every ancestor's text and bloat or overflow the answer input. The chain is
-# ordered oldest-first, so the tail keeps the target plus its nearest ancestors.
-MAX_THREADS_POSTS = 6
-
-# Cap on the comments rendered below the target, counted across every branch. Kept on its own
-# axis rather than sharing MAX_THREADS_POSTS: the chain is the context leading UP to the linked
-# post, the comments are the discussion under it, and one should never squeeze the other out.
-# Sized to roughly what one page ships (the sampled pages carry 0-46 comments, median 3), so it
-# is a backstop rather than a policy; `_select_replies` decides what a trim actually drops.
-MAX_THREADS_REPLIES = 30
 
 # The pipeline's own inline markers, opening or closing. Quoted post text is the one place they
 # can arrive written by someone else; `_defuse_markers` has the why. Case-insensitive because

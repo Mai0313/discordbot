@@ -71,8 +71,8 @@ from discordbot.services.memory.store import (
     unaccounted_files,
 )
 from discordbot.services.memory.deltas import partition_raw_entries
+from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.pipeline import flavor_of, regenerate_main_memory
-from discordbot.services.memory.constants import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.extraction import MemoryExtractorAI
 
 if TYPE_CHECKING:

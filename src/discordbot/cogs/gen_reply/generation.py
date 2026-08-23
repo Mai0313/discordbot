@@ -74,15 +74,11 @@ from discordbot.typings.timeouts import (
     VIDEO_RENDER_TIMEOUT_SECONDS,
     PROMPT_REFINE_TIMEOUT_SECONDS,
 )
+from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 
 if TYPE_CHECKING:
     from google.genai.interactions import ImageContentMimeType
     from openai.types.responses.response_input_file_param import ResponseInputFileParam
-
-# omni accepts a handful of subject reference images. Shared so the VIDEO route caps the frames it
-# grounds the prompt director on to exactly the set render will send, rather than letting the
-# director describe references omni never receives (and uploading those unused bytes on the path).
-MAX_VIDEO_REFERENCE_IMAGES = 3
 
 # Tunable voice config (edit here). The style directive fixes the voice age/gender and lets
 # the spoken tone follow the reply's own wording (a heavy fixed tone sounds forced and

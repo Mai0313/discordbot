@@ -83,6 +83,15 @@ from discordbot.cogs.gen_reply.prompts import (
     REQUEST_LOCATION_CONTEXT_PROMPT,
 )
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.typings.context_budgets import (
+    HISTORY_CHAR_BUDGET,
+    HISTORY_MESSAGE_LIMIT,
+    MAX_HISTORY_MEDIA_PARTS,
+    MAX_REFERENCE_CHAIN_DEPTH,
+    MAX_VIDEO_REFERENCE_IMAGES,
+    MEMORY_CONTEXT_TARGET_USERS,
+    HISTORY_PER_MESSAGE_OVERHEAD,
+)
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
 from discordbot.cogs.gen_reply.streaming import (
     ResponseStreamer,
@@ -97,7 +106,6 @@ from discordbot.services.memory.pipeline import (
     consolidate_if_needed,
     schedule_memory_update,
 )
-from discordbot.cogs.gen_reply.generation import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.memory_tool import (
     NO_STORED_MEMORY,
     GET_USER_MEMORY_TOOL,
@@ -146,53 +154,8 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, Coroutine
 
 
-# Preserve the existing eight-user context target for optional model-selected additions.
-# Deterministic participants are never displaced: if they fill or exceed the target, the
-# selector is skipped; otherwise it can use only the remaining slots.
-MEMORY_CONTEXT_TARGET_USERS = 8
-
 # Recorded as a reply's route when the pipeline failed before the router returned one.
 UNROUTED_REPLY = "unrouted"
-
-# How much channel history one answer reads, bounded on three axes (the third is
-# `MAX_HISTORY_MEDIA_PARTS` below) because no one of them is the right shape alone. Discord
-# conversation here is overwhelmingly one-line messages — measured across 10M logged messages,
-# the median is 6 characters and the busiest channel's last 200 come to 1.5k — so a message
-# count alone lets a chatty channel hand the model almost nothing while a channel of long posts
-# blows the input up. Whichever bound binds first wins, and in practice that has only ever been
-# the char budget: it alone held history to 107-119 messages at 8000, so the message limit is a
-# backstop rather than the working bound.
-HISTORY_MESSAGE_LIMIT = 500
-# Doubled from 8000 once the media cap landed. Text was never the expensive half — the whole
-# budget is worth ~4k input tokens against 1.3k to 1.9k for a single attachment — so what made
-# widening it unsafe was that more messages meant proportionally more files, which the cap now
-# decouples.
-HISTORY_CHAR_BUDGET = 16000
-
-# What a history message costs beyond its own text: the rendered form carries an author header,
-# and an attachment-only message has empty `content` but still renders a marker standing in for
-# it. Without a floor per message a run of image posts would count as free and overshoot.
-HISTORY_PER_MESSAGE_OVERHEAD = 40
-
-# How many history attachments ride as real uploaded files. The char budget cannot see this cost
-# at all: an attachment-only message spends `HISTORY_PER_MESSAGE_OVERHEAD` there while re-sending
-# every one of its files to the model on every single reply, and the Files-API cache in `input.py`
-# only saves the re-upload, never the tokens. A media part costs ~1.1k input tokens, measured as
-# the median over consecutive replies in one channel, where the history text barely moves between
-# the two; the naive slope across all replies reads 2.3k and is measuring the channels that post
-# many files rather than the part. Past this many the older attachments degrade to the
-# `[attachment: ...]` markers the route already reads, which keeps the model aware a file was
-# posted without paying to re-read it.
-#
-# Ten was a judgement call when it landed and 249 post-deploy replies say to keep it, because what
-# a reply WOULD send uncapped is bimodal rather than graded: just over half want five parts or
-# fewer and never reach the cap, while the p90 is 92 and the worst 128. There is no bulge just
-# above ten to buy, so raising the cap to 20 un-caps 21 more of them and leaves 82 still capped,
-# and every further step buys less for more. Latency says the same: the answer awaits this render,
-# which runs a median 6s when the cap binds against 0s when it does not, and the uploads under it
-# share `MEDIA_CONCURRENCY` slots with every other reply in flight, so the cost of a raise is not
-# confined to the reply that asked for it.
-MAX_HISTORY_MEDIA_PARTS = 10
 
 # The model this turn most recently dispatched on, so `gen_reply failed` can name it: the failure
 # surfaces in `on_message`, several frames above every place that picks a model, and a provider
@@ -445,12 +408,12 @@ def _find_youtube_url(message: Message) -> str | None:
 
 
 def _walk_reference_chain(message: Message) -> list[Message]:
-    """Walks the reply-reference chain up to depth 3, oldest link last."""
+    """Walks the reply-reference chain up to `MAX_REFERENCE_CHAIN_DEPTH`, oldest link last."""
     chain: list[Message] = []
     visited: set[int] = {message.id}
     current = message
     while (
-        len(chain) < 3
+        len(chain) < MAX_REFERENCE_CHAIN_DEPTH
         and current.reference
         and isinstance(current.reference.resolved, Message)
         and current.reference.resolved.id not in visited
@@ -971,7 +934,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_reference_message(
         self, toolkit: GeminiKeyToolkit, message: Message, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
-        """Walks the reference chain up to depth 3 and renders each link as context.
+        """Walks the reference chain up to `MAX_REFERENCE_CHAIN_DEPTH`, rendering each link.
 
         `text_only` emits attachment markers instead of uploaded file parts, for the
         route and memory-selection calls that must not wait on the Files API.

@@ -9,13 +9,13 @@ import threading
 import pytest
 
 from discordbot.utils.downloader import VideoMetadata, DownloadResult, VideoDownloader
+from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
 from discordbot.cogs.gen_reply.link_sources import bilibili as bilibili_builder
 from discordbot.cogs.gen_reply.link_sources.bilibili import (
     BILIBILI_CONTEXT_SEPARATOR,
     BILIBILI_UNREADABLE_NOTICE,
     BILIBILI_TOO_LONG_SEPARATOR,
     BILIBILI_TEXT_ONLY_SEPARATOR,
-    MAX_BILIBILI_DESCRIPTION_CHARS,
     MAX_BILIBILI_INGEST_DURATION_SECONDS,
     build_bilibili_context_messages,
 )

@@ -48,20 +48,16 @@ from discordbot.utils.llm_errors import (
 )
 from discordbot.cogs.gen_reply.cog import (
     UNROUTED_REPLY,
-    HISTORY_CHAR_BUDGET,
     LINK_CONTEXT_SOURCES,
-    HISTORY_MESSAGE_LIMIT,
-    MAX_HISTORY_MEDIA_PARTS,
-    HISTORY_PER_MESSAGE_OVERHEAD,
     ReplyGeneratorCogs,
     _discard_task,
     _find_youtube_url,
+    _reference_header,
     _count_media_parts,
     _run_until_deadline,
     _can_launch_research,
     _link_url_for_source,
     _trim_history_to_budget,
-    _reference_header,
     _await_deadline_bound_task,
     _history_media_over_budget,
     _build_runtime_instructions,
@@ -88,11 +84,17 @@ from discordbot.cogs.gen_reply.markers import (
 )
 from discordbot.cogs.gen_reply.prompts import (
     IMAGE_PROMPT,
-    VIDEO_PROMPT,
     REPLY_PROMPT,
+    VIDEO_PROMPT,
     MEMORY_SELECT_PROMPT,
 )
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.typings.context_budgets import (
+    HISTORY_CHAR_BUDGET,
+    HISTORY_MESSAGE_LIMIT,
+    MAX_HISTORY_MEDIA_PARTS,
+    HISTORY_PER_MESSAGE_OVERHEAD,
+)
 from discordbot.cogs.gen_reply.streaming import (
     DISCORD_MESSAGE_LIMIT,
     REASONING_PREVIEW_MAX_CHARS,
@@ -7580,9 +7582,13 @@ def test_only_the_replied_to_message_claims_the_current_message_is_about_it() ->
     each asserting they are what the Current Message is about, which is the ambiguity the
     sentence was added to remove.
     """
-    direct = _reference_header(ref=FakeMessage(content="原訊息", author=FakeAuthor(user_id=4)), is_direct=True)
+    direct = _reference_header(
+        ref=as_message(fake=FakeMessage(content="原訊息", author=FakeAuthor(user_id=4))),
+        is_direct=True,
+    )
     ancestor = _reference_header(
-        ref=FakeMessage(content="更早的", author=FakeAuthor(user_id=5)), is_direct=False
+        ref=as_message(fake=FakeMessage(content="更早的", author=FakeAuthor(user_id=5))),
+        is_direct=False,
     )
 
     direct_text = next(text for _role, text in iter_text_blocks(request=[direct]))
