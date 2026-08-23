@@ -289,8 +289,8 @@ class RuntimeModelCatalog(BaseModel):
         link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
-            `gemini-3.7-flash` at `high`, on every hour. The peak-hour split below is parked,
-            not deleted: see the comment there.
+            `gemini-3.1-pro-preview` at `high`, on every hour. The peak-hour split below is
+            parked, not deleted: see the comment there.
         """
         # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
@@ -308,12 +308,15 @@ class RuntimeModelCatalog(BaseModel):
         # proves nothing here; only the response's own `model` does.
         # Peak-hour branch parked 2026-08-22: it routed around 3.7 queueing in the busy hours,
         # which is what balancing the keys attacks, so it is held back to see if it is still
-        # needed. Uncomment to restore.
+        # needed. Both halves name the same snapshot since 2026-08-23, so uncommenting it
+        # restores the branch and not a split; one of them has to be repointed to buy anything.
         # if self.is_peak:
         #     return ModelSettings(
         #         name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index
         #     )
-        return ModelSettings(name="gemini-3.7-flash", effort="high", key_index=self.key_index)
+        return ModelSettings(
+            name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index
+        )
 
     @property
     def memory_extractor_model(self) -> ModelSettings:
