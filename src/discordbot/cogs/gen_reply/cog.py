@@ -468,10 +468,16 @@ def _reference_header(ref: Message, is_direct: bool) -> EasyInputMessageParam:
     `is_direct` marks the message the user is actually replying to (the immediate parent);
     older ancestors in the chain are labelled as thread context so only the real reply
     target reads as the primary context.
+
+    The attachment sentence rides the direct branch alone. A chain runs to
+    `MAX_REFERENCE_CHAIN_DEPTH`, so putting it on every link would leave up to three blocks
+    each claiming to be what the Current Message is about, which is the same defect this
+    wording exists to close.
     """
     relation = (
         "The user is directly replying to this message; it is the primary context for the "
-        "Current Message below."
+        "Current Message below. When the Current Message points at something without naming "
+        "it, that something is here, this message's attachments included."
         if is_direct
         else "An earlier message in the reply thread, for context."
     )
@@ -943,11 +949,19 @@ class ReplyGeneratorCogs(commands.Cog):
                 media_capped=sum(over_budget.values()),
                 message_id=message_id,
             )
+        # Names the block and stops there. The old wording invited the model to answer FROM the
+        # history ("that might be helpful for answering"), which competed with the Reference
+        # Message's own claim to be the primary context and lost the reply's subject to whatever
+        # in the window read as the most answerable thing. Where the subject may come from is a
+        # behaviour rule, so it lives in `REPLY_PROMPT` at developer authority instead. Keeping it
+        # out of here also keeps it out of the three other calls this render feeds, none of which
+        # is answering a question: memory selection, the media persona reply, and the phase-1
+        # extraction transcript, whose first message is this header verbatim.
         header = EasyInputMessageParam(
             role="system",
             content=[
                 ResponseInputTextParam(
-                    text="==== Chat History that might be helpful for answering. ====",
+                    text="==== Chat History: earlier messages in this channel. ====",
                     type="input_text",
                 )
             ],
