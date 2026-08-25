@@ -15,6 +15,7 @@ from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
 from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
+from discordbot.typings.memory import MemoryCredits
 from discordbot.typings.models import strip_key_suffix
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
@@ -77,6 +78,16 @@ ANSWER_RETRY_JITTER_SECONDS = 1.0
 # Shown on both retry surfaces, so the reaction on the source message and the notice on the
 # reply read as the same event rather than two unrelated hints.
 RETRY_HINT_EMOJI = "🔁"
+
+# One symbol per memory action, because all three notes stack in the same corner of the same
+# reply and used to share one `<:tag:>`: a reader could not tell "I read this person's memory"
+# from "I wrote this down about you" without parsing the whole sentence, and one did misread
+# the read credit as something the bot had just recorded. Each note also opens on its VERB for
+# the same reason. Plain unicode rather than app emoji because uploading one is not something
+# the bot can do; swapping in a custom `<:name:id>` later is a change to these three lines.
+MEMORY_READ_EMOJI = "📖"
+MEMORY_WRITE_EMOJI = "✏️"
+MEMORY_FORGET_EMOJI = "🩹"
 
 # The thinking preview is a live glance, not a transcript: keep only the newest few subtext
 # lines so a long think never grows into a wall of text above the reply. The char budget is
@@ -175,9 +186,9 @@ class ResponseStreamer(BaseModel):
     )
     input_tokens: int = Field(default=0, description="Input tokens reported by the stream.")
     output_tokens: int = Field(default=0, description="Output tokens reported by the stream.")
-    memory_lookups: list[str] = Field(
-        default_factory=list,
-        description="Labels of users whose stored memory was injected, for the footer.",
+    memory_lookups: MemoryCredits = Field(
+        default_factory=MemoryCredits,
+        description="Credits for the users whose stored memory was injected, for the footer.",
     )
     voice_generator: SkipValidation[VoiceGenerator | None] = Field(
         default=None,
@@ -694,13 +705,20 @@ class ResponseStreamer(BaseModel):
         # Credit looked-up memory owners on a second -# subtext line. Dedupe while
         # preserving lookup order; past two names collapse to "等 N 人" so a busy
         # lookup stays short. USAGE_FOOTER_RE matches this optional second line too.
+        # A user the reply read but cannot name is folded into that same count rather
+        # than printed, which is the only shape that reports them at all (see
+        # `MemoryCredits`), so the collapse also fires whenever there is one.
         memory_line = ""
-        if self.memory_lookups:
-            names = list(dict.fromkeys(self.memory_lookups))
-            if len(names) > 2:
-                memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names[:2])} 等 {len(names)} 人的記憶"
-            else:
-                memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names)} 的記憶"
+        names = list(dict.fromkeys(self.memory_lookups.named))
+        read_count = len(names) + self.memory_lookups.unnamed
+        if not names and read_count:
+            memory_line = f"\n-# {MEMORY_READ_EMOJI} 讀了 {read_count} 人的記憶"
+        elif read_count > len(names) or read_count > 2:
+            memory_line = (
+                f"\n-# {MEMORY_READ_EMOJI} 讀了 {', '.join(names[:2])} 等 {read_count} 人的記憶"
+            )
+        elif names:
+            memory_line = f"\n-# {MEMORY_READ_EMOJI} 讀了 {', '.join(names)} 的記憶"
         # Footer format must stay matchable by `utils/llm_transcript.py::USAGE_FOOTER_RE`; the
         # ⬆/⬇ icons are its anchor.
         model_label = (
@@ -740,7 +758,7 @@ class ResponseStreamer(BaseModel):
             image_count=len(self.image_prompts),
             music_requested=bool(self.music_prompt),
             video_requested=bool(self.video_prompt),
-            memory_lookups=len(self.memory_lookups),
+            memory_lookups=self.memory_lookups.total,
             chunked=chunked,
         )
         return self.stored_content

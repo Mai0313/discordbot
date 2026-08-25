@@ -30,7 +30,13 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig, GeminiKeySlot
 from discordbot.cogs.gen_reply import streaming as streaming_module
-from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
+from discordbot.typings.memory import (
+    MemoryFact,
+    MemoryOwner,
+    MemorySection,
+    MemoryCredits,
+    MemoryDurability,
+)
 from discordbot.typings.models import (
     EffortGrade,
     ModelSettings,
@@ -122,7 +128,7 @@ from discordbot.cogs.gen_reply.memory_tool import (
     MemoryReadContext,
     parse_user_id_list,
     memory_read_context,
-    memory_lookup_labels,
+    memory_lookup_credits,
     resolve_user_memories,
     build_memory_allowlist,
     compartments_for_reading,
@@ -2508,7 +2514,7 @@ async def test_voice_config_gate_controls_synthesizer(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -2567,7 +2573,7 @@ async def test_image_config_gate_controls_generator(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -4731,7 +4737,7 @@ async def test_gen_reply_routes_and_handlers_without_api(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -6021,7 +6027,7 @@ class _ThreadsStreamer:
     def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
         self,
         message: FakeMessage,
-        memory_lookups: list[str] | None = None,
+        memory_lookups: MemoryCredits | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
         model_effort: str = "",
@@ -7888,7 +7894,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -7996,7 +8002,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -8072,7 +8078,7 @@ async def test_memory_markers_route_by_the_message_not_by_the_note(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -8238,15 +8244,17 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     assert by_id["2"].memory == "(no stored memory for this user)"
 
 
-def test_absent_member_is_credited_by_id_never_by_the_alias_row(
+def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row(
     memory_isolated_dir: object,
 ) -> None:
-    """A member named only by the nickname table is credited by their bare id.
+    """A member named only by the nickname table is counted, not named and not id-dropped.
 
     The row is community prose the model reads; it can never be the public footer credit
-    (#463). Nothing else here can name them: the guild member cache is empty for an absent
-    member, and the identity the store stamps belongs to whichever guild's consolidation
-    last wrote that fact, so it would put another server's nickname in this channel.
+    (#463). Nothing else here can name them either: the guild member cache is empty for an
+    absent member, and the identity the store stamps belongs to whichever guild's
+    consolidation last wrote that fact, so it would put another server's nickname in this
+    channel. The bare id that used to fill the gap read as a memory the bot had just
+    written rather than as a person it had read, so the count is what the footer gets.
     """
     del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=42), text="第三人的記憶")
@@ -8257,7 +8265,10 @@ def test_absent_member_is_credited_by_id_never_by_the_alias_row(
         context=MemoryReadContext(guild_id=None, dm_partner_id=None),
     )
 
-    assert memory_lookup_labels(memories=memories) == ["42"]
+    credits = memory_lookup_credits(memories=memories)
+    assert credits.named == ()
+    assert credits.unnamed == 1
+    assert credits.total == 1
     # The model still reads the row the credit refused.
     assert memories[0].prompt_label == "Boss(社群暱稱:李董)"
 
@@ -8384,7 +8395,7 @@ def test_resolve_user_memories_fully_locked_reads_as_no_memory(
     )
 
     assert [memory.memory for memory in memories] == [NO_STORED_MEMORY]
-    assert memory_lookup_labels(memories=memories) == []
+    assert memory_lookup_credits(memories=memories).total == 0
 
 
 @pytest.mark.parametrize(
@@ -8721,7 +8732,6 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
         "stream_usage",
         "present",
         "absent",
-        "credited_once",
     ),
     [
         (
@@ -8731,11 +8741,10 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [["42"]],
             (100, 20),
             (5, 6),
-            ["⬆ 5 ⬇ 6", "\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
+            ["⬆ 5 ⬇ 6", "\n-# 📖 讀了 Tester (tester) 的記憶"],
             [],
-            None,
         ),
-        ([1, 42], (42, "Boss", "李董"), [], [["42"]], (100, 20), (5, 6), ["⬆ 105 ⬇ 26"], [], None),
+        ([1, 42], (42, "Boss", "李董"), [], [["42"]], (100, 20), (5, 6), ["⬆ 105 ⬇ 26"], []),
         (
             [1, 2, 3],
             None,
@@ -8743,9 +8752,8 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [],
             None,
             (1, 1),
-            ["\n-# <:tag:1517563887573143595> Tester (tester), Alice (alice) 等 3 人的記憶"],
+            ["\n-# 📖 讀了 Tester (tester), Alice (alice) 等 3 人的記憶"],
             [],
-            None,
         ),
         (
             [1, 42],
@@ -8754,9 +8762,8 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [["42"], ["42"]],
             None,
             (1, 1),
-            ["\n-# <:tag:1517563887573143595> Tester (tester), 42 的記憶"],
-            ["社群暱稱"],
-            "42",
+            ["\n-# 📖 讀了 Tester (tester) 等 2 人的記憶"],
+            ["社群暱稱", "42"],
         ),
         (
             [1],
@@ -8765,17 +8772,16 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [],
             None,
             (1, 1),
-            ["\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
+            ["\n-# 📖 讀了 Tester (tester) 的記憶"],
             ["社群暱稱"],
-            None,
         ),
-        ([], None, [], [["42"]], None, (5, 6), [], ["<:tag:1517563887573143595>"], None),
+        ([], None, [], [["42"]], None, (5, 6), [], ["📖"]),
     ],
     ids=[
         "skipped-selector-not-counted",
         "selection-usage-folded-in",
         "owners-collapse-past-two",
-        "absent-member-credited-by-id",
+        "absent-member-counted-never-named",
         "participant-alias-row-stays-out-of-the-credit",
         "no-memory-no-credit",
     ],
@@ -8792,7 +8798,6 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     stream_usage: tuple[int, int],
     present: list[str],
     absent: list[str],
-    credited_once: str | None,
 ) -> None:
     """The footer credits the memory owners actually read and folds selection tokens into usage.
 
@@ -8800,7 +8805,9 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     credit, the selection-request token contribution, the collapse to "等 N 人" past two owners,
     repeat-lookup de-duplication, and the no-credit case. Two of them also pin that the
     `## 成員稱呼` row never reaches this line from either side it used to (#463) — an absent
-    member is credited by their id, a participant by their Discord label.
+    member is counted into the "等 N 人" total and never named at all, a participant is named by
+    their Discord label. The line opens on 讀了 because the write notes share this corner of the
+    reply and a reader has to be able to tell them apart at a glance.
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
@@ -8851,8 +8858,6 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
         assert fragment in content
     for fragment in absent:
         assert fragment not in content
-    if credited_once is not None:
-        assert content.count(credited_once) == 1
 
 
 async def test_handle_message_reply_retains_author_memory_when_optional_selection_fails(
@@ -9542,7 +9547,7 @@ async def test_memory_selection_timeout_retains_author_memory(
     blocks = extract_user_memory_blocks(request=[context.memory_block])
     assert "甲" in (blocks.get(1) or "")
     assert 42 not in blocks
-    assert context.memory_labels
+    assert context.memory_credits.named
 
 
 async def test_memory_selection_timeout_without_author_memory_injects_nothing(
@@ -9558,7 +9563,7 @@ async def test_memory_selection_timeout_without_author_memory_injects_nothing(
     )
 
     assert context.memory_block is None
-    assert context.memory_labels == []
+    assert context.memory_credits.total == 0
 
 
 async def test_memory_selection_timeout_retains_author_and_reference_memory(
@@ -9584,7 +9589,7 @@ async def test_memory_selection_timeout_retains_author_and_reference_memory(
     blocks = extract_user_memory_blocks(request=[context.memory_block])
     assert "甲" in (blocks.get(1) or "")
     assert "乙" in (blocks.get(2) or "")
-    assert len(context.memory_labels) == 2
+    assert context.memory_credits.total == 2
 
 
 async def test_deterministic_memory_lookup_skips_locked_author_memory(
@@ -9611,7 +9616,7 @@ async def test_deterministic_memory_lookup_skips_locked_author_memory(
     )
 
     assert context.memory_block is None
-    assert context.memory_labels == []
+    assert context.memory_credits.total == 0
 
 
 def test_can_launch_research_requires_guild_text_channel() -> None:

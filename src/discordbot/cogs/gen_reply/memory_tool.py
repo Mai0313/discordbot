@@ -18,12 +18,13 @@ import re
 import json
 
 from nextcord import User, Member, Message, DMChannel
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, ConfigDict
 from nextcord.utils import escape_mentions
 from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
+from discordbot.typings.memory import MemoryCredits
 from discordbot.utils.llm_transcript import sanitize_identity
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
@@ -100,13 +101,15 @@ class MemoryCandidate(BaseModel):
     this conversation knows only from the table. `credit_label` is what the public usage footer
     names, so it stays the short Discord label and never carries the table's community prose.
 
-    A table-only member has no Discord label here, so their `credit_label` is None and
-    `resolve_user_memories` credits them by their bare id. Deliberately not a name pulled from
+    A table-only member has no Discord label here, so their `credit_label` stays None and the
+    footer counts them instead of naming them. There is deliberately no name pulled from
     somewhere else: the guild member cache is empty for them (the bot runs without the members
     intent, so nextcord never caches a plain message author), and the identity the memory store
     stamps is the display name of whichever guild's consolidation last wrote that fact, which
-    would put another server's nickname in this channel's footer. An id is the one short thing
-    that is true everywhere.
+    would put another server's nickname in this channel's footer. What changed is the fallback,
+    not that reasoning: the bare id it used to print reads as a memory the bot just wrote rather
+    than as a person it read (measured on a real user), and it names someone the channel cannot
+    resolve anyway, so `和另 N 人` says the same true thing without publishing a snowflake.
 
     Attributes:
         prompt_label: Label the model reads, community aliases included.
@@ -130,7 +133,7 @@ class UserMemory(BaseModel):
 
     Attributes:
         prompt_label: Label the model reads for this user, community aliases included.
-        credit_label: Short label the public usage footer credits this lookup to.
+        credit_label: Short footer credit, or None when nothing here can name this user.
         user_id: String form of the Discord user id.
         memory: Consolidated long-term memory markdown, identity-stripped.
     """
@@ -138,8 +141,8 @@ class UserMemory(BaseModel):
     prompt_label: str = Field(
         ..., description="Label the model reads for this user, community aliases included."
     )
-    credit_label: str = Field(
-        ..., description="Short label the public usage footer credits this lookup to."
+    credit_label: str | None = Field(
+        ..., description="Short footer credit, or None when nothing here can name this user."
     )
     user_id: str = Field(..., description="String form of the Discord user id.")
     memory: str = Field(
@@ -391,7 +394,7 @@ def resolve_user_memories(
         results.append(
             UserMemory(
                 prompt_label=candidate.prompt_label,
-                credit_label=candidate.credit_label or str(user_id),
+                credit_label=candidate.credit_label,
                 user_id=str(user_id),
                 memory=memory or NO_STORED_MEMORY,
             )
@@ -399,11 +402,17 @@ def resolve_user_memories(
     return results
 
 
-def memory_lookup_labels(*, memories: list[UserMemory]) -> list[str]:
-    """Labels of looked-up users that actually had stored memory, for the usage footer.
+def memory_lookup_credits(*, memories: list[UserMemory]) -> MemoryCredits:
+    """Who to credit in the usage footer for the memory this reply actually read.
 
     Users that were queried but had no stored memory are omitted: they did not
     contribute anything to the reply, so surfacing them would be misleading. The credit
-    label is the short one, so a busy lookup stays a readable one-line credit.
+    label is the short one, so a busy lookup stays a readable one-line credit, and a
+    user nothing here can name is counted rather than dropped, so the footer still
+    accounts for every memory the reply leaned on.
     """
-    return [memory.credit_label for memory in memories if memory.memory != NO_STORED_MEMORY]
+    read = [memory for memory in memories if memory.memory != NO_STORED_MEMORY]
+    return MemoryCredits(
+        named=tuple(memory.credit_label for memory in read if memory.credit_label is not None),
+        unnamed=sum(1 for memory in read if memory.credit_label is None),
+    )

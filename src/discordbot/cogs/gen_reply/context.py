@@ -3,6 +3,8 @@
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
+from discordbot.typings.memory import MemoryCredits
+
 
 class ReplyContext(BaseModel):
     """Reply inputs built once per message and shared across pipeline phases.
@@ -40,8 +42,9 @@ class ReplyContext(BaseModel):
             "injected before the current message."
         ),
     )
-    memory_labels: list[str] = Field(
-        default_factory=list, description="Footer labels of users whose memory was injected."
+    memory_credits: MemoryCredits = Field(
+        default_factory=MemoryCredits,
+        description="Footer credits for the users whose memory was injected.",
     )
     selection_input_tokens: int = Field(
         default=0, description="Input tokens spent by the memory selection request."
