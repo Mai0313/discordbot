@@ -32,9 +32,9 @@ async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:
     member: Member | None = None
     if isinstance(user, Member):
         member = user
-    elif guild is not None and hasattr(guild, "get_member"):
+    elif guild is not None:
         member = guild.get_member(user.id)
-        if member is None and hasattr(guild, "fetch_member"):
+        if member is None:
             with contextlib.suppress(HTTPException):
                 member = await guild.fetch_member(user.id)
 
@@ -42,4 +42,4 @@ async def guild_avatar_url(user: AvatarUser, guild: Guild | None = None) -> str:
         return fallback_url
     if member.guild_avatar is not None:
         return member.guild_avatar.url
-    return fallback_url or member.display_avatar.url
+    return fallback_url

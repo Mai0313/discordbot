@@ -52,7 +52,7 @@ class ModelPriceEntry(BaseModel):
         default=0.0, description="Per-token output price in USD; 0.0 when the model is unknown."
     )
     supported_modalities: list[str] = Field(
-        default=["text", "image"],
+        default_factory=lambda: ["text", "image"],
         description="Input modalities the model accepts; defaults to text and image.",
     )
 
@@ -304,17 +304,3 @@ def get_supported_modalities(model_name: str) -> set[str]:
     model_info = load_model_info()
     info = model_info.get(model_name, ModelPriceEntry())
     return set(info.supported_modalities)
-
-
-if __name__ == "__main__":
-    from rich.console import Console
-
-    console = Console()
-
-    model_name = "gemini-3.1-pro-preview"
-    model_info = load_model_info()
-    console.print(model_info)
-    supported_modalities = get_supported_modalities(model_name=model_name)
-    console.print(supported_modalities)
-    token_rates = get_token_rates(model_name=model_name)
-    console.print(token_rates)

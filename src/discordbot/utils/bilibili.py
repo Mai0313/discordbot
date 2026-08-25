@@ -2,6 +2,8 @@
 
 import re
 
+from discordbot.utils.urls import URL_START_ANCHOR
+
 # Single source of truth for detecting a Bilibili video URL in a message. gen_reply uses it to
 # decide whether to read the linked video into answer context (yt-dlp download, then a Gemini
 # Files API upload — unlike YouTube, Gemini cannot fetch a Bilibili page server-side).
@@ -20,7 +22,7 @@ import re
 # and the optional query tail must end on `[A-Za-z0-9_-]` so a link written mid-sentence stops
 # cleanly at a non-ASCII terminator (e.g. zh/ja `...hEc8。`) instead of swallowing punctuation.
 BILIBILI_URL_RE = re.compile(
-    r"https?://"
+    rf"{URL_START_ANCHOR}https?://"
     r"(?:"
     r"(?:www\.|m\.)?bilibili\.com/video/(?:BV[0-9A-Za-z]{10}(?![0-9A-Za-z])|av\d+)/?"
     r"|b23\.tv/[A-Za-z0-9]+"

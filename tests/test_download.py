@@ -9,10 +9,13 @@ import pytest
 from requests.exceptions import RequestException
 
 from discordbot.utils import downloader as downloader_module
-from discordbot.utils.urls import extract_first_url
+from discordbot.utils.urls import normalized_host, extract_first_url, host_matches_domain
 from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownloader
 from discordbot.typings.video import VideoQuality
+from discordbot.utils.threads import THREADS_URL_RE
+from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.video.cog import QUALITY_CHOICES, VideoCogs
+from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.downloader import VideoDownloader, DownloadStoppedError
 
 from tests.helpers.casting import as_bot
@@ -378,6 +381,44 @@ def test_get_params_bilibili_referer_handles_scheme_less_hosts(tmp_path: Path) -
     assert referer(url="www.bilibili.com/video/BV1") == "https://www.bilibili.com"  # scheme-less
     assert referer(url="evil.com/?x=bilibili.com") is None  # substring lookalike
     assert referer(url="bilibili.com.attacker.com/x") is None  # suffix lookalike
+
+
+def test_host_matches_domain_refuses_a_lookalike_host() -> None:
+    """The exact-label rule every site checks its host through, tested where it now lives."""
+    assert host_matches_domain(host="douyin.com", domain="douyin.com")
+    assert host_matches_domain(host="v.douyin.com", domain="douyin.com")
+    assert not host_matches_domain(host="douyin.com.attacker.com", domain="douyin.com")
+    assert not host_matches_domain(host="notdouyin.com", domain="douyin.com")
+    assert not host_matches_domain(host="", domain="douyin.com")
+
+
+def test_normalized_host_reads_a_scheme_less_paste_and_never_raises() -> None:
+    """A pasted host with no scheme still parses, and malformed input answers rather than raising.
+
+    This runs in routing checks that sit ahead of any error handling, so a `ValueError` out of
+    urlparse would escape into a command handler that has nothing to say about it.
+    """
+    assert normalized_host(url="https://V.Douyin.com/abc") == "v.douyin.com"
+    assert normalized_host(url="v.douyin.com/abc") == "v.douyin.com"
+    assert normalized_host(url="https://[abc/x") == ""
+
+
+def test_every_url_pattern_shares_the_generic_start_anchor() -> None:
+    """A link glued to the end of an ASCII word is not a link to ANY of the scanners.
+
+    The site patterns used to carry no start anchor at all, so `xhttps://v.douyin.com/abc` was
+    refused by the generic scanner and matched by every site one. CJK in front is not an ASCII
+    word character, so those still match (#492).
+    """
+    for pattern, url in (
+        (DOUYIN_URL_RE, "https://v.douyin.com/tLgj3lCAnds"),
+        (THREADS_URL_RE, "https://www.threads.com/@user/post/ABC123"),
+        (BILIBILI_URL_RE, "https://www.bilibili.com/video/BV1jpK86hEc8"),
+        (YOUTUBE_URL_RE, "https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+    ):
+        assert pattern.search(string=url) is not None
+        assert pattern.search(string=f"x{url}") is None
+        assert pattern.search(string=f"看這個{url}") is not None
 
 
 def test_download_video_extracts_a_url_from_share_text() -> None:

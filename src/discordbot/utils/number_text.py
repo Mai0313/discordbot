@@ -5,27 +5,22 @@ from decimal import Decimal
 _COMPACT_UNITS = ((1_0000_0000_0000, "兆"), (1_0000_0000, "億"), (1_0000, "萬"))
 
 
-def compact_number(number: int, signed: bool = False) -> str:
-    """Formats a large integer with Traditional Chinese scale units."""
-    abs_number = abs(number)
-    sign = _number_sign(number=number, signed=signed)
+def compact_amount(amount: int, signed: bool = False) -> str:
+    """Formats a large amount with Traditional Chinese scale units."""
+    abs_amount = abs(amount)
+    sign = _number_sign(number=amount, signed=signed)
     for unit_index, (threshold, suffix) in enumerate(_COMPACT_UNITS):
-        if abs_number >= threshold:
-            value = Decimal(abs_number) / Decimal(threshold)
+        if abs_amount >= threshold:
+            value = Decimal(abs_amount) / Decimal(threshold)
             formatted = _compact_decimal(value=value)
             display_suffix = suffix
             if formatted == "10,000" and unit_index > 0:
                 rollover_threshold, rollover_suffix = _COMPACT_UNITS[unit_index - 1]
-                value = Decimal(abs_number) / Decimal(rollover_threshold)
+                value = Decimal(abs_amount) / Decimal(rollover_threshold)
                 formatted = _compact_decimal(value=value)
                 display_suffix = rollover_suffix
             return f"{sign}{formatted}{display_suffix}"
-    return f"{number:+,}" if signed and number != 0 else f"{number:,}"
-
-
-def compact_amount(amount: int, signed: bool = False) -> str:
-    """Formats a large amount with Traditional Chinese scale units."""
-    return compact_number(number=amount, signed=signed)
+    return f"{amount:+,}" if signed and amount != 0 else f"{amount:,}"
 
 
 def _number_sign(number: int, signed: bool) -> str:

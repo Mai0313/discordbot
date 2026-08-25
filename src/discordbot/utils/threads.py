@@ -23,11 +23,13 @@ from pydantic import (
 import requests
 from pydantic_core.core_schema import ValidatorFunctionWrapHandler
 
+from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.timeouts import (
     THREADS_PAGE_TIMEOUT_SECONDS,
     THREADS_MEDIA_READ_TIMEOUT_SECONDS,
     THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS,
 )
+from discordbot.utils.file_downloads import stream_to_file
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
 # cog (which expands it into embeds) and gen_reply (which self-parses it into answer
@@ -41,7 +43,7 @@ from discordbot.typings.timeouts import (
 # (`...ABC123。`, `...ABC123】super`) text instead of swallowing the terminator into the code,
 # which would otherwise make the parse fail on an otherwise valid link.
 THREADS_URL_RE = re.compile(
-    r"https?://(?:www\.)?threads\.(?:net|com)/(?:@[^/]+/post|share)/"
+    rf"{URL_START_ANCHOR}https?://(?:www\.)?threads\.(?:net|com)/(?:@[^/]+/post|share)/"
     r"[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]"
 )
 
@@ -1080,12 +1082,13 @@ class ThreadsDownloader(BaseModel):
             return "png"
         if ".mp4" in path_lower:
             return "mp4"
-        if "video" not in media_url and "mp4" not in media_url:
-            return "jpg"
-        return "mp4"
+        return "mp4" if "video" in media_url or "mp4" in media_url else "jpg"
 
-    def download_media(self, url: str, filename: str) -> Path | None:
+    def download_media(self, url: str, filename: str) -> Path:
         """Downloads media from the given URL to the output folder.
+
+        `output_folder` is the caller's to create and `stream_to_file` never recreates it, which
+        is what turns its removal into the stop signal a cancellation could not deliver.
 
         Args:
             url: The URL of the media to download.
@@ -1097,28 +1100,18 @@ class ThreadsDownloader(BaseModel):
         Raises:
             RuntimeError: If the HTTP fetch fails.
             OSError: If the file cannot be written. A caller that removed the scratch dir gets
-                `FileNotFoundError` here, deliberately: see below.
+                `FileNotFoundError` here, deliberately.
         """
-        # `output_folder` is the caller's to create and this never recreates it, which is what
-        # turns its removal into the stop signal a cancellation could not deliver: a caller that
-        # gives up mid-walk cannot stop the worker thread (`asyncio.to_thread` abandons it), so
-        # it removes the directory instead and the open below fails. A `mkdir` here would undo
-        # that between two files and quietly rebuild a directory nobody will clean up.
-        filepath = Path(self.output_folder) / filename
+        # The CDN serves these signed URLs with any Referer or none (measured), so this only has
+        # to stop naming a host the fetch no longer visits.
+        headers = {"User-Agent": "Mozilla/5.0", "Referer": f"{_CANONICAL_THREADS_ORIGIN}/"}
         try:
-            # The CDN serves these signed URLs with any Referer or none (measured), so this
-            # only has to stop naming a host the fetch no longer visits.
-            headers = {"User-Agent": "Mozilla/5.0", "Referer": f"{_CANONICAL_THREADS_ORIGIN}/"}
-            response = requests.get(
-                url=url, headers=headers, stream=True, timeout=THREADS_MEDIA_READ_TIMEOUT_SECONDS
+            return stream_to_file(
+                url=url,
+                filepath=Path(self.output_folder) / filename,
+                headers=headers,
+                timeout=THREADS_MEDIA_READ_TIMEOUT_SECONDS,
             )
-            response.raise_for_status()
-
-            with filepath.open("wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            return filepath
         except requests.RequestException as e:
             raise RuntimeError(f"Failed to download media from {url}: {e}") from e
 
@@ -1147,9 +1140,7 @@ class ThreadsDownloader(BaseModel):
         fetch_url = threads_url.clean_url
         post_code = threads_url.post_code
         deadline = time.monotonic() + THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS
-        attempts = 0
         for attempt in range(THREADS_EMPTY_PAGE_RETRIES + 1):
-            attempts = attempt + 1
             fetched = self._fetch_page(url=fetch_url)
             if not post_code:
                 resolved = ThreadsURL(raw_url=fetched.final_url)
@@ -1172,14 +1163,14 @@ class ThreadsDownloader(BaseModel):
             logfire.info(
                 "Threads answered without any post JSON; fetching the page again",
                 post_code=post_code,
-                attempt=attempts,
+                attempt=attempt + 1,
                 html_length=len(fetched.html),
             )
             time.sleep(THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS)
         logfire.warn(
             "Threads kept answering without any post JSON; treating the post as unreadable",
             post_code=post_code,
-            attempts=attempts,
+            attempts=attempt + 1,
         )
         return ThreadsPage()
 
@@ -1216,9 +1207,7 @@ class ThreadsDownloader(BaseModel):
                 video_urls.append(media_url)
                 if download:
                     filename = f"threads_{post_code}_{i}.{ext}"
-                    filepath = self.download_media(url=media_url, filename=filename)
-                    if filepath:
-                        video_paths.append(filepath)
+                    video_paths.append(self.download_media(url=media_url, filename=filename))
             else:
                 image_urls.append(media_url)
 
@@ -1312,9 +1301,9 @@ class ThreadsDownloader(BaseModel):
         Yields:
             The parsed conversation. Its `chain` is empty when no post is found.
         """
-        # Once, here, ahead of every fetch, rather than per file inside `download_media`: see
-        # that method's comment for why rebuilding it mid-walk would cost a caller who gave up
-        # its only way to stop this. A caller already handing over a scratch directory of its
+        # Once, here, ahead of every fetch, rather than per file inside `stream_to_file`: see
+        # that function's docstring for why rebuilding it mid-walk would cost a caller who gave
+        # up its only way to stop this. A caller already handing over a scratch directory of its
         # own gets a no-op; the standalone use gets a folder it did not have to make.
         Path(self.output_folder).mkdir(parents=True, exist_ok=True)
         conversation = self._build_conversation(url=url, download=True)
@@ -1338,15 +1327,3 @@ class ThreadsDownloader(BaseModel):
             The parsed conversation; empty when no post is found.
         """
         return self._build_conversation(url=url, download=False)
-
-
-if __name__ == "__main__":
-    from rich.console import Console
-
-    console = Console()
-
-    downloader = ThreadsDownloader(output_folder="./tmp")
-    url = "https://www.threads.com/share/DwqmnLALg/"
-    with downloader.parse(url=url) as parsed:
-        console.print(parsed.chain)
-        console.print(parsed.reply_branches)
