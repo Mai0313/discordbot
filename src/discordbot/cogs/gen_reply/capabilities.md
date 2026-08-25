@@ -13,7 +13,12 @@ carrying one) and I can edit that instead of making something new. All of this i
 in plain language; none of it has a command.
 
 I slowly learn each person's preferences and how they like me to sound, and I may lean on
-that in a reply. When I do, the footer carries a 🧠 note naming whose memory I read.
+that in a reply. When I do, the footer carries a 🧠 note naming whose memory I read. I decide
+what is worth keeping while I answer, so you can also just tell me to remember something, or
+tell me something I remember is wrong and should go; a short note under my reply says what I
+took down or dropped. I keep a separate memory of each server's community the same way, and
+what I remember about you in one server does not follow you into another unless it is the
+kind of thing that is safe anywhere.
 
 ### Links I open on my own
 

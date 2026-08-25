@@ -78,6 +78,7 @@ from discordbot.services.memory.store import (
 )
 from discordbot.cogs.gen_reply.context import ReplyContext
 from discordbot.cogs.gen_reply.markers import (
+    MAX_MEMORY_NOTES,
     MAX_INLINE_IMAGES,
     extract_inline_markers,
     scrub_markers_for_preview,
@@ -1719,6 +1720,66 @@ def test_extract_inline_markers_ignores_real_html_svg_ssml_tags() -> None:
     assert markers.image_prompts == []
     assert markers.voice_requested is False
     assert markers.cleaned_text == text
+
+
+def test_extract_inline_markers_memory_notes_are_pulled_per_kind() -> None:
+    """The three memory tags are collected separately and none of them reaches the reader.
+
+    A note is instruction to the memory pipeline, so it is pulled whole like an image block
+    rather than left visible like a voice span: a reply that recites what it just recorded reads
+    as the bot talking about itself instead of answering.
+    """
+    markers = extract_inline_markers(
+        text=(
+            "沒問題<write-memory>使用者希望用繁體中文回覆</write-memory>"
+            "<forget-memory>使用者已經不住台中了</forget-memory>"
+            "<write-server-memory>這個社群把週五叫做炸雞日</write-server-memory>,還有什麼要問的"
+        )
+    )
+    assert markers.memory_notes == ["使用者希望用繁體中文回覆"]
+    assert markers.forget_notes == ["使用者已經不住台中了"]
+    assert markers.server_memory_notes == ["這個社群把週五叫做炸雞日"]
+    assert markers.cleaned_text == "沒問題,還有什麼要問的"
+
+
+def test_extract_inline_markers_server_memory_tag_is_not_read_as_a_user_one() -> None:
+    """`<write-server-memory>` shares a prefix with `<write-memory>` and must not be split by it."""
+    markers = extract_inline_markers(
+        text="<write-server-memory>這裡週五吃炸雞</write-server-memory>"
+    )
+    assert markers.server_memory_notes == ["這裡週五吃炸雞"]
+    assert markers.memory_notes == []
+    assert markers.cleaned_text == ""
+
+
+def test_extract_inline_markers_unclosed_memory_note_is_pulled() -> None:
+    """An unclosed trailing memory tag still never leaks the note into the visible reply."""
+    markers = extract_inline_markers(text="好喔\n<forget-memory>使用者不再玩那款遊戲")
+    assert markers.forget_notes == ["使用者不再玩那款遊戲"]
+    assert markers.cleaned_text == "好喔"
+
+
+def test_extract_inline_markers_caps_memory_notes_per_kind() -> None:
+    """A model that emits a note per sentence is trimmed rather than trusted.
+
+    The cap is a sanity bound, not a Discord limit: the evaluator downstream still decides
+    whether any kept note survives, but a turn producing twenty notes has misread the
+    instruction and should not be able to flood the raw file with them.
+    """
+    text = "".join(f"<write-memory>note {index}</write-memory>" for index in range(12))
+    markers = extract_inline_markers(text=text)
+    assert markers.memory_notes == [f"note {index}" for index in range(MAX_MEMORY_NOTES)]
+
+
+def test_scrub_markers_for_preview_hides_a_streaming_memory_note() -> None:
+    """A half-streamed memory tag must not flicker into the live preview.
+
+    The preview is edited as deltas arrive, so a note that becomes invisible only at finalize
+    time would still be readable in the channel for the seconds before that.
+    """
+    assert scrub_markers_for_preview(text="好的 <write-memory>使用者喜歡") == "好的"
+    assert scrub_markers_for_preview(text="好的 <write-mem") == "好的"
+    assert scrub_markers_for_preview(text="好的 <write-server-memory>這裡") == "好的"
 
 
 def test_speechify_discord_markup_rewrites_and_drops() -> None:
