@@ -1,4 +1,4 @@
-"""Tunable thresholds shared by the per-user memory store, extraction, and pipeline."""
+"""Tunable thresholds shared by the per-user memory store, writer, and pipeline."""
 
 # Raw entries accumulated before a consolidation runs. Kept low so stored facts stay
 # fresh; still above 1 (together with the consolidation cooldown) so a heavy chatter

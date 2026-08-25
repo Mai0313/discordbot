@@ -239,7 +239,7 @@ class RuntimeModelCatalog(BaseModel):
     def triage_model(self) -> ModelSettings:
         """The model settings for filling a shape the caller has already fixed.
 
-        Callers: `_route_classify`, `_grade_effort`, `_select_user_memories`, the research
+        Callers: `_route_classify`, `_grade_effort`, `_select_recalled_memories`, the research
         thread title.
 
         Every one lands in a slot with no room in it: two enums, a list of ids, and a few
@@ -322,14 +322,14 @@ class RuntimeModelCatalog(BaseModel):
     def memory_writer_model(self) -> ModelSettings:
         """The model settings for everything deciding what reaches long-term memory.
 
-        Callers: the note evaluator (`MemoryExtractorAI.evaluate`, its `evaluate_model` field)
-        and phase-2 consolidation (`MemoryExtractorAI.consolidate`, its `consolidate_model`
+        Callers: the note evaluator (`MemoryWriterAI.evaluate`, its `evaluate_model` field)
+        and phase-2 consolidation (`MemoryWriterAI.consolidate`, its `consolidate_model`
         field), which also backs `regenerate_main_memory`, plus `scripts/regen_memories.py`,
         which defaults to this tier to drive that rebuild offline.
 
         There is no separate extractor tier any more. #596 moved the decision of what is worth
-        remembering into the answer model's own reply, so the recall-oriented first pass that
-        tier existed for has no caller left.
+        remembering into the answer model's own reply, so the transcript-scanning first pass
+        that tier existed for has no caller left.
 
         Returns:
             Model settings for the background memory write calls. One tier for both because

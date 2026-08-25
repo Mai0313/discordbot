@@ -18,6 +18,11 @@ from discordbot.typings.memory import (
     MemoryDurability,
     MemoryDeltaAction,
 )
+from discordbot.cogs.gen_reply.recall import (
+    RecallContext,
+    compartments_for_reading,
+    allowlist_ids_from_server_memory,
+)
 from discordbot.services.memory.facts import (
     FACT_ID_RE,
     mint_fact_id,
@@ -54,12 +59,7 @@ from discordbot.services.memory.deltas import (
     render_existing_facts,
     tone_evidence_from_raw,
 )
-from discordbot.cogs.gen_reply.memory_tool import (
-    MemoryReadContext,
-    compartments_for_reading,
-    allowlist_ids_from_server_memory,
-)
-from discordbot.services.memory.extraction import MemoryFactDelta
+from discordbot.services.memory.writer import MemoryFactDelta
 
 _OWNER = MemoryOwner(owner_id=111, owner_name="Alice (alice)")
 _NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)
@@ -220,7 +220,7 @@ def test_reading_a_guild_never_opens_another_guild(memory_isolated_dir: Path) ->
     document = read_memory_document(
         scope=scope,
         compartments=compartments_for_reading(
-            owner_id=111, context=MemoryReadContext(guild_id=111, dm_partner_id=None)
+            owner_id=111, context=RecallContext(guild_id=111, dm_partner_id=None)
         ),
         flavor="user",
     )
@@ -233,18 +233,18 @@ def test_reading_a_guild_never_opens_another_guild(memory_isolated_dir: Path) ->
 @pytest.mark.parametrize(
     ("context", "expected"),
     [
-        (MemoryReadContext(guild_id=111, dm_partner_id=None), ["global", "g/111"]),
+        (RecallContext(guild_id=111, dm_partner_id=None), ["global", "g/111"]),
         # A guild the owner has no memory in still reads only global; the join simply
         # names a directory that does not exist.
-        (MemoryReadContext(guild_id=999, dm_partner_id=None), ["global", "g/999"]),
+        (RecallContext(guild_id=999, dm_partner_id=None), ["global", "g/999"]),
         # A group DM, and a third party's memory read inside a 1:1 DM, both get the
         # cross-server compartment only.
-        (MemoryReadContext(guild_id=None, dm_partner_id=None), ["global"]),
-        (MemoryReadContext(guild_id=None, dm_partner_id=222), ["global"]),
+        (RecallContext(guild_id=None, dm_partner_id=None), ["global"]),
+        (RecallContext(guild_id=None, dm_partner_id=222), ["global"]),
     ],
 )
 def test_compartments_for_reading_matrix(
-    memory_isolated_dir: Path, context: MemoryReadContext, expected: list[str]
+    memory_isolated_dir: Path, context: RecallContext, expected: list[str]
 ) -> None:
     """Each reading context resolves to exactly the directories it may open."""
     assert compartments_for_reading(owner_id=111, context=context) == expected
@@ -256,7 +256,7 @@ def test_the_owner_reads_everything_in_their_own_dm(memory_isolated_dir: Path) -
     for compartment in (GLOBAL_COMPARTMENT, guild_compartment(guild_id=222), DM_COMPARTMENT):
         write_fact(scope=scope, fact=_fact(compartment=compartment))
     compartments = compartments_for_reading(
-        owner_id=111, context=MemoryReadContext(guild_id=None, dm_partner_id=111)
+        owner_id=111, context=RecallContext(guild_id=None, dm_partner_id=111)
     )
     assert set(compartments) == {"global", "g/222", "dm"}
 
@@ -865,7 +865,7 @@ def test_the_owners_dm_renders_each_global_fact_once(memory_isolated_dir: Path) 
         scope=scope, fact=_fact(fact_id="b" * 16, compartment=DM_COMPARTMENT, text="私訊事實")
     )
     compartments = compartments_for_reading(
-        owner_id=111, context=MemoryReadContext(guild_id=None, dm_partner_id=111)
+        owner_id=111, context=RecallContext(guild_id=None, dm_partner_id=111)
     )
     assert compartments == list(dict.fromkeys(compartments))
     document = read_memory_document(scope=scope, compartments=compartments, flavor="user")
@@ -878,7 +878,7 @@ def test_an_owner_with_no_stored_facts_still_reads_the_shared_compartment(
 ) -> None:
     """A scope with no directories yet must still resolve to a readable compartment list."""
     assert compartments_for_reading(
-        owner_id=111, context=MemoryReadContext(guild_id=None, dm_partner_id=111)
+        owner_id=111, context=RecallContext(guild_id=None, dm_partner_id=111)
     ) == [GLOBAL_COMPARTMENT]
 
 

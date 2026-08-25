@@ -20,7 +20,7 @@ from discordbot.services.memory.pipeline import RegenerationReport
 from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 
 if TYPE_CHECKING:
-    from discordbot.services.memory.extraction import MemoryExtractorAI
+    from discordbot.services.memory.writer import MemoryWriterAI
 
 pytestmark = pytest.mark.usefixtures("memory_isolated_dir")
 
@@ -152,16 +152,14 @@ async def test_a_batch_run_counts_finished_scopes_and_reports_them_in_store_orde
         _seed(scope=scope)
     scopes = regen_script._scopes_for_target(target="all")
 
-    async def _land_in_reverse(scope: str, extractor: object, identity: str) -> object:
+    async def _land_in_reverse(scope: str, writer: object, identity: str) -> object:
         """Finishes the batch back to front, which is what the re-keying has to survive."""
         await asyncio.sleep(0.01 * (len(scopes) - scopes.index(scope)))
         return RegenerationReport(result="no_evidence")
 
     monkeypatch.setattr(regen_script, "regenerate_main_memory", _land_in_reverse)
 
-    rows = await regen_script._rebuild_batch(
-        extractor=cast("MemoryExtractorAI", None), scopes=scopes
-    )
+    rows = await regen_script._rebuild_batch(writer=cast("MemoryWriterAI", None), scopes=scopes)
 
     assert [scope for scope, *_ in rows] == scopes
     assert "3/3" in " ".join(capsys.readouterr().out.split())
@@ -211,7 +209,7 @@ async def test_a_scope_key_that_is_not_a_discord_id_becomes_one_error_row() -> N
     """`read_owner` parses the id, and it used to raise past the handler into the gather."""
     _seed(scope="111.bak")
     scope, result, _, removed = await regen_script._regen_one(
-        extractor=cast("MemoryExtractorAI", None), scope="111.bak", semaphore=asyncio.Semaphore(1)
+        writer=cast("MemoryWriterAI", None), scope="111.bak", semaphore=asyncio.Semaphore(1)
     )
     assert scope == "111.bak"
     assert result.startswith("error: ValueError")

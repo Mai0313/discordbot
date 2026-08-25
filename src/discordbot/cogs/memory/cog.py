@@ -36,13 +36,13 @@ from discordbot.services.memory.store import (
     list_compartments,
     read_memory_document,
 )
+from discordbot.services.memory.writer import MemoryWriterAI
 from discordbot.services.memory.pipeline import (
     flavor_of,
     regeneration_on_cooldown,
     regeneration_has_evidence,
     schedule_memory_regeneration,
 )
-from discordbot.services.memory.extraction import MemoryExtractorAI
 from discordbot.services.gemini_keys.balancer import lease_model_catalog
 
 _SUCCESS_EMBED_COLOR = DISCORD_GREEN
@@ -85,8 +85,8 @@ class MemoryCogs(commands.Cog):
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
-    async def build_memory_extractor(self) -> MemoryExtractorAI:
-        """Builds a memory extraction service on a freshly leased Gemini key.
+    async def build_memory_writer(self) -> MemoryWriterAI:
+        """Builds a memory writing service on a freshly leased Gemini key.
 
         Per call rather than cached, because the key is: a rebuild is a burst of LLM calls
         and pinning every one of them to whichever key the cog happened to start on would
@@ -94,10 +94,10 @@ class MemoryCogs(commands.Cog):
         spreading the count.
 
         Returns:
-            An extractor bound to this cog's client and the leased key's memory tiers.
+            A writer bound to this cog's client and the leased key's memory tiers.
         """
         runtime_models = await lease_model_catalog(config=self.config)
-        return MemoryExtractorAI(
+        return MemoryWriterAI(
             client=self.client,
             evaluate_model=runtime_models.memory_writer_model,
             consolidate_model=runtime_models.memory_writer_model,
@@ -311,7 +311,7 @@ class MemoryCogs(commands.Cog):
         # command replies immediately; the user checks back with `/memory show`.
         scheduled = schedule_memory_regeneration(
             scope=scope,
-            extractor=await self.build_memory_extractor(),
+            writer=await self.build_memory_writer(),
             identity=render_author_identity(
                 display_name=interaction.user.display_name,
                 username=interaction.user.name,

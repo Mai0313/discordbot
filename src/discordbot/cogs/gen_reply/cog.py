@@ -38,7 +38,7 @@ from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.timeouts import (
     EFFORT_GRACE_SECONDS,
     LINK_CONTEXT_GRACE_SECONDS,
-    MEMORY_SELECT_GRACE_SECONDS,
+    RECALL_SELECT_GRACE_SECONDS,
     GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS,
 )
 from discordbot.utils.llm_errors import extract_friendly_error
@@ -55,6 +55,25 @@ from discordbot.utils.media_delivery import (
     MediaDeliveryPlanner,
     upload_limit_for,
     build_media_delivery_planner,
+)
+from discordbot.cogs.gen_reply.recall import (
+    NO_STORED_MEMORY,
+    GET_USER_MEMORY_TOOL,
+    UserMemory,
+    RecallContext,
+    RecallCandidate,
+    RecallSelection,
+    render_tone_block,
+    parse_user_id_list,
+    build_recall_context,
+    recall_user_memories,
+    memory_lookup_credits,
+    build_recall_allowlist,
+    render_server_memory_block,
+    render_callable_users_block,
+    render_memory_context_block,
+    widen_allowlist_with_aliases,
+    allowlist_ids_from_server_memory,
 )
 from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import (
@@ -77,13 +96,14 @@ from discordbot.cogs.gen_reply.prompts import (
     VIDEO_INSTRUCTION,
     IMAGE_REPLY_PROMPT,
     VIDEO_REPLY_PROMPT,
-    MEMORY_SELECT_PROMPT,
+    RECALL_SELECT_PROMPT,
     INLINE_IMAGE_INSTRUCTION,
     DEEP_RESEARCH_INSTRUCTION,
     REQUEST_TIME_CONTEXT_PROMPT,
     REQUEST_LOCATION_CONTEXT_PROMPT,
 )
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.services.memory.writer import subject_source_line, target_centered_memory_messages
 from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
     HISTORY_MESSAGE_LIMIT,
@@ -107,29 +127,6 @@ from discordbot.services.memory.pipeline import (
     resume_memory_update,
     consolidate_if_needed,
     schedule_memory_update,
-)
-from discordbot.cogs.gen_reply.memory_tool import (
-    NO_STORED_MEMORY,
-    GET_USER_MEMORY_TOOL,
-    UserMemory,
-    MemoryCandidate,
-    MemorySelection,
-    MemoryReadContext,
-    render_tone_block,
-    parse_user_id_list,
-    memory_read_context,
-    memory_lookup_credits,
-    resolve_user_memories,
-    build_memory_allowlist,
-    render_server_memory_block,
-    render_callable_users_block,
-    render_memory_context_block,
-    widen_allowlist_with_aliases,
-    allowlist_ids_from_server_memory,
-)
-from discordbot.services.memory.extraction import (
-    subject_source_line,
-    target_centered_memory_messages,
 )
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.interactions import (
@@ -1229,7 +1226,7 @@ class ReplyGeneratorCogs(commands.Cog):
             base = await self._persona_base_reply(message=message, reply=reply)
             # Mirror the answer path's order (history, memory, tone, reference, current),
             # injecting only the selected user memory (already compartment-scoped by
-            # `resolve_user_memories`) and the author's tone note, never the server memory block.
+            # `recall_user_memories`) and the author's tone note, never the server memory block.
             response_input: ResponseInputParam = [*context.hist_messages]
             response_input.extend(
                 block for block in (context.memory_block, context.tone_block) if block is not None
@@ -1622,16 +1619,16 @@ class ReplyGeneratorCogs(commands.Cog):
         )
         return blocks
 
-    async def _select_user_memories(  # noqa: PLR0913 -- the leased key plus the selection's own inputs
+    async def _select_recalled_memories(  # noqa: PLR0913 -- the leased key plus the selection's own inputs
         self,
         toolkit: GeminiKeyToolkit,
         *,
         message: Message,
         message_list: list[EasyInputMessageParam],
-        allowed: dict[int, MemoryCandidate],
-        read_context: MemoryReadContext,
+        allowed: dict[int, RecallCandidate],
+        recall_context: RecallContext,
         server_memory_block: EasyInputMessageParam | None = None,
-    ) -> MemorySelection:
+    ) -> RecallSelection:
         """Lets the model choose optional third-party memories for an oblique reference.
 
         Runs an isolated request offering only the get_user_memory tool, then resolves the
@@ -1652,7 +1649,7 @@ class ReplyGeneratorCogs(commands.Cog):
         ]
         responses = await self.openai_client.responses.create(
             model=triage_model.deployment_name,
-            instructions=MEMORY_SELECT_PROMPT,
+            instructions=RECALL_SELECT_PROMPT,
             input=selection_input,
             reasoning=triage_model.reasoning,
             tools=[GET_USER_MEMORY_TOOL],
@@ -1667,17 +1664,17 @@ class ReplyGeneratorCogs(commands.Cog):
                 continue
             if item.name != "get_user_memory":
                 continue
-            for memory in resolve_user_memories(
+            for memory in recall_user_memories(
                 user_id_list=parse_user_id_list(arguments=item.arguments),
                 allowed=allowed,
-                context=read_context,
+                context=recall_context,
             ):
                 if memory.user_id not in seen:
                     seen.add(memory.user_id)
                     memories.append(memory)
         input_tokens = responses.usage.input_tokens if responses.usage else 0
         output_tokens = responses.usage.output_tokens if responses.usage else 0
-        return MemorySelection(
+        return RecallSelection(
             memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
         )
 
@@ -1697,16 +1694,16 @@ class ReplyGeneratorCogs(commands.Cog):
             flavor="server",
         )
 
-    def _resolve_reply_memory_candidates(
-        self, *, message: Message, server_memory: str, read_context: MemoryReadContext
-    ) -> tuple[list[UserMemory], dict[int, MemoryCandidate], int]:
+    def _resolve_reply_recall_candidates(
+        self, *, message: Message, server_memory: str, recall_context: RecallContext
+    ) -> tuple[list[UserMemory], dict[int, RecallCandidate], int]:
         """Resolves deterministic memories and derives disjoint optional alias candidates."""
         bot_user = self.bot.user
         if bot_user is None:
             return [], {}, 0
 
         replied_to = _replied_to_message(message=message)
-        deterministic_allowed = build_memory_allowlist(
+        deterministic_allowed = build_recall_allowlist(
             users=[
                 message.author,
                 *([replied_to.author] if replied_to is not None else []),
@@ -1714,7 +1711,7 @@ class ReplyGeneratorCogs(commands.Cog):
             ],
             bot_user_id=bot_user.id,
         )
-        optional_allowed: dict[int, MemoryCandidate] = {}
+        optional_allowed: dict[int, RecallCandidate] = {}
         # Existing participant labels keep their community aliases even in a private
         # channel because that grants no new access. Only a public channel may offer absent
         # nickname-table members to the selector.
@@ -1724,11 +1721,11 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             if _source_channel_is_public(message=message):
                 # No credit label: the conversation never names these members, so
-                # `resolve_user_memories` credits them by their bare id. Deliberately NOT the
+                # `recall_user_memories` credits them by their bare id. Deliberately NOT the
                 # identity their own memory carries, which is the display name of whichever
-                # guild's consolidation last wrote that fact (see `MemoryCandidate`).
+                # guild's consolidation last wrote that fact (see `RecallCandidate`).
                 optional_allowed = {
-                    user_id: MemoryCandidate(prompt_label=label)
+                    user_id: RecallCandidate(prompt_label=label)
                     for user_id, label in allowlist_ids_from_server_memory(
                         memory=server_memory
                     ).items()
@@ -1737,10 +1734,10 @@ class ReplyGeneratorCogs(commands.Cog):
 
         memories = [
             memory
-            for memory in resolve_user_memories(
+            for memory in recall_user_memories(
                 user_id_list=[str(user_id) for user_id in deterministic_allowed],
                 allowed=deterministic_allowed,
-                context=read_context,
+                context=recall_context,
             )
             if memory.memory != NO_STORED_MEMORY
         ]
@@ -1776,21 +1773,21 @@ class ReplyGeneratorCogs(commands.Cog):
             subject=f"target_server_id: {message.guild.id}",
             message_list=message_list,
             full_reply=full_reply,
-            extractor=toolkit.server_memory_extractor,
+            writer=toolkit.server_memory_writer,
             identity=render_server_identity(
                 server_name=message.guild.name, server_id=message.guild.id
             ),
             remember_notes=tuple(notes),
         )
 
-    async def _await_optional_memory_selection(
+    async def _await_optional_recall_selection(
         self,
         toolkit: GeminiKeyToolkit,
         *,
-        task: asyncio.Task[MemorySelection],
+        task: asyncio.Task[RecallSelection],
         message: Message,
         route_done: asyncio.Event,
-    ) -> tuple[MemorySelection, float] | None:
+    ) -> tuple[RecallSelection, float] | None:
         """Awaits the optional selector without letting its failure affect direct memories."""
         started = time.monotonic()
         try:
@@ -1799,12 +1796,12 @@ class ReplyGeneratorCogs(commands.Cog):
                     task=task,
                     label="memory selection",
                     route_done=route_done,
-                    grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
+                    grace_seconds=RECALL_SELECT_GRACE_SECONDS,
                 )
         except TimeoutError as exc:
             logfire.warn(
                 "Optional memory selection exceeded the post-route grace; retaining deterministic memories",
-                grace_seconds=MEMORY_SELECT_GRACE_SECONDS,
+                grace_seconds=RECALL_SELECT_GRACE_SECONDS,
                 message_id=message.id,
                 model=toolkit.runtime_models.triage_model.name,
                 _exc_info=exc,
@@ -1854,7 +1851,7 @@ class ReplyGeneratorCogs(commands.Cog):
         )
 
         # Where this reply is happening, for compartment scoping of every user-memory read.
-        read_context = memory_read_context(message=message)
+        recall_context = build_recall_context(message=message)
 
         # The message author's tone-preference note is read directly for that one author
         # (their own preference for how the bot should sound, cross-server safe by
@@ -1866,16 +1863,16 @@ class ReplyGeneratorCogs(commands.Cog):
         # Code always resolves the current author, reply-chain authors, and current-message
         # mentions. A separate model call is reserved for the one non-mechanical question: does
         # the latest message obliquely refer to an absent member in a public nickname table? Both
-        # paths stay behind resolve_user_memories, the shared permission and compartment boundary.
+        # paths stay behind recall_user_memories, the shared permission and compartment boundary.
         memory_credits = MemoryCredits()
         selection_input_tokens = 0
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
         remaining_slots = 0
-        selection_task: asyncio.Task[MemorySelection] | None = None
+        selection_task: asyncio.Task[RecallSelection] | None = None
         memories, optional_allowed, deterministic_candidate_count = (
-            self._resolve_reply_memory_candidates(
-                message=message, server_memory=server_memory, read_context=read_context
+            self._resolve_reply_recall_candidates(
+                message=message, server_memory=server_memory, recall_context=recall_context
             )
         )
         deterministic_memory_count = len(memories)
@@ -1907,12 +1904,12 @@ class ReplyGeneratorCogs(commands.Cog):
                     *text_current,
                 ]
                 selection_task = asyncio.create_task(
-                    coro=self._select_user_memories(
+                    coro=self._select_recalled_memories(
                         toolkit=toolkit,
                         message=message,
                         message_list=selection_message_list,
                         allowed=optional_allowed,
-                        read_context=read_context,
+                        recall_context=recall_context,
                         server_memory_block=server_memory_block,
                     )
                 )
@@ -1946,7 +1943,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 # never turn an answerable message into the generic error path. Resolved under the
                 # route_done gate: it usually already finished during the upload wait above, so
                 # this returns immediately; a slow one gets only the post-route grace.
-                selection_result = await self._await_optional_memory_selection(
+                selection_result = await self._await_optional_recall_selection(
                     toolkit=toolkit, task=selection_task, message=message, route_done=route_done
                 )
                 if selection_result is not None:
@@ -2228,7 +2225,7 @@ class ReplyGeneratorCogs(commands.Cog):
             subject=f"target_user_id: {message.author.id}\n{source_line}",
             message_list=memory_message_list,
             full_reply=full_reply,
-            extractor=toolkit.memory_extractor,
+            writer=toolkit.memory_writer,
             identity=render_author_identity(
                 display_name=message.author.display_name,
                 username=message.author.name,
@@ -2286,16 +2283,14 @@ class ReplyGeneratorCogs(commands.Cog):
             # here is bound to a key (memory extraction reaches no Files API), so the lease is
             # only about the count.
             toolkit = await self.lease_toolkit()
-            extractor = (
-                toolkit.server_memory_extractor
-                if job.flavor == "server"
-                else toolkit.memory_extractor
+            writer = (
+                toolkit.server_memory_writer if job.flavor == "server" else toolkit.memory_writer
             )
             resume_memory_update(
                 scope=job.scope,
                 subject=job.subject,
                 transcript=job.transcript,
-                extractor=extractor,
+                writer=writer,
                 identity=job.identity,
                 token=job.token,
             )
@@ -2306,15 +2301,15 @@ class ReplyGeneratorCogs(commands.Cog):
             if not needs_consolidation(scope=scope):
                 continue
             swept_toolkit = await self.lease_toolkit()
-            extractor = (
-                swept_toolkit.server_memory_extractor
+            writer = (
+                swept_toolkit.server_memory_writer
                 if flavor_of(scope=scope) == "server"
-                else swept_toolkit.memory_extractor
+                else swept_toolkit.memory_writer
             )
             self._spawn(
                 consolidate_if_needed(
                     scope=scope,
-                    extractor=extractor,
+                    writer=writer,
                     identity=render_owner_identity(owner=read_owner(scope=scope)),
                 )
             )

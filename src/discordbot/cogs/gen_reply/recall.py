@@ -1,9 +1,12 @@
-"""The `get_user_memory` function tool for oblique third-party memory lookups.
+"""The read side of memory: which stored memory one reply carries, and who may see it.
 
-Code directly resolves the current author, reply-chain authors, and users explicitly
-mentioned in the current message. The selector only decides whether the latest message
+Recall is the half that only reads. The write side is the answer model marking notes in
+its own reply (`markers.py`) and `services/memory/` turning them into facts; nothing here
+touches either. Code directly resolves the current author, reply-chain authors, and users
+explicitly mentioned in the current message. The selector, running behind the
+`get_user_memory` function tool defined below, only decides whether the latest message
 obliquely refers to an additional member from a public server nickname table. Every path
-still passes a per-request allowlist to `resolve_user_memories`, which drops any requested
+still passes a per-request allowlist to `recall_user_memories`, which drops any requested
 id outside it before reading a file. A second boundary decides how much of an allowed
 user's memory this conversation may see, and it is a path join rather than a filter:
 memory is stored one fact per file under the compartment that may read it, so
@@ -40,7 +43,7 @@ from discordbot.services.memory.store import (
 NO_STORED_MEMORY = "(no stored memory for this user)"
 
 # Mechanism-only description: the "when to call it" behavior rule lives in
-# MEMORY_SELECT_PROMPT (developer authority), not in the tool definition.
+# RECALL_SELECT_PROMPT (developer authority), not in the tool definition.
 GET_USER_MEMORY_TOOL: FunctionToolParam = {
     "type": "function",
     "name": "get_user_memory",
@@ -65,10 +68,10 @@ GET_USER_MEMORY_TOOL: FunctionToolParam = {
 }
 
 
-class MemoryReadContext(BaseModel):
+class RecallContext(BaseModel):
     """Where a reply is happening, for choosing which memory compartments to read.
 
-    Built once per reply by `memory_read_context` and threaded into every path that
+    Built once per reply by `build_recall_context` and threaded into every path that
     reads a user's stored memory (deterministic participants and optional selection),
     so `compartments_for_reading` can name the directories this conversation is allowed
     to open.
@@ -84,16 +87,16 @@ class MemoryReadContext(BaseModel):
     )
 
 
-def memory_read_context(*, message: Message) -> MemoryReadContext:
+def build_recall_context(*, message: Message) -> RecallContext:
     """Builds the read context for one incoming message."""
     is_direct_message = message.guild is None and isinstance(message.channel, DMChannel)
-    return MemoryReadContext(
+    return RecallContext(
         guild_id=message.guild.id if message.guild else None,
         dm_partner_id=message.author.id if is_direct_message else None,
     )
 
 
-class MemoryCandidate(BaseModel):
+class RecallCandidate(BaseModel):
     """One allowlisted user's two labels, because the model and the footer want different text.
 
     `prompt_label` is what a request shows the model: a participant's Discord label with the
@@ -150,7 +153,7 @@ class UserMemory(BaseModel):
     )
 
 
-class MemorySelection(BaseModel):
+class RecallSelection(BaseModel):
     """Optional third-party memories chosen by the selector plus its token usage.
 
     Attributes:
@@ -180,9 +183,9 @@ def _user_label(user: Member | User) -> str:
     return escape_mentions(f"{safe_display} ({safe_username})")
 
 
-def build_memory_allowlist(
+def build_recall_allowlist(
     *, users: list[Member | User], bot_user_id: int
-) -> dict[int, MemoryCandidate]:
+) -> dict[int, RecallCandidate]:
     """Builds an insertion-ordered id-to-label memory allowlist from trusted users.
 
     The caller chooses the exact participant roles that are eligible. This helper only
@@ -190,12 +193,12 @@ def build_memory_allowlist(
     participant carries the same label on both sides; only the model-facing one grows
     later, when `widen_allowlist_with_aliases` appends the community nickname row.
     """
-    allowed: dict[int, MemoryCandidate] = {}
+    allowed: dict[int, RecallCandidate] = {}
     for user in users:
         if user.id == bot_user_id or user.id in allowed:
             continue
         label = _user_label(user=user)
-        allowed[user.id] = MemoryCandidate(prompt_label=label, credit_label=label)
+        allowed[user.id] = RecallCandidate(prompt_label=label, credit_label=label)
     return allowed
 
 
@@ -233,7 +236,7 @@ def allowlist_ids_from_server_memory(*, memory: str) -> dict[int, str]:
 
 
 def widen_allowlist_with_aliases(
-    *, allowed: dict[int, MemoryCandidate], memory: str, include_absent: bool
+    *, allowed: dict[int, RecallCandidate], memory: str, include_absent: bool
 ) -> None:
     """Merges the server memory's nickname-table ids and aliases into the allowlist in place.
 
@@ -252,15 +255,15 @@ def widen_allowlist_with_aliases(
     for user_id, label in allowlist_ids_from_server_memory(memory=memory).items():
         candidate = allowed.get(user_id)
         if candidate is not None:
-            allowed[user_id] = MemoryCandidate(
+            allowed[user_id] = RecallCandidate(
                 prompt_label=f"{candidate.prompt_label} | {label}",
                 credit_label=candidate.credit_label,
             )
         elif include_absent:
-            allowed[user_id] = MemoryCandidate(prompt_label=label)
+            allowed[user_id] = RecallCandidate(prompt_label=label)
 
 
-def render_callable_users_block(*, allowed: dict[int, MemoryCandidate]) -> EasyInputMessageParam:
+def render_callable_users_block(*, allowed: dict[int, RecallCandidate]) -> EasyInputMessageParam:
     """Renders optional oblique-reference candidates as a system separator block."""
     lines = "\n".join(
         f"[id: {user_id}] {candidate.prompt_label}" for user_id, candidate in allowed.items()
@@ -340,7 +343,7 @@ def parse_user_id_list(*, arguments: str) -> list[str]:
     return [str(item) for item in raw]
 
 
-def compartments_for_reading(owner_id: int, context: MemoryReadContext) -> list[str]:
+def compartments_for_reading(owner_id: int, context: RecallContext) -> list[str]:
     """Returns the compartments of `owner_id`'s memory this conversation may read.
 
     The whole cross-server boundary is these three lines. Reading in a guild joins the
@@ -363,8 +366,8 @@ def compartments_for_reading(owner_id: int, context: MemoryReadContext) -> list[
     return [GLOBAL_COMPARTMENT]
 
 
-def resolve_user_memories(
-    *, user_id_list: list[str], allowed: dict[int, MemoryCandidate], context: MemoryReadContext
+def recall_user_memories(
+    *, user_id_list: list[str], allowed: dict[int, RecallCandidate], context: RecallContext
 ) -> list[UserMemory]:
     """Resolves requested ids to stored memory, enforcing the allowlist and the compartments.
 

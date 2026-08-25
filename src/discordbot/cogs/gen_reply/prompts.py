@@ -161,7 +161,7 @@ DEEP_RESEARCH_INSTRUCTION = f"""
     * Never mention the tags and never wrap them in backticks.
 """
 
-MEMORY_SELECT_PROMPT = """
+RECALL_SELECT_PROMPT = """
 Your only task: decide whether the latest user message obliquely refers to any additional server members, and fetch their long-term memory if so.
 
 * Every user message is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.

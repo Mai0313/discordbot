@@ -1,6 +1,6 @@
-"""LLM extraction and consolidation for long-term memory, in either flavor.
+"""LLM review and consolidation for long-term memory, in either flavor.
 
-The phase prompts ride on `MemoryExtractorAI` as fields, so the per-user and the
+The phase prompts ride on `MemoryWriterAI` as fields, so the per-user and the
 per-server memory share every gate, renderer and redaction here.
 """
 
@@ -291,7 +291,7 @@ class ConsolidationRequest(BaseModel):
     emit_tone: bool = Field(..., description="Whether this call owns the tone note.")
 
 
-class MemoryExtractorAI(BaseModel):
+class MemoryWriterAI(BaseModel):
     """Runs the memory LLM calls with best-effort fallbacks.
 
     The phase prompts are instance fields so the same engine can drive a

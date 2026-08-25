@@ -71,9 +71,9 @@ from discordbot.services.memory.store import (
     unaccounted_files,
 )
 from discordbot.services.memory.deltas import partition_raw_entries
+from discordbot.services.memory.writer import MemoryWriterAI
 from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.pipeline import flavor_of, regenerate_main_memory
-from discordbot.services.memory.extraction import MemoryExtractorAI
 
 if TYPE_CHECKING:
     from openai.types.shared.reasoning_effort import ReasoningEffort
@@ -202,7 +202,7 @@ def _report(rows: list[tuple[str, str, dict[str, int], int]]) -> None:
 
 
 async def _regen_one(
-    extractor: MemoryExtractorAI, scope: str, semaphore: asyncio.Semaphore
+    writer: MemoryWriterAI, scope: str, semaphore: asyncio.Semaphore
 ) -> tuple[str, str, dict[str, int], int]:
     """Rebuilds one scope, prints its outcome, and returns its report row."""
     removed = 0
@@ -216,9 +216,7 @@ async def _regen_one(
             # backup copy, which this tool's own advice invites) used to raise past the
             # gather and throw away every row that had already rebuilt.
             identity = render_owner_identity(owner=read_owner(scope=scope))
-            report = await regenerate_main_memory(
-                scope=scope, extractor=extractor, identity=identity
-            )
+            report = await regenerate_main_memory(scope=scope, writer=writer, identity=identity)
             result, removed = report.result, report.unreadable_removed
             counts = _written(scope=scope)
         except Exception as error:
@@ -231,7 +229,7 @@ async def _regen_one(
 
 
 async def _rebuild_batch(
-    extractor: MemoryExtractorAI, scopes: list[str]
+    writer: MemoryWriterAI, scopes: list[str]
 ) -> list[tuple[str, str, dict[str, int], int]]:
     """Rebuilds every scope concurrently, advancing one bar over the whole batch.
 
@@ -251,9 +249,7 @@ async def _rebuild_batch(
         console=console,
     ) as progress:
         task = progress.add_task("[green]rebuilding", total=len(scopes))
-        pending = [
-            _regen_one(extractor=extractor, scope=scope, semaphore=semaphore) for scope in scopes
-        ]
+        pending = [_regen_one(writer=writer, scope=scope, semaphore=semaphore) for scope in scopes]
         for landing in asyncio.as_completed(pending):
             row = await landing
             rows[row[0]] = row
@@ -305,13 +301,13 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
     if not _confirmed():
         return
     config = LLMConfig()
-    extractor = MemoryExtractorAI(
+    writer = MemoryWriterAI(
         client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
         evaluate_model=model,
         consolidate_model=model,
     )
     console.print(f"Rebuilding with [bold]{model.name}[/bold] (effort: {model.effort})")
-    _report(rows=await _rebuild_batch(extractor=extractor, scopes=scopes))
+    _report(rows=await _rebuild_batch(writer=writer, scopes=scopes))
 
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
