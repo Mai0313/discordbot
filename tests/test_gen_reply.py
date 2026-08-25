@@ -8136,12 +8136,12 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     assert "喜歡簡短回覆" not in str(scheduled_list)
     assert scheduled[0]["scope"] == user_scope(user_id=1)
     assert scheduled[0]["full_reply"] == "完整回覆"
-    assert scheduled[0]["extractor"] is _toolkit(cog=cog).memory_extractor
+    assert scheduled[0]["writer"] is _toolkit(cog=cog).memory_writer
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
-    evaluate_model = _toolkit(cog=cog).memory_extractor.evaluate_model
+    evaluate_model = _toolkit(cog=cog).memory_writer.evaluate_model
     assert evaluate_model.name == _toolkit(cog=cog).runtime_models.memory_writer_model.name
     assert (
-        _toolkit(cog=cog).memory_extractor.consolidate_model.name
+        _toolkit(cog=cog).memory_writer.consolidate_model.name
         == _toolkit(cog=cog).runtime_models.memory_writer_model.name
     )
 
@@ -9130,15 +9130,14 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
             assert update["subject"] == f"target_user_id: 1\nsource: {user_source}"
         if update["scope"] == server_scope_value:
             assert update["subject"] == "target_server_id: 1"
-            assert update["extractor"] is _toolkit(cog=cog).server_memory_extractor
+            assert update["writer"] is _toolkit(cog=cog).server_memory_writer
             assert update["identity"] == "Test Guild [id: 1]"
             assert (
-                _toolkit(cog=cog).server_memory_extractor.evaluator_prompt
+                _toolkit(cog=cog).server_memory_writer.evaluator_prompt
                 is SERVER_PHASE1_EVALUATOR_PROMPT
             )
             assert (
-                _toolkit(cog=cog).server_memory_extractor.consolidate_prompt
-                is SERVER_PHASE2_PROMPT
+                _toolkit(cog=cog).server_memory_writer.consolidate_prompt is SERVER_PHASE2_PROMPT
             )
 
     assert _recorded(cog).responses.create_streams == [True]
@@ -9793,8 +9792,8 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     cog._resume_started = False
     user_sentinel = object()
     server_sentinel = object()
-    _toolkit(cog=cog).__dict__["memory_extractor"] = user_sentinel
-    _toolkit(cog=cog).__dict__["server_memory_extractor"] = server_sentinel
+    _toolkit(cog=cog).__dict__["memory_writer"] = user_sentinel
+    _toolkit(cog=cog).__dict__["server_memory_writer"] = server_sentinel
 
     user_job_scope = user_scope(user_id=1)
     server_job_scope = server_scope(server_id=2)
@@ -9830,7 +9829,7 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     def fake_resume(**kwargs: object) -> None:
         resumed.append(kwargs)
 
-    async def fake_consolidate(scope: str, extractor: object, identity: str) -> None:
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
         swept.append(scope)
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.safe_list_resumable", fake_list)
@@ -9853,9 +9852,9 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
 
     assert {kwargs["scope"] for kwargs in resumed} == {user_job_scope, server_job_scope}
     by_scope = {kwargs["scope"]: kwargs for kwargs in resumed}
-    assert by_scope[user_job_scope]["extractor"] is user_sentinel
+    assert by_scope[user_job_scope]["writer"] is user_sentinel
     assert by_scope[user_job_scope]["token"] == 11
-    assert by_scope[server_job_scope]["extractor"] is server_sentinel
+    assert by_scope[server_job_scope]["writer"] is server_sentinel
     # Every over-threshold scope is swept, including the resumed ones: the scope
     # lock makes the resumed extraction and the consolidation sweep idempotent.
     assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
@@ -9906,8 +9905,8 @@ def test_a_toolkit_binds_every_piece_to_one_key() -> None:
         toolkit.voice_generator.model_name,
         toolkit.image_generator.image_model.deployment_name,
         toolkit.prompt_generator.prompt_model.deployment_name,
-        toolkit.memory_extractor.evaluate_model.deployment_name,
-        toolkit.server_memory_extractor.consolidate_model.deployment_name,
+        toolkit.memory_writer.evaluate_model.deployment_name,
+        toolkit.server_memory_writer.consolidate_model.deployment_name,
     ]
     unpinned = [name for name in dispatched if not name.endswith("-key2")]
     assert unpinned == [], f"Every dispatch runs on the leased key. Offenders: {unpinned}"

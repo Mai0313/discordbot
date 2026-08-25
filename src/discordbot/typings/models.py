@@ -322,8 +322,8 @@ class RuntimeModelCatalog(BaseModel):
     def memory_writer_model(self) -> ModelSettings:
         """The model settings for everything deciding what reaches long-term memory.
 
-        Callers: the note evaluator (`MemoryExtractorAI.evaluate`, its `evaluate_model` field)
-        and phase-2 consolidation (`MemoryExtractorAI.consolidate`, its `consolidate_model`
+        Callers: the note evaluator (`MemoryWriterAI.evaluate`, its `evaluate_model` field)
+        and phase-2 consolidation (`MemoryWriterAI.consolidate`, its `consolidate_model`
         field), which also backs `regenerate_main_memory`, plus `scripts/regen_memories.py`,
         which defaults to this tier to drive that rebuild offline.
 

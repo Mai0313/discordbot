@@ -82,9 +82,9 @@ from discordbot.services.memory.constants import (
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.services.memory.extraction import (
+    MemoryWriterAI,
     RawMemoryDraft,
     MemoryFactDelta,
-    MemoryExtractorAI,
     MemoryObservation,
     ConsolidatedMemory,
     ConsolidationRequest,
@@ -213,15 +213,15 @@ class FakeMemoryClient:
         self.responses = FakeMemoryResponses()
 
 
-def _extractor() -> tuple[MemoryExtractorAI, FakeMemoryClient]:
-    """Builds a MemoryExtractorAI bound to a fake client."""
+def _writer() -> tuple[MemoryWriterAI, FakeMemoryClient]:
+    """Builds a MemoryWriterAI bound to a fake client."""
     fake_client = FakeMemoryClient()
-    extractor = MemoryExtractorAI(
+    writer = MemoryWriterAI(
         client=cast("AsyncOpenAI", fake_client),
         evaluate_model=TEST_MEMORY_MODEL,
         consolidate_model=TEST_MEMORY_MODEL,
     )
-    return extractor, fake_client
+    return writer, fake_client
 
 
 def _parsed(output: BaseModel | None) -> SimpleNamespace:
@@ -473,12 +473,12 @@ async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
 
 
 async def test_evaluate_returns_redacted_draft() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft(
         "提到 token sk-aaaabbbbccccddddeeee 的事",
         normalized_key="preference.sk-aaaabbbbccccddddeeee",
     )
-    draft = await extractor.evaluate(
+    draft = await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript="some transcript", notes=_NOTES
     )
     assert draft is not None
@@ -492,9 +492,9 @@ async def test_evaluate_returns_redacted_draft() -> None:
 
 
 async def test_evaluate_no_signal_passthrough() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    draft = await extractor.evaluate(
+    draft = await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
     )
     assert draft is not None
@@ -504,7 +504,7 @@ async def test_evaluate_no_signal_passthrough() -> None:
 
 async def test_evaluate_keeps_member_alias_as_community_vocabulary() -> None:
     """A stable_fact member-alias observation survives the shared gate (server vocabulary)."""
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
         observations=(
@@ -517,13 +517,13 @@ async def test_evaluate_keeps_member_alias_as_community_vocabulary() -> None:
             ),
         ),
     )
-    draft = await extractor.evaluate(subject="target_server_id: 1", transcript="hi", notes=_NOTES)
+    draft = await writer.evaluate(subject="target_server_id: 1", transcript="hi", notes=_NOTES)
     assert draft is not None
     assert [obs.normalized_key for obs in draft.observations] == ["vocab.member_alias.42"]
 
 
 async def test_evaluate_filters_weak_observations() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
         observations=(
@@ -557,7 +557,7 @@ async def test_evaluate_filters_weak_observations() -> None:
             ),
         ),
     )
-    draft = await extractor.evaluate(
+    draft = await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
     )
     assert draft is not None
@@ -574,7 +574,7 @@ async def test_evaluate_accepts_permanent_and_rejects_volatile_durability() -> N
     # The freshness tiers hinge on the durability gate: an immutable identity fact
     # tagged `permanent` must pass (the sweep never ages a `permanent` fact out),
     # while a `volatile` observation on a stable category is still dropped.
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
         observations=(
@@ -594,7 +594,7 @@ async def test_evaluate_accepts_permanent_and_rejects_volatile_durability() -> N
             ),
         ),
     )
-    draft = await extractor.evaluate(
+    draft = await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
     )
     assert draft is not None
@@ -613,9 +613,9 @@ async def test_evaluate_can_refuse_every_note() -> None:
     the only step that reads it against the transcript. Refusing all of them is a normal
     outcome, not an error.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    draft = await extractor.evaluate(
+    draft = await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
     )
     assert draft is not None
@@ -628,10 +628,8 @@ async def test_evaluate_without_notes_calls_no_model() -> None:
     This is the saving over the extraction pass this replaced, which ran on every reply just
     to find out whether there was anything to find.
     """
-    extractor, fake_client = _extractor()
-    draft = await extractor.evaluate(
-        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=()
-    )
+    writer, fake_client = _writer()
+    draft = await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=())
     assert draft is not None
     assert draft.has_signal is False
     assert fake_client.responses.parse_models == []
@@ -639,9 +637,9 @@ async def test_evaluate_without_notes_calls_no_model() -> None:
 
 async def test_evaluate_hands_the_notes_to_the_model() -> None:
     """The notes are the input the review is about, so they have to reach the request."""
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    await extractor.evaluate(
+    await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript="hi", notes=("使用者偏好繁體中文",)
     )
     user_text = fake_client.responses.parse_inputs[0][0]["content"]
@@ -650,46 +648,40 @@ async def test_evaluate_hands_the_notes_to_the_model() -> None:
 
 
 async def test_evaluate_returns_none_on_validation_error() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     try:
         RawMemoryDraft.model_validate({})
     except ValidationError as exc:
         fake_client.responses.raises = exc
     assert (
-        await extractor.evaluate(
-            subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-        )
+        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
         is None
     )
 
 
 async def test_evaluate_returns_none_on_generic_failure() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("boom")
     assert (
-        await extractor.evaluate(
-            subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-        )
+        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
         is None
     )
 
 
 async def test_evaluate_returns_none_on_empty_parse() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = None
     assert (
-        await extractor.evaluate(
-            subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-        )
+        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
         is None
     )
 
 
 async def test_consolidate_marks_every_absent_input_block() -> None:
     """An absent block is labelled `(empty)` so the model never reads a gap as content."""
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _consolidated(text="新事實")
-    result = await extractor.consolidate(request=_consolidation_request())
+    result = await writer.consolidate(request=_consolidation_request())
     assert result is not None
     assert [delta.text for delta in result.deltas] == ["新事實"]
     user_text = fake_client.responses.parse_inputs[0][0]["content"]
@@ -707,44 +699,44 @@ async def test_consolidate_marks_every_absent_input_block() -> None:
 
 async def test_consolidate_empty_delta_batch_passes_through() -> None:
     """Asking for no change is the normal outcome, not a failure the caller must retry."""
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_change()
-    result = await extractor.consolidate(request=_consolidation_request())
+    result = await writer.consolidate(request=_consolidation_request())
     assert result is not None
     assert result.deltas == ()
 
 
 async def test_consolidate_omits_the_tone_blocks_when_it_does_not_own_the_note() -> None:
     """Only the global compartment's call emits tone, so the others never see the note."""
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_change()
-    await extractor.consolidate(request=_consolidation_request(emit_tone=False))
+    await writer.consolidate(request=_consolidation_request(emit_tone=False))
     user_text = fake_client.responses.parse_inputs[0][0]["content"]
     assert "<existing_tone>" not in user_text
     assert "<tone_evidence>" not in user_text
 
 
 async def test_consolidate_compact_appends_compaction_block() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_change()
-    await extractor.consolidate(request=_consolidation_request(compact=True))
-    await extractor.consolidate(request=_consolidation_request(compact=False))
+    await writer.consolidate(request=_consolidation_request(compact=True))
+    await writer.consolidate(request=_consolidation_request(compact=False))
     assert "COMPACTION" in fake_client.responses.parse_instructions[0]
     assert "COMPACTION" not in fake_client.responses.parse_instructions[1]
 
 
-async def test_extractor_uses_distinct_models_per_phase() -> None:
+async def test_writer_uses_distinct_models_per_phase() -> None:
     """Two phases, two model fields, dispatched in order. There is no third phase left."""
     fake_client = FakeMemoryClient()
-    extractor = MemoryExtractorAI(
+    writer = MemoryWriterAI(
         client=cast("AsyncOpenAI", fake_client),
         evaluate_model=ModelSettings(name="evaluate-model", effort="minimal"),
         consolidate_model=ModelSettings(name="consolidate-model", effort="minimal"),
     )
     fake_client.responses.output_parsed = _draft("偏好明確")
-    await extractor.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
+    await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
     fake_client.responses.output_parsed = _no_change()
-    await extractor.consolidate(request=_consolidation_request())
+    await writer.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_models == ["evaluate-model", "consolidate-model"]
 
 
@@ -1054,14 +1046,14 @@ async def _wait_for_persisted_writes() -> None:
 
 
 async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1076,14 +1068,14 @@ async def test_pipeline_skips_a_turn_that_marked_nothing(memory_isolated_dir: Pa
     Most replies are this case. It is the whole saving over the extraction pass this
     replaced, which ran on every single reply to find out whether there was anything to find.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=(),
     )
@@ -1104,14 +1096,14 @@ async def test_pipeline_writes_a_forget_without_asking_a_model(memory_isolated_d
     rather than kept around waiting for a compartment to appear.
     """
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("review is down")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=(),
         forget_notes=("使用者已經不住台中了",),
@@ -1185,7 +1177,7 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
     `deletes_only`, and the observation gets a separate one.
     """
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     requests: list[str] = []
     forget_pass_deltas: list[bool] = []
     real_apply = pipeline.apply_deltas
@@ -1211,7 +1203,7 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
         subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=("使用者希望被叫阿明",),
         forget_notes=("使用者已經不住台中了",),
@@ -1258,7 +1250,7 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
         entry_text=render_forget_requests(notes=("使用者已經不住台中了",), source="guild 42"),
     )
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     deletes_only_calls: list[bool] = []
     real_apply = pipeline.apply_deltas
 
@@ -1291,7 +1283,7 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
     monkeypatch.setattr("discordbot.services.memory.pipeline.apply_deltas", recording_apply)
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
     assert report.result == "regenerated"
     # The forget was replayed against the rebuilt tree, under the same deletion-only gate the
@@ -1307,7 +1299,7 @@ async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_
     should not be repeated outside the conversation it came from, and the note under a reply
     outlives the exchange in the channel, so those are counted rather than quoted.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
         observations=(
@@ -1330,7 +1322,7 @@ async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
         report=record,
@@ -1362,7 +1354,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
         del kwargs
         raise RuntimeError("detail read blew up")
 
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     if outcome == "review-failed":
         # The LLM call itself failing, which parks the row for the restart sweep. Not the same
         # as a review that returned nothing: that one is `kept-nothing`.
@@ -1382,7 +1374,7 @@ async def test_a_turn_that_records_nothing_still_answers_the_report(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
         report=record,
@@ -1407,7 +1399,7 @@ async def test_a_failed_review_still_reports_the_forget_it_already_wrote(
     `notes` and never reaches the LLM, so a forget-only turn cannot fail this way at all.
     """
     del memory_isolated_dir
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.raises = RuntimeError("the evaluator call blew up")
     reported: list[MemoryWriteSummary] = []
 
@@ -1420,7 +1412,7 @@ async def test_a_failed_review_still_reports_the_forget_it_already_wrote(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=("他換了新桌機",),
         forget_notes=("別再提那台舊筆電",),
@@ -1447,7 +1439,7 @@ async def test_a_superseded_turn_is_still_told_what_became_of_its_notes(
     absorbs the other.
     """
     del memory_isolated_dir
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
         observations=(_observation(summary="偏好繁體中文", normalized_key="preference.lang"),),
@@ -1473,7 +1465,7 @@ async def test_a_superseded_turn_is_still_told_what_became_of_its_notes(
             subject=f"target_user_id: {USER_ID}",
             message_list=_user_message(),
             full_reply="回覆",
-            extractor=extractor,
+            writer=writer,
             identity=IDENTITY,
             remember_notes=(note,),
             report=_recorder(key=key),
@@ -1484,14 +1476,14 @@ async def test_a_superseded_turn_is_still_told_what_became_of_its_notes(
 
 
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1506,7 +1498,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
     # Keep this test about in-flight de-dupe only: the eager default threshold
     # would otherwise trigger consolidation on the replayed second entry.
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     started = asyncio.Event()
     release = asyncio.Event()
     seen_replies: list[str] = []
@@ -1534,7 +1526,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         subject=subject,
         message_list=_user_message(),
         full_reply="第一",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1545,7 +1537,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         subject=subject,
         message_list=_user_message(),
         full_reply="第二",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1554,7 +1546,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         subject=subject,
         message_list=_user_message(),
         full_reply="第三",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1584,7 +1576,7 @@ async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
     review is still running would lose X entirely, with nothing in the logs to say so.
     """
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     started = asyncio.Event()
     release = asyncio.Event()
     seen_notes: list[str] = []
@@ -1606,7 +1598,7 @@ async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
             subject=f"target_user_id: {USER_ID}",
             message_list=_user_message(),
             full_reply="回覆",
-            extractor=extractor,
+            writer=writer,
             identity=IDENTITY,
             remember_notes=(note,),
         )
@@ -1634,7 +1626,7 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
     held per source and replayed one after another, each keeping its own subject.
     """
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     started = asyncio.Event()
     release = asyncio.Event()
     requests: list[str] = []
@@ -1656,7 +1648,7 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
             subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=guild)}",
             message_list=_user_message(),
             full_reply="回覆",
-            extractor=extractor,
+            writer=writer,
             identity=IDENTITY,
             remember_notes=(note,),
         )
@@ -1685,14 +1677,14 @@ async def test_pipeline_consolidates_at_threshold(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("第一筆", normalized_key="preference.first")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆一",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1710,7 +1702,7 @@ async def test_pipeline_consolidates_at_threshold(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆二",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1731,7 +1723,7 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     parse_results: list[SimpleNamespace | None] = [_parsed(output=_draft("訊號")), None]
 
@@ -1747,7 +1739,7 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1764,7 +1756,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
     """A batch that implies no change is applied, so it is consumed rather than replayed."""
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     parsed_outputs: list[BaseModel] = [_draft("已知資訊"), _no_change()]
 
@@ -1777,7 +1769,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1796,7 +1788,7 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     monkeypatch.setattr("discordbot.services.memory.pipeline.COMPACTION_TRIGGER_CHARS", 100)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="長" * 200))
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     seen_instructions: list[str] = []
     seen_inputs: list[str] = []
 
@@ -1816,7 +1808,7 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1833,7 +1825,7 @@ async def test_pipeline_small_compartment_skips_compaction(
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="小檔案"))
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     seen_instructions: list[str] = []
 
     parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
@@ -1848,7 +1840,7 @@ async def test_pipeline_small_compartment_skips_compaction(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -1904,7 +1896,7 @@ async def test_consolidation_fans_one_batch_out_over_its_compartments(
     """One batch, two directories: routing is per observation and neither call sees the other."""
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     _stage_mixed_raw_batch()
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     seen_inputs: list[str] = []
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
@@ -1917,7 +1909,7 @@ async def test_consolidation_fans_one_batch_out_over_its_compartments(
         return _parsed(output=_consolidated(summary=written, text=written))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert list_compartments(scope=USER_SCOPE) == [GLOBAL_COMPARTMENT, _GUILD_222]
     global_texts = [
@@ -1943,7 +1935,7 @@ async def test_a_failed_compartment_keeps_the_whole_raw_batch(
     """
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     _stage_mixed_raw_batch()
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
         inputs = kwargs["input"]
@@ -1954,7 +1946,7 @@ async def test_a_failed_compartment_keeps_the_whole_raw_batch(
         return _parsed(output=_consolidated(summary="全域事實", text="全域事實"))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert count_raw_entries(scope=USER_SCOPE) == 2
     assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
@@ -1984,7 +1976,7 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
         category="stable_preference",
         evidence_kind="explicit_preference",
     )
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     seen_inputs: list[str] = []
 
     async def staged_parse(**kwargs: object) -> SimpleNamespace:
@@ -1998,7 +1990,7 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
         return _parsed(output=_consolidated(summary="本群事實", text="本群事實"))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
     tone_calls = [text for text in seen_inputs if "<tone_evidence>" in text]
@@ -2020,7 +2012,7 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
 async def test_pipeline_aborts_write_after_clear(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     parse_started = asyncio.Event()
     release = asyncio.Event()
 
@@ -2035,7 +2027,7 @@ async def test_pipeline_aborts_write_after_clear(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -2049,7 +2041,7 @@ async def test_pipeline_aborts_write_after_clear(
 async def test_pipeline_background_failure_is_swallowed(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     async def exploding_parse(**kwargs: object) -> SimpleNamespace:
         raise MemoryError("unexpected")
@@ -2060,7 +2052,7 @@ async def test_pipeline_background_failure_is_swallowed(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -2183,14 +2175,14 @@ async def test_regenerate_main_memory_rebuilds_from_evidence_only(
     memory_isolated_dir: Path,
 ) -> None:
     """The rebuild distils the cold-tier evidence alone; the stored facts never reach the model."""
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "regenerated"
@@ -2222,7 +2214,7 @@ async def test_regenerate_main_memory_replaces_the_directory_not_only_what_it_co
     broken one surviving the odd case out. A file the store never wrote is a different
     thing: it stays where it is and is reported instead.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
     directory = memory_isolated_dir / str(USER_ID) / GLOBAL_COMPARTMENT
     broken = directory / f"{'b' * 16}.md"
@@ -2233,7 +2225,7 @@ async def test_regenerate_main_memory_replaces_the_directory_not_only_what_it_co
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "regenerated"
@@ -2257,14 +2249,14 @@ async def test_regenerate_main_memory_never_calls_the_model_for_an_empty_compart
     the answer it does not get is one more way to fail the compartments that do have
     something.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     leftover = memory_isolated_dir / str(USER_ID) / _GUILD_222
     leftover.mkdir(parents=True)
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "regenerated"
@@ -2285,7 +2277,7 @@ async def test_regenerate_main_memory_prunes_a_compartment_it_never_handed_to_th
     skipped — but a file the store never wrote is still not the store's to delete, and
     naming it is what makes the difference visible instead of assumed.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     leftover = memory_isolated_dir / str(USER_ID) / _GUILD_222
     leftover.mkdir(parents=True)
@@ -2296,7 +2288,7 @@ async def test_regenerate_main_memory_prunes_a_compartment_it_never_handed_to_th
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "regenerated"
@@ -2312,12 +2304,12 @@ async def test_regenerate_main_memory_prunes_a_compartment_it_never_handed_to_th
 async def test_regenerate_main_memory_without_evidence_skips_llm(
     memory_isolated_dir: Path,
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     # Stored facts alone are not evidence: the rebuild never reads them back in.
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "no_evidence"
@@ -2343,14 +2335,14 @@ def test_regeneration_has_evidence_detects_detail_only(memory_isolated_dir: Path
 async def test_regenerate_main_memory_failure_keeps_existing_state(
     memory_isolated_dir: Path,
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.raises = TimeoutError()
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "failed"
@@ -2369,7 +2361,7 @@ async def test_regenerate_main_memory_reports_what_it_destroyed_before_it_failed
     earlier ones already replaced. Reporting the count only on the way out through the
     success path would lose exactly the runs an operator most needs to hear about.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     broken = memory_isolated_dir / str(USER_ID) / GLOBAL_COMPARTMENT / f"{'b' * 16}.md"
     broken.parent.mkdir(parents=True, exist_ok=True)
     broken.write_text("hand-edited into nonsense\n", encoding="utf-8")
@@ -2390,7 +2382,7 @@ async def test_regenerate_main_memory_reports_what_it_destroyed_before_it_failed
 
     monkeypatch.setattr(fake_client.responses, "parse", failing_second_parse)
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "failed"
@@ -2410,7 +2402,7 @@ def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> 
 async def test_regenerate_main_memory_recheck_cooldown_under_lock(
     memory_isolated_dir: Path,
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     # An invocation queued behind a held lock passes the command-level check
     # before the in-flight one stamps the attempt; the locked re-check is what
@@ -2418,7 +2410,7 @@ async def test_regenerate_main_memory_recheck_cooldown_under_lock(
     pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "cooldown"
@@ -2428,7 +2420,7 @@ async def test_regenerate_main_memory_recheck_cooldown_under_lock(
 async def test_regenerate_main_memory_aborts_write_after_clear(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
 
     async def clearing_parse(**kwargs: object) -> SimpleNamespace:
@@ -2437,7 +2429,7 @@ async def test_regenerate_main_memory_aborts_write_after_clear(
 
     monkeypatch.setattr(fake_client.responses, "parse", clearing_parse)
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "failed"
@@ -2485,18 +2477,18 @@ async def test_memory_regenerate_command_schedules_in_background(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, scheduled: bool, expected_text: str
 ) -> None:
     cog = _memory_cog()
-    extractor_sentinel = object()
+    writer_sentinel = object()
 
-    async def fake_build_extractor() -> object:
-        """Stands in for the extractor the command builds on a freshly leased key."""
-        return extractor_sentinel
+    async def fake_build_writer() -> object:
+        """Stands in for the writer the command builds on a freshly leased key."""
+        return writer_sentinel
 
-    monkeypatch.setattr(cog, "build_memory_extractor", fake_build_extractor)
+    monkeypatch.setattr(cog, "build_memory_writer", fake_build_writer)
     calls: dict[str, object] = {}
 
-    def fake_schedule(scope: str, extractor: object, identity: str) -> bool:
+    def fake_schedule(scope: str, writer: object, identity: str) -> bool:
         calls["scope"] = scope
-        calls["extractor"] = extractor
+        calls["writer"] = writer
         calls["identity"] = identity
         return scheduled
 
@@ -2515,7 +2507,7 @@ async def test_memory_regenerate_command_schedules_in_background(
     assert isinstance(embed, Embed)
     assert expected_text in (embed.description or "")
     assert calls["scope"] == USER_SCOPE
-    assert calls["extractor"] is extractor_sentinel
+    assert calls["writer"] is writer_sentinel
     assert calls["identity"] == f"Alice (alice) [id: {USER_ID}]"
 
 
@@ -2525,7 +2517,7 @@ async def test_memory_regenerate_command_reports_no_evidence(
     cog = _memory_cog()
     scheduled = False
 
-    def fake_schedule(scope: str, extractor: object, identity: str) -> bool:
+    def fake_schedule(scope: str, writer: object, identity: str) -> bool:
         nonlocal scheduled
         scheduled = True
         return True
@@ -2552,7 +2544,7 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
     pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
     scheduled = False
 
-    def fake_schedule(scope: str, extractor: object, identity: str) -> bool:
+    def fake_schedule(scope: str, writer: object, identity: str) -> bool:
         nonlocal scheduled
         scheduled = True
         return True
@@ -2572,12 +2564,12 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
 
 
 async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_dir: Path) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     fake_client.responses.output_parsed = _consolidated(text="背景重建後的記憶")
 
     scheduled = pipeline.schedule_memory_regeneration(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert scheduled is True
@@ -2591,11 +2583,11 @@ async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_d
 async def test_schedule_memory_regeneration_dedupes_in_flight(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    extractor, _ = _extractor()
+    writer, _ = _writer()
     release = asyncio.Event()
 
     async def blocking_regen(
-        scope: str, extractor: object, identity: str
+        scope: str, writer: object, identity: str
     ) -> pipeline.RegenerationReport:
         await release.wait()
         return pipeline.RegenerationReport(result="regenerated")
@@ -2603,10 +2595,10 @@ async def test_schedule_memory_regeneration_dedupes_in_flight(
     monkeypatch.setattr(pipeline, "regenerate_main_memory", blocking_regen)
 
     first = pipeline.schedule_memory_regeneration(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
     second = pipeline.schedule_memory_regeneration(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert first is True
@@ -2805,7 +2797,7 @@ def test_transcript_caps_reply_so_current_message_survives_truncation(
 async def test_pipeline_cancelled_task_does_not_raise_or_replay(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     started = asyncio.Event()
 
     async def hang(**kwargs: object) -> SimpleNamespace:
@@ -2819,7 +2811,7 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="一",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -2830,7 +2822,7 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="二",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -2847,7 +2839,7 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
 async def test_pipeline_drops_pending_replay_after_clear(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     first_started = asyncio.Event()
     release = asyncio.Event()
     parse_calls = 0
@@ -2866,7 +2858,7 @@ async def test_pipeline_drops_pending_replay_after_clear(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="一",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -2877,7 +2869,7 @@ async def test_pipeline_drops_pending_replay_after_clear(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="二",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -2923,15 +2915,13 @@ def test_read_detail_tail_window_aligns_to_entry_header(memory_isolated_dir: Pat
 
 
 async def test_evaluate_returns_none_on_incomplete_response() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("被截斷前的部分內容")
     fake_client.responses.status = "incomplete"
     # A response that hit the output-token budget must be refused even when the
     # parsed payload looks usable.
     assert (
-        await extractor.evaluate(
-            subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
-        )
+        await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
         is None
     )
 
@@ -2939,11 +2929,11 @@ async def test_evaluate_returns_none_on_incomplete_response() -> None:
 async def test_memory_calls_omit_max_output_tokens() -> None:
     # The memory calls intentionally set no explicit output cap so the backend
     # uses the model's own ceiling; only the `incomplete` guard bounds output.
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
-    await extractor.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
+    await writer.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
     fake_client.responses.output_parsed = _no_change()
-    await extractor.consolidate(request=_consolidation_request())
+    await writer.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_extra_kwargs == [{}, {}]
 
 
@@ -2957,14 +2947,14 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("訊號")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -2983,7 +2973,7 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
     pipeline._last_consolidation[USER_SCOPE] = (
         time.monotonic() - MEMORY_CONSOLIDATION_COOLDOWN_SECONDS - 1
     )
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
 
@@ -2996,7 +2986,7 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3012,7 +3002,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 99)
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_MAX_BYTES", 10)
     pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     parsed_outputs: list[BaseModel] = [
         _draft("超過位元組門檻的長訊號"),
@@ -3028,7 +3018,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3042,7 +3032,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00+00:00\n舊的詳細證據")
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     seen_inputs: list[str] = []
 
     parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated()]
@@ -3060,7 +3050,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3080,7 +3070,7 @@ async def test_memory_semaphore_caps_concurrent_updates(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.MEMORY_GLOBAL_CONCURRENCY", 1)
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     in_flight = 0
     max_in_flight = 0
 
@@ -3099,7 +3089,7 @@ async def test_memory_semaphore_caps_concurrent_updates(
             subject=f"target_user_id: {USER_ID + offset}",
             message_list=_user_message(),
             full_reply="回覆",
-            extractor=extractor,
+            writer=writer,
             identity=IDENTITY,
             remember_notes=_NOTES,
         )
@@ -3138,7 +3128,7 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
     # The clear lands after the recorded attempt, so the cooldown belonged to
     # the wiped memory and must not delay the fresh state's first consolidation.
     mark_cleared(scope=USER_SCOPE)
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     parsed_outputs: list[BaseModel] = [_draft("清除後的新訊號"), _consolidated(text="全新整理")]
 
@@ -3151,7 +3141,7 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3361,14 +3351,14 @@ async def test_db_clear_job_rejects_stale_upsert_but_allows_a_newer_turn(
 async def test_pipeline_success_marks_done_and_clears_transcript(
     memory_isolated_dir: Path,
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3382,7 +3372,7 @@ async def test_pipeline_success_marks_done_and_clears_transcript(
 async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
     memory_isolated_dir: Path,
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     # extract() returns None on an LLM error, which must park the row at failed.
     fake_client.responses.raises = RuntimeError("llm down")
     pipeline.schedule_memory_update(
@@ -3390,7 +3380,7 @@ async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3403,14 +3393,14 @@ async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
 
 
 async def test_pipeline_no_signal_marks_done(memory_isolated_dir: Path) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3432,14 +3422,14 @@ async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir
         token=7,
     )
     captured_at = time.monotonic()
-    extractor, _ = _extractor()
+    writer, _ = _writer()
     subject = f"target_user_id: {USER_ID}"
     # Pending turns are held per conversation source, so the map is scope -> subject -> turn.
     pipeline._pending_updates[USER_SCOPE] = {
         subject: pipeline._PendingMemoryUpdate(
             subject=subject,
             transcript="Alice (alice) [id: 123456789]: 哈囉",
-            extractor=extractor,
+            writer=writer,
             identity=IDENTITY,
             captured_at=captured_at,
             token=7,
@@ -3475,13 +3465,13 @@ async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path)
         token=42,
     )
     await memory_db.mark_failed(scope=USER_SCOPE, token=42, error="boom")
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.resume_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         transcript=payload,
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         token=42,
     )
@@ -3499,13 +3489,13 @@ async def test_resume_of_a_row_predating_markers_writes_nothing(memory_isolated_
     transcript here is exactly the guessing this change removed. It closes quietly rather than
     parking forever as a failure the restart sweep keeps retrying.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.resume_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         transcript="Alice (alice) [id: 123456789]: 哈囉",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         token=42,
     )
@@ -3523,9 +3513,9 @@ async def test_consolidate_if_needed_digests_over_threshold_scope(
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _consolidated(text="掃描整理")
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
     assert "掃描整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
@@ -3535,8 +3525,8 @@ async def test_consolidate_if_needed_skips_under_threshold(
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 5)
     append_raw_entry(scope=USER_SCOPE, entry_text="- 只有一筆")
-    extractor, _fake_client = _extractor()
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, extractor=extractor, identity=IDENTITY)
+    writer, _fake_client = _writer()
+    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
     # Below threshold: no consolidation, raw untouched.
     assert _memory_text() == ""
     assert count_raw_entries(scope=USER_SCOPE) == 1
@@ -3634,7 +3624,7 @@ def test_observation_key_sources_from_text_pairs_keys_with_block_sources() -> No
 
 
 async def test_evaluate_sharing_gates_tighten_but_never_loosen() -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
         observations=(
@@ -3694,7 +3684,7 @@ async def test_evaluate_sharing_gates_tighten_but_never_loosen() -> None:
             ),
         ),
     )
-    draft = await extractor.evaluate(
+    draft = await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
     )
     assert draft is not None
@@ -3727,7 +3717,7 @@ async def test_a_named_participant_locks_an_observation_with_no_id_token() -> No
     A fact naming someone else is about a relationship, and plain prose like 「跟小美吵架」
     carries no id token at all, so the gate also matches the conversation's own roster.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
         observations=(
@@ -3745,7 +3735,7 @@ async def test_a_named_participant_locks_an_observation_with_no_id_token() -> No
             ),
         ),
     )
-    draft = await extractor.evaluate(
+    draft = await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT, notes=_NOTES
     )
     assert draft is not None
@@ -3760,7 +3750,7 @@ async def test_a_latin_roster_name_only_matches_on_a_word_boundary() -> None:
     A CJK name has no boundary to anchor to and stays a substring match; a Latin one does,
     so `amy` must not fire on `amylase`.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
         observations=(
@@ -3769,7 +3759,7 @@ async def test_a_latin_roster_name_only_matches_on_a_word_boundary() -> None:
             ),
         ),
     )
-    draft = await extractor.evaluate(
+    draft = await writer.evaluate(
         subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT, notes=_NOTES
     )
     assert draft is not None
@@ -3820,14 +3810,14 @@ def test_filter_duplicate_observations_legacy_evidence_pairs_with_none() -> None
 
 
 async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_dir: Path) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=123)}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3842,14 +3832,14 @@ async def test_pipeline_sourceless_subject_renders_without_source_fields(
 ) -> None:
     # A server-flavor or pre-source-line subject parses to None and keeps the
     # old observation format.
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3945,7 +3935,7 @@ async def test_pipeline_consolidation_writes_tone_note(
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     seen_inputs: list[str] = []
 
     parsed_outputs: list[BaseModel] = [
@@ -3969,7 +3959,7 @@ async def test_pipeline_consolidation_writes_tone_note(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -3989,7 +3979,7 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
 ) -> None:
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     parsed_outputs: list[BaseModel] = [
         _draft("已知資訊"),
@@ -4009,7 +3999,7 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -4036,7 +4026,7 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
     """
     monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 原有偏好")
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
 
     parsed_outputs: list[BaseModel] = [_draft("訊號"), _consolidated(tone=bad_tone)]
 
@@ -4049,7 +4039,7 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -4067,11 +4057,11 @@ async def test_consolidate_if_needed_server_scope_never_writes_tone(
     scope = server_scope(server_id=555)
     append_raw_entry(scope=scope, entry_text="- 第一筆")
     append_raw_entry(scope=scope, entry_text="- 第二筆")
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _consolidated(
         section="culture", text="整理", tone="## 語氣偏好\n* 不該存在"
     )
-    await pipeline.consolidate_if_needed(scope=scope, extractor=extractor, identity="srv")
+    await pipeline.consolidate_if_needed(scope=scope, writer=writer, identity="srv")
     assert "整理" in _memory_text(scope=scope, flavor="server")
     # A server scope has exactly one compartment, so its evidence never fans out.
     assert list_compartments(scope=scope) == [GLOBAL_COMPARTMENT]
@@ -4083,7 +4073,7 @@ async def test_consolidate_if_needed_server_scope_never_writes_tone(
 async def test_regenerate_main_memory_writes_tone_and_ignores_existing_tone(
     memory_isolated_dir: Path,
 ) -> None:
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     # Structured evidence, because the rebuild's tone note is distilled from the batch's
     # tone-bearing observations; free-form prose carries no category to select on.
@@ -4100,7 +4090,7 @@ async def test_regenerate_main_memory_writes_tone_and_ignores_existing_tone(
     )
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "regenerated"
@@ -4121,13 +4111,13 @@ async def test_regenerate_main_memory_clears_stale_tone_on_empty_output(
     note kept), the rebuild saw the whole corpus, so a surviving note would keep
     injecting a preference the evidence no longer backs.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
     report = await pipeline.regenerate_main_memory(
-        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert report.result == "regenerated"
@@ -4255,7 +4245,7 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The deferred turn holds a pre-clear transcript in memory and in reply.db."""
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     first_started = asyncio.Event()
     release = asyncio.Event()
     parse_calls = 0
@@ -4275,7 +4265,7 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
             subject=f"target_user_id: {USER_ID}",
             message_list=_user_message(),
             full_reply=reply,
-            extractor=extractor,
+            writer=writer,
             identity=IDENTITY,
             remember_notes=_NOTES,
         )
@@ -4338,14 +4328,14 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
     await during_clear
     assert await memory_db.list_resumable() == []
 
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _no_signal()
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="清除已經回傳",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
@@ -4703,14 +4693,14 @@ async def test_memory_update_scheduled_before_a_clear_never_starts(
     The worker times itself from the enqueue, so a clear landing while the task is
     still queued is newer than the turn and wins.
     """
-    extractor, fake_client = _extractor()
+    writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("不該被寫入")
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         message_list=_user_message(),
         full_reply="回覆",
-        extractor=extractor,
+        writer=writer,
         identity=IDENTITY,
         remember_notes=_NOTES,
     )

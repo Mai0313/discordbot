@@ -2,8 +2,8 @@
 
 The pipeline is keyed by an opaque scope (see ``store``), so the same
 orchestration drives both per-user and per-server (bot self) memory. The
-flavor-specific bits are injected: ``subject`` names the extraction target and
-``extractor`` carries the flavor's prompts.
+flavor-specific bits are injected: ``subject`` names the memory target and
+``writer`` carries the flavor's prompts.
 """
 
 import time
@@ -70,7 +70,7 @@ from discordbot.services.memory.constants import (
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 from discordbot.services.memory.extraction import (
-    MemoryExtractorAI,
+    MemoryWriterAI,
     MemoryObservation,
     ConsolidatedMemory,
     ConsolidationRequest,
@@ -116,7 +116,7 @@ class _PendingMemoryUpdate(BaseModel):
         subject: The phase-1 extraction directive naming the memory target.
         transcript: The rendered phase-1 input captured for the skipped turn
             (already folds in the reply), so the replay needs no re-render.
-        extractor: The extraction service to run the replayed update with.
+        writer: The memory writing service to run the replayed update with.
         identity: Single-line target identity `parse_identity` splits into the
             `owner_id` / `owner_name` stamped on every fact this scope writes.
         captured_at: `time.monotonic()` when the turn was captured, so a clear
@@ -133,8 +133,8 @@ class _PendingMemoryUpdate(BaseModel):
     transcript: str = Field(
         ..., description="The rendered phase-1 input captured for the skipped turn."
     )
-    extractor: SkipValidation[MemoryExtractorAI] = Field(
-        ..., description="The extraction service to run the replayed update with."
+    writer: SkipValidation[MemoryWriterAI] = Field(
+        ..., description="The memory writing service to run the replayed update with."
     )
     identity: str = Field(
         ...,
@@ -391,7 +391,7 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     subject: str,
     message_list: list[EasyInputMessageParam],
     full_reply: str,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     identity: str,
     remember_notes: tuple[str, ...],
     forget_notes: tuple[str, ...] = (),
@@ -423,7 +423,7 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
         transcript=render_turn_payload(
             transcript=transcript, remember=remember_notes, forget=forget_notes
         ),
-        extractor=extractor,
+        writer=writer,
         identity=identity,
         token=memory_db.new_token(),
         report=report,
@@ -431,20 +431,14 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
 
 
 def resume_memory_update(  # noqa: PLR0913 -- mirrors a persisted row's columns
-    *,
-    scope: str,
-    subject: str,
-    transcript: str,
-    extractor: MemoryExtractorAI,
-    identity: str,
-    token: int,
+    *, scope: str, subject: str, transcript: str, writer: MemoryWriterAI, identity: str, token: int
 ) -> None:
     """Re-enqueues a persisted phase-1 turn on restart, reusing its stored token."""
     _enqueue_memory_update(
         scope=scope,
         subject=subject,
         transcript=transcript,
-        extractor=extractor,
+        writer=writer,
         identity=identity,
         token=token,
     )
@@ -454,7 +448,7 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     scope: str,
     subject: str,
     transcript: str,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     identity: str,
     token: int,
     report: MemoryWriteReport | None = None,
@@ -481,7 +475,7 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
             subject=subject,
             transcript=transcript,
             report=report,
-            extractor=extractor,
+            writer=writer,
             identity=identity,
             captured_at=captured_at,
             token=token,
@@ -506,7 +500,7 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
             scope=scope,
             subject=subject,
             transcript=transcript,
-            extractor=extractor,
+            writer=writer,
             identity=identity,
             token=token,
             captured_at=captured_at,
@@ -666,7 +660,7 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
         scope=scope,
         subject=pending.subject,
         transcript=pending.transcript,
-        extractor=pending.extractor,
+        writer=pending.writer,
         identity=pending.identity,
         token=pending.token,
         report=pending.report,
@@ -677,7 +671,7 @@ async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavo
     scope: str,
     subject: str,
     transcript: str,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     identity: str,
     token: int,
     captured_at: float,
@@ -736,7 +730,7 @@ async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavo
                 scope=scope,
                 subject=subject,
                 payload=transcript,
-                extractor=extractor,
+                writer=writer,
                 token=token,
                 captured_at=captured_at,
                 report=settle if report is not None else None,
@@ -744,7 +738,7 @@ async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavo
             if forced is None or not _should_consolidate(scope=scope, forced=forced):
                 return
             await _consolidate_now(
-                scope=scope, started_at=captured_at, extractor=extractor, identity=identity
+                scope=scope, started_at=captured_at, writer=writer, identity=identity
             )
     finally:
         # Nothing recorded is the honest answer for every path that reaches here without having
@@ -761,7 +755,7 @@ async def _review_and_stage(  # noqa: PLR0913 -- the turn's identity and payload
     scope: str,
     subject: str,
     payload: str,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     token: int,
     captured_at: float,
     report: MemoryWriteReport | None,
@@ -785,7 +779,7 @@ async def _review_and_stage(  # noqa: PLR0913 -- the turn's identity and payload
     forget_text = render_forget_requests(notes=forget_notes, source=source)
     if forget_text and not cleared_since(scope=scope, started_at=captured_at):
         append_raw_entry(scope=scope, entry_text=forget_text)
-    draft = await extractor.evaluate(subject=subject, transcript=transcript, notes=remember_notes)
+    draft = await writer.evaluate(subject=subject, transcript=transcript, notes=remember_notes)
     if cleared_since(scope=scope, started_at=captured_at):
         # Cleared while this update was in flight; dropping the result beats
         # resurrecting deleted memory. The tombstone already owns the durable
@@ -848,7 +842,7 @@ async def _review_and_stage(  # noqa: PLR0913 -- the turn's identity and payload
 
 
 async def _consolidate_now(
-    scope: str, started_at: float, extractor: MemoryExtractorAI, identity: str
+    scope: str, started_at: float, writer: MemoryWriterAI, identity: str
 ) -> None:
     """Runs the fan-out immediately, stamping the cooldown first.
 
@@ -857,9 +851,7 @@ async def _consolidate_now(
     and a semaphore permit, like `_consolidate_locked` itself.
     """
     _last_consolidation[scope] = time.monotonic()
-    await _consolidate_locked(
-        scope=scope, started_at=started_at, extractor=extractor, identity=identity
-    )
+    await _consolidate_locked(scope=scope, started_at=started_at, writer=writer, identity=identity)
 
 
 async def safe_list_resumable() -> list[memory_db.MemoryJob]:
@@ -885,7 +877,7 @@ def needs_consolidation(scope: str) -> bool:
     return _should_consolidate(scope=scope)
 
 
-async def consolidate_if_needed(scope: str, extractor: MemoryExtractorAI, identity: str) -> None:
+async def consolidate_if_needed(scope: str, writer: MemoryWriterAI, identity: str) -> None:
     """Consolidates a scope whose raw backlog is over threshold; best-effort, self-logging.
 
     The boot-sweep entry point: `_consolidate_locked` is private and assumes the
@@ -899,7 +891,7 @@ async def consolidate_if_needed(scope: str, extractor: MemoryExtractorAI, identi
                 return
             _last_consolidation[scope] = time.monotonic()
             await _consolidate_locked(
-                scope=scope, started_at=time.monotonic(), extractor=extractor, identity=identity
+                scope=scope, started_at=time.monotonic(), writer=writer, identity=identity
             )
     except Exception:
         logfire.warn("Background memory consolidation sweep failed", scope=scope, _exc_info=True)
@@ -931,7 +923,7 @@ def _should_consolidate(scope: str, forced: bool = False) -> bool:
 
 
 async def _consolidate_locked(
-    scope: str, started_at: float, extractor: MemoryExtractorAI, identity: str
+    scope: str, started_at: float, writer: MemoryWriterAI, identity: str
 ) -> None:
     """Fans one raw batch out over the scope's compartments, applying each one's deltas.
 
@@ -981,7 +973,7 @@ async def _consolidate_locked(
                 flavor=flavor,
                 owner=owner,
                 started_at=started_at,
-                extractor=extractor,
+                writer=writer,
                 buckets=forget_buckets,
                 today=today,
             ):
@@ -1002,7 +994,7 @@ async def _consolidate_locked(
                     flavor=flavor,
                     owner=owner,
                     started_at=started_at,
-                    extractor=extractor,
+                    writer=writer,
                     request_parts=_CompartmentInput(
                         raw_entries=buckets.get(compartment, ""),
                         recent_detail=detail_buckets.get(compartment, ""),
@@ -1031,7 +1023,7 @@ async def _consolidate_locked(
         scope=scope,
         flavor=flavor,
         started_at=started_at,
-        extractor=extractor,
+        writer=writer,
         raw_entries=raw_entries,
         today=today,
     )
@@ -1056,7 +1048,7 @@ async def _apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus t
     flavor: MemoryFlavor,
     owner: MemoryOwner,
     started_at: float,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     buckets: dict[str, str],
     today: str,
 ) -> bool:
@@ -1079,7 +1071,7 @@ async def _apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus t
             flavor=flavor,
             owner=owner,
             started_at=started_at,
-            extractor=extractor,
+            writer=writer,
             deletes_only=True,
             request_parts=_CompartmentInput(
                 raw_entries=forget_text, recent_detail="", global_reference="", today=today
@@ -1111,7 +1103,7 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
     flavor: MemoryFlavor,
     owner: MemoryOwner,
     started_at: float,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     request_parts: _CompartmentInput,
     deletes_only: bool = False,
 ) -> DeltaOutcome | None:
@@ -1125,7 +1117,7 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
     existing = read_facts(scope=scope, compartment=compartment)
     rendered = render_existing_facts(facts=existing)
     is_global = compartment == GLOBAL_COMPARTMENT
-    result = await extractor.consolidate(
+    result = await writer.consolidate(
         request=ConsolidationRequest(
             compartment_note=_compartment_note(compartment=compartment, flavor=flavor),
             allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
@@ -1209,7 +1201,7 @@ async def _update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the b
     scope: str,
     flavor: MemoryFlavor,
     started_at: float,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     raw_entries: str,
     today: str,
 ) -> None:
@@ -1238,7 +1230,7 @@ async def _update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the b
         # No tone signal in this batch is the normal case, and an empty output must
         # never delete the note; only the evidence-complete rebuild may do that.
         return
-    result = await extractor.consolidate(
+    result = await writer.consolidate(
         request=ConsolidationRequest(
             compartment_note="the user's persona-independent tone note, read in every conversation",
             allowed_sections=(),
@@ -1365,7 +1357,7 @@ def regeneration_on_cooldown(scope: str) -> bool:
     return time.monotonic() - last_attempt < MEMORY_REGENERATION_COOLDOWN_SECONDS
 
 
-def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, identity: str) -> bool:
+def schedule_memory_regeneration(scope: str, writer: MemoryWriterAI, identity: str) -> bool:
     """Starts a background main-memory rebuild without blocking the command.
 
     Returns False when a rebuild is already in flight for this scope (so the
@@ -1376,7 +1368,7 @@ def schedule_memory_regeneration(scope: str, extractor: MemoryExtractorAI, ident
     if running is not None and not running.done():
         return False
     task = asyncio.create_task(
-        regenerate_main_memory(scope=scope, extractor=extractor, identity=identity)
+        regenerate_main_memory(scope=scope, writer=writer, identity=identity)
     )
     _regeneration_tasks.set(key=scope, value=task)
     task.add_done_callback(
@@ -1408,7 +1400,7 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
 
 
 async def regenerate_main_memory(
-    scope: str, extractor: MemoryExtractorAI, identity: str
+    scope: str, writer: MemoryWriterAI, identity: str
 ) -> RegenerationReport:
     """Rebuilds every compartment from cold-tier evidence alone.
 
@@ -1470,7 +1462,7 @@ async def regenerate_main_memory(
                             scope=scope, compartment=compartment, keep=set()
                         )
                         continue
-                    result = await extractor.consolidate(
+                    result = await writer.consolidate(
                         request=ConsolidationRequest(
                             compartment_note=_compartment_note(
                                 compartment=compartment, flavor=flavor
@@ -1515,7 +1507,7 @@ async def regenerate_main_memory(
                     flavor=flavor,
                     owner=owner,
                     started_at=started_at,
-                    extractor=extractor,
+                    writer=writer,
                     evidence=evidence,
                     today=today,
                 )
@@ -1523,7 +1515,7 @@ async def regenerate_main_memory(
                     scope=scope,
                     flavor=flavor,
                     started_at=started_at,
-                    extractor=extractor,
+                    writer=writer,
                     evidence=evidence,
                     today=today,
                 )
@@ -1547,7 +1539,7 @@ async def _reapply_forgets(  # noqa: PLR0913 -- the scope's identity plus the co
     flavor: MemoryFlavor,
     owner: MemoryOwner,
     started_at: float,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     evidence: str,
     today: str,
 ) -> None:
@@ -1573,7 +1565,7 @@ async def _reapply_forgets(  # noqa: PLR0913 -- the scope's identity plus the co
         flavor=flavor,
         owner=owner,
         started_at=started_at,
-        extractor=extractor,
+        writer=writer,
         buckets=partition_forget_requests(
             raw_text=evidence, compartments=tuple(list_compartments(scope=scope))
         ),
@@ -1585,7 +1577,7 @@ async def _rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the 
     scope: str,
     flavor: MemoryFlavor,
     started_at: float,
-    extractor: MemoryExtractorAI,
+    writer: MemoryWriterAI,
     evidence: str,
     today: str,
 ) -> None:
@@ -1602,7 +1594,7 @@ async def _rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the 
     result = (
         None
         if not tone_evidence
-        else await extractor.consolidate(
+        else await writer.consolidate(
             request=ConsolidationRequest(
                 compartment_note=(
                     "the user's persona-independent tone note, read in every conversation"

@@ -1790,7 +1790,7 @@ class ReplyGeneratorCogs(commands.Cog):
             subject=f"target_server_id: {message.guild.id}",
             message_list=message_list,
             full_reply=full_reply,
-            extractor=toolkit.server_memory_extractor,
+            writer=toolkit.server_memory_writer,
             identity=render_server_identity(
                 server_name=message.guild.name, server_id=message.guild.id
             ),
@@ -2242,7 +2242,7 @@ class ReplyGeneratorCogs(commands.Cog):
             subject=f"target_user_id: {message.author.id}\n{source_line}",
             message_list=memory_message_list,
             full_reply=full_reply,
-            extractor=toolkit.memory_extractor,
+            writer=toolkit.memory_writer,
             identity=render_author_identity(
                 display_name=message.author.display_name,
                 username=message.author.name,
@@ -2300,16 +2300,14 @@ class ReplyGeneratorCogs(commands.Cog):
             # here is bound to a key (memory extraction reaches no Files API), so the lease is
             # only about the count.
             toolkit = await self.lease_toolkit()
-            extractor = (
-                toolkit.server_memory_extractor
-                if job.flavor == "server"
-                else toolkit.memory_extractor
+            writer = (
+                toolkit.server_memory_writer if job.flavor == "server" else toolkit.memory_writer
             )
             resume_memory_update(
                 scope=job.scope,
                 subject=job.subject,
                 transcript=job.transcript,
-                extractor=extractor,
+                writer=writer,
                 identity=job.identity,
                 token=job.token,
             )
@@ -2320,15 +2318,15 @@ class ReplyGeneratorCogs(commands.Cog):
             if not needs_consolidation(scope=scope):
                 continue
             swept_toolkit = await self.lease_toolkit()
-            extractor = (
-                swept_toolkit.server_memory_extractor
+            writer = (
+                swept_toolkit.server_memory_writer
                 if flavor_of(scope=scope) == "server"
-                else swept_toolkit.memory_extractor
+                else swept_toolkit.memory_writer
             )
             self._spawn(
                 consolidate_if_needed(
                     scope=scope,
-                    extractor=extractor,
+                    writer=writer,
                     identity=render_owner_identity(owner=read_owner(scope=scope)),
                 )
             )

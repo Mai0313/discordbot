@@ -33,7 +33,7 @@ from discordbot.cogs.gen_reply.generation import (
     VoiceGenerator,
     PromptGenerator,
 )
-from discordbot.services.memory.extraction import MemoryExtractorAI
+from discordbot.services.memory.extraction import MemoryWriterAI
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
@@ -208,28 +208,28 @@ class GeminiKeyToolkit(BaseModel):
         )
 
     @cached_property
-    def memory_extractor(self) -> MemoryExtractorAI:
+    def memory_writer(self) -> MemoryWriterAI:
         """The per-user memory writing service.
 
         Returns:
-            An extractor bound to the proxy client and this key's memory deployments.
+            A writer bound to the proxy client and this key's memory deployments.
         """
-        return MemoryExtractorAI(
+        return MemoryWriterAI(
             client=self.openai_client,
             evaluate_model=self.runtime_models.memory_writer_model,
             consolidate_model=self.runtime_models.memory_writer_model,
         )
 
     @cached_property
-    def server_memory_extractor(self) -> MemoryExtractorAI:
+    def server_memory_writer(self) -> MemoryWriterAI:
         """The per-server (bot self) memory writing service.
 
         Returns:
-            An extractor sharing the per-user models and client but driving the server-flavor
+            A writer sharing the per-user models and client but driving the server-flavor
             prompts, so the bot builds community-level memory per guild through the same
             engine.
         """
-        return MemoryExtractorAI(
+        return MemoryWriterAI(
             client=self.openai_client,
             evaluate_model=self.runtime_models.memory_writer_model,
             consolidate_model=self.runtime_models.memory_writer_model,
