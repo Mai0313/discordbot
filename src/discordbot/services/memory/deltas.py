@@ -50,7 +50,7 @@ from discordbot.services.memory.constants import (
     MAX_NET_FACT_DELETIONS_FLOOR,
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
-from discordbot.services.memory.extraction import MemoryFactDelta
+from discordbot.services.memory.extraction import FORGET_REQUEST_CATEGORY, MemoryFactDelta
 
 # One raw entry's `## <ISO timestamp>` header, and one observation block inside it.
 _ENTRY_HEADER_RE = re.compile(r"^## (?P<timestamp>\d{4}-\d{2}-\d{2}T\S+)\s*$")
@@ -100,16 +100,73 @@ def partition_raw_entries(raw_text: str, flavor: MemoryFlavor) -> dict[str, str]
     Server-flavor observations carry neither field by design (a server memory is one
     guild by construction), so they all land in that scope's single compartment.
 
+    Forget requests are NOT here: they are their own pass, in `partition_forget_requests`,
+    for the reason that function gives.
+
     Each observation keeps the `## <timestamp>` header of the entry it came from, so
     the consolidation prompt still sees dated, oldest-first evidence.
     """
     buckets: dict[str, list[tuple[str, str]]] = {}
     for timestamp, block in _iter_observations(text=raw_text):
+        if _is_forget_request(block=block):
+            continue
         compartment = (
             GLOBAL_COMPARTMENT if flavor == "server" else _compartment_for_block(block=block)
         )
         buckets.setdefault(compartment, []).append((timestamp, block))
     return {compartment: _render_entries(blocks=blocks) for compartment, blocks in buckets.items()}
+
+
+def partition_forget_requests(raw_text: str, compartments: tuple[str, ...]) -> dict[str, str]:
+    """Splits the forget requests in a raw batch into their own per-compartment texts.
+
+    Deliberately separate from `partition_raw_entries` rather than a bucket alongside the
+    observations, because a forget must never share a consolidation call with them. The call
+    that carries one is applied with `deletes_only`, and that flag is per call: on a turn that
+    both remembered and forgot something, a combined bucket would leave nothing but a prompt
+    line stopping the model from writing the forget's own sentence into a compartment it was
+    copied into precisely because it could not reach the fact any other way. Keeping the two
+    apart costs one extra call on a mixed turn and keeps the guarantee structural.
+
+    A request is COPIED into every compartment its speaker could read from, since the fact it
+    names may be stored in any of them; `_forget_targets` decides which. An empty
+    `compartments` yields nothing at all.
+    """
+    buckets: dict[str, list[tuple[str, str]]] = {}
+    for timestamp, block in _iter_observations(text=raw_text):
+        if not _is_forget_request(block=block):
+            continue
+        for compartment in _forget_targets(block=block, compartments=compartments):
+            buckets.setdefault(compartment, []).append((timestamp, block))
+    return {compartment: _render_entries(blocks=blocks) for compartment, blocks in buckets.items()}
+
+
+def _is_forget_request(block: str) -> bool:
+    """Whether one raw block is a forget request rather than an observation."""
+    header = _OBSERVATION_HEADER_RE.match(block)
+    return header is not None and header.group("category") == FORGET_REQUEST_CATEGORY
+
+
+def _forget_targets(block: str, compartments: tuple[str, ...]) -> tuple[str, ...]:
+    """Which compartments one forget request is copied into.
+
+    A forget can only sensibly name a fact its speaker could see, and what they can see is
+    exactly what `compartments_for_reading` injects: in a guild, the shared compartment plus
+    that guild's own; in the owner's own DMs, everything, since their whole memory is readable
+    there. Copying wider would let a forget spoken in one guild reach a fact stored for
+    another, and copying narrower would leave the ordinary case, forgetting something the bot
+    just told them, unable to reach a fact that happens to live in `global/`.
+    """
+    source = _fields_of(block=block).get("source", "")
+    if source == "dm" or not source:
+        return compartments
+    match = _GUILD_SOURCE_RE.match(source)
+    if match is None:
+        return compartments
+    guild = guild_compartment(guild_id=int(match.group("guild_id")))
+    return tuple(
+        compartment for compartment in compartments if compartment in {GLOBAL_COMPARTMENT, guild}
+    )
 
 
 def tone_evidence_from_raw(raw_text: str) -> str:
@@ -166,19 +223,26 @@ def render_existing_facts(facts: list[MemoryFact]) -> str:
     return "\n\n".join(blocks)
 
 
-def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartment/flavor) plus the batch, its stamp, and the mass-delete exemption
+def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartment/flavor) plus the batch, its stamp, and the two write exemptions
     scope: str,
     compartment: str,
     flavor: MemoryFlavor,
     deltas: tuple[MemoryFactDelta, ...],
     owner: MemoryOwner,
     allow_mass_delete: bool,
+    deletes_only: bool = False,
 ) -> DeltaOutcome:
     """Validates and applies one compartment's delta batch.
 
     Deletes run before writes so a fact narrowed from one compartment to another can
     only ever be temporarily missing (it re-forms from evidence) instead of temporarily
     present in both — the one ordering that cannot widen a fact's reach.
+
+    `deletes_only` refuses every create and update in the batch, and is set when the bucket
+    carried nothing but forget requests. It is what makes a broadcast forget structurally safe
+    rather than safe by prompt: the compartments it reaches beyond the one holding the fact are
+    handed a sentence that may be `source_only`, and this stops any of them writing it down
+    however the model reads it.
     """
     existing = {fact.fact_id: fact for fact in read_facts(scope=scope, compartment=compartment)}
     allowed = sections_for_flavor(flavor=flavor)
@@ -187,6 +251,12 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     to_delete: set[str] = set()
     to_write: list[MemoryFact] = []
     for delta in deltas:
+        if deletes_only and delta.action != "delete":
+            logfire.warn(
+                "Memory delta writes into a forget-only batch; dropping", action=delta.action
+            )
+            dropped += 1
+            continue
         resolved = _resolve_delta(
             delta=delta, compartment=compartment, existing=existing, allowed=allowed
         )

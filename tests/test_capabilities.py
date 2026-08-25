@@ -448,6 +448,9 @@ def test_capabilities_doc_accounts_for_every_inline_marker() -> None:
         "<generate-music>",
         "<generate-video>",
         "<deep-research>",
+        "<write-memory>",
+        "<forget-memory>",
+        "<write-server-memory>",
     }, "the inline markers changed: say so in capabilities.md, then pin the new set here"
 
 

@@ -35,7 +35,6 @@ from discordbot.cogs.gen_reply.generation import (
 )
 from discordbot.services.memory.extraction import MemoryExtractorAI
 from discordbot.services.memory.server_prompts import (
-    SERVER_PHASE1_PROMPT,
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
@@ -210,22 +209,20 @@ class GeminiKeyToolkit(BaseModel):
 
     @cached_property
     def memory_extractor(self) -> MemoryExtractorAI:
-        """The per-user memory extraction service.
+        """The per-user memory writing service.
 
         Returns:
-            An extractor bound to the proxy client and this key's phase-1 / phase-2 memory
-            deployments.
+            An extractor bound to the proxy client and this key's memory deployments.
         """
         return MemoryExtractorAI(
             client=self.openai_client,
-            extract_model=self.runtime_models.memory_extractor_model,
             evaluate_model=self.runtime_models.memory_writer_model,
             consolidate_model=self.runtime_models.memory_writer_model,
         )
 
     @cached_property
     def server_memory_extractor(self) -> MemoryExtractorAI:
-        """The per-server (bot self) memory extraction service.
+        """The per-server (bot self) memory writing service.
 
         Returns:
             An extractor sharing the per-user models and client but driving the server-flavor
@@ -234,10 +231,8 @@ class GeminiKeyToolkit(BaseModel):
         """
         return MemoryExtractorAI(
             client=self.openai_client,
-            extract_model=self.runtime_models.memory_extractor_model,
             evaluate_model=self.runtime_models.memory_writer_model,
             consolidate_model=self.runtime_models.memory_writer_model,
-            phase1_prompt=SERVER_PHASE1_PROMPT,
             evaluator_prompt=SERVER_PHASE1_EVALUATOR_PROMPT,
             consolidate_prompt=SERVER_PHASE2_PROMPT,
         )

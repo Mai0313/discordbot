@@ -307,7 +307,6 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
     config = LLMConfig()
     extractor = MemoryExtractorAI(
         client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
-        extract_model=model,
         evaluate_model=model,
         consolidate_model=model,
     )

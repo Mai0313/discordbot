@@ -10,13 +10,13 @@ import time
 from typing import Literal
 import asyncio
 from datetime import UTC, datetime
-from collections.abc import Awaitable
+from collections.abc import Callable, Awaitable
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.typings.memory import MemoryOwner
+from discordbot.typings.memory import MemoryOwner, MemoryWriteSummary
 from discordbot.services.memory import database as memory_db
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry, LoopLocalSemaphore
@@ -53,8 +53,10 @@ from discordbot.services.memory.deltas import (
     partition_raw_entries,
     render_existing_facts,
     tone_evidence_from_raw,
+    partition_forget_requests,
 )
 from discordbot.typings.context_budgets import (
+    MEMORY_MERGED_NOTES_MAX,
     MEMORY_INJECTION_MAX_CHARS,
     MEMORY_INJECTION_WARN_CHARS,
     MEMORY_DETAIL_CONTEXT_MAX_CHARS,
@@ -69,14 +71,23 @@ from discordbot.services.memory.constants import (
 )
 from discordbot.services.memory.extraction import (
     MemoryExtractorAI,
+    MemoryObservation,
     ConsolidatedMemory,
     ConsolidationRequest,
+    parse_turn_payload,
+    render_turn_payload,
     parse_subject_source,
+    render_forget_requests,
     transcript_from_messages,
     render_memory_observations,
     filter_duplicate_observations,
 )
 from discordbot.services.memory.git_history import memory_git
+
+# What a caller is handed once a turn's memory writes land. `services/` never composes what
+# a user reads, so this reports the shape and lets the cog word it. In-memory only: a resumed
+# turn runs after a restart, long past the reply it belonged to, and has no report to make.
+type MemoryWriteReport = Callable[[MemoryWriteSummary], Awaitable[None]]
 
 # The ways a from-scratch rebuild can end, carried on `RegenerationReport.result`.
 _RegenerationResult = Literal["regenerated", "no_evidence", "failed", "cooldown"]
@@ -142,14 +153,23 @@ class _PendingMemoryUpdate(BaseModel):
     token: int = Field(
         ..., description="Logical version token reused on replay for the DB row guard."
     )
+    report: SkipValidation[MemoryWriteReport | None] = Field(
+        default=None, description="Callback reporting what the replayed turn recorded."
+    )
 
 
-# Process-level per-scope in-flight de-dupe; while one extraction runs, only the
-# NEWEST skipped turn is kept and replayed afterwards. Its history window
-# already contains the earlier skipped turns, so one replay recovers the
-# dropped signal without a real queue.
+# Process-level per-scope in-flight de-dupe; while one update runs, the skipped turns are
+# held and replayed afterwards. Within ONE conversation source only the newest is kept, its
+# history window already covering the earlier ones, and its memory notes merged in so nothing
+# a marker wrote is lost.
+#
+# The second key is the subject, which carries the source line, and it is a correctness
+# boundary rather than bookkeeping: the scope is guild-independent, so a user active in two
+# guilds at once would otherwise have one conversation's notes replayed under the other's
+# source stamp, filing a `source_only` observation in a compartment the speaker never spoke
+# in. Sources are replayed one after another, each keeping its own subject.
 _inflight_tasks: dict[str, asyncio.Task[None]] = {}
-_pending_updates: dict[str, _PendingMemoryUpdate] = {}
+_pending_updates: dict[str, dict[str, _PendingMemoryUpdate]] = {}
 _inflight_loop: asyncio.AbstractEventLoop | None = None
 
 # Per-scope consolidation attempt times for the cooldown; monotonic, so it does
@@ -371,21 +391,40 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     full_reply: str,
     extractor: MemoryExtractorAI,
     identity: str,
+    remember_notes: tuple[str, ...],
+    forget_notes: tuple[str, ...] = (),
+    report: MemoryWriteReport | None = None,
 ) -> None:
     """Starts a background memory update without delaying the reply path.
+
+    `remember_notes` and `forget_notes` are the inline memory markers the answer model wrote in
+    the reply it just gave. A turn that carried none does nothing at all: no row, no model call,
+    no background task. That is the normal case now, and it is the whole saving over the
+    extraction pass this replaced, which ran on every single reply to find out whether there was
+    anything to find.
 
     The transcript is rendered eagerly here (pure, sub-ms, already past the reply)
     so the persisted job and the in-memory replay both carry a plain string and
     `_run_memory_update` re-renders nothing.
+
+    `report`, when given, is awaited once the turn's writes land, so the caller can tell the
+    user what was recorded. It is deliberately in-memory only and is NOT persisted with the
+    row: a resumed turn runs after a restart, long after the reply it belonged to, and
+    reporting onto it then would edit a message the conversation has moved past.
     """
+    if not remember_notes and not forget_notes:
+        return
     transcript = transcript_from_messages(message_list=message_list, full_reply=full_reply)
     _enqueue_memory_update(
         scope=scope,
         subject=subject,
-        transcript=transcript,
+        transcript=render_turn_payload(
+            transcript=transcript, remember=remember_notes, forget=forget_notes
+        ),
         extractor=extractor,
         identity=identity,
         token=memory_db.new_token(),
+        report=report,
     )
 
 
@@ -416,6 +455,7 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     extractor: MemoryExtractorAI,
     identity: str,
     token: int,
+    report: MemoryWriteReport | None = None,
 ) -> None:
     """Schedules (or defers) one rendered-transcript update, backed by a reply.db row."""
     global _inflight_loop  # noqa: PLW0603 -- process task de-dupe
@@ -430,9 +470,14 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     captured_at = time.monotonic()
     running = _inflight_tasks.get(scope)
     if running is not None and not running.done():
-        _pending_updates[scope] = _PendingMemoryUpdate(
+        by_subject = _pending_updates.setdefault(scope, {})
+        superseded = by_subject.get(subject)
+        if superseded is not None:
+            transcript = _merged_payload(newer=transcript, older=superseded.transcript)
+        by_subject[subject] = _PendingMemoryUpdate(
             subject=subject,
             transcript=transcript,
+            report=report,
             extractor=extractor,
             identity=identity,
             captured_at=captured_at,
@@ -462,10 +507,81 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
             identity=identity,
             token=token,
             captured_at=captured_at,
+            report=report,
         )
     )
     _inflight_tasks[scope] = task
     task.add_done_callback(lambda finished: _finish_memory_update(scope=scope, task=finished))
+
+
+def _write_summary(
+    observations: tuple[MemoryObservation, ...], forgotten: tuple[str, ...]
+) -> MemoryWriteSummary:
+    """Builds what the user is told about this turn's memory work.
+
+    Reported at raw-append time rather than after consolidation: that is the point the turn's
+    work is durable, and consolidation can be minutes away. So the wording the caller builds
+    from this has to be "taken down", never "stored as a fact" -- the merge that turns these
+    into facts can still fold or drop any of them.
+    """
+    return MemoryWriteSummary(
+        remembered=tuple(
+            observation.summary_zh
+            for observation in observations
+            if observation.sharing != "source_only"
+        ),
+        private=sum(1 for observation in observations if observation.sharing == "source_only"),
+        forgotten=forgotten,
+    )
+
+
+async def _report_writes(report: MemoryWriteReport, summary: MemoryWriteSummary) -> None:
+    """Hands the caller what this turn recorded, never letting the report cost the write.
+
+    The write is already durable by the time this runs, so a Discord edit that fails, or a
+    reply that has since been deleted, must not surface as a memory failure.
+    """
+    if summary.is_empty:
+        return
+    try:
+        await report(summary)
+    except Exception:
+        # Broad on purpose: the callback reaches Discord, and this runs in a background task
+        # whose failure would otherwise be logged as the memory update having failed.
+        logfire.warn("Reporting a memory write back to the reply failed", _exc_info=True)
+
+
+def _merged_payload(newer: str, older: str) -> str:
+    """Carries a superseded turn's memory notes into the turn replacing it.
+
+    Only the newest skipped turn is replayed, and for a TRANSCRIPT that is right: its history
+    window already contains the earlier skipped turns, which is what makes one replay enough. A
+    marker note is not in that window. It exists only in the reply that emitted it, so letting
+    the newer payload simply overwrite the older one would drop it with nothing in the logs to
+    say a note had ever been written.
+
+    Merging is only ever within one conversation source; `_pending_updates` is keyed on the
+    subject for that reason, and this function never sees two sources.
+    """
+    transcript, remember, forget = parse_turn_payload(payload=newer)
+    _, older_remember, older_forget = parse_turn_payload(payload=older)
+    return render_turn_payload(
+        transcript=transcript,
+        remember=_deduped(notes=(*older_remember, *remember)),
+        forget=_deduped(notes=(*older_forget, *forget)),
+    )
+
+
+def _deduped(notes: tuple[str, ...]) -> tuple[str, ...]:
+    """Drops exact repeats, keeps writing order, and caps what a merge can accumulate.
+
+    The per-reply cap the markers enforce does not survive a merge: each skipped turn stacks
+    onto the pending payload, so without a bound here a long stretch of skipped turns grows
+    the review request and the raw entry together. The OLDEST are dropped, since the newest
+    notes are the ones the user is still in the middle of.
+    """
+    unique = tuple(dict.fromkeys(notes))
+    return unique[-MEMORY_MERGED_NOTES_MAX:]
 
 
 def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
@@ -489,9 +605,15 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
             error_type=type(exc).__name__,
             _exc_info=exc,
         )
-    pending = _pending_updates.pop(scope, None)
-    if pending is None:
+    by_subject = _pending_updates.get(scope)
+    if not by_subject:
+        _pending_updates.pop(scope, None)
         return
+    # Oldest source first (dicts keep insertion order), and only one: each replay ends in
+    # this same callback, which picks up the next one.
+    pending = by_subject.pop(next(iter(by_subject)))
+    if not by_subject:
+        _pending_updates.pop(scope, None)
     if cleared_since(scope=scope, started_at=pending.captured_at):
         # The durable clear tombstone owns the privacy guarantee. This remains a
         # best-effort cleanup for store-level clears that only stamped the process.
@@ -504,10 +626,11 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
         extractor=pending.extractor,
         identity=pending.identity,
         token=pending.token,
+        report=pending.report,
     )
 
 
-async def _run_memory_update(  # noqa: PLR0913, PLR0911 -- schedule_memory_update's flavor + payload, and one early exit per way a turn can end
+async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavor + payload, and one early exit per way a turn can end
     scope: str,
     subject: str,
     transcript: str,
@@ -515,8 +638,9 @@ async def _run_memory_update(  # noqa: PLR0913, PLR0911 -- schedule_memory_updat
     identity: str,
     token: int,
     captured_at: float,
+    report: MemoryWriteReport | None = None,
 ) -> None:
-    """Runs phase-1 extraction and, past the raw threshold, phase-2 consolidation.
+    """Reviews the turn's memory notes and, past the raw threshold, consolidates.
 
     The reply.db row is written `pending` at the top (awaited, before the lock) so
     a redeploy mid-extraction resumes this turn; it is marked `done` once phase-1
@@ -548,66 +672,120 @@ async def _run_memory_update(  # noqa: PLR0913, PLR0911 -- schedule_memory_updat
         # owns the DB ordering, so drop the in-memory turn before extraction.
         return
     async with scope_lock(scope=scope), _memory_semaphore():
-        draft = await extractor.extract(subject=subject, transcript=transcript)
-        if cleared_since(scope=scope, started_at=captured_at):
-            # Cleared while this update was in flight; dropping the result beats
-            # resurrecting deleted memory. The tombstone already owns the durable
-            # ordering; this terminal write is only best-effort cleanup for a
-            # process-local store clear.
-            await _safe(coro=memory_db.mark_done(scope=scope, token=token))
-            return
-        if draft is None:
-            # The LLM path itself failed: keep the row (transcript intact) so the
-            # restart sweep retries it, no extra timeout needed. The cause detail is
-            # already logged upstream; this line adds the scope attribution.
-            logfire.warn(
-                "Memory extraction returned no draft; job parked for restart retry",
-                scope=scope,
-                flavor=flavor_of(scope=scope),
-            )
-            await _safe(
-                coro=memory_db.mark_failed(scope=scope, token=token, error="extract failed")
-            )
-            return
-        if not draft.has_signal or not draft.observations:
-            logfire.debug("Memory extraction found no signal", scope=scope)
-            await _safe(coro=memory_db.mark_done(scope=scope, token=token))
-            return
-        # The subject's source line survives the memory_job round-trip, so a resumed
-        # turn stamps the same source; a pre-source row (or the server flavor) parses
-        # to None and renders without the source/sharing fields.
-        source = parse_subject_source(subject=subject)
-        recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
-        deduped_observations = filter_duplicate_observations(
-            observations=draft.observations,
-            existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
-            source=source,
+        forced = await _review_and_stage(
+            scope=scope,
+            subject=subject,
+            payload=transcript,
+            extractor=extractor,
+            token=token,
+            captured_at=captured_at,
+            report=report,
         )
-        if not deduped_observations:
-            logfire.debug(
-                "Memory extraction produced only duplicates",
-                scope=scope,
-                candidates=len(draft.observations),
-            )
-            await _safe(coro=memory_db.mark_done(scope=scope, token=token))
+        if forced is None or not _should_consolidate(scope=scope, forced=forced):
             return
+        await _consolidate_now(
+            scope=scope, started_at=captured_at, extractor=extractor, identity=identity
+        )
+
+
+async def _review_and_stage(  # noqa: PLR0913 -- the turn's identity and payload, and one early exit per way a review can end
+    scope: str,
+    subject: str,
+    payload: str,
+    extractor: MemoryExtractorAI,
+    token: int,
+    captured_at: float,
+    report: MemoryWriteReport | None,
+) -> bool | None:
+    """Reviews one turn's notes and stages what survives, under the caller's scope lock.
+
+    Returns whether consolidation should be FORCED (a forget is waiting), or None when the
+    turn is finished and must not consolidate at all. Split out of `_run_memory_update` so the
+    lock-holding half reads as one thing; the caller owns only the consolidation decision.
+    """
+    transcript, remember_notes, forget_notes = parse_turn_payload(payload=payload)
+    # The subject's source line survives the memory_job round-trip, so a resumed
+    # turn stamps the same source; a pre-source row (or the server flavor) parses
+    # to None and renders without the source/sharing fields.
+    source = parse_subject_source(subject=subject)
+    # Written before the evaluator runs, and deliberately not undone by its failure: a
+    # forget needs no model, and making it wait behind one would let a failed call keep
+    # the bot repeating what it was just asked to drop. A retried row therefore writes it
+    # twice, which costs nothing: consolidation deletes the fact the first time and finds
+    # nothing to delete the second.
+    forget_text = render_forget_requests(notes=forget_notes, source=source)
+    if forget_text and not cleared_since(scope=scope, started_at=captured_at):
+        append_raw_entry(scope=scope, entry_text=forget_text)
+    draft = await extractor.evaluate(subject=subject, transcript=transcript, notes=remember_notes)
+    if cleared_since(scope=scope, started_at=captured_at):
+        # Cleared while this update was in flight; dropping the result beats
+        # resurrecting deleted memory. The tombstone already owns the durable
+        # ordering; this terminal write is only best-effort cleanup for a
+        # process-local store clear.
+        await _safe(coro=memory_db.mark_done(scope=scope, token=token))
+        return None
+    if draft is None:
+        # The LLM path itself failed: keep the row (payload intact) so the
+        # restart sweep retries it, no extra timeout needed. The cause detail is
+        # already logged upstream; this line adds the scope attribution.
+        logfire.warn(
+            "Memory note review returned no draft; job parked for restart retry",
+            scope=scope,
+            flavor=flavor_of(scope=scope),
+        )
+        await _safe(coro=memory_db.mark_failed(scope=scope, token=token, error="evaluate failed"))
+        # The forget above is already durable and has nothing to do with the review that
+        # failed, so it still gets the immediate pass it was written for. Without this it
+        # would wait for an unrelated turn to push the backlog over threshold, and the bot
+        # would go on repeating what it was asked to drop -- exactly what writing it first
+        # was meant to prevent.
+        return True if forget_text else None
+    recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
+    deduped_observations = filter_duplicate_observations(
+        observations=draft.observations,
+        existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
+        source=source,
+    )
+    if deduped_observations:
         append_raw_entry(
             scope=scope,
             entry_text=render_memory_observations(
                 observations=deduped_observations, source=source
             ),
         )
-        # Phase-1 is durable in raw.md now; record success before the (best-effort,
-        # self-healing) consolidation so a consolidation crash never re-runs extraction.
-        await _safe(coro=memory_db.mark_done(scope=scope, token=token))
-        if not _should_consolidate(scope=scope):
-            return
-        # Recorded at attempt time, not success time, so repeated LLM failures
-        # are rate-limited by the same cooldown instead of retrying every turn.
-        _last_consolidation[scope] = time.monotonic()
-        await _consolidate_locked(
-            scope=scope, started_at=captured_at, extractor=extractor, identity=identity
+    elif not forget_text:
+        logfire.debug(
+            "Memory notes survived nothing",
+            scope=scope,
+            notes=len(remember_notes),
+            candidates=len(draft.observations),
         )
+        await _safe(coro=memory_db.mark_done(scope=scope, token=token))
+        return None
+    # The turn is durable in raw.md now; record success before the (best-effort,
+    # self-healing) consolidation so a consolidation crash never re-runs the review.
+    await _safe(coro=memory_db.mark_done(scope=scope, token=token))
+    if report is not None:
+        await _report_writes(
+            report=report,
+            summary=_write_summary(observations=deduped_observations, forgotten=forget_notes),
+        )
+    return bool(forget_text)
+
+
+async def _consolidate_now(
+    scope: str, started_at: float, extractor: MemoryExtractorAI, identity: str
+) -> None:
+    """Runs the fan-out immediately, stamping the cooldown first.
+
+    Recorded at attempt time, not success time, so repeated LLM failures are rate-limited by
+    the same cooldown instead of retrying every turn. Assumes the caller holds the scope lock
+    and a semaphore permit, like `_consolidate_locked` itself.
+    """
+    _last_consolidation[scope] = time.monotonic()
+    await _consolidate_locked(
+        scope=scope, started_at=started_at, extractor=extractor, identity=identity
+    )
 
 
 async def safe_list_resumable() -> list[memory_db.MemoryJob]:
@@ -653,8 +831,16 @@ async def consolidate_if_needed(scope: str, extractor: MemoryExtractorAI, identi
         logfire.warn("Background memory consolidation sweep failed", scope=scope, _exc_info=True)
 
 
-def _should_consolidate(scope: str) -> bool:
-    """Whether the raw backlog warrants a consolidation right now."""
+def _should_consolidate(scope: str, forced: bool = False) -> bool:
+    """Whether the raw backlog warrants a consolidation right now.
+
+    `forced` is a batch carrying a forget request. It skips BOTH gates below rather than just
+    the cooldown: the entry count is checked first and a lone forget is one entry against a
+    threshold of two, so bypassing the cooldown alone would still leave the user waiting for
+    their next message before the bot stopped repeating what they asked it to drop.
+    """
+    if forced:
+        return True
     if raw_file_bytes(scope=scope) >= RAW_CONSOLIDATION_MAX_BYTES:
         # A verbose burst consolidates regardless of the cooldown so the raw
         # file cannot sit large until the timer expires.
@@ -695,6 +881,11 @@ async def _consolidate_locked(
     owner = parse_identity(identity=identity, fallback_owner_id=scope_owner_id(scope=scope))
     raw_entries = read_raw_entries(scope=scope)
     buckets = partition_raw_entries(raw_text=raw_entries, flavor=flavor)
+    # Forget requests are a separate pass over the same batch: they are copied into every
+    # compartment their speaker could read from, and each of those calls may only delete.
+    forget_buckets = partition_forget_requests(
+        raw_text=raw_entries, compartments=tuple(list_compartments(scope=scope))
+    )
     detail_tail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
     # The detail window is up to MEMORY_DETAIL_CONTEXT_MAX_CHARS and used to be sliced
     # rather than parsed; splitting it into observation blocks is a real stall on a
@@ -709,6 +900,18 @@ async def _consolidate_locked(
     global_reference = ""
     try:
         async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
+            # Forgets first, so a fact this batch also re-confirms is not deleted right after
+            # being written, and so the observation pass sees the tree the deletions left.
+            if not await _apply_forget_buckets(
+                scope=scope,
+                flavor=flavor,
+                owner=owner,
+                started_at=started_at,
+                extractor=extractor,
+                buckets=forget_buckets,
+                today=today,
+            ):
+                return
             for compartment in compartments:
                 if compartment != GLOBAL_COMPARTMENT and not global_reference:
                     # Read from disk rather than from this run: when the batch carried no
@@ -774,6 +977,45 @@ async def _consolidate_locked(
     memory_git.enqueue(scope=scope, reason="update")
 
 
+async def _apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus the buckets, their stamp and the LLM handle
+    scope: str,
+    flavor: MemoryFlavor,
+    owner: MemoryOwner,
+    started_at: float,
+    extractor: MemoryExtractorAI,
+    buckets: dict[str, str],
+    today: str,
+) -> bool:
+    """Runs one deletion-only pass per compartment a forget was copied into.
+
+    Returns False when the caller must keep the raw batch for a retry, on the same terms as
+    the observation fan-out: an unread bucket is not safe to retire.
+
+    Every call here is `deletes_only`. That is the whole reason forgets are partitioned
+    separately rather than folded into the observation buckets: the flag is per call, so a
+    turn that both remembered and forgot something would otherwise hand a possibly-private
+    sentence to a call that is allowed to write.
+    """
+    for compartment, forget_text in sorted(buckets.items()):
+        if cleared_since(scope=scope, started_at=started_at):
+            return False
+        outcome = await _consolidate_compartment(
+            scope=scope,
+            compartment=compartment,
+            flavor=flavor,
+            owner=owner,
+            started_at=started_at,
+            extractor=extractor,
+            deletes_only=True,
+            request_parts=_CompartmentInput(
+                raw_entries=forget_text, recent_detail="", global_reference="", today=today
+            ),
+        )
+        if outcome is None or not outcome.applied:
+            return False
+    return True
+
+
 class _CompartmentInput(BaseModel):
     """The per-compartment half of a consolidation request, before the store is read.
 
@@ -789,7 +1031,7 @@ class _CompartmentInput(BaseModel):
     today: str = Field(..., description="ISO date for dating and aging.")
 
 
-async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identity plus the shared stamp and the LLM handle
+async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identity plus the shared stamp, the LLM handle and the write gate
     scope: str,
     compartment: str,
     flavor: MemoryFlavor,
@@ -797,6 +1039,7 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
     started_at: float,
     extractor: MemoryExtractorAI,
     request_parts: _CompartmentInput,
+    deletes_only: bool = False,
 ) -> DeltaOutcome | None:
     """Runs and applies one compartment's consolidation; None means the LLM path failed.
 
@@ -842,6 +1085,7 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
         deltas=result.deltas,
         owner=owner,
         allow_mass_delete=False,
+        deletes_only=deletes_only,
     )
     if not outcome.applied:
         _record_rejection(
@@ -1192,6 +1436,15 @@ async def regenerate_main_memory(
                         owner=owner,
                         result=result,
                     )
+                await _reapply_forgets(
+                    scope=scope,
+                    flavor=flavor,
+                    owner=owner,
+                    started_at=started_at,
+                    extractor=extractor,
+                    evidence=evidence,
+                    today=today,
+                )
                 await _rebuild_tone_note(
                     scope=scope,
                     flavor=flavor,
@@ -1213,6 +1466,45 @@ async def regenerate_main_memory(
             clear_raw(scope=scope)
         memory_git.enqueue(scope=scope, reason="rebuild")
         return RegenerationReport(result="regenerated", unreadable_removed=unreadable_removed)
+
+
+async def _reapply_forgets(  # noqa: PLR0913 -- the scope's identity plus the corpus, its stamp, and the LLM handle
+    scope: str,
+    flavor: MemoryFlavor,
+    owner: MemoryOwner,
+    started_at: float,
+    extractor: MemoryExtractorAI,
+    evidence: str,
+    today: str,
+) -> None:
+    """Re-runs every forget request in the corpus against the freshly rebuilt facts.
+
+    A rebuild derives facts from evidence rather than from the current facts, and the
+    observation a forget was aimed at is still sitting in `detail.md` verbatim: consolidation
+    retires the raw batch there and never prunes it. So the rebuild re-creates exactly what
+    the user asked to have removed, and `/memory regenerate` quietly undoes every forget they
+    ever asked for.
+
+    Replaying the requests afterwards fixes that without weakening anything: each runs as its
+    own `deletes_only` call, the same shape the incremental path uses, so the forget's own
+    sentence still cannot be written anywhere. Feeding the requests INTO the rebuild instead
+    would have put a possibly-private sentence in front of a call whose whole job is creating
+    facts, which is the one thing `deletes_only` exists to prevent.
+
+    Best-effort: the rebuild has already landed by this point, and a failure here leaves a
+    resurrected fact rather than a broken store. The next forget removes it again.
+    """
+    await _apply_forget_buckets(
+        scope=scope,
+        flavor=flavor,
+        owner=owner,
+        started_at=started_at,
+        extractor=extractor,
+        buckets=partition_forget_requests(
+            raw_text=evidence, compartments=tuple(list_compartments(scope=scope))
+        ),
+        today=today,
+    )
 
 
 async def _rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the corpus, its stamp, and the LLM handle

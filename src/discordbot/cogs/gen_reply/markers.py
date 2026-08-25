@@ -1,4 +1,4 @@
-"""Inline reply markers: the answer model self-selects spoken segments, images, music, and video.
+"""Inline reply markers: the answer model self-selects spoken segments, images, music, video, and what to remember.
 
 The answer model wraps the parts of its reply it wants read aloud in `<generate-voice>...
 </generate-voice>`: only those segments are synthesized (concatenated into a single voice clip),
@@ -12,6 +12,14 @@ into chat. `ResponseStreamer` extracts them at finalize time via `extract_inline
 scrubs partial/complete tags from the live preview via `scrub_markers_for_preview`, so none flickers
 mid-stream. The asymmetry is deliberate: voice content is meant to stay visible, image / music /
 video content are meant to be pulled.
+
+The memory tags (`<write-memory>`, `<forget-memory>`, `<write-server-memory>`) are pulled the same
+way and carry one plain sentence each: what to remember about the person being replied to, what
+they no longer want remembered, or what to remember about the community. They are the answer
+model's half of the memory write path, replacing the separate extraction pass that used to re-read
+the conversation afterwards (#596). Nothing here decides WHOSE memory is written or which
+compartment it lands in: the scope comes from the message's author and guild in `cog.py`, so a
+marker body can never name one.
 
 The tags are deliberately hyphenated (`generate-*`, like `<deep-research>`) so none collides with a
 real single-word HTML / SVG / SSML element — `<video>` is HTML5, `<image>` is SVG, `<voice>` is
@@ -34,6 +42,12 @@ VIDEO_OPEN = "<generate-video>"
 VIDEO_CLOSE = "</generate-video>"
 DEEP_RESEARCH_OPEN = "<deep-research>"
 DEEP_RESEARCH_CLOSE = "</deep-research>"
+WRITE_MEMORY_OPEN = "<write-memory>"
+WRITE_MEMORY_CLOSE = "</write-memory>"
+FORGET_MEMORY_OPEN = "<forget-memory>"
+FORGET_MEMORY_CLOSE = "</forget-memory>"
+WRITE_SERVER_MEMORY_OPEN = "<write-server-memory>"
+WRITE_SERVER_MEMORY_CLOSE = "</write-server-memory>"
 
 # Hard cap on inline images per reply: a voice clip plus 9 images exactly fills Discord's
 # 10-attachment ceiling. The prompt tells the model this limit; the streamer enforces it by
@@ -42,6 +56,12 @@ DEEP_RESEARCH_CLOSE = "</deep-research>"
 # voice + music + video + 9 images would be 12 attachments; `MediaDeliveryPlanner.plan`'s
 # attachment-count clamp is the backstop, dropping the trailing overflow.
 MAX_INLINE_IMAGES = 9
+
+# Hard cap on memory notes of one kind per reply. Unlike the image cap this is not a Discord
+# limit but a sanity bound: a turn worth remembering produces one or two notes, and a model that
+# emits twenty has misread the instruction rather than found twenty durable facts. Extra blocks
+# are dropped, and the evaluator downstream still decides whether any of the kept ones survive.
+MAX_MEMORY_NOTES = 5
 
 # Complete blocks: non-greedy, DOTALL so a multi-line segment is captured, IGNORECASE so a
 # stray-cased tag still matches.
@@ -52,18 +72,35 @@ _VIDEO_BLOCK_RE = re.compile(r"<generate-video>(.*?)</generate-video>", re.IGNOR
 _DEEP_RESEARCH_BLOCK_RE = re.compile(
     r"<deep-research>(.*?)</deep-research>", re.IGNORECASE | re.DOTALL
 )
+_WRITE_MEMORY_BLOCK_RE = re.compile(
+    r"<write-memory>(.*?)</write-memory>", re.IGNORECASE | re.DOTALL
+)
+_FORGET_MEMORY_BLOCK_RE = re.compile(
+    r"<forget-memory>(.*?)</forget-memory>", re.IGNORECASE | re.DOTALL
+)
+_WRITE_SERVER_MEMORY_BLOCK_RE = re.compile(
+    r"<write-server-memory>(.*?)</write-server-memory>", re.IGNORECASE | re.DOTALL
+)
 # Bare tags, scrubbed so a stray/unpaired tag never leaks into the visible reply.
 _VOICE_TAG_RE = re.compile(r"</?generate-voice>", re.IGNORECASE)
 _IMAGE_TAG_RE = re.compile(r"</?generate-image>", re.IGNORECASE)
 _MUSIC_TAG_RE = re.compile(r"</?generate-music>", re.IGNORECASE)
 _VIDEO_TAG_RE = re.compile(r"</?generate-video>", re.IGNORECASE)
 _DEEP_RESEARCH_TAG_RE = re.compile(r"</?deep-research>", re.IGNORECASE)
+_WRITE_MEMORY_TAG_RE = re.compile(r"</?write-memory>", re.IGNORECASE)
+_FORGET_MEMORY_TAG_RE = re.compile(r"</?forget-memory>", re.IGNORECASE)
+_WRITE_SERVER_MEMORY_TAG_RE = re.compile(r"</?write-server-memory>", re.IGNORECASE)
 # An unclosed open tag and everything after it: the whole block is going to be pulled, so hide it
 # the moment it starts streaming in (and tolerate the model forgetting to close it).
 _TRAILING_IMAGE_OPEN_RE = re.compile(r"<generate-image>.*\Z", re.IGNORECASE | re.DOTALL)
 _TRAILING_MUSIC_OPEN_RE = re.compile(r"<generate-music>.*\Z", re.IGNORECASE | re.DOTALL)
 _TRAILING_VIDEO_OPEN_RE = re.compile(r"<generate-video>.*\Z", re.IGNORECASE | re.DOTALL)
 _TRAILING_DEEP_RESEARCH_OPEN_RE = re.compile(r"<deep-research>.*\Z", re.IGNORECASE | re.DOTALL)
+_TRAILING_WRITE_MEMORY_OPEN_RE = re.compile(r"<write-memory>.*\Z", re.IGNORECASE | re.DOTALL)
+_TRAILING_FORGET_MEMORY_OPEN_RE = re.compile(r"<forget-memory>.*\Z", re.IGNORECASE | re.DOTALL)
+_TRAILING_WRITE_SERVER_MEMORY_OPEN_RE = re.compile(
+    r"<write-server-memory>.*\Z", re.IGNORECASE | re.DOTALL
+)
 _COLLAPSE_BLANK_LINES_RE = re.compile(r"\n{3,}")
 
 # Every tag whose half-streamed tail must be trimmed from a live preview so it never flickers in.
@@ -78,6 +115,12 @@ _ALL_TAGS = (
     VOICE_CLOSE,
     DEEP_RESEARCH_OPEN,
     DEEP_RESEARCH_CLOSE,
+    WRITE_MEMORY_OPEN,
+    WRITE_MEMORY_CLOSE,
+    FORGET_MEMORY_OPEN,
+    FORGET_MEMORY_CLOSE,
+    WRITE_SERVER_MEMORY_OPEN,
+    WRITE_SERVER_MEMORY_CLOSE,
 )
 
 
@@ -111,6 +154,20 @@ class InlineMarkers(BaseModel):
         default=None,
         description="First <deep-research> brief to launch a research thread, or None when absent.",
     )
+    memory_notes: list[str] = Field(
+        default_factory=list,
+        description="Every <write-memory> note about the message author, in order; empty when none.",
+        examples=[["使用者希望回覆用繁體中文"]],
+    )
+    forget_notes: list[str] = Field(
+        default_factory=list,
+        description="Every <forget-memory> note naming what the author no longer wants remembered.",
+        examples=[["使用者已經不住台中了"]],
+    )
+    server_memory_notes: list[str] = Field(
+        default_factory=list,
+        description="Every <write-server-memory> note about the community, in order; empty when none.",
+    )
 
 
 def extract_inline_markers(*, text: str) -> InlineMarkers:
@@ -123,7 +180,8 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
     the visible reply, and every wrapped segment is concatenated as the spoken-clip input. An
     unclosed trailing `<generate-image>` / `<generate-music>` / `<generate-video>` (the model forgot
     to close it) is still pulled so its raw description never leaks, and any stray unpaired tag is
-    scrubbed.
+    scrubbed. The three memory tags are pulled the same way as image blocks, each keeping up to
+    `MAX_MEMORY_NOTES` notes in the order they were written.
     """
     image_prompts = [
         group for m in _IMAGE_BLOCK_RE.finditer(text) if (group := m.group(1).strip())
@@ -176,6 +234,28 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
             research_brief = trailing_research.group(0)[len(DEEP_RESEARCH_OPEN) :].strip() or None
         cleaned = _TRAILING_DEEP_RESEARCH_OPEN_RE.sub("", cleaned)
 
+    # Memory notes are pulled like image blocks: the note is instruction to the memory pipeline,
+    # never something the reader should see, and a reply that narrates what it just recorded reads
+    # as the bot talking about itself instead of answering.
+    memory_notes, cleaned = _pull_notes(
+        text=cleaned,
+        block_re=_WRITE_MEMORY_BLOCK_RE,
+        trailing_re=_TRAILING_WRITE_MEMORY_OPEN_RE,
+        open_tag=WRITE_MEMORY_OPEN,
+    )
+    forget_notes, cleaned = _pull_notes(
+        text=cleaned,
+        block_re=_FORGET_MEMORY_BLOCK_RE,
+        trailing_re=_TRAILING_FORGET_MEMORY_OPEN_RE,
+        open_tag=FORGET_MEMORY_OPEN,
+    )
+    server_memory_notes, cleaned = _pull_notes(
+        text=cleaned,
+        block_re=_WRITE_SERVER_MEMORY_BLOCK_RE,
+        trailing_re=_TRAILING_WRITE_SERVER_MEMORY_OPEN_RE,
+        open_tag=WRITE_SERVER_MEMORY_OPEN,
+    )
+
     voice_segments = [
         segment for m in _VOICE_BLOCK_RE.finditer(cleaned) if (segment := m.group(1).strip())
     ]
@@ -187,6 +267,9 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
     cleaned = _VIDEO_TAG_RE.sub("", cleaned)
     cleaned = _VOICE_TAG_RE.sub("", cleaned)
     cleaned = _DEEP_RESEARCH_TAG_RE.sub("", cleaned)
+    cleaned = _WRITE_SERVER_MEMORY_TAG_RE.sub("", cleaned)
+    cleaned = _WRITE_MEMORY_TAG_RE.sub("", cleaned)
+    cleaned = _FORGET_MEMORY_TAG_RE.sub("", cleaned)
     # Only tidy the gap a removed block leaves behind when marker processing actually changed
     # the text, so a marker-free reply (poetry, preformatted text, an exact code/output sample)
     # keeps its intentional blank lines and surrounding whitespace byte-for-byte.
@@ -201,17 +284,40 @@ def extract_inline_markers(*, text: str) -> InlineMarkers:
         music_prompt=music_prompt,
         video_prompt=video_prompt,
         research_brief=research_brief,
+        memory_notes=memory_notes,
+        forget_notes=forget_notes,
+        server_memory_notes=server_memory_notes,
     )
+
+
+def _pull_notes(
+    text: str, block_re: re.Pattern[str], trailing_re: re.Pattern[str], open_tag: str
+) -> tuple[list[str], str]:
+    """Pulls one kind of memory note out of a reply, returning the notes and what is left.
+
+    Blocks are removed whole, an unclosed trailing open is taken as one last note (the model
+    forgot to close it, and its body must not leak), and the result is capped at
+    `MAX_MEMORY_NOTES`. Order is the order the model wrote them in, which is the order the
+    evaluator downstream reads them in.
+    """
+    notes = [group for match in block_re.finditer(text) if (group := match.group(1).strip())]
+    cleaned = block_re.sub("", text)
+    trailing = trailing_re.search(cleaned)
+    if trailing is not None:
+        if note := trailing.group(0)[len(open_tag) :].strip():
+            notes.append(note)
+        cleaned = trailing_re.sub("", cleaned)
+    return notes[:MAX_MEMORY_NOTES], cleaned
 
 
 def scrub_markers_for_preview(*, text: str) -> str:
     """Hides complete or still-streaming markers from a live preview snapshot.
 
-    Complete image / music / video blocks and an unclosed trailing `<generate-image>` /
-    `<generate-music>` / `<generate-video>` open are removed whole (the block is going to be pulled
-    from the reply, so it must never flash in). Complete voice tags are stripped but their content
-    stays visible. A trailing fragment that is a prefix of any marker tag (`<generate-imag`,
-    `</generate-voic`, ...) is trimmed so a half-streamed tag never flickers.
+    Complete image / music / video / memory blocks and an unclosed trailing `<generate-image>` /
+    `<generate-music>` / `<generate-video>` / `<write-memory>` open are removed whole (the block is
+    going to be pulled from the reply, so it must never flash in). Complete voice tags are stripped
+    but their content stays visible. A trailing fragment that is a prefix of any marker tag
+    (`<generate-imag`, `</generate-voic`, ...) is trimmed so a half-streamed tag never flickers.
     """
     cleaned = _IMAGE_BLOCK_RE.sub("", text)
     cleaned = _TRAILING_IMAGE_OPEN_RE.sub("", cleaned)
@@ -221,6 +327,12 @@ def scrub_markers_for_preview(*, text: str) -> str:
     cleaned = _TRAILING_VIDEO_OPEN_RE.sub("", cleaned)
     cleaned = _DEEP_RESEARCH_BLOCK_RE.sub("", cleaned)
     cleaned = _TRAILING_DEEP_RESEARCH_OPEN_RE.sub("", cleaned)
+    cleaned = _WRITE_SERVER_MEMORY_BLOCK_RE.sub("", cleaned)
+    cleaned = _TRAILING_WRITE_SERVER_MEMORY_OPEN_RE.sub("", cleaned)
+    cleaned = _WRITE_MEMORY_BLOCK_RE.sub("", cleaned)
+    cleaned = _TRAILING_WRITE_MEMORY_OPEN_RE.sub("", cleaned)
+    cleaned = _FORGET_MEMORY_BLOCK_RE.sub("", cleaned)
+    cleaned = _TRAILING_FORGET_MEMORY_OPEN_RE.sub("", cleaned)
     cleaned = _VOICE_BLOCK_RE.sub(r"\1", cleaned)
     cleaned = _VOICE_TAG_RE.sub("", cleaned)
     stripped = cleaned.rstrip()

@@ -143,6 +143,39 @@ class MemoryFact(BaseModel):
     )
 
 
+class MemoryWriteSummary(BaseModel):
+    """What one turn's memory work recorded, for the note shown under the reply.
+
+    Structured rather than pre-rendered because the wording is a Discord concern and the
+    pipeline is not: `services/` never composes what a user reads.
+
+    `private` is a COUNT, not a list. A `source_only` observation is one the pipeline judged
+    unsafe to repeat outside the conversation it came from, and while the reply is in that
+    conversation, the note under it stays in the channel long after the exchange scrolls past.
+    Saying how many were taken keeps the report honest without publishing them.
+
+    Attributes:
+        remembered: Summaries of the observations safe to name.
+        private: How many were recorded but not named.
+        forgotten: What the user asked to have dropped, in their own framing.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    remembered: tuple[str, ...] = Field(
+        default=(), description="Summaries of the observations safe to name."
+    )
+    private: int = Field(default=0, description="Observations recorded but not named.")
+    forgotten: tuple[str, ...] = Field(
+        default=(), description="What the user asked to have dropped."
+    )
+
+    @property
+    def is_empty(self) -> bool:
+        """Whether the turn recorded nothing worth reporting."""
+        return not self.remembered and not self.forgotten and self.private == 0
+
+
 class MemoryConfig(BaseSettings):
     """Deployment switches for long-term memory, read from environment variables.
 

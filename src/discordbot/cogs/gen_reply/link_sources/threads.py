@@ -55,7 +55,9 @@ if TYPE_CHECKING:
 # `markers.py` extracts case-insensitively, and a defusing pass that is stricter than the
 # extraction it defends against is no defence at all.
 _MARKER_TAG_RE = re.compile(
-    r"</?(generate-(?:voice|image|music|video)|deep-research)>", flags=re.IGNORECASE
+    r"</?(generate-(?:voice|image|music|video)|deep-research|write-memory|forget-memory"
+    r"|write-server-memory)>",
+    flags=re.IGNORECASE,
 )
 
 # Closes the quoted block, and is always the LAST part of it (past the attachments on the media
@@ -217,6 +219,10 @@ def _defuse_markers(text: str) -> str:
     back — which is exactly what "what does this comment say" asks it to do. Extraction runs
     regardless of the kill-switches, so the tag has to stop being a tag here. Cheap to write and
     cheap to abuse otherwise: a comment on a viral post costs an attacker nothing.
+
+    The memory tags are defused for a different cost. A quoted `<forget-memory>` fires no render
+    and spends nothing, so nothing in the logs looks wrong; it writes into the replied-to user's
+    own long-term memory, and what it can reach there survives every later conversation.
     """
     return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
 

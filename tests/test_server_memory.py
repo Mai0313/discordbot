@@ -34,7 +34,6 @@ from discordbot.cogs.gen_reply.memory_tool import (
 )
 from discordbot.services.memory.extraction import MemoryFactDelta
 from discordbot.services.memory.server_prompts import (
-    SERVER_PHASE1_PROMPT,
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,
 )
@@ -199,10 +198,9 @@ def test_render_server_memory_block_is_low_authority_assistant_note() -> None:
 
 def test_server_prompts_target_the_server_not_individuals() -> None:
     """Server memory is about the community; a member's own facts stay in their scope."""
-    assert "target_server_id" in SERVER_PHASE1_PROMPT
     assert "target_server_id" in SERVER_PHASE1_EVALUATOR_PROMPT
     # The privacy boundary: individual personal facts are out of scope.
-    assert "personal" in SERVER_PHASE1_PROMPT
+    assert "personal" in SERVER_PHASE1_EVALUATOR_PROMPT
     assert "individual" in SERVER_PHASE2_PROMPT
 
 
@@ -225,15 +223,15 @@ def test_server_consolidation_prompt_offers_exactly_the_server_sections() -> Non
     assert "`interaction`" not in sections_block
 
 
-def test_phase1_prompt_records_member_aliases_as_community_vocabulary() -> None:
+def test_note_review_records_member_aliases_as_community_vocabulary() -> None:
     """Nicknames are the one carve-out from the no-individuals rule, and must survive the gate."""
-    assert "COMMUNITY VOCABULARY EXCEPTION" in SERVER_PHASE1_PROMPT
-    assert "vocab.member_alias.<USER_ID>" in SERVER_PHASE1_PROMPT
-    assert 'evidence_kind="stable_fact"' in SERVER_PHASE1_PROMPT
+    assert "COMMUNITY VOCABULARY EXCEPTION" in SERVER_PHASE1_EVALUATOR_PROMPT
+    assert "vocab.member_alias.<USER_ID>" in SERVER_PHASE1_EVALUATOR_PROMPT
+    assert 'evidence_kind="stable_fact"' in SERVER_PHASE1_EVALUATOR_PROMPT
     # Aliases are permanent community vocabulary so the freshness sweep never ages them.
-    assert 'durability="permanent"' in SERVER_PHASE1_PROMPT
+    assert 'durability="permanent"' in SERVER_PHASE1_EVALUATOR_PROMPT
     # The same kind that the deterministic gate drops must be explicitly forbidden here.
-    assert "other_user_context" in SERVER_PHASE1_PROMPT
+    assert "other_user_context" in SERVER_PHASE1_EVALUATOR_PROMPT
 
 
 def test_evaluator_prompt_keeps_member_aliases() -> None:
@@ -268,7 +266,7 @@ def test_server_consolidation_prompt_leaves_dating_and_aging_to_code() -> None:
 
 def test_server_phase1_prompt_pins_sharing_global() -> None:
     """The sharing field routes per-user memory; a server memory is already server-confined."""
-    assert 'Always set `sharing="global"`' in SERVER_PHASE1_PROMPT
+    assert 'Always set `sharing="global"`' in SERVER_PHASE1_EVALUATOR_PROMPT
 
 
 def test_server_consolidation_prompt_never_emits_a_tone_note() -> None:
