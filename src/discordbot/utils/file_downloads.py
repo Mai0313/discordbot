@@ -77,11 +77,7 @@ def _reject_oversize_header(response: requests.Response, url: str, max_bytes: in
 
 
 def stream_to_file(
-    url: str,
-    filepath: Path,
-    headers: dict[str, str],
-    timeout: float,
-    max_bytes: int | None = None,
+    url: str, filepath: Path, headers: dict[str, str], timeout: float, max_bytes: int | None = None
 ) -> Path:
     """Streams a remote file into `filepath`, refusing anything past `max_bytes`.
 
