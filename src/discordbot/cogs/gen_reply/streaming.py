@@ -15,6 +15,7 @@ from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
 from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
+from discordbot.typings.memory import MemoryCredits
 from discordbot.typings.models import strip_key_suffix
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
@@ -77,6 +78,24 @@ ANSWER_RETRY_JITTER_SECONDS = 1.0
 # Shown on both retry surfaces, so the reaction on the source message and the notice on the
 # reply read as the same event rather than two unrelated hints.
 RETRY_HINT_EMOJI = "🔁"
+
+# One symbol per memory action, because all three notes stack in the same corner of the same
+# reply and used to share one `<:tag:>`: a reader could not tell "I read this person's memory"
+# from "I wrote this down about you" without parsing the whole sentence, and one did misread
+# the read credit as something the bot had just recorded. Each note also opens on its VERB for
+# the same reason. Plain unicode rather than app emoji because uploading one is not something
+# the bot can do; swapping in a custom `<:name:id>` later is a change to these three lines.
+MEMORY_READ_EMOJI = "📖"
+MEMORY_WRITE_EMOJI = "✏️"
+MEMORY_FORGET_EMOJI = "🩹"
+
+# Written the moment a reply carrying a memory marker lands, and replaced by the outcome once
+# the background review finishes. It exists because that review is seconds to minutes behind the
+# answer and can also end in nothing, which left four different turns — the model marked nothing,
+# the reviewer kept nothing, the review failed, the reply is still working — showing the reader
+# the same empty corner. It costs no extra Discord edit: `_finalize_reply` splices it into the
+# content it was about to write anyway.
+MEMORY_PENDING_NOTE = "-# ✏️ 正在整理記憶⋯"
 
 # The thinking preview is a live glance, not a transcript: keep only the newest few subtext
 # lines so a long think never grows into a wall of text above the reply. The char budget is
@@ -175,9 +194,9 @@ class ResponseStreamer(BaseModel):
     )
     input_tokens: int = Field(default=0, description="Input tokens reported by the stream.")
     output_tokens: int = Field(default=0, description="Output tokens reported by the stream.")
-    memory_lookups: list[str] = Field(
-        default_factory=list,
-        description="Labels of users whose stored memory was injected, for the footer.",
+    memory_lookups: MemoryCredits = Field(
+        default_factory=MemoryCredits,
+        description="Credits for the users whose stored memory was injected, for the footer.",
     )
     voice_generator: SkipValidation[VoiceGenerator | None] = Field(
         default=None,
@@ -263,6 +282,9 @@ class ResponseStreamer(BaseModel):
     # The usage footer appended to stored_content, kept so the media edit can splice any hosted-URL
     # line BEFORE it (USAGE_FOOTER_RE strips only a footer at end-of-message).
     _usage_footer: str = PrivateAttr(default="")
+    # The memory note currently on the reply, so the outcome can replace the pending one rather
+    # than stack under it, and so the answer text handed back to the cog can drop it again.
+    _memory_note: str = PrivateAttr(default="")
     # Set when the reply message was deleted while streaming, so the media step knows the
     # difference between "never sent" (a real problem, worth a hint) and "sent then deleted".
     _reply_deleted: bool = PrivateAttr(default=False)
@@ -694,13 +716,20 @@ class ResponseStreamer(BaseModel):
         # Credit looked-up memory owners on a second -# subtext line. Dedupe while
         # preserving lookup order; past two names collapse to "等 N 人" so a busy
         # lookup stays short. USAGE_FOOTER_RE matches this optional second line too.
+        # A user the reply read but cannot name is folded into that same count rather
+        # than printed, which is the only shape that reports them at all (see
+        # `MemoryCredits`), so the collapse also fires whenever there is one.
         memory_line = ""
-        if self.memory_lookups:
-            names = list(dict.fromkeys(self.memory_lookups))
-            if len(names) > 2:
-                memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names[:2])} 等 {len(names)} 人的記憶"
-            else:
-                memory_line = f"\n-# <:tag:1517563887573143595> {', '.join(names)} 的記憶"
+        names = list(dict.fromkeys(self.memory_lookups.named))
+        read_count = len(names) + self.memory_lookups.unnamed
+        if not names and read_count:
+            memory_line = f"\n-# {MEMORY_READ_EMOJI} 讀了 {read_count} 人的記憶"
+        elif read_count > len(names) or read_count > 2:
+            memory_line = (
+                f"\n-# {MEMORY_READ_EMOJI} 讀了 {', '.join(names[:2])} 等 {read_count} 人的記憶"
+            )
+        elif names:
+            memory_line = f"\n-# {MEMORY_READ_EMOJI} 讀了 {', '.join(names)} 的記憶"
         # Footer format must stay matchable by `utils/llm_transcript.py::USAGE_FOOTER_RE`; the
         # ⬆/⬇ icons are its anchor.
         model_label = (
@@ -708,10 +737,13 @@ class ResponseStreamer(BaseModel):
         )
         usage_footer = f"\n\n-# {model_label} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f}{memory_line}"
 
-        # Final update to ensure complete message is displayed.
-        await self._write_final_message(content=self.stored_content, footer=usage_footer)
         reply_chars = len(self.stored_content)
         chunked = reply_chars + len(usage_footer) > DISCORD_MESSAGE_LIMIT
+        if self._wants_pending_memory_note(footer_chars=len(usage_footer)):
+            self._memory_note = MEMORY_PENDING_NOTE
+            self.stored_content = f"{self.stored_content}\n{self._memory_note}"
+        # Final update to ensure complete message is displayed.
+        await self._write_final_message(content=self.stored_content, footer=usage_footer)
         self.stored_content += usage_footer
         self._usage_footer = usage_footer
         # The answer is on screen in full, so the turn's failure path lets go of it here rather
@@ -740,15 +772,49 @@ class ResponseStreamer(BaseModel):
             image_count=len(self.image_prompts),
             music_requested=bool(self.music_prompt),
             video_requested=bool(self.video_prompt),
-            memory_lookups=len(self.memory_lookups),
+            memory_lookups=self.memory_lookups.total,
             chunked=chunked,
         )
-        return self.stored_content
+        # The pending note is chrome the bot added, not something it said, so it must not reach
+        # the caller: this return value becomes `full_reply`, which is the transcript the memory
+        # reviewer reads back and the text every later history render carries. `USAGE_FOOTER_RE`
+        # cannot take it out downstream either, since the note sits BEFORE the ⬆⬇ line and that
+        # regex only reaches what follows it.
+        return self._without_memory_note(text=self.stored_content)
 
-    async def append_footnote(self, *, line: str) -> None:
-        """Splices one `-#` subtext line onto the finished reply, best-effort.
+    def _without_memory_note(self, *, text: str) -> str:
+        """Returns `text` with the memory note currently on the reply removed, if any."""
+        if not self._memory_note:
+            return text
+        return text.replace(f"\n{self._memory_note}", "", 1)
 
-        Written for the memory report, which lands seconds to minutes after the answer did.
+    def _wants_pending_memory_note(self, *, footer_chars: int) -> bool:
+        """Whether this reply should say it is still working on the memory the model marked.
+
+        Both guards rule out a note nothing could ever take back. The turn must own this
+        surface: a media persona reply renders onto the DELIVERED image or video and schedules
+        no memory at all, so a promise there would caption a finished picture forever
+        (`carries_turn_notices` carries the same reasoning for the retry and error notices).
+        And the note must fit alongside the footer, which is the same check `set_memory_note`
+        makes and covers the chunked reply for the same reason: a reply chunks precisely when
+        its content plus footer already passes the limit, so one that would chunk cannot fit a
+        note either — and its footer would be on a follow-up message while the outcome edits
+        the parent, leaving the note with nothing to replace it.
+        """
+        if not self.carries_turn_notices:
+            return False
+        if not (self.memory_notes or self.forget_notes):
+            return False
+        spliced = len(self.stored_content) + 1 + len(MEMORY_PENDING_NOTE) + footer_chars
+        return spliced <= DISCORD_MESSAGE_LIMIT
+
+    async def set_memory_note(self, *, line: str) -> None:
+        """Puts the reply's memory note on it, replacing whatever note it already carries.
+
+        Written for the memory report, which lands seconds to minutes after the answer did and
+        takes back the `正在整理記憶⋯` the answer landed with. Replace rather than append, so a
+        turn shows one memory note and not a running log of one.
+
         The line goes BEFORE the usage footer, exactly as `_finalize_media_edit` places a
         hosted-URL line: appending after it would leave `USAGE_FOOTER_RE` unable to strip the
         footer, so every later history render would keep the model / token / cost line inside
@@ -756,31 +822,45 @@ class ResponseStreamer(BaseModel):
         optional trailing group matches lines AFTER the ⬆⬇ line and loosening it would start
         eating any reply that happens to end in stacked subtext.
 
+        The old note is removed by value rather than off the end, because it is not always at
+        the end: `_finalize_media_edit` rebuilds the content as body + hosted-URL line + footer,
+        which leaves the note sitting mid-string on any reply that hosted its media.
+
         Declines rather than fails when there is nothing safe to edit: no reply, or a splice
         that would overflow Discord's limit. That second check also covers the chunked reply,
         whose footer lives on a follow-up message rather than on `self.reply`: a reply is
         chunked precisely when its content plus footer already exceeds the limit, so adding a
         line to it can only exceed it too. Only `content` is sent, so a reply carrying
         generated attachments keeps them.
+
+        An overflow that finds a pending note already on the reply withdraws it instead of
+        declining. The note that fit was `MEMORY_PENDING_NOTE`, a dozen characters; the outcome
+        replacing it names what was recorded and runs several times that, so a reply close to
+        the limit can have room for the promise and none for the answer. Leaving the promise
+        standing is the one outcome worse than showing nothing.
         """
         if self.reply is None or not self._usage_footer:
             return
-        body = self.stored_content.removesuffix(self._usage_footer)
+        body = self._without_memory_note(text=self.stored_content.removesuffix(self._usage_footer))
         updated = f"{body}\n{line}{self._usage_footer}"
         if len(updated) > DISCORD_MESSAGE_LIMIT:
-            return
+            if not self._memory_note:
+                return
+            updated, line = f"{body}{self._usage_footer}", ""
         try:
             await self.reply.edit(content=updated, allowed_mentions=AllowedMentions.none())
         except Exception as exc:
             # Broad on purpose: the reply may have been deleted, and a footnote is never worth
-            # surfacing a failure for.
+            # surfacing a failure for. The note already on the reply stays recorded, so a later
+            # attempt still replaces it rather than stacking under it.
             logfire.warn(
-                "Failed to append a footnote to the reply",
+                "Failed to write the memory note onto the reply",
                 message_id=self.message.id,
                 error_type=type(exc).__name__,
             )
             return
         self.stored_content = updated
+        self._memory_note = line
 
     def _resolve_mention_name(self, *, target_id: int) -> str | None:
         """Looks up a member/role/channel display name for the spoken-clip mention rewrite."""

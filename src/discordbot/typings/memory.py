@@ -176,6 +176,34 @@ class MemoryWriteSummary(BaseModel):
         return not self.remembered and not self.forgotten and self.private == 0
 
 
+class MemoryCredits(BaseModel):
+    """Who the usage footer credits for the memory one reply read.
+
+    Two fields rather than one list because the footer treats them differently: a named user
+    is worth printing, while an unnamed one is worth counting and nothing more. The unnamed
+    are the table-only members of a server memory's `## 成員稱呼`, who carry no Discord label
+    anywhere in the conversation and whose name cannot be fetched from anywhere trustworthy
+    (`gen_reply/memory_tool.py::MemoryCandidate` carries why), so the alternative to counting
+    them is publishing a raw snowflake nobody in the channel can resolve.
+
+    Attributes:
+        named: Short footer credits, in lookup order, for the users this reply can name.
+        unnamed: How many further users it read and cannot name.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    named: tuple[str, ...] = Field(
+        default=(), description="Short footer credits, in lookup order, for nameable users."
+    )
+    unnamed: int = Field(default=0, description="How many further users were read but unnamed.")
+
+    @property
+    def total(self) -> int:
+        """How many users' memory this reply actually read."""
+        return len(self.named) + self.unnamed
+
+
 class MemoryConfig(BaseSettings):
     """Deployment switches for long-term memory, read from environment variables.
 

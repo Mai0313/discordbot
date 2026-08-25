@@ -28,7 +28,7 @@ from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
 from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.typings.colors import DISCORD_RED
-from discordbot.typings.memory import MemoryWriteSummary
+from discordbot.typings.memory import MemoryCredits, MemoryWriteSummary
 from discordbot.typings.models import EffortGrade, ModelSettings, RouteClassification
 from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.mentions import has_bot_mention
@@ -95,6 +95,8 @@ from discordbot.typings.context_budgets import (
 )
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
 from discordbot.cogs.gen_reply.streaming import (
+    MEMORY_WRITE_EMOJI,
+    MEMORY_FORGET_EMOJI,
     ResponseStreamer,
     current_answer_streamer,
     stream_answer_with_retry,
@@ -117,7 +119,7 @@ from discordbot.cogs.gen_reply.memory_tool import (
     render_tone_block,
     parse_user_id_list,
     memory_read_context,
-    memory_lookup_labels,
+    memory_lookup_credits,
     resolve_user_memories,
     build_memory_allowlist,
     render_server_memory_block,
@@ -344,24 +346,30 @@ def _memory_report_for(
     lets someone correct a memory the bot got wrong, on the spot — so a `source_only`
     observation, which is exactly the kind that should not be repeated in a channel long after
     the exchange scrolls past, is counted instead of quoted.
+
+    Every branch produces a line, the empty summary included. The streamer put `正在整理記憶⋯`
+    on the reply the moment it landed, so saying nothing here would leave that promise standing
+    over a turn that has finished and recorded nothing.
     """
 
     async def report(summary: MemoryWriteSummary) -> None:
-        """Splices one subtext line onto the reply describing what was recorded."""
+        """Replaces the reply's memory note with what this turn actually recorded."""
+        lines: list[str] = []
         parts: list[str] = []
         if summary.remembered:
             parts.append("、".join(summary.remembered))
         if summary.private:
-            parts.append(f"{summary.private} 則私下的")
-        line = ""
+            # Counted, never quoted, and phrased as its own clause: "N 則私下的" read as a
+            # fragment of whatever preceded it, and had no subject at all on a turn that
+            # recorded nothing else.
+            parts.append(f"另外私下記了 {summary.private} 則")
         if parts:
-            line = f"-# <:tag:1517563887573143595> 記下了:{'；'.join(parts)}"
+            lines.append(f"-# {MEMORY_WRITE_EMOJI} 記下了 {'；'.join(parts)}")
         if summary.forgotten:
-            forgotten = "、".join(summary.forgotten)
-            line = f"{line}\n" if line else ""
-            line = f"{line}-# <:tag:1517563887573143595> 不再記得:{forgotten}"
-        if line:
-            await streamer.append_footnote(line=line)
+            lines.append(f"-# {MEMORY_FORGET_EMOJI} 不再記得 {'、'.join(summary.forgotten)}")
+        if not lines:
+            lines.append(f"-# {MEMORY_WRITE_EMOJI} 這次沒有記下什麼")
+        await streamer.set_memory_note(line="\n".join(lines))
 
     return report
 
@@ -1268,7 +1276,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 # This streamer renders onto the delivered media message itself, so no notice
                 # belonging to the turn -- a retry, the failure embed -- may touch it.
                 carries_turn_notices=False,
-                memory_lookups=context.memory_labels,
+                memory_lookups=context.memory_credits,
                 input_tokens=context.selection_input_tokens,
                 output_tokens=context.selection_output_tokens,
                 model_effort=model.effort or "",
@@ -1873,7 +1881,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # mentions. A separate model call is reserved for the one non-mechanical question: does
         # the latest message obliquely refer to an absent member in a public nickname table? Both
         # paths stay behind resolve_user_memories, the shared permission and compartment boundary.
-        memory_labels: list[str] = []
+        memory_credits = MemoryCredits()
         selection_input_tokens = 0
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
@@ -1887,7 +1895,7 @@ class ReplyGeneratorCogs(commands.Cog):
         deterministic_memory_count = len(memories)
         if memories:
             memory_block = render_memory_context_block(memories=memories)
-            memory_labels = memory_lookup_labels(memories=memories)
+            memory_credits = memory_lookup_credits(memories=memories)
 
             remaining_slots = max(0, MEMORY_CONTEXT_TARGET_USERS - len(memories))
             logfire.debug(
@@ -1970,14 +1978,17 @@ class ReplyGeneratorCogs(commands.Cog):
                     if selected_memories:
                         memories.extend(selected_memories)
                         memory_block = render_memory_context_block(memories=memories)
-                        memory_labels = memory_lookup_labels(memories=memories)
+                        memory_credits = memory_lookup_credits(memories=memories)
                     logfire.info(
                         "gen_reply memory selection done",
                         elapsed_seconds=selection_elapsed,
                         model=toolkit.runtime_models.triage_model.name,
                         selected=len(selected_memories),
                         selected_ids=[memory.user_id for memory in selected_memories],
-                        labels=memory_lookup_labels(memories=selected_memories),
+                        # The model-facing label, not the footer credit: this is an operator
+                        # record, so the community nickname the selector matched on is exactly
+                        # what makes the row readable, and it is never None.
+                        labels=[memory.prompt_label for memory in selected_memories],
                         candidate_count=len(optional_allowed),
                         deterministic_count=deterministic_memory_count,
                         message_id=message.id,
@@ -1997,7 +2008,7 @@ class ReplyGeneratorCogs(commands.Cog):
             server_memory_block=server_memory_block,
             memory_block=memory_block,
             tone_block=tone_block,
-            memory_labels=memory_labels,
+            memory_credits=memory_credits,
             selection_input_tokens=selection_input_tokens,
             selection_output_tokens=selection_output_tokens,
         )
@@ -2129,7 +2140,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # reflect both LLM calls; the answer stream sums its own usage on top.
         streamer = ResponseStreamer(
             message=message,
-            memory_lookups=context.memory_labels,
+            memory_lookups=context.memory_credits,
             input_tokens=context.selection_input_tokens,
             output_tokens=context.selection_output_tokens,
             model_effort=effort,

@@ -30,7 +30,13 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.typings.llm import LLMConfig, GeminiKeySlot
 from discordbot.cogs.gen_reply import streaming as streaming_module
-from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, MemoryDurability
+from discordbot.typings.memory import (
+    MemoryFact,
+    MemoryOwner,
+    MemoryCredits,
+    MemorySection,
+    MemoryDurability,
+)
 from discordbot.typings.models import (
     EffortGrade,
     ModelSettings,
@@ -97,6 +103,7 @@ from discordbot.typings.context_budgets import (
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
 from discordbot.cogs.gen_reply.streaming import (
+    MEMORY_PENDING_NOTE,
     DISCORD_MESSAGE_LIMIT,
     REASONING_PREVIEW_MAX_CHARS,
     REASONING_PREVIEW_MAX_LINES,
@@ -122,7 +129,7 @@ from discordbot.cogs.gen_reply.memory_tool import (
     MemoryReadContext,
     parse_user_id_list,
     memory_read_context,
-    memory_lookup_labels,
+    memory_lookup_credits,
     resolve_user_memories,
     build_memory_allowlist,
     compartments_for_reading,
@@ -1393,7 +1400,7 @@ def _voice_marker_events() -> list[SimpleNamespace]:
     ]
 
 
-async def test_append_footnote_splices_before_the_usage_footer() -> None:
+async def test_set_memory_note_splices_before_the_usage_footer() -> None:
     """The memory note lands seconds after the answer and must not break the footer.
 
     It goes before the usage footer for the same reason the hosted-URL line does: appended
@@ -1408,17 +1415,17 @@ async def test_append_footnote_splices_before_the_usage_footer() -> None:
             _completed_event(input_tokens=3, output_tokens=4),
         ])
     )
-    await streamer.append_footnote(line="-# 記下了:使用者偏好繁體中文")
+    await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
 
     content = message.replies[0].content or ""
-    assert "記下了:使用者偏好繁體中文" in content
+    assert "記下了 使用者偏好繁體中文" in content
     assert USAGE_FOOTER_RE.search(content) is not None
     stripped = USAGE_FOOTER_RE.sub("", content)
     assert "記下了" in stripped
     assert "⬆" not in stripped
 
 
-async def test_append_footnote_declines_when_the_reply_is_already_full() -> None:
+async def test_set_memory_note_declines_when_the_reply_is_already_full() -> None:
     """A reply with no room left keeps what it has rather than being edited into an overflow.
 
     This is also the chunked case: a reply chunks precisely when its content plus footer
@@ -1434,8 +1441,163 @@ async def test_append_footnote_declines_when_the_reply_is_already_full() -> None
         ])
     )
     before = message.replies[0].content
-    await streamer.append_footnote(line="-# 記下了:使用者偏好繁體中文")
+    await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
     assert message.replies[0].content == before
+
+
+async def test_the_outcome_note_replaces_the_pending_one() -> None:
+    """One turn shows one memory note, not a running log of one.
+
+    The pending note is a promise the outcome takes back, so it has to be removed rather than
+    written under: two `-#` lines saying different things about the same turn read as two
+    separate pieces of memory work.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+    assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
+
+    await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
+
+    content = message.replies[0].content or ""
+    assert MEMORY_PENDING_NOTE not in content
+    assert content.count("-# ✏️") == 1
+
+
+async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
+    """A hosted-URL line lands between the note and the footer, so the note is no longer last.
+
+    `_finalize_media_edit` rebuilds the content as body + hosted-URL line + footer, which puts
+    the pending note mid-string. Removing it off the end would then leave both notes on screen.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+    streamer.stored_content = streamer.stored_content.replace(
+        streamer._usage_footer,
+        f"\n-# 媒體過大，改用連結\nhttps://media.example/x.mp4{streamer._usage_footer}",
+    )
+    await message.replies[0].edit(content=streamer.stored_content)
+
+    await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
+
+    content = message.replies[0].content or ""
+    assert MEMORY_PENDING_NOTE not in content
+    assert "媒體過大，改用連結" in content
+    assert content.count("-# ✏️") == 1
+
+
+async def test_the_pending_note_never_reaches_the_answer_text() -> None:
+    """`full_reply` is the transcript the memory reviewer reads and history renders later.
+
+    The note is chrome the bot added, not something it said. `USAGE_FOOTER_RE` cannot remove it
+    downstream either: the note sits before the ⬆⬇ line and that regex only reaches what follows.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    full_reply = await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
+    assert "正在整理記憶" not in full_reply
+    assert USAGE_FOOTER_RE.sub("", full_reply) == "好喔"
+
+
+@pytest.mark.parametrize(
+    ("carries_turn_notices", "delta", "expected"),
+    [
+        (True, "好喔<write-memory>他喜歡繁體中文</write-memory>", True),
+        (True, "好喔<forget-memory>他討厭貓</forget-memory>", True),
+        (True, "好喔", False),
+        (False, "好喔<write-memory>他喜歡繁體中文</write-memory>", False),
+    ],
+    ids=["a-write-marker", "a-forget-marker", "no-marker", "a-media-persona-reply"],
+)
+async def test_the_pending_note_is_written_only_when_something_can_take_it_back(
+    carries_turn_notices: bool, delta: str, expected: bool
+) -> None:
+    """A promise of more to come must never outlive the thing that would withdraw it.
+
+    A media persona reply is the case that makes this a guard rather than a formality: markers
+    are extracted on every route, but only the QA route schedules memory, so that streamer would
+    caption a delivered image with `正在整理記憶⋯` and nothing would ever replace it.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message, carries_turn_notices=carries_turn_notices)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta=delta),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    assert (MEMORY_PENDING_NOTE in (message.replies[0].content or "")) is expected
+
+
+async def test_an_outcome_too_long_to_splice_withdraws_the_pending_note() -> None:
+    """A reply can have room for the promise and none for the answer that replaces it.
+
+    The pending note is a dozen characters; the outcome names what was recorded and runs
+    several times that. Declining the edit would leave `正在整理記憶⋯` standing for good, which
+    is the one outcome worse than showing nothing at all.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 90)),
+            _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+    assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
+
+    await streamer.set_memory_note(line=f"-# ✏️ 記下了 {'長' * 60}")
+
+    content = message.replies[0].content or ""
+    assert MEMORY_PENDING_NOTE not in content
+    assert "記下了" not in content
+    assert USAGE_FOOTER_RE.search(content) is not None
+
+
+async def test_no_pending_note_on_a_reply_that_chunks() -> None:
+    """A chunked reply's footer lives on a follow-up while the note would edit the parent.
+
+    So the outcome could never replace it: `set_memory_note` edits `self.reply`, and the note
+    it is looking for is on another message entirely.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="x" * DISCORD_MESSAGE_LIMIT),
+            _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    # Each overflow chunk is a reply to the previous chunk, so the whole chain has to be walked:
+    # `message.replies` alone holds the parent, and the note would be on the tail chunk with the
+    # footer, where checking only the parent would never see it.
+    chunks = [message.replies[0]]
+    while chunks[-1].replies:
+        chunks.append(chunks[-1].replies[-1])
+    assert len(chunks) > 1, "the reply did not chunk, so this test proves nothing"
+    assert all(MEMORY_PENDING_NOTE not in (chunk.content or "") for chunk in chunks)
 
 
 def _assert_no_voice_tags(text: str) -> None:
@@ -2508,7 +2670,7 @@ async def test_voice_config_gate_controls_synthesizer(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -2567,7 +2729,7 @@ async def test_image_config_gate_controls_generator(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -4731,7 +4893,7 @@ async def test_gen_reply_routes_and_handlers_without_api(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -6021,7 +6183,7 @@ class _ThreadsStreamer:
     def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
         self,
         message: FakeMessage,
-        memory_lookups: list[str] | None = None,
+        memory_lookups: MemoryCredits | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
         model_effort: str = "",
@@ -7888,7 +8050,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -7996,7 +8158,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -8072,7 +8234,7 @@ async def test_memory_markers_route_by_the_message_not_by_the_note(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
-            memory_lookups: list[str] | None = None,
+            memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
             model_effort: str = "",
@@ -8238,15 +8400,17 @@ def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -
     assert by_id["2"].memory == "(no stored memory for this user)"
 
 
-def test_absent_member_is_credited_by_id_never_by_the_alias_row(
+def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row(
     memory_isolated_dir: object,
 ) -> None:
-    """A member named only by the nickname table is credited by their bare id.
+    """A member named only by the nickname table is counted, not named and not id-dropped.
 
     The row is community prose the model reads; it can never be the public footer credit
-    (#463). Nothing else here can name them: the guild member cache is empty for an absent
-    member, and the identity the store stamps belongs to whichever guild's consolidation
-    last wrote that fact, so it would put another server's nickname in this channel.
+    (#463). Nothing else here can name them either: the guild member cache is empty for an
+    absent member, and the identity the store stamps belongs to whichever guild's
+    consolidation last wrote that fact, so it would put another server's nickname in this
+    channel. The bare id that used to fill the gap read as a memory the bot had just
+    written rather than as a person it had read, so the count is what the footer gets.
     """
     del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=42), text="第三人的記憶")
@@ -8257,7 +8421,10 @@ def test_absent_member_is_credited_by_id_never_by_the_alias_row(
         context=MemoryReadContext(guild_id=None, dm_partner_id=None),
     )
 
-    assert memory_lookup_labels(memories=memories) == ["42"]
+    footer_credits = memory_lookup_credits(memories=memories)
+    assert footer_credits.named == ()
+    assert footer_credits.unnamed == 1
+    assert footer_credits.total == 1
     # The model still reads the row the credit refused.
     assert memories[0].prompt_label == "Boss(社群暱稱:李董)"
 
@@ -8384,7 +8551,7 @@ def test_resolve_user_memories_fully_locked_reads_as_no_memory(
     )
 
     assert [memory.memory for memory in memories] == [NO_STORED_MEMORY]
-    assert memory_lookup_labels(memories=memories) == []
+    assert memory_lookup_credits(memories=memories).total == 0
 
 
 @pytest.mark.parametrize(
@@ -8721,7 +8888,6 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
         "stream_usage",
         "present",
         "absent",
-        "credited_once",
     ),
     [
         (
@@ -8731,11 +8897,10 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [["42"]],
             (100, 20),
             (5, 6),
-            ["⬆ 5 ⬇ 6", "\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
+            ["⬆ 5 ⬇ 6", "\n-# 📖 讀了 Tester (tester) 的記憶"],
             [],
-            None,
         ),
-        ([1, 42], (42, "Boss", "李董"), [], [["42"]], (100, 20), (5, 6), ["⬆ 105 ⬇ 26"], [], None),
+        ([1, 42], (42, "Boss", "李董"), [], [["42"]], (100, 20), (5, 6), ["⬆ 105 ⬇ 26"], []),
         (
             [1, 2, 3],
             None,
@@ -8743,9 +8908,8 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [],
             None,
             (1, 1),
-            ["\n-# <:tag:1517563887573143595> Tester (tester), Alice (alice) 等 3 人的記憶"],
+            ["\n-# 📖 讀了 Tester (tester), Alice (alice) 等 3 人的記憶"],
             [],
-            None,
         ),
         (
             [1, 42],
@@ -8754,9 +8918,8 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [["42"], ["42"]],
             None,
             (1, 1),
-            ["\n-# <:tag:1517563887573143595> Tester (tester), 42 的記憶"],
-            ["社群暱稱"],
-            "42",
+            ["\n-# 📖 讀了 Tester (tester) 等 2 人的記憶"],
+            ["社群暱稱", "42"],
         ),
         (
             [1],
@@ -8765,17 +8928,16 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [],
             None,
             (1, 1),
-            ["\n-# <:tag:1517563887573143595> Tester (tester) 的記憶"],
+            ["\n-# 📖 讀了 Tester (tester) 的記憶"],
             ["社群暱稱"],
-            None,
         ),
-        ([], None, [], [["42"]], None, (5, 6), [], ["<:tag:1517563887573143595>"], None),
+        ([], None, [], [["42"]], None, (5, 6), [], ["📖"]),
     ],
     ids=[
         "skipped-selector-not-counted",
         "selection-usage-folded-in",
         "owners-collapse-past-two",
-        "absent-member-credited-by-id",
+        "absent-member-counted-never-named",
         "participant-alias-row-stays-out-of-the-credit",
         "no-memory-no-credit",
     ],
@@ -8792,7 +8954,6 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     stream_usage: tuple[int, int],
     present: list[str],
     absent: list[str],
-    credited_once: str | None,
 ) -> None:
     """The footer credits the memory owners actually read and folds selection tokens into usage.
 
@@ -8800,7 +8961,9 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     credit, the selection-request token contribution, the collapse to "等 N 人" past two owners,
     repeat-lookup de-duplication, and the no-credit case. Two of them also pin that the
     `## 成員稱呼` row never reaches this line from either side it used to (#463) — an absent
-    member is credited by their id, a participant by their Discord label.
+    member is counted into the "等 N 人" total and never named at all, a participant is named by
+    their Discord label. The line opens on 讀了 because the write notes share this corner of the
+    reply and a reader has to be able to tell them apart at a glance.
     """
     del economy_isolated_db, memory_isolated_dir
     cog = _cog()
@@ -8851,8 +9014,6 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
         assert fragment in content
     for fragment in absent:
         assert fragment not in content
-    if credited_once is not None:
-        assert content.count(credited_once) == 1
 
 
 async def test_handle_message_reply_retains_author_memory_when_optional_selection_fails(
@@ -9542,7 +9703,7 @@ async def test_memory_selection_timeout_retains_author_memory(
     blocks = extract_user_memory_blocks(request=[context.memory_block])
     assert "甲" in (blocks.get(1) or "")
     assert 42 not in blocks
-    assert context.memory_labels
+    assert context.memory_credits.named
 
 
 async def test_memory_selection_timeout_without_author_memory_injects_nothing(
@@ -9558,7 +9719,7 @@ async def test_memory_selection_timeout_without_author_memory_injects_nothing(
     )
 
     assert context.memory_block is None
-    assert context.memory_labels == []
+    assert context.memory_credits.total == 0
 
 
 async def test_memory_selection_timeout_retains_author_and_reference_memory(
@@ -9584,7 +9745,7 @@ async def test_memory_selection_timeout_retains_author_and_reference_memory(
     blocks = extract_user_memory_blocks(request=[context.memory_block])
     assert "甲" in (blocks.get(1) or "")
     assert "乙" in (blocks.get(2) or "")
-    assert len(context.memory_labels) == 2
+    assert context.memory_credits.total == 2
 
 
 async def test_deterministic_memory_lookup_skips_locked_author_memory(
@@ -9611,7 +9772,7 @@ async def test_deterministic_memory_lookup_skips_locked_author_memory(
     )
 
     assert context.memory_block is None
-    assert context.memory_labels == []
+    assert context.memory_credits.total == 0
 
 
 def test_can_launch_research_requires_guild_text_channel() -> None:
