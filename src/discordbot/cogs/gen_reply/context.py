@@ -20,7 +20,8 @@ class ReplyContext(BaseModel):
         default_factory=list, description="Rendered channel-history context blocks."
     )
     reference_messages: SkipValidation[list[EasyInputMessageParam]] = Field(
-        default_factory=list, description="Rendered reference-chain context blocks (depth <= 3)."
+        default_factory=list,
+        description="Rendered blocks for the message being replied to; empty when it is not a reply.",
     )
     current_message: SkipValidation[list[EasyInputMessageParam]] = Field(
         default_factory=list,

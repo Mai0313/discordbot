@@ -2988,7 +2988,7 @@ async def test_youtube_qa_falls_back_to_responses(
     assert dispatch["backend"] == "responses"
 
 
-def test_find_youtube_url_searches_reference_chain(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_find_youtube_url_searches_the_replied_to_message(monkeypatch: pytest.MonkeyPatch) -> None:
     """A YouTube link in the replied-to message is found even when the reply omits it."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
@@ -3040,7 +3040,7 @@ def test_find_youtube_url_keeps_footer_shaped_text_in_the_current_message(
 def test_find_youtube_url_reads_embed_card_in_replied_to_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Footer stripping keeps the wider reference-chain scan used for YouTube cards."""
+    """Footer stripping keeps the wider replied-to scan used for YouTube cards."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     url = "https://youtu.be/jNQXAC9IVRw"
     referenced = FakeMessage(content="")
@@ -3053,7 +3053,7 @@ def test_find_youtube_url_reads_embed_card_in_replied_to_message(
 
 
 def test_find_youtube_url_none_without_link(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No YouTube link in the message or its reference chain returns None."""
+    """No YouTube link in the message or the one it replies to returns None."""
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     message = FakeMessage(content="<@999> hi")
     message.reference = FakeReference(resolved=FakeMessage(content="just chatting"))
@@ -3169,7 +3169,7 @@ def test_link_url_for_source_prefers_the_current_message(monkeypatch: pytest.Mon
 def test_link_url_for_source_leaves_the_clip_sources_on_the_current_message(
     monkeypatch: pytest.MonkeyPatch, name: str, url: str
 ) -> None:
-    """Douyin and Bilibili never widen to the reply chain: their value is the clip, and both
+    """Douyin and Bilibili never widen to the replied-to message: their value is the clip, and both
     are rate-limit sensitive, so a passing mention one hop away is not worth a fetch.
     """
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
@@ -4668,8 +4668,13 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     reference = await cog._get_reference_message(
         toolkit=_toolkit(cog=cog), message=as_message(fake=current)
     )
-    assert len(reference) == 4
+    # One header plus one message, and the grandparent these fakes nest is not among them.
+    # Discord never nests `referenced_message`, so a real parent's own `.reference.resolved` is
+    # always None and only a fake can offer a second link at all; the walk that used to follow
+    # one went with #593. This assertion is what makes a re-added walk fail here.
+    assert len(reference) == 2
     assert reference[0]["role"] == "system"
+    assert "grandparent" not in str(reference[1]["content"])
     assert (
         len(
             await cog._get_current_message(
@@ -7065,7 +7070,7 @@ _CLIP_SOURCE_CASES = {
 async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """Only Threads widened to the reply chain; the clip sources stay on the current message."""
+    """Only Threads widened to the replied-to message; the clip sources stay on the current one."""
     builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -7867,26 +7872,21 @@ def test_the_subject_rule_rides_the_developer_prompt_with_its_recap_exception() 
 
 
 def test_only_the_replied_to_message_claims_the_current_message_is_about_it() -> None:
-    """The attachment sentence rides the direct link alone, not every link in the chain.
+    """The one Reference Message block claims the Current Message, and nothing competes with it.
 
-    A chain runs to `MAX_REFERENCE_CHAIN_DEPTH`, so on every link it would leave three blocks
-    each asserting they are what the Current Message is about, which is the ambiguity the
-    sentence was added to remove.
+    A reply renders exactly one of these (`_replied_to_message`), so the attachment sentence has
+    no sibling. The `An earlier message in the reply thread` wording that used to ride an
+    ancestor block went with #593 and must not come back: a second block asserting it is what
+    the Current Message is about is the ambiguity this sentence exists to remove.
     """
-    direct = _reference_header(
-        ref=as_message(fake=FakeMessage(content="原訊息", author=FakeAuthor(user_id=4))),
-        is_direct=True,
-    )
-    ancestor = _reference_header(
-        ref=as_message(fake=FakeMessage(content="更早的", author=FakeAuthor(user_id=5))),
-        is_direct=False,
+    header = _reference_header(
+        ref=as_message(fake=FakeMessage(content="原訊息", author=FakeAuthor(user_id=4)))
     )
 
-    direct_text = next(text for _role, text in iter_text_blocks(request=[direct]))
-    ancestor_text = next(text for _role, text in iter_text_blocks(request=[ancestor]))
-    assert "that something is here, this message's attachments included" in direct_text
-    assert "attachments included" not in ancestor_text
-    assert "An earlier message in the reply thread" in ancestor_text
+    text = next(text for _role, text in iter_text_blocks(request=[header]))
+    assert "it is the primary context for the Current Message below" in text
+    assert "that something is here, this message's attachments included" in text
+    assert "An earlier message in the reply thread" not in text
 
 
 async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
@@ -9730,7 +9730,7 @@ async def test_memory_selection_timeout_retains_author_and_reference_memory(
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="甲")
     _seed_fact(scope=user_scope(user_id=2), text="乙")
-    # _walk_reference_chain only follows a resolved message that passes isinstance(_, Message).
+    # _replied_to_message only returns a resolved message that passes isinstance(_, Message).
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.Message", FakeMessage)
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     parent = FakeMessage(content="原訊息", author=FakeAuthor(user_id=2))

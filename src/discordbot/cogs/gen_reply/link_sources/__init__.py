@@ -6,7 +6,7 @@ uniformly: spot the URL, decide how far to look for it, start the intent-selecte
 media ingestion, and inject a deterministic notice when the build outruns the post-route
 grace. A build starts only after the router selects that source for QA, so an incidental URL
 never reaches its network-capable builder. How far to look is per-source rather than global
-(`search_reference_chain`): Threads
+(`search_replied_to_message`): Threads
 also reads a link the user only replied to, while Douyin and Bilibili stay on the triggering
 message, since their value is the clip rather than a discussion and both are rate-limit
 sensitive. The registry instances live in `gen_reply/cog.py` (`LINK_CONTEXT_SOURCES`) as thin
@@ -69,9 +69,9 @@ class LinkContextSource(BaseModel):
     url_filter: SkipValidation[LinkUrlFilter | None] = Field(
         default=None, description="Optional post-match guard; None accepts every pattern match."
     )
-    search_reference_chain: bool = Field(
+    search_replied_to_message: bool = Field(
         default=False,
-        description="Whether a link in the reply-reference chain also selects this source.",
+        description="Whether a link in the message being replied to also selects this source.",
         examples=[True],
     )
     build: SkipValidation[LinkContextBuilder] = Field(
