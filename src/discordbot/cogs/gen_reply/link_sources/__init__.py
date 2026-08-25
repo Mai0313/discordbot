@@ -8,12 +8,12 @@ grace. A build starts only after the router selects that source for QA, so an in
 never reaches its network-capable builder. How far to look is per-source rather than global
 (`search_replied_to_message`): Threads also reads a link the user only replied to, while Douyin
 and Bilibili stay on the triggering message, since their value is the clip rather than a
-discussion and both are rate-limit sensitive. The registry instances live in `gen_reply/cog.py`
-(`LINK_CONTEXT_SOURCES`) as thin adapters over the builder functions: an adapter body resolves
-the builder name from that module's globals at call time, so a test monkeypatching
-`discordbot.cogs.gen_reply.cog.build_*_context_messages` still intercepts the call. Adding a
-source is one builder module here, a `utils/` URL regex, a route-schema and prompt source name,
-and one registry entry.
+discussion and both are rate-limit sensitive. The registry instances live in `registry.py` beside
+this file (`LINK_CONTEXT_SOURCES`) as thin adapters over the builder functions: an adapter body
+resolves the builder name from that module's globals at call time, so a test monkeypatching
+`discordbot.cogs.gen_reply.link_sources.registry.build_*_context_messages` still intercepts the
+call. Adding a source is one builder module here, a `utils/` URL regex, a route-schema and prompt
+source name, and one registry entry.
 """
 
 import re
