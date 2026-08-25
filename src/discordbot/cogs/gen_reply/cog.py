@@ -108,7 +108,6 @@ from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
     HISTORY_MESSAGE_LIMIT,
     MAX_HISTORY_MEDIA_PARTS,
-    MAX_REFERENCE_CHAIN_DEPTH,
     MAX_VIDEO_REFERENCE_IMAGES,
     MEMORY_CONTEXT_TARGET_USERS,
     HISTORY_PER_MESSAGE_OVERHEAD,
@@ -176,8 +175,8 @@ def _message_link_texts(message: Message, strip_usage_footer: bool) -> list[str]
     link the answer model was not shown, e.g. a captioned forwarded link card whose URL lives only
     in the embed. A forward puts its payload in `message.snapshots`, scanned via `snapshot_text`.
 
-    `strip_usage_footer` removes the bot-authored footer from every span when a caller scans a
-    reply-reference chain. The triggering message keeps its complete author-controlled text.
+    `strip_usage_footer` removes the bot-authored footer from every span when a caller scans the
+    message being replied to. The triggering message keeps its complete author-controlled text.
     """
     content = message.content or ""
     content_present = bool(content.strip())
@@ -297,10 +296,10 @@ def _first_url_match(pattern: re.Pattern[str], texts: list[str]) -> re.Match[str
 def _link_url_for_source(source: LinkContextSource, message: Message) -> str | None:
     """The URL one link source should read: the current message's, else the replied-to one's.
 
-    The current message always wins. A source that opts into `search_reference_chain` then
-    falls back to the reply-reference chain, the same walk `_find_youtube_url` does, so
+    The current message always wins. A source that opts into `search_replied_to_message` then
+    falls back to the message being replied to, the same one hop `_find_youtube_url` takes, so
     "@bot 這篇底下在吵什麼" sent as a reply to someone else's link still reads the post; one
-    that does not opt in never looks past the triggering message. The chain is scanned with
+    that does not opt in never looks past the triggering message. That parent is scanned with
     `_authored_link_texts`, which is what keeps the bot's own expansion from triggering a read
     of the wrong post.
 
@@ -313,13 +312,12 @@ def _link_url_for_source(source: LinkContextSource, message: Message) -> str | N
         pattern=source.url_pattern,
         texts=_message_link_texts(message=message, strip_usage_footer=False),
     )
-    if match is None and source.search_reference_chain:
-        for ref in _walk_reference_chain(message=message):
+    if match is None and source.search_replied_to_message:
+        replied_to = _replied_to_message(message=message)
+        if replied_to is not None:
             match = _first_url_match(
-                pattern=source.url_pattern, texts=_authored_link_texts(message=ref)
+                pattern=source.url_pattern, texts=_authored_link_texts(message=replied_to)
             )
-            if match is not None:
-                break
     if match is None:
         return None
     url = match.group(0)
@@ -430,70 +428,60 @@ def _youtube_url_in_message(message: Message, strip_usage_footer: bool) -> str |
 
 
 def _find_youtube_url(message: Message) -> str | None:
-    """Finds a YouTube URL in the current message or the reply-reference chain.
+    """Finds a YouTube URL in the current message or the message it replies to.
 
-    A reply to a message that merely links a video would otherwise be missed, so the chain is
+    A reply to a message that merely links a video would otherwise be missed, so the parent is
     searched too and "summarize this" on a replied-to video still watches it. The current
-    message wins, then the nearest reference outward. Threads reaches one hop the same way
-    (`_link_url_for_source`, `search_reference_chain`); Douyin and Bilibili deliberately do
-    not, since their value is the clip rather than a discussion and both are rate-limit
-    sensitive. This one keeps scanning embeds out there — a YouTube link card is the link
-    itself, not a rendering of some other post the way a Threads expansion is.
+    message wins. Threads reaches the same one hop (`_link_url_for_source`,
+    `search_replied_to_message`); Douyin and Bilibili deliberately do not, since their value is
+    the clip rather than a discussion and both are rate-limit sensitive. This one keeps scanning
+    embeds out there — a YouTube link card is the link itself, not a rendering of some other
+    post the way a Threads expansion is.
     """
     found = _youtube_url_in_message(message=message, strip_usage_footer=False)
     if found is not None:
         return found
-    for ref in _walk_reference_chain(message=message):
-        found = _youtube_url_in_message(message=ref, strip_usage_footer=True)
-        if found is not None:
-            return found
+    replied_to = _replied_to_message(message=message)
+    if replied_to is not None:
+        return _youtube_url_in_message(message=replied_to, strip_usage_footer=True)
     return None
 
 
-def _walk_reference_chain(message: Message) -> list[Message]:
-    """Walks the reply-reference chain up to `MAX_REFERENCE_CHAIN_DEPTH`, oldest link last."""
-    chain: list[Message] = []
-    visited: set[int] = {message.id}
-    current = message
-    while (
-        len(chain) < MAX_REFERENCE_CHAIN_DEPTH
-        and current.reference
-        and isinstance(current.reference.resolved, Message)
-        and current.reference.resolved.id not in visited
-    ):
-        ref = current.reference.resolved
-        visited.add(ref.id)
-        chain.append(ref)
-        current = ref
-    return chain
+def _replied_to_message(message: Message) -> Message | None:
+    """The message this one replies to, or None when it is not a reply.
 
-
-def _reference_header(ref: Message, is_direct: bool) -> EasyInputMessageParam:
-    """Builds the system separator that precedes one reference-chain message.
-
-    `is_direct` marks the message the user is actually replying to (the immediate parent);
-    older ancestors in the chain are labelled as thread context so only the real reply
-    target reads as the primary context.
-
-    The attachment sentence rides the direct branch alone. A chain runs to
-    `MAX_REFERENCE_CHAIN_DEPTH`, so putting it on every link would leave up to three blocks
-    each claiming to be what the Current Message is about, which is the same defect this
-    wording exists to close.
+    One hop is everything Discord hands over. nextcord fills `MessageReference.resolved` in
+    exactly one place, from the `referenced_message` key of the payload it is building, and
+    never from the message cache; Discord does not nest that key, so a referenced message's own
+    `.reference.resolved` is always `None`. Reaching a grandparent needs an explicit
+    `fetch_message` per ancestor, which #593 decided against: an ancestor is another message in
+    this same channel, so the history every reply already carries holds it, and a second
+    Reference Message block would dilute the one below that says it is the primary context.
     """
-    relation = (
-        "The user is directly replying to this message; it is the primary context for the "
-        "Current Message below. When the Current Message points at something without naming "
-        "it, that something is here, this message's attachments included."
-        if is_direct
-        else "An earlier message in the reply thread, for context."
-    )
+    if message.reference is None:
+        return None
+    resolved = message.reference.resolved
+    return resolved if isinstance(resolved, Message) else None
+
+
+def _reference_header(ref: Message) -> EasyInputMessageParam:
+    """Builds the system separator that precedes the message being replied to.
+
+    Exactly one of these is ever rendered, so it is always the primary context and says so
+    plainly. The attachment sentence is the load-bearing half: a Current Message that points at
+    something without naming it is pointing here, this message's files included.
+    """
     return EasyInputMessageParam(
         role="system",
         content=[
             ResponseInputTextParam(
                 text=(
                     f"==== Reference Message from {sanitize_identity(value=ref.author.display_name)} "
-                    f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. {relation} ===="
+                    f"({sanitize_identity(value=ref.author.name)}) [id: {ref.author.id}]. "
+                    "The user is directly replying to this message; it is the primary context for "
+                    "the Current Message below. When the Current Message points at something "
+                    "without naming it, that something is here, this message's attachments "
+                    "included. ===="
                 ),
                 type="input_text",
             )
@@ -718,7 +706,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # The one source that reads a link the user only replied to: what it fetches is the
         # discussion under the post, which the `parse_threads` expansion deliberately does not
         # show, so "@bot 這篇底下在吵什麼" on someone else's link has nothing else to answer from.
-        search_reference_chain=True,
+        search_replied_to_message=True,
         build=_build_threads_link_context,
         on_timeout=threads_timeout_context_messages,
         media_ingest_allowed=_threads_media_ingest_allowed,
@@ -977,34 +965,28 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_reference_message(
         self, toolkit: GeminiKeyToolkit, message: Message, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
-        """Walks the reference chain up to `MAX_REFERENCE_CHAIN_DEPTH`, rendering each link.
+        """Renders the message being replied to, or nothing when this is not a reply.
 
         `text_only` emits attachment markers instead of uploaded file parts, for the
         route and memory-selection calls that must not wait on the Files API.
         """
-        chain = _walk_reference_chain(message=message)
-        if not chain:
+        replied_to = _replied_to_message(message=message)
+        if replied_to is None:
             return []
 
-        tasks: list[Awaitable[EasyInputMessageParam]] = []
-        for ref in chain:
-            if text_only:
-                tasks.append(toolkit.input_builder.process_single_message_text_only(message=ref))
-            else:
-                tasks.append(toolkit.input_builder.process_single_message(message=ref))
-        processed: list[EasyInputMessageParam] = await asyncio.gather(*tasks)
-
-        messages: list[EasyInputMessageParam] = []
-        for ref, processed_ref in zip(reversed(chain), reversed(processed), strict=True):
-            messages.append(_reference_header(ref=ref, is_direct=ref is chain[0]))
-            messages.append(processed_ref)
-        return messages
+        if text_only:
+            processed = await toolkit.input_builder.process_single_message_text_only(
+                message=replied_to
+            )
+        else:
+            processed = await toolkit.input_builder.process_single_message(message=replied_to)
+        return [_reference_header(ref=replied_to), processed]
 
     async def _get_current_message(
         self, toolkit: GeminiKeyToolkit, message: Message, text_only: bool = False
     ) -> list[EasyInputMessageParam]:
         """Processes the current message that needs to be answered."""
-        has_reference = bool(_walk_reference_chain(message=message))
+        has_reference = _replied_to_message(message=message) is not None
         messages: list[EasyInputMessageParam] = [
             _current_header(message=message, has_reference=has_reference)
         ]
@@ -1418,7 +1400,7 @@ class ReplyGeneratorCogs(commands.Cog):
     async def _get_reference_and_current(
         self, toolkit: GeminiKeyToolkit, message: Message, text_only: bool = False
     ) -> tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]:
-        """Renders the reference chain and the current message together.
+        """Renders the message being replied to and the current message together.
 
         With `text_only` they render as attachment markers (no upload) for the route and memory
         selection; otherwise this is the answer-path render (uploads + activation poll to ACTIVE)
@@ -1720,9 +1702,13 @@ class ReplyGeneratorCogs(commands.Cog):
         if bot_user is None:
             return [], {}, 0
 
-        reference_chain = _walk_reference_chain(message=message)
+        replied_to = _replied_to_message(message=message)
         deterministic_allowed = build_recall_allowlist(
-            users=[message.author, *(ref.author for ref in reference_chain), *message.mentions],
+            users=[
+                message.author,
+                *([replied_to.author] if replied_to is not None else []),
+                *message.mentions,
+            ],
             bot_user_id=bot_user.id,
         )
         optional_allowed: dict[int, RecallCandidate] = {}
@@ -2526,7 +2512,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if route.decision == "QA" and route.link_context_sources:
                     # The router selects only source names; URL ownership stays local and the
-                    # registry still applies every URL filter and reply-chain rule. Start each
+                    # registry still applies every URL filter and replied-to rule. Start each
                     # selected builder only now, after intent is known, so an incidental link
                     # never begins a metadata fetch, media download, or Files API upload.
                     selected_sources = set(route.link_context_sources)

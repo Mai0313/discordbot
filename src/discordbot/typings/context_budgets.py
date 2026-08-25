@@ -83,13 +83,6 @@ HISTORY_PER_MESSAGE_OVERHEAD: Final[int] = 40
 # confined to the reply that asked for it.
 MAX_HISTORY_MEDIA_PARTS: Final[int] = 10
 
-# How far up the reply chain the Reference Message block is walked. Every link past the first is
-# labelled as thread context rather than as the message being answered, so this bounds background
-# rather than subject. Measured over 303 logged answer turns, no chain ever rendered more than one
-# link: `message.reference.resolved` is populated from Discord's cache, which rarely holds the
-# grandparent, so the walk stops on its own long before this does.
-MAX_REFERENCE_CHAIN_DEPTH: Final[int] = 3
-
 # --------------------------------------------------------------------------------------
 # Memory read into a request
 # --------------------------------------------------------------------------------------
