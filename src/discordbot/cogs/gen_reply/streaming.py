@@ -745,6 +745,43 @@ class ResponseStreamer(BaseModel):
         )
         return self.stored_content
 
+    async def append_footnote(self, *, line: str) -> None:
+        """Splices one `-#` subtext line onto the finished reply, best-effort.
+
+        Written for the memory report, which lands seconds to minutes after the answer did.
+        The line goes BEFORE the usage footer, exactly as `_finalize_media_edit` places a
+        hosted-URL line: appending after it would leave `USAGE_FOOTER_RE` unable to strip the
+        footer, so every later history render would keep the model / token / cost line inside
+        the bot's own answer. Widening that regex instead is not an option, because its
+        optional trailing group matches lines AFTER the ⬆⬇ line and loosening it would start
+        eating any reply that happens to end in stacked subtext.
+
+        Declines rather than fails when there is nothing safe to edit: no reply, or a splice
+        that would overflow Discord's limit. That second check also covers the chunked reply,
+        whose footer lives on a follow-up message rather than on `self.reply`: a reply is
+        chunked precisely when its content plus footer already exceeds the limit, so adding a
+        line to it can only exceed it too. Only `content` is sent, so a reply carrying
+        generated attachments keeps them.
+        """
+        if self.reply is None or not self._usage_footer:
+            return
+        body = self.stored_content.removesuffix(self._usage_footer)
+        updated = f"{body}\n{line}{self._usage_footer}"
+        if len(updated) > DISCORD_MESSAGE_LIMIT:
+            return
+        try:
+            await self.reply.edit(content=updated, allowed_mentions=AllowedMentions.none())
+        except Exception as exc:
+            # Broad on purpose: the reply may have been deleted, and a footnote is never worth
+            # surfacing a failure for.
+            logfire.warn(
+                "Failed to append a footnote to the reply",
+                message_id=self.message.id,
+                error_type=type(exc).__name__,
+            )
+            return
+        self.stored_content = updated
+
     def _resolve_mention_name(self, *, target_id: int) -> str | None:
         """Looks up a member/role/channel display name for the spoken-clip mention rewrite."""
         guild = self.message.guild

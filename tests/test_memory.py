@@ -25,6 +25,7 @@ from discordbot.typings.memory import (
     MemoryDurability,
     MemoryDeltaAction,
     MemoryEvidenceKind,
+    MemoryWriteSummary,
 )
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.memory.cog import MemoryCogs
@@ -1147,6 +1148,49 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
     assert outcome.created == 0
     assert outcome.dropped == 1
     assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
+
+
+async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_dir: Path) -> None:
+    """What gets named under the reply is what is safe to repeat in that channel later.
+
+    Showing the content is the point of the report: it is what lets someone correct a memory
+    the bot got wrong, on the spot. A `source_only` observation is by definition one that
+    should not be repeated outside the conversation it came from, and the note under a reply
+    outlives the exchange in the channel, so those are counted rather than quoted.
+    """
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(
+            _observation(
+                summary="偏好繁體中文", normalized_key="preference.lang", sharing="global"
+            ),
+            _observation(
+                summary="正在跟人吵架", normalized_key="recent.fight", sharing="source_only"
+            ),
+        ),
+    )
+    reported: list[MemoryWriteSummary] = []
+
+    async def record(summary: MemoryWriteSummary) -> None:
+        """Captures what the pipeline decided to report."""
+        reported.append(summary)
+
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+        remember_notes=_NOTES,
+        report=record,
+    )
+    await _wait_for_inflight()
+    assert len(reported) == 1
+    assert reported[0].remembered == ("偏好繁體中文",)
+    assert reported[0].private == 1
+    assert "正在跟人吵架" not in str(reported[0])
 
 
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:

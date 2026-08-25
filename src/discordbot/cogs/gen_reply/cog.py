@@ -8,7 +8,7 @@ import asyncio
 from functools import cached_property
 import contextlib
 from contextvars import ContextVar
-from collections.abc import AsyncIterator
+from collections.abc import Callable, Awaitable, AsyncIterator
 
 from google import genai
 from openai import AsyncOpenAI
@@ -28,6 +28,7 @@ from discordbot.utils.images import convert_base64_to_data_uri
 from discordbot.utils.threads import THREADS_URL_RE
 from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.typings.colors import DISCORD_RED
+from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.typings.models import EffortGrade, ModelSettings, RouteClassification
 from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.utils.mentions import has_bot_mention
@@ -151,7 +152,7 @@ from discordbot.cogs.gen_reply.link_sources.bilibili import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Awaitable, Coroutine
+    from collections.abc import Coroutine
 
 
 # Recorded as a reply's route when the pipeline failed before the router returned one.
@@ -326,6 +327,43 @@ def _link_url_for_source(source: LinkContextSource, message: Message) -> str | N
     if source.url_filter is not None and not source.url_filter(url=url):
         return None
     return url
+
+
+def _memory_report_for(
+    streamer: ResponseStreamer,
+) -> Callable[[MemoryWriteSummary], Awaitable[None]]:
+    """Builds the callback that tells the user what this turn's memory work recorded.
+
+    Closes over the streamer rather than reaching for it later: by the time memory lands the
+    reply path has returned, and the streamer is the only thing that knows where the answer
+    ended up and where its usage footer sits.
+
+    The wording is deliberately "took this down" rather than "remembered": the observations
+    are staged evidence at this point, and the merge that turns them into stored facts can
+    still fold or drop any of them. Showing the content is the point of the line — it is what
+    lets someone correct a memory the bot got wrong, on the spot — so a `source_only`
+    observation, which is exactly the kind that should not be repeated in a channel long after
+    the exchange scrolls past, is counted instead of quoted.
+    """
+
+    async def report(summary: MemoryWriteSummary) -> None:
+        """Splices one subtext line onto the reply describing what was recorded."""
+        parts: list[str] = []
+        if summary.remembered:
+            parts.append("、".join(summary.remembered))
+        if summary.private:
+            parts.append(f"{summary.private} 則私下的")
+        line = ""
+        if parts:
+            line = f"-# <:tag:1517563887573143595> 記下了:{'；'.join(parts)}"
+        if summary.forgotten:
+            forgotten = "、".join(summary.forgotten)
+            line = f"{line}\n" if line else ""
+            line = f"{line}-# <:tag:1517563887573143595> 不再記得:{forgotten}"
+        if line:
+            await streamer.append_footnote(line=line)
+
+    return report
 
 
 def _source_channel_is_public(message: Message) -> bool:
@@ -2201,6 +2239,7 @@ class ReplyGeneratorCogs(commands.Cog):
             ),
             remember_notes=tuple(streamer.memory_notes),
             forget_notes=tuple(streamer.forget_notes),
+            report=_memory_report_for(streamer=streamer),
         )
         # The per-server update carries its own guards rather than riding the per-user one:
         # DMs and non-public channels are dropped inside `_schedule_server_memory_update`.

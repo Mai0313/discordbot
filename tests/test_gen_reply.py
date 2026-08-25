@@ -1393,6 +1393,51 @@ def _voice_marker_events() -> list[SimpleNamespace]:
     ]
 
 
+async def test_append_footnote_splices_before_the_usage_footer() -> None:
+    """The memory note lands seconds after the answer and must not break the footer.
+
+    It goes before the usage footer for the same reason the hosted-URL line does: appended
+    after it, `USAGE_FOOTER_RE` could no longer strip the footer, and every later history
+    render would carry the model / token / cost line inside the bot's own answer.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="好喔"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+    await streamer.append_footnote(line="-# 記下了:使用者偏好繁體中文")
+
+    content = message.replies[0].content or ""
+    assert "記下了:使用者偏好繁體中文" in content
+    assert USAGE_FOOTER_RE.search(content) is not None
+    stripped = USAGE_FOOTER_RE.sub("", content)
+    assert "記下了" in stripped
+    assert "⬆" not in stripped
+
+
+async def test_append_footnote_declines_when_the_reply_is_already_full() -> None:
+    """A reply with no room left keeps what it has rather than being edited into an overflow.
+
+    This is also the chunked case: a reply chunks precisely when its content plus footer
+    already passes the limit, so one guard covers both and the streamer needs no separate
+    chunked flag.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 5)),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+    before = message.replies[0].content
+    await streamer.append_footnote(line="-# 記下了:使用者偏好繁體中文")
+    assert message.replies[0].content == before
+
+
 def _assert_no_voice_tags(text: str) -> None:
     """Asserts neither voice tag leaked into the visible reply."""
     assert "<generate-voice>" not in text

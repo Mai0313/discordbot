@@ -10,13 +10,13 @@ import time
 from typing import Literal
 import asyncio
 from datetime import UTC, datetime
-from collections.abc import Awaitable
+from collections.abc import Callable, Awaitable
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
-from discordbot.typings.memory import MemoryOwner
+from discordbot.typings.memory import MemoryOwner, MemoryWriteSummary
 from discordbot.services.memory import database as memory_db
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry, LoopLocalSemaphore
@@ -82,6 +82,11 @@ from discordbot.services.memory.extraction import (
 )
 from discordbot.services.memory.git_history import memory_git
 
+# What a caller is handed once a turn's memory writes land. `services/` never composes what
+# a user reads, so this reports the shape and lets the cog word it. In-memory only: a resumed
+# turn runs after a restart, long past the reply it belonged to, and has no report to make.
+type MemoryWriteReport = Callable[[MemoryWriteSummary], Awaitable[None]]
+
 # The ways a from-scratch rebuild can end, carried on `RegenerationReport.result`.
 _RegenerationResult = Literal["regenerated", "no_evidence", "failed", "cooldown"]
 
@@ -145,6 +150,9 @@ class _PendingMemoryUpdate(BaseModel):
     )
     token: int = Field(
         ..., description="Logical version token reused on replay for the DB row guard."
+    )
+    report: SkipValidation[MemoryWriteReport | None] = Field(
+        default=None, description="Callback reporting what the replayed turn recorded."
     )
 
 
@@ -377,6 +385,7 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     identity: str,
     remember_notes: tuple[str, ...],
     forget_notes: tuple[str, ...] = (),
+    report: MemoryWriteReport | None = None,
 ) -> None:
     """Starts a background memory update without delaying the reply path.
 
@@ -389,6 +398,11 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     The transcript is rendered eagerly here (pure, sub-ms, already past the reply)
     so the persisted job and the in-memory replay both carry a plain string and
     `_run_memory_update` re-renders nothing.
+
+    `report`, when given, is awaited once the turn's writes land, so the caller can tell the
+    user what was recorded. It is deliberately in-memory only and is NOT persisted with the
+    row: a resumed turn runs after a restart, long after the reply it belonged to, and
+    reporting onto it then would edit a message the conversation has moved past.
     """
     if not remember_notes and not forget_notes:
         return
@@ -402,6 +416,7 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
         extractor=extractor,
         identity=identity,
         token=memory_db.new_token(),
+        report=report,
     )
 
 
@@ -432,6 +447,7 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     extractor: MemoryExtractorAI,
     identity: str,
     token: int,
+    report: MemoryWriteReport | None = None,
 ) -> None:
     """Schedules (or defers) one rendered-transcript update, backed by a reply.db row."""
     global _inflight_loop  # noqa: PLW0603 -- process task de-dupe
@@ -452,6 +468,7 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
         _pending_updates[scope] = _PendingMemoryUpdate(
             subject=subject,
             transcript=transcript,
+            report=report,
             extractor=extractor,
             identity=identity,
             captured_at=captured_at,
@@ -481,10 +498,27 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
             identity=identity,
             token=token,
             captured_at=captured_at,
+            report=report,
         )
     )
     _inflight_tasks[scope] = task
     task.add_done_callback(lambda finished: _finish_memory_update(scope=scope, task=finished))
+
+
+async def _report_writes(report: MemoryWriteReport, summary: MemoryWriteSummary) -> None:
+    """Hands the caller what this turn recorded, never letting the report cost the write.
+
+    The write is already durable by the time this runs, so a Discord edit that fails, or a
+    reply that has since been deleted, must not surface as a memory failure.
+    """
+    if summary.is_empty:
+        return
+    try:
+        await report(summary)
+    except Exception:
+        # Broad on purpose: the callback reaches Discord, and this runs in a background task
+        # whose failure would otherwise be logged as the memory update having failed.
+        logfire.warn("Reporting a memory write back to the reply failed", _exc_info=True)
 
 
 def _merged_payload(newer: str, older: str) -> str:
@@ -546,6 +580,7 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
         extractor=pending.extractor,
         identity=pending.identity,
         token=pending.token,
+        report=pending.report,
     )
 
 
@@ -557,8 +592,9 @@ async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavo
     identity: str,
     token: int,
     captured_at: float,
+    report: MemoryWriteReport | None = None,
 ) -> None:
-    """Runs phase-1 extraction and, past the raw threshold, phase-2 consolidation.
+    """Reviews the turn's memory notes and, past the raw threshold, consolidates.
 
     The reply.db row is written `pending` at the top (awaited, before the lock) so
     a redeploy mid-extraction resumes this turn; it is marked `done` once phase-1
@@ -651,6 +687,27 @@ async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavo
         # The turn is durable in raw.md now; record success before the (best-effort,
         # self-healing) consolidation so a consolidation crash never re-runs the review.
         await _safe(coro=memory_db.mark_done(scope=scope, token=token))
+        if report is not None:
+            # Reported here rather than after consolidation: this is the point the turn's
+            # work is durable, and consolidation can be minutes away. What the user is told
+            # therefore has to be "taken down", never "stored as a fact" — the merge that
+            # turns these into facts can still drop or fold any of them.
+            await _report_writes(
+                report=report,
+                summary=MemoryWriteSummary(
+                    remembered=tuple(
+                        observation.summary_zh
+                        for observation in deduped_observations
+                        if observation.sharing != "source_only"
+                    ),
+                    private=sum(
+                        1
+                        for observation in deduped_observations
+                        if observation.sharing == "source_only"
+                    ),
+                    forgotten=forget_notes,
+                ),
+            )
         if not _should_consolidate(scope=scope, forced=bool(forget_text)):
             return
         # Recorded at attempt time, not success time, so repeated LLM failures
