@@ -293,7 +293,7 @@ class ReplyPipeline(BaseModel):
             yt_url=yt_url,
         )
 
-    async def run(self) -> None:
+    async def run(self) -> None:  # noqa: PLR0915 -- the turn's sequence, and the task handles its `finally` drains
         """Routes the message and dispatches the matching handler with speculative QA context."""
         message = self.message
         # Named in the usage record below, which is written from this method's `finally`

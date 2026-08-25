@@ -18,13 +18,41 @@ source name, and one registry entry.
 
 import re
 from typing import Any, Protocol
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Sequence, Coroutine
 
 from google import genai
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from openai.types.responses.response_input_param import EasyInputMessageParam
+from openai.types.responses.response_input_file_param import ResponseInputFileParam
+from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.llm import LLMConfig
+
+
+def system_block(*, text: str) -> EasyInputMessageParam:
+    """Wraps one separator or notice string as a low-authority system block."""
+    return EasyInputMessageParam(
+        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
+    )
+
+
+def link_context_blocks(
+    *, separator: str, text: str, media_parts: Sequence[ResponseInputFileParam] = ()
+) -> list[EasyInputMessageParam]:
+    """The separator plus the post itself, the shape a readable source returns.
+
+    The separator carries the source's own claim about what is attached, so it is the caller's
+    to choose: the same post renders under a "here is its media" wording when the upload landed
+    and under a "text only" one when it did not, and the difference is exactly what stops the
+    model describing media it never received.
+    """
+    return [
+        system_block(text=separator),
+        EasyInputMessageParam(
+            role="user",
+            content=[ResponseInputTextParam(text=text, type="input_text"), *media_parts],
+        ),
+    ]
 
 
 class LinkUrlFilter(Protocol):

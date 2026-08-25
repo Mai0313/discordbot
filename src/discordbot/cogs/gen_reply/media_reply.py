@@ -91,9 +91,7 @@ class MediaReplyRoutes(BaseModel):
             )
         # Too big to attach: the hosted URL is the deliverable (pings the author once). The persona
         # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
-        await self.message.reply(
-            content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}"
-        )
+        await self.message.reply(content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}")
         return None
 
     async def handle_image(
