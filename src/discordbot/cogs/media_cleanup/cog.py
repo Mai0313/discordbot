@@ -55,8 +55,14 @@ class MediaCleanupCogs(commands.Cog):
         self.cleanup_loop.start()
 
     def cog_unload(self) -> None:
-        """Stops the loop when the cog is torn down."""
+        """Stops the loop and the startup sweep when the cog is torn down.
+
+        The one-off startup sweep is cancelled too: it deletes against the live
+        serve dir, so a reload must not leave it running behind a cog that is gone.
+        """
         self.cleanup_loop.cancel()
+        if self._startup_task is not None:
+            self._startup_task.cancel()
 
     @tasks.loop(hours=MEDIA_CLEANUP_INTERVAL_HOURS)
     async def cleanup_loop(self) -> None:

@@ -21,6 +21,7 @@ from pydantic import Field, BaseModel
 from discordbot.utils.llm import parse_responses_or_none
 from discordbot.typings.colors import NEUTRAL_GREY, DISCORD_GREEN
 from discordbot.typings.models import ModelSettings
+from discordbot.cogs.feedback.views import clipped
 from discordbot.cogs.feedback.github import CloseOutcome, IssueComment
 from discordbot.cogs.feedback.prompts import CLOSE_NOTICE_TRANSLATION_PROMPT
 from discordbot.cogs.feedback.database import FeedbackTicket
@@ -31,7 +32,6 @@ from discordbot.typings.context_budgets import CLOSE_NOTICE_LANGUAGE_SAMPLE_CHAR
 # stops reads as the bot having lost the rest of it.
 _MAX_COMMENT_CHARS = 900
 _MAX_QUOTED_CHARS = 300
-_TRUNCATED_SUFFIX = "…"
 
 # How long before a close a comment can have been written and still be read as the reason
 # for it. A day is generous on purpose: "fixed, shipping with the next release" is written
@@ -60,13 +60,6 @@ class TranslatedComment(BaseModel):
     text: str = Field(
         ..., description="The maintainer's message, translated, with nothing added or removed."
     )
-
-
-def _clipped(*, text: str, limit: int) -> str:
-    """Returns `text` within `limit`, marked when something was cut off."""
-    if len(text) <= limit:
-        return text
-    return text[: limit - len(_TRUNCATED_SUFFIX)].rstrip() + _TRUNCATED_SUFFIX
 
 
 def _moment(*, stamp: str | None) -> datetime | None:
@@ -181,14 +174,14 @@ def build_close_notice_embed(
     """
     number = f"#{ticket.issue_number}" if ticket.issue_number else ""
     embed = Embed(title=f"{_TITLES[outcome]} {number}".strip(), color=_COLORS[outcome])
-    quoted = _clipped(text=ticket.summary_line, limit=_MAX_QUOTED_CHARS)
+    quoted = clipped(text=ticket.summary_line, limit=_MAX_QUOTED_CHARS)
     embed.description = f"> {quoted}"
     if comment is None:
         embed.description = f"{embed.description}\n\n-# {_NO_COMMENT[outcome]}"
     else:
         embed.add_field(
             name=f"開發者 · {comment.created_at[:10]}",
-            value=_clipped(text=text, limit=_MAX_COMMENT_CHARS) or "（空白）",
+            value=clipped(text=text, limit=_MAX_COMMENT_CHARS) or "（空白）",
             inline=False,
         )
     embed.set_footer(text="用 /feedback 可以看這張單的完整對話")

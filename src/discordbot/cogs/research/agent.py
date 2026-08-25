@@ -22,9 +22,8 @@ or a poll that never recovered, or a `RuntimeError` when the stream ended before
 existed; the cog maps both to a friendly message.
 """
 
-import time
 import base64
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 import asyncio
 
 from google import genai
@@ -41,7 +40,7 @@ from google.genai.interactions import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, AsyncIterator
 
-    from google.genai.interactions import InteractionSSEEvent
+    from google.genai.interactions import Step, InteractionSSEEvent
 
     from discordbot.cogs.research.streaming import ResearchProgressStreamer
 
@@ -61,10 +60,58 @@ RESEARCH_POLL_INTERVAL_SECONDS = 15.0
 # bounds each request and the agent settles server-side on its own budget.
 MAX_CONSECUTIVE_POLL_ERRORS = 30
 
-# `_poll_until_terminal`'s optional progress hook: (latest thought summary or None, elapsed
-# seconds). Nothing passes one today -- the live view is the streamer's, and the only call site
-# polls with `on_progress=None` -- so `_latest_thought` is unreached outside its tests.
-type ProgressCallback = Callable[[str | None, float], Awaitable[None]]
+
+class _InteractionUsage(Protocol):
+    """Structural view of the token counts a terminal interaction reports.
+
+    Both are Optional on the SDK model and absent on an interaction that never billed, so a
+    None is read as zero rather than as a missing field.
+    """
+
+    @property
+    def total_input_tokens(self) -> int | None: ...
+
+    @property
+    def total_output_tokens(self) -> int | None: ...
+
+
+class _ResearchInteraction(Protocol):
+    """Structural view of a terminal research interaction, as this module reads it.
+
+    `interactions.get` returns `Interaction | AsyncStream[...]`, and the stream cannot be excluded
+    with `isinstance(x, AsyncIterator)` because genai's `AsyncStream` is only structurally an
+    `AsyncIterator` and so stays in the union; naming the response class instead is its own trap
+    (`google.genai.interactions` star-imports `Interaction` from both the request-union alias and
+    the response module, so which one wins rests on import order). The attributes actually read
+    are declared here and cast to, exactly as `gen_reply/generation.py::_InteractionResult` does.
+
+    `steps` stays the SDK's open `Step` union: its members carry genuinely different payloads, so
+    `_extract_image` still probes each one rather than reading a shape this could declare.
+    """
+
+    @property
+    def id(self) -> str | None: ...
+
+    @property
+    def status(self) -> str: ...
+
+    @property
+    def output_text(self) -> str | None: ...
+
+    @property
+    def usage(self) -> _InteractionUsage | None: ...
+
+    @property
+    def steps(self) -> "list[Step] | None": ...
+
+
+class _TokenUsage(BaseModel):
+    """The token counts read off one terminal interaction."""
+
+    input_tokens: int = Field(default=0, description="Reported input tokens for the interaction.")
+    output_tokens: int = Field(
+        default=0, description="Reported output tokens for the interaction."
+    )
 
 
 class ResearchResult(BaseModel):
@@ -91,82 +138,72 @@ class ResearchResult(BaseModel):
         return self.status == "completed"
 
 
-def _latest_thought(*, interaction: object) -> str | None:
-    """Returns the most recent thought-summary text from an interaction's steps, if any.
+def _extract_image(*, interaction: _ResearchInteraction) -> bytes | None:
+    """Returns the first generated image (decoded) from an interaction's model_output steps.
 
-    A materialized `thought` step carries its text in `step.summary[].text` (verified by spike
-    dump), not in `step.content`; the older content-based shape is kept as a fallback.
+    A step that fails to decode is reported rather than swallowed: it is the one path that loses
+    a generated chart from an otherwise complete report, and the report itself carries no trace
+    of the missing figure.
     """
-    latest: str | None = None
-    for step in getattr(interaction, "steps", None) or []:
-        if getattr(step, "type", None) == "thought":
-            for item in getattr(step, "summary", None) or []:
-                text = getattr(item, "text", None)
-                if text:
-                    latest = text
-        for item in getattr(step, "content", None) or []:
-            if getattr(item, "type", None) in ("thought_summary", "thought"):
-                text = getattr(item, "text", None)
-                if text:
-                    latest = text
-    return latest
-
-
-def _extract_image(*, interaction: object) -> bytes | None:
-    """Returns the first generated image (decoded) from an interaction's model_output steps."""
-    for step in getattr(interaction, "steps", None) or []:
+    for step in interaction.steps or []:
         if getattr(step, "type", None) != "model_output":
             continue
         for item in getattr(step, "content", None) or []:
             if getattr(item, "type", None) == "image" and getattr(item, "data", None):
                 try:
                     return base64.b64decode(item.data)
-                except Exception:
+                except Exception as exc:
+                    # Broad: a corrupt payload only costs the chart, so the report is still
+                    # delivered; without this the drop leaves nothing at all in the logs.
+                    logfire.warn(
+                        "research chart image could not be decoded; delivering without it",
+                        interaction_id=interaction.id,
+                        error_type=type(exc).__name__,
+                        _exc_info=exc,
+                    )
                     return None
     return None
 
 
-def _extract_usage(*, interaction: object) -> tuple[int, int]:
-    """Returns `(input_tokens, output_tokens)` from an interaction, defaulting to zero."""
-    usage = getattr(interaction, "usage", None)
+def _extract_usage(*, interaction: _ResearchInteraction) -> _TokenUsage:
+    """Returns the interaction's token counts, defaulting to zero."""
+    usage = interaction.usage
     if usage is None:
-        return 0, 0
-    inp = getattr(usage, "total_input_tokens", None) or getattr(usage, "input_tokens", None) or 0
-    out = getattr(usage, "total_output_tokens", None) or getattr(usage, "output_tokens", None) or 0
-    return int(inp), int(out)
+        return _TokenUsage()
+    return _TokenUsage(
+        input_tokens=int(usage.total_input_tokens or 0),
+        output_tokens=int(usage.total_output_tokens or 0),
+    )
 
 
-def _to_result(*, interaction: object) -> ResearchResult:
+def _to_result(*, interaction: _ResearchInteraction) -> ResearchResult:
     """Maps a terminal interaction to a `ResearchResult`."""
-    input_tokens, output_tokens = _extract_usage(interaction=interaction)
+    usage = _extract_usage(interaction=interaction)
     return ResearchResult(
-        interaction_id=str(getattr(interaction, "id", "")),
-        status=str(getattr(interaction, "status", "failed")),
-        report_text=(getattr(interaction, "output_text", "") or ""),
+        interaction_id=str(interaction.id or ""),
+        status=str(interaction.status),
+        report_text=(interaction.output_text or ""),
         image_bytes=_extract_image(interaction=interaction),
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
     )
 
 
 async def _poll_until_terminal(
-    *,
-    client: genai.Client,
-    interaction_id: str,
-    on_progress: "ProgressCallback | None",
-    poll_interval_seconds: float,
-) -> object:
+    *, client: genai.Client, interaction_id: str, poll_interval_seconds: float
+) -> _ResearchInteraction:
     """Polls `interactions.get` until the status leaves `in_progress`.
 
     No wall-clock timeout (the SDK bounds each request; the agent settles server-side). A
     transient get() error mid-research is retried so one 504 does not kill a long run; it gives
     up only after `MAX_CONSECUTIVE_POLL_ERRORS` consecutive failures (re-raising the last error).
     """
-    started = time.monotonic()
     consecutive_errors = 0
     while True:
         try:
-            interaction = await client.aio.interactions.get(id=interaction_id)
+            interaction = cast(
+                "_ResearchInteraction", await client.aio.interactions.get(id=interaction_id)
+            )
         except Exception as exc:
             consecutive_errors += 1
             logfire.warn(
@@ -181,10 +218,8 @@ async def _poll_until_terminal(
             await asyncio.sleep(poll_interval_seconds)
             continue
         consecutive_errors = 0
-        if getattr(interaction, "status", None) != "in_progress":
+        if interaction.status != "in_progress":
             return interaction
-        if on_progress is not None:
-            await on_progress(_latest_thought(interaction=interaction), time.monotonic() - started)
         await asyncio.sleep(poll_interval_seconds)
 
 
@@ -318,7 +353,7 @@ async def _drive(
     streamer: "ResearchProgressStreamer",
     open_initial: "Callable[[], Awaitable[AsyncIterator[InteractionSSEEvent]]]",
     on_created: "CreatedCallback",
-) -> object:
+) -> _ResearchInteraction:
     """Runs the streamer over the driver's events, then returns the authoritative terminal interaction.
 
     The streamed deltas are the live view only; the result is ALWAYS read through
@@ -346,7 +381,6 @@ async def _drive(
     return await _poll_until_terminal(
         client=client,
         interaction_id=driver.interaction_id,
-        on_progress=None,
         poll_interval_seconds=RESEARCH_POLL_INTERVAL_SECONDS,
     )
 

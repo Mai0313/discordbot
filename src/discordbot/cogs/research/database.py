@@ -101,15 +101,15 @@ class ResearchSessionRow(Base):
 
 
 class PersistentResearchSession(BaseModel):
-    """A research session row read back from `reply.db`."""
+    """A research session row read back from `reply.db`.
+
+    Only what the resume sweep reads. `channel_id`, `guild_id` and `source_message_id` stay
+    columns (dropping one would break every INSERT against a deployed `reply.db`, which has no
+    migration mechanism) but nothing reads them back, so they are not projected here.
+    """
 
     thread_id: int = Field(..., description="Discord thread ID; primary key.")
     owner_id: int = Field(..., description="Discord user ID that launched the research.")
-    channel_id: int = Field(..., description="Parent channel ID the thread hangs off.")
-    guild_id: int | None = Field(
-        ..., description="Guild ID; nullable in the schema but never written None."
-    )
-    source_message_id: int = Field(..., description="The message the thread was anchored to.")
     agent: str = Field(..., description="The Gemini agent string currently running this session.")
     interaction_id: str | None = Field(
         ..., description="The running interaction's id; None before it starts."
@@ -155,9 +155,6 @@ def _row_to_model(row: ResearchSessionRow) -> PersistentResearchSession:
     return PersistentResearchSession(
         thread_id=row.thread_id,
         owner_id=row.owner_id,
-        channel_id=row.channel_id,
-        guild_id=row.guild_id,
-        source_message_id=row.source_message_id,
         agent=row.agent,
         interaction_id=row.interaction_id,
         brief=row.brief,

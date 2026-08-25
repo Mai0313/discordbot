@@ -45,6 +45,7 @@ from discordbot.cogs.feedback.github import (
 )
 from discordbot.cogs.feedback.notice import closing_comment
 from discordbot.cogs.feedback.writeup import (
+    StoredDraft,
     ReportWriteUp,
     stored_draft,
     render_issue_body,
@@ -109,10 +110,7 @@ class FakeIssues:
     async def read_issue(self, *, number: int) -> IssueSnapshot:
         """Returns a prepared snapshot, or an open issue with no comments."""
         return self.snapshots.get(
-            number,
-            IssueSnapshot(
-                number=number, title="t", state="open", state_reason=None, comment_count=0
-            ),
+            number, IssueSnapshot(number=number, state="open", state_reason=None, comment_count=0)
         )
 
     async def read_conversation(self, *, number: int) -> list[Any]:
@@ -430,29 +428,25 @@ def test_only_the_developer_and_the_reporter_are_shown() -> None:
         (None, {"issue_number": None}, "⏳ 建立中", True),
         (None, {}, "❔ 讀不到狀態", False),
         (
-            IssueSnapshot(number=460, title="t", state="open", state_reason=None, comment_count=0),
+            IssueSnapshot(number=460, state="open", state_reason=None, comment_count=0),
             {},
             "🟡 還沒回覆",
             True,
         ),
         (
-            IssueSnapshot(number=460, title="t", state="open", state_reason=None, comment_count=1),
+            IssueSnapshot(number=460, state="open", state_reason=None, comment_count=1),
             {},
             "🟢 處理中",
             True,
         ),
         (
-            IssueSnapshot(
-                number=460, title="t", state="closed", state_reason="completed", comment_count=2
-            ),
+            IssueSnapshot(number=460, state="closed", state_reason="completed", comment_count=2),
             {},
             "✅ 已處理",
             False,
         ),
         (
-            IssueSnapshot(
-                number=460, title="t", state="closed", state_reason="not_planned", comment_count=1
-            ),
+            IssueSnapshot(number=460, state="closed", state_reason="not_planned", comment_count=1),
             {},
             "⚪ 不處理",
             False,
@@ -460,9 +454,7 @@ def test_only_the_developer_and_the_reporter_are_shown() -> None:
         # Merged into another issue. Reading this as work that got done is what the plain
         # else branch used to do, and it is the one closed state that is not an outcome.
         (
-            IssueSnapshot(
-                number=460, title="t", state="closed", state_reason="duplicate", comment_count=1
-            ),
+            IssueSnapshot(number=460, state="closed", state_reason="duplicate", comment_count=1),
             {},
             "🔁 併入其他單",
             False,
@@ -481,9 +473,7 @@ def test_the_status_comes_from_the_issue(
 def test_a_reporters_own_reply_does_not_read_as_an_answer() -> None:
     """Someone adding detail to their own report must not look like a reply to them."""
     row = _row(
-        snapshot=IssueSnapshot(
-            number=460, title="t", state="open", state_reason=None, comment_count=1
-        ),
+        snapshot=IssueSnapshot(number=460, state="open", state_reason=None, comment_count=1),
         relayed_replies=1,
     )
     assert row.status.text == "🟡 還沒回覆"
@@ -523,12 +513,8 @@ def test_the_detail_says_so_when_nobody_has_replied() -> None:
 
 async def test_the_open_report_cap_reads_what_the_panel_already_fetched() -> None:
     """The submission cap costs no extra request, because the panel just measured it."""
-    closed = IssueSnapshot(
-        number=1, title="t", state="closed", state_reason="completed", comment_count=0
-    )
-    open_issue = IssueSnapshot(
-        number=2, title="t", state="open", state_reason=None, comment_count=0
-    )
+    closed = IssueSnapshot(number=1, state="closed", state_reason="completed", comment_count=0)
+    open_issue = IssueSnapshot(number=2, state="open", state_reason=None, comment_count=0)
     view = FeedbackPanelView(
         host=cast("Any", object()),
         rows=[_row(snapshot=closed), _row(snapshot=open_issue), _row(snapshot=None)],
@@ -989,9 +975,7 @@ async def test_picking_a_report_opens_it_in_place() -> None:
 async def test_the_report_form_carries_the_open_count_it_was_opened_with() -> None:
     """The cap is measured against the list the person was looking at."""
     host = _FakeHost(detail=None)
-    open_issue = IssueSnapshot(
-        number=460, title="t", state="open", state_reason=None, comment_count=0
-    )
+    open_issue = IssueSnapshot(number=460, state="open", state_reason=None, comment_count=0)
     view = FeedbackPanelView(host=cast("Any", host), rows=[_row(snapshot=open_issue)])
     view.stop()
     button = next(child for child in view.children if isinstance(child, Button))
@@ -1378,7 +1362,9 @@ def test_a_half_written_draft_is_not_used() -> None:
     """A row with only one half of the draft is not a draft."""
     assert stored_draft(ticket=_ticket()) is None
     assert stored_draft(ticket=_ticket(draft_title="t")) is None
-    assert stored_draft(ticket=_ticket(draft_title="t", draft_body="b")) == ("t", "b")
+    assert stored_draft(ticket=_ticket(draft_title="t", draft_body="b")) == StoredDraft(
+        title="t", body="b"
+    )
 
 
 # ------------------------------------------------------------------ how it authorizes
@@ -1596,7 +1582,6 @@ async def _filed_report(
     if state_reason is not None:
         issues.snapshots[460] = IssueSnapshot(
             number=460,
-            title="t",
             state="closed",
             state_reason=state_reason,
             comment_count=1,
@@ -1694,11 +1679,11 @@ async def test_a_reopened_and_reclosed_report_says_nothing_further(
     assert len(reporter.embeds) == 1
 
     issues.snapshots[460] = IssueSnapshot(
-        number=460, title="t", state="open", state_reason="reopened", comment_count=2
+        number=460, state="open", state_reason="reopened", comment_count=2
     )
     await cog.notify_closed_reports()
     issues.snapshots[460] = IssueSnapshot(
-        number=460, title="t", state="closed", state_reason="not_planned", comment_count=3
+        number=460, state="closed", state_reason="not_planned", comment_count=3
     )
     await cog.notify_closed_reports()
 
@@ -1907,7 +1892,7 @@ async def test_a_report_reopened_during_the_wait_is_not_announced(
 
     await cog.notify_closed_reports()
     issues.snapshots[460] = IssueSnapshot(
-        number=460, title="t", state="open", state_reason="reopened", comment_count=1
+        number=460, state="open", state_reason="reopened", comment_count=1
     )
     monkeypatch.setattr("discordbot.cogs.feedback.cog.CLOSE_NOTICE_MIN_AGE_SECONDS", 0)
     await cog.notify_closed_reports()
@@ -1918,7 +1903,6 @@ async def test_a_report_reopened_during_the_wait_is_not_announced(
 
     issues.snapshots[460] = IssueSnapshot(
         number=460,
-        title="t",
         state="closed",
         state_reason="completed",
         comment_count=1,

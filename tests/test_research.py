@@ -441,35 +441,15 @@ def test_to_result_extracts_text_image_and_usage() -> None:
 
 
 def test_to_result_handles_failure_and_missing_fields() -> None:
-    interaction = SimpleNamespace(id="int_x", status="failed")
+    # Every field the SDK leaves unset on a failed run comes back None, not absent.
+    interaction = SimpleNamespace(
+        id="int_x", status="failed", output_text=None, usage=None, steps=None
+    )
     result = agent._to_result(interaction=interaction)
     assert result.ok is False
     assert result.report_text == ""
     assert result.image_bytes is None
     assert result.input_tokens == 0
-
-
-def test_latest_thought_returns_last_summary() -> None:
-    interaction = SimpleNamespace(
-        steps=[
-            SimpleNamespace(content=[SimpleNamespace(type="thought_summary", text="first")]),
-            SimpleNamespace(content=[SimpleNamespace(type="thought_summary", text="second")]),
-        ]
-    )
-    assert agent._latest_thought(interaction=interaction) == "second"
-    assert agent._latest_thought(interaction=SimpleNamespace()) is None
-
-
-def test_latest_thought_reads_thought_step_summary() -> None:
-    interaction = SimpleNamespace(
-        steps=[
-            SimpleNamespace(type="thought", summary=[SimpleNamespace(text="planning the search")]),
-            SimpleNamespace(
-                type="model_output", content=[SimpleNamespace(type="text", text="report")]
-            ),
-        ]
-    )
-    assert agent._latest_thought(interaction=interaction) == "planning the search"
 
 
 # ----- progress streamer --------------------------------------------------------------------
@@ -549,12 +529,6 @@ def test_terminal_phase_mapping() -> None:
     assert research_cog._terminal_phase(status="completed") == "done"
     assert research_cog._terminal_phase(status="cancelled") == "cancelled"
     assert research_cog._terminal_phase(status="budget_exceeded") == "failed"
-
-
-def test_owner_id_from_mention_parses_digits() -> None:
-    assert research_cog._owner_id_from_mention(mention="<@123456789>") == 123456789
-    assert research_cog._owner_id_from_mention(mention="<@!42>") == 42
-    assert research_cog._owner_id_from_mention(mention="nobody") == 0
 
 
 def test_deep_research_available_requires_enabled_and_key() -> None:

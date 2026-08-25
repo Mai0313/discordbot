@@ -289,8 +289,8 @@ class FeedbackCogs(commands.Cog):
         # write-up never waits for a token. Opening the issue from that draft is one call
         # instead of opening it raw and editing it a moment later.
         draft = stored_draft(ticket=ticket)
-        title = draft[0] if draft else initial_issue_title(ticket=ticket)
-        lead = draft[1] if draft else ""
+        title = draft.title if draft else initial_issue_title(ticket=ticket)
+        lead = draft.body if draft else ""
         labels = label_for_category(category=ticket.category) if draft else ["user-report"]
         try:
             number = await self.issues.create_issue(

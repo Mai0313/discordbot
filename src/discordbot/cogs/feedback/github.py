@@ -98,7 +98,6 @@ class IssueSnapshot(BaseModel):
     """The state of one issue as the panel needs it."""
 
     number: int = Field(..., description="The issue number, which is the ticket number.")
-    title: str = Field(..., description="Current issue title.")
     state: Literal["open", "closed"] = Field(..., description="Whether the issue is still open.")
     state_reason: str | None = Field(
         ..., description="Why it was closed: completed, not_planned, duplicate, reopened, or None."
@@ -319,7 +318,6 @@ class GitHubIssues(BaseModel):
         try:
             return IssueSnapshot(
                 number=int(issue["number"]),
-                title=str(issue.get("title") or ""),
                 state=state,
                 state_reason=issue.get("state_reason"),
                 comment_count=int(issue.get("comments") or 0),

@@ -40,6 +40,8 @@ from discordbot.utils.douyin import (
     DouyinUnavailableError,
     douyin_url_locks,
     is_douyin_post_url,
+    plan_douyin_delivery,
+    douyin_delivery_lines,
     douyin_failure_message,
     douyin_fetch_semaphore,
 )
@@ -50,15 +52,15 @@ from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
-    MEDIA_ENVELOPE_MARGIN,
     DISCORD_ATTACHMENT_LIMIT,
-    MediaItem,
     MediaPlan,
     upload_limit_for,
     build_media_delivery_planner,
 )
 
-# Douyin's own palette, so the expansion reads as a Douyin card at a glance.
+# Douyin's own palette, so the expansion reads as a Douyin card at a glance. Deliberately NOT
+# in `typings/colors.py`: that palette is Discord's own semantic set (success / failure / info),
+# and a third party's brand red belongs to the one card that wears it, not to the shared vocabulary.
 _EMBED_COLOR = 0xFE2C55
 
 
@@ -238,25 +240,19 @@ class DouyinCogs(commands.Cog):
         current_emoji: str,
     ) -> None:
         """Posts the downloaded media plus its caption card, then marks the source done."""
-        items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
-        # Read BEFORE planning, which caches it: a successful host moves the source out of the
-        # temp dir, so measuring afterwards would stat a deleted path and break the very
-        # oversize-to-URL fallback this number describes.
-        total_mb = result.total_bytes / 1024 / 1024
-        plan = await self.media_delivery.plan(
-            items=items,
+        delivery = await plan_douyin_delivery(
+            planner=self.media_delivery,
+            result=result,
             upload_limit=upload_limit_for(guild=message.guild),
-            # A gallery rides several attachments on one send, and Discord measures the whole
-            # multipart body, so hold back the envelope; a lone video is a single-file send.
-            envelope_margin=MEDIA_ENVELOPE_MARGIN if len(items) > 1 else 0,
         )
+        plan = delivery.plan
 
         if not plan.native and not plan.hosted_urls:
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
             )
             await message.reply(
-                content=f"-# 檔案大小超過 {total_mb:.1f}MB,無法傳送",
+                content=f"-# 檔案大小超過 {delivery.total_mb:.1f}MB,無法傳送",
                 mention_author=False,
                 allowed_mentions=AllowedMentions.none(),
             )
@@ -287,25 +283,13 @@ class DouyinCogs(commands.Cog):
         self, message: Message, url: str, post: DouyinPost, result: DouyinDownload, plan: MediaPlan
     ) -> None:
         """Sends the expansion, stating anything that was left out rather than dropping it."""
-        lines: list[str] = []
-        if result.omitted_images:
-            lines.append(
-                f"-# 已省略 {result.omitted_images} 張圖片 (Discord 單則訊息最多 "
-                f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
-            )
-        if plan.dropped_items:
-            logfire.warn(
-                "Douyin expansion dropped some media",
-                url=url,
-                dropped_count=len(plan.dropped_items),
-                native_count=len(plan.native),
-                hosted_count=len(plan.hosted_urls),
-                hosting_available=self.media_delivery.media_hosting.config.available,
-            )
-            lines.append(f"-# 有 {len(plan.dropped_items)} 個檔案傳送失敗")
-        # Hosted URLs must stay unwrapped and each on its own line to stay clickable and, under
-        # ~100 MiB, to render Discord's inline player.
-        lines.extend(plan.hosted_urls)
+        lines = douyin_delivery_lines(
+            result=result,
+            plan=plan,
+            hosting_available=self.media_delivery.media_hosting.config.available,
+            url=url,
+            dropped_event="Douyin expansion dropped some media",
+        )
 
         files = [item.to_file() for item in plan.native]
         embeds = [self._build_embed(post=post, url=url)]
