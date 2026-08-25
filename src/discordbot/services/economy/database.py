@@ -44,7 +44,7 @@ player delta and the house-side mirror in one atomic SQLite transaction.
 """
 
 from time import monotonic
-from typing import Any, Final
+from typing import Any, Final, Literal
 import asyncio
 from datetime import datetime, timedelta
 from collections.abc import Sequence
@@ -79,12 +79,10 @@ from discordbot.typings.economy import (
     MIN_LOAN_MONTHLY_RATE_BPS,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
-    AdminAccount,
     CreditResult,
     PortfolioView,
     LoanLenderType,
     TransferResult,
-    WalletDeltaLeg,
     AccountSnapshot,
     JackpotSnapshot,
     CasinoDailyStats,
@@ -104,12 +102,11 @@ from discordbot.typings.economy import (
     JackpotSettlementResult,
     JackpotSettlementRequest,
     LoanProposalAcceptResult,
-    OrderedWalletDeltaResult,
     JackpotSettlementBatchResult,
 )
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
-from discordbot.utils.stored_integer import StoredInteger
+from discordbot.utils.stored_integer import StoredInteger, int_add_text, int_compare_text
 from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
 
@@ -156,8 +153,6 @@ def _configure_sqlite_on_checkout(
 
 class Base(DeclarativeBase):
     """Base class for economy ORM models."""
-
-    pass
 
 
 class UserAccount(Base):
@@ -284,6 +279,9 @@ class LoanProposal(Base):
     monthly_rate_bps: Mapped[int] = mapped_column(
         Integer, default=DEFAULT_LOAN_MONTHLY_RATE_BPS, nullable=False
     )
+    # Always zero today: nothing escrows a proposal any more. The column is kept
+    # because `_ensure_schema` is one `create_all`, which never alters an existing
+    # table, so dropping it would break a deployed database.
     escrow_amount: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -421,8 +419,8 @@ def _jackpot_seed_amount(game_id: str) -> int:
 _schema_ready_for: AsyncEngine | None = None
 _schema_lock = LoopLocalLock()
 _loan_accept_lock = LoopLocalLock()
-type _TopNCacheKey = tuple[int, int | None, tuple[int, ...], bool]
-type _TopLosersCacheKey = tuple[int, int, tuple[int, ...], bool, datetime]
+type _TopNCacheKey = tuple[int, int | None, bool]
+type _TopLosersCacheKey = tuple[int, int, bool, datetime]
 _top_n_cache: dict[_TopNCacheKey, tuple[float, tuple[LeaderboardEntry, ...]]] = {}
 _top_losers_cache: dict[_TopLosersCacheKey, tuple[float, tuple[LossLeaderboardEntry, ...]]] = {}
 
@@ -439,33 +437,23 @@ def invalidate_economy_leaderboard_cache() -> None:
     _top_losers_cache.clear()
 
 
-def _cached_top_n_rows(cache_key: _TopNCacheKey) -> list[LeaderboardEntry] | None:
-    """Returns cached balance leaderboard rows when the short TTL is still valid."""
-    cached = _top_n_cache.get(cache_key)
+def _cached_leaderboard_rows[K, R](
+    cache: dict[K, tuple[float, tuple[R, ...]]], cache_key: K
+) -> list[R] | None:
+    """Returns cached leaderboard rows when the short TTL is still valid."""
+    cached = cache.get(cache_key)
     if cached is None:
         return None
     cached_at, rows = cached
     if monotonic() - cached_at > _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS:
-        _top_n_cache.pop(cache_key, None)
-        return None
-    return list(rows)
-
-
-def _cached_top_loser_rows(cache_key: _TopLosersCacheKey) -> list[LossLeaderboardEntry] | None:
-    """Returns cached loss leaderboard rows when the short TTL is still valid."""
-    cached = _top_losers_cache.get(cache_key)
-    if cached is None:
-        return None
-    cached_at, rows = cached
-    if monotonic() - cached_at > _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS:
-        _top_losers_cache.pop(cache_key, None)
+        cache.pop(cache_key, None)
         return None
     return list(rows)
 
 
 def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 -- SQLAlchemy columns are generic expressions
     """Returns ORDER BY terms for descending numeric order over decimal text."""
-    sign = func.discordbot_int_compare_text(column, _stored_int_to_text(value=0))
+    sign = int_compare_text(column=column, value=0)
     positive_length = case((sign > 0, func.length(column)), else_=0)
     negative_length = case((sign < 0, func.length(column)), else_=0)
     positive_text = case((sign > 0, column), else_="")
@@ -702,21 +690,15 @@ async def _apply_daily_casino_delta_in_session(
                 "name": name or str(user_id),
                 "day_started_at": today_midnight,
                 "daily_loss": case(
-                    (
-                        same_day,
-                        func.discordbot_int_add_text(CasinoAccount.daily_loss, loss_delta_text),
-                    ),
+                    (same_day, int_add_text(column=CasinoAccount.daily_loss, delta=loss_delta)),
                     else_=loss_delta_text,
                 ),
                 "daily_win": case(
-                    (
-                        same_day,
-                        func.discordbot_int_add_text(CasinoAccount.daily_win, win_delta_text),
-                    ),
+                    (same_day, int_add_text(column=CasinoAccount.daily_win, delta=win_delta)),
                     else_=win_delta_text,
                 ),
                 "daily_net": case(
-                    (same_day, func.discordbot_int_add_text(CasinoAccount.daily_net, delta_text)),
+                    (same_day, int_add_text(column=CasinoAccount.daily_net, delta=delta)),
                     else_=delta_text,
                 ),
                 "updated_at": now,
@@ -744,9 +726,7 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
     )
     new_balance = result.scalar_one()
     invalidate_economy_leaderboard_cache()
-    return CreditResult(
-        new_balance=new_balance, credited_amount=amount, principal_repaid=0, remaining_debt=0
-    )
+    return CreditResult(new_balance=new_balance, credited_amount=amount)
 
 
 async def _apply_clamped_delta_in_session(  # noqa: PLR0913 -- session helper needs identity and delta state
@@ -989,46 +969,10 @@ async def get_casino_daily_stats(user_id: int) -> CasinoDailyStats:
 async def _apply_player_delta_in_session(  # noqa: PLR0913 -- player settlement needs identity and audit metadata
     session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
 ) -> tuple[int, int]:
-    """Applies a casino player delta and returns the balance plus actual delta."""
-    if delta > 0:
-        credit_result = await _credit_with_repayment_in_session(
-            session=session,
-            user_id=user_id,
-            name=name,
-            avatar_url=avatar_url,
-            amount=delta,
-            now=now,
-        )
-        await _apply_daily_casino_delta_in_session(
-            session=session, user_id=user_id, name=name, delta=delta, now=now
-        )
-        return credit_result.new_balance, delta
-    if delta < 0:
-        new_balance, applied_delta = await _apply_clamped_delta_in_session(
-            session=session,
-            user_id=user_id,
-            name=name,
-            avatar_url=avatar_url,
-            delta=delta,
-            now=now,
-        )
-        await _apply_daily_casino_delta_in_session(
-            session=session, user_id=user_id, name=name, delta=applied_delta, now=now
-        )
-        return new_balance, applied_delta
-    read_result = await session.execute(
-        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
-    )
-    return read_result.scalar_one_or_none() or 0, 0
+    """Applies a casino or jackpot player delta and returns the balance plus applied delta.
 
-
-async def _apply_jackpot_player_delta_in_session(  # noqa: PLR0913 -- jackpot settlement needs identity and audit metadata
-    session: AsyncSession, user_id: int, name: str, avatar_url: str, delta: int, now: datetime
-) -> tuple[int, int]:
-    """Applies a jackpot player delta and returns the balance plus applied delta.
-
-    Positive deltas keep the existing casino payout path and count as fully
-    applied. Negative deltas clamp at zero so Dragon Gate losses cannot drive
+    Positive deltas take the shared income path and count as fully applied.
+    Negative deltas clamp at zero so a casino or Dragon Gate loss cannot drive
     the player account negative; the returned delta is the actual debit.
     """
     if delta > 0:
@@ -1080,17 +1024,11 @@ async def credit_with_repayment(
         avatar_url: Last-seen Discord avatar URL to store when available.
 
     Returns:
-        Outcome capturing post-credit balance. Repayment fields are zero
-        because passive income no longer auto-repays long-term loans.
+        Outcome capturing post-credit balance.
     """
     await _ensure_schema()
     if amount <= 0:
-        return CreditResult(
-            new_balance=await get_balance(user_id=user_id),
-            credited_amount=0,
-            principal_repaid=0,
-            remaining_debt=0,
-        )
+        return CreditResult(new_balance=await get_balance(user_id=user_id), credited_amount=0)
     now = _database_now()
     async with open_session() as session:
         result = await _credit_with_repayment_in_session(
@@ -1156,95 +1094,6 @@ async def adjust_balance(
         await session.commit()
         invalidate_economy_leaderboard_cache()
         return BalanceAdjustmentResult(new_balance=new_balance, applied_delta=applied_delta)
-
-
-async def apply_ordered_wallet_deltas(
-    user_id: int, name: str, deltas: Sequence[WalletDeltaLeg], avatar_url: str = ""
-) -> OrderedWalletDeltaResult | None:
-    """Applies ordered full-debit wallet deltas without netting.
-
-    This helper is for non-casino domains that need gross wallet accounting but
-    must reject insufficient funds instead of clamping a debit. Positive legs
-    increment `total_earned` and negative legs increment `total_spent` in
-    the order supplied by the caller. The transaction rolls back if any debit
-    cannot be applied in full.
-
-    Args:
-        user_id: Discord user ID whose wallet should be updated.
-        name: Last-seen Discord username to store on the wallet row.
-        deltas: Ordered signed wallet legs.
-        avatar_url: Last-seen Discord avatar URL to store when available.
-
-    Returns:
-        The post-leg balance and applied deltas, or `None` when a full debit
-        cannot be covered.
-    """
-    await _ensure_schema()
-    now = _database_now()
-    applied: list[int] = []
-    async with open_session() as session:
-        await _upsert_user_metadata_in_session(
-            session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
-        )
-        balance = await _apply_ordered_wallet_deltas_in_session(
-            session=session, user_id=user_id, name=name, deltas=deltas, now=now, applied=applied
-        )
-        if balance is None:
-            await session.rollback()
-            return None
-        await session.commit()
-        invalidate_economy_leaderboard_cache()
-        return OrderedWalletDeltaResult(new_balance=balance, applied_deltas=tuple(applied))
-
-
-async def _apply_ordered_wallet_deltas_in_session(  # noqa: PLR0913 -- session helper carries identity and output accumulator
-    session: AsyncSession,
-    user_id: int,
-    name: str,
-    deltas: Sequence[WalletDeltaLeg],
-    now: datetime,
-    applied: list[int],
-) -> int | None:
-    """Applies ordered wallet legs inside the caller's economy transaction."""
-    balance_result = await session.execute(
-        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
-    )
-    balance = balance_result.scalar_one_or_none() or 0
-    effective_name = name or str(user_id)
-    for leg in deltas:
-        delta = leg.delta
-        if delta == 0:
-            applied.append(0)
-            continue
-        if delta > 0:
-            credit_result = await session.execute(
-                statement=_build_credit_upsert(
-                    user_id=user_id, name=effective_name, amount=delta, now=now
-                )
-            )
-            balance = credit_result.scalar_one()
-            applied.append(delta)
-            continue
-        debit = -delta
-        debit_result = await session.execute(
-            statement=update(UserWallet)
-            .where(UserWallet.user_id == user_id, UserWallet.balance >= debit)
-            .values(
-                balance=UserWallet.balance - debit,
-                total_spent=UserWallet.total_spent + debit,
-                name=effective_name,
-                updated_at=now,
-            )
-            .returning(UserWallet.balance)
-        )
-        new_balance = debit_result.scalar_one_or_none()
-        if new_balance is None:
-            return None
-        balance = new_balance
-        applied.append(delta)
-    if any(delta != 0 for delta in applied):
-        invalidate_economy_leaderboard_cache()
-    return balance
 
 
 async def apply_round_settlement(
@@ -1584,6 +1433,23 @@ async def _full_debit_rejections_in_session(
     )
 
 
+async def _rejected_jackpot_batch_result(
+    session: AsyncSession, game_id: str, rejected_player_ids: tuple[int, ...], now: datetime
+) -> JackpotSettlementBatchResult:
+    """Commits the untouched jackpot state and reports a batch that applied nothing."""
+    jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
+        session=session, game_id=game_id, now=now
+    )
+    await session.commit()
+    return JackpotSettlementBatchResult(
+        player_balances={},
+        applied_player_deltas={},
+        jackpot_balance=jackpot_snapshot.balance,
+        jackpot_generation=jackpot_snapshot.generation,
+        rejected_player_ids=rejected_player_ids,
+    )
+
+
 async def apply_jackpot_settlement_batch(
     game_id: str, settlements: Sequence[JackpotSettlementRequest]
 ) -> JackpotSettlementBatchResult:
@@ -1618,16 +1484,11 @@ async def apply_jackpot_settlement_batch(
                 session=session, settlements=settlements
             )
             if rejected_player_ids:
-                jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                    session=session, game_id=game_id, now=now
-                )
-                await session.commit()
-                return JackpotSettlementBatchResult(
-                    player_balances={},
-                    applied_player_deltas={},
-                    jackpot_balance=jackpot_snapshot.balance,
-                    jackpot_generation=jackpot_snapshot.generation,
+                return await _rejected_jackpot_batch_result(
+                    session=session,
+                    game_id=game_id,
                     rejected_player_ids=rejected_player_ids,
+                    now=now,
                 )
 
             for settlement in settlements:
@@ -1643,10 +1504,7 @@ async def apply_jackpot_settlement_batch(
                     effective_player_delta = claim
                     jackpot_depleted = jackpot_depleted or depleted
 
-                (
-                    player_balance,
-                    applied_player_delta,
-                ) = await _apply_jackpot_player_delta_in_session(
+                (player_balance, applied_player_delta) = await _apply_player_delta_in_session(
                     session=session,
                     user_id=settlement.player_id,
                     name=settlement.player_account_name,
@@ -1661,16 +1519,11 @@ async def apply_jackpot_settlement_batch(
                     # Nothing in the batch is committed yet, so one rollback
                     # discards every player and jackpot write so far.
                     await session.rollback()
-                    jackpot_snapshot = await _read_jackpot_snapshot_or_replenish_in_session(
-                        session=session, game_id=game_id, now=now
-                    )
-                    await session.commit()
-                    return JackpotSettlementBatchResult(
-                        player_balances={},
-                        applied_player_deltas={},
-                        jackpot_balance=jackpot_snapshot.balance,
-                        jackpot_generation=jackpot_snapshot.generation,
+                    return await _rejected_jackpot_batch_result(
+                        session=session,
+                        game_id=game_id,
                         rejected_player_ids=(settlement.player_id,),
+                        now=now,
                     )
                 player_balances[settlement.player_id] = player_balance
                 applied_player_deltas[settlement.player_id] = applied_player_delta
@@ -1839,13 +1692,64 @@ async def get_admin(user_id: int) -> bool:
         return bool(result.scalar_one_or_none())
 
 
+async def _set_account_flag(
+    user_id: int,
+    name: str,
+    flag: Literal["is_admin", "is_central_banker"],
+    value: bool,
+    avatar_url: str,
+) -> bool:
+    """Grants or revokes one `user_account` permission flag.
+
+    Granting creates the identity row if the user has never touched the economy
+    system; no wallet row is created, so the balance still reads 0. Revoking
+    updates an existing row only; missing users are left untouched so revoke
+    operations do not create empty account rows.
+
+    Returns:
+        `True` when a row was created or updated; `False` when revoking a
+        missing user.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    effective_name = name or str(user_id)
+    values: dict[str, Any] = {flag: value, "updated_at": now}
+    if name:
+        values["name"] = effective_name
+    if avatar_url:
+        values["avatar_url"] = avatar_url
+    async with open_session() as session:
+        if value:
+            insert_values: dict[str, Any] = {
+                "user_id": user_id,
+                "name": effective_name,
+                "avatar_url": avatar_url,
+                "updated_at": now,
+                "is_vip": False,
+                "is_admin": False,
+                "is_central_banker": False,
+                flag: True,
+            }
+            statement = (
+                insert(UserAccount)
+                .values(**insert_values)
+                .on_conflict_do_update(index_elements=["user_id"], set_=values)
+                .returning(UserAccount.user_id)
+            )
+        else:
+            statement = (
+                update(UserAccount)
+                .where(UserAccount.user_id == user_id)
+                .values(**values)
+                .returning(UserAccount.user_id)
+            )
+        result = await session.execute(statement=statement)
+        await session.commit()
+        return result.scalar_one_or_none() is not None
+
+
 async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "") -> bool:
     """Sets the economy admin flag for a Discord user.
-
-    Granting admin creates the `user_account` identity row if the user has
-    never touched the economy system; no wallet row is created, so the balance
-    still reads 0. Revoking admin updates an existing row only; missing users
-    are left untouched so revoke operations do not create empty account rows.
 
     Args:
         user_id: Discord user ID to modify.
@@ -1857,57 +1761,9 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
         `True` when a row was created or updated; `False` when revoking a
         missing user.
     """
-    await _ensure_schema()
-    now = _database_now()
-    effective_name = name or str(user_id)
-    async with open_session() as session:
-        if is_admin:
-            stmt = insert(UserAccount).values(
-                user_id=user_id,
-                name=effective_name,
-                avatar_url=avatar_url,
-                updated_at=now,
-                is_vip=False,
-                is_admin=True,
-            )
-            set_: dict[str, Any] = {"is_admin": True, "updated_at": now}
-            if name:
-                set_["name"] = effective_name
-            if avatar_url:
-                set_["avatar_url"] = avatar_url
-            result = await session.execute(
-                statement=stmt.on_conflict_do_update(
-                    index_elements=["user_id"], set_=set_
-                ).returning(UserAccount.user_id)
-            )
-            await session.commit()
-            return result.scalar_one_or_none() is not None
-
-        values: dict[str, Any] = {"is_admin": False, "updated_at": now}
-        if name:
-            values["name"] = effective_name
-        if avatar_url:
-            values["avatar_url"] = avatar_url
-        result = await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == user_id)
-            .values(**values)
-            .returning(UserAccount.user_id)
-        )
-        await session.commit()
-        return result.scalar_one_or_none() is not None
-
-
-async def list_admins() -> list[AdminAccount]:
-    """Returns all economy admins ordered by user ID."""
-    await _ensure_schema()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(UserAccount.user_id, UserAccount.name)
-            .where(UserAccount.is_admin.is_(True))
-            .order_by(UserAccount.user_id)
-        )
-        return [AdminAccount(user_id=row[0], name=row[1]) for row in result.all()]
+    return await _set_account_flag(
+        user_id=user_id, name=name, flag="is_admin", value=is_admin, avatar_url=avatar_url
+    )
 
 
 async def get_central_banker(user_id: int) -> bool:
@@ -1932,46 +1788,13 @@ async def set_central_banker(
         `True` when a row was created or updated; `False` when revoking a
         missing user.
     """
-    await _ensure_schema()
-    now = _database_now()
-    effective_name = name or str(user_id)
-    async with open_session() as session:
-        if is_central_banker:
-            stmt = insert(UserAccount).values(
-                user_id=user_id,
-                name=effective_name,
-                avatar_url=avatar_url,
-                updated_at=now,
-                is_vip=False,
-                is_admin=False,
-                is_central_banker=True,
-            )
-            set_: dict[str, Any] = {"is_central_banker": True, "updated_at": now}
-            if name:
-                set_["name"] = effective_name
-            if avatar_url:
-                set_["avatar_url"] = avatar_url
-            result = await session.execute(
-                statement=stmt.on_conflict_do_update(
-                    index_elements=["user_id"], set_=set_
-                ).returning(UserAccount.user_id)
-            )
-            await session.commit()
-            return result.scalar_one_or_none() is not None
-
-        values: dict[str, Any] = {"is_central_banker": False, "updated_at": now}
-        if name:
-            values["name"] = effective_name
-        if avatar_url:
-            values["avatar_url"] = avatar_url
-        result = await session.execute(
-            statement=update(UserAccount)
-            .where(UserAccount.user_id == user_id)
-            .values(**values)
-            .returning(UserAccount.user_id)
-        )
-        await session.commit()
-        return result.scalar_one_or_none() is not None
+    return await _set_account_flag(
+        user_id=user_id,
+        name=name,
+        flag="is_central_banker",
+        value=is_central_banker,
+        avatar_url=avatar_url,
+    )
 
 
 async def get_account(user_id: int) -> AccountSnapshot | None:
@@ -2101,22 +1924,18 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
         )
 
 
-async def top_n(
-    limit: int | None = 10, exclude_user_ids: tuple[int, ...] = (), include_hidden: bool = False
-) -> list[LeaderboardEntry]:
+async def top_n(limit: int | None = 10, include_hidden: bool = False) -> list[LeaderboardEntry]:
     """Returns accounts ordered by balance descending.
 
-    Hidden accounts are the only thing dropped by default (`include_hidden`).
-    The one production caller (`cogs/economy/cog.py`, `/leaderboard`) does not pass
-    `exclude_user_ids`: the bot is an ordinary player here and the casino's own P&L
-    is a `casino_ledger` row, not a wallet. Stored integer values are
-    sorted in SQL with explicit decimal-text aware order terms so the query
-    can still apply `LIMIT` before rows reach Python.
+    Hidden accounts are the only thing dropped (`include_hidden`): the bot is an
+    ordinary player here and the casino's own P&L is a `casino_ledger` row, not a
+    wallet. Stored integer values are sorted in SQL with explicit decimal-text
+    aware order terms so the query can still apply `LIMIT` before rows reach
+    Python.
 
     Args:
         limit: Maximum number of accounts to return, or `None` to return all
             matching accounts.
-        exclude_user_ids: User IDs to filter out before applying the limit.
         include_hidden: Whether to include accounts marked as hidden from
             public leaderboards.
 
@@ -2127,9 +1946,8 @@ async def top_n(
     await _ensure_schema()
     if limit is not None and limit <= 0:
         return []
-    exclude_key = tuple(sorted(exclude_user_ids))
-    cache_key: _TopNCacheKey = (id(_engine), limit, exclude_key, include_hidden)
-    cached_rows = _cached_top_n_rows(cache_key=cache_key)
+    cache_key: _TopNCacheKey = (id(_engine), limit, include_hidden)
+    cached_rows = _cached_leaderboard_rows(cache=_top_n_cache, cache_key=cache_key)
     if cached_rows is not None:
         return cached_rows
     async with open_session() as session:
@@ -2138,8 +1956,6 @@ async def top_n(
         ).join(UserAccount, UserAccount.user_id == UserWallet.user_id)
         if not include_hidden:
             stmt = stmt.where(UserAccount.hide_from_leaderboard.is_(False))
-        if exclude_user_ids:
-            stmt = stmt.where(UserWallet.user_id.notin_(other=exclude_user_ids))
         stmt = stmt.order_by(*_stored_integer_desc_order(column=UserWallet.balance))
         if limit is not None:
             stmt = stmt.limit(limit=limit)
@@ -2152,9 +1968,7 @@ async def top_n(
         return list(rows)
 
 
-async def top_losers(
-    limit: int = 10, exclude_user_ids: tuple[int, ...] = (), include_hidden: bool = False
-) -> list[LossLeaderboardEntry]:
+async def top_losers(limit: int = 10, include_hidden: bool = False) -> list[LossLeaderboardEntry]:
     """Returns the biggest gross casino losers for the current Taipei day.
 
     The leaderboard reads persisted `casino_account` daily counters. Writes lazily reset stale
@@ -2164,7 +1978,6 @@ async def top_losers(
 
     Args:
         limit: Maximum number of accounts to return.
-        exclude_user_ids: User IDs to filter out before applying the limit.
         include_hidden: Whether to include accounts marked as hidden from
             public leaderboards.
 
@@ -2177,15 +1990,8 @@ async def top_losers(
         return []
     now = _database_now()
     today_midnight = _taipei_midnight(now=now)
-    exclude_key = tuple(sorted(exclude_user_ids))
-    cache_key: _TopLosersCacheKey = (
-        id(_engine),
-        limit,
-        exclude_key,
-        include_hidden,
-        today_midnight,
-    )
-    cached_rows = _cached_top_loser_rows(cache_key=cache_key)
+    cache_key: _TopLosersCacheKey = (id(_engine), limit, include_hidden, today_midnight)
+    cached_rows = _cached_leaderboard_rows(cache=_top_losers_cache, cache_key=cache_key)
     if cached_rows is not None:
         return cached_rows
 
@@ -2205,8 +2011,6 @@ async def top_losers(
         )
         if not include_hidden:
             stmt = stmt.where(UserAccount.hide_from_leaderboard.is_(False))
-        if exclude_user_ids:
-            stmt = stmt.where(UserAccount.user_id.notin_(other=exclude_user_ids))
         result = await session.execute(statement=stmt)
         rows: list[LossLeaderboardEntry] = []
         for row in result.all():
@@ -2283,7 +2087,6 @@ async def _reject_expired_loan_proposal_in_session(
     )
     if status_result.scalar_one_or_none() is None:
         return None
-    await _refund_proposal_escrow_in_session(session=session, proposal=proposal, now=now)
     proposal.status = LoanProposalStatus.REJECTED
     proposal.updated_at = now
     return _loan_proposal_view(proposal=proposal)
@@ -2439,30 +2242,6 @@ async def create_central_bank_loan_request(
         return _loan_proposal_view(proposal=proposal)
 
 
-async def _refund_proposal_escrow_in_session(
-    session: AsyncSession, proposal: LoanProposal, now: datetime
-) -> int | None:
-    """Refunds escrowed proposal funds and returns lender balance."""
-    if proposal.escrow_amount <= 0 or proposal.lender_id is None:
-        return None
-    await _upsert_user_metadata_in_session(
-        session=session,
-        user_id=proposal.lender_id,
-        name=proposal.lender_name,
-        avatar_url=proposal.lender_avatar_url,
-        now=now,
-    )
-    credit_result = await session.execute(
-        statement=_build_credit_upsert(
-            user_id=proposal.lender_id,
-            name=proposal.lender_name,
-            amount=proposal.escrow_amount,
-            now=now,
-        )
-    )
-    return credit_result.scalar_one()
-
-
 async def reject_expired_loan_proposal(proposal_id: int) -> LoanProposalView | None:
     """Rejects a pending loan proposal if its decision window has expired."""
     await _ensure_schema()
@@ -2507,7 +2286,6 @@ async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalV
         if expired is not None:
             await session.commit()
             return None
-        await _refund_proposal_escrow_in_session(session=session, proposal=proposal, now=now)
         status_result = await session.execute(
             statement=update(LoanProposal)
             .where(
@@ -2552,7 +2330,6 @@ async def reject_loan_proposal(
             allowed = is_central_banker
         if not allowed:
             return None
-        await _refund_proposal_escrow_in_session(session=session, proposal=proposal, now=now)
         status_result = await session.execute(
             statement=update(LoanProposal)
             .where(

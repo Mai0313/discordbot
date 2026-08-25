@@ -50,13 +50,11 @@ def test_apply_vip_blackjack_bonus(delta: int, is_vip: bool, expected: int) -> N
 
 
 async def test_credit_with_repayment_full_credit() -> None:
-    """Income credits the full amount and leaves repayment fields at zero."""
+    """Income credits the full amount."""
     result = await credit_with_repayment(user_id=1, name="alice", amount=100)
 
     assert result.new_balance == 100
     assert result.credited_amount == 100
-    assert result.principal_repaid == 0
-    assert result.remaining_debt == 0
 
 
 async def test_credit_with_repayment_zero_amount_is_noop() -> None:
@@ -67,8 +65,6 @@ async def test_credit_with_repayment_zero_amount_is_noop() -> None:
 
     assert result.new_balance == 50
     assert result.credited_amount == 0
-    assert result.principal_repaid == 0
-    assert result.remaining_debt == 0
 
 
 async def test_credit_with_repayment_first_sight_creates_row() -> None:
@@ -105,7 +101,6 @@ async def test_credit_with_repayment_does_not_touch_long_term_debt() -> None:
 
     assert result.new_balance == 600
     assert result.credited_amount == 100
-    assert result.principal_repaid == 0
     assert len(contracts) == 1
     assert contracts[0].principal_remaining == 500
 
