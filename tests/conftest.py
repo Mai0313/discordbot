@@ -82,9 +82,6 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     # its queue stays unbound; `memory_git.start()` is exercised on its own.
     monkeypatch.setattr("discordbot.services.memory.git_history.memory_git.enabled", False)
     monkeypatch.setattr("discordbot.services.memory.git_history.memory_git._queue", None)
-    monkeypatch.setattr("discordbot.services.memory.pipeline._inflight_tasks", {})
-    monkeypatch.setattr("discordbot.services.memory.pipeline._pending_updates", {})
-    monkeypatch.setattr("discordbot.services.memory.pipeline._inflight_loop", None)
     monkeypatch.setattr("discordbot.services.memory.pipeline._last_consolidation", {})
     monkeypatch.setattr("discordbot.services.memory.pipeline._last_regeneration", {})
     monkeypatch.setattr("discordbot.services.memory.pipeline._consecutive_rejections", {})
@@ -101,8 +98,12 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.services.memory.database._schema_ready_for", None)
     monkeypatch.setattr("discordbot.services.memory.database._token_sequence", count(start=1))
     monkeypatch.setattr("discordbot.services.memory.database._token_block_bases", {})
-    # _scope_locks, _staging_locks, _regeneration_tasks, and the memory semaphore
-    # are loop-local helpers that rebuild on the per-test event loop, so they need no manual reset.
+    # _scope_locks, _staging_locks, _inflight_tasks, _pending_updates, _regeneration_tasks
+    # and the memory semaphore are loop-local helpers that rebuild on the per-test event
+    # loop, so they need no manual reset. The two in-flight registries used to be reset by
+    # hand here; `LoopLocalRegistry` is what took that over, and an `asyncio.Task` left in
+    # one is unusable on the next loop anyway, so the rebuild is the correctness rule
+    # rather than a test convenience.
     return memories_dir
 
 

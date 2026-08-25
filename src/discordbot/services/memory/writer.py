@@ -33,6 +33,12 @@ from discordbot.typings.context_budgets import (
     MEMORY_REPLY_MAX_CHARS,
     MEMORY_TRANSCRIPT_MAX_CHARS,
 )
+from discordbot.services.memory.constants import (
+    OBSERVATION_MAX_TTL_DAYS,
+    OBSERVATION_QUOTE_MAX_CHARS,
+    OBSERVATION_DEFAULT_TTL_DAYS,
+    OBSERVATION_SUMMARY_MAX_CHARS,
+)
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -177,7 +183,7 @@ class MemoryObservation(BaseModel):
 
 
 class RawMemoryDraft(BaseModel):
-    """Structured phase-1 extraction output for one conversation."""
+    """Structured phase-1 review output for one turn's memory notes."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -263,6 +269,11 @@ class ConsolidationRequest(BaseModel):
     Bundled rather than passed as a dozen arguments because the fan-out builds these
     per compartment and the differences between them (which raw bucket, whether tone is
     wanted, which sections are legal) are exactly what the caller has to get right.
+
+    A block that defaults to `""` is one most calls have nothing to put in: the tone note's
+    call carries no facts and no cold evidence, and a from-scratch rebuild deliberately
+    withholds both. `_tagged` marks an absent block explicitly, so an omitted one and one
+    passed as `""` reach the model identically.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -274,11 +285,15 @@ class ConsolidationRequest(BaseModel):
         ..., description="Sections a delta may name for this flavor."
     )
     existing_facts: str = Field(
-        ..., description="The compartment's current facts, rendered with their ids."
+        default="", description="The compartment's current facts, rendered with their ids."
     )
-    existing_tone: str = Field(..., description="Current tone note; ignored unless emit_tone.")
+    existing_tone: str = Field(
+        default="", description="Current tone note; ignored unless emit_tone."
+    )
     raw_entries: str = Field(..., description="This compartment's share of the raw batch.")
-    recent_detail: str = Field(..., description="Cold evidence filtered to this compartment.")
+    recent_detail: str = Field(
+        default="", description="Cold evidence filtered to this compartment."
+    )
     tone_evidence: str = Field(
         default="", description="Unpartitioned tone signal; carried only by the tone-note call."
     )
@@ -537,7 +552,7 @@ def target_centered_memory_messages(
     current_message: list[EasyInputMessageParam],
     target_user_id: int,
 ) -> list[EasyInputMessageParam]:
-    """Narrows reply context to target-centered evidence for memory extraction."""
+    """Narrows reply context to target-centered evidence for the memory review."""
     return [
         *_target_centered_history_messages(
             hist_messages=hist_messages, target_user_id=target_user_id
@@ -554,8 +569,8 @@ def render_memory_observations(
 
     `source` names the conversation the observations came from (`guild <id>` /
     `dm`), stamped deterministically here — never LLM-echoed — so consolidation
-    can scope each bullet. None (the server flavor, or a legacy job with no
-    source line) renders neither the source nor the sharing field.
+    can scope each bullet. None is the server flavor, whose subject carries no
+    source line; it renders neither the source nor the sharing field.
     """
     blocks: list[str] = []
     for observation in observations:
@@ -636,8 +651,8 @@ def render_forget_requests(notes: tuple[str, ...], source: str | None) -> str:
     `observation_key_sources_from_text` finds no `normalized_key` to pair it with.
 
     `source` is stamped for the record rather than for routing. Routing a forget by its source
-    would leave it unable to reach a fact stored anywhere else, so `partition_raw_entries`
-    broadcasts it to every compartment instead.
+    would leave it unable to reach a fact stored anywhere else, so `partition_forget_requests`
+    broadcasts it to every compartment its speaker could read from instead.
     """
     blocks = [
         "\n".join([
@@ -664,9 +679,9 @@ def subject_source_line(guild_id: int | None) -> str:
 def parse_subject_source(subject: str) -> str | None:
     """Extracts the conversation source from a persisted subject, or None when absent.
 
-    None covers the server flavor (its subject never carries a source line) and
-    user jobs persisted before the source line existed; both render without
-    per-observation source stamping.
+    None is the server flavor, whose subject never carries a source line: a server memory
+    is one guild by construction, so there is nothing to scope its observations by and they
+    render without per-observation source stamping.
     """
     match = _SUBJECT_SOURCE_RE.search(subject)
     return match.group("source") if match else None
@@ -763,12 +778,18 @@ def _sanitize_observation(
     if category == "recent_context":
         promotion_eligible = False
         durability = "recent"
-        ttl_days = 30 if ttl_days is None or ttl_days <= 0 else min(ttl_days, 90)
+        ttl_days = (
+            OBSERVATION_DEFAULT_TTL_DAYS
+            if ttl_days is None or ttl_days <= 0
+            else min(ttl_days, OBSERVATION_MAX_TTL_DAYS)
+        )
     else:
         ttl_days = None
-    summary_zh = _trim_text(text=redact_secrets(text=observation.summary_zh), max_chars=800)
+    summary_zh = _trim_text(
+        text=redact_secrets(text=observation.summary_zh), max_chars=OBSERVATION_SUMMARY_MAX_CHARS
+    )
     evidence_quote = _trim_text(
-        text=redact_secrets(text=observation.evidence_quote), max_chars=240
+        text=redact_secrets(text=observation.evidence_quote), max_chars=OBSERVATION_QUOTE_MAX_CHARS
     )
     # Deterministic privacy backstop over the LLM's sharing call: ongoing situations
     # are private by construction, and an observation about ANOTHER participant is

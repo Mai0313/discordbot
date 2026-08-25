@@ -27,7 +27,7 @@ import asyncio
 import contextlib
 
 import logfire
-from pydantic import Field, BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
 
 from discordbot.typings.memory import MemoryConfig
 from discordbot.utils.asyncio_locks import LoopLocalLock
@@ -57,19 +57,20 @@ class _GitRequest(BaseModel):
 
 
 class MemoryGitService(BaseModel):
-    """Serialized, best-effort committer for the memory store."""
+    """Serialized, best-effort committer for the memory store.
+
+    Constructed with no worker at all: the queue and the task are bound to a loop by
+    `start`, which a cog's `on_ready` calls, so nothing here touches asyncio at import time.
+    """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     enabled: bool = Field(default=True, description="Whether commits are attempted at all.")
 
-    def __init__(self, **data: object) -> None:
-        """Initializes the service with no worker; `start` binds it to a loop."""
-        super().__init__(**data)
-        self._queue: asyncio.Queue[_GitRequest] | None = None
-        self._worker: asyncio.Task[None] | None = None
-        self._failures = 0
-        self._lock = LoopLocalLock()
+    _queue: asyncio.Queue[_GitRequest] | None = PrivateAttr(default=None)
+    _worker: asyncio.Task[None] | None = PrivateAttr(default=None)
+    _failures: int = PrivateAttr(default=0)
+    _lock: LoopLocalLock = PrivateAttr(default_factory=LoopLocalLock)
 
     def start(self) -> None:
         """Starts the single worker, if git history is enabled and a repository exists.

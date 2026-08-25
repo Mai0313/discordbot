@@ -5,13 +5,28 @@
 # does not fan a consolidation out over every compartment on every single message.
 RAW_CONSOLIDATION_THRESHOLD = 2
 
-# Second consolidation trigger: verbose raw extractions consolidate early even
+# Second consolidation trigger: a verbose raw batch consolidates early even
 # below the entry-count threshold, bypassing the cooldown as the escape hatch.
 RAW_CONSOLIDATION_MAX_BYTES = 16_384
 
 # Hard cap for the raw file so repeated consolidation failures cannot grow it
 # unbounded; the oldest entries are evicted into the detail file first.
 RAW_FILE_MAX_BYTES = 65_536
+
+# Clamps on one observation's model-authored fields, applied by `_sanitize_observation`
+# before the entry is appended. Write-side like the cap above and unlike anything in
+# `typings/context_budgets.py`: nothing here bounds what a model request may carry, only
+# what a stored observation may hold. The quote is evidence for a summary that is already
+# a one-line gist, so it is the tighter of the two.
+OBSERVATION_SUMMARY_MAX_CHARS = 800
+OBSERVATION_QUOTE_MAX_CHARS = 240
+
+# How long a `recent_context` observation may claim to matter for. The model's `ttl_days`
+# is free text, so it is clamped both ways: absent, zero or negative takes the default and
+# anything longer than the ceiling is capped. Write-side too — the sweep that acts on the
+# stored result reads `RECENT_CONTEXT_TTL_DAYS` below, which is a different question.
+OBSERVATION_DEFAULT_TTL_DAYS = 30
+OBSERVATION_MAX_TTL_DAYS = 90
 
 # Minimum gap between entry-count-triggered consolidations per user. Not a cost
 # guard: it batches the fan-out so the injected facts do not churn on every other

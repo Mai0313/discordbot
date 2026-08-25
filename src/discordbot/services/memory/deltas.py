@@ -324,14 +324,21 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
     already back an existing fact becomes an `update` of that fact. The second rule is
     what makes a retried batch idempotent: ids are minted from the summary, so a model
     that rewords slightly on the retry would otherwise file a duplicate.
+
+    A delete is resolved by its id alone, BEFORE the section gate: the section a delete
+    names is decoration, since the fact being removed already exists and carries its own,
+    and a flavor's section vocabulary is not the other's — so gating a delete on it loses
+    the deletion outright when the model names a section legal on the other flavor
+    (`member_alias` against a user scope). That is the path every `<forget-memory>` runs
+    through, where losing the delta means the bot goes on repeating what it was asked to drop.
     """
-    if delta.section not in allowed:
-        logfire.warn("Memory delta names an unknown section; dropping", section=delta.section)
-        return None
     named_id = delta.fact_id.strip()
     known = named_id if FACT_ID_RE.match(named_id) and named_id in existing else ""
     if delta.action == "delete":
         return (known, True) if known else None
+    if delta.section not in allowed:
+        logfire.warn("Memory delta names an unknown section; dropping", section=delta.section)
+        return None
     if not delta.summary.strip() or not _delta_body(delta=delta):
         logfire.warn("Memory delta carries no content; dropping", action=delta.action)
         return None

@@ -220,7 +220,7 @@ class MemoryCogs(commands.Cog):
                 title=title,
             )
             return
-        # Extraction may have produced raw observations before the first
+        # A review may have staged raw observations before the first
         # consolidation ran; saying "no memory" then would contradict chat.
         description = (
             pending_template.format(count=pending_count) if pending_count else empty_description

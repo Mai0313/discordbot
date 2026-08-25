@@ -1,7 +1,7 @@
-"""Persistent phase-1 memory extraction inbox (`data/database/reply.db`).
+"""Persistent phase-1 memory review inbox (`data/database/reply.db`).
 
 One row per scope (a user or a bot-per-server). The row durably stages a phase-1
-extraction turn so a bot restart resumes the work the in-memory pipeline had not
+review turn so a bot restart resumes the work the in-memory pipeline had not
 yet flushed to `raw.md`. Success is *recorded* (`status='done'`, `transcript`
 cleared) rather than the row deleted, so the table doubles as an inspectable
 per-scope processing state; an LLM failure parks the row at `status='failed'`
@@ -47,7 +47,7 @@ from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite
 
 # Memory flavor stored per row so the restart sweep rebuilds the matching writer.
 MemoryJobFlavor = Literal["user", "server"]
-# Lifecycle of a persisted extraction turn, stored in the `status` column.
+# Lifecycle of a persisted review turn, stored in the `status` column.
 MemoryJobStatus = Literal["pending", "done", "failed", "cleared"]
 # `last_error` is a bounded blurb, not a full traceback.
 _MAX_ERROR_CHARS = 500
@@ -90,7 +90,7 @@ class Base(DeclarativeBase):
 
 
 class MemoryJobRow(Base):
-    """One scope's persisted phase-1 extraction turn.
+    """One scope's persisted phase-1 review turn.
 
     Attributes:
         scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
@@ -137,7 +137,7 @@ class MemoryJob(BaseModel):
 
     scope: str = Field(..., description="Opaque memory scope; primary key.")
     flavor: MemoryJobFlavor = Field(..., description="User or server flavor of the scope.")
-    subject: str = Field(..., description="The phase-1 directive naming the extraction target.")
+    subject: str = Field(..., description="The phase-1 directive naming the review target.")
     transcript: str | None = Field(
         ..., description="The rendered phase-1 input, or None once the turn is done."
     )
@@ -267,7 +267,7 @@ async def upsert_pending(  # noqa: PLR0913 -- one row's columns are all per-call
     identity: str,
     token: int,
 ) -> None:
-    """Records (newest-wins) a pending extraction turn for a scope.
+    """Records (newest-wins) a pending review turn for a scope.
 
     On conflict the row is overwritten only when the new `token` is strictly
     newer than the stored one, so an older turn's write can never clobber a newer
@@ -421,7 +421,14 @@ async def list_resumable() -> list[MemoryJob]:
 
 
 async def get_job(*, scope: str) -> MemoryJob | None:
-    """Reads one scope's row, or `None` when it is not tracked."""
+    """Reads one scope's row, or `None` when it is not tracked.
+
+    Test-only, like `store.clear_memory`: nothing under `src/` reads a single row, since the
+    pipeline only ever writes its own scope's state and the restart sweep takes them in bulk
+    through `list_resumable`. It is what lets a test assert the row's status unwrapped, where
+    `safe_list_resumable` would degrade a read failure to "nothing to resume" and pass without
+    having looked.
+    """
     await _ensure_schema()
     async with open_session() as session:
         result = await session.execute(
