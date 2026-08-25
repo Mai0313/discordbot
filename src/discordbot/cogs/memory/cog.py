@@ -99,7 +99,6 @@ class MemoryCogs(commands.Cog):
         runtime_models = await lease_model_catalog(config=self.config)
         return MemoryExtractorAI(
             client=self.client,
-            extract_model=runtime_models.memory_extractor_model,
             evaluate_model=runtime_models.memory_writer_model,
             consolidate_model=runtime_models.memory_writer_model,
         )

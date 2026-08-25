@@ -319,36 +319,26 @@ class RuntimeModelCatalog(BaseModel):
         )
 
     @property
-    def memory_extractor_model(self) -> ModelSettings:
-        """The model settings for phase-1 memory extraction.
-
-        Callers: `MemoryExtractorAI.extract` (its `extract_model` field).
-
-        Returns:
-            Model settings for the background memory extraction call. Kept apart from the
-            writer tier so the recall-oriented first pass can be downgraded on its own if
-            the gates behind it prove able to carry the precision.
-        """
-        return ModelSettings(
-            name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index
-        )
-
-    @property
     def memory_writer_model(self) -> ModelSettings:
         """The model settings for everything deciding what reaches long-term memory.
 
-        Callers: the phase-1.5 evaluator (`MemoryExtractorAI.extract`, its optional
-        `evaluate_model` field) and phase-2 consolidation (`MemoryExtractorAI.consolidate`,
-        its `consolidate_model` field), which also backs `regenerate_main_memory`, plus
-        `scripts/regen_memories.py`, which defaults to this tier to drive that rebuild offline.
+        Callers: the note evaluator (`MemoryExtractorAI.evaluate`, its `evaluate_model` field)
+        and phase-2 consolidation (`MemoryExtractorAI.consolidate`, its `consolidate_model`
+        field), which also backs `regenerate_main_memory`, plus `scripts/regen_memories.py`,
+        which defaults to this tier to drive that rebuild offline.
+
+        There is no separate extractor tier any more. #596 moved the decision of what is worth
+        remembering into the answer model's own reply, so the recall-oriented first pass that
+        tier existed for has no caller left.
 
         Returns:
             Model settings for the background memory write calls. One tier for both because
             both are gates on the same side: the evaluator is the last LLM check before an
-            observation is staged, tightening `sharing` and `durability` (downgrade-only),
-            deduping by `normalized_key` and stripping personal-attack wording, and the
-            consolidator turns that staging into the fact files plus the tone note. A weaker
-            model on either loses memory or leaks it, rather than just failing to record it.
+            observation is staged, authoring its fields, tightening `sharing` and `durability`
+            (downgrade-only), deduping by `normalized_key` and stripping personal-attack
+            wording, and the consolidator turns that staging into the fact files plus the tone
+            note. A weaker model on either loses memory or leaks it, rather than just failing
+            to record it.
         """
         return ModelSettings(
             name="gemini-3.1-pro-preview", effort="high", key_index=self.key_index

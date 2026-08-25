@@ -131,7 +131,10 @@ from discordbot.cogs.gen_reply.memory_tool import (
 )
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
-from discordbot.services.memory.server_prompts import SERVER_PHASE1_PROMPT, SERVER_PHASE2_PROMPT
+from discordbot.services.memory.server_prompts import (
+    SERVER_PHASE2_PROMPT,
+    SERVER_PHASE1_EVALUATOR_PROMPT,
+)
 from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 from discordbot.cogs.gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
@@ -2475,6 +2478,11 @@ async def test_voice_config_gate_controls_synthesizer(
             """Records the synthesizer the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort, backend
             del image_generator, music_generator, video_generator, media_delivery, input_builder
+            # The cog reads these off the streamer after every answer, so a stub without
+            # them fails with an AttributeError the reply path's own handler would swallow.
+            self.memory_notes: list[str] = []
+            self.forget_notes: list[str] = []
+            self.server_memory_notes: list[str] = []
             captured.append(voice_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -2529,6 +2537,11 @@ async def test_image_config_gate_controls_generator(
             """Records the generator the cog passed."""
             del message, memory_lookups, input_tokens, output_tokens, model_effort, backend
             del voice_generator, music_generator, video_generator, media_delivery, input_builder
+            # The cog reads these off the streamer after every answer, so a stub without
+            # them fails with an AttributeError the reply path's own handler would swallow.
+            self.memory_notes: list[str] = []
+            self.forget_notes: list[str] = []
+            self.server_memory_notes: list[str] = []
             captured.append(image_generator)
 
         async def stream(self, *, responses: object) -> str:
@@ -4696,6 +4709,11 @@ async def test_gen_reply_routes_and_handlers_without_api(
                 input_builder,
             )
             self.message = message
+            # The cog reads these off the streamer after every answer, so a stub without
+            # them fails with an AttributeError the reply path's own handler would swallow.
+            self.memory_notes: list[str] = []
+            self.forget_notes: list[str] = []
+            self.server_memory_notes: list[str] = []
 
         async def stream(self, *, responses: object) -> str:
             """Records the message and returns placeholder content."""
@@ -5980,6 +5998,11 @@ class _ThreadsStreamer:
             media_delivery,
             input_builder,
         )
+        # The cog reads these off the streamer after every answer, so a stub without
+        # them fails with an AttributeError the reply path's own handler would swallow.
+        self.memory_notes: list[str] = []
+        self.forget_notes: list[str] = []
+        self.server_memory_notes: list[str] = []
         self.message = message
 
     async def stream(self, *, responses: object) -> str:
@@ -7843,6 +7866,11 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
                 input_builder,
             )
             self.message = message
+            # The cog reads these off the streamer after every answer, so a stub without
+            # them fails with an AttributeError the reply path's own handler would swallow.
+            self.memory_notes: list[str] = []
+            self.forget_notes: list[str] = []
+            self.server_memory_notes: list[str] = []
 
         async def stream(self, *, responses: object) -> str:
             """Returns placeholder reply content."""
@@ -7903,12 +7931,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     assert scheduled[0]["full_reply"] == "完整回覆"
     assert scheduled[0]["extractor"] is _toolkit(cog=cog).memory_extractor
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
-    assert (
-        _toolkit(cog=cog).memory_extractor.extract_model.name
-        == _toolkit(cog=cog).runtime_models.memory_extractor_model.name
-    )
     evaluate_model = _toolkit(cog=cog).memory_extractor.evaluate_model
-    assert evaluate_model is not None
     assert evaluate_model.name == _toolkit(cog=cog).runtime_models.memory_writer_model.name
     assert (
         _toolkit(cog=cog).memory_extractor.consolidate_model.name
@@ -7951,6 +7974,11 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
                 input_builder,
             )
             self.message = message
+            # The cog reads these off the streamer after every answer, so a stub without
+            # them fails with an AttributeError the reply path's own handler would swallow.
+            self.memory_notes: list[str] = []
+            self.forget_notes: list[str] = []
+            self.server_memory_notes: list[str] = []
 
         async def stream(self, *, responses: object) -> str:
             """Returns placeholder reply content."""
@@ -7979,6 +8007,78 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         responses=_recorded(cog).responses, n=answer_idx
     )
     assert Counter(scheduled) == Counter((user_scope(user_id=1), server_scope(server_id=1)))
+
+
+async def test_memory_markers_route_by_the_message_not_by_the_note(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whose memory a note lands in is decided from the message, never from the marker body.
+
+    This is what keeps the compartment boundary structural now that the answer model, rather
+    than a separate extraction pass, proposes what to write: a note claiming to be about
+    someone else still goes to the author's scope, and the community note goes to the guild
+    the message was sent in.
+    """
+    cog = _cog()
+
+    class FakeResponder:
+        """Streams a reply that carried all three kinds of memory marker."""
+
+        def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
+            self,
+            message: FakeMessage,
+            memory_lookups: list[str] | None = None,
+            input_tokens: int = 0,
+            output_tokens: int = 0,
+            model_effort: str = "",
+            backend: str = "responses",
+            voice_generator: object | None = None,
+            image_generator: object | None = None,
+            music_generator: object | None = None,
+            video_generator: object | None = None,
+            media_delivery: object | None = None,
+            input_builder: object | None = None,
+        ) -> None:
+            """Stores the streaming target message and the marker payloads."""
+            del memory_lookups, input_tokens, output_tokens, model_effort, backend
+            del (
+                voice_generator,
+                image_generator,
+                music_generator,
+                video_generator,
+                media_delivery,
+                input_builder,
+            )
+            self.message = message
+            self.memory_notes = ["使用者偏好繁體中文"]
+            self.forget_notes = ["使用者不再玩那款遊戲"]
+            self.server_memory_notes = ["這個社群週五都在講炸雞"]
+
+        async def stream(self, *, responses: object) -> str:
+            """Returns placeholder reply content."""
+            del responses
+            return "回覆"
+
+    scheduled: list[dict[str, object]] = []
+
+    def fake_schedule(**kwargs: object) -> None:
+        """Records each scheduled memory update."""
+        scheduled.append(kwargs)
+
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.ResponseStreamer", FakeResponder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.schedule_memory_update", fake_schedule)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    await _reply_via_pipeline(cog=cog, message=message)
+
+    by_scope = {str(update["scope"]): update for update in scheduled}
+    personal = by_scope[user_scope(user_id=1)]
+    assert personal["remember_notes"] == ("使用者偏好繁體中文",)
+    assert personal["forget_notes"] == ("使用者不再玩那款遊戲",)
+    community = by_scope[server_scope(server_id=1)]
+    assert community["remember_notes"] == ("這個社群週五都在講炸雞",)
+    # The community update never carries a forget: `<forget-memory>` is a per-user marker.
+    assert "forget_notes" not in community
 
 
 async def test_process_single_message_neutralizes_spoofed_identity(
@@ -8826,7 +8926,10 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
             assert update["subject"] == "target_server_id: 1"
             assert update["extractor"] is _toolkit(cog=cog).server_memory_extractor
             assert update["identity"] == "Test Guild [id: 1]"
-            assert _toolkit(cog=cog).server_memory_extractor.phase1_prompt is SERVER_PHASE1_PROMPT
+            assert (
+                _toolkit(cog=cog).server_memory_extractor.evaluator_prompt
+                is SERVER_PHASE1_EVALUATOR_PROMPT
+            )
             assert (
                 _toolkit(cog=cog).server_memory_extractor.consolidate_prompt
                 is SERVER_PHASE2_PROMPT
@@ -9597,7 +9700,7 @@ def test_a_toolkit_binds_every_piece_to_one_key() -> None:
         toolkit.voice_generator.model_name,
         toolkit.image_generator.image_model.deployment_name,
         toolkit.prompt_generator.prompt_model.deployment_name,
-        toolkit.memory_extractor.extract_model.deployment_name,
+        toolkit.memory_extractor.evaluate_model.deployment_name,
         toolkit.server_memory_extractor.consolidate_model.deployment_name,
     ]
     unpinned = [name for name in dispatched if not name.endswith("-key2")]

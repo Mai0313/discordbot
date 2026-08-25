@@ -24,12 +24,15 @@ from discordbot.typings.memory import (
 from discordbot.typings.models import ModelSettings
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
 from discordbot.services.memory.prompts import (
-    PHASE1_PROMPT,
     PHASE2_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
-from discordbot.typings.context_budgets import MEMORY_REPLY_MAX_CHARS, MEMORY_TRANSCRIPT_MAX_CHARS
+from discordbot.typings.context_budgets import (
+    MEMORY_NOTE_MAX_CHARS,
+    MEMORY_REPLY_MAX_CHARS,
+    MEMORY_TRANSCRIPT_MAX_CHARS,
+)
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_text_param import ResponseInputTextParam
@@ -89,6 +92,19 @@ _STRUCTURED_SOURCE_RE = re.compile(r"^\s*-\s*source:\s*(?P<source>guild \d+|dm)\
 # truncated tail to a trusted block boundary so a sliced indent never leaves user
 # content at column 0, where the marker scheme reserves the trusted authorship signal.
 _BLOCK_MARKER_RE = re.compile(r"^\[message \d+ \| ", flags=re.MULTILINE)
+# One `[memory notes | <kind>]` block plus its indented body, as `render_turn_payload` writes it.
+# The body runs to the first line that is neither indented nor blank, which is the next column-0
+# marker or the end of the payload.
+_NOTES_BLOCK_RE = re.compile(
+    r"^\[memory notes \| (?P<kind>remember|forget)\]$(?P<body>(?:\n(?:[ \t]+.*)?)*)",
+    flags=re.MULTILINE,
+)
+# The `### <category>` header a forget request carries inside `raw.md`. Deliberately not a
+# `MemoryCategory`: a forget is an instruction to consolidation, not an observation to store, and
+# keeping it out of that vocabulary is what keeps it out of every reader that walks observation
+# fields. `render_forget_requests` has the rest.
+FORGET_REQUEST_CATEGORY = "forget_request"
+
 _REJECTED_EVIDENCE_KINDS = frozenset({
     "casual_mention",
     "hypothetical",
@@ -276,11 +292,11 @@ class ConsolidationRequest(BaseModel):
 
 
 class MemoryExtractorAI(BaseModel):
-    """Runs the two-phase memory LLM calls with best-effort fallbacks.
+    """Runs the memory LLM calls with best-effort fallbacks.
 
     The phase prompts are instance fields so the same engine can drive a
     different memory flavor (e.g. the bot's per-server memory) by swapping the
-    prompts while reusing the extraction, consolidation, validation, and
+    prompts while reusing the evaluation, consolidation, validation, and
     redaction logic unchanged. They default to the per-user prompts.
     """
 
@@ -289,21 +305,19 @@ class MemoryExtractorAI(BaseModel):
     client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Async OpenAI client for the Responses API memory calls."
     )
-    extract_model: ModelSettings = Field(
-        ..., description="Model running the phase-1 extraction call."
-    )
     consolidate_model: ModelSettings = Field(
         ..., description="Model running the phase-2 consolidation call."
     )
-    evaluate_model: ModelSettings | None = Field(
-        default=None, description="Optional model for the phase-1.5 evaluator review."
-    )
-    phase1_prompt: str = Field(
-        default=PHASE1_PROMPT, description="Instructions for the phase-1 extraction call."
+    evaluate_model: ModelSettings = Field(
+        ...,
+        description=(
+            "Model reviewing the answer model's memory notes. Required rather than optional: "
+            "with the extraction pass gone it is the only step that authors a raw entry's "
+            "fields, so a caller that omitted it would turn memory writing into a silent no-op."
+        ),
     )
     evaluator_prompt: str = Field(
-        default=PHASE1_EVALUATOR_PROMPT,
-        description="Instructions for the phase-1.5 evaluator call.",
+        default=PHASE1_EVALUATOR_PROMPT, description="Instructions for the evaluator call."
     )
     consolidate_prompt: str = Field(
         default=PHASE2_PROMPT, description="Instructions for the phase-2 consolidation call."
@@ -313,14 +327,31 @@ class MemoryExtractorAI(BaseModel):
         description="Extra block appended to the consolidation prompt when compacting.",
     )
 
-    async def extract(self, subject: str, transcript: str) -> RawMemoryDraft | None:
-        """Returns the phase-1 raw memory draft, or None when the LLM path fails.
+    async def evaluate(
+        self, subject: str, transcript: str, notes: tuple[str, ...]
+    ) -> RawMemoryDraft | None:
+        """Turns the answer model's own memory notes into validated observations.
 
-        `subject` is the leading directive naming the memory's target (e.g.
-        `target_user_id: <id>` or `target_server_id: <id>`); the phase-1 prompt
-        explains how to read it.
+        This replaced the phase-1 extraction pass (#596). `notes` are the `<write-memory>`
+        sentences the answer model wrote inside the reply it had just given, so nothing here
+        guesses at what mattered in a conversation it was not part of. What is left for this
+        call is the half that never worked well from the outside: reviewing each note against
+        the transcript it came from, and authoring the structured fields a raw entry needs.
+        The second half used to belong to the deleted `extract`, which is why the evaluator
+        prompt now carries its field rules.
+
+        `subject` is the leading directive naming the memory's target (`target_user_id: <id>` or
+        `target_server_id: <id>`). The server flavor deliberately parses to no target user, which
+        leaves the roster empty too: a server memory has no single subject for the sharing gate
+        to protect, and its observations carry no sharing field at all.
+
+        `<forget-memory>` notes do NOT come through here. A forget is an instruction to
+        consolidation rather than something to store, so it needs none of the fields this call
+        authors and none of the gates that decide whether a fact is worth keeping;
+        `render_forget_requests` writes it straight into the raw batch.
         """
-        user_text = f"{subject}\n\nConversation transcript:\n{transcript}"
+        if not notes:
+            return RawMemoryDraft(has_signal=False)
         target_match = _SUBJECT_TARGET_USER_RE.search(subject)
         target_user_id = int(target_match.group("user_id")) if target_match else None
         roster = (
@@ -329,34 +360,19 @@ class MemoryExtractorAI(BaseModel):
             else ()
         )
         draft = await self._parse(
-            model=self.extract_model,
-            instructions=self.phase1_prompt,
-            user_text=user_text,
-            text_format=RawMemoryDraft,
-            end_user_label="memory_extract",
-        )
-        if draft is None:
-            return None
-        draft = _validated_draft(draft=draft, target_user_id=target_user_id, roster=roster)
-        if not draft.has_signal:
-            return draft
-        evaluate_model = self.evaluate_model
-        if evaluate_model is None:
-            return draft
-        evaluated = await self._parse(
-            model=evaluate_model,
+            model=self.evaluate_model,
             instructions=self.evaluator_prompt,
             user_text=(
                 f"{subject}\n\n"
                 f"Conversation transcript:\n{transcript}\n\n"
-                f"Candidate observations:\n{draft.model_dump_json()}"
+                f"<memory_notes>\n{render_memory_notes(notes=notes)}\n</memory_notes>"
             ),
             text_format=RawMemoryDraft,
             end_user_label="memory_evaluate",
         )
-        if evaluated is None:
+        if draft is None:
             return None
-        return _validated_draft(draft=evaluated, target_user_id=target_user_id, roster=roster)
+        return _validated_draft(draft=draft, target_user_id=target_user_id, roster=roster)
 
     async def consolidate(self, request: ConsolidationRequest) -> ConsolidatedMemory | None:
         """Returns one compartment's consolidation deltas, or None when the LLM path fails."""
@@ -560,6 +576,84 @@ def render_memory_observations(
         lines.append(f"- evidence_quote: {observation.evidence_quote}")
         blocks.append("\n".join(lines))
     return "\n\n".join(blocks)
+
+
+def render_turn_payload(
+    transcript: str, remember: tuple[str, ...], forget: tuple[str, ...]
+) -> str:
+    """Bundles one turn's transcript and its inline memory notes into a single stored string.
+
+    The notes ride inside the `transcript` column rather than in columns of their own. This
+    repo has no migration mechanism (`_ensure_schema` is one `create_all`, which never alters
+    an existing table) and `clear_job` is the one memory DB call not wrapped in best-effort
+    handling, so a new column would take `/memory clear` down on a deployed bot. What the
+    column holds is still one thing: everything the background turn needs to run.
+
+    Appended AFTER the transcript's own truncation, so a long conversation can never push the
+    notes out of the payload. Each block reuses the column-0 marker shape the transcript
+    already uses, with the notes indented under it, so the split back out cannot be forged by
+    conversation content that happens to contain the header line.
+    """
+    blocks = [transcript]
+    for kind, notes in (("remember", remember), ("forget", forget)):
+        lines = [text for note in notes if (text := _note_text(note=note))]
+        if lines:
+            body = _indent_block(text="\n".join(lines))
+            blocks.append(f"[memory notes | {kind}]\n{body}")
+    return "\n\n".join(blocks)
+
+
+def parse_turn_payload(payload: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """Splits a stored payload back into `(transcript, remember notes, forget notes)`.
+
+    The inverse of `render_turn_payload`, and the reason a resumed job needs no extra column:
+    a row persisted before restart carries its notes in the same string.
+    """
+    collected: dict[str, list[str]] = {"remember": [], "forget": []}
+    for match in _NOTES_BLOCK_RE.finditer(payload):
+        collected[match.group("kind")].extend(
+            stripped for line in match.group("body").splitlines() if (stripped := line.strip())
+        )
+    transcript = _NOTES_BLOCK_RE.sub("", payload).rstrip()
+    return transcript, tuple(collected["remember"]), tuple(collected["forget"])
+
+
+def render_memory_notes(notes: tuple[str, ...]) -> str:
+    """Renders the answer model's notes as the numbered candidate list the evaluator reviews."""
+    return "\n".join(
+        f"{index}. {_note_text(note=note)}" for index, note in enumerate(notes, start=1)
+    )
+
+
+def render_forget_requests(notes: tuple[str, ...], source: str | None) -> str:
+    """Renders `<forget-memory>` notes as raw entries consolidation can act on.
+
+    A forget is deliberately NOT a `MemoryObservation`. It is not something to store, so it needs
+    no category, durability, sharing or dedupe key, and running it through the gates that decide
+    whether a fact is worth keeping would only find reasons to drop it. Giving it its own
+    `### forget_request` header instead keeps it invisible to every reader that walks observation
+    fields: `tone_evidence_from_raw` skips it because the header is not a tone category, and
+    `observation_key_sources_from_text` finds no `normalized_key` to pair it with.
+
+    `source` is stamped for the record rather than for routing. Routing a forget by its source
+    would leave it unable to reach a fact stored anywhere else, so `partition_raw_entries`
+    broadcasts it to every compartment instead.
+    """
+    blocks = [
+        "\n".join([
+            f"### {FORGET_REQUEST_CATEGORY}",
+            *([f"- source: {source}"] if source is not None else []),
+            f"- text: {_note_text(note=note)}",
+        ])
+        for note in notes
+        if _note_text(note=note)
+    ]
+    return "\n\n".join(blocks)
+
+
+def _note_text(note: str) -> str:
+    """Collapses one inline memory note to a single redacted, bounded line."""
+    return _trim_text(text=redact_secrets(text=note), max_chars=MEMORY_NOTE_MAX_CHARS)
 
 
 def subject_source_line(guild_id: int | None) -> str:

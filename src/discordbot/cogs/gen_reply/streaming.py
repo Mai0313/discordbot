@@ -226,6 +226,17 @@ class ResponseStreamer(BaseModel):
         default=None,
         description="The <deep-research> brief the answer model asked to launch, if any.",
     )
+    memory_notes: list[str] = Field(
+        default_factory=list,
+        description="<write-memory> notes about the message author; the cog schedules them.",
+    )
+    forget_notes: list[str] = Field(
+        default_factory=list,
+        description="<forget-memory> notes naming what the author wants dropped.",
+    )
+    server_memory_notes: list[str] = Field(
+        default_factory=list, description="<write-server-memory> notes about the community."
+    )
     media_delivery: MediaDeliveryPlanner = Field(
         default_factory=lambda: MediaDeliveryPlanner(
             media_hosting=MediaHostingService(
@@ -666,6 +677,11 @@ class ResponseStreamer(BaseModel):
         # The streamer only surfaces the brief; the cog (not the streamer) launches the research
         # after the single media edit so it never touches the reply's one attachment edit.
         self.research_brief = markers.research_brief
+        # Surfaced for the cog, which owns whose memory each kind is written to; a media persona
+        # reply never sees the marker instructions, so these stay empty there.
+        self.memory_notes = markers.memory_notes
+        self.forget_notes = markers.forget_notes
+        self.server_memory_notes = markers.server_memory_notes
         # The spoken clip must not narrate raw Discord markup (a `<@id>` mention reads as a bare
         # snowflake), so the voice input is normalised while the visible reply keeps its markup.
         self.voice_text = (

@@ -17,6 +17,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.memory import (
     MemoryFact,
+    MemoryOwner,
     MemorySection,
     MemorySharing,
     MemoryCategory,
@@ -63,8 +64,8 @@ from discordbot.services.memory.store import (
     list_compartments,
     read_memory_document,
 )
+from discordbot.services.memory.deltas import apply_deltas, partition_raw_entries
 from discordbot.services.memory.prompts import (
-    PHASE1_PROMPT,
     PHASE2_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
@@ -81,8 +82,10 @@ from discordbot.services.memory.extraction import (
     ConsolidatedMemory,
     ConsolidationRequest,
     redact_secrets,
+    render_turn_payload,
     subject_source_line,
     parse_subject_source,
+    render_forget_requests,
     transcript_from_messages,
     render_memory_observations,
     filter_duplicate_observations,
@@ -103,6 +106,11 @@ USER_SCOPE = user_scope(user_id=USER_ID)
 IDENTITY = f"Alice (alice) [id: {USER_ID}]"
 
 TEST_MEMORY_MODEL = ModelSettings(name="test-memories-model", effort="minimal")
+
+# One `<write-memory>` note, standing in for whatever the answer model wrote inline. The content
+# is irrelevant to these tests (the fake client decides what comes back); what matters is that the
+# list is non-empty, since an empty one short-circuits before any model call.
+_NOTES = ("使用者提到一件值得記住的事",)
 
 
 def _observation(  # noqa: PLR0913 -- test helper mirrors the structured schema
@@ -203,7 +211,7 @@ def _extractor() -> tuple[MemoryExtractorAI, FakeMemoryClient]:
     fake_client = FakeMemoryClient()
     extractor = MemoryExtractorAI(
         client=cast("AsyncOpenAI", fake_client),
-        extract_model=TEST_MEMORY_MODEL,
+        evaluate_model=TEST_MEMORY_MODEL,
         consolidate_model=TEST_MEMORY_MODEL,
     )
     return extractor, fake_client
@@ -457,14 +465,14 @@ async def test_user_lock_is_stable_per_user(memory_isolated_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_extract_returns_redacted_draft() -> None:
+async def test_evaluate_returns_redacted_draft() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft(
         "提到 token sk-aaaabbbbccccddddeeee 的事",
         normalized_key="preference.sk-aaaabbbbccccddddeeee",
     )
-    draft = await extractor.extract(
-        subject=f"target_user_id: {USER_ID}", transcript="some transcript"
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript="some transcript", notes=_NOTES
     )
     assert draft is not None
     assert draft.has_signal is True
@@ -476,16 +484,18 @@ async def test_extract_returns_redacted_draft() -> None:
     assert f"target_user_id: {USER_ID}" in user_text
 
 
-async def test_extract_no_signal_passthrough() -> None:
+async def test_evaluate_no_signal_passthrough() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _no_signal()
-    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
+    )
     assert draft is not None
     assert draft.has_signal is False
     assert draft.observations == ()
 
 
-async def test_extract_keeps_member_alias_as_community_vocabulary() -> None:
+async def test_evaluate_keeps_member_alias_as_community_vocabulary() -> None:
     """A stable_fact member-alias observation survives the shared gate (server vocabulary)."""
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = RawMemoryDraft(
@@ -500,12 +510,12 @@ async def test_extract_keeps_member_alias_as_community_vocabulary() -> None:
             ),
         ),
     )
-    draft = await extractor.extract(subject="target_server_id: 1", transcript="hi")
+    draft = await extractor.evaluate(subject="target_server_id: 1", transcript="hi", notes=_NOTES)
     assert draft is not None
     assert [obs.normalized_key for obs in draft.observations] == ["vocab.member_alias.42"]
 
 
-async def test_extract_filters_weak_observations() -> None:
+async def test_evaluate_filters_weak_observations() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
@@ -540,7 +550,9 @@ async def test_extract_filters_weak_observations() -> None:
             ),
         ),
     )
-    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
+    )
     assert draft is not None
     assert draft.has_signal is True
     assert [observation.normalized_key for observation in draft.observations] == [
@@ -551,7 +563,7 @@ async def test_extract_filters_weak_observations() -> None:
     assert draft.observations[1].ttl_days == 30
 
 
-async def test_extract_accepts_permanent_and_rejects_volatile_durability() -> None:
+async def test_evaluate_accepts_permanent_and_rejects_volatile_durability() -> None:
     # The freshness tiers hinge on the durability gate: an immutable identity fact
     # tagged `permanent` must pass (the sweep never ages a `permanent` fact out),
     # while a `volatile` observation on a stable category is still dropped.
@@ -575,7 +587,9 @@ async def test_extract_accepts_permanent_and_rejects_volatile_durability() -> No
             ),
         ),
     )
-    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
+    )
     assert draft is not None
     assert [observation.normalized_key for observation in draft.observations] == [
         "fact.gender.male"
@@ -585,44 +599,83 @@ async def test_extract_accepts_permanent_and_rejects_volatile_durability() -> No
     assert draft.observations[0].ttl_days is None
 
 
-async def test_extract_evaluator_can_drop_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_client = FakeMemoryClient()
-    extractor = MemoryExtractorAI(
-        client=cast("AsyncOpenAI", fake_client),
-        extract_model=TEST_MEMORY_MODEL,
-        evaluate_model=TEST_MEMORY_MODEL,
-        consolidate_model=TEST_MEMORY_MODEL,
+async def test_evaluate_can_refuse_every_note() -> None:
+    """The reply model proposing a note is not the same as the note being stored.
+
+    The answer model wrote it while it was also writing prose for a human, so the review is
+    the only step that reads it against the transcript. Refusing all of them is a normal
+    outcome, not an error.
+    """
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _no_signal()
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
     )
-    parsed_outputs: list[BaseModel] = [_draft("使用者說想嘗試咖啡"), _no_signal()]
-
-    async def staged_parse(**kwargs: object) -> SimpleNamespace:
-        return _parsed(output=parsed_outputs.pop(0))
-
-    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
     assert draft is not None
     assert draft.has_signal is False
 
 
-async def test_extract_returns_none_on_validation_error() -> None:
+async def test_evaluate_without_notes_calls_no_model() -> None:
+    """A reply that marked nothing costs nothing: no request, no row, no background work.
+
+    This is the saving over the extraction pass this replaced, which ran on every reply just
+    to find out whether there was anything to find.
+    """
+    extractor, fake_client = _extractor()
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=()
+    )
+    assert draft is not None
+    assert draft.has_signal is False
+    assert fake_client.responses.parse_models == []
+
+
+async def test_evaluate_hands_the_notes_to_the_model() -> None:
+    """The notes are the input the review is about, so they have to reach the request."""
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _no_signal()
+    await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=("使用者偏好繁體中文",)
+    )
+    user_text = fake_client.responses.parse_inputs[0][0]["content"]
+    assert "使用者偏好繁體中文" in user_text
+    assert "<memory_notes>" in user_text
+
+
+async def test_evaluate_returns_none_on_validation_error() -> None:
     extractor, fake_client = _extractor()
     try:
         RawMemoryDraft.model_validate({})
     except ValidationError as exc:
         fake_client.responses.raises = exc
-    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
+    assert (
+        await extractor.evaluate(
+            subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
+        )
+        is None
+    )
 
 
-async def test_extract_returns_none_on_generic_failure() -> None:
+async def test_evaluate_returns_none_on_generic_failure() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.raises = RuntimeError("boom")
-    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
+    assert (
+        await extractor.evaluate(
+            subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
+        )
+        is None
+    )
 
 
-async def test_extract_returns_none_on_empty_parse() -> None:
+async def test_evaluate_returns_none_on_empty_parse() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = None
-    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
+    assert (
+        await extractor.evaluate(
+            subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
+        )
+        is None
+    )
 
 
 async def test_consolidate_marks_every_absent_input_block() -> None:
@@ -674,26 +727,22 @@ async def test_consolidate_compact_appends_compaction_block() -> None:
 
 
 async def test_extractor_uses_distinct_models_per_phase() -> None:
+    """Two phases, two model fields, dispatched in order. There is no third phase left."""
     fake_client = FakeMemoryClient()
     extractor = MemoryExtractorAI(
         client=cast("AsyncOpenAI", fake_client),
-        extract_model=ModelSettings(name="extract-model", effort="minimal"),
         evaluate_model=ModelSettings(name="evaluate-model", effort="minimal"),
         consolidate_model=ModelSettings(name="consolidate-model", effort="minimal"),
     )
     fake_client.responses.output_parsed = _draft("偏好明確")
-    await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
+    await extractor.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
     fake_client.responses.output_parsed = _no_change()
     await extractor.consolidate(request=_consolidation_request())
-    assert fake_client.responses.parse_models == [
-        "extract-model",
-        "evaluate-model",
-        "consolidate-model",
-    ]
+    assert fake_client.responses.parse_models == ["evaluate-model", "consolidate-model"]
 
 
 def test_prompts_cover_recent_context_and_compaction() -> None:
-    assert "recent_context" in PHASE1_PROMPT
+    assert "recent_context" in PHASE1_EVALUATOR_PROMPT
     assert "one-off mention" in PHASE1_EVALUATOR_PROMPT
     assert "`recent`" in PHASE2_PROMPT
     assert "today" in PHASE2_PROMPT
@@ -722,9 +771,8 @@ def test_phase2_prompt_tells_the_model_dates_are_stamped_for_it() -> None:
 
 
 def test_prompts_cover_the_permanent_tier() -> None:
-    # Phase-1 must offer the permanent durability so identity facts are tagged
-    # at extraction time; the evaluator may downgrade an over-eager permanent.
-    assert "permanent" in PHASE1_PROMPT
+    # The note review authors the durability, so it must offer the permanent tier and say
+    # which narrow class it is for.
     assert "permanent" in PHASE1_EVALUATOR_PROMPT
     assert "permanent" in PHASE2_PROMPT
 
@@ -732,7 +780,7 @@ def test_prompts_cover_the_permanent_tier() -> None:
 def test_prompts_record_tone_persona_independently() -> None:
     # Tone lives in its own tier but must be recorded as persona-independent qualities so
     # a PERSONA_CHOICES change does not leave a stale persona-bound tone preference.
-    assert "persona-independent" in PHASE1_PROMPT
+    assert "persona-independent" in PHASE1_EVALUATOR_PROMPT
     assert "persona-independent" in PHASE2_PROMPT
 
 
@@ -992,10 +1040,113 @@ async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
     assert _memory_text() == ""
+
+
+async def test_pipeline_skips_a_turn_that_marked_nothing(memory_isolated_dir: Path) -> None:
+    """No marker, no work at all: no model call, no reply.db row, no background task.
+
+    Most replies are this case. It is the whole saving over the extraction pass this
+    replaced, which ran on every single reply to find out whether there was anything to find.
+    """
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _draft("喜歡簡短")
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+        remember_notes=(),
+    )
+    await _wait_for_inflight()
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    assert fake_client.responses.parse_models == []
+    assert await memory_db.get_job(scope=USER_SCOPE) is None
+
+
+async def test_pipeline_writes_a_forget_without_asking_a_model(memory_isolated_dir: Path) -> None:
+    """A forget needs no review: it stores nothing, it only names what should go.
+
+    It is also written BEFORE the note review runs, so a failing review cannot leave the bot
+    still repeating what the user just asked it to drop.
+
+    A stored fact has to exist first, because a forget is copied into the compartments the
+    scope actually has: a scope with none has nothing to delete, and the request is dropped
+    rather than kept around waiting for a compartment to appear.
+    """
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
+    extractor, fake_client = _extractor()
+    fake_client.responses.raises = RuntimeError("review is down")
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+        remember_notes=(),
+        forget_notes=("使用者已經不住台中了",),
+    )
+    await _wait_for_inflight()
+    raw_text = read_raw_entries(scope=USER_SCOPE)
+    assert "### forget_request" in raw_text
+    assert "使用者已經不住台中了" in raw_text
+    assert "- source: guild 42" in raw_text
+
+
+async def test_forget_reaches_a_fact_stored_in_another_compartment(
+    memory_isolated_dir: Path,
+) -> None:
+    """A forget spoken in a guild has to be able to delete a fact stored in `global/`.
+
+    Routing it by its own source would file it under `g/42`, where `apply_deltas` never sees
+    the global fact's id and drops the delete. The consolidation prompt would then be told to
+    record the corrected state in its own compartment instead, leaving the original surfacing
+    in every server with a contradiction filed beside it.
+    """
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
+    forget = render_forget_requests(notes=("使用者已經不住台中了",), source="guild 42")
+    buckets = partition_raw_entries(
+        raw_text=forget, flavor="user", compartments=("global", "g/42", "g/99")
+    )
+    assert sorted(buckets) == ["g/42", "global"]
+    # And the compartments it reaches may only delete, never write the sentence down.
+    outcome = apply_deltas(
+        scope=USER_SCOPE,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="user",
+        deltas=(
+            MemoryFactDelta(
+                action="delete",
+                fact_id="a" * 16,
+                section="fact",
+                durability="stable",
+                summary="住台中",
+                text="使用者住在台中",
+            ),
+            MemoryFactDelta(
+                action="create",
+                fact_id="",
+                section="fact",
+                durability="stable",
+                summary="使用者要求忘記住處",
+                text="使用者已經不住台中了",
+            ),
+        ),
+        owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
+        allow_mass_delete=False,
+        deletes_only=True,
+    )
+    assert outcome.deleted == 1
+    assert outcome.created == 0
+    assert outcome.dropped == 1
+    assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
 
 
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
@@ -1008,6 +1159,7 @@ async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> 
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 0
@@ -1050,6 +1202,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         full_reply="第一",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await started.wait()
     first_task = pipeline._inflight_tasks[USER_SCOPE]
@@ -1060,6 +1213,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         full_reply="第二",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
@@ -1068,6 +1222,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         full_reply="第三",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     assert pipeline._inflight_tasks[USER_SCOPE] is first_task
     release.set()
@@ -1084,6 +1239,56 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
     assert read_raw_entries(scope=USER_SCOPE).count("- source: guild 99") == 2
 
 
+async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replaying only the newest skipped turn must not silently drop an older turn's notes.
+
+    For a transcript, replaying the newest is enough: its history window already contains the
+    earlier skipped turns. A marker note is not in that window. It exists only in the reply
+    that emitted it, so a user who says "remember X" and then "remember Y" while the first
+    review is still running would lose X entirely, with nothing in the logs to say so.
+    """
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
+    extractor, fake_client = _extractor()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    seen_notes: list[str] = []
+
+    async def slow_parse(**kwargs: object) -> SimpleNamespace:
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        first = cast("dict[str, object]", inputs[0])
+        seen_notes.append(str(first["content"]))
+        started.set()
+        if not release.is_set():
+            await release.wait()
+        return _parsed(output=_no_signal())
+
+    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
+    for note in ("記住 X", "記住 Y", "記住 Z"):
+        pipeline.schedule_memory_update(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}",
+            message_list=_user_message(),
+            full_reply="回覆",
+            extractor=extractor,
+            identity=IDENTITY,
+            remember_notes=(note,),
+        )
+        if note == "記住 X":
+            await started.wait()
+    first_task = pipeline._inflight_tasks[USER_SCOPE]
+    release.set()
+    await first_task
+    replay_task = pipeline._inflight_tasks.get(USER_SCOPE)
+    assert replay_task is not None
+    await replay_task
+    # The replay carries the note of the turn it superseded as well as its own.
+    assert "記住 Y" in seen_notes[-1]
+    assert "記住 Z" in seen_notes[-1]
+
+
 async def test_pipeline_consolidates_at_threshold(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1097,6 +1302,7 @@ async def test_pipeline_consolidates_at_threshold(
         full_reply="回覆一",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
@@ -1114,6 +1320,7 @@ async def test_pipeline_consolidates_at_threshold(
         full_reply="回覆二",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
@@ -1150,6 +1357,7 @@ async def test_pipeline_keeps_raw_when_consolidation_fails(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert count_raw_entries(scope=USER_SCOPE) == 1
@@ -1179,6 +1387,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "既有內容" in _memory_text()
@@ -1217,6 +1426,7 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "壓縮後" in _memory_text()
@@ -1248,6 +1458,7 @@ async def test_pipeline_small_compartment_skips_compaction(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "COMPACTION" not in seen_instructions[1]
@@ -1434,6 +1645,7 @@ async def test_pipeline_aborts_write_after_clear(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await parse_started.wait()
     mark_cleared(scope=USER_SCOPE)
@@ -1458,6 +1670,7 @@ async def test_pipeline_background_failure_is_swallowed(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     task = pipeline._inflight_tasks.get(USER_SCOPE)
     assert task is not None
@@ -2216,6 +2429,7 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
         full_reply="一",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await started.wait()
     task = pipeline._inflight_tasks[USER_SCOPE]
@@ -2226,6 +2440,7 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
         full_reply="二",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     assert USER_SCOPE in pipeline._pending_updates
     task.cancel()
@@ -2261,6 +2476,7 @@ async def test_pipeline_drops_pending_replay_after_clear(
         full_reply="一",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await first_started.wait()
     # Queue a pending replay, then clear before the in-flight task finishes.
@@ -2271,6 +2487,7 @@ async def test_pipeline_drops_pending_replay_after_clear(
         full_reply="二",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     assert USER_SCOPE in pipeline._pending_updates
     clear_memory(scope=USER_SCOPE)
@@ -2313,13 +2530,18 @@ def test_read_detail_tail_window_aligns_to_entry_header(memory_isolated_dir: Pat
 # ---------------------------------------------------------------------------
 
 
-async def test_extract_returns_none_on_incomplete_response() -> None:
+async def test_evaluate_returns_none_on_incomplete_response() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("被截斷前的部分內容")
     fake_client.responses.status = "incomplete"
     # A response that hit the output-token budget must be refused even when the
     # parsed payload looks usable.
-    assert await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi") is None
+    assert (
+        await extractor.evaluate(
+            subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
+        )
+        is None
+    )
 
 
 async def test_memory_calls_omit_max_output_tokens() -> None:
@@ -2327,7 +2549,7 @@ async def test_memory_calls_omit_max_output_tokens() -> None:
     # uses the model's own ceiling; only the `incomplete` guard bounds output.
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _no_signal()
-    await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
+    await extractor.evaluate(subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES)
     fake_client.responses.output_parsed = _no_change()
     await extractor.consolidate(request=_consolidation_request())
     assert fake_client.responses.parse_extra_kwargs == [{}, {}]
@@ -2352,6 +2574,7 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     # Threshold is met but the cooldown has not elapsed: only the phase-1
@@ -2383,6 +2606,7 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
@@ -2414,6 +2638,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     # The raw byte burst escape hatch consolidates despite the active cooldown.
@@ -2445,6 +2670,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     consolidation_input = seen_inputs[1]
@@ -2483,6 +2709,7 @@ async def test_memory_semaphore_caps_concurrent_updates(
             full_reply="回覆",
             extractor=extractor,
             identity=IDENTITY,
+            remember_notes=_NOTES,
         )
     tasks = list(pipeline._inflight_tasks.values())
     await asyncio.gather(*tasks)
@@ -2534,6 +2761,7 @@ async def test_pipeline_clear_resets_consolidation_cooldown(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "全新整理" in _memory_text()
@@ -2750,6 +2978,7 @@ async def test_pipeline_success_marks_done_and_clears_transcript(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
@@ -2771,6 +3000,7 @@ async def test_pipeline_extract_failure_marks_failed_and_keeps_transcript(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
@@ -2790,6 +3020,7 @@ async def test_pipeline_no_signal_marks_done(memory_isolated_dir: Path) -> None:
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     job = await memory_db.get_job(scope=USER_SCOPE)
@@ -2831,16 +3062,47 @@ async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir
 
 
 async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path) -> None:
-    # A persisted failed row (transcript kept) is re-run on restart and succeeds.
+    """A persisted failed row is re-run on restart and succeeds, notes included.
+
+    The notes ride inside the stored `transcript` rather than in a column of their own, so a
+    resumed row carries what the answer model marked without `memory_job` growing a field.
+    """
+    payload = render_turn_payload(
+        transcript="Alice (alice) [id: 123456789]: 哈囉", remember=_NOTES, forget=()
+    )
     await memory_db.upsert_pending(
         scope=USER_SCOPE,
         flavor="user",
         subject=f"target_user_id: {USER_ID}",
-        transcript="Alice (alice) [id: 123456789]: 哈囉",
+        transcript=payload,
         identity=IDENTITY,
         token=42,
     )
     await memory_db.mark_failed(scope=USER_SCOPE, token=42, error="boom")
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = _draft("喜歡簡短")
+    pipeline.resume_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        transcript=payload,
+        extractor=extractor,
+        identity=IDENTITY,
+        token=42,
+    )
+    await _wait_for_inflight()
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    job = await memory_db.get_job(scope=USER_SCOPE)
+    assert job is not None
+    assert job.status == "done"
+
+
+async def test_resume_of_a_row_predating_markers_writes_nothing(memory_isolated_dir: Path) -> None:
+    """A row staged by the old extraction pass carries a transcript and no notes.
+
+    Nothing can be done with it: the pass that would have mined it is gone, and mining the
+    transcript here is exactly the guessing this change removed. It closes quietly rather than
+    parking forever as a failure the restart sweep keeps retrying.
+    """
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = _draft("喜歡簡短")
     pipeline.resume_memory_update(
@@ -2852,7 +3114,8 @@ async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path)
         token=42,
     )
     await _wait_for_inflight()
-    assert count_raw_entries(scope=USER_SCOPE) == 1
+    assert count_raw_entries(scope=USER_SCOPE) == 0
+    assert fake_client.responses.parse_models == []
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
     assert job.status == "done"
@@ -2974,7 +3237,7 @@ def test_observation_key_sources_from_text_pairs_keys_with_block_sources() -> No
     }
 
 
-async def test_extract_sharing_gates_tighten_but_never_loosen() -> None:
+async def test_evaluate_sharing_gates_tighten_but_never_loosen() -> None:
     extractor, fake_client = _extractor()
     fake_client.responses.output_parsed = RawMemoryDraft(
         has_signal=True,
@@ -3035,7 +3298,9 @@ async def test_extract_sharing_gates_tighten_but_never_loosen() -> None:
             ),
         ),
     )
-    draft = await extractor.extract(subject=f"target_user_id: {USER_ID}", transcript="hi")
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript="hi", notes=_NOTES
+    )
     assert draft is not None
     sharing_by_key = {
         observation.normalized_key: observation.sharing for observation in draft.observations
@@ -3084,8 +3349,8 @@ async def test_a_named_participant_locks_an_observation_with_no_id_token() -> No
             ),
         ),
     )
-    draft = await extractor.extract(
-        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT, notes=_NOTES
     )
     assert draft is not None
     assert {
@@ -3108,8 +3373,8 @@ async def test_a_latin_roster_name_only_matches_on_a_word_boundary() -> None:
             ),
         ),
     )
-    draft = await extractor.extract(
-        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT
+    draft = await extractor.evaluate(
+        subject=f"target_user_id: {USER_ID}", transcript=_ROSTER_TRANSCRIPT, notes=_NOTES
     )
     assert draft is not None
     assert [observation.sharing for observation in draft.observations] == ["global"]
@@ -3168,6 +3433,7 @@ async def test_pipeline_stamps_subject_source_into_raw_entries(memory_isolated_d
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
@@ -3189,6 +3455,7 @@ async def test_pipeline_sourceless_subject_renders_without_source_fields(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     raw_text = read_raw_entries(scope=USER_SCOPE)
@@ -3197,10 +3464,17 @@ async def test_pipeline_sourceless_subject_renders_without_source_fields(
 
 
 def test_prompts_cover_sharing_classification() -> None:
-    # Phase-1 must offer the sharing scope; the evaluator may only ever tighten it.
-    assert "SHARING CLASSIFICATION" in PHASE1_PROMPT
-    assert "source_only" in PHASE1_PROMPT
-    assert "NEVER loosen" in PHASE1_EVALUATOR_PROMPT
+    """The note review authors `sharing`, so the classification rules live with it.
+
+    The old "NEVER loosen a source_only candidate" anchor went with the extraction pass that
+    used to propose one: there is no earlier model call left whose decision could be loosened.
+    What still has to be in the prompt is the default and the third-party rule, which
+    `_sanitize_observation` mirrors deterministically on the code side.
+    """
+    assert "SHARING CLASSIFICATION" in PHASE1_EVALUATOR_PROMPT
+    assert "source_only" in PHASE1_EVALUATOR_PROMPT
+    assert "When unsure, choose `source_only`" in PHASE1_EVALUATOR_PROMPT
+    assert "ANY person other than the target user" in PHASE1_EVALUATOR_PROMPT
 
 
 def test_phase2_prompt_binds_the_model_to_one_compartment() -> None:
@@ -3301,6 +3575,7 @@ async def test_pipeline_consolidation_writes_tone_note(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
@@ -3340,6 +3615,7 @@ async def test_pipeline_no_op_consolidation_still_writes_tone(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "既有內容" in _memory_text()
@@ -3379,6 +3655,7 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
@@ -3604,6 +3881,7 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
             full_reply=reply,
             extractor=extractor,
             identity=IDENTITY,
+            remember_notes=_NOTES,
         )
         await first_started.wait()
     assert USER_SCOPE in pipeline._pending_updates
@@ -3673,6 +3951,7 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
         full_reply="清除已經回傳",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     await _wait_for_inflight()
 
@@ -4037,6 +4316,7 @@ async def test_memory_update_scheduled_before_a_clear_never_starts(
         full_reply="回覆",
         extractor=extractor,
         identity=IDENTITY,
+        remember_notes=_NOTES,
     )
     # The task has not run a single step yet; the clear lands first.
     await pipeline.clear_scope_memory(scope=USER_SCOPE)

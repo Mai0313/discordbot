@@ -126,6 +126,12 @@ MEMORY_INJECTION_WARN_CHARS: Final[int] = 24_000
 # inputs.
 MEMORY_TRANSCRIPT_MAX_CHARS: Final[int] = 100_000
 
+# Cap for one memory note the answer model wrote inline, as it reaches the evaluator and, for a
+# forget, the consolidation prompts. A note is asked for as one sentence, so this only bounds a
+# model that ignored that; it is per note rather than per batch because `MAX_MEMORY_NOTES` already
+# bounds the count, and because a batch cap would let one runaway note starve the rest.
+MEMORY_NOTE_MAX_CHARS: Final[int] = 400
+
 # Cap for the bot's own reply inside that transcript. The reply is secondary evidence and is
 # appended last, so without this cap a long (e.g. SUMMARY) reply fills the entire kept tail and
 # the middle-truncation drops the current user message right before it.

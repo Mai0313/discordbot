@@ -1721,6 +1721,7 @@ class ReplyGeneratorCogs(commands.Cog):
         message: Message,
         message_list: list[EasyInputMessageParam],
         full_reply: str,
+        notes: list[str],
     ) -> None:
         """Schedules the bot's per-server memory update for a guild message.
 
@@ -1728,6 +1729,11 @@ class ReplyGeneratorCogs(commands.Cog):
         target-centering, since every message is server context). Skipped for DMs and
         for channels not visible to `@everyone`, so private / restricted-channel content
         never enters the server-wide memory any member can read.
+
+        Those two gates are invisible to the answer model, which is why a
+        `<write-server-memory>` note written in a DM or a restricted channel is dropped here
+        without a word: the note reaches this method exactly as any other would, and the
+        channel decides, not the model.
         """
         if message.guild is None:
             return
@@ -1742,6 +1748,7 @@ class ReplyGeneratorCogs(commands.Cog):
             identity=render_server_identity(
                 server_name=message.guild.name, server_id=message.guild.id
             ),
+            remember_notes=tuple(notes),
         )
 
     async def _await_optional_memory_selection(
@@ -2177,6 +2184,10 @@ class ReplyGeneratorCogs(commands.Cog):
         # or DM); it survives the memory_job round-trip so the pipeline can stamp
         # each observation's source deterministically.
         source_line = subject_source_line(guild_id=message.guild.id if message.guild else None)
+        # Whose memory a note lands in is decided HERE, from the message, and the marker body
+        # never gets a say: the author for the two personal tags and the guild for the server
+        # one. That is what keeps the compartment boundary structural now that the model, not a
+        # separate extraction pass, is the one proposing what to write.
         schedule_memory_update(
             scope=user_scope(user_id=message.author.id),
             subject=f"target_user_id: {message.author.id}\n{source_line}",
@@ -2188,6 +2199,8 @@ class ReplyGeneratorCogs(commands.Cog):
                 username=message.author.name,
                 user_id=message.author.id,
             ),
+            remember_notes=tuple(streamer.memory_notes),
+            forget_notes=tuple(streamer.forget_notes),
         )
         # The per-server update carries its own guards rather than riding the per-user one:
         # DMs and non-public channels are dropped inside `_schedule_server_memory_update`.
@@ -2196,6 +2209,7 @@ class ReplyGeneratorCogs(commands.Cog):
             message=message,
             message_list=context.message_list,
             full_reply=full_reply,
+            notes=streamer.server_memory_notes,
         )
 
     @commands.Cog.listener()
