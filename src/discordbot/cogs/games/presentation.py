@@ -1,6 +1,6 @@
 """Shared presentation helpers for casino game embeds."""
 
-from typing import Final, Literal
+from typing import Final
 
 from discordbot.typings.games import SettleOutcome
 from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW
@@ -24,31 +24,6 @@ LOSE_RESULT_EMOJI = "😢"
 BUST_RESULT_EMOJI = "💥"
 DEALER_BUST_RESULT_EMOJI = "🎊"
 NATURAL_RESULT_EMOJI = "✨"
-
-PlayerStatusKind = Literal["blackjack", "bust", "active", "stand", "waiting"]
-
-
-def blackjack_outcome_presentation(outcome: SettleOutcome) -> tuple[str, int]:
-    """Returns presentation values for a Blackjack outcome.
-
-    Args:
-        outcome: Player-facing Blackjack outcome.
-
-    Returns:
-        A `(label, color)` tuple for the final embed.
-    """
-    blackjack_result = {
-        "win": ("你贏了", WIN_COLOR),
-        "lose": ("你輸了", LOSE_COLOR),
-        "push": ("平手", PUSH_COLOR),
-        "blackjack": ("Blackjack!", WIN_COLOR),
-        "five_card_win": ("過五關", WIN_COLOR),
-        "five_card_twenty_one": ("過五關", WIN_COLOR),
-        "player_bust": ("你爆牌了", LOSE_COLOR),
-        "dealer_bust": ("莊家爆牌, 你贏了", WIN_COLOR),
-        "surrender": ("投降 · 退一半", LOSE_COLOR),
-    }
-    return blackjack_result[outcome]
 
 
 def card_line(cards_text: str) -> str:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 import asyncio
 
 import logfire
@@ -19,7 +19,6 @@ from discordbot.cogs.games.lobby import (
 from discordbot.typings.timeouts import GAME_FINAL_EDIT_TIMEOUT_SECONDS
 from discordbot.cogs.games.wagers import parse_wager_amount
 from discordbot.utils.number_text import compact_amount
-from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs.games.dragon_gate import (
     ANTE,
@@ -37,7 +36,11 @@ from discordbot.cogs.games.dragon_gate import (
     DragonGateParticipantUnknownError,
     DragonGatePairChoiceUnavailableError,
 )
-from discordbot.cogs.games.interactions import set_view_item_visible, edit_message_with_retry
+from discordbot.cogs.games.interactions import (
+    table_edit_kwargs,
+    set_view_item_visible,
+    edit_message_with_retry,
+)
 from discordbot.cogs.games.presentation import (
     WIN_COLOR,
     LOSE_COLOR,
@@ -66,19 +69,8 @@ if TYPE_CHECKING:
 
     from discordbot.typings.economy import JackpotSnapshot
 
-DRAGON_GATE_ACTION_TIMEOUT_SECONDS = 180
-DRAGON_GATE_VISIBLE_PLAYER_LINES = 20
-
-
-def _dragon_gate_table_edit_kwargs(
-    *, embeds: list[Embed], view: View | None, target: object | None = None
-) -> dict[str, Any]:
-    """Builds the shared edit payload for 射龍門 table renders."""
-    return {
-        "embeds": embeds,
-        "view": view,
-        **embed_spacer_payload(embeds=embeds, is_edit=True, target=target),
-    }
+DRAGON_GATE_ACTION_TIMEOUT_SECONDS: Final[int] = 180
+DRAGON_GATE_VISIBLE_PLAYER_LINES: Final[int] = 20
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
@@ -102,22 +94,22 @@ def _direction_label(direction: DragonGateDirection | None) -> str:
     return "尚未選擇"
 
 
-def _outcome_presentation(outcome: DragonGateOutcome) -> tuple[str, int]:
-    """Returns the display label and embed color for a turn outcome."""
-    values: dict[DragonGateOutcome, tuple[str, int]] = {
-        "gate_win": ("✅ 射中", WIN_COLOR),
-        "outside_lose": ("❌ 射偏", LOSE_COLOR),
-        "pillar_hit": ("🧱 撞柱", LOSE_COLOR),
-        "pair_win": ("✅ 猜中", WIN_COLOR),
-        "pair_lose": ("❌ 猜錯", LOSE_COLOR),
-        "pair_pillar_hit": ("🧱 同點撞柱", LOSE_COLOR),
+def _outcome_label(outcome: DragonGateOutcome) -> str:
+    """Returns the display label for a turn outcome."""
+    labels: dict[DragonGateOutcome, str] = {
+        "gate_win": "✅ 射中",
+        "outside_lose": "❌ 射偏",
+        "pillar_hit": "🧱 撞柱",
+        "pair_win": "✅ 猜中",
+        "pair_lose": "❌ 猜錯",
+        "pair_pillar_hit": "🧱 同點撞柱",
     }
-    return values[outcome]
+    return labels[outcome]
 
 
 def _result_line(result: DragonGateTurnResult) -> str:
     """Formats the last resolved turn for the final embed's last-hand block."""
-    outcome_label, _color = _outcome_presentation(outcome=result.outcome)
+    outcome_label = _outcome_label(outcome=result.outcome)
     direction = f" · {_direction_label(direction=result.direction)}" if result.direction else ""
     pillars = " ".join(str(card) for card in result.pillars)
     return (
@@ -131,7 +123,7 @@ def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
     """Builds monospace history lines for completed turns."""
     lines: list[str] = []
     for result in history:
-        outcome_label, _color = _outcome_presentation(outcome=result.outcome)
+        outcome_label = _outcome_label(outcome=result.outcome)
         pillars = " ".join(str(card) for card in result.pillars)
         lines.append(
             f"第 {result.turn_number} 手 {result.participant.account_name}: "
@@ -155,7 +147,7 @@ def _scoreboard_code_lines(round_state: DragonGateRound) -> list[str]:
 
 def _last_result_line(result: DragonGateTurnResult) -> str:
     """One-line summary of the previous turn for placement above the current state."""
-    outcome_label, _color = _outcome_presentation(outcome=result.outcome)
+    outcome_label = _outcome_label(outcome=result.outcome)
     pillars = " ".join(str(card) for card in result.pillars)
     return (
         f"**{result.participant.display_name}**: "
@@ -394,9 +386,7 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
         embeds = view.in_progress_embeds()
         await edit_message_with_retry(
             message=message,
-            kwargs_factory=lambda: _dragon_gate_table_edit_kwargs(
-                embeds=embeds, view=view, target=message
-            ),
+            kwargs_factory=lambda: table_edit_kwargs(embeds=embeds, view=view, target=message),
         )
 
 
@@ -440,7 +430,10 @@ class DragonGateView(View):
         without waiting for their turn. Every other control needs the user to BE the active
         turn holder; a seated player who is not gets 現在輪到 … instead.
         """
-        if self._settled or interaction.user is None:
+        if self._settled:
+            await self._send_notice(interaction=interaction, content="這桌已經結束, 等下一桌吧")
+            return False
+        if interaction.user is None:
             return False
         data = (
             cast("dict[str, Any]", interaction.data) if isinstance(interaction.data, dict) else {}
@@ -461,7 +454,7 @@ class DragonGateView(View):
                 if active_turn is not None
                 else "這桌已經不能操作了"
             )
-        await interaction.response.send_message(content=notice, ephemeral=True)
+        await self._send_notice(interaction=interaction, content=notice)
         return False
 
     async def on_timeout(self) -> None:
@@ -639,7 +632,7 @@ class DragonGateView(View):
                 return
             self.sync_controls()
             await interaction.message.edit(
-                **_dragon_gate_table_edit_kwargs(
+                **table_edit_kwargs(
                     embeds=self.in_progress_embeds(), view=self, target=interaction.message
                 )
             )
@@ -739,9 +732,7 @@ class DragonGateView(View):
                     return
             self.sync_controls()
             await message.edit(
-                **_dragon_gate_table_edit_kwargs(
-                    embeds=self.in_progress_embeds(), view=self, target=message
-                )
+                **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
             )
 
     async def _handle_leave(self, interaction: Interaction[commands.Bot]) -> None:
@@ -760,29 +751,16 @@ class DragonGateView(View):
             except DragonGateParticipantUnknownError:
                 await self._send_notice(interaction=interaction, content="你不在這桌")
                 return
-            participant = self._participant_for(user_id=interaction.user.id)
             if delta > 0:
-                settlement = await apply_jackpot_settlement(
-                    player_id=interaction.user.id,
-                    player_account_name=participant.account_name if participant else "",
-                    player_avatar_url=participant.avatar_url if participant else "",
-                    player_delta=-delta,
-                    game_id=GAME_ID,
+                await self._refund_winnings_to_pool_locked(
+                    user_id=interaction.user.id, delta=delta
                 )
-                self._jackpot_snapshot = settlement.jackpot_balance
-                self._jackpot_generation = settlement.jackpot_generation
-                self._final_balances[interaction.user.id] = settlement.player_balance
-                refunded_to_pool = max(-settlement.applied_player_delta, 0)
-                if refunded_to_pool > 0:
-                    self._refunded_to_pool[interaction.user.id] = refunded_to_pool
             if self.round_state.finished:
                 await self._finalize_locked(message=message, reason="所有玩家已離桌")
                 return
             self.sync_controls()
             await message.edit(
-                **_dragon_gate_table_edit_kwargs(
-                    embeds=self.in_progress_embeds(), view=self, target=message
-                )
+                **table_edit_kwargs(embeds=self.in_progress_embeds(), view=self, target=message)
             )
 
     def in_progress_embeds(self) -> list[Embed]:
@@ -799,25 +777,30 @@ class DragonGateView(View):
             embeds.append(history_embed)
         return embeds
 
+    async def _refund_winnings_to_pool_locked(self, *, user_id: int, delta: int) -> None:
+        """Pushes one player's positive table delta back into the jackpot ("逆贏不拿")."""
+        participant = self._participant_for(user_id=user_id)
+        settlement = await apply_jackpot_settlement(
+            player_id=user_id,
+            player_account_name=participant.account_name if participant else "",
+            player_avatar_url=participant.avatar_url if participant else "",
+            player_delta=-delta,
+            game_id=GAME_ID,
+        )
+        self._jackpot_snapshot = settlement.jackpot_balance
+        self._jackpot_generation = settlement.jackpot_generation
+        self._final_balances[user_id] = settlement.player_balance
+        refunded_to_pool = max(-settlement.applied_player_delta, 0)
+        if refunded_to_pool > 0:
+            self._refunded_to_pool[user_id] = refunded_to_pool
+
     async def _refund_remaining_winners_locked(self) -> None:
         """Returns positive in-flight deltas to the jackpot before table cleanup."""
         for participant in self.round_state.active_participants():
             delta = self.round_state.player_delta(user_id=participant.user_id)
             if delta <= 0:
                 continue
-            settlement = await apply_jackpot_settlement(
-                player_id=participant.user_id,
-                player_account_name=participant.account_name,
-                player_avatar_url=participant.avatar_url,
-                player_delta=-delta,
-                game_id=GAME_ID,
-            )
-            self._jackpot_snapshot = settlement.jackpot_balance
-            self._jackpot_generation = settlement.jackpot_generation
-            self._final_balances[participant.user_id] = settlement.player_balance
-            refunded_to_pool = max(-settlement.applied_player_delta, 0)
-            if refunded_to_pool > 0:
-                self._refunded_to_pool[participant.user_id] = refunded_to_pool
+            await self._refund_winnings_to_pool_locked(user_id=participant.user_id, delta=delta)
 
     async def _finalize_locked(self, message: Message, reason: str) -> None:
         """Builds final results, clears the controls, and schedules cleanup."""
@@ -858,9 +841,7 @@ class DragonGateView(View):
         self.stop()
         try:
             await asyncio.wait_for(
-                message.edit(
-                    **_dragon_gate_table_edit_kwargs(embeds=embeds, view=None, target=message)
-                ),
+                message.edit(**table_edit_kwargs(embeds=embeds, view=None, target=message)),
                 timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         except nextcord.NotFound:

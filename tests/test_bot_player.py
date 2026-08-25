@@ -5,7 +5,6 @@ from discordbot.cogs.games.bot_player import (
     BOT_TABLE_EDGE,
     kelly_bet,
     fallback_action,
-    choose_bot_action,
     fallback_insurance,
     count_adjusted_edge,
     build_bot_action_context,
@@ -70,53 +69,6 @@ def test_fallback_action_splits_eights_against_ten() -> None:
     assert action == "split"
 
 
-def _full_shoe() -> list[Card]:
-    """Builds a fresh four-deck shoe (208 cards) as a flat card list for EV-engine tests."""
-    ranks = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"]
-    # Four decks of four suits each: every rank appears 16 times.
-    return [_card(rank=rank) for rank in ranks] * 16
-
-
-def test_fallback_action_uses_hole_card_when_dealer_cards_provided() -> None:
-    """With dealer cards and shoe, the fallback exploits the known hole card."""
-    shoe = _full_shoe()
-    weak = fallback_action(
-        hand_cards=[_card(rank="10"), _card(rank="6")],
-        hand_total=16,
-        dealer_up=_card(rank="10"),
-        is_pair_hand=False,
-        allowed_actions=("hit", "stand", "surrender"),
-        dealer_cards=[_card(rank="5"), _card(rank="10")],
-        shoe=shoe,
-    )
-    strong = fallback_action(
-        hand_cards=[_card(rank="10"), _card(rank="6")],
-        hand_total=16,
-        dealer_up=_card(rank="10"),
-        is_pair_hand=False,
-        allowed_actions=("hit", "stand", "surrender"),
-        dealer_cards=[_card(rank="10"), _card(rank="10")],
-        shoe=shoe,
-    )
-
-    assert weak == "stand"
-    assert strong == "surrender"
-    assert weak != strong
-
-
-def test_fallback_action_without_shoe_uses_plain_strategy() -> None:
-    """Omitting dealer cards and shoe reproduces the classic basic-strategy table."""
-    action = fallback_action(
-        hand_cards=[_card(rank="10"), _card(rank="6")],
-        hand_total=16,
-        dealer_up=_card(rank="J"),
-        is_pair_hand=False,
-        allowed_actions=("hit", "stand", "surrender"),
-    )
-
-    assert action == "surrender"
-
-
 def test_fallback_insurance_is_count_based() -> None:
     """Insurance fallback takes only when the remaining-shoe ten density makes it +EV."""
     take_context = build_bot_insurance_context(
@@ -145,14 +97,11 @@ def test_action_context_exposes_up_card_only_without_hole() -> None:
         allowed_actions=("hit", "stand"),
         is_pair_hand=False,
         bet=100,
-        balance_remaining=900,
     )
 
     assert context.dealer.up_card == "A♠"
     assert context.dealer.up_value == 11
     assert context.shoe_summary.total_cards == 2
-    assert context.action_analysis.hit_odds is not None
-    assert context.action_analysis.hit_odds.five_card_non_bust_probability > 0
 
     ev_analysis = context.action_analysis.ev_analysis
     assert ev_analysis is not None
@@ -213,35 +162,10 @@ def test_action_uses_ev_recommendation() -> None:
         allowed_actions=("hit", "stand"),
         is_pair_hand=False,
         bet=100,
-        balance_remaining=900,
     )
+
     assert action_context.action_analysis.ev_analysis is not None
     assert action_context.action_analysis.basic_strategy_action == "hit"
-
-    chosen = choose_bot_action(
-        action_context=action_context,
-        hand_cards=[_card(rank="10"), _card(rank="6")],
-        hand_total=16,
-        dealer_up=_card(rank="10"),
-        is_pair_hand=False,
-        allowed_actions=("hit", "stand"),
-    )
-
-    assert chosen == "hit"
-
-
-def test_choose_bot_action_without_context_uses_basic_strategy() -> None:
-    """With no EV context, the deterministic action falls back to the basic-strategy table."""
-    chosen = choose_bot_action(
-        action_context=None,
-        hand_cards=[_card(rank="10"), _card(rank="6")],
-        hand_total=16,
-        dealer_up=_card(rank="J"),
-        is_pair_hand=False,
-        allowed_actions=("hit", "stand", "surrender"),
-    )
-
-    assert chosen == "surrender"
 
 
 def test_kelly_bet_wagers_half_kelly_fraction_within_bounds() -> None:

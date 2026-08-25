@@ -12,9 +12,8 @@ import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.games import Card, BotAction, ActionEvAnalysis
-from discordbot.cogs.games.blackjack import is_soft_total, _card_blackjack_value
+from discordbot.cogs.games.blackjack import is_soft_total, card_blackjack_value
 from discordbot.cogs.games.blackjack_ev import compute_action_evs
-from discordbot.services.economy.presentation import CURRENCY_NAME
 
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
 # play, measured by offline simulation (neutral-count edge ~ +0.13, sigma^2 ~ 1.34).
@@ -104,31 +103,6 @@ class DealerKnowledge(BaseModel):
     )
 
 
-class DrawOdds(BaseModel):
-    """One-card draw probabilities derived from current hand plus rank counts."""
-
-    model_config = ConfigDict(frozen=True)
-
-    total_draws: int = Field(
-        ..., description="Number of possible next cards (size of the remaining shoe)."
-    )
-    bust_probability: float = Field(
-        ..., description="Probability the next single card busts the hand."
-    )
-    twenty_one_probability: float = Field(
-        ..., description="Probability the next single card makes the hand total 21."
-    )
-    seventeen_to_twenty_one_probability: float = Field(
-        ..., description="Probability the next single card leaves a total between 17 and 21."
-    )
-    five_card_non_bust_probability: float = Field(
-        ..., description="Probability the next card reaches a five-plus-card hand without busting."
-    )
-    five_card_twenty_one_probability: float = Field(
-        ..., description="Probability the next card reaches a five-plus-card hand totaling 21."
-    )
-
-
 class ActionAnalysis(BaseModel):
     """Computed reference data for the bot player's action decision."""
 
@@ -140,31 +114,9 @@ class ActionAnalysis(BaseModel):
     basic_strategy_action: BotAction = Field(
         ..., description="The deterministic hint action the bot would play this turn."
     )
-    basic_strategy_reason: str = Field(
-        ..., description="Short English explanation of the basic-strategy hint action."
-    )
     ev_analysis: ActionEvAnalysis | None = Field(
         default=None,
         description="Per-action EV analysis from the EV engine, or None when unavailable.",
-    )
-    hit_odds: DrawOdds | None = Field(
-        default=None,
-        description="One-card draw odds for hitting, or None when hit is not allowed.",
-    )
-    double_odds: DrawOdds | None = Field(
-        default=None,
-        description="One-card draw odds for doubling, or None when double is not allowed.",
-    )
-    stand_summary: str | None = Field(
-        default=None,
-        description="Human-readable summary of standing, or None when not applicable.",
-    )
-    split_summary: str | None = Field(
-        default=None, description="Human-readable summary of splitting, or None when not allowed."
-    )
-    surrender_summary: str | None = Field(
-        default=None,
-        description="Human-readable summary of surrendering, or None when not allowed.",
     )
 
 
@@ -203,7 +155,6 @@ class BotPlayerInsuranceContext(BaseModel):
     insurance_cost: int = Field(
         ..., description="Cost in currency to take the insurance side bet."
     )
-    insurance_payout: int = Field(..., description="Payout in currency if the insurance bet wins.")
     ten_value_probability: float = Field(
         ..., description="Ten-value card fraction of the remaining shoe used to price insurance."
     )
@@ -214,9 +165,6 @@ class BotPlayerInsuranceContext(BaseModel):
     insurance_recommendation: str = Field(
         ...,
         description="Deterministic recommendation, 'take' or 'decline', from the shoe density.",
-    )
-    summary: str = Field(
-        ..., description="Human-readable summary of the insurance pricing analysis."
     )
 
 
@@ -239,25 +187,15 @@ def _dealer_up_value(*, up_card: Card | None) -> int:
     """Returns the Blackjack value of the dealer's up-card (A counts as 11)."""
     if up_card is None:
         return 0
-    if up_card.rank == "A":
-        return 11
-    if up_card.rank in ("J", "Q", "K"):
-        return 10
-    return int(up_card.rank)
-
-
-def _hand_total_and_soft(*, cards: list[Card]) -> tuple[int, bool]:
-    """Returns the best total and whether at least one Ace remains high."""
-    is_soft, total = is_soft_total(cards=cards)
-    return total, is_soft
+    return card_blackjack_value(card=up_card)
 
 
 def _pair_value(*, cards: list[Card]) -> int | None:
     """Returns the pair value for same-value two-card hands."""
     if len(cards) != 2:
         return None
-    first = _card_blackjack_value(card=cards[0])
-    second = _card_blackjack_value(card=cards[1])
+    first = card_blackjack_value(card=cards[0])
+    second = card_blackjack_value(card=cards[1])
     return first if first == second else None
 
 
@@ -270,7 +208,7 @@ def _should_surrender(*, hand_total: int, dealer_value: int) -> bool:
 
 def _should_double(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
     """Returns whether double down is the fallback table choice."""
-    _, is_soft = _hand_total_and_soft(cards=cards)
+    is_soft, _total = is_soft_total(cards=cards)
     double_dealers = (
         _SOFT_DOUBLE_DEALERS.get(hand_total, frozenset())
         if is_soft
@@ -281,7 +219,7 @@ def _should_double(*, cards: list[Card], hand_total: int, dealer_value: int) -> 
 
 def _should_stand(*, cards: list[Card], hand_total: int, dealer_value: int) -> bool:
     """Returns whether stand is the fallback table choice."""
-    _, is_soft = _hand_total_and_soft(cards=cards)
+    is_soft, _total = is_soft_total(cards=cards)
     if is_soft:
         return hand_total >= 19 or (hand_total == 18 and 2 <= dealer_value <= 8)
     return (
@@ -323,55 +261,6 @@ def build_dealer_knowledge(*, dealer_up: Card | None) -> DealerKnowledge:
         up_card=str(dealer_up) if dealer_up is not None else "unknown",
         up_value=_dealer_up_value(up_card=dealer_up),
     )
-
-
-def _probability(*, count: int, total: int) -> float:
-    """Returns a zero-safe probability in the range [0.0, 1.0]."""
-    if total <= 0:
-        return 0.0
-    return count / total
-
-
-def _draw_odds(*, hand_cards: list[Card], shoe: list[Card], doubled: bool) -> DrawOdds:
-    """Computes one-card draw odds from rank counts, not shoe order."""
-    counts = _rank_counts(cards=shoe)
-    total_draws = len(shoe)
-    busts = 0
-    twenty_ones = 0
-    strong_totals = 0
-    five_card_non_busts = 0
-    five_card_twenty_ones = 0
-    for rank, count in counts.items():
-        if count <= 0:
-            continue
-        drawn = Card(rank=rank, suit="♠")
-        next_cards = [*hand_cards, drawn]
-        next_total = _hand_total_and_soft(cards=next_cards)[0]
-        if next_total > 21:
-            busts += count
-        if next_total == 21:
-            twenty_ones += count
-        if 17 <= next_total <= 21:
-            strong_totals += count
-        if not doubled and len(next_cards) >= 5 and next_total <= 21:
-            five_card_non_busts += count
-        if not doubled and len(next_cards) >= 5 and next_total == 21:
-            five_card_twenty_ones += count
-    return DrawOdds(
-        total_draws=total_draws,
-        bust_probability=_probability(count=busts, total=total_draws),
-        twenty_one_probability=_probability(count=twenty_ones, total=total_draws),
-        seventeen_to_twenty_one_probability=_probability(count=strong_totals, total=total_draws),
-        five_card_non_bust_probability=_probability(count=five_card_non_busts, total=total_draws),
-        five_card_twenty_one_probability=_probability(
-            count=five_card_twenty_ones, total=total_draws
-        ),
-    )
-
-
-def _basic_strategy_reason(*, action: BotAction) -> str:
-    """Returns a compact English reason for the fallback action hint."""
-    return f"Deterministic fallback table would choose {action}; use as a hint, not a hard rule."
 
 
 def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap) as overridable args.
@@ -467,7 +356,7 @@ def _safe_compute_action_evs(  # noqa: PLR0913 -- thin EV-engine wrapper mirrori
         return None
 
 
-def _basic_strategy_table_action(
+def fallback_action(
     *,
     hand_cards: list[Card],
     hand_total: int,
@@ -475,7 +364,10 @@ def _basic_strategy_table_action(
     is_pair_hand: bool,
     allowed_actions: tuple[BotAction, ...],
 ) -> BotAction:
-    """Classic up-card-only basic-strategy table, used when the EV engine is unavailable."""
+    """Classic up-card-only basic-strategy table, used when the EV engine is unavailable.
+
+    Only emits actions listed in `allowed_actions`.
+    """
     dealer_value = _dealer_up_value(up_card=dealer_up)
     pair_value = _pair_value(cards=hand_cards) if is_pair_hand else None
     if (
@@ -501,41 +393,6 @@ def _basic_strategy_table_action(
     return allowed_actions[0]
 
 
-def fallback_action(  # noqa: PLR0913 -- hole-card-aware fallback also accepts dealer cards and shoe.
-    *,
-    hand_cards: list[Card],
-    hand_total: int,
-    dealer_up: Card | None,
-    is_pair_hand: bool,
-    allowed_actions: tuple[BotAction, ...],
-    dealer_cards: list[Card] | None = None,
-    shoe: list[Card] | None = None,
-) -> BotAction:
-    """Deterministic fallback that only emits allowed actions.
-
-    When the full dealer cards and remaining shoe are supplied, the exact EV
-    engine drives the choice (hole-card-aware). Otherwise it degrades to the
-    classic up-card-only basic-strategy table.
-    """
-    if dealer_cards is not None and shoe is not None:
-        analysis = _safe_compute_action_evs(
-            hand_cards=hand_cards,
-            dealer_cards=dealer_cards,
-            shoe=shoe,
-            allowed_actions=allowed_actions,
-            doubled=False,
-        )
-        if analysis is not None and analysis.recommended_action in allowed_actions:
-            return analysis.recommended_action
-    return _basic_strategy_table_action(
-        hand_cards=hand_cards,
-        hand_total=hand_total,
-        dealer_up=dealer_up,
-        is_pair_hand=is_pair_hand,
-        allowed_actions=allowed_actions,
-    )
-
-
 def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the full decision surface.
     *,
     hand_cards: list[Card],
@@ -545,11 +402,14 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
     allowed_actions: tuple[BotAction, ...],
     is_pair_hand: bool,
     bet: int,
-    balance_remaining: int,
     doubled: bool = False,
 ) -> BotPlayerActionContext:
-    """Builds the bot's computed decision context without exposing the future shoe order."""
-    hand_total, _is_soft = _hand_total_and_soft(cards=hand_cards)
+    """Builds the bot's computed decision context without exposing the future shoe order.
+
+    `action_analysis.basic_strategy_action` is the action the bot plays: the EV
+    engine's hole-aware recommendation, or the basic-strategy table when the
+    engine is unavailable.
+    """
     ev_analysis = _safe_compute_action_evs(
         hand_cards=hand_cards,
         dealer_cards=dealer_cards,
@@ -560,87 +420,22 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
     )
     if ev_analysis is not None:
         basic_strategy_action = ev_analysis.recommended_action
-        basic_strategy_reason = (
-            "EV-max legal action given the dealer up-card and remaining shoe; "
-            f"expected_value={ev_analysis.recommended_expected_value:+.2f} base bets."
-        )
     else:
         basic_strategy_action = fallback_action(
             hand_cards=hand_cards,
-            hand_total=hand_total,
+            hand_total=is_soft_total(cards=hand_cards)[1],
             dealer_up=dealer_up,
             is_pair_hand=is_pair_hand,
             allowed_actions=allowed_actions,
         )
-        basic_strategy_reason = _basic_strategy_reason(action=basic_strategy_action)
-    dealer = build_dealer_knowledge(dealer_up=dealer_up)
-    hit_odds = (
-        _draw_odds(hand_cards=hand_cards, shoe=shoe, doubled=doubled)
-        if "hit" in allowed_actions
-        else None
-    )
-    double_odds = (
-        _draw_odds(hand_cards=hand_cards, shoe=shoe, doubled=True)
-        if "double" in allowed_actions
-        else None
-    )
-    pair_value = _pair_value(cards=hand_cards)
-    split_summary = None
-    if "split" in allowed_actions:
-        split_summary = (
-            f"Pair value {pair_value}; split costs an extra {bet} {CURRENCY_NAME}; "
-            "double after split is not allowed; split Aces receive one card and stand."
-        )
-    surrender_summary = None
-    if "surrender" in allowed_actions:
-        surrender_summary = (
-            f"Surrender locks in a half-bet loss of {(bet + 1) // 2} {CURRENCY_NAME}."
-        )
     return BotPlayerActionContext(
         shoe_summary=build_shoe_summary(shoe=shoe),
-        dealer=dealer,
+        dealer=build_dealer_knowledge(dealer_up=dealer_up),
         action_analysis=ActionAnalysis(
             allowed_actions=allowed_actions,
             basic_strategy_action=basic_strategy_action,
-            basic_strategy_reason=basic_strategy_reason,
             ev_analysis=ev_analysis,
-            hit_odds=hit_odds,
-            double_odds=double_odds,
-            stand_summary=(
-                f"Standing leaves active hand total {hand_total} against dealer up-card "
-                f"{dealer.up_card} (value {dealer.up_value}); uncommitted balance after current "
-                f"wagers: {balance_remaining} {CURRENCY_NAME}."
-            ),
-            split_summary=split_summary,
-            surrender_summary=surrender_summary,
         ),
-    )
-
-
-def choose_bot_action(  # noqa: PLR0913 -- deterministic action picker mirrors the full decision surface.
-    *,
-    action_context: BotPlayerActionContext | None,
-    hand_cards: list[Card],
-    hand_total: int,
-    dealer_up: Card | None,
-    is_pair_hand: bool,
-    allowed_actions: tuple[BotAction, ...],
-) -> BotAction:
-    """Returns the deterministic action the bot plays this turn.
-
-    The choice is whatever the action context already resolved (always one of
-    `allowed_actions`): the EV engine's hole-aware recommendation, or the
-    basic-strategy fallback the builder substituted when the engine failed.
-    This function only recomputes that fallback when the context is missing.
-    """
-    if action_context is not None:
-        return action_context.action_analysis.basic_strategy_action
-    return fallback_action(
-        hand_cards=hand_cards,
-        hand_total=hand_total,
-        dealer_up=dealer_up,
-        is_pair_hand=is_pair_hand,
-        allowed_actions=allowed_actions,
     )
 
 
@@ -658,7 +453,6 @@ def build_bot_insurance_context(
     ten_count = sum(1 for card in shoe if card.rank in _TEN_VALUE_RANKS)
     total = len(shoe)
     ten_probability = ten_count / total if total > 0 else 0.0
-    insurance_payout = insurance_cost * 2
     # Take pays +2x cost on a ten hole, loses cost otherwise: EV = cost*(3p - 1),
     # so it only turns positive once ten-value density clears one third.
     break_even = 1.0 / 3.0
@@ -668,14 +462,9 @@ def build_bot_insurance_context(
         shoe_summary=build_shoe_summary(shoe=shoe),
         dealer=build_dealer_knowledge(dealer_up=dealer_up),
         insurance_cost=insurance_cost,
-        insurance_payout=insurance_payout,
         ten_value_probability=ten_probability,
         insurance_expected_value=expected_value,
         insurance_recommendation=recommendation,
-        summary=(
-            "Insurance pays only on a ten-value hole; estimated ten-value probability "
-            f"{ten_probability * 100:.1f}% from the remaining shoe; +EV only above 33.3%."
-        ),
     )
 
 
