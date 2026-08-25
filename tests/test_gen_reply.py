@@ -71,6 +71,19 @@ from discordbot.cogs.gen_reply.cog import (
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
+from discordbot.cogs.gen_reply.recall import (
+    NO_STORED_MEMORY,
+    RecallContext,
+    RecallCandidate,
+    parse_user_id_list,
+    build_recall_context,
+    recall_user_memories,
+    memory_lookup_credits,
+    build_recall_allowlist,
+    compartments_for_reading,
+    widen_allowlist_with_aliases,
+    allowlist_ids_from_server_memory,
+)
 from discordbot.services.memory.facts import utc_now, mint_fact_id, node_type_for
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
@@ -93,7 +106,7 @@ from discordbot.cogs.gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
     VIDEO_PROMPT,
-    MEMORY_SELECT_PROMPT,
+    RECALL_SELECT_PROMPT,
 )
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.typings.context_budgets import (
@@ -122,19 +135,6 @@ from discordbot.cogs.gen_reply.generation import (
     PromptGenerator,
     music_filename,
     speechify_discord_markup,
-)
-from discordbot.cogs.gen_reply.memory_tool import (
-    NO_STORED_MEMORY,
-    MemoryCandidate,
-    MemoryReadContext,
-    parse_user_id_list,
-    memory_read_context,
-    memory_lookup_credits,
-    resolve_user_memories,
-    build_memory_allowlist,
-    compartments_for_reading,
-    widen_allowlist_with_aliases,
-    allowlist_ids_from_server_memory,
 )
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.attachment.base import DEAD_SOURCE_TTL, loggable_cache_key
@@ -8115,7 +8115,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     assert extract_callable_user_ids(
         request=request_input(responses=_recorded(cog).responses, phase="selection")
     ) == {42}
-    assert _recorded(cog).responses.create_instructions[selection_idx] == MEMORY_SELECT_PROMPT
+    assert _recorded(cog).responses.create_instructions[selection_idx] == RECALL_SELECT_PROMPT
 
     # Answer keeps the built-in tools and the deterministic author memory.
     answer_idx = request_index(responses=_recorded(cog).responses, phase="answer")
@@ -8136,12 +8136,12 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     assert "喜歡簡短回覆" not in str(scheduled_list)
     assert scheduled[0]["scope"] == user_scope(user_id=1)
     assert scheduled[0]["full_reply"] == "完整回覆"
-    assert scheduled[0]["extractor"] is _toolkit(cog=cog).memory_extractor
+    assert scheduled[0]["writer"] is _toolkit(cog=cog).memory_writer
     assert scheduled[0]["identity"] == "Tester (tester) [id: 1]"
-    evaluate_model = _toolkit(cog=cog).memory_extractor.evaluate_model
+    evaluate_model = _toolkit(cog=cog).memory_writer.evaluate_model
     assert evaluate_model.name == _toolkit(cog=cog).runtime_models.memory_writer_model.name
     assert (
-        _toolkit(cog=cog).memory_extractor.consolidate_model.name
+        _toolkit(cog=cog).memory_writer.consolidate_model.name
         == _toolkit(cog=cog).runtime_models.memory_writer_model.name
     )
 
@@ -8316,7 +8316,7 @@ async def test_process_single_message_neutralizes_spoofed_identity(
     assert "[id: 1]" not in step_dicts(steps=separator)[0]["text"]
 
 
-def test_build_memory_allowlist_collects_authors_and_mentions_excluding_bot() -> None:
+def test_build_recall_allowlist_collects_authors_and_mentions_excluding_bot() -> None:
     """Trusted users are kept in order, deduped, and the bot is excluded."""
     author = FakeAuthor(user_id=1)
     mentioned = FakeAuthor(user_id=2)
@@ -8329,7 +8329,7 @@ def test_build_memory_allowlist_collects_authors_and_mentions_excluding_bot() ->
     duplicate_author = FakeMessage(author=author)
     bot_authored = FakeMessage(author=bot)
 
-    allowed = build_memory_allowlist(
+    allowed = build_recall_allowlist(
         users=cast(
             "list[nextcord.Member | nextcord.User]",
             [
@@ -8345,19 +8345,19 @@ def test_build_memory_allowlist_collects_authors_and_mentions_excluding_bot() ->
     # Insertion order preserved, bot (999) excluded from both author and mention slots.
     assert list(allowed.keys()) == [1, 2]
     # A participant carries the same label on both sides until aliases widen the prompt one.
-    assert allowed[1] == MemoryCandidate(
+    assert allowed[1] == RecallCandidate(
         prompt_label="Tester (tester)", credit_label="Tester (tester)"
     )
-    assert allowed[2] == MemoryCandidate(
+    assert allowed[2] == RecallCandidate(
         prompt_label="Alice (alice)", credit_label="Alice (alice)"
     )
 
 
-def test_build_memory_allowlist_escapes_mention_labels() -> None:
+def test_build_recall_allowlist_escapes_mention_labels() -> None:
     """Mention syntax in a display name is neutralized so a label cannot ping."""
     author = FakeAuthor(user_id=1)
     author.display_name = "@everyone"
-    allowed = build_memory_allowlist(
+    allowed = build_recall_allowlist(
         users=cast("list[nextcord.Member | nextcord.User]", [author]), bot_user_id=999
     )
 
@@ -8378,19 +8378,19 @@ def test_parse_user_id_list_handles_valid_and_malformed() -> None:
     assert parse_user_id_list(arguments='{"user_id_list": "nope"}') == []
 
 
-def test_resolve_user_memories_enforces_allowlist(memory_isolated_dir: object) -> None:
+def test_recall_user_memories_enforces_allowlist(memory_isolated_dir: object) -> None:
     """Ids outside the allowlist drop, mention wrappers and dupes collapse, gaps signal clearly."""
     del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=1), text="甲的記憶")
     allowed = {
-        1: MemoryCandidate(prompt_label="A (a)", credit_label="A (a)"),
-        2: MemoryCandidate(prompt_label="B (b)", credit_label="B (b)"),
+        1: RecallCandidate(prompt_label="A (a)", credit_label="A (a)"),
+        2: RecallCandidate(prompt_label="B (b)", credit_label="B (b)"),
     }
 
-    memories = resolve_user_memories(
+    memories = recall_user_memories(
         user_id_list=["1", "<@1>", "3", "abc", "2"],
         allowed=allowed,
-        context=MemoryReadContext(guild_id=None, dm_partner_id=None),
+        context=RecallContext(guild_id=None, dm_partner_id=None),
     )
 
     by_id = {memory.user_id: memory for memory in memories}
@@ -8415,10 +8415,10 @@ def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row(
     del memory_isolated_dir
     _seed_fact(scope=user_scope(user_id=42), text="第三人的記憶")
 
-    memories = resolve_user_memories(
+    memories = recall_user_memories(
         user_id_list=["42"],
-        allowed={42: MemoryCandidate(prompt_label="Boss(社群暱稱:李董)")},
-        context=MemoryReadContext(guild_id=None, dm_partner_id=None),
+        allowed={42: RecallCandidate(prompt_label="Boss(社群暱稱:李董)")},
+        context=RecallContext(guild_id=None, dm_partner_id=None),
     )
 
     footer_credits = memory_lookup_credits(memories=memories)
@@ -8443,31 +8443,31 @@ _COMPARTMENT_FACTS = {
     ("context", "compartments", "present", "absent"),
     [
         (
-            MemoryReadContext(guild_id=111, dm_partner_id=None),
+            RecallContext(guild_id=111, dm_partner_id=None),
             {"global", "g/111"},
             ["全域事實", "本群事實"],
             ["他群事實", "私訊事實"],
         ),
         (
-            MemoryReadContext(guild_id=222, dm_partner_id=None),
+            RecallContext(guild_id=222, dm_partner_id=None),
             {"global", "g/222"},
             ["全域事實", "他群事實"],
             ["本群事實", "私訊事實"],
         ),
         (
-            MemoryReadContext(guild_id=None, dm_partner_id=1),
+            RecallContext(guild_id=None, dm_partner_id=1),
             {"global", "g/111", "g/222", "dm"},
             ["全域事實", "本群事實", "他群事實", "私訊事實"],
             [],
         ),
         (
-            MemoryReadContext(guild_id=None, dm_partner_id=555),
+            RecallContext(guild_id=None, dm_partner_id=555),
             {"global"},
             ["全域事實"],
             ["本群事實", "他群事實", "私訊事實"],
         ),
         (
-            MemoryReadContext(guild_id=None, dm_partner_id=None),
+            RecallContext(guild_id=None, dm_partner_id=None),
             {"global"},
             ["全域事實"],
             ["本群事實", "他群事實", "私訊事實"],
@@ -8477,7 +8477,7 @@ _COMPARTMENT_FACTS = {
 )
 def test_memory_read_opens_only_the_permitted_compartments(
     memory_isolated_dir: object,
-    context: MemoryReadContext,
+    context: RecallContext,
     compartments: set[str],
     present: list[str],
     absent: list[str],
@@ -8488,7 +8488,7 @@ def test_memory_read_opens_only_the_permitted_compartments(
     shared compartment plus its own, a group DM and a third party's lookup inside a 1:1
     DM read the shared one alone, and the owner's own DM opens everything, since their
     own information cannot leak to themselves. Asserted end to end through
-    `resolve_user_memories`, the one call every reply path reads user memory through, so
+    `recall_user_memories`, the one call every reply path reads user memory through, so
     a compartment that is not listed is one whose facts never reach the model.
     """
     del memory_isolated_dir
@@ -8497,9 +8497,9 @@ def test_memory_read_opens_only_the_permitted_compartments(
 
     assert set(compartments_for_reading(owner_id=1, context=context)) == compartments
 
-    memories = resolve_user_memories(
+    memories = recall_user_memories(
         user_id_list=["1"],
-        allowed={1: MemoryCandidate(prompt_label="A (a)", credit_label="A (a)")},
+        allowed={1: RecallCandidate(prompt_label="A (a)", credit_label="A (a)")},
         context=context,
     )
     document = memories[0].memory
@@ -8509,31 +8509,29 @@ def test_memory_read_opens_only_the_permitted_compartments(
         assert fragment not in document
 
 
-def test_memory_read_context_by_channel_kind() -> None:
+def test_build_recall_context_by_channel_kind() -> None:
     """Guild sets guild_id; a 1:1 DM sets dm_partner_id; a guildless non-DM channel sets neither."""
     guild_message = FakeMessage(content="hi")
-    guild_context = memory_read_context(message=as_message(fake=guild_message))
+    guild_context = build_recall_context(message=as_message(fake=guild_message))
     assert guild_context.guild_id == 1
     assert guild_context.dm_partner_id is None
 
     dm_message = FakeMessage(content="hi", author=FakeAuthor(user_id=7))
     dm_message.guild = None
     dm_message.channel = MagicMock(spec=nextcord.DMChannel)
-    dm_context = memory_read_context(message=as_message(fake=dm_message))
+    dm_context = build_recall_context(message=as_message(fake=dm_message))
     assert dm_context.guild_id is None
     assert dm_context.dm_partner_id == 7
 
     # A group DM has no guild but is not a DMChannel, so it fail-closes to neither.
     group_message = FakeMessage(content="hi")
     group_message.guild = None
-    group_context = memory_read_context(message=as_message(fake=group_message))
+    group_context = build_recall_context(message=as_message(fake=group_message))
     assert group_context.guild_id is None
     assert group_context.dm_partner_id is None
 
 
-def test_resolve_user_memories_fully_locked_reads_as_no_memory(
-    memory_isolated_dir: object,
-) -> None:
+def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_dir: object) -> None:
     """A memory stored only in another guild resolves to the no-memory signal, uncredited."""
     del memory_isolated_dir
     _seed_fact(
@@ -8544,10 +8542,10 @@ def test_resolve_user_memories_fully_locked_reads_as_no_memory(
         durability="permanent",
     )
 
-    memories = resolve_user_memories(
+    memories = recall_user_memories(
         user_id_list=["1"],
-        allowed={1: MemoryCandidate(prompt_label="A (a)", credit_label="A (a)")},
-        context=MemoryReadContext(guild_id=111, dm_partner_id=None),
+        allowed={1: RecallCandidate(prompt_label="A (a)", credit_label="A (a)")},
+        context=RecallContext(guild_id=111, dm_partner_id=None),
     )
 
     assert [memory.memory for memory in memories] == [NO_STORED_MEMORY]
@@ -9041,7 +9039,7 @@ async def test_handle_message_reply_retains_author_memory_when_optional_selectio
         del kwargs
         raise RuntimeError("selection provider error")
 
-    monkeypatch.setattr(cog, "_select_user_memories", boom)
+    monkeypatch.setattr(cog, "_select_recalled_memories", boom)
 
     _recorded(cog).responses.stream_queue = [
         [_text_event(delta="照常回答"), _completed_event(input_tokens=5, output_tokens=6)]
@@ -9130,15 +9128,14 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
             assert update["subject"] == f"target_user_id: 1\nsource: {user_source}"
         if update["scope"] == server_scope_value:
             assert update["subject"] == "target_server_id: 1"
-            assert update["extractor"] is _toolkit(cog=cog).server_memory_extractor
+            assert update["writer"] is _toolkit(cog=cog).server_memory_writer
             assert update["identity"] == "Test Guild [id: 1]"
             assert (
-                _toolkit(cog=cog).server_memory_extractor.evaluator_prompt
+                _toolkit(cog=cog).server_memory_writer.evaluator_prompt
                 is SERVER_PHASE1_EVALUATOR_PROMPT
             )
             assert (
-                _toolkit(cog=cog).server_memory_extractor.consolidate_prompt
-                is SERVER_PHASE2_PROMPT
+                _toolkit(cog=cog).server_memory_writer.consolidate_prompt is SERVER_PHASE2_PROMPT
             )
 
     assert _recorded(cog).responses.create_streams == [True]
@@ -9166,7 +9163,7 @@ def test_widen_allowlist_with_aliases_merges_participant_labels() -> None:
     memory = (
         "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
-    allowed = {123: MemoryCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
+    allowed = {123: RecallCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
     widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=True)
 
     # The conversation label leads and the table row rides behind it on the same line.
@@ -9189,7 +9186,7 @@ def test_widen_allowlist_with_aliases_skips_absent_when_not_public() -> None:
     memory = (
         "## 成員稱呼\n* Mai(社群暱稱:李董、破貓親爹)[id: 123]\n* Bob(社群暱稱:阿伯)[id: 456]\n"
     )
-    allowed = {123: MemoryCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
+    allowed = {123: RecallCandidate(prompt_label="Mai (mai9999)", credit_label="Mai (mai9999)")}
     widen_allowlist_with_aliases(allowed=allowed, memory=memory, include_absent=False)
 
     # The present participant is still enriched with community aliases.
@@ -9536,7 +9533,7 @@ async def test_route_input_excludes_attachment_payloads() -> None:
     assert "[attachment: file]" in rendered
 
 
-async def test_select_user_memories_uses_text_only_transcript() -> None:
+async def test_select_recalled_memories_uses_text_only_transcript() -> None:
     """The selection request carries the text-only transcript verbatim, no payloads."""
     cog = _cog()
     _recorded(cog).responses.select_queue = [[]]
@@ -9551,12 +9548,12 @@ async def test_select_user_memories_uses_text_only_transcript() -> None:
     ]
 
     message = FakeMessage()
-    await cog._select_user_memories(
+    await cog._select_recalled_memories(
         toolkit=_toolkit(cog=cog),
         message=as_message(fake=message),
         message_list=message_list,
-        allowed={1: MemoryCandidate(prompt_label="u", credit_label="u")},
-        read_context=memory_read_context(message=as_message(fake=message)),
+        allowed={1: RecallCandidate(prompt_label="u", credit_label="u")},
+        recall_context=build_recall_context(message=as_message(fake=message)),
     )
 
     rendered = str(_recorded(cog).responses.create_inputs[-1])
@@ -9650,7 +9647,7 @@ async def _prepare_context_with_hanging_selection(
     cog: ReplyGeneratorCogs, message: FakeMessage, monkeypatch: pytest.MonkeyPatch
 ) -> ReplyContext:
     """Builds reply context where an optional alias selection exceeds its grace."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.MEMORY_SELECT_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.cog.RECALL_SELECT_GRACE_SECONDS", 0.01)
     _seed_fact(
         scope=server_scope(server_id=1),
         text="Boss(社群暱稱:李董)",
@@ -9664,7 +9661,7 @@ async def _prepare_context_with_hanging_selection(
         del kwargs
         await asyncio.sleep(1)
 
-    monkeypatch.setattr(cog, "_select_user_memories", slow_selection)
+    monkeypatch.setattr(cog, "_select_recalled_memories", slow_selection)
     msg = as_message(fake=message)
     parts_task = asyncio.create_task(
         coro=cog._get_reference_and_current(toolkit=_toolkit(cog=cog), message=msg)
@@ -9793,8 +9790,8 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     cog._resume_started = False
     user_sentinel = object()
     server_sentinel = object()
-    _toolkit(cog=cog).__dict__["memory_extractor"] = user_sentinel
-    _toolkit(cog=cog).__dict__["server_memory_extractor"] = server_sentinel
+    _toolkit(cog=cog).__dict__["memory_writer"] = user_sentinel
+    _toolkit(cog=cog).__dict__["server_memory_writer"] = server_sentinel
 
     user_job_scope = user_scope(user_id=1)
     server_job_scope = server_scope(server_id=2)
@@ -9830,7 +9827,7 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
     def fake_resume(**kwargs: object) -> None:
         resumed.append(kwargs)
 
-    async def fake_consolidate(scope: str, extractor: object, identity: str) -> None:
+    async def fake_consolidate(scope: str, writer: object, identity: str) -> None:
         swept.append(scope)
 
     monkeypatch.setattr("discordbot.cogs.gen_reply.cog.safe_list_resumable", fake_list)
@@ -9853,9 +9850,9 @@ async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(
 
     assert {kwargs["scope"] for kwargs in resumed} == {user_job_scope, server_job_scope}
     by_scope = {kwargs["scope"]: kwargs for kwargs in resumed}
-    assert by_scope[user_job_scope]["extractor"] is user_sentinel
+    assert by_scope[user_job_scope]["writer"] is user_sentinel
     assert by_scope[user_job_scope]["token"] == 11
-    assert by_scope[server_job_scope]["extractor"] is server_sentinel
+    assert by_scope[server_job_scope]["writer"] is server_sentinel
     # Every over-threshold scope is swept, including the resumed ones: the scope
     # lock makes the resumed extraction and the consolidation sweep idempotent.
     assert set(swept) == {user_job_scope, server_job_scope, sweep_scope}
@@ -9906,8 +9903,8 @@ def test_a_toolkit_binds_every_piece_to_one_key() -> None:
         toolkit.voice_generator.model_name,
         toolkit.image_generator.image_model.deployment_name,
         toolkit.prompt_generator.prompt_model.deployment_name,
-        toolkit.memory_extractor.evaluate_model.deployment_name,
-        toolkit.server_memory_extractor.consolidate_model.deployment_name,
+        toolkit.memory_writer.evaluate_model.deployment_name,
+        toolkit.server_memory_writer.consolidate_model.deployment_name,
     ]
     unpinned = [name for name in dispatched if not name.endswith("-key2")]
     assert unpinned == [], f"Every dispatch runs on the leased key. Offenders: {unpinned}"

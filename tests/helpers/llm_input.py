@@ -9,7 +9,7 @@ headers and the ``[id: N]`` markers the memory blocks emit, so a test asserts on
 *which user's memory reached which role* rather than on an arbitrary literal.
 
 The block-header anchors are derived from the production renderers and the
-link-source separators at import time, so a wording change in ``memory_tool.py``
+link-source separators at import time, so a wording change in ``recall.py``
 or in a ``link_sources`` module is tracked automatically rather than silently
 breaking these extractors.
 """
@@ -20,7 +20,7 @@ from collections.abc import Mapping, Iterator, Sequence
 
 from openai.types.responses import ResponseInputParam
 
-from discordbot.cogs.gen_reply.memory_tool import (
+from discordbot.cogs.gen_reply.recall import (
     render_tone_block,
     render_server_memory_block,
     render_callable_users_block,

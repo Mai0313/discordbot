@@ -8,14 +8,14 @@ import pytest
 import nextcord
 from openai.types.responses import ResponseInputParam, EasyInputMessageParam
 
-from discordbot.services.economy.database import adjust_balance
-from discordbot.cogs.gen_reply.memory_tool import (
+from discordbot.cogs.gen_reply.recall import (
     UserMemory,
-    MemoryCandidate,
+    RecallCandidate,
     render_server_memory_block,
     render_callable_users_block,
     render_memory_context_block,
 )
+from discordbot.services.economy.database import adjust_balance
 
 from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
 from tests.helpers.llm_input import (
@@ -48,7 +48,7 @@ def _answer_request(
         request.append(
             render_callable_users_block(
                 allowed={
-                    uid: MemoryCandidate(prompt_label=label) for uid, label in callable_ids.items()
+                    uid: RecallCandidate(prompt_label=label) for uid, label in callable_ids.items()
                 }
             )
         )

@@ -45,12 +45,12 @@ from discordbot.services.memory.store import (
     delete_fact,
     guild_compartment,
 )
+from discordbot.services.memory.writer import FORGET_REQUEST_CATEGORY, MemoryFactDelta
 from discordbot.services.memory.constants import (
     RECENT_CONTEXT_TTL_DAYS,
     MAX_NET_FACT_DELETIONS_FLOOR,
     STABLE_FRESHNESS_WINDOW_DAYS,
 )
-from discordbot.services.memory.extraction import FORGET_REQUEST_CATEGORY, MemoryFactDelta
 
 # One raw entry's `## <ISO timestamp>` header, and one observation block inside it.
 _ENTRY_HEADER_RE = re.compile(r"^## (?P<timestamp>\d{4}-\d{2}-\d{2}T\S+)\s*$")

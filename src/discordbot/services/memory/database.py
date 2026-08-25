@@ -45,7 +45,7 @@ from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
 
-# Memory flavor stored per row so the restart sweep rebuilds the matching extractor.
+# Memory flavor stored per row so the restart sweep rebuilds the matching writer.
 MemoryJobFlavor = Literal["user", "server"]
 # Lifecycle of a persisted extraction turn, stored in the `status` column.
 MemoryJobStatus = Literal["pending", "done", "failed", "cleared"]
@@ -94,7 +94,7 @@ class MemoryJobRow(Base):
 
     Attributes:
         scope: Opaque memory scope (``<user_id>`` or ``bot_memories/<server_id>``); primary key.
-        flavor: ``user`` or ``server`` so the restart sweep picks the matching extractor.
+        flavor: ``user`` or ``server`` so the restart sweep picks the matching writer.
         subject: The phase-1 directive naming the target (``target_user_id: <id>`` etc.).
         transcript: The rendered phase-1 input; set to NULL once the turn is ``done``.
         identity: Single-line identity ``parse_identity`` splits into the ``owner_id`` /

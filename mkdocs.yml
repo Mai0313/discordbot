@@ -71,8 +71,8 @@ nav:
                   - input: Reference/discordbot/cogs/gen_reply/input.md
                   - interactions: Reference/discordbot/cogs/gen_reply/interactions.md
                   - markers: Reference/discordbot/cogs/gen_reply/markers.md
-                  - memory_tool: Reference/discordbot/cogs/gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/gen_reply/prompts.md
+                  - recall: Reference/discordbot/cogs/gen_reply/recall.md
                   - streaming: Reference/discordbot/cogs/gen_reply/streaming.md
                   - toolkit: Reference/discordbot/cogs/gen_reply/toolkit.md
               - log_msg:
@@ -110,13 +110,13 @@ nav:
                   - constants: Reference/discordbot/services/memory/constants.md
                   - database: Reference/discordbot/services/memory/database.md
                   - deltas: Reference/discordbot/services/memory/deltas.md
-                  - extraction: Reference/discordbot/services/memory/extraction.md
                   - facts: Reference/discordbot/services/memory/facts.md
                   - git_history: Reference/discordbot/services/memory/git_history.md
                   - pipeline: Reference/discordbot/services/memory/pipeline.md
                   - prompts: Reference/discordbot/services/memory/prompts.md
                   - server_prompts: Reference/discordbot/services/memory/server_prompts.md
                   - store: Reference/discordbot/services/memory/store.md
+                  - writer: Reference/discordbot/services/memory/writer.md
           - typings:
               - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md
