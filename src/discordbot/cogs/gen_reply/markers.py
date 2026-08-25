@@ -239,6 +239,12 @@ def scrub_markers_for_preview(*, text: str) -> str:
     in). Complete voice tags are stripped but their content stays visible. A trailing fragment
     that is a prefix of any marker tag (`<generate-imag`, `</generate-voic`, ...) is trimmed so a
     half-streamed tag never flickers.
+
+    This walks `_PULLED`, i.e. the same order extraction uses, which the preview did not always
+    do: a marker open nested inside another marker's complete block (malformed output — the
+    model never writes it) used to survive here and vanish at extraction, so the preview flashed
+    text the finished reply then dropped. Sharing the order is what makes the preview agree with
+    the reply.
     """
     cleaned = text
     for marker in _PULLED:

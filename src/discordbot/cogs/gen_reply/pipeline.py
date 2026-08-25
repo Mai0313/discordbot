@@ -236,11 +236,6 @@ class ReplyPipeline(BaseModel):
         The handler awaits `context_task` only after the media is on screen, so the context
         build overlaps generation instead of delaying it.
         """
-        self.reactions.advance(
-            emoji="<:image:1517559727880667226>"
-            if decision == "IMAGE"
-            else "<:video:1517560671913377842>"
-        )
         routes = MediaReplyRoutes(
             config=self.config,
             media_delivery=self.media_delivery,
@@ -371,6 +366,11 @@ class ReplyPipeline(BaseModel):
                     # while intent-gated link builders never start for these routes.
                     await discard_task(task=effort_task, label="effort", message_id=message.id)
                     effort_task = None
+                    self.reactions.advance(
+                        emoji="<:image:1517559727880667226>"
+                        if route.decision == "IMAGE"
+                        else "<:video:1517560671913377842>"
+                    )
                     # `parts_task` is left for the finally backstop — prep awaits it via
                     # asyncio.shield, so if the handler discards prep on a generation failure the
                     # shielded upload keeps running and the finally must drain it.

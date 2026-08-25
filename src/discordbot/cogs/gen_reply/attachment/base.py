@@ -133,9 +133,15 @@ class AttachmentRenderer(BaseModel):
         PIL decode; any failure must degrade to dropping this one attachment rather than blanking
         the message it belongs to. A history render (`allow_dead_cache`) additionally marks the
         source dead, so an expired CDN url is not re-fetched on every later reply.
+
+        The unpack happens INSIDE that guard rather than at the caller, so a loader that answers
+        the wrong shape is the same kind of failure as one that raises. Returning the pair
+        unpacked would let a `None` short-circuit with no warning and no dead-source marking, and
+        would let a wrong-arity tuple raise into `input.py`'s attachment `gather`, which has no
+        `return_exceptions` and would lose the whole message's attachments rather than this one.
         """
         try:
-            return await load_data()
+            data, content_type = await load_data()
         except Exception as exc:
             logfire.warn(
                 "failed to load attachment bytes for upload",
@@ -148,3 +154,4 @@ class AttachmentRenderer(BaseModel):
             if allow_dead_cache:
                 self._mark_dead(cache_key=cache_key)
             return None
+        return data, content_type
