@@ -11,15 +11,15 @@ import platform
 import logfire
 from logfire import LogfireLoggingHandler
 import nextcord
-from nextcord import Game, Embed, Intents, Message
+from nextcord import Game, Intents, Message, Interaction
 from nextcord.ext import tasks, commands
+from nextcord.errors import ApplicationError
 
 from discordbot import setup_logging
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
-from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.services.economy.database import credit_with_repayment
 
 
@@ -27,7 +27,6 @@ class DiscordBot(commands.Bot):
     """Discord bot configured with project-specific intents and cogs.
 
     Attributes:
-        discord_config: Runtime Discord configuration loaded from settings.
         logger: Logger used by Nextcord state events.
     """
 
@@ -39,7 +38,6 @@ class DiscordBot(commands.Bot):
         super().__init__(
             intents=intents, help_command=None, description="A Discord bot made with Nextcord."
         )
-        self.discord_config = DiscordConfig()
         self.logger = logging.getLogger("nextcord.state")
         self.logger.setLevel(logging.WARNING)
         self.logger.addHandler(LogfireLoggingHandler())
@@ -60,7 +58,7 @@ class DiscordBot(commands.Bot):
 
     def _prune_message_reward_cooldowns(self, now: float) -> None:
         """Drops expired message-reward cooldown entries."""
-        if now - getattr(self, "_message_reward_pruned_at", 0.0) < MESSAGE_REWARD_COOLDOWN_SECONDS:
+        if now - self._message_reward_pruned_at < MESSAGE_REWARD_COOLDOWN_SECONDS:
             return
         cutoff = now - MESSAGE_REWARD_COOLDOWN_SECONDS
         self._message_reward_at = {
@@ -185,14 +183,14 @@ class DiscordBot(commands.Bot):
             return
 
         now = monotonic()
-        DiscordBot._prune_message_reward_cooldowns(self, now=now)
+        self._prune_message_reward_cooldowns(now=now)
         last_rewarded_at = self._message_reward_at.get(message.author.id)
         if last_rewarded_at is None or now - last_rewarded_at >= MESSAGE_REWARD_COOLDOWN_SECONDS:
             # Reserve the cooldown slot before awaiting so two rapid messages cannot
             # both pass the check and double-credit; roll it back if the credit fails
             # so a transient error does not cost the user their reward window.
             self._message_reward_at[message.author.id] = now
-            guild = getattr(message, "guild", None)
+            guild = message.guild
             try:
                 avatar_url = await guild_avatar_url(user=message.author, guild=guild)
                 await credit_with_repayment(
@@ -217,119 +215,36 @@ class DiscordBot(commands.Bot):
                 )
         await self.process_commands(message)
 
-    async def on_command_completion(self, context: commands.Context[commands.Bot]) -> None:
-        """Handles successful command execution.
-
-        Args:
-            context: The context of the command that was executed.
-        """
-        command = context.command
-        if command is None:
-            return
-        full_command_name = command.qualified_name
-        split = full_command_name.split(" ")
-        executed_command = str(split[0])
-        logfire.info("Command Received", command=executed_command)
-        if context.guild is not None:
-            logfire.info(
-                f"Executed {executed_command} command in {context.guild.name} (ID: {context.guild.id}) by {context.author} (ID: {context.author.id})"
-            )
-        else:
-            logfire.info(
-                f"Executed {executed_command} command by {context.author} (ID: {context.author.id}) in DMs"
-            )
-
-    async def on_command_error(
-        self,
-        context: commands.Context[commands.Bot],
-        exception: commands.CommandOnCooldown
-        | commands.NotOwner
-        | commands.MissingPermissions
-        | commands.BotMissingPermissions
-        | commands.MissingRequiredArgument
-        | commands.CommandNotFound
-        | Exception,
+    async def on_application_command_error(
+        self, interaction: Interaction[commands.Bot], exception: ApplicationError
     ) -> None:
-        """Handles command errors.
+        """Records a slash command that raised, which nothing else in this process does.
 
-        Args:
-            context: The context of the command that failed.
-            exception: The exception that was raised.
+        This bot has no prefix commands at all, so the pair of `on_command_*` handlers that
+        used to sit here could never fire: `command_prefix` is never passed to
+        `commands.Bot`, nextcord then defaults it to `()`, and `get_context`'s
+        `content.startswith(())` is False for every message, so `invoke` never reaches a
+        command to dispatch either event from.
+
+        What DOES fire is this one, and until now nothing overrode it: nextcord's default
+        prints the traceback to `sys.stderr`, while `_TeeStream` tees only `sys.stdout` into
+        `./data/logs`, so a failing slash command left no line in the file this project is
+        debugged from. Logging only, deliberately — a cog that wants to tell the user
+        something answers its own interaction, and an unanswered one already shows Discord's
+        own failure notice.
         """
-        if isinstance(exception, commands.CommandOnCooldown):
-            minutes, seconds = divmod(exception.retry_after, 60)
-            hours, minutes = divmod(minutes, 60)
-            hours = hours % 24
-            embed = Embed(
-                description=f"**Please slow down** - You can use this command again in {f'{round(hours)} hours' if round(hours) > 0 else ''} {f'{round(minutes)} minutes' if round(minutes) > 0 else ''} {f'{round(seconds)} seconds' if round(seconds) > 0 else ''}.",
-                color=0xE02B2B,
-            )
-            await context.send(
-                embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
-            )
-        elif isinstance(exception, commands.NotOwner):
-            embed = Embed(description="You are not the owner of the bot!", color=0xE02B2B)
-            await context.send(
-                embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
-            )
-            logfire.info(
-                "Owner-only command refused",
-                command=context.command.qualified_name if context.command else None,
-                author=str(context.author),
-                author_id=context.author.id,
-                guild_id=context.guild.id if context.guild else None,
-            )
-        elif isinstance(exception, commands.MissingPermissions):
-            embed = Embed(
-                description="You are missing the permission(s) `"
-                + ", ".join(exception.missing_permissions)
-                + "` to execute this command!",
-                color=0xE02B2B,
-            )
-            await context.send(
-                embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
-            )
-        elif isinstance(exception, commands.BotMissingPermissions):
-            embed = Embed(
-                description="I am missing the permission(s) `"
-                + ", ".join(exception.missing_permissions)
-                + "` to fully perform this command!",
-                color=0xE02B2B,
-            )
-            await context.send(
-                embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
-            )
-        elif isinstance(exception, commands.MissingRequiredArgument):
-            embed = Embed(
-                title="Error!",
-                # We need to capitalize because the command arguments have no capital letter in the code and they are the first word in the error message.
-                description=str(exception).capitalize(),
-                color=0xE02B2B,
-            )
-            await context.send(
-                embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
-            )
-        elif isinstance(exception, commands.CommandNotFound):
-            embed = Embed(
-                title="Error!",
-                description=f"Command {exception.command_name} not found",
-                color=0xE02B2B,
-            )
-            await context.send(
-                embed=embed, **embed_spacer_payload(embeds=[embed], is_edit=False, target=context)
-            )
-        else:
-            # nextcord wraps a command-body failure in CommandInvokeError, so report
-            # the unwrapped type to name the real defect.
-            original = getattr(exception, "original", exception)
-            logfire.error(
-                "Unhandled command error",
-                command=context.command.qualified_name if context.command else None,
-                guild_id=context.guild.id if context.guild else None,
-                author_id=context.author.id,
-                error_type=type(original).__name__,
-                _exc_info=exception,
-            )
+        # nextcord wraps a command-body failure in ApplicationInvokeError, so report the
+        # unwrapped type to name the real defect.
+        original = getattr(exception, "original", exception)
+        command = interaction.application_command
+        logfire.error(
+            "Unhandled application command error",
+            command=command.qualified_name if command is not None else None,
+            guild_id=interaction.guild_id,
+            user_id=interaction.user.id if interaction.user is not None else None,
+            error_type=type(original).__name__,
+            _exc_info=exception,
+        )
 
 
 def main() -> None:

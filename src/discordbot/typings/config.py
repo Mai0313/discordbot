@@ -1,3 +1,5 @@
+"""Environment-backed configuration for the pieces that are not a feature of their own."""
+
 from typing import Literal
 
 import dotenv

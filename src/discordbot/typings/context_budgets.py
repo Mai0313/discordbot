@@ -111,12 +111,12 @@ MEMORY_INJECTION_MAX_CHARS: Final[int] = 30_000
 MEMORY_INJECTION_WARN_CHARS: Final[int] = 24_000
 
 # --------------------------------------------------------------------------------------
-# Memory extraction and consolidation requests
+# Memory note review and consolidation requests
 # --------------------------------------------------------------------------------------
 
-# Phase-1 transcript truncation (keeps head and tail, drops the middle). Large on purpose: the
-# reply history window should reach extraction whole, and the memory models accept 1M-token
-# inputs.
+# Transcript truncation for the note review (keeps head and tail, drops the middle). Large on
+# purpose: the reply history window should reach the review whole, and the memory models accept
+# 1M-token inputs.
 MEMORY_TRANSCRIPT_MAX_CHARS: Final[int] = 100_000
 
 # Cap for one memory note the answer model wrote inline, as it reaches the evaluator and, for a

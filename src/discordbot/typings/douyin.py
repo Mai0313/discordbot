@@ -2,7 +2,7 @@
 
 import dotenv
 from pydantic import Field, AliasChoices
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
 
 dotenv.load_dotenv()
 
@@ -21,10 +21,11 @@ class DouyinConfig(BaseSettings):
             reply pipeline's ingest have their own switches and are unaffected.
     """
 
-    model_config = SettingsConfigDict(arbitrary_types_allowed=True)
-
     auto_expand_enabled: bool = Field(
         default=True,
         description="Whether a Douyin link pasted in chat is expanded into the channel.",
         validation_alias=AliasChoices("DOUYIN_AUTO_EXPAND_ENABLED"),
     )
+
+
+__all__ = ["DouyinConfig"]
