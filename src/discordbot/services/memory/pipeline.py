@@ -351,8 +351,10 @@ async def clear_scope_memory(scope: str) -> bool:
     mark_cleared(scope=scope)
     # Drops the retained transcript now rather than waiting for the in-flight
     # task to finish and discard it; `_finish_memory_update` then finds no
-    # pending turn and replays nothing.
-    _pending_updates.pop(scope, None)
+    # pending turn and replays nothing. Each dropped turn's reply is told, or it
+    # would keep saying it was still working on memory this clear just erased.
+    for dropped in _pending_updates.pop(scope, {}).values():
+        _release_pending_report(pending=dropped)
     critical_task = asyncio.create_task(_clear_scope_critical(scope=scope))
     (removed_files, removed_job), caller_cancelled = await _await_clear_critical(
         task=critical_task
@@ -474,6 +476,7 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
         superseded = by_subject.get(subject)
         if superseded is not None:
             transcript = _merged_payload(newer=transcript, older=superseded.transcript)
+            report = _merged_report(newer=report, older=superseded.report)
         by_subject[subject] = _PendingMemoryUpdate(
             subject=subject,
             transcript=transcript,
@@ -540,9 +543,11 @@ async def _report_writes(report: MemoryWriteReport, summary: MemoryWriteSummary)
 
     The write is already durable by the time this runs, so a Discord edit that fails, or a
     reply that has since been deleted, must not surface as a memory failure.
+
+    An empty summary is reported like any other. It is the answer to a real question — the
+    turn is over and kept nothing — and the caller is holding a reply that says the work is
+    still going, so silence here reads as the work never having finished.
     """
-    if summary.is_empty:
-        return
     try:
         await report(summary)
     except Exception:
@@ -572,6 +577,31 @@ def _merged_payload(newer: str, older: str) -> str:
     )
 
 
+def _merged_report(
+    newer: MemoryWriteReport | None, older: MemoryWriteReport | None
+) -> MemoryWriteReport | None:
+    """Answers both replies when one turn's notes are merged into another's.
+
+    The counterpart to `_merged_payload`, and needed for the same reason: the superseded turn's
+    notes ride on into the merged payload, so its reply is still waiting to be told what became
+    of them. Overwriting the report the way the transcript is overwritten would leave that reply
+    saying `正在整理記憶⋯` for good.
+
+    Both are handed the same summary, which is the only honest one available: the two turns'
+    notes were reviewed as one payload and there is nothing left that says which note came from
+    which reply.
+    """
+    if newer is None or older is None:
+        return newer or older
+
+    async def both(summary: MemoryWriteSummary) -> None:
+        """Reports one merged outcome to every reply whose notes went into it."""
+        await older(summary)
+        await newer(summary)
+
+    return both
+
+
 def _deduped(notes: tuple[str, ...]) -> tuple[str, ...]:
     """Drops exact repeats, keeps writing order, and caps what a merge can accumulate.
 
@@ -582,6 +612,18 @@ def _deduped(notes: tuple[str, ...]) -> tuple[str, ...]:
     """
     unique = tuple(dict.fromkeys(notes))
     return unique[-MEMORY_MERGED_NOTES_MAX:]
+
+
+def _release_pending_report(pending: _PendingMemoryUpdate) -> None:
+    """Tells a dropped turn's reply that nothing was recorded, detached.
+
+    A deferred turn is dropped rather than replayed when the scope was cleared under it, and
+    its reply is still showing `正在整理記憶⋯`. Detached because both callers are synchronous —
+    a done-callback and the clear orchestration — while the report reaches Discord.
+    """
+    if pending.report is None:
+        return
+    _spawn_db(coro=_report_writes(report=pending.report, summary=MemoryWriteSummary()))
 
 
 def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
@@ -618,6 +660,7 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
         # The durable clear tombstone owns the privacy guarantee. This remains a
         # best-effort cleanup for store-level clears that only stamped the process.
         _spawn_db(coro=memory_db.mark_done(scope=scope, token=pending.token))
+        _release_pending_report(pending=pending)
         return
     _enqueue_memory_update(
         scope=scope,
@@ -651,41 +694,67 @@ async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavo
     `captured_at` is when the turn was scheduled, and every clear check runs
     against it rather than a worker-local clock, so a clear that lands while this
     turn is still queued aborts it too.
+
+    The caller's `report` is answered exactly once, and the `finally` is what guarantees it:
+    the reply already carries `正在整理記憶⋯`, and this function has more ways to end than
+    ways to record something — two clear checks before the lock, an unread exception out of
+    the review, a shutdown cancellation. Making each of those remember to report is how one
+    of them ends up not doing it and leaves a reply promising work that finished long ago.
     """
-    if cleared_since(scope=scope, started_at=captured_at):
-        # Cleared between capture and start: staging the row would hand the
-        # restart sweep the very conversation the clear erased, so drop the turn
-        # before it writes anything at all.
-        return
-    await _safe(
-        coro=_stage_turn(
-            scope=scope,
-            subject=subject,
-            transcript=transcript,
-            identity=identity,
-            token=token,
-            captured_at=captured_at,
-        )
-    )
-    if cleared_since(scope=scope, started_at=captured_at):
-        # The clear landed while the row was being written. Its durable tombstone
-        # owns the DB ordering, so drop the in-memory turn before extraction.
-        return
-    async with scope_lock(scope=scope), _memory_semaphore():
-        forced = await _review_and_stage(
-            scope=scope,
-            subject=subject,
-            payload=transcript,
-            extractor=extractor,
-            token=token,
-            captured_at=captured_at,
-            report=report,
-        )
-        if forced is None or not _should_consolidate(scope=scope, forced=forced):
+    settled = False
+
+    async def settle(summary: MemoryWriteSummary) -> None:
+        """Answers the caller's report once, whichever way this turn ends."""
+        nonlocal settled
+        if settled or report is None:
             return
-        await _consolidate_now(
-            scope=scope, started_at=captured_at, extractor=extractor, identity=identity
+        settled = True
+        await _report_writes(report=report, summary=summary)
+
+    try:
+        if cleared_since(scope=scope, started_at=captured_at):
+            # Cleared between capture and start: staging the row would hand the
+            # restart sweep the very conversation the clear erased, so drop the turn
+            # before it writes anything at all.
+            return
+        await _safe(
+            coro=_stage_turn(
+                scope=scope,
+                subject=subject,
+                transcript=transcript,
+                identity=identity,
+                token=token,
+                captured_at=captured_at,
+            )
         )
+        if cleared_since(scope=scope, started_at=captured_at):
+            # The clear landed while the row was being written. Its durable tombstone
+            # owns the DB ordering, so drop the in-memory turn before extraction.
+            return
+        async with scope_lock(scope=scope), _memory_semaphore():
+            forced = await _review_and_stage(
+                scope=scope,
+                subject=subject,
+                payload=transcript,
+                extractor=extractor,
+                token=token,
+                captured_at=captured_at,
+                report=settle if report is not None else None,
+            )
+            if forced is None or not _should_consolidate(scope=scope, forced=forced):
+                return
+            await _consolidate_now(
+                scope=scope, started_at=captured_at, extractor=extractor, identity=identity
+            )
+    finally:
+        # Nothing recorded is the honest answer for every path that reaches here without having
+        # reported: a cleared scope wrote nothing, and neither did a turn that raised. The one
+        # case where it is a guess is a review whose LLM call failed, which the restart sweep
+        # will retry -- but a resumed turn carries no report (in-memory only, by design), so the
+        # choice is between saying "kept nothing" now and leaving the reply promising work
+        # forever. It says "kept nothing". The forget half of such a turn is reported for real
+        # above, being durable before the evaluator ever runs.
+        await settle(MemoryWriteSummary())
 
 
 async def _review_and_stage(  # noqa: PLR0913 -- the turn's identity and payload, and one early exit per way a review can end
@@ -734,6 +803,11 @@ async def _review_and_stage(  # noqa: PLR0913 -- the turn's identity and payload
             flavor=flavor_of(scope=scope),
         )
         await _safe(coro=memory_db.mark_failed(scope=scope, token=token, error="evaluate failed"))
+        if report is not None and forget_text:
+            # The forget is durable regardless of the review, so the reply may say so. Its
+            # remembered half is left empty rather than guessed at: the notes that would have
+            # filled it are exactly what the failed call was reviewing.
+            await _report_writes(report=report, summary=MemoryWriteSummary(forgotten=forget_notes))
         # The forget above is already durable and has nothing to do with the review that
         # failed, so it still gets the immediate pass it was written for. Without this it
         # would wait for an unrelated turn to push the backlog over threshold, and the bot

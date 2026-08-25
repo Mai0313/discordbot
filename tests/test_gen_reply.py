@@ -33,8 +33,8 @@ from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.memory import (
     MemoryFact,
     MemoryOwner,
-    MemorySection,
     MemoryCredits,
+    MemorySection,
     MemoryDurability,
 )
 from discordbot.typings.models import (
@@ -103,6 +103,7 @@ from discordbot.typings.context_budgets import (
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
 from discordbot.cogs.gen_reply.streaming import (
+    MEMORY_PENDING_NOTE,
     DISCORD_MESSAGE_LIMIT,
     REASONING_PREVIEW_MAX_CHARS,
     REASONING_PREVIEW_MAX_LINES,
@@ -1399,7 +1400,7 @@ def _voice_marker_events() -> list[SimpleNamespace]:
     ]
 
 
-async def test_append_footnote_splices_before_the_usage_footer() -> None:
+async def test_set_memory_note_splices_before_the_usage_footer() -> None:
     """The memory note lands seconds after the answer and must not break the footer.
 
     It goes before the usage footer for the same reason the hosted-URL line does: appended
@@ -1414,17 +1415,17 @@ async def test_append_footnote_splices_before_the_usage_footer() -> None:
             _completed_event(input_tokens=3, output_tokens=4),
         ])
     )
-    await streamer.append_footnote(line="-# 記下了:使用者偏好繁體中文")
+    await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
 
     content = message.replies[0].content or ""
-    assert "記下了:使用者偏好繁體中文" in content
+    assert "記下了 使用者偏好繁體中文" in content
     assert USAGE_FOOTER_RE.search(content) is not None
     stripped = USAGE_FOOTER_RE.sub("", content)
     assert "記下了" in stripped
     assert "⬆" not in stripped
 
 
-async def test_append_footnote_declines_when_the_reply_is_already_full() -> None:
+async def test_set_memory_note_declines_when_the_reply_is_already_full() -> None:
     """A reply with no room left keeps what it has rather than being edited into an overflow.
 
     This is also the chunked case: a reply chunks precisely when its content plus footer
@@ -1440,8 +1441,163 @@ async def test_append_footnote_declines_when_the_reply_is_already_full() -> None
         ])
     )
     before = message.replies[0].content
-    await streamer.append_footnote(line="-# 記下了:使用者偏好繁體中文")
+    await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
     assert message.replies[0].content == before
+
+
+async def test_the_outcome_note_replaces_the_pending_one() -> None:
+    """One turn shows one memory note, not a running log of one.
+
+    The pending note is a promise the outcome takes back, so it has to be removed rather than
+    written under: two `-#` lines saying different things about the same turn read as two
+    separate pieces of memory work.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+    assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
+
+    await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
+
+    content = message.replies[0].content or ""
+    assert MEMORY_PENDING_NOTE not in content
+    assert content.count("-# ✏️") == 1
+
+
+async def test_the_pending_note_survives_a_hosted_media_splice() -> None:
+    """A hosted-URL line lands between the note and the footer, so the note is no longer last.
+
+    `_finalize_media_edit` rebuilds the content as body + hosted-URL line + footer, which puts
+    the pending note mid-string. Removing it off the end would then leave both notes on screen.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+    streamer.stored_content = streamer.stored_content.replace(
+        streamer._usage_footer,
+        f"\n-# 媒體過大，改用連結\nhttps://media.example/x.mp4{streamer._usage_footer}",
+    )
+    await message.replies[0].edit(content=streamer.stored_content)
+
+    await streamer.set_memory_note(line="-# ✏️ 記下了 使用者偏好繁體中文")
+
+    content = message.replies[0].content or ""
+    assert MEMORY_PENDING_NOTE not in content
+    assert "媒體過大，改用連結" in content
+    assert content.count("-# ✏️") == 1
+
+
+async def test_the_pending_note_never_reaches_the_answer_text() -> None:
+    """`full_reply` is the transcript the memory reviewer reads and history renders later.
+
+    The note is chrome the bot added, not something it said. `USAGE_FOOTER_RE` cannot remove it
+    downstream either: the note sits before the ⬆⬇ line and that regex only reaches what follows.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    full_reply = await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="好喔<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
+    assert "正在整理記憶" not in full_reply
+    assert USAGE_FOOTER_RE.sub("", full_reply) == "好喔"
+
+
+@pytest.mark.parametrize(
+    ("carries_turn_notices", "delta", "expected"),
+    [
+        (True, "好喔<write-memory>他喜歡繁體中文</write-memory>", True),
+        (True, "好喔<forget-memory>他討厭貓</forget-memory>", True),
+        (True, "好喔", False),
+        (False, "好喔<write-memory>他喜歡繁體中文</write-memory>", False),
+    ],
+    ids=["a-write-marker", "a-forget-marker", "no-marker", "a-media-persona-reply"],
+)
+async def test_the_pending_note_is_written_only_when_something_can_take_it_back(
+    carries_turn_notices: bool, delta: str, expected: bool
+) -> None:
+    """A promise of more to come must never outlive the thing that would withdraw it.
+
+    A media persona reply is the case that makes this a guard rather than a formality: markers
+    are extracted on every route, but only the QA route schedules memory, so that streamer would
+    caption a delivered image with `正在整理記憶⋯` and nothing would ever replace it.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message, carries_turn_notices=carries_turn_notices)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta=delta),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    assert (MEMORY_PENDING_NOTE in (message.replies[0].content or "")) is expected
+
+
+async def test_an_outcome_too_long_to_splice_withdraws_the_pending_note() -> None:
+    """A reply can have room for the promise and none for the answer that replaces it.
+
+    The pending note is a dozen characters; the outcome names what was recorded and runs
+    several times that. Declining the edit would leave `正在整理記憶⋯` standing for good, which
+    is the one outcome worse than showing nothing at all.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="x" * (DISCORD_MESSAGE_LIMIT - 90)),
+            _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+    assert MEMORY_PENDING_NOTE in (message.replies[0].content or "")
+
+    await streamer.set_memory_note(line=f"-# ✏️ 記下了 {'長' * 60}")
+
+    content = message.replies[0].content or ""
+    assert MEMORY_PENDING_NOTE not in content
+    assert "記下了" not in content
+    assert USAGE_FOOTER_RE.search(content) is not None
+
+
+async def test_no_pending_note_on_a_reply_that_chunks() -> None:
+    """A chunked reply's footer lives on a follow-up while the note would edit the parent.
+
+    So the outcome could never replace it: `set_memory_note` edits `self.reply`, and the note
+    it is looking for is on another message entirely.
+    """
+    message = FakeMessage()
+    streamer = ResponseStreamer(message=message)
+    await streamer.stream(
+        responses=_stream_events_from([
+            _text_event(delta="x" * DISCORD_MESSAGE_LIMIT),
+            _text_event(delta="<write-memory>他喜歡繁體中文</write-memory>"),
+            _completed_event(input_tokens=3, output_tokens=4),
+        ])
+    )
+
+    # Each overflow chunk is a reply to the previous chunk, so the whole chain has to be walked:
+    # `message.replies` alone holds the parent, and the note would be on the tail chunk with the
+    # footer, where checking only the parent would never see it.
+    chunks = [message.replies[0]]
+    while chunks[-1].replies:
+        chunks.append(chunks[-1].replies[-1])
+    assert len(chunks) > 1, "the reply did not chunk, so this test proves nothing"
+    assert all(MEMORY_PENDING_NOTE not in (chunk.content or "") for chunk in chunks)
 
 
 def _assert_no_voice_tags(text: str) -> None:
@@ -8265,10 +8421,10 @@ def test_absent_member_is_counted_never_credited_by_id_or_the_alias_row(
         context=MemoryReadContext(guild_id=None, dm_partner_id=None),
     )
 
-    credits = memory_lookup_credits(memories=memories)
-    assert credits.named == ()
-    assert credits.unnamed == 1
-    assert credits.total == 1
+    footer_credits = memory_lookup_credits(memories=memories)
+    assert footer_credits.named == ()
+    assert footer_credits.unnamed == 1
+    assert footer_credits.total == 1
     # The model still reads the row the credit refused.
     assert memories[0].prompt_label == "Boss(社群暱稱:李董)"
 

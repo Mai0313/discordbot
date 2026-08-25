@@ -18,7 +18,7 @@ import re
 import json
 
 from nextcord import User, Member, Message, DMChannel
-from pydantic import Field, BaseModel, ConfigDict
+from pydantic import Field, BaseModel
 from nextcord.utils import escape_mentions
 from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.response_input_param import EasyInputMessageParam

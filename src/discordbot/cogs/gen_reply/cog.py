@@ -95,6 +95,8 @@ from discordbot.typings.context_budgets import (
 )
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
 from discordbot.cogs.gen_reply.streaming import (
+    MEMORY_WRITE_EMOJI,
+    MEMORY_FORGET_EMOJI,
     ResponseStreamer,
     current_answer_streamer,
     stream_answer_with_retry,
@@ -344,24 +346,30 @@ def _memory_report_for(
     lets someone correct a memory the bot got wrong, on the spot — so a `source_only`
     observation, which is exactly the kind that should not be repeated in a channel long after
     the exchange scrolls past, is counted instead of quoted.
+
+    Every branch produces a line, the empty summary included. The streamer put `正在整理記憶⋯`
+    on the reply the moment it landed, so saying nothing here would leave that promise standing
+    over a turn that has finished and recorded nothing.
     """
 
     async def report(summary: MemoryWriteSummary) -> None:
-        """Splices one subtext line onto the reply describing what was recorded."""
+        """Replaces the reply's memory note with what this turn actually recorded."""
+        lines: list[str] = []
         parts: list[str] = []
         if summary.remembered:
             parts.append("、".join(summary.remembered))
         if summary.private:
-            parts.append(f"{summary.private} 則私下的")
-        line = ""
+            # Counted, never quoted, and phrased as its own clause: "N 則私下的" read as a
+            # fragment of whatever preceded it, and had no subject at all on a turn that
+            # recorded nothing else.
+            parts.append(f"另外私下記了 {summary.private} 則")
         if parts:
-            line = f"-# <:tag:1517563887573143595> 記下了:{'；'.join(parts)}"
+            lines.append(f"-# {MEMORY_WRITE_EMOJI} 記下了 {'；'.join(parts)}")
         if summary.forgotten:
-            forgotten = "、".join(summary.forgotten)
-            line = f"{line}\n" if line else ""
-            line = f"{line}-# <:tag:1517563887573143595> 不再記得:{forgotten}"
-        if line:
-            await streamer.append_footnote(line=line)
+            lines.append(f"-# {MEMORY_FORGET_EMOJI} 不再記得 {'、'.join(summary.forgotten)}")
+        if not lines:
+            lines.append(f"-# {MEMORY_WRITE_EMOJI} 這次沒有記下什麼")
+        await streamer.set_memory_note(line="\n".join(lines))
 
     return report
 

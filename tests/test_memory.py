@@ -1022,6 +1022,22 @@ async def _wait_for_inflight() -> None:
         await task
 
 
+async def _drain_scope() -> None:
+    """Awaits every queued turn for the test user, the deferred replays included.
+
+    `_wait_for_inflight` awaits the one task in flight when it is called, which says nothing
+    about the turns queued behind it: each replay is started by a done-callback, so the next
+    task only exists once the loop has run the callback for the previous one.
+    """
+    while True:
+        task = pipeline._inflight_tasks.get(USER_SCOPE)
+        if task is None:
+            return
+        await asyncio.gather(task, return_exceptions=True)
+        # Lets the done-callback run, which is what starts the next queued turn.
+        await asyncio.sleep(0)
+
+
 async def _wait_for_persisted_writes() -> None:
     """Drains the pipeline's detached reply.db writes, for a DEFERRED turn's row.
 
@@ -1324,6 +1340,147 @@ async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_
     assert reported[0].remembered == ("偏好繁體中文",)
     assert reported[0].private == 1
     assert "正在跟人吵架" not in str(reported[0])
+
+
+@pytest.mark.parametrize(
+    "outcome", ["kept-nothing", "review-failed", "cleared-mid-flight", "raised"]
+)
+async def test_a_turn_that_records_nothing_still_answers_the_report(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """The reply is showing `正在整理記憶⋯`, so every way a turn can end has to take it back.
+
+    Four of them record nothing, and before this they were all silent, which left the promise
+    standing over work that had finished. The guarantee is a `finally` in `_run_memory_update`
+    rather than a report call per branch, because the branch that forgets to report is exactly
+    the one nobody notices.
+    """
+    del memory_isolated_dir
+
+    def _blow_up(**kwargs: object) -> str:
+        """Stands in for a store read that fails after the review succeeded."""
+        del kwargs
+        raise RuntimeError("detail read blew up")
+
+    extractor, fake_client = _extractor()
+    if outcome == "review-failed":
+        # The LLM call itself failing, which parks the row for the restart sweep. Not the same
+        # as a review that returned nothing: that one is `kept-nothing`.
+        fake_client.responses.raises = RuntimeError("the evaluator call blew up")
+    elif outcome == "raised":
+        monkeypatch.setattr(pipeline, "read_detail_tail", _blow_up)
+    else:
+        fake_client.responses.output_parsed = RawMemoryDraft(has_signal=False, observations=())
+    reported: list[MemoryWriteSummary] = []
+
+    async def record(summary: MemoryWriteSummary) -> None:
+        """Captures what the pipeline decided to report."""
+        reported.append(summary)
+
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+        remember_notes=_NOTES,
+        report=record,
+    )
+    if outcome == "cleared-mid-flight":
+        mark_cleared(scope=USER_SCOPE)
+    await _wait_for_inflight()
+
+    assert len(reported) == 1
+    assert reported[0].is_empty
+
+
+async def test_a_failed_review_still_reports_the_forget_it_already_wrote(
+    memory_isolated_dir: Path,
+) -> None:
+    """A forget is durable before the evaluator runs, so a failed review does not hide it.
+
+    Its remembered half stays empty rather than being guessed at: the notes that would fill it
+    are exactly what the call that failed was reviewing.
+
+    The turn carries a remember note as well, and has to: `evaluate` short-circuits on an empty
+    `notes` and never reaches the LLM, so a forget-only turn cannot fail this way at all.
+    """
+    del memory_isolated_dir
+    extractor, fake_client = _extractor()
+    fake_client.responses.raises = RuntimeError("the evaluator call blew up")
+    reported: list[MemoryWriteSummary] = []
+
+    async def record(summary: MemoryWriteSummary) -> None:
+        """Captures what the pipeline decided to report."""
+        reported.append(summary)
+
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+        remember_notes=("他換了新桌機",),
+        forget_notes=("別再提那台舊筆電",),
+        report=record,
+    )
+    await _wait_for_inflight()
+
+    assert len(reported) == 1
+    assert reported[0].forgotten == ("別再提那台舊筆電",)
+    assert reported[0].remembered == ()
+
+
+async def test_a_superseded_turn_is_still_told_what_became_of_its_notes(
+    memory_isolated_dir: Path,
+) -> None:
+    """Merging two deferred turns' notes must merge their reports, not overwrite the older one.
+
+    `_merged_payload` carries the superseded turn's notes into the payload that replaces it, so
+    that reply is still waiting on an answer. Dropping its report the way the transcript is
+    dropped would leave it saying `正在整理記憶⋯` for good.
+
+    Three turns, because that is what it takes to reach the merge: the first occupies the scope
+    and the other two queue behind it under the same subject, which is where one payload
+    absorbs the other.
+    """
+    del memory_isolated_dir
+    extractor, fake_client = _extractor()
+    fake_client.responses.output_parsed = RawMemoryDraft(
+        has_signal=True,
+        observations=(_observation(summary="偏好繁體中文", normalized_key="preference.lang"),),
+    )
+    seen: dict[str, list[MemoryWriteSummary]] = {"first": [], "superseded": [], "newest": []}
+
+    def _recorder(key: str) -> pipeline.MemoryWriteReport:
+        """Builds a report callback that records which reply was answered."""
+
+        async def record(summary: MemoryWriteSummary) -> None:
+            """Captures what this turn's reply was told."""
+            seen[key].append(summary)
+
+        return record
+
+    for key, note in (
+        ("first", "他喜歡繁體中文"),
+        ("superseded", "他在台北工作"),
+        ("newest", "他養了一隻貓"),
+    ):
+        pipeline.schedule_memory_update(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}",
+            message_list=_user_message(),
+            full_reply="回覆",
+            extractor=extractor,
+            identity=IDENTITY,
+            remember_notes=(note,),
+            report=_recorder(key=key),
+        )
+    await _drain_scope()
+
+    assert [len(reports) for reports in seen.values()] == [1, 1, 1]
 
 
 async def test_pipeline_no_op_gate_writes_nothing(memory_isolated_dir: Path) -> None:
