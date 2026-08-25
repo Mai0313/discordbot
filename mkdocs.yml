@@ -62,7 +62,9 @@ nav:
                   - link_sources:
                       - bilibili: Reference/discordbot/cogs/gen_reply/link_sources/bilibili.md
                       - douyin: Reference/discordbot/cogs/gen_reply/link_sources/douyin.md
+                      - registry: Reference/discordbot/cogs/gen_reply/link_sources/registry.md
                       - threads: Reference/discordbot/cogs/gen_reply/link_sources/threads.md
+                  - answer: Reference/discordbot/cogs/gen_reply/answer.md
                   - capabilities: Reference/discordbot/cogs/gen_reply/capabilities.md
                   - cog: Reference/discordbot/cogs/gen_reply/cog.md
                   - context: Reference/discordbot/cogs/gen_reply/context.md
@@ -71,10 +73,17 @@ nav:
                   - input: Reference/discordbot/cogs/gen_reply/input.md
                   - interactions: Reference/discordbot/cogs/gen_reply/interactions.md
                   - markers: Reference/discordbot/cogs/gen_reply/markers.md
+                  - media_reply: Reference/discordbot/cogs/gen_reply/media_reply.md
+                  - pipeline: Reference/discordbot/cogs/gen_reply/pipeline.md
                   - prompts: Reference/discordbot/cogs/gen_reply/prompts.md
                   - recall: Reference/discordbot/cogs/gen_reply/recall.md
+                  - references: Reference/discordbot/cogs/gen_reply/references.md
+                  - research_bridge: Reference/discordbot/cogs/gen_reply/research_bridge.md
+                  - routing: Reference/discordbot/cogs/gen_reply/routing.md
+                  - speculation: Reference/discordbot/cogs/gen_reply/speculation.md
                   - streaming: Reference/discordbot/cogs/gen_reply/streaming.md
                   - toolkit: Reference/discordbot/cogs/gen_reply/toolkit.md
+                  - turn_state: Reference/discordbot/cogs/gen_reply/turn_state.md
               - log_msg:
                   - cog: Reference/discordbot/cogs/log_msg/cog.md
               - media_cleanup:
@@ -137,6 +146,7 @@ nav:
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - douyin: Reference/discordbot/utils/douyin.md
               - downloader: Reference/discordbot/utils/downloader.md
+              - file_downloads: Reference/discordbot/utils/file_downloads.md
               - images: Reference/discordbot/utils/images.md
               - interaction_responses: Reference/discordbot/utils/interaction_responses.md
               - llm: Reference/discordbot/utils/llm.md
