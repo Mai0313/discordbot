@@ -183,7 +183,7 @@ class MemoryCredits(BaseModel):
     is worth printing, while an unnamed one is worth counting and nothing more. The unnamed
     are the table-only members of a server memory's `## 成員稱呼`, who carry no Discord label
     anywhere in the conversation and whose name cannot be fetched from anywhere trustworthy
-    (`gen_reply/memory_tool.py::MemoryCandidate` carries why), so the alternative to counting
+    (`gen_reply/recall.py::RecallCandidate` carries why), so the alternative to counting
     them is publishing a raw snowflake nobody in the channel can resolve.
 
     Attributes:

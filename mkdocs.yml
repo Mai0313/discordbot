@@ -71,8 +71,8 @@ nav:
                   - input: Reference/discordbot/cogs/gen_reply/input.md
                   - interactions: Reference/discordbot/cogs/gen_reply/interactions.md
                   - markers: Reference/discordbot/cogs/gen_reply/markers.md
-                  - memory_tool: Reference/discordbot/cogs/gen_reply/memory_tool.md
                   - prompts: Reference/discordbot/cogs/gen_reply/prompts.md
+                  - recall: Reference/discordbot/cogs/gen_reply/recall.md
                   - streaming: Reference/discordbot/cogs/gen_reply/streaming.md
                   - toolkit: Reference/discordbot/cogs/gen_reply/toolkit.md
               - log_msg:

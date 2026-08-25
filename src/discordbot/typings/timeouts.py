@@ -51,7 +51,7 @@ from typing import Final
 # this grace before the reply answers with its deterministic participant memories, so a slow
 # selector can never cost the author, reply-chain authors, or explicitly mentioned users.
 # Tune against the `gen_reply memory selection done` latency log.
-MEMORY_SELECT_GRACE_SECONDS: Final[float] = 2.0
+RECALL_SELECT_GRACE_SECONDS: Final[float] = 2.0
 
 # Effort grading runs in parallel with the route under the same `route_done` gate as
 # memory selection: it runs unbounded while the route is in flight and gets only this
