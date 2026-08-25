@@ -31,8 +31,8 @@ from discordbot.services.memory.store import (
     read_memory_document,
 )
 from discordbot.services.memory.deltas import apply_deltas, sweep_stale_facts
+from discordbot.services.memory.writer import MemoryFactDelta
 from discordbot.services.memory.constants import STABLE_FRESHNESS_WINDOW_DAYS
-from discordbot.services.memory.extraction import MemoryFactDelta
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,

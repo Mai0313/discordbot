@@ -103,6 +103,7 @@ from discordbot.cogs.gen_reply.prompts import (
     REQUEST_LOCATION_CONTEXT_PROMPT,
 )
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.services.memory.writer import subject_source_line, target_centered_memory_messages
 from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
     HISTORY_MESSAGE_LIMIT,
@@ -127,10 +128,6 @@ from discordbot.services.memory.pipeline import (
     resume_memory_update,
     consolidate_if_needed,
     schedule_memory_update,
-)
-from discordbot.services.memory.extraction import (
-    subject_source_line,
-    target_centered_memory_messages,
 )
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.interactions import (

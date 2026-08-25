@@ -20,7 +20,7 @@ from discordbot.services.memory.pipeline import RegenerationReport
 from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 
 if TYPE_CHECKING:
-    from discordbot.services.memory.extraction import MemoryWriterAI
+    from discordbot.services.memory.writer import MemoryWriterAI
 
 pytestmark = pytest.mark.usefixtures("memory_isolated_dir")
 

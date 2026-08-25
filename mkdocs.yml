@@ -110,13 +110,13 @@ nav:
                   - constants: Reference/discordbot/services/memory/constants.md
                   - database: Reference/discordbot/services/memory/database.md
                   - deltas: Reference/discordbot/services/memory/deltas.md
-                  - extraction: Reference/discordbot/services/memory/extraction.md
                   - facts: Reference/discordbot/services/memory/facts.md
                   - git_history: Reference/discordbot/services/memory/git_history.md
                   - pipeline: Reference/discordbot/services/memory/pipeline.md
                   - prompts: Reference/discordbot/services/memory/prompts.md
                   - server_prompts: Reference/discordbot/services/memory/server_prompts.md
                   - store: Reference/discordbot/services/memory/store.md
+                  - writer: Reference/discordbot/services/memory/writer.md
           - typings:
               - colors: Reference/discordbot/typings/colors.md
               - config: Reference/discordbot/typings/config.md

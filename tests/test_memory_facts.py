@@ -59,7 +59,7 @@ from discordbot.services.memory.deltas import (
     render_existing_facts,
     tone_evidence_from_raw,
 )
-from discordbot.services.memory.extraction import MemoryFactDelta
+from discordbot.services.memory.writer import MemoryFactDelta
 
 _OWNER = MemoryOwner(owner_id=111, owner_name="Alice (alice)")
 _NOW = datetime(2026, 7, 1, 12, 0, 0, tzinfo=UTC)

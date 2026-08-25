@@ -72,16 +72,7 @@ from discordbot.services.memory.deltas import (
     partition_raw_entries,
     partition_forget_requests,
 )
-from discordbot.services.memory.prompts import (
-    PHASE2_PROMPT,
-    PHASE1_EVALUATOR_PROMPT,
-    PHASE2_COMPACTION_BLOCK,
-)
-from discordbot.services.memory.constants import (
-    COMPACTION_TARGET_CHARS,
-    MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
-)
-from discordbot.services.memory.extraction import (
+from discordbot.services.memory.writer import (
     MemoryWriterAI,
     RawMemoryDraft,
     MemoryFactDelta,
@@ -98,6 +89,15 @@ from discordbot.services.memory.extraction import (
     filter_duplicate_observations,
     target_centered_memory_messages,
     observation_key_sources_from_text,
+)
+from discordbot.services.memory.prompts import (
+    PHASE2_PROMPT,
+    PHASE1_EVALUATOR_PROMPT,
+    PHASE2_COMPACTION_BLOCK,
+)
+from discordbot.services.memory.constants import (
+    COMPACTION_TARGET_CHARS,
+    MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
 )
 
 from tests.helpers.casting import as_bot, as_interaction
@@ -928,7 +928,7 @@ def test_transcript_indents_bodies_so_markers_cannot_be_forged() -> None:
 
 
 def test_transcript_from_messages_truncates_middle(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("discordbot.services.memory.extraction.MEMORY_TRANSCRIPT_MAX_CHARS", 200)
+    monkeypatch.setattr("discordbot.services.memory.writer.MEMORY_TRANSCRIPT_MAX_CHARS", 200)
     message_list = [
         EasyInputMessageParam(role="user", content=f"user message {index} " + "x" * 50)
         for index in range(20)
@@ -2772,10 +2772,8 @@ def test_transcript_caps_reply_so_current_message_survives_truncation(
 ) -> None:
     # Pin the (now much larger) limits so the head/tail-vs-reply-cap interplay
     # stays deterministically exercised.
-    monkeypatch.setattr(
-        "discordbot.services.memory.extraction.MEMORY_TRANSCRIPT_MAX_CHARS", 12_000
-    )
-    monkeypatch.setattr("discordbot.services.memory.extraction.MEMORY_REPLY_MAX_CHARS", 2_000)
+    monkeypatch.setattr("discordbot.services.memory.writer.MEMORY_TRANSCRIPT_MAX_CHARS", 12_000)
+    monkeypatch.setattr("discordbot.services.memory.writer.MEMORY_REPLY_MAX_CHARS", 2_000)
     message_list = [
         EasyInputMessageParam(
             role="user", content=f"路人 (mob{index}) [id: {index}]: 閒聊 " + "x" * 80

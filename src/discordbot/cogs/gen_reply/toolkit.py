@@ -26,6 +26,7 @@ from nextcord.ext import commands
 from discordbot.typings.llm import GeminiKeySlot
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
+from discordbot.services.memory.writer import MemoryWriterAI
 from discordbot.cogs.gen_reply.generation import (
     ImageGenerator,
     MusicGenerator,
@@ -33,7 +34,6 @@ from discordbot.cogs.gen_reply.generation import (
     VoiceGenerator,
     PromptGenerator,
 )
-from discordbot.services.memory.extraction import MemoryWriterAI
 from discordbot.services.memory.server_prompts import (
     SERVER_PHASE2_PROMPT,
     SERVER_PHASE1_EVALUATOR_PROMPT,

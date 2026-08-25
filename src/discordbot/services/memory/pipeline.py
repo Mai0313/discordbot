@@ -55,6 +55,19 @@ from discordbot.services.memory.deltas import (
     tone_evidence_from_raw,
     partition_forget_requests,
 )
+from discordbot.services.memory.writer import (
+    MemoryWriterAI,
+    MemoryObservation,
+    ConsolidatedMemory,
+    ConsolidationRequest,
+    parse_turn_payload,
+    render_turn_payload,
+    parse_subject_source,
+    render_forget_requests,
+    transcript_from_messages,
+    render_memory_observations,
+    filter_duplicate_observations,
+)
 from discordbot.typings.context_budgets import (
     MEMORY_MERGED_NOTES_MAX,
     MEMORY_INJECTION_MAX_CHARS,
@@ -68,19 +81,6 @@ from discordbot.services.memory.constants import (
     RAW_CONSOLIDATION_THRESHOLD,
     MEMORY_REGENERATION_COOLDOWN_SECONDS,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
-)
-from discordbot.services.memory.extraction import (
-    MemoryWriterAI,
-    MemoryObservation,
-    ConsolidatedMemory,
-    ConsolidationRequest,
-    parse_turn_payload,
-    render_turn_payload,
-    parse_subject_source,
-    render_forget_requests,
-    transcript_from_messages,
-    render_memory_observations,
-    filter_duplicate_observations,
 )
 from discordbot.services.memory.git_history import memory_git
 

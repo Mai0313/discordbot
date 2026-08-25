@@ -71,9 +71,9 @@ from discordbot.services.memory.store import (
     unaccounted_files,
 )
 from discordbot.services.memory.deltas import partition_raw_entries
+from discordbot.services.memory.writer import MemoryWriterAI
 from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 from discordbot.services.memory.pipeline import flavor_of, regenerate_main_memory
-from discordbot.services.memory.extraction import MemoryWriterAI
 
 if TYPE_CHECKING:
     from openai.types.shared.reasoning_effort import ReasoningEffort

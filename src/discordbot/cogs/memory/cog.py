@@ -36,13 +36,13 @@ from discordbot.services.memory.store import (
     list_compartments,
     read_memory_document,
 )
+from discordbot.services.memory.writer import MemoryWriterAI
 from discordbot.services.memory.pipeline import (
     flavor_of,
     regeneration_on_cooldown,
     regeneration_has_evidence,
     schedule_memory_regeneration,
 )
-from discordbot.services.memory.extraction import MemoryWriterAI
 from discordbot.services.gemini_keys.balancer import lease_model_catalog
 
 _SUCCESS_EMBED_COLOR = DISCORD_GREEN
