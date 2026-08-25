@@ -92,9 +92,7 @@ class DeltaOutcome(BaseModel):
         return not self.rejected
 
 
-def partition_raw_entries(
-    raw_text: str, flavor: MemoryFlavor, compartments: tuple[str, ...] = ()
-) -> dict[str, str]:
+def partition_raw_entries(raw_text: str, flavor: MemoryFlavor) -> dict[str, str]:
     """Splits a raw batch into per-compartment texts, keyed by compartment.
 
     Routing is entirely deterministic: `sharing: global` is cross-server safe and goes
@@ -102,13 +100,8 @@ def partition_raw_entries(
     Server-flavor observations carry neither field by design (a server memory is one
     guild by construction), so they all land in that scope's single compartment.
 
-    A forget request is the exception and is COPIED into several compartments, because the
-    fact it names may be stored in any of them and a request routed to one would simply fail
-    to find it. `_forget_targets` decides which, from `compartments` (the ones the scope
-    actually has on disk) and the source the request was spoken in. An empty `compartments`
-    drops forget requests entirely, which is what the detail-file and rebuild callers want:
-    there the batch is evidence to ground facts in, and an already-executed forget is neither
-    evidence nor still pending.
+    Forget requests are NOT here: they are their own pass, in `partition_forget_requests`,
+    for the reason that function gives.
 
     Each observation keeps the `## <timestamp>` header of the entry it came from, so
     the consolidation prompt still sees dated, oldest-first evidence.
@@ -116,27 +109,36 @@ def partition_raw_entries(
     buckets: dict[str, list[tuple[str, str]]] = {}
     for timestamp, block in _iter_observations(text=raw_text):
         if _is_forget_request(block=block):
-            targets = _forget_targets(block=block, compartments=compartments)
-        else:
-            targets = (
-                (GLOBAL_COMPARTMENT,)
-                if flavor == "server"
-                else (_compartment_for_block(block=block),)
-            )
-        for compartment in targets:
-            buckets.setdefault(compartment, []).append((timestamp, block))
+            continue
+        compartment = (
+            GLOBAL_COMPARTMENT if flavor == "server" else _compartment_for_block(block=block)
+        )
+        buckets.setdefault(compartment, []).append((timestamp, block))
     return {compartment: _render_entries(blocks=blocks) for compartment, blocks in buckets.items()}
 
 
-def is_forget_only(text: str) -> bool:
-    """Whether one compartment's bucket carries nothing but forget requests.
+def partition_forget_requests(raw_text: str, compartments: tuple[str, ...]) -> dict[str, str]:
+    """Splits the forget requests in a raw batch into their own per-compartment texts.
 
-    Such a bucket is applied with `deletes_only`, which is what makes broadcasting a forget
-    safe: the compartments it reaches beyond the one holding the fact are handed a sentence
-    that may be `source_only`, and this is the guarantee that none of them can write it down.
+    Deliberately separate from `partition_raw_entries` rather than a bucket alongside the
+    observations, because a forget must never share a consolidation call with them. The call
+    that carries one is applied with `deletes_only`, and that flag is per call: on a turn that
+    both remembered and forgot something, a combined bucket would leave nothing but a prompt
+    line stopping the model from writing the forget's own sentence into a compartment it was
+    copied into precisely because it could not reach the fact any other way. Keeping the two
+    apart costs one extra call on a mixed turn and keeps the guarantee structural.
+
+    A request is COPIED into every compartment its speaker could read from, since the fact it
+    names may be stored in any of them; `_forget_targets` decides which. An empty
+    `compartments` yields nothing at all.
     """
-    blocks = _iter_observations(text=text)
-    return bool(blocks) and all(_is_forget_request(block=block) for _, block in blocks)
+    buckets: dict[str, list[tuple[str, str]]] = {}
+    for timestamp, block in _iter_observations(text=raw_text):
+        if not _is_forget_request(block=block):
+            continue
+        for compartment in _forget_targets(block=block, compartments=compartments):
+            buckets.setdefault(compartment, []).append((timestamp, block))
+    return {compartment: _render_entries(blocks=blocks) for compartment, blocks in buckets.items()}
 
 
 def _is_forget_request(block: str) -> bool:

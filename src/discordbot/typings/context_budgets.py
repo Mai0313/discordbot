@@ -132,6 +132,14 @@ MEMORY_TRANSCRIPT_MAX_CHARS: Final[int] = 100_000
 # bounds the count, and because a batch cap would let one runaway note starve the rest.
 MEMORY_NOTE_MAX_CHARS: Final[int] = 400
 
+# How many notes of one kind survive a merge, when several turns were skipped while one memory
+# update was in flight and their notes were folded into one payload. Distinct from the per-reply
+# cap in `cogs/gen_reply/markers.py`, which bounds what ONE answer may emit and cannot be imported
+# here anyway (`services/` never reads from `cogs/`): this one bounds the request that carries the
+# accumulated result, which is why it lives with the other request budgets. Two replies' worth,
+# because a merge that deep already means the pipeline is behind.
+MEMORY_MERGED_NOTES_MAX: Final[int] = 10
+
 # Cap for the bot's own reply inside that transcript. The reply is secondary evidence and is
 # appended last, so without this cap a long (e.g. SUMMARY) reply fills the entire kept tail and
 # the middle-truncation drops the current user message right before it.

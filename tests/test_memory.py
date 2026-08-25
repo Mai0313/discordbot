@@ -8,6 +8,7 @@ import asyncio
 from pathlib import Path
 from datetime import UTC, datetime
 import contextlib
+from collections import Counter
 
 import pytest
 from nextcord import Embed, Locale
@@ -65,7 +66,12 @@ from discordbot.services.memory.store import (
     list_compartments,
     read_memory_document,
 )
-from discordbot.services.memory.deltas import apply_deltas, partition_raw_entries
+from discordbot.services.memory.deltas import (
+    DeltaOutcome,
+    apply_deltas,
+    partition_raw_entries,
+    partition_forget_requests,
+)
 from discordbot.services.memory.prompts import (
     PHASE2_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
@@ -1113,10 +1119,10 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
     """
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
     forget = render_forget_requests(notes=("使用者已經不住台中了",), source="guild 42")
-    buckets = partition_raw_entries(
-        raw_text=forget, flavor="user", compartments=("global", "g/42", "g/99")
-    )
+    buckets = partition_forget_requests(raw_text=forget, compartments=("global", "g/42", "g/99"))
     assert sorted(buckets) == ["g/42", "global"]
+    # And it is not in the observation partition at all, so it can never share a call with one.
+    assert partition_raw_entries(raw_text=forget, flavor="user") == {}
     # And the compartments it reaches may only delete, never write the sentence down.
     outcome = apply_deltas(
         scope=USER_SCOPE,
@@ -1148,6 +1154,133 @@ async def test_forget_reaches_a_fact_stored_in_another_compartment(
     assert outcome.created == 0
     assert outcome.dropped == 1
     assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
+
+
+async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mixed turn is the one that would quietly turn the guarantee into a prompt rule.
+
+    "Forget I live in Taichung, and call me 阿明" writes both a forget request and a
+    `sharing="global"` observation into the same batch. Handed to one call, the only thing
+    left stopping the model from filing the forget's own sentence as a `global` fact would be
+    a line in the prompt, and that sentence was copied into `global` precisely because it
+    could not reach the fact any other way. So the forget gets its own call, applied with
+    `deletes_only`, and the observation gets a separate one.
+    """
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
+    extractor, fake_client = _extractor()
+    requests: list[str] = []
+    forget_pass_deltas: list[bool] = []
+    real_apply = pipeline.apply_deltas
+
+    def recording_apply(**kwargs: Any) -> DeltaOutcome:  # noqa: ANN401 -- a pass-through of the real signature
+        """Records whether each applied batch was gated to deletions."""
+        forget_pass_deltas.append(bool(kwargs.get("deletes_only", False)))
+        return real_apply(**kwargs)
+
+    async def recording_parse(**kwargs: object) -> SimpleNamespace:
+        """Captures every request body and answers with the schema each phase asked for."""
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        requests.append(str(cast("dict[str, object]", inputs[0])["content"]))
+        if kwargs.get("text_format") is RawMemoryDraft:
+            return _parsed(output=_draft("希望被叫阿明", normalized_key="preference.name"))
+        return _parsed(output=_no_change())
+
+    monkeypatch.setattr("discordbot.services.memory.pipeline.apply_deltas", recording_apply)
+    monkeypatch.setattr(fake_client.responses, "parse", recording_parse)
+    pipeline.schedule_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+        message_list=_user_message(),
+        full_reply="回覆",
+        extractor=extractor,
+        identity=IDENTITY,
+        remember_notes=("使用者希望被叫阿明",),
+        forget_notes=("使用者已經不住台中了",),
+    )
+    await _wait_for_inflight()
+
+    consolidations = [body for body in requests if "<raw_entries>" in body]
+    forget_calls = [body for body in consolidations if "forget_request" in body]
+    observation_calls = [body for body in consolidations if "### stable_preference" in body]
+    assert forget_calls, "the forget reached consolidation"
+    assert observation_calls, "the observation reached consolidation"
+    # No call mixes the two, in either direction.
+    assert all("### stable_preference" not in body for body in forget_calls)
+    assert all("forget_request" not in body for body in observation_calls)
+    # The forget's call could only delete; the observation's could write.
+    assert Counter(forget_pass_deltas) == Counter({
+        True: len(forget_calls),
+        False: len(observation_calls),
+    })
+
+
+async def test_regenerate_does_not_resurrect_a_forgotten_fact(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rebuild derives from evidence, and the evidence a forget removed is still in detail.md.
+
+    Without replaying the forget requests afterwards, `/memory regenerate` re-creates exactly
+    what the user asked to have removed, and does it every time they run it.
+    """
+    monkeypatch.setattr(
+        "discordbot.services.memory.pipeline.MEMORY_REGENERATION_COOLDOWN_SECONDS", 0.0
+    )
+    # The evidence a forget was aimed at, retired to the cold tier as consolidation leaves it,
+    # plus the forget request itself.
+    append_detail(
+        scope=USER_SCOPE,
+        text=render_memory_observations(
+            observations=(_observation(summary="住在台中", normalized_key="fact.city"),),
+            source="guild 42",
+        ),
+    )
+    append_raw_entry(
+        scope=USER_SCOPE,
+        entry_text=render_forget_requests(notes=("使用者已經不住台中了",), source="guild 42"),
+    )
+    write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
+    extractor, fake_client = _extractor()
+    deletes_only_calls: list[bool] = []
+    real_apply = pipeline.apply_deltas
+
+    def recording_apply(**kwargs: Any) -> DeltaOutcome:  # noqa: ANN401 -- a pass-through of the real signature
+        """Records the write gate each applied batch ran under."""
+        deletes_only_calls.append(bool(kwargs.get("deletes_only", False)))
+        return real_apply(**kwargs)
+
+    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Rebuilds the fact from evidence, then answers the forget pass with a no-op."""
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        body = str(cast("dict[str, object]", inputs[0])["content"])
+        if "forget_request" in body:
+            return _parsed(output=_no_change())
+        return _parsed(
+            output=ConsolidatedMemory(
+                deltas=(
+                    MemoryFactDelta(
+                        action="create",
+                        section="fact",
+                        durability="stable",
+                        summary="住在台中",
+                        text="使用者住在台中",
+                    ),
+                )
+            )
+        )
+
+    monkeypatch.setattr("discordbot.services.memory.pipeline.apply_deltas", recording_apply)
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    report = await pipeline.regenerate_main_memory(
+        scope=USER_SCOPE, extractor=extractor, identity=IDENTITY
+    )
+    assert report.result == "regenerated"
+    # The forget was replayed against the rebuilt tree, under the same deletion-only gate the
+    # incremental path uses, so its own sentence still could not be written anywhere.
+    assert True in deletes_only_calls
 
 
 async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_dir: Path) -> None:
@@ -1331,6 +1464,64 @@ async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
     # The replay carries the note of the turn it superseded as well as its own.
     assert "記住 Y" in seen_notes[-1]
     assert "記住 Z" in seen_notes[-1]
+
+
+async def test_pipeline_never_merges_notes_across_conversation_sources(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A note written in one guild must never be replayed under another guild's source stamp.
+
+    The scope is guild-independent, so holding one pending turn per scope and keeping only the
+    newest subject would file a `source_only` observation derived from guild A's note into
+    `g/<B>`, readable by a server the speaker never said it in. Pending turns are therefore
+    held per source and replayed one after another, each keeping its own subject.
+    """
+    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
+    extractor, fake_client = _extractor()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    requests: list[str] = []
+
+    async def slow_parse(**kwargs: object) -> SimpleNamespace:
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        first = cast("dict[str, object]", inputs[0])
+        requests.append(str(first["content"]))
+        started.set()
+        if not release.is_set():
+            await release.wait()
+        return _parsed(output=_no_signal())
+
+    monkeypatch.setattr(fake_client.responses, "parse", slow_parse)
+    for guild, note in ((99, "在 99 說的"), (77, "在 77 說的"), (99, "也在 99 說的")):
+        pipeline.schedule_memory_update(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=guild)}",
+            message_list=_user_message(),
+            full_reply="回覆",
+            extractor=extractor,
+            identity=IDENTITY,
+            remember_notes=(note,),
+        )
+        if guild == 99 and note == "在 99 說的":
+            await started.wait()
+    release.set()
+    # Each replay ends in the same done-callback, which starts the next pending source.
+    while (task := pipeline._inflight_tasks.get(USER_SCOPE)) is not None:
+        await task
+
+    by_note = {
+        note: request
+        for note in ("在 99 說的", "在 77 說的", "也在 99 說的")
+        for request in requests
+        if note in request
+    }
+    assert len(by_note) == 3
+    assert "source: guild 77" in by_note["在 77 說的"]
+    assert "source: guild 99" in by_note["也在 99 說的"]
+    # The two sources never share a request, in either direction.
+    assert "在 77 說的" not in by_note["也在 99 說的"]
+    assert "也在 99 說的" not in by_note["在 77 說的"]
 
 
 async def test_pipeline_consolidates_at_threshold(
@@ -3085,14 +3276,18 @@ async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir
     )
     captured_at = time.monotonic()
     extractor, _ = _extractor()
-    pipeline._pending_updates[USER_SCOPE] = pipeline._PendingMemoryUpdate(
-        subject=f"target_user_id: {USER_ID}",
-        transcript="Alice (alice) [id: 123456789]: 哈囉",
-        extractor=extractor,
-        identity=IDENTITY,
-        captured_at=captured_at,
-        token=7,
-    )
+    subject = f"target_user_id: {USER_ID}"
+    # Pending turns are held per conversation source, so the map is scope -> subject -> turn.
+    pipeline._pending_updates[USER_SCOPE] = {
+        subject: pipeline._PendingMemoryUpdate(
+            subject=subject,
+            transcript="Alice (alice) [id: 123456789]: 哈囉",
+            extractor=extractor,
+            identity=IDENTITY,
+            captured_at=captured_at,
+            token=7,
+        )
+    }
     mark_cleared(scope=USER_SCOPE)
     done_task = asyncio.create_task(asyncio.sleep(0))
     await done_task
