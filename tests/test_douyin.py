@@ -384,6 +384,24 @@ def test_unreadable_page_without_a_challenge_marker_is_a_plain_error(
     assert not isinstance(excinfo.value, DouyinBlockedError | DouyinUnavailableError)
 
 
+def test_a_moved_payload_shape_is_unreadable_never_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `videoInfoRes` that no longer validates must not read as a deleted post.
+
+    The models answer a moved shape at the boundary rather than several frames later, and
+    which outcome it lands on is the load-bearing half: `DouyinUnavailableError` is the one
+    wording that sends somebody off to re-check a link that is perfectly fine.
+    """
+    page = _router_html(page_key="note", video_info={"item_list": {"0": _VIDEO_ITEM}})
+    _install_session(monkeypatch=monkeypatch, handler=lambda url, kwargs: _FakeResponse(text=page))
+    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
+
+    with pytest.raises(DouyinError) as excinfo:
+        downloader.parse_metadata(url=f"https://www.douyin.com/video/{_VIDEO_ID}")
+    assert not isinstance(excinfo.value, DouyinBlockedError | DouyinUnavailableError)
+
+
 def test_share_page_is_fetched_from_the_note_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Normalisation must target share/note, which serves both post types."""
     calls = _install_session(

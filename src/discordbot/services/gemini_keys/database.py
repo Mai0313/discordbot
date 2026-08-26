@@ -12,35 +12,19 @@ catch-up to one day's traffic.
 
 Its own file rather than a table in `reply.db`, because the keys are not a reply concept:
 every cog that calls a Gemini model draws from the same pool. Engine, PRAGMA hooks and the
-lazy schema bootstrap follow `services/memory/database.py`, including the module-level
-`AsyncEngine` singleton (a per-instance `cached_property` engine would leak the pool and
-dialect cache).
+lazy schema bootstrap follow the other five databases through `SqliteBootstrap`, including
+the module-level `AsyncEngine` singleton (a per-instance `cached_property` engine would leak
+the pool and dialect cache).
 """
 
-from typing import Any
-
-from sqlalchemy import String, Integer, event, select
+from sqlalchemy import String, Integer, select
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
-from discordbot.utils.asyncio_locks import LoopLocalLock
-from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
+from discordbot.utils.sqlite_config import SqliteBootstrap
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/llm_keys.db")
-
-
-@event.listens_for(_engine.sync_engine, "connect")
-def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures a newly opened SQLite connection."""
-    configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
-def _configure_sqlite_on_checkout(
-    dbapi_connection: object, _connection_record: object, _connection_proxy: object
-) -> None:
-    """Re-applies the PRAGMA setup when a pooled connection is checked out."""
-    configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 class Base(DeclarativeBase):
@@ -63,36 +47,18 @@ class GeminiKeyUsageRow(Base):
     count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
-_schema_ready_for: AsyncEngine | None = None
-_schema_lock = LoopLocalLock()
+_database = SqliteBootstrap(metadata=Base.metadata)
+_database.install_hooks(engine=_engine)
 
 
 async def _ensure_schema() -> None:
     """Bootstraps this module's table once per engine (loop-local-locked)."""
-    global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    ensure_sqlite_hooks(
-        engine=_engine,
-        on_connect_fn=_configure_sqlite,
-        on_checkout_fn=_configure_sqlite_on_checkout,
-    )
-    if _schema_ready_for is _engine:
-        return
-    async with _schema_lock.get():
-        if _schema_ready_for is _engine:
-            return
-        async with _engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        _schema_ready_for = _engine
+    await _database.ensure_schema(engine=_engine)
 
 
 def open_session() -> AsyncSession:
     """Creates an async session bound to the current llm_keys.db engine."""
-    ensure_sqlite_hooks(
-        engine=_engine,
-        on_connect_fn=_configure_sqlite,
-        on_checkout_fn=_configure_sqlite_on_checkout,
-    )
-    return AsyncSession(bind=_engine, expire_on_commit=False)
+    return _database.open_session(engine=_engine)
 
 
 async def read_day_counts(day: str) -> dict[int, int]:

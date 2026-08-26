@@ -47,7 +47,6 @@ async def research_isolated_db(
     async with engine.begin() as conn:
         await conn.run_sync(ResearchBase.metadata.create_all)
     monkeypatch.setattr("discordbot.cogs.research.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs.research.database._schema_ready_for", None)
     yield
     await engine.dispose()
 
@@ -62,7 +61,6 @@ async def feedback_isolated_db(
     async with engine.begin() as conn:
         await conn.run_sync(FeedbackBase.metadata.create_all)
     monkeypatch.setattr("discordbot.cogs.feedback.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs.feedback.database._schema_ready_for", None)
     yield
     await engine.dispose()
 
@@ -83,9 +81,9 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.services.memory.git_history.memory_git.enabled", False)
     monkeypatch.setattr("discordbot.services.memory.git_history.memory_git._queue", None)
     monkeypatch.setattr("discordbot.services.memory.pipeline._last_consolidation", {})
-    monkeypatch.setattr("discordbot.services.memory.pipeline._last_regeneration", {})
+    monkeypatch.setattr("discordbot.services.memory.regeneration._last_regeneration", {})
     monkeypatch.setattr("discordbot.services.memory.pipeline._consecutive_rejections", {})
-    monkeypatch.setattr("discordbot.services.memory.pipeline._db_tasks", set())
+    monkeypatch.setattr("discordbot.services.memory.inflight._db_tasks", set())
     # Point the memory_job engine at a throwaway reply.db so no test ever writes the
     # real file: every schedule_memory_update now persists, and those writes are
     # swallowed best-effort, so a missing swap would pass green while polluting the
@@ -95,7 +93,6 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
         url=f"sqlite+aiosqlite:///{tmp_path / 'memory_reply.db'}", poolclass=NullPool
     )
     monkeypatch.setattr("discordbot.services.memory.database._engine", memory_db_engine)
-    monkeypatch.setattr("discordbot.services.memory.database._schema_ready_for", None)
     monkeypatch.setattr("discordbot.services.memory.database._token_sequence", count(start=1))
     monkeypatch.setattr("discordbot.services.memory.database._token_block_bases", {})
     # _scope_locks, _staging_locks, _inflight_tasks, _pending_updates, _regeneration_tasks
@@ -220,6 +217,5 @@ def gemini_key_balancer_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     keys_db_path = tmp_path / "llm_keys.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{keys_db_path}", poolclass=NullPool)
     monkeypatch.setattr("discordbot.services.gemini_keys.database._engine", engine)
-    monkeypatch.setattr("discordbot.services.gemini_keys.database._schema_ready_for", None)
     reset_balancer_state()
     return keys_db_path

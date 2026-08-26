@@ -8,6 +8,7 @@ from discordbot.typings.games import (
     BlackjackPlayerSettlement,
     BlackjackInsuranceSettlement,
 )
+from discordbot.typings.economy import apply_vip_blackjack_bonus
 from discordbot.cogs.games.blackjack import (
     BlackjackRound,
     BlackjackHandState,
@@ -19,7 +20,6 @@ from discordbot.cogs.games.blackjack import (
 from discordbot.services.economy.database import (
     get_vip,
     apply_round_settlement,
-    apply_vip_blackjack_bonus,
     apply_blackjack_settlement,
 )
 

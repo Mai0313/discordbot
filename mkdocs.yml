@@ -121,10 +121,13 @@ nav:
                   - deltas: Reference/discordbot/services/memory/deltas.md
                   - facts: Reference/discordbot/services/memory/facts.md
                   - git_history: Reference/discordbot/services/memory/git_history.md
+                  - inflight: Reference/discordbot/services/memory/inflight.md
                   - pipeline: Reference/discordbot/services/memory/pipeline.md
                   - prompts: Reference/discordbot/services/memory/prompts.md
+                  - regeneration: Reference/discordbot/services/memory/regeneration.md
                   - server_prompts: Reference/discordbot/services/memory/server_prompts.md
                   - store: Reference/discordbot/services/memory/store.md
+                  - tone: Reference/discordbot/services/memory/tone.md
                   - writer: Reference/discordbot/services/memory/writer.md
           - typings:
               - colors: Reference/discordbot/typings/colors.md

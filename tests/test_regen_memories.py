@@ -16,8 +16,8 @@ from discordbot.services.memory.store import (
     append_raw_entry,
     read_raw_entries,
 )
-from discordbot.services.memory.pipeline import RegenerationReport
 from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
+from discordbot.services.memory.regeneration import RegenerationReport
 
 if TYPE_CHECKING:
     from discordbot.services.memory.writer import MemoryWriterAI

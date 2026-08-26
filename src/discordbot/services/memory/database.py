@@ -13,10 +13,12 @@ a row already newer than the clear makes `clear_job` refuse rather than report a
 empty scope, so the caller never erases the files behind a tombstone that no-opped.
 
 Engine, PRAGMA hooks, and the schema bootstrap follow `cogs/research/database.py`
-exactly: a module-level `AsyncEngine` singleton on the shared `reply.db` (a
-per-instance `cached_property` engine would leak the pool / dialect cache), with
-this module owning its own `Base` and the `memory_job` table, distinct from
-research's `research` table in the same file. No money columns, so no
+exactly, through the shared `SqliteBootstrap`: a module-level `AsyncEngine` singleton
+on the shared `reply.db` (a per-instance `cached_property` engine would leak the pool /
+dialect cache), with this module owning its own `Base` and the `memory_job` table,
+distinct from research's `research` table in the same file. The two keep separate
+engines and separate bootstraps precisely because the metadata differs, so one of them
+cannot create or mark the other's table. No money columns, so no
 `StoredInteger`. Like research it avoids `from __future__ import annotations`:
 SQLAlchemy resolves the `Mapped[datetime]` columns at class-definition time.
 
@@ -30,20 +32,19 @@ token, so a stale turn's write no-ops once a newer turn has overwritten the
 scope's row.
 """
 
-from typing import Any, Literal, cast
+from typing import Literal, cast
 from datetime import datetime
 from itertools import count
 from threading import Lock
 
 from pydantic import Field, BaseModel
-from sqlalchemy import Text, String, Integer, DateTime, func, text, event, select, update
+from sqlalchemy import Text, String, Integer, DateTime, func, text, select, update
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.utils.timezone import database_now as _database_now
-from discordbot.utils.asyncio_locks import LoopLocalLock
-from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
+from discordbot.utils.sqlite_config import SqliteBootstrap
 
 # Memory flavor stored per row so the restart sweep rebuilds the matching writer.
 MemoryJobFlavor = Literal["user", "server"]
@@ -63,24 +64,6 @@ _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/databas
 _token_sequence = count(start=1)
 _token_block_bases: dict[AsyncEngine, int] = {}
 _token_state_lock = Lock()
-
-
-def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Applies the project's standard PRAGMA setup to a new reply.db connection."""
-    configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
-@event.listens_for(_engine.sync_engine, "connect")
-def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures a newly opened SQLite connection."""
-    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
-def _configure_sqlite_on_checkout(
-    dbapi_connection: object, _connection_record: object, _connection_proxy: object
-) -> None:
-    """Configures pooled connections from test-swapped engines."""
-    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 class Base(DeclarativeBase):
@@ -147,36 +130,18 @@ class MemoryJob(BaseModel):
     last_error: str | None = Field(..., description="Bounded failure blurb when failed.")
 
 
-_schema_ready_for: AsyncEngine | None = None
-_schema_lock = LoopLocalLock()
+_database = SqliteBootstrap(metadata=Base.metadata)
+_database.install_hooks(engine=_engine)
 
 
 async def _ensure_schema() -> None:
     """Bootstraps this module's tables once per engine (loop-local-locked)."""
-    global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    ensure_sqlite_hooks(
-        engine=_engine,
-        on_connect_fn=_configure_sqlite,
-        on_checkout_fn=_configure_sqlite_on_checkout,
-    )
-    if _schema_ready_for is _engine:
-        return
-    async with _schema_lock.get():
-        if _schema_ready_for is _engine:
-            return
-        async with _engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        _schema_ready_for = _engine
+    await _database.ensure_schema(engine=_engine)
 
 
 def open_session() -> AsyncSession:
     """Creates an async session bound to the current reply.db engine."""
-    ensure_sqlite_hooks(
-        engine=_engine,
-        on_connect_fn=_configure_sqlite,
-        on_checkout_fn=_configure_sqlite_on_checkout,
-    )
-    return AsyncSession(bind=_engine, expire_on_commit=False)
+    return _database.open_session(engine=_engine)
 
 
 def cast_flavor(value: str) -> MemoryJobFlavor:

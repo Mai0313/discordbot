@@ -23,11 +23,10 @@ from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
 from discordbot.services.memory.facts import render_owner_identity
-from discordbot.services.memory.store import read_owner, iter_scopes
+from discordbot.services.memory.store import flavor_of, read_owner, iter_scopes
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import (
-    flavor_of,
     needs_consolidation,
     safe_list_resumable,
     resume_memory_update,

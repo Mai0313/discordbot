@@ -104,6 +104,11 @@ def scope_owner_id(scope: str) -> int:
     return int(scope.rsplit("/", maxsplit=1)[-1])
 
 
+def flavor_of(scope: str) -> MemoryFlavor:
+    """Maps a scope to its memory flavor (`server_scope` carries a '/')."""
+    return "server" if "/" in scope else "user"
+
+
 def memory_root() -> Path:
     """Returns the store root, read through this accessor so tests can relocate it."""
     return _MEMORY_DIR

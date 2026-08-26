@@ -63,6 +63,7 @@ from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
 from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
+    flavor_of,
     read_facts,
     read_owner,
     iter_scopes,
@@ -74,7 +75,7 @@ from discordbot.services.memory.store import (
 from discordbot.services.memory.deltas import partition_raw_entries
 from discordbot.services.memory.writer import MemoryWriterAI
 from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
-from discordbot.services.memory.pipeline import flavor_of, regenerate_scope_memory
+from discordbot.services.memory.regeneration import regenerate_scope_memory
 
 if TYPE_CHECKING:
     from openai.types.shared.reasoning_effort import ReasoningEffort
@@ -234,7 +235,7 @@ async def _regen_one(
     removed = 0
     async with semaphore:
         # The script calls the rebuild directly rather than through the reply pipeline,
-        # so it needs its own bound: `_memory_semaphore` is entered inside
+        # so it needs its own bound: `pipeline.memory_semaphore` is entered inside
         # `regenerate_scope_memory`, but nothing else here throttles the fan-out.
         try:
             # Inside the handler because it is not safe either: `read_owner` parses the

@@ -328,7 +328,7 @@ class RuntimeModelCatalog(BaseModel):
 
         Callers: the note evaluator (`MemoryWriterAI.evaluate`, its `evaluate_model` field)
         and phase-2 consolidation (`MemoryWriterAI.consolidate`, its `consolidate_model`
-        field), which also backs `regenerate_scope_memory`, plus `scripts/regen_memories.py`,
+        field), which also backs `regeneration.regenerate_scope_memory`, plus `scripts/regen_memories.py`,
         which defaults to this tier to drive that rebuild offline.
 
         There is no separate extractor tier any more. #596 moved the decision of what is worth

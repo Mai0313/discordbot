@@ -466,7 +466,6 @@ async def test_ensure_schema_bootstraps_current_databases(
     db_path = tmp_path / "current-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-    monkeypatch.setattr("discordbot.services.economy.database._schema_ready_for", None)
 
     await _ensure_schema()
 
@@ -521,7 +520,6 @@ async def test_ensure_schema_serializes_concurrent_first_use(
     db_path = tmp_path / "concurrent-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-    monkeypatch.setattr("discordbot.services.economy.database._schema_ready_for", None)
 
     await asyncio.gather(*(_ensure_schema() for _ in range(20)))
 
@@ -2267,15 +2265,18 @@ async def test_ensure_schema_seeds_dragon_gate_jackpot_once(
     db_path = tmp_path / "seed-economy.db"
     engine = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-    monkeypatch.setattr("discordbot.services.economy.database._schema_ready_for", None)
 
     await _ensure_schema()
     first_balance = await get_jackpot_pool(game_id="dragon_gate")
     assert first_balance == 1_000
 
-    # Calling again is idempotent: the seed must not pile on top of itself.
-    monkeypatch.setattr("discordbot.services.economy.database._schema_ready_for", None)
+    # Calling again is idempotent: the seed must not pile on top of itself. A second engine on
+    # the same file is what makes the bootstrap actually run again — readiness is tracked by
+    # engine identity — and it is also what a restart against a seeded database looks like.
+    restarted = create_async_engine(url=f"sqlite+aiosqlite:///{db_path}")
+    monkeypatch.setattr("discordbot.services.economy.database._engine", restarted)
     await _ensure_schema()
     assert await get_jackpot_pool(game_id="dragon_gate") == 1_000
 
+    await restarted.dispose()
     await engine.dispose()

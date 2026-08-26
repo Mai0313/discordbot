@@ -25,6 +25,40 @@ MAX_SINGLE_BET: Final[int] = 1_000_000
 MESSAGE_REWARD_COOLDOWN_SECONDS: Final[float] = 60.0
 # Permanent money sink: a burn on every /give transfer, in basis points.
 TRANSFER_TAX_BPS: Final[int] = 500
+# Blackjack VIP perk: 1.2x payout on winning rounds, applied as floor(delta * 6 / 5).
+_VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
+_VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
+
+
+def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
+    """Converts a user-facing monthly percent into basis points."""
+    return max(
+        MIN_LOAN_MONTHLY_RATE_BPS,
+        min(MAX_LOAN_MONTHLY_RATE_BPS, round(monthly_rate_percent * 100)),
+    )
+
+
+def monthly_rate_bps_to_percent(monthly_rate_bps: int) -> float:
+    """Converts stored monthly basis points into a display percent."""
+    return monthly_rate_bps / 100
+
+
+def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
+    """Applies the VIP 1.2x payout multiplier on a winning player delta.
+
+    The bonus only fires on positive deltas (wins). Pushes and losses pass
+    through unchanged so VIP never softens a loss.
+
+    Args:
+        delta: Pre-bonus player delta for the round.
+        is_vip: VIP status of the account at settlement time.
+
+    Returns:
+        Post-bonus player delta.
+    """
+    if not is_vip or delta <= 0:
+        return delta
+    return delta * _VIP_WIN_MULTIPLIER_NUM // _VIP_WIN_MULTIPLIER_DEN
 
 
 class LoanLenderType(StrEnum):
@@ -471,4 +505,7 @@ __all__ = [
     "RoundSettlementResult",
     "TransferResult",
     "VipPurchaseResult",
+    "apply_vip_blackjack_bonus",
+    "monthly_rate_bps_to_percent",
+    "monthly_rate_percent_to_bps",
 ]

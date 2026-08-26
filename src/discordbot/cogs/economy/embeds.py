@@ -18,14 +18,12 @@ from discordbot.typings.economy import (
     LossLeaderboardEntry,
     BalanceAdjustmentResult,
     LoanProposalAcceptResult,
+    apply_vip_blackjack_bonus,
+    monthly_rate_bps_to_percent,
 )
 from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
     BALANCE_LEADERBOARD_BOARD_FILENAME,
-)
-from discordbot.services.economy.database import (
-    apply_vip_blackjack_bonus,
-    monthly_rate_bps_to_percent,
 )
 from discordbot.services.economy.presentation import (
     CURRENCY_NAME,

@@ -42,7 +42,6 @@ async def games_isolated_db(
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     monkeypatch.setattr("discordbot.cogs.games.database._engine", engine)
-    monkeypatch.setattr("discordbot.cogs.games.database._schema_ready_for", None)
     yield
     await engine.dispose()
 
