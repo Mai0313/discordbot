@@ -16,6 +16,7 @@ from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import DISCORD_GREEN, DISCORD_YELLOW
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.memory.views import (
     MEMORY_EMBED_COLOR,
     MEMORY_PAGE_MAX_CHARS,
@@ -112,6 +113,8 @@ class MemoryCogs(commands.Cog):
             Locale.ja: "ボットの長期記憶を管理します。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def memory(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for memory management."""

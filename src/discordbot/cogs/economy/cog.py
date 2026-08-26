@@ -17,6 +17,7 @@ from discordbot.typings.economy import (
     LoanLenderType,
     monthly_rate_percent_to_bps,
 )
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.cogs.economy.boards import (
     LOSS_LEADERBOARD_BOARD_FILENAME,
@@ -106,6 +107,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: f"economy admin 専用：{CURRENCY_NAME}メンテナンス操作を実行します。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def admin(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for economy admin operations."""
@@ -264,6 +267,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: f"member の{CURRENCY_NAME}残高、loan、VIP 状態を確認します。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def balance(
         self,
@@ -314,6 +319,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: f"グローバル{CURRENCY_NAME}トップ10を表示します。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
         """Replies with the top 10 point holders.
@@ -350,6 +357,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: f"本日累計で失った{CURRENCY_NAME}の上位10名 (毎日 0:00 リセット)。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def loss_leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
         """Replies with the top 10 gross casino losses for the current day.
@@ -386,6 +395,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: f"他のメンバーまたは bot に{CURRENCY_NAME}を送ります。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def give(
         self,
@@ -491,6 +502,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "カジノシステムの累計 P&L を表示します。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def casino(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the casino system's accumulated P&L (was `/house`)."""
@@ -508,6 +521,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "ボットプレイヤー自身の財布を表示します (/balance @bot のショートカット)。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def pocat(self, interaction: Interaction[commands.Bot]) -> None:
         """Shows the bot player's `user_wallet` balance and gross flows."""
@@ -551,6 +566,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "personal credit 操作。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def credit(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for personal credit operations."""
@@ -880,6 +897,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "中央銀行 loan 操作。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def central_bank(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group for central bank operations."""
@@ -1142,6 +1161,8 @@ class EconomyCogs(commands.Cog):
             Locale.ja: "永久 VIP を購入: Blackjack 勝利 1.2x。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def vip_command(self, interaction: Interaction[commands.Bot]) -> None:
         """Buys the permanent VIP perk for a one-time fixed cost.

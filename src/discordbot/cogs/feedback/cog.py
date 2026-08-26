@@ -39,6 +39,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.config import FeedbackConfig
 from discordbot.utils.timezone import as_taipei, database_now
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.feedback.auth import AppCredentials, TokenCredentials, GitHubCredentials
 from discordbot.cogs.feedback.views import (
     MAX_PANEL_TICKETS,
@@ -621,6 +622,8 @@ class FeedbackCogs(commands.Cog):
             Locale.ja: "不具合や要望を開発者に送り、返信を確認します。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def feedback(self, interaction: Interaction[commands.Bot]) -> None:
         """Opens the caller's own report panel."""

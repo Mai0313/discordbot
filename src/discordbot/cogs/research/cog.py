@@ -42,6 +42,7 @@ from discordbot.typings.colors import DISCORD_RED
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import THREAD_TITLE_TIMEOUT_SECONDS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.research.agent import (
@@ -207,6 +208,8 @@ class ResearchCogs(commands.Cog):
             Locale.ja: "スレッドで引用付きのディープリサーチを実行します（数分かかり、完了時にメンションします）。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def deep_research(
         self,

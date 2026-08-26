@@ -4,10 +4,13 @@ import re
 import ast
 from pathlib import Path
 
+from nextcord import IntegrationType, InteractionContextType
+
 # The whole module, not the five tag constants by name: reading its namespace is what lets a
 # sixth marker be noticed instead of quietly falling outside a fixed import list.
 from discordbot.cogs.gen_reply import markers
 from discordbot.typings.economy import LOAN_PROPOSAL_TIMEOUT_SECONDS
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.gen_reply.capabilities import CAPABILITIES_DOC, render_capabilities_block
 
 _CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
@@ -16,6 +19,14 @@ _CODE_SPAN_RE = re.compile(pattern=r"`([^`]+)`")
 # names a command where `_documented_commands` cannot read it.
 _BARE_COMMAND_RE = re.compile(pattern=r"(?<![\w:/.\-])(/[a-z][\w-]*)")
 _PICKER_GATE_KEYWORD = "default_member_permissions"
+# The two context fields every root command owes, each mapped to the shared tuple that has to be
+# handed to it. Both are checked by the constant's name rather than by reading a literal: a
+# command spelling its own list out would pass a membership check while drifting from the other
+# fifteen, and it is the drift that costs a surface rather than any one list being wrong.
+_CONTEXT_DECLARATIONS = {
+    "integration_types": "INSTALL_CONTEXTS",
+    "contexts": "INTERACTION_CONTEXTS",
+}
 # Every boolean column on `UserAccount`, mapped to the wording it owes and the command lines
 # that owe it, or `None` when the flag gates no command. `is_admin`'s wording carries the term
 # its own refusal embed shows the user, so a refused member reads one name for the flag.
@@ -341,6 +352,39 @@ def _modules_declaring_a_picker_gate() -> list[str]:
     return sorted(declaring)
 
 
+def _undeclared_context_keywords(decorator: ast.Call) -> list[str]:
+    """Returns the context keywords a decorator does not hand the shared tuple named for it."""
+    named = {
+        keyword.arg: keyword.value.id
+        for keyword in decorator.keywords
+        if isinstance(keyword.value, ast.Name)
+    }
+    return [
+        keyword
+        for keyword, constant in _CONTEXT_DECLARATIONS.items()
+        if named.get(keyword) != constant
+    ]
+
+
+def _root_commands_missing_a_context() -> dict[str, list[str]]:
+    """Returns the root commands not declaring both shared tuples, each with what it is missing."""
+    cogs_dir = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
+    missing: dict[str, list[str]] = {}
+    for module in cogs_dir.rglob(pattern="*.py"):
+        label = module.relative_to(cogs_dir).as_posix()
+        for path, (decorator, _) in _module_command_declarations(
+            module=module, label=label
+        ).items():
+            # Subcommands are skipped rather than checked: Discord reads both fields off the root
+            # command alone, so a subcommand declaring either one would be inert.
+            if " " in path:
+                continue
+            undeclared = _undeclared_context_keywords(decorator=decorator)
+            if undeclared:
+                missing[f"/{path}"] = undeclared
+    return missing
+
+
 def test_slash_command_scan_resolves_subcommands() -> None:
     """The scan must reach group subcommands, since a silent shrink is what it guards against."""
     paths = _slash_command_paths()
@@ -558,6 +602,45 @@ def test_no_command_hides_behind_a_discord_permission() -> None:
     declared = _modules_declaring_a_picker_gate()
     assert not declared, (
         f"a command now hides behind a Discord permission: revisit capabilities.md {declared}"
+    )
+
+
+def test_every_root_command_declares_both_context_fields() -> None:
+    """A field left off a root command takes a whole surface away with no error anywhere.
+
+    Both are read off the root command alone, and nextcord leaves either one out of the payload
+    it builds whenever a command does not declare it. An absent `integration_types` is
+    guild-install-only. An absent `contexts` is stored as null, which Discord reads back through
+    the deprecated `dm_permission` boolean, and that flag can express "DMs with the bot" and
+    nothing else.
+
+    Both halves have already failed in production, and neither said a word. Discord held
+    `integration_types = [0, 1]` on all sixteen commands while not one decorator declared
+    anything, so what kept user installs alive was Discord preserving a field the payload never
+    sent, not this repo. `contexts` was the other half: a user install reached servers and DMs
+    with the bot while group DMs and DMs with anyone else had no commands at all, which is the
+    exact line `dm_permission` can draw.
+    """
+    missing = _root_commands_missing_a_context()
+    assert not missing, (
+        "these root commands do not hand Discord the shared context tuples, so each is missing "
+        f"from a surface it should reach: {missing}"
+    )
+
+
+def test_the_shared_context_tuples_reach_every_surface_discord_offers() -> None:
+    """The tuples themselves, checked against nextcord's enums rather than a copied list.
+
+    Written as "every member of the enum" because that is the actual intent: the bot should be
+    reachable wherever Discord can offer it. A new member appearing upstream turns this red,
+    which is the point — a surface Discord has just added is worth one look, and the alternative
+    is a hardcoded list that goes on passing while the bot is missing from somewhere new.
+    """
+    assert set(INSTALL_CONTEXTS) == set(IntegrationType), (
+        "INSTALL_CONTEXTS no longer covers every installation context Discord offers"
+    )
+    assert set(INTERACTION_CONTEXTS) == set(InteractionContextType), (
+        "INTERACTION_CONTEXTS no longer covers every surface a command can appear in"
     )
 
 

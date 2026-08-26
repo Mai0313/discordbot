@@ -132,6 +132,7 @@ nav:
                   - writer: Reference/discordbot/services/memory/writer.md
           - typings:
               - colors: Reference/discordbot/typings/colors.md
+              - commands: Reference/discordbot/typings/commands.md
               - config: Reference/discordbot/typings/config.md
               - context_budgets: Reference/discordbot/typings/context_budgets.md
               - douyin: Reference/discordbot/typings/douyin.md
