@@ -50,7 +50,7 @@ from discordbot.cogs.gen_reply.streaming import (
 )
 from discordbot.services.memory.pipeline import schedule_memory_update
 from discordbot.cogs.gen_reply.references import source_channel_is_public
-from discordbot.cogs.gen_reply.turn_state import dispatched_model
+from discordbot.cogs.gen_reply.turn_state import dispatched_model, watched_video_url
 from discordbot.cogs.gen_reply.capabilities import render_capabilities_block
 from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
@@ -388,6 +388,8 @@ class AnswerTurn(BaseModel):
             and bool(self.config.gemini_api_key.strip())
         )
         backend = "interactions" if use_interactions else "responses"
+        if use_interactions:
+            watched_video_url.set(yt_url)
         if yt_url is not None and not use_interactions:
             # The swap is silent to the user, so without this the log shows a Responses answer to
             # a message the router explicitly asked to watch, with nothing saying which gate said
