@@ -60,13 +60,12 @@ from sqlalchemy import (
     desc,
     func,
     text,
-    event,
     select,
     update,
 )
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.sql.dml import ReturningInsert
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, AsyncConnection, create_async_engine
 from sqlalchemy.dialects.sqlite import insert
 
 from discordbot.utils.timezone import as_taipei as _as_taipei
@@ -105,7 +104,7 @@ from discordbot.typings.economy import (
     JackpotSettlementBatchResult,
 )
 from discordbot.utils.asyncio_locks import LoopLocalLock
-from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
+from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.stored_integer import StoredInteger, int_add_text, int_compare_text
 from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
@@ -125,27 +124,6 @@ def _taipei_midnight(now: datetime) -> datetime:
     """Returns the most recent Asia/Taipei 00:00 boundary at or before `now`."""
     local = _as_taipei(dt=now)
     return local.replace(hour=0, minute=0, second=0, microsecond=0)
-
-
-def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Configures a newly opened economy SQLite connection.
-
-    Foreign keys are enabled defensively for any future FK constraint.
-    """
-    configure_sqlite_connection(dbapi_connection=dbapi_connection, enable_foreign_keys=True)
-
-
-@event.listens_for(_engine.sync_engine, "connect")
-def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures a newly opened SQLite connection."""
-    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
-def _configure_sqlite_on_checkout(
-    dbapi_connection: object, _connection_record: object, _connection_proxy: object
-) -> None:
-    """Configures pooled connections from test-swapped engines."""
-    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 class Base(DeclarativeBase):
@@ -407,14 +385,6 @@ def _jackpot_seed_amount(game_id: str) -> int:
     return 0
 
 
-# Track which engine the schema has already been bootstrapped on. Storing
-# the engine identity (not just a bool) means swapping `_engine` (e.g. tests
-# pointing it at a temp file) automatically forces another schema check.
-# SQLAlchemy's SQLite `create_all(checkfirst=True)` still has a check-then-create
-# race under concurrent first use, so schema creation is serialized with
-# loop-local locks.
-_schema_ready_for: AsyncEngine | None = None
-_schema_lock = LoopLocalLock()
 _loan_accept_lock = LoopLocalLock()
 type _TopNCacheKey = tuple[int, int | None, bool]
 type _TopLosersCacheKey = tuple[int, int, bool, datetime]
@@ -464,57 +434,60 @@ def _stored_integer_desc_order(column: Any) -> tuple[Any, ...]:  # noqa: ANN401 
     )
 
 
-def _current_schema_lock() -> asyncio.Lock:
-    """Returns the schema bootstrap lock bound to the current event loop."""
-    return _schema_lock.get()
-
-
 def _current_loan_accept_lock() -> asyncio.Lock:
     """Serializes loan approval so central-bank capacity is consumed once."""
     return _loan_accept_lock.get()
 
 
+async def _seed_singleton_rows(conn: AsyncConnection) -> None:
+    """Seeds the jackpot pools and the casino ledger, inside `create_all`'s transaction.
+
+    Both are singleton rows the rest of this module assumes exist, so they are written in
+    the same transaction that creates the tables rather than in one of their own. Every
+    insert ignores a conflict, which is what makes a repeat bootstrap on the same file a
+    no-op instead of a reset.
+
+    Args:
+        conn: The open connection `create_all` just ran on.
+    """
+    for seed_game_id, seed_amount in _JACKPOT_SEEDS:
+        await conn.execute(
+            statement=insert(JackpotPool)
+            .values(
+                game_id=seed_game_id,
+                pool_balance=_stored_int_to_text(value=seed_amount),
+                total_contributed="0",
+                total_claimed="0",
+                seeded_amount=_stored_int_to_text(value=seed_amount),
+                generation=0,
+                updated_at=_database_now(),
+            )
+            .on_conflict_do_nothing(index_elements=["game_id"])
+        )
+    await conn.execute(
+        statement=insert(CasinoLedger)
+        .values(
+            ledger_id=CASINO_LEDGER_ID,
+            balance="0",
+            total_earned="0",
+            total_spent="0",
+            updated_at=_database_now(),
+        )
+        .on_conflict_do_nothing(index_elements=["ledger_id"])
+    )
+
+
+# Foreign keys are enabled defensively for any future FK constraint; economy is the only
+# one of the six databases that asks for them.
+_database = SqliteBootstrap(
+    metadata=Base.metadata, enable_foreign_keys=True, after_create=_seed_singleton_rows
+)
+_database.install_hooks(engine=_engine)
+
+
 async def _ensure_schema() -> None:
     """Bootstraps the economy schema, jackpot seeds, and casino ledger once per engine."""
-    global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    ensure_sqlite_hooks(
-        engine=_engine,
-        on_connect_fn=_configure_sqlite,
-        on_checkout_fn=_configure_sqlite_on_checkout,
-    )
-    if _schema_ready_for is _engine:
-        return
-    async with _current_schema_lock():
-        if _schema_ready_for is _engine:
-            return
-        async with _engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-            for seed_game_id, seed_amount in _JACKPOT_SEEDS:
-                await conn.execute(
-                    statement=insert(JackpotPool)
-                    .values(
-                        game_id=seed_game_id,
-                        pool_balance=_stored_int_to_text(value=seed_amount),
-                        total_contributed="0",
-                        total_claimed="0",
-                        seeded_amount=_stored_int_to_text(value=seed_amount),
-                        generation=0,
-                        updated_at=_database_now(),
-                    )
-                    .on_conflict_do_nothing(index_elements=["game_id"])
-                )
-            await conn.execute(
-                statement=insert(CasinoLedger)
-                .values(
-                    ledger_id=CASINO_LEDGER_ID,
-                    balance="0",
-                    total_earned="0",
-                    total_spent="0",
-                    updated_at=_database_now(),
-                )
-                .on_conflict_do_nothing(index_elements=["ledger_id"])
-            )
-        _schema_ready_for = _engine
+    await _database.ensure_schema(engine=_engine)
 
 
 def open_session() -> AsyncSession:
@@ -523,12 +496,7 @@ def open_session() -> AsyncSession:
     Returns:
         An `AsyncSession` using the current module-level `_engine`.
     """
-    ensure_sqlite_hooks(
-        engine=_engine,
-        on_connect_fn=_configure_sqlite,
-        on_checkout_fn=_configure_sqlite_on_checkout,
-    )
-    return AsyncSession(bind=_engine, expire_on_commit=False)
+    return _database.open_session(engine=_engine)
 
 
 async def _upsert_user_metadata_in_session(

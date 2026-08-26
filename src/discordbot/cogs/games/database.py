@@ -15,12 +15,11 @@ card detail (player hands, dealer hand, insurance) is serialized into one typed
 `outcome` / `delta` columns drive filtering, ordering, and summaries.
 """
 
-from typing import Any, cast
-import asyncio
+from typing import cast
 from datetime import datetime
 from collections.abc import Sequence
 
-from sqlalchemy import Text, Index, String, Boolean, Integer, DateTime, event, select
+from sqlalchemy import Text, Index, String, Boolean, Integer, DateTime, select
 from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 
@@ -36,27 +35,11 @@ from discordbot.typings.games import (
 )
 from discordbot.utils.timezone import as_taipei as _as_taipei
 from discordbot.utils.timezone import database_now as _database_now
-from discordbot.utils.asyncio_locks import LoopLocalLock
-from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite_connection
+from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.cogs.games.blackjack import hand_value
 from discordbot.utils.stored_integer import StoredInteger
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/games.db")
-_schema_ready_for: AsyncEngine | None = None
-_schema_lock = LoopLocalLock()
-
-
-@event.listens_for(_engine.sync_engine, "connect")
-def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Configures a newly opened SQLite connection."""
-    configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
-def _configure_sqlite_on_checkout(
-    dbapi_connection: object, _connection_record: object, _connection_proxy: object
-) -> None:
-    """Configures pooled connections from test-swapped engines."""
-    configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 class Base(DeclarativeBase):
@@ -92,37 +75,18 @@ class BlackjackRoundResult(Base):
     )
 
 
-def _current_schema_lock() -> asyncio.Lock:
-    """Returns the schema bootstrap lock bound to the current event loop."""
-    return _schema_lock.get()
+_database = SqliteBootstrap(metadata=Base.metadata)
+_database.install_hooks(engine=_engine)
 
 
 async def _ensure_schema() -> None:
     """Bootstraps the games-history schema once per engine."""
-    global _schema_ready_for  # noqa: PLW0603 -- module-level cache by engine identity
-    ensure_sqlite_hooks(
-        engine=_engine,
-        on_connect_fn=_configure_sqlite,
-        on_checkout_fn=_configure_sqlite_on_checkout,
-    )
-    if _schema_ready_for is _engine:
-        return
-    async with _current_schema_lock():
-        if _schema_ready_for is _engine:
-            return
-        async with _engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        _schema_ready_for = _engine
+    await _database.ensure_schema(engine=_engine)
 
 
 def open_session() -> AsyncSession:
     """Creates an async session bound to the current games-history engine."""
-    ensure_sqlite_hooks(
-        engine=_engine,
-        on_connect_fn=_configure_sqlite,
-        on_checkout_fn=_configure_sqlite_on_checkout,
-    )
-    return AsyncSession(bind=_engine, expire_on_commit=False)
+    return _database.open_session(engine=_engine)
 
 
 def _history_hand(hand: BlackjackHandSettlement) -> BlackjackHistoryHand:
