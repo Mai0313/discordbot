@@ -130,9 +130,12 @@ class DiscordBot(commands.Bot):
         self.price_table_task.start()
 
         app_info = await self.application_info()
-        invite_url = (
-            f"https://discord.com/oauth2/authorize?client_id={app_info.id}&permissions=8&scope=bot"
-        )
+        # Scopes and permissions are deliberately left off: they live in the Developer Portal's
+        # Default Install Settings, and the authorize page reads them from there. A link that
+        # hardcodes `scope=bot` can only offer the server install, so the "add to my apps" choice
+        # disappears from it — which is how this one, once pasted into the Portal as a custom
+        # install URL, silently switched user installs off for everybody.
+        invite_url = f"https://discord.com/oauth2/authorize?client_id={app_info.id}"
         logfire.info("Bot Started", bot_name=bot_user.name, bot_id=bot_user.id)
         logfire.info("Invite Link", invite_url=invite_url)
 
