@@ -116,6 +116,7 @@ nav:
                   - balancer: Reference/discordbot/services/gemini_keys/balancer.md
                   - database: Reference/discordbot/services/gemini_keys/database.md
               - memory:
+                  - consolidation: Reference/discordbot/services/memory/consolidation.md
                   - constants: Reference/discordbot/services/memory/constants.md
                   - database: Reference/discordbot/services/memory/database.md
                   - deltas: Reference/discordbot/services/memory/deltas.md

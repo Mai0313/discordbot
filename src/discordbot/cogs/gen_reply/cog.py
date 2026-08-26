@@ -26,15 +26,11 @@ from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import flavor_of, read_owner, iter_scopes
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
-from discordbot.services.memory.pipeline import (
-    needs_consolidation,
-    safe_list_resumable,
-    resume_memory_update,
-    consolidate_if_needed,
-)
+from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.services.memory.git_history import memory_git
 from discordbot.services.gemini_keys.balancer import pick_gemini_key
+from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
 
 if TYPE_CHECKING:

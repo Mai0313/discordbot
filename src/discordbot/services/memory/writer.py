@@ -444,7 +444,7 @@ class MemoryWriterAI(BaseModel):
         No deadline is passed: every phase runs in the background with nobody waiting on it,
         so the client's own ceiling is the right bound (`constants.py` has what a stuck call
         costs while it holds the scope lock). What the fan-out AROUND these calls needs is a
-        different question, answered in `pipeline.py`.
+        different question, answered in `consolidation.py`.
         """
         return await parse_responses_or_none(
             client=self.client,

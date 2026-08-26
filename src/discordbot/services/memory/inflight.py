@@ -29,11 +29,7 @@ from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.services.memory import database as memory_db
-from discordbot.utils.asyncio_locks import (
-    KeyedLockManager,
-    LoopLocalRegistry,
-    LoopLocalSemaphore,
-)
+from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry, LoopLocalSemaphore
 from discordbot.services.memory.store import flavor_of, cleared_since
 from discordbot.services.memory.writer import (
     MemoryWriterAI,
