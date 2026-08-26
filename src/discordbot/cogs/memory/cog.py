@@ -29,6 +29,7 @@ from discordbot.cogs.memory.views import (
 )
 from discordbot.utils.llm_transcript import render_author_identity
 from discordbot.services.memory.store import (
+    flavor_of,
     read_tone,
     user_scope,
     server_scope,
@@ -37,8 +38,7 @@ from discordbot.services.memory.store import (
     read_memory_document,
 )
 from discordbot.services.memory.writer import MemoryWriterAI
-from discordbot.services.memory.pipeline import (
-    flavor_of,
+from discordbot.services.memory.regeneration import (
     regeneration_on_cooldown,
     regeneration_has_evidence,
     schedule_memory_regeneration,

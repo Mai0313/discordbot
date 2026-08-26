@@ -81,9 +81,9 @@ def memory_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path
     monkeypatch.setattr("discordbot.services.memory.git_history.memory_git.enabled", False)
     monkeypatch.setattr("discordbot.services.memory.git_history.memory_git._queue", None)
     monkeypatch.setattr("discordbot.services.memory.pipeline._last_consolidation", {})
-    monkeypatch.setattr("discordbot.services.memory.pipeline._last_regeneration", {})
+    monkeypatch.setattr("discordbot.services.memory.regeneration._last_regeneration", {})
     monkeypatch.setattr("discordbot.services.memory.pipeline._consecutive_rejections", {})
-    monkeypatch.setattr("discordbot.services.memory.pipeline._db_tasks", set())
+    monkeypatch.setattr("discordbot.services.memory.inflight._db_tasks", set())
     # Point the memory_job engine at a throwaway reply.db so no test ever writes the
     # real file: every schedule_memory_update now persists, and those writes are
     # swallowed best-effort, so a missing swap would pass green while polluting the

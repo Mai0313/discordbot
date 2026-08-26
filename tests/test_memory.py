@@ -31,7 +31,7 @@ from discordbot.typings.memory import (
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.memory.cog import MemoryCogs
 from discordbot.services.memory import database as memory_db
-from discordbot.services.memory import pipeline
+from discordbot.services.memory import inflight, pipeline, regeneration
 from discordbot.cogs.memory.views import (
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
@@ -45,6 +45,7 @@ from discordbot.services.memory.store import (
     DM_COMPARTMENT,
     GLOBAL_COMPARTMENT,
     clear_raw,
+    flavor_of,
     read_tone,
     read_facts,
     scope_lock,
@@ -1010,7 +1011,7 @@ def _user_message() -> list[EasyInputMessageParam]:
 
 async def _wait_for_inflight() -> None:
     """Awaits the scheduled background memory task for the test user."""
-    task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+    task = inflight._inflight_tasks.get(key=USER_SCOPE)
     if task is not None:
         await task
 
@@ -1023,7 +1024,7 @@ async def _drain_scope() -> None:
     task only exists once the loop has run the callback for the previous one.
     """
     while True:
-        task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+        task = inflight._inflight_tasks.get(key=USER_SCOPE)
         if task is None:
             return
         await asyncio.gather(task, return_exceptions=True)
@@ -1042,8 +1043,8 @@ async def _wait_for_persisted_writes() -> None:
     move on its own `cleared_since` check, which is what made the clear test
     flaky (#397).
     """
-    while pipeline._db_tasks:
-        await asyncio.gather(*list(pipeline._db_tasks))
+    while inflight._db_tasks:
+        await asyncio.gather(*list(inflight._db_tasks))
 
 
 async def test_pipeline_appends_raw_entry_on_signal(memory_isolated_dir: Path) -> None:
@@ -1312,7 +1313,7 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
     what the user asked to have removed, and does it every time they run it.
     """
     monkeypatch.setattr(
-        "discordbot.services.memory.pipeline.MEMORY_REGENERATION_COOLDOWN_SECONDS", 0.0
+        "discordbot.services.memory.regeneration.MEMORY_REGENERATION_COOLDOWN_SECONDS", 0.0
     )
     # The evidence a forget was aimed at, retired to the cold tier as consolidation leaves it,
     # plus the forget request itself.
@@ -1358,9 +1359,14 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
             )
         )
 
+    # Both, and that is the point: the rebuild writes its own facts through
+    # `regeneration.apply_deltas`, while the forget it replays afterwards runs back through
+    # the retained fan-out. Patching only the first would leave `deletes_only_calls` at
+    # `[False]` and the assertion below looking at the wrong half of the run.
     monkeypatch.setattr("discordbot.services.memory.pipeline.apply_deltas", recording_apply)
+    monkeypatch.setattr("discordbot.services.memory.regeneration.apply_deltas", recording_apply)
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
     assert report.result == "regenerated"
@@ -1524,7 +1530,7 @@ async def test_a_superseded_turn_is_still_told_what_became_of_its_notes(
     )
     seen: dict[str, list[MemoryWriteSummary]] = {"first": [], "superseded": [], "newest": []}
 
-    def _recorder(key: str) -> pipeline.MemoryWriteReport:
+    def _recorder(key: str) -> inflight.MemoryWriteReport:
         """Builds a report callback that records which reply was answered."""
 
         async def record(summary: MemoryWriteSummary) -> None:
@@ -1571,7 +1577,7 @@ async def test_a_merged_report_answers_the_newer_reply_when_the_older_one_raises
         """Records what the surviving reply was told."""
         seen.append(summary)
 
-    merged = pipeline._merged_report(newer=newer, older=older)
+    merged = inflight._merged_report(newer=newer, older=older)
     assert merged is not None
     await merged(MemoryWriteSummary(remembered=("偏好繁體中文",)))
 
@@ -1634,7 +1640,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         remember_notes=_NOTES,
     )
     await started.wait()
-    first_task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+    first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert first_task is not None
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
@@ -1654,12 +1660,12 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
-    assert pipeline._inflight_tasks.get(key=USER_SCOPE) is first_task
+    assert inflight._inflight_tasks.get(key=USER_SCOPE) is first_task
     release.set()
     await first_task
     # Only the newest skipped turn is replayed; its history already covers the
     # earlier skipped one.
-    replay_task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+    replay_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert replay_task is not None
     await replay_task
     assert count_raw_entries(scope=USER_SCOPE) == 2
@@ -1708,11 +1714,11 @@ async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
         )
         if note == "記住 X":
             await started.wait()
-    first_task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+    first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert first_task is not None
     release.set()
     await first_task
-    replay_task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+    replay_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert replay_task is not None
     await replay_task
     # The replay carries the note of the turn it superseded as well as its own.
@@ -1761,7 +1767,7 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
             await started.wait()
     release.set()
     # Each replay ends in the same done-callback, which starts the next pending source.
-    while (task := pipeline._inflight_tasks.get(key=USER_SCOPE)) is not None:
+    while (task := inflight._inflight_tasks.get(key=USER_SCOPE)) is not None:
         await task
 
     by_note = {
@@ -2161,10 +2167,10 @@ async def test_pipeline_background_failure_is_swallowed(
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
-    task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+    task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert task is not None
     await asyncio.wait([task])
-    assert pipeline._inflight_tasks.get(key=USER_SCOPE) is None
+    assert inflight._inflight_tasks.get(key=USER_SCOPE) is None
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
@@ -2286,7 +2292,7 @@ async def test_regenerate_scope_memory_rebuilds_from_evidence_only(
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2329,7 +2335,7 @@ async def test_regenerate_scope_memory_replaces_the_directory_not_only_what_it_c
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2360,7 +2366,7 @@ async def test_regenerate_scope_memory_never_calls_the_model_for_an_empty_compar
     leftover.mkdir(parents=True)
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2392,7 +2398,7 @@ async def test_regenerate_scope_memory_prunes_a_compartment_it_never_handed_to_t
     stray.write_text("操作者自己放的筆記", encoding="utf-8")
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2413,7 +2419,7 @@ async def test_regenerate_scope_memory_without_evidence_skips_llm(
     # Stored facts alone are not evidence: the rebuild never reads them back in.
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2421,20 +2427,20 @@ async def test_regenerate_scope_memory_without_evidence_skips_llm(
     assert fake_client.responses.parse_models == []
     assert "舊的整理" in _memory_text()
     # No LLM attempt happened, so the cooldown must stay untouched.
-    assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is False
+    assert regeneration.regeneration_on_cooldown(scope=USER_SCOPE) is False
 
 
 def test_regeneration_has_evidence_tracks_raw_and_detail(memory_isolated_dir: Path) -> None:
     # Stored facts alone are not evidence; only raw or detail counts.
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="舊的整理"))
-    assert pipeline.regeneration_has_evidence(scope=USER_SCOPE) is False
+    assert regeneration.regeneration_has_evidence(scope=USER_SCOPE) is False
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
-    assert pipeline.regeneration_has_evidence(scope=USER_SCOPE) is True
+    assert regeneration.regeneration_has_evidence(scope=USER_SCOPE) is True
 
 
 def test_regeneration_has_evidence_detects_detail_only(memory_isolated_dir: Path) -> None:
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
-    assert pipeline.regeneration_has_evidence(scope=USER_SCOPE) is True
+    assert regeneration.regeneration_has_evidence(scope=USER_SCOPE) is True
 
 
 async def test_regenerate_scope_memory_failure_keeps_existing_state(
@@ -2446,7 +2452,7 @@ async def test_regenerate_scope_memory_failure_keeps_existing_state(
     append_raw_entry(scope=USER_SCOPE, entry_text="偏好訊號:\n- 喜歡簡短回覆")
     fake_client.responses.raises = TimeoutError()
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2454,7 +2460,7 @@ async def test_regenerate_scope_memory_failure_keeps_existing_state(
     assert "舊的整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 1
     # Attempt-time cooldown: repeated failures are rate-limited too.
-    assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is True
+    assert regeneration.regeneration_on_cooldown(scope=USER_SCOPE) is True
 
 
 async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_failed(
@@ -2486,7 +2492,7 @@ async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_faile
         return _parsed(output=_consolidated(text="重建後的記憶"))
 
     monkeypatch.setattr(fake_client.responses, "parse", failing_second_parse)
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2496,12 +2502,12 @@ async def test_regenerate_scope_memory_reports_what_it_destroyed_before_it_faile
 
 
 def test_regeneration_cooldown_resets_after_clear(memory_isolated_dir: Path) -> None:
-    pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
-    assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is True
+    regeneration._last_regeneration[USER_SCOPE] = time.monotonic()
+    assert regeneration.regeneration_on_cooldown(scope=USER_SCOPE) is True
     # A clear wipes the memory the cooldown belonged to; the fresh post-clear
     # state deserves a prompt rebuild, mirroring the consolidation cooldown.
     mark_cleared(scope=USER_SCOPE)
-    assert pipeline.regeneration_on_cooldown(scope=USER_SCOPE) is False
+    assert regeneration.regeneration_on_cooldown(scope=USER_SCOPE) is False
 
 
 async def test_regenerate_scope_memory_recheck_cooldown_under_lock(
@@ -2512,9 +2518,9 @@ async def test_regenerate_scope_memory_recheck_cooldown_under_lock(
     # An invocation queued behind a held lock passes the command-level check
     # before the in-flight one stamps the attempt; the locked re-check is what
     # keeps the per-user limit on the expensive rewrite.
-    pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
+    regeneration._last_regeneration[USER_SCOPE] = time.monotonic()
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2533,7 +2539,7 @@ async def test_regenerate_scope_memory_aborts_write_after_clear(
         return _parsed(output=_consolidated(text="不該被寫入"))
 
     monkeypatch.setattr(fake_client.responses, "parse", clearing_parse)
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2646,7 +2652,7 @@ async def test_memory_regenerate_command_blocked_by_cooldown(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cog = _memory_cog()
-    pipeline._last_regeneration[USER_SCOPE] = time.monotonic()
+    regeneration._last_regeneration[USER_SCOPE] = time.monotonic()
     scheduled = False
 
     def fake_schedule(scope: str, writer: object, identity: str) -> bool:
@@ -2673,13 +2679,13 @@ async def test_schedule_memory_regeneration_runs_in_background(memory_isolated_d
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     fake_client.responses.output_parsed = _consolidated(text="背景重建後的記憶")
 
-    scheduled = pipeline.schedule_memory_regeneration(
+    scheduled = regeneration.schedule_memory_regeneration(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
     assert scheduled is True
     # The actual rebuild runs as a background task; await it to observe the write.
-    task = pipeline._regeneration_tasks.get(key=USER_SCOPE)
+    task = regeneration._regeneration_tasks.get(key=USER_SCOPE)
     assert task is not None
     await task
     assert "背景重建後的記憶" in _memory_text()
@@ -2693,16 +2699,16 @@ async def test_schedule_memory_regeneration_dedupes_in_flight(
 
     async def blocking_regen(
         scope: str, writer: object, identity: str
-    ) -> pipeline.RegenerationReport:
+    ) -> regeneration.RegenerationReport:
         await release.wait()
-        return pipeline.RegenerationReport(result="regenerated")
+        return regeneration.RegenerationReport(result="regenerated")
 
-    monkeypatch.setattr(pipeline, "regenerate_scope_memory", blocking_regen)
+    monkeypatch.setattr(regeneration, "regenerate_scope_memory", blocking_regen)
 
-    first = pipeline.schedule_memory_regeneration(
+    first = regeneration.schedule_memory_regeneration(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
-    second = pipeline.schedule_memory_regeneration(
+    second = regeneration.schedule_memory_regeneration(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -2710,7 +2716,7 @@ async def test_schedule_memory_regeneration_dedupes_in_flight(
     # A rebuild already in flight must not double-schedule the whole-scope rebuild.
     assert second is False
     release.set()
-    task = pipeline._regeneration_tasks.get(key=USER_SCOPE)
+    task = regeneration._regeneration_tasks.get(key=USER_SCOPE)
     assert task is not None
     await task
 
@@ -2919,7 +2925,7 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
         remember_notes=_NOTES,
     )
     await started.wait()
-    task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+    task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert task is not None
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
@@ -2930,14 +2936,14 @@ async def test_pipeline_cancelled_task_does_not_raise_or_replay(
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
-    assert pipeline._pending_updates.get(key=USER_SCOPE) is not None
+    assert inflight._pending_updates.get(key=USER_SCOPE) is not None
     task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await task
     await asyncio.sleep(0)
     # The callback must not raise, must clear the slot, and must not replay.
-    assert pipeline._inflight_tasks.get(key=USER_SCOPE) is None
-    assert pipeline._pending_updates.get(key=USER_SCOPE) is not None
+    assert inflight._inflight_tasks.get(key=USER_SCOPE) is None
+    assert inflight._pending_updates.get(key=USER_SCOPE) is not None
 
 
 async def test_pipeline_drops_pending_replay_after_clear(
@@ -2977,15 +2983,15 @@ async def test_pipeline_drops_pending_replay_after_clear(
         identity=IDENTITY,
         remember_notes=_NOTES,
     )
-    assert pipeline._pending_updates.get(key=USER_SCOPE) is not None
+    assert inflight._pending_updates.get(key=USER_SCOPE) is not None
     clear_memory(scope=USER_SCOPE)
     release.set()
-    first_task = pipeline._inflight_tasks.get(key=USER_SCOPE)
+    first_task = inflight._inflight_tasks.get(key=USER_SCOPE)
     assert first_task is not None
     if first_task is not None:
         await first_task
     # The pre-clear pending turn must not be replayed back into storage.
-    assert pipeline._inflight_tasks.get(key=USER_SCOPE) is None
+    assert inflight._inflight_tasks.get(key=USER_SCOPE) is None
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
 
@@ -3168,14 +3174,14 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
 
 
 async def test_memory_semaphore_is_stable_within_a_loop(memory_isolated_dir: Path) -> None:
-    assert pipeline._memory_semaphore() is pipeline._memory_semaphore()
+    assert pipeline.memory_semaphore() is pipeline.memory_semaphore()
 
 
 def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
     """A task belongs to the loop that made it, so neither registry may outlive its loop.
 
-    `_enqueue_memory_update` defers a turn whenever the scope's slot holds a task that is
-    not `done()`, and `_finish_memory_update` replays a deferred one only from that task's
+    `inflight.enqueue_memory_update` defers a turn whenever the scope's slot holds a task
+    that is not `done()`, and `_finish_memory_update` replays a deferred one only from that task's
     own done-callback. An entry carried across a loop change is therefore either a task this
     loop can never see finish, parking the scope for good, or a queue of turns whose replay
     was wired to a loop that is gone.
@@ -3194,12 +3200,12 @@ def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
             """Never finishes, so the slot it occupies would defer every later turn."""
             await asyncio.Event().wait()
 
-        pipeline._inflight_tasks.set(key=scope, value=asyncio.ensure_future(never()))
-        pipeline._pending_updates.set(key=scope, value={})
+        inflight._inflight_tasks.set(key=scope, value=asyncio.ensure_future(never()))
+        inflight._pending_updates.set(key=scope, value={})
 
     async def read() -> tuple[object, object]:
         """Reads the same two slots from a second, unrelated loop."""
-        return (pipeline._inflight_tasks.get(key=scope), pipeline._pending_updates.get(key=scope))
+        return (inflight._inflight_tasks.get(key=scope), inflight._pending_updates.get(key=scope))
 
     asyncio.run(park())
     assert asyncio.run(read()) == (None, None)
@@ -3234,7 +3240,7 @@ async def test_memory_semaphore_caps_concurrent_updates(
             remember_notes=_NOTES,
         )
     tasks = [
-        task for scope in scopes if (task := pipeline._inflight_tasks.get(key=scope)) is not None
+        task for scope in scopes if (task := inflight._inflight_tasks.get(key=scope)) is not None
     ]
     assert len(tasks) == len(scopes), "each scope started its own turn"
     await asyncio.gather(*tasks)
@@ -3568,10 +3574,11 @@ async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir
     writer, _ = _writer()
     subject = f"target_user_id: {USER_ID}"
     # Pending turns are held per conversation source, so the map is scope -> subject -> turn.
-    pipeline._pending_updates.set(
+    inflight._pending_updates.set(
         key=USER_SCOPE,
         value={
-            subject: pipeline._PendingMemoryUpdate(
+            subject: inflight.MemoryTurn(
+                scope=USER_SCOPE,
                 subject=subject,
                 transcript="Alice (alice) [id: 123456789]: 哈囉",
                 writer=writer,
@@ -3584,7 +3591,9 @@ async def test_pipeline_cleared_deferred_turn_marks_job_done(memory_isolated_dir
     mark_cleared(scope=USER_SCOPE)
     done_task = asyncio.create_task(asyncio.sleep(0))
     await done_task
-    pipeline._finish_memory_update(scope=USER_SCOPE, task=done_task)
+    inflight._finish_memory_update(
+        scope=USER_SCOPE, task=done_task, run=pipeline._run_memory_update
+    )
     await _wait_for_persisted_writes()
     job = await memory_db.get_job(scope=USER_SCOPE)
     assert job is not None
@@ -3699,8 +3708,8 @@ def test_iter_scopes_only_descends_into_the_bot_memory_directory(
 
 
 def test_flavor_of_distinguishes_user_and_server() -> None:
-    assert pipeline.flavor_of(scope=user_scope(user_id=USER_ID)) == "user"
-    assert pipeline.flavor_of(scope=server_scope(server_id=2)) == "server"
+    assert flavor_of(scope=user_scope(user_id=USER_ID)) == "user"
+    assert flavor_of(scope=server_scope(server_id=2)) == "server"
 
 
 def test_needs_consolidation_reflects_threshold(
@@ -4235,7 +4244,7 @@ async def test_regenerate_scope_memory_writes_tone_and_ignores_existing_tone(
         text="重建後的記憶", tone="## 語氣偏好\n* 新語氣"
     )
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -4262,7 +4271,7 @@ async def test_regenerate_scope_memory_clears_stale_tone_on_empty_output(
     append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
     fake_client.responses.output_parsed = _consolidated(text="重建後的記憶")
 
-    report = await pipeline.regenerate_scope_memory(
+    report = await regeneration.regenerate_scope_memory(
         scope=USER_SCOPE, writer=writer, identity=IDENTITY
     )
 
@@ -4416,11 +4425,11 @@ async def test_clear_scope_memory_drops_the_deferred_replay(
             remember_notes=_NOTES,
         )
         await first_started.wait()
-    assert pipeline._pending_updates.get(key=USER_SCOPE) is not None
+    assert inflight._pending_updates.get(key=USER_SCOPE) is not None
 
     await pipeline.clear_scope_memory(scope=USER_SCOPE)
 
-    assert pipeline._pending_updates.get(key=USER_SCOPE) is None
+    assert inflight._pending_updates.get(key=USER_SCOPE) is None
     release.set()
     await _wait_for_inflight()
     await _wait_for_persisted_writes()
@@ -4457,7 +4466,7 @@ async def test_clear_completion_drops_a_turn_staged_during_its_db_write(
     clearing = asyncio.create_task(pipeline.clear_scope_memory(scope=USER_SCOPE))
     await clear_job_finished.wait()
     during_clear = asyncio.create_task(
-        pipeline._stage_turn(
+        inflight.stage_turn(
             scope=USER_SCOPE,
             subject=f"target_user_id: {USER_ID}",
             transcript="清除尚未回傳",
@@ -4509,7 +4518,7 @@ async def test_cancelled_clear_waiting_for_staging_lock_finishes_the_tombstone(
     release_lock = asyncio.Event()
 
     async def hold_staging_lock() -> None:
-        async with pipeline._staging_locks.hold(key=USER_SCOPE):
+        async with inflight.staging_locks.hold(key=USER_SCOPE):
             lock_held.set()
             await release_lock.wait()
 
@@ -4687,7 +4696,7 @@ async def test_a_row_write_starting_after_the_clear_never_lands(memory_isolated_
     leave its removal resting on the best-effort `mark_done`.
     """
     await pipeline.clear_scope_memory(scope=USER_SCOPE)
-    await pipeline._stage_turn(
+    await inflight.stage_turn(
         scope=USER_SCOPE,
         subject=f"target_user_id: {USER_ID}",
         transcript="清除前的對話",
@@ -4732,7 +4741,7 @@ async def test_a_row_write_racing_a_committed_clear_keeps_the_tombstone(
 
     monkeypatch.setattr(memory_db, "upsert_pending", slow_upsert)
     staging = asyncio.create_task(
-        pipeline._stage_turn(
+        inflight.stage_turn(
             scope=USER_SCOPE,
             subject=f"target_user_id: {USER_ID}",
             transcript="清除前的對話",
@@ -4784,7 +4793,7 @@ async def test_clear_overwrites_a_staged_row_even_if_its_task_is_cancelled(
 
     monkeypatch.setattr(memory_db, "upsert_pending", committed_upsert)
     staging = asyncio.create_task(
-        pipeline._stage_turn(
+        inflight.stage_turn(
             scope=USER_SCOPE,
             subject=f"target_user_id: {USER_ID}",
             transcript="清除前的對話",
