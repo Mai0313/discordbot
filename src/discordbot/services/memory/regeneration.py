@@ -47,10 +47,10 @@ from discordbot.services.memory.deltas import (
 )
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidatedMemory
 from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
+from discordbot.services.memory.inflight import memory_semaphore
 from discordbot.services.memory.pipeline import (
     CompartmentInput,
     global_first,
-    memory_semaphore,
     compartment_request,
     apply_forget_buckets,
     report_injection_size,

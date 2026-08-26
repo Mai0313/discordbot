@@ -15,8 +15,8 @@ They do not all sit on the same side of this module. ``inflight`` and ``tone`` a
 and import nothing from here — the turn body ``inflight`` runs reaches it as an argument
 rather than an import, which is what keeps that edge one-way. ``regeneration`` is ABOVE it
 and takes the compartment machinery (``CompartmentInput``, ``compartment_request``,
-``apply_forget_buckets``, ``global_first``, ``memory_semaphore``, ``report_injection_size``)
-from here, so nothing in this module may import it back.
+``apply_forget_buckets``, ``global_first``, ``report_injection_size``) from here, so nothing
+in this module may import it back.
 """
 
 import time
@@ -30,7 +30,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.memory import MemoryOwner, MemoryWriteSummary
 from discordbot.services.memory import database as memory_db
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
-from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 from discordbot.services.memory.tone import update_tone_note
 from discordbot.services.memory.facts import MemoryFlavor, parse_identity, sections_for_flavor
 from discordbot.services.memory.store import (
@@ -86,12 +85,12 @@ from discordbot.services.memory.inflight import (
     report_writes,
     safe_db_write,
     staging_locks,
+    memory_semaphore,
     drop_pending_updates,
     enqueue_memory_update,
 )
 from discordbot.services.memory.constants import (
     COMPACTION_TRIGGER_CHARS,
-    MEMORY_GLOBAL_CONCURRENCY,
     RAW_CONSOLIDATION_MAX_BYTES,
     RAW_CONSOLIDATION_THRESHOLD,
     MEMORY_CONSOLIDATION_COOLDOWN_SECONDS,
@@ -109,16 +108,6 @@ _last_consolidation: dict[str, float] = {}
 # error, since CONTRIBUTING puts "an unexpected failure that lost a deliverable" at error.
 _consecutive_rejections: dict[tuple[str, str], int] = {}
 _MAX_QUIET_REJECTIONS = 3
-
-# Process-wide semaphore capping concurrent background memory updates so a busy server
-# cannot fan out unbounded LLM work; shared across flavors and rebuilt per loop. The cap
-# is read at build time so a test that lowers MEMORY_GLOBAL_CONCURRENCY first still applies.
-_memory_semaphore_holder = LoopLocalSemaphore(capacity_provider=lambda: MEMORY_GLOBAL_CONCURRENCY)
-
-
-def memory_semaphore() -> asyncio.Semaphore:
-    """Returns the process-wide semaphore, rebuilt when the event loop changes."""
-    return _memory_semaphore_holder.get()
 
 
 async def _clear_scope_critical(scope: str) -> tuple[bool, bool]:

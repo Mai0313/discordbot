@@ -235,7 +235,7 @@ async def _regen_one(
     removed = 0
     async with semaphore:
         # The script calls the rebuild directly rather than through the reply pipeline,
-        # so it needs its own bound: `pipeline.memory_semaphore` is entered inside
+        # so it needs its own bound: `inflight.memory_semaphore` is entered inside
         # `regenerate_scope_memory`, but nothing else here throttles the fan-out.
         try:
             # Inside the handler because it is not safe either: `read_owner` parses the

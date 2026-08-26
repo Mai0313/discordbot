@@ -3174,7 +3174,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
 
 
 async def test_memory_semaphore_is_stable_within_a_loop(memory_isolated_dir: Path) -> None:
-    assert pipeline.memory_semaphore() is pipeline.memory_semaphore()
+    assert inflight.memory_semaphore() is inflight.memory_semaphore()
 
 
 def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
@@ -3214,7 +3214,7 @@ def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
 async def test_memory_semaphore_caps_concurrent_updates(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.MEMORY_GLOBAL_CONCURRENCY", 1)
+    monkeypatch.setattr("discordbot.services.memory.inflight.MEMORY_GLOBAL_CONCURRENCY", 1)
     writer, fake_client = _writer()
     in_flight = 0
     max_in_flight = 0
