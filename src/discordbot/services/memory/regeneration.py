@@ -1,6 +1,6 @@
 """Rebuilding a scope's memory from cold-tier evidence alone.
 
-The incremental fan-out in `pipeline.py` merges one raw batch into the facts already
+The incremental fan-out in `consolidation.py` merges one raw batch into the facts already
 stored. This is the other direction: the existing facts are not shown to the model at all,
 every compartment is distilled from the detail tail plus any unconsumed raw entries, and
 whatever the rebuild did not re-emit is deleted. It is the one path allowed to lose most of
@@ -47,16 +47,16 @@ from discordbot.services.memory.deltas import (
 )
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidatedMemory
 from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
-from discordbot.services.memory.pipeline import (
+from discordbot.services.memory.inflight import memory_semaphore
+from discordbot.services.memory.constants import MEMORY_REGENERATION_COOLDOWN_SECONDS
+from discordbot.services.memory.git_history import memory_git
+from discordbot.services.memory.consolidation import (
     CompartmentInput,
     global_first,
-    memory_semaphore,
     compartment_request,
     apply_forget_buckets,
     report_injection_size,
 )
-from discordbot.services.memory.constants import MEMORY_REGENERATION_COOLDOWN_SECONDS
-from discordbot.services.memory.git_history import memory_git
 
 # The ways a from-scratch rebuild can end, carried on `RegenerationReport.result`.
 _RegenerationResult = Literal["regenerated", "no_evidence", "failed", "cooldown"]

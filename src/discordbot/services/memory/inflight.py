@@ -1,4 +1,4 @@
-"""One memory review job per scope, and the reply.db bookkeeping around it.
+"""When background memory work runs, and the reply.db bookkeeping around it.
 
 While a scope's update runs, later turns for that scope are held rather than dropped and
 replayed one at a time afterwards. Within ONE conversation source only the newest is kept,
@@ -9,6 +9,11 @@ The turn's own body is not here: `enqueue_memory_update` takes it as `run`, and 
 carries it on through the done-callback. That is what keeps this module below `pipeline.py`
 rather than beside it — the queue owns when a turn runs and what happens to the ones it
 displaces, and nothing about what a turn does.
+
+`memory_semaphore` is the same question one level up: the queue serializes a scope, and the
+semaphore caps the whole process. Its three callers are a turn, a consolidation and a
+rebuild, so it belongs to none of their modules; it sits here with the package's other
+process-wide primitives, and everything that takes it imports downward to get it.
 
 The detached reply.db writes live here too, because the queue and the clear are the only
 two things that touch them and they have to agree on one staging lock.
@@ -24,7 +29,7 @@ from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.services.memory import database as memory_db
-from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry
+from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry, LoopLocalSemaphore
 from discordbot.services.memory.store import flavor_of, cleared_since
 from discordbot.services.memory.writer import (
     MemoryWriterAI,
@@ -32,6 +37,7 @@ from discordbot.services.memory.writer import (
     render_turn_payload,
 )
 from discordbot.typings.context_budgets import MEMORY_MERGED_NOTES_MAX
+from discordbot.services.memory.constants import MEMORY_GLOBAL_CONCURRENCY
 
 # What a caller is handed once a turn's memory writes land. `services/` never composes what
 # a user reads, so this reports the shape and lets the cog word it. In-memory only: a resumed
@@ -117,6 +123,16 @@ _db_tasks: set[asyncio.Task[None]] = set()
 # from the minutes-long file-write lock and is held only around reply.db staging
 # or the clear's tombstone plus synchronous file removal.
 staging_locks = KeyedLockManager[str]()
+
+# Process-wide semaphore capping concurrent background memory updates so a busy server
+# cannot fan out unbounded LLM work; shared across flavors and rebuilt per loop. The cap
+# is read at build time so a test that lowers MEMORY_GLOBAL_CONCURRENCY first still applies.
+_memory_semaphore_holder = LoopLocalSemaphore(capacity_provider=lambda: MEMORY_GLOBAL_CONCURRENCY)
+
+
+def memory_semaphore() -> asyncio.Semaphore:
+    """Returns the process-wide semaphore, rebuilt when the event loop changes."""
+    return _memory_semaphore_holder.get()
 
 
 async def safe_db_write(coro: Awaitable[None]) -> None:

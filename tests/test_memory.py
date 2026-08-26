@@ -31,7 +31,7 @@ from discordbot.typings.memory import (
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.memory.cog import MemoryCogs
 from discordbot.services.memory import database as memory_db
-from discordbot.services.memory import inflight, pipeline, regeneration
+from discordbot.services.memory import inflight, pipeline, regeneration, consolidation
 from discordbot.cogs.memory.views import (
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
@@ -1259,7 +1259,7 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
     writer, fake_client = _writer()
     requests: list[str] = []
     forget_pass_deltas: list[bool] = []
-    real_apply = pipeline.apply_deltas
+    real_apply = consolidation.apply_deltas
 
     def recording_apply(**kwargs: Any) -> DeltaOutcome:  # noqa: ANN401 -- a pass-through of the real signature
         """Records whether each applied batch was gated to deletions."""
@@ -1275,7 +1275,7 @@ async def test_a_forget_never_shares_a_consolidation_call_with_an_observation(
             return _parsed(output=_draft("希望被叫阿明", normalized_key="preference.name"))
         return _parsed(output=_no_change())
 
-    monkeypatch.setattr("discordbot.services.memory.pipeline.apply_deltas", recording_apply)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.apply_deltas", recording_apply)
     monkeypatch.setattr(fake_client.responses, "parse", recording_parse)
     pipeline.schedule_memory_update(
         scope=USER_SCOPE,
@@ -1331,7 +1331,7 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
     write_fact(scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中"))
     writer, fake_client = _writer()
     deletes_only_calls: list[bool] = []
-    real_apply = pipeline.apply_deltas
+    real_apply = consolidation.apply_deltas
 
     def recording_apply(**kwargs: Any) -> DeltaOutcome:  # noqa: ANN401 -- a pass-through of the real signature
         """Records the write gate each applied batch ran under."""
@@ -1363,7 +1363,7 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
     # `regeneration.apply_deltas`, while the forget it replays afterwards runs back through
     # the retained fan-out. Patching only the first would leave `deletes_only_calls` at
     # `[False]` and the assertion below looking at the wrong half of the run.
-    monkeypatch.setattr("discordbot.services.memory.pipeline.apply_deltas", recording_apply)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.apply_deltas", recording_apply)
     monkeypatch.setattr("discordbot.services.memory.regeneration.apply_deltas", recording_apply)
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
     report = await regeneration.regenerate_scope_memory(
@@ -1606,7 +1606,7 @@ async def test_pipeline_defers_and_replays_newest_update_in_flight(
 ) -> None:
     # Keep this test about in-flight de-dupe only: the eager default threshold
     # would otherwise trigger consolidation on the replayed second entry.
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 10)
     writer, fake_client = _writer()
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1685,7 +1685,7 @@ async def test_pipeline_carries_a_skipped_turns_notes_into_the_replay(
     that emitted it, so a user who says "remember X" and then "remember Y" while the first
     review is still running would lose X entirely, with nothing in the logs to say so.
     """
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 10)
     writer, fake_client = _writer()
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1736,7 +1736,7 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
     `g/<B>`, readable by a server the speaker never said it in. Pending turns are therefore
     held per source and replayed one after another, each keeping its own subject.
     """
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 10)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 10)
     writer, fake_client = _writer()
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1787,7 +1787,7 @@ async def test_pipeline_never_merges_notes_across_conversation_sources(
 async def test_pipeline_consolidates_at_threshold(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("第一筆", normalized_key="preference.first")
     pipeline.schedule_memory_update(
@@ -1833,7 +1833,7 @@ async def test_pipeline_consolidates_at_threshold(
 async def test_pipeline_keeps_raw_when_consolidation_fails(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     writer, fake_client = _writer()
 
     parse_results: list[SimpleNamespace | None] = [_parsed(output=_draft("訊號")), None]
@@ -1865,7 +1865,7 @@ async def test_pipeline_empty_delta_batch_still_clears_raw(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A batch that implies no change is applied, so it is consumed rather than replayed."""
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
     writer, fake_client = _writer()
 
@@ -1896,8 +1896,8 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Compaction is now decided per compartment, off the rendered size of its own facts."""
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    monkeypatch.setattr("discordbot.services.memory.pipeline.COMPACTION_TRIGGER_CHARS", 100)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.COMPACTION_TRIGGER_CHARS", 100)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="長" * 200))
     writer, fake_client = _writer()
     seen_instructions: list[str] = []
@@ -1934,7 +1934,7 @@ async def test_pipeline_compaction_triggers_past_compartment_size(
 async def test_pipeline_small_compartment_skips_compaction(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="小檔案"))
     writer, fake_client = _writer()
     seen_instructions: list[str] = []
@@ -2005,7 +2005,7 @@ async def test_consolidation_fans_one_batch_out_over_its_compartments(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """One batch, two directories: routing is per observation and neither call sees the other."""
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     _stage_mixed_raw_batch()
     writer, fake_client = _writer()
     seen_inputs: list[str] = []
@@ -2020,7 +2020,7 @@ async def test_consolidation_fans_one_batch_out_over_its_compartments(
         return _parsed(output=_consolidated(summary=written, text=written))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert list_compartments(scope=USER_SCOPE) == [GLOBAL_COMPARTMENT, _GUILD_222]
     global_texts = [
@@ -2044,7 +2044,7 @@ async def test_a_failed_compartment_keeps_the_whole_raw_batch(
     Replaying the compartment that did apply is safe (a delta is an upsert keyed on an id
     the model echoes back, then on the evidence keys), so the whole batch is kept.
     """
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     _stage_mixed_raw_batch()
     writer, fake_client = _writer()
 
@@ -2057,7 +2057,7 @@ async def test_a_failed_compartment_keeps_the_whole_raw_batch(
         return _parsed(output=_consolidated(summary="全域事實", text="全域事實"))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert count_raw_entries(scope=USER_SCOPE) == 2
     assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
@@ -2078,7 +2078,7 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
     is separate from every compartment call precisely so the unpartitioned evidence it
     needs can never reach one that writes facts.
     """
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     _stage_raw_observation(
         summary="喜歡有禮貌的回覆",
         key="preference.tone",
@@ -2101,7 +2101,7 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
         return _parsed(output=_consolidated(summary="本群事實", text="本群事實"))
 
     monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
 
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n* 偏好禮貌"
     tone_calls = [text for text in seen_inputs if "<tone_evidence>" in text]
@@ -3056,8 +3056,8 @@ async def test_memory_calls_omit_max_output_tokens() -> None:
 async def test_pipeline_cooldown_defers_entry_count_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
+    consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _draft("訊號")
     pipeline.schedule_memory_update(
@@ -3080,8 +3080,8 @@ async def test_pipeline_cooldown_defers_entry_count_consolidation(
 async def test_pipeline_cooldown_elapsed_allows_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    pipeline._last_consolidation[USER_SCOPE] = (
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
+    consolidation._last_consolidation[USER_SCOPE] = (
         time.monotonic() - MEMORY_CONSOLIDATION_COOLDOWN_SECONDS - 1
     )
     writer, fake_client = _writer()
@@ -3104,15 +3104,15 @@ async def test_pipeline_cooldown_elapsed_allows_consolidation(
     await _wait_for_inflight()
     assert "合併後" in _memory_text()
     # The attempt refreshed the per-user cooldown timestamp.
-    assert pipeline._last_consolidation[USER_SCOPE] > time.monotonic() - 5
+    assert consolidation._last_consolidation[USER_SCOPE] > time.monotonic() - 5
 
 
 async def test_pipeline_byte_trigger_bypasses_cooldown(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 99)
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_MAX_BYTES", 10)
-    pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 99)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_MAX_BYTES", 10)
+    consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
     writer, fake_client = _writer()
 
     parsed_outputs: list[BaseModel] = [
@@ -3141,7 +3141,7 @@ async def test_pipeline_byte_trigger_bypasses_cooldown(
 async def test_pipeline_passes_recent_detail_to_consolidation(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     append_detail(scope=USER_SCOPE, text="## 2026-01-01T00:00:00+00:00\n舊的詳細證據")
     writer, fake_client = _writer()
     seen_inputs: list[str] = []
@@ -3174,7 +3174,7 @@ async def test_pipeline_passes_recent_detail_to_consolidation(
 
 
 async def test_memory_semaphore_is_stable_within_a_loop(memory_isolated_dir: Path) -> None:
-    assert pipeline.memory_semaphore() is pipeline.memory_semaphore()
+    assert inflight.memory_semaphore() is inflight.memory_semaphore()
 
 
 def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
@@ -3214,7 +3214,7 @@ def test_the_in_flight_registries_do_not_survive_an_event_loop_change() -> None:
 async def test_memory_semaphore_caps_concurrent_updates(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.MEMORY_GLOBAL_CONCURRENCY", 1)
+    monkeypatch.setattr("discordbot.services.memory.inflight.MEMORY_GLOBAL_CONCURRENCY", 1)
     writer, fake_client = _writer()
     in_flight = 0
     max_in_flight = 0
@@ -3272,8 +3272,8 @@ def test_append_detail_trims_oldest_past_cap(
 async def test_pipeline_clear_resets_consolidation_cooldown(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
-    pipeline._last_consolidation[USER_SCOPE] = time.monotonic()
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
+    consolidation._last_consolidation[USER_SCOPE] = time.monotonic()
     # The clear lands after the recorded attempt, so the cooldown belonged to
     # the wiped memory and must not delay the fresh state's first consolidation.
     mark_cleared(scope=USER_SCOPE)
@@ -3665,12 +3665,12 @@ async def test_resume_of_a_row_predating_markers_writes_nothing(memory_isolated_
 async def test_consolidate_if_needed_digests_over_threshold_scope(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
     writer, fake_client = _writer()
     fake_client.responses.output_parsed = _consolidated(text="掃描整理")
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
     assert "掃描整理" in _memory_text()
     assert count_raw_entries(scope=USER_SCOPE) == 0
 
@@ -3678,10 +3678,10 @@ async def test_consolidate_if_needed_digests_over_threshold_scope(
 async def test_consolidate_if_needed_skips_under_threshold(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 5)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 5)
     append_raw_entry(scope=USER_SCOPE, entry_text="- 只有一筆")
     writer, _fake_client = _writer()
-    await pipeline.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
     # Below threshold: no consolidation, raw untouched.
     assert _memory_text() == ""
     assert count_raw_entries(scope=USER_SCOPE) == 1
@@ -3715,11 +3715,11 @@ def test_flavor_of_distinguishes_user_and_server() -> None:
 def test_needs_consolidation_reflects_threshold(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
-    assert pipeline.needs_consolidation(scope=USER_SCOPE) is False
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
+    assert consolidation.needs_consolidation(scope=USER_SCOPE) is False
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第一筆")
     append_raw_entry(scope=USER_SCOPE, entry_text="- 第二筆")
-    assert pipeline.needs_consolidation(scope=USER_SCOPE) is True
+    assert consolidation.needs_consolidation(scope=USER_SCOPE) is True
 
 
 # ---------------------------------------------------------------------------
@@ -4088,7 +4088,7 @@ def test_clear_memory_removes_tone_note(memory_isolated_dir: Path) -> None:
 async def test_pipeline_consolidation_writes_tone_note(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 舊語氣")
     writer, fake_client = _writer()
     seen_inputs: list[str] = []
@@ -4132,7 +4132,7 @@ async def test_pipeline_consolidation_writes_tone_note(
 async def test_pipeline_no_op_consolidation_still_writes_tone(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_fact(scope=USER_SCOPE, fact=_stored_fact(text="既有內容"))
     writer, fake_client = _writer()
 
@@ -4179,7 +4179,7 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
     they landed in the note. A delta batch is per fact, so it no longer holds the facts
     hostage to the tone tier, which is best-effort and repaired by the next pass.
     """
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 1)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
     write_tone(scope=USER_SCOPE, content="## 語氣偏好\n* 原有偏好")
     writer, fake_client = _writer()
 
@@ -4208,7 +4208,7 @@ async def test_pipeline_bad_tone_output_keeps_existing_note(
 async def test_consolidate_if_needed_server_scope_never_writes_tone(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("discordbot.services.memory.pipeline.RAW_CONSOLIDATION_THRESHOLD", 2)
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 2)
     scope = server_scope(server_id=555)
     append_raw_entry(scope=scope, entry_text="- 第一筆")
     append_raw_entry(scope=scope, entry_text="- 第二筆")
@@ -4216,7 +4216,7 @@ async def test_consolidate_if_needed_server_scope_never_writes_tone(
     fake_client.responses.output_parsed = _consolidated(
         section="culture", text="整理", tone="## 語氣偏好\n* 不該存在"
     )
-    await pipeline.consolidate_if_needed(scope=scope, writer=writer, identity="srv")
+    await consolidation.consolidate_if_needed(scope=scope, writer=writer, identity="srv")
     assert "整理" in _memory_text(scope=scope, flavor="server")
     # A server scope has exactly one compartment, so its evidence never fans out.
     assert list_compartments(scope=scope) == [GLOBAL_COMPARTMENT]
