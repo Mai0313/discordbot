@@ -50,9 +50,9 @@ _MAX_EMBED_TITLE_CHARS = 240
 _MAX_QUOTED_CHARS = 900
 _MAX_SUMMARY_CHARS = 120
 
-# Marks the three body caps that run through `_clipped`, so a trimmed report does not read as
-# the bot having garbled it. The embed title and the select label are hard slices instead: both
-# are one line of chrome the reader can open the full text from.
+# Marks the body caps that run through `clipped`, so a trimmed report does not read as the bot
+# having garbled it. The embed title and the select label are hard slices instead: both are one
+# line of chrome the reader can open the full text from.
 _TRUNCATED_SUFFIX = "…"
 
 REPORT_TITLE = "🎫 回報中心"
@@ -71,10 +71,10 @@ class TicketStatus(BaseModel):
 # How each way of closing an issue reads in the panel. A table rather than a branch each,
 # because `outstanding=False` is true of all three and stating it once is what says the cap
 # is about the maintainer's inbox rather than about whether the work is finished.
-_CLOSED_STATUS: dict[CloseOutcome, tuple[str, int]] = {
-    "completed": ("✅ 已處理", DISCORD_GREEN),
-    "not_planned": ("⚪ 不處理", NEUTRAL_GREY),
-    "duplicate": ("🔁 併入其他單", NEUTRAL_BLUE),
+_CLOSED_STATUS: dict[CloseOutcome, TicketStatus] = {
+    "completed": TicketStatus(text="✅ 已處理", color=DISCORD_GREEN, outstanding=False),
+    "not_planned": TicketStatus(text="⚪ 不處理", color=NEUTRAL_GREY, outstanding=False),
+    "duplicate": TicketStatus(text="🔁 併入其他單", color=NEUTRAL_BLUE, outstanding=False),
 }
 
 
@@ -113,8 +113,7 @@ class TicketRow(BaseModel):
                 return TicketStatus(text="⏳ 建立中", color=DISCORD_YELLOW, outstanding=True)
             return TicketStatus(text="❔ 讀不到狀態", color=NEUTRAL_GREY, outstanding=False)
         if self.snapshot.state == "closed":
-            text, color = _CLOSED_STATUS[close_outcome(state_reason=self.snapshot.state_reason)]
-            return TicketStatus(text=text, color=color, outstanding=False)
+            return _CLOSED_STATUS[close_outcome(state_reason=self.snapshot.state_reason)]
         if self.snapshot.comment_count > self.ticket.relayed_replies:
             return TicketStatus(text="🟢 處理中", color=NEUTRAL_BLUE, outstanding=True)
         return TicketStatus(text="🟡 還沒回覆", color=DISCORD_YELLOW, outstanding=True)
@@ -182,16 +181,21 @@ def _short_date(*, row: TicketRow) -> str:
     return row.ticket.created_at.strftime("%m/%d")
 
 
-def _clipped(*, text: str, limit: int) -> str:
+def clipped(*, text: str, limit: int) -> str:
     """Returns `text` within `limit`, marked when something was cut off.
 
     The marker is the whole point. A report is the one place where a person needs to
     recognise their own words, and text that just stops reads as the bot having garbled
     it rather than as more text existing.
+
+    The cut is rstripped before the marker goes on, so a cut landing mid-space reads as
+    `word…` rather than `word …`, which looks like the marker belongs to the next word.
+
+    Shared with `notice.py`, which renders the same reporter-authored text into a DM.
     """
     if len(text) <= limit:
         return text
-    return text[: limit - len(_TRUNCATED_SUFFIX)] + _TRUNCATED_SUFFIX
+    return text[: limit - len(_TRUNCATED_SUFFIX)].rstrip() + _TRUNCATED_SUFFIX
 
 
 def build_panel_embed(*, rows: list[TicketRow], total: int | None = None) -> Embed:
@@ -219,7 +223,7 @@ def build_panel_embed(*, rows: list[TicketRow], total: int | None = None) -> Emb
         # Only the date. The issue's comment count includes anyone who wandered past on a
         # public repository, so a number here would promise replies the detail view then
         # (correctly) refuses to show. The status already carries whether anyone answered.
-        summary = _clipped(text=row.ticket.summary_line, limit=_MAX_SUMMARY_CHARS)
+        summary = clipped(text=row.ticket.summary_line, limit=_MAX_SUMMARY_CHARS)
         embed.add_field(
             name=f"{number} · {status.text}",
             value=f"{summary}\n-# {_short_date(row=row)} 送出",
@@ -241,7 +245,7 @@ def build_detail_embed(*, detail: TicketDetail) -> Embed:
     embed = Embed(
         title=f"{number} {ticket.summary_line}"[:_MAX_EMBED_TITLE_CHARS], color=status.color
     )
-    quoted = _clipped(text=ticket.raw_text.strip(), limit=_MAX_QUOTED_CHARS) or "（沒有內容）"
+    quoted = clipped(text=ticket.raw_text.strip(), limit=_MAX_QUOTED_CHARS) or "（沒有內容）"
     quoted_lines = "\n".join(f"> {line}" for line in quoted.splitlines())
     embed.description = f"{status.text} · {_short_date(row=detail.row)} 送出\n\n{quoted_lines}"
     if detail.comments is None:
@@ -270,7 +274,7 @@ def build_detail_embed(*, detail: TicketDetail) -> Embed:
         stamp = comment.created_at[:10]
         embed.add_field(
             name=f"{voice} · {stamp}",
-            value=_clipped(text=comment.body.strip(), limit=_MAX_FIELD_CHARS) or "（空白）",
+            value=clipped(text=comment.body.strip(), limit=_MAX_FIELD_CHARS) or "（空白）",
             inline=False,
         )
     embed.set_footer(text="只有你看得到這個畫面")

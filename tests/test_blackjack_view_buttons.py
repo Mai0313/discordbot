@@ -336,9 +336,7 @@ def test_blackjack_table_edit_payload_adds_width_spacer() -> None:
         round_state=round_state, system_name="賭場系統", system_avatar_url=""
     )
 
-    payload = blackjack_views._blackjack_table_edit_kwargs(
-        embeds=[talk_embed, *seat_embeds], view=None
-    )
+    payload = blackjack_views.table_edit_kwargs(embeds=[talk_embed, *seat_embeds], view=None)
 
     assert payload["attachments"] == []
     assert payload["files"][0].filename == DEFAULT_EMBED_SPACER_FILENAME

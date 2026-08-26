@@ -98,17 +98,12 @@ class LoopLocalRegistry[K, V](BaseModel):
         """Removes and returns `key`'s value, or None when absent."""
         return self._bind().pop(key, None)
 
-    def snapshot(self) -> dict[K, V]:
-        """Returns a shallow copy of the current loop's entries (mainly for tests)."""
-        return dict(self._bind())
-
 
 class KeyedLockManager[K](BaseModel):
     """Refcounted per-key asyncio locks, rebuilt when the running event loop changes.
 
     Serializes work per key (user / symbol) while keeping the maps bounded: a key's lock
-    and refcount are dropped once the last holder releases, so an idle key leaves no
-    residue (the empty-map invariant some tests assert via `is_empty`).
+    and refcount are dropped once the last holder releases, so an idle key leaves no residue.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -139,8 +134,3 @@ class KeyedLockManager[K](BaseModel):
             if self._refcounts[key] <= 0:
                 self._refcounts.pop(key, None)
                 self._locks.pop(key, None)
-
-    @property
-    def is_empty(self) -> bool:
-        """Whether no per-key lock or refcount remains (no held or pending keys)."""
-        return not self._locks and not self._refcounts

@@ -1,6 +1,6 @@
 """Tests for shared readable number presentation helpers."""
 
-from discordbot.utils.number_text import compact_amount, compact_number
+from discordbot.utils.number_text import compact_amount
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 
@@ -34,8 +34,3 @@ def test_currency_helpers_can_opt_into_compact_amounts() -> None:
     assert currency_text(amount=123_456_789, compact=True) == "1.23億 虛擬歡樂豆"
     assert currency_text(amount=123_456_789, signed=True, compact=True) == "+1.23億 虛擬歡樂豆"
     assert amount_code(amount=-10_000, signed=True, compact=True) == "`-1萬`"
-
-
-def test_compact_number_matches_amount_formatting() -> None:
-    """Generic numeric text keeps the same compact scale behavior."""
-    assert compact_number(number=123_456_789) == "1.23億"

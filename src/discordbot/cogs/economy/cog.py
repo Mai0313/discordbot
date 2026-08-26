@@ -1,6 +1,7 @@
 """Slash commands for balances, leaderboards, transfers, loans, VIP, and admin tax."""
 
 from io import BytesIO
+from typing import Literal
 from datetime import UTC, datetime
 
 import nextcord
@@ -211,7 +212,7 @@ class EconomyCogs(commands.Cog):
         self,
         interaction: Interaction[commands.Bot],
         member: Member,
-        action: str,
+        action: Literal["refund_tax", "collect_tax"],
         title: str,
         delta: int,
     ) -> None:
@@ -289,12 +290,15 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         target = member or interaction.user
+        target_avatar_url = await guild_avatar_url(
+            user=target, guild=getattr(interaction, "guild", None)
+        )
         portfolio = await get_portfolio(user_id=target.id)
         is_vip = await get_vip(user_id=target.id)
         age_days = (datetime.now(tz=UTC) - target.created_at).days
         embed = embeds.build_balance_embed(
             display_name=target.display_name,
-            avatar_url=target.display_avatar.url,
+            avatar_url=target_avatar_url,
             portfolio=portfolio,
             is_vip=is_vip,
             age_days=age_days,
@@ -526,10 +530,11 @@ class EconomyCogs(commands.Cog):
             balance = account.balance
             total_earned = account.total_earned
             total_spent = account.total_spent
-            name = name or account.name
 
         embed = embeds.build_pocat_embed(
             name=name,
+            # `ClientUser` is not a guild member, so there is no per-guild avatar
+            # for `guild_avatar_url` to find here.
             avatar_url=bot_user.display_avatar.url,
             balance=balance,
             total_earned=total_earned,
@@ -805,9 +810,9 @@ class EconomyCogs(commands.Cog):
             )
             return
         user = interaction.user
-        borrower_avatar_url = await guild_avatar_url(
-            user=member, guild=getattr(interaction, "guild", None)
-        )
+        guild = getattr(interaction, "guild", None)
+        borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
+        actor_avatar_url = await guild_avatar_url(user=user, guild=guild)
         result = await call_personal_loans(
             lender_id=user.id,
             borrower_id=member.id,
@@ -823,14 +828,14 @@ class EconomyCogs(commands.Cog):
                     title="催收失敗",
                     description=f"### {member.display_name} 沒有欠你有效個人借款，或目前無可扣餘額",
                     author_name=user.display_name,
-                    author_icon_url=user.display_avatar.url,
+                    author_icon_url=actor_avatar_url,
                 ),
             )
             return
         await interaction.response.defer()
         embed = embeds.build_credit_call_embed(
             actor_name=user.display_name,
-            actor_avatar_url=user.display_avatar.url,
+            actor_avatar_url=actor_avatar_url,
             borrower_mention=member.mention,
             result=result,
         )
@@ -1080,9 +1085,9 @@ class EconomyCogs(commands.Cog):
                 ),
             )
             return
-        borrower_avatar_url = await guild_avatar_url(
-            user=member, guild=getattr(interaction, "guild", None)
-        )
+        guild = getattr(interaction, "guild", None)
+        borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
+        actor_avatar_url = await guild_avatar_url(user=interaction.user, guild=guild)
         result = await call_central_bank_loans(
             borrower_id=member.id,
             borrower_name=member.name,
@@ -1101,7 +1106,7 @@ class EconomyCogs(commands.Cog):
         await interaction.response.defer()
         embed = embeds.build_central_bank_call_embed(
             actor_name=interaction.user.display_name,
-            actor_avatar_url=interaction.user.display_avatar.url,
+            actor_avatar_url=actor_avatar_url,
             borrower_mention=member.mention,
             borrower_avatar_url=borrower_avatar_url,
             result=result,

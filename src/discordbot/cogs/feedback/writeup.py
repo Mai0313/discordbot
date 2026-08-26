@@ -81,8 +81,15 @@ def _reporter_line(*, ticket: FeedbackTicket) -> str:
     )
 
 
-def stored_draft(*, ticket: FeedbackTicket) -> tuple[str, str] | None:
-    """The write-up already stored for this report, as `(title, body)`.
+class StoredDraft(BaseModel):
+    """The issue text already written up for a report, ready to open the issue with."""
+
+    title: str = Field(..., description="English issue title in conventional-commit style.")
+    body: str = Field(..., description="English issue body in GitHub-flavoured markdown.")
+
+
+def stored_draft(*, ticket: FeedbackTicket) -> StoredDraft | None:
+    """The write-up already stored for this report.
 
     The write-up does not wait for a token, so a report that queued through an outage or
     a half-configured deployment usually has one by the time its issue is opened. Using
@@ -90,7 +97,7 @@ def stored_draft(*, ticket: FeedbackTicket) -> tuple[str, str] | None:
     it a moment later.
     """
     if ticket.draft_title.strip() and ticket.draft_body.strip():
-        return ticket.draft_title.strip(), ticket.draft_body.strip()
+        return StoredDraft(title=ticket.draft_title.strip(), body=ticket.draft_body.strip())
     return None
 
 

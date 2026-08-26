@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from functools import partial
 
 from discordbot import cli
 from discordbot.utils.avatars import guild_avatar_url
@@ -144,8 +145,16 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
             fetched_member=None,
         ),
     )
+    # `on_message` is invoked unbound with this namespace as `self`, so the double owes every
+    # attribute the reward path reads: the cooldown map, its prune stamp, and the prune helper.
     bot = SimpleNamespace(
-        user=object(), process_commands=noop_process_commands, _message_reward_at={}
+        user=object(),
+        process_commands=noop_process_commands,
+        _message_reward_at={},
+        _message_reward_pruned_at=0.0,
+    )
+    bot._prune_message_reward_cooldowns = partial(
+        cli.DiscordBot._prune_message_reward_cooldowns, as_discord_bot(fake=bot)
     )
 
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))

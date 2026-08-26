@@ -9,7 +9,6 @@ upload state machine does not tangle with source-to-part rendering.
 
 import io
 import time
-from typing import TYPE_CHECKING
 import asyncio
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
@@ -25,6 +24,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from discordbot.typings.timeouts import ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.attachment.base import (
     RenderedPart,
+    FileBytesLoader,
     AttachmentRenderer,
     media_semaphore,
     loggable_cache_key,
@@ -35,13 +35,6 @@ from discordbot.cogs.gen_reply.attachment.loaders import (
     load_attachment_bytes,
     resolve_source_filename,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Awaitable
-
-# Lazily fetches a source's bytes and mime type. Awaited only when a fresh Gemini upload is
-# needed, so adopting an already-uploaded pending file never re-downloads the source.
-type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
 
 
 class PendingUpload(BaseModel):
@@ -240,22 +233,15 @@ class GeminiFileUploader(AttachmentRenderer):
                 cache_key=loggable_cache_key(cache_key=cache_key),
                 wait_seconds=time.monotonic() - wait_started,
             )
-            try:
-                data, content_type = await load_data()
-            except Exception as exc:
-                # Broad on purpose: `load_data` is caller-supplied and spans a CDN fetch plus a
-                # PIL decode, and any failure must degrade to dropping this one attachment.
-                logfire.warn(
-                    "failed to load attachment bytes for upload",
-                    filename=filename,
-                    cache_key=loggable_cache_key(cache_key=cache_key),
-                    allow_dead_cache=allow_dead_cache,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
-                )
-                if allow_dead_cache:
-                    self._mark_dead(cache_key=cache_key)
+            loaded = await self._load_source_bytes(
+                cache_key=cache_key,
+                filename=filename,
+                load_data=load_data,
+                allow_dead_cache=allow_dead_cache,
+            )
+            if loaded is None:
                 return None
+            data, content_type = loaded
             result = await self._upload_file(
                 filename=filename, data=data, content_type=content_type
             )

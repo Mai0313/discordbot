@@ -28,7 +28,6 @@ MIME and referencing it blindly.
 
 import io
 import time
-from typing import TYPE_CHECKING
 from datetime import UTC, datetime, timedelta
 from functools import cached_property
 
@@ -42,9 +41,9 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply.attachment.base import (
     RenderedPart,
+    FileBytesLoader,
     AttachmentRenderer,
     media_semaphore,
-    loggable_cache_key,
 )
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,
@@ -52,11 +51,6 @@ from discordbot.cogs.gen_reply.attachment.loaders import (
     load_attachment_bytes,
     resolve_source_filename,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Awaitable
-
-type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
 
 # Anthropic Files API entries persist until explicitly deleted (no provider expiry), so the
 # per-message render cache reuses an upload for a fixed window as a cheap CDN-rehost safety net.
@@ -144,22 +138,15 @@ class AnthropicFileUploader(AttachmentRenderer):
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
         async with media_semaphore.get():
-            try:
-                data, content_type = await load_data()
-            except Exception as exc:
-                # Broad on purpose: `load_data` is caller-supplied and spans a CDN fetch plus a
-                # PIL decode, and any failure must degrade to dropping this one attachment.
-                logfire.warn(
-                    "failed to load attachment bytes for upload",
-                    filename=filename,
-                    cache_key=loggable_cache_key(cache_key=cache_key),
-                    allow_dead_cache=allow_dead_cache,
-                    error_type=type(exc).__name__,
-                    _exc_info=exc,
-                )
-                if allow_dead_cache:
-                    self._mark_dead(cache_key=cache_key)
+            loaded = await self._load_source_bytes(
+                cache_key=cache_key,
+                filename=filename,
+                load_data=load_data,
+                allow_dead_cache=allow_dead_cache,
+            )
+            if loaded is None:
                 return None
+            data, content_type = loaded
             return await self._upload_file(filename=filename, data=data, content_type=content_type)
 
     async def _upload_file(

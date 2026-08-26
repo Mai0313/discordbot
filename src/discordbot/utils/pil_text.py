@@ -23,9 +23,9 @@ BOLD_FONT_CANDIDATES = (
     "DejaVuSans-Bold.ttf",
 )
 
-# One warn per weight: every render calls load_font several times, and a deployment can be
-# missing only the bold face.
-_font_fallback_warned: set[bool] = set()
+# Weights that have already warned. One warn per weight: every render calls load_font several
+# times, and a deployment can be missing only the bold face.
+_WARNED_FALLBACK_WEIGHTS: set[str] = set()
 
 
 def load_font(size: int, bold: bool) -> Font:
@@ -36,8 +36,9 @@ def load_font(size: int, bold: bool) -> Font:
             return ImageFont.truetype(font=candidate, size=size)
         except OSError:
             continue
-    if bold not in _font_fallback_warned:
-        _font_fallback_warned.add(bold)
+    weight = "bold" if bold else "regular"
+    if weight not in _WARNED_FALLBACK_WEIGHTS:
+        _WARNED_FALLBACK_WEIGHTS.add(weight)
         logfire.warn(
             "No CJK font found; PNG renders fall back to the Pillow default",
             bold=bold,

@@ -218,16 +218,23 @@ class GamesCogs(commands.Cog):
             refreshed.append(refreshed_participant)
         return RefreshParticipantsResult(participants=refreshed, dropped_names=dropped)
 
-    def _insufficient_balance_embed(self, balance: int) -> Embed:
-        """Builds the shared insufficient-balance embed for clamp-mode tables."""
+    @staticmethod
+    def _balance_embed(balance: int, requirement_line: str) -> Embed:
+        """Builds an insufficient-balance embed around one game-specific requirement line."""
         return Embed(
             title="餘額不足",
             description=(
                 f"### {bold_currency(amount=balance, compact=True)}\n"
-                f"沒有可下注的{CURRENCY_NAME}\n"
+                f"{requirement_line}\n"
                 f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
             ),
             color=ERROR_COLOR,
+        )
+
+    def _insufficient_balance_embed(self, balance: int) -> Embed:
+        """Builds the shared insufficient-balance embed for clamp-mode tables."""
+        return self._balance_embed(
+            balance=balance, requirement_line=f"沒有可下注的{CURRENCY_NAME}"
         )
 
     @staticmethod
@@ -241,14 +248,11 @@ class GamesCogs(commands.Cog):
 
     def _dragon_gate_insufficient_balance_embed(self, balance: int) -> Embed:
         """Builds the insufficient-balance embed for 射龍門 ante checks."""
-        return Embed(
-            title="餘額不足",
-            description=(
-                f"### {bold_currency(amount=balance, compact=True)}\n"
-                f"射龍門入場費固定 {bold_currency(amount=ANTE, compact=True)} 進彩金池\n"
-                f"-# 跟機器人聊天可以累積{CURRENCY_NAME}"
+        return self._balance_embed(
+            balance=balance,
+            requirement_line=(
+                f"射龍門入場費固定 {bold_currency(amount=ANTE, compact=True)} 進彩金池"
             ),
-            color=ERROR_COLOR,
         )
 
     @nextcord.slash_command(

@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Unpack, TypedDict
 from datetime import UTC, datetime, timedelta
 
+from tests.helpers.casting import make_not_found
+
 if TYPE_CHECKING:
     from nextcord import File, Embed, Attachment, AllowedMentions
     from nextcord.ui import View
@@ -160,6 +162,42 @@ class FakeDiscordMessage:
         self.deleted = True
 
 
+class FakeGuild:
+    """Guild stub that answers the member lookups a real `nextcord.Guild` always answers.
+
+    It used to be a bare namespace carrying only the upload limit and the ids, which is why
+    `utils/avatars.py::guild_avatar_url` grew `hasattr` guards around `get_member` /
+    `fetch_member`: a real Guild has both unconditionally, so the guards only ever protected
+    this double. They are gone, so the double owes the methods instead.
+
+    The bot runs without the members intent, so an uncached member is the ordinary case: this
+    answers None from the cache and a `NotFound` from the fetch, which is the shape
+    `guild_avatar_url` handles by falling back to the global avatar. That is the same URL the
+    guarded version returned, so this buys fidelity rather than coverage — a test wanting the
+    guild-avatar branch still has to hand in a member, as `tests/test_avatar_utils.py` does.
+    """
+
+    def __init__(
+        self,
+        filesize_limit: int = 25 * 1024 * 1024,
+        guild_id: int = 100,
+        guild_name: str = "test guild",
+    ) -> None:
+        """Initializes the upload limit and identity a guild is read for."""
+        self.filesize_limit = filesize_limit
+        self.id = guild_id
+        self.name = guild_name
+
+    def get_member(self, user_id: int) -> None:
+        """Answers the member cache, which is empty without the members intent."""
+        del user_id
+
+    async def fetch_member(self, user_id: int) -> None:
+        """Answers the REST lookup the way Discord does for a member this guild has not got."""
+        del user_id
+        raise make_not_found(message="member not found")
+
+
 class FakeInteraction:
     """Interaction stub shared by cog command and view tests."""
 
@@ -177,8 +215,11 @@ class FakeInteraction:
         """Initializes user, origin, guild upload limit, response, followup, and edit records."""
         self.user = user or FakeUser()
         self.message = message
-        self.guild = (
-            SimpleNamespace(filesize_limit=filesize_limit, id=guild_id, name=guild_name)
+        # Union rather than `FakeGuild`: a few tests hand in a stricter guild of their own (one
+        # whose `fetch_member` asserts it is never reached), and the real attribute is a Guild
+        # this package deliberately does not model in full.
+        self.guild: FakeGuild | SimpleNamespace | None = (
+            FakeGuild(filesize_limit=filesize_limit, guild_id=guild_id, guild_name=guild_name)
             if in_guild
             else None
         )

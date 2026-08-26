@@ -40,13 +40,23 @@ _BOARD_IMAGE_CACHE_TTL_SECONDS: Final[float] = 5.0
 class _BoardFonts(BaseModel):
     """Font set used by economy board images."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     title: Font = Field(..., description="Board title font.")
     header: Font = Field(..., description="Table header font.")
     rank: Font = Field(..., description="Ranking number font.")
     body: Font = Field(..., description="Row text font.")
     small: Font = Field(..., description="Subtitle and badge font.")
+
+
+class _RankingRow(BaseModel):
+    """One row in a rendered ranking board."""
+
+    model_config = ConfigDict(frozen=True)
+
+    position: int = Field(..., description="One-based ranking position.")
+    name: str = Field(..., description="Player display name.")
+    amount: int = Field(..., description="Amount shown in the row.")
 
 
 class _RankingBoardSpec(BaseModel):
@@ -64,19 +74,7 @@ class _RankingBoardSpec(BaseModel):
             "and the top-three rank numbers."
         ),
     )
-    rows: tuple[tuple[str, int], ...] = Field(
-        ..., description="Ranked (name, amount) rows to render."
-    )
-
-
-class _RankingRow(BaseModel):
-    """One row in a rendered ranking board."""
-
-    model_config = ConfigDict(frozen=True)
-
-    position: int = Field(..., description="One-based ranking position.")
-    name: str = Field(..., description="Player display name.")
-    amount: int = Field(..., description="Amount shown in the row.")
+    rows: tuple[_RankingRow, ...] = Field(..., description="Ranked rows to render, best first.")
 
 
 _board_image_cache: dict[_RankingBoardSpec, tuple[float, bytes]] = {}
@@ -90,7 +88,10 @@ def build_balance_leaderboard_board_image(rows: Sequence[LeaderboardEntry]) -> b
             subtitle="Top 10 public balances",
             amount_header="餘額",
             accent=_BALANCE_ACCENT,
-            rows=tuple((row.name, row.balance) for row in rows),
+            rows=tuple(
+                _RankingRow(position=index + 1, name=row.name, amount=row.balance)
+                for index, row in enumerate(iterable=rows)
+            ),
         )
     )
 
@@ -103,7 +104,10 @@ def build_loss_leaderboard_board_image(rows: Sequence[LossLeaderboardEntry]) -> 
             subtitle="Gross casino loss · Asia/Taipei 00:00 reset",
             amount_header="累計輸",
             accent=_LOSS_ACCENT,
-            rows=tuple((row.name, row.loss_amount) for row in rows),
+            rows=tuple(
+                _RankingRow(position=index + 1, name=row.name, amount=row.loss_amount)
+                for index, row in enumerate(iterable=rows)
+            ),
         )
     )
 
@@ -160,15 +164,9 @@ def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
         draw=draw, fonts=fonts, y=table_top, amount_header=spec.amount_header, accent=spec.accent
     )
     if rows:
-        for index, (name, amount) in enumerate(iterable=rows):
+        for index, row in enumerate(iterable=rows):
             y = table_top + _TABLE_HEADER_HEIGHT + index * _ROW_HEIGHT
-            _draw_rank_row(
-                draw=draw,
-                fonts=fonts,
-                row=_RankingRow(position=index + 1, name=name, amount=amount),
-                spec=spec,
-                y=y,
-            )
+            _draw_rank_row(draw=draw, fonts=fonts, row=row, spec=spec, y=y)
     else:
         _draw_empty_row(draw=draw, fonts=fonts, y=table_top + _TABLE_HEADER_HEIGHT)
     output = BytesIO()

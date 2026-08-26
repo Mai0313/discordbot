@@ -1,9 +1,11 @@
+"""Runtime LLM configuration: the proxy credentials, the Gemini keys, and the kill-switches."""
+
 import os
 import re
 
 import dotenv
 from pydantic import Field, BaseModel, AliasChoices
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
 
 dotenv.load_dotenv()
 
@@ -83,7 +85,6 @@ class LLMConfig(BaseSettings):
             wired today, but the switch answers the same question for every uploader.
     """
 
-    model_config = SettingsConfigDict(arbitrary_types_allowed=True)
     # All credentials default to empty so tests never have to supply env vars; a real
     # deployment provides them via .env, and an empty value fails at the API call.
     base_url: str = Field(

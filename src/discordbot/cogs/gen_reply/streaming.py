@@ -4,7 +4,6 @@ import re
 import time
 import asyncio
 import contextlib
-from contextvars import ContextVar
 from collections.abc import Callable, Awaitable, AsyncIterator
 
 import logfire
@@ -46,6 +45,8 @@ from discordbot.cogs.gen_reply.generation import (
     music_filename,
     speechify_discord_markup,
 )
+from discordbot.cogs.gen_reply.references import replied_to_message
+from discordbot.cogs.gen_reply.turn_state import current_answer_streamer
 
 # Filename of a single inline-generated image attached onto a QA reply; mirrors the router IMAGE
 # route's `generated.png` so the bot's own generated images render the same in history. Multiple
@@ -947,12 +948,11 @@ class ResponseStreamer(BaseModel):
         if self.input_builder is None:
             return []
         try:
-            if self.message.reference and isinstance(self.message.reference.resolved, Message):
+            replied_to = replied_to_message(message=self.message)
+            if replied_to is not None:
                 own_images, ref_images = await asyncio.gather(
                     self.input_builder.get_image_sources_with_mime(message=self.message),
-                    self.input_builder.get_image_sources_with_mime(
-                        message=self.message.reference.resolved
-                    ),
+                    self.input_builder.get_image_sources_with_mime(message=replied_to),
                 )
                 return own_images + ref_images
             return await self.input_builder.get_image_sources_with_mime(message=self.message)
@@ -1245,19 +1245,6 @@ class ResponseStreamer(BaseModel):
             self._answer_seconds = time.monotonic() - self.created_at
             await self._stop_editor()
         return await self._finalize_reply()
-
-
-# The turn's UNFINISHED answer, so the pipeline's failure path can land its error on the reply
-# already on screen. A ContextVar for the same reason `_dispatched_model` is one: the failure
-# surfaces in `on_message`, several frames above the streamer that owns the reply handle, and
-# nextcord dispatches each `on_message` as its own task, so a context copy can never be read by
-# another user's turn. It holds the streamer rather than the message because what the error path
-# needs is decided at failure time -- whether a reply exists at all (`withdraw_retry_notice` and a
-# mid-stream delete each drop it) and what it is showing. Published by `stream` for a
-# `carries_turn_notices` streamer, and taken back the moment its answer is written in full.
-current_answer_streamer: ContextVar[ResponseStreamer | None] = ContextVar(
-    "gen_reply_answer_streamer", default=None
-)
 
 
 # Opens one answer stream. A factory rather than the stream itself, because the request has to

@@ -24,7 +24,6 @@ from google import genai
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.utils.douyin import (
     DouyinPost,
@@ -40,6 +39,7 @@ from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
+from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
 
 # Resolution asked of Douyin for the clip the model reads: the lowest preset (540p).
 # Deliberately below what the expansion posts to Discord: the model samples frames at its own
@@ -108,16 +108,9 @@ DOUYIN_TIMEOUT_NOTICE = (
 )
 
 
-def _system_block(text: str) -> EasyInputMessageParam:
-    """Wraps one separator/notice string as a low-authority system block."""
-    return EasyInputMessageParam(
-        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
-    )
-
-
 def douyin_timeout_context_messages() -> list[EasyInputMessageParam]:
     """Blocks injected when the Douyin build exceeds gen_reply's post-route grace."""
-    return [_system_block(text=DOUYIN_TIMEOUT_NOTICE)]
+    return [system_block(text=DOUYIN_TIMEOUT_NOTICE)]
 
 
 def _render_post_text(post: DouyinPost, url: str) -> str:
@@ -264,7 +257,7 @@ async def build_douyin_context_messages(
                 url=url,
                 _exc_info=True,
             )
-            return [_system_block(text=DOUYIN_BLOCKED_NOTICE)]
+            return [system_block(text=DOUYIN_BLOCKED_NOTICE)]
         except DouyinUnavailableError as error:
             # A deleted or private post is a routine remote outcome, not a defect; the message
             # is the only place Douyin's own filter reason lives.
@@ -273,7 +266,7 @@ async def build_douyin_context_messages(
                 url=url,
                 reason=str(error),
             )
-            return [_system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
+            return [system_block(text=DOUYIN_UNAVAILABLE_NOTICE)]
         except Exception as error:
             # Anything else says nothing about the post: an unresolvable link, a transport
             # error, a changed payload shape. `DOUYIN_UNAVAILABLE_NOTICE` would have the model
@@ -284,24 +277,14 @@ async def build_douyin_context_messages(
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            return [_system_block(text=DOUYIN_UNREADABLE_NOTICE)]
+            return [system_block(text=DOUYIN_UNREADABLE_NOTICE)]
 
         media_parts: list[ResponseInputFileParam] = []
         if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
             media_parts = await _media_parts(url=url, post=post, gemini_client=gemini_client)
 
-    text = _render_post_text(post=post, url=url)
-    if media_parts:
-        return [
-            _system_block(text=DOUYIN_CONTEXT_SEPARATOR),
-            EasyInputMessageParam(
-                role="user",
-                content=[ResponseInputTextParam(text=text, type="input_text"), *media_parts],
-            ),
-        ]
-    return [
-        _system_block(text=DOUYIN_TEXT_ONLY_SEPARATOR),
-        EasyInputMessageParam(
-            role="user", content=[ResponseInputTextParam(text=text, type="input_text")]
-        ),
-    ]
+    return link_context_blocks(
+        separator=DOUYIN_CONTEXT_SEPARATOR if media_parts else DOUYIN_TEXT_ONLY_SEPARATOR,
+        text=_render_post_text(post=post, url=url),
+        media_parts=media_parts,
+    )

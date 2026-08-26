@@ -71,23 +71,10 @@ def hand_value(cards: list[Card]) -> int:
     Returns:
         Best total for the hand under Blackjack ace rules.
     """
-    total = 0
-    aces = 0
-    for card in cards:
-        if card.rank == "A":
-            aces += 1
-            total += 11
-        elif card.rank in ("J", "Q", "K"):
-            total += 10
-        else:
-            total += int(card.rank)
-    while total > 21 and aces > 0:
-        total -= 10
-        aces -= 1
-    return total
+    return is_soft_total(cards=cards)[1]
 
 
-def _card_blackjack_value(card: Card) -> int:
+def card_blackjack_value(card: Card) -> int:
     """Returns the Blackjack value used for pair and up-card checks."""
     if card.rank == "A":
         return 11
@@ -150,7 +137,7 @@ def is_pair(cards: list[Card]) -> bool:
     Returns:
         True only when exactly two cards share the same Blackjack value.
     """
-    return len(cards) == 2 and _card_blackjack_value(card=cards[0]) == _card_blackjack_value(
+    return len(cards) == 2 and card_blackjack_value(card=cards[0]) == card_blackjack_value(
         card=cards[1]
     )
 

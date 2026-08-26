@@ -4,6 +4,7 @@ import nextcord
 from nextcord import Embed, Locale, Message, Interaction
 from nextcord.ext import commands
 
+from discordbot.typings.colors import DISCORD_GREEN
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
 
@@ -58,7 +59,9 @@ class TemplateCogs(commands.Cog):
         await interaction.response.defer()
         bot_latency = round(self.bot.latency * 1000, 2)
 
-        embed = Embed(title=":ping_pong: Pong!", color=0x00FF00, timestamp=nextcord.utils.utcnow())
+        embed = Embed(
+            title=":ping_pong: Pong!", color=DISCORD_GREEN, timestamp=nextcord.utils.utcnow()
+        )
         embed.add_field(name="Bot Latency", value=f"`{bot_latency}ms`")
         user = interaction.user
         if user is not None:

@@ -7,7 +7,6 @@ command's own deadline. It is here rather than at either call site because both 
 neither may import from the other's directory.
 """
 
-import types
 from typing import Any, ClassVar
 import asyncio
 from pathlib import Path
@@ -21,6 +20,7 @@ from pydantic import Field, BaseModel
 from requests import Session
 from requests.exceptions import RequestException
 
+from discordbot.utils.urls import normalized_host, host_matches_domain
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import (
     YTDLP_RETRIES,
@@ -28,13 +28,14 @@ from discordbot.typings.timeouts import (
     YTDLP_SOCKET_TIMEOUT_SECONDS,
     SHARE_RESOLVE_TIMEOUT_SECONDS,
 )
+from discordbot.utils.file_downloads import TemporaryDownload
 
 
 class DownloadStoppedError(Exception):
     """Raised inside yt-dlp when the caller's stop signal is set mid-download."""
 
 
-class DownloadResult(BaseModel):
+class DownloadResult(TemporaryDownload):
     """Represents a downloaded video file.
 
     Attributes:
@@ -48,29 +49,6 @@ class DownloadResult(BaseModel):
     def unlink(self) -> None:
         """Deletes the downloaded file."""
         self.filename.unlink(missing_ok=True)
-
-    def __enter__(self):
-        """Enters the context manager.
-
-        Returns:
-            This download result.
-        """
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: types.TracebackType | None,
-    ):
-        """Exits the context manager and deletes the downloaded file.
-
-        Args:
-            exc_type: Exception type raised inside the context, if any.
-            exc_val: Exception value raised inside the context, if any.
-            exc_tb: Traceback raised inside the context, if any.
-        """
-        self.unlink()
 
 
 class VideoMetadata(BaseModel):
@@ -210,14 +188,8 @@ class VideoDownloader(BaseModel):
         # Match the real host (not a raw substring) so a URL like `evil.com/?x=bilibili.com`
         # or `bilibili.com.attacker.com` never gets the bilibili Referer.
         http_headers = self._default_http_headers()
-        # A user-pasted URL may be scheme-less (e.g. `www.bilibili.com/video/...`), which urlparse
-        # reads as a path with no hostname; prepend `//` so the host is parsed either way. The
-        # exact-host match still rejects `evil.com/?x=bilibili.com` and `bilibili.com.attacker.com`.
-        host = ""
-        if url:
-            normalized = url if "://" in url else f"//{url}"
-            host = (urlparse(normalized).hostname or "").lower()
-        if host == "bilibili.com" or host.endswith(".bilibili.com"):
+        host = normalized_host(url=url) if url else ""
+        if host_matches_domain(host=host, domain="bilibili.com"):
             http_headers["Referer"] = "https://www.bilibili.com"
 
         params = {
@@ -270,6 +242,9 @@ class VideoDownloader(BaseModel):
 
         Returns:
             A DownloadResult instance containing the title and filename.
+
+        Raises:
+            RuntimeError: When yt-dlp returns no metadata for the URL.
         """
         # Convert Facebook watch URLs to reel format
         url = self._convert_facebook_url(url)
@@ -284,6 +259,9 @@ class VideoDownloader(BaseModel):
             params["progress_hooks"] = [_abort_if_stopped]
         with YoutubeDL(params=params) as ydl:
             info = ydl.extract_info(url=url, download=True)
+            if info is None:
+                msg = f"yt-dlp returned no metadata for {url}"
+                raise RuntimeError(msg)
             title = info.get("title", "")
             filename = Path(ydl.prepare_filename(info))
             return DownloadResult(title=title, filename=filename)
@@ -388,14 +366,3 @@ async def download_with_stop_signal(
                 join_seconds=DOWNLOAD_STOP_JOIN_SECONDS,
             )
         raise
-
-
-if __name__ == "__main__":
-    from rich.console import Console
-
-    console = Console()
-
-    downloader = VideoDownloader(output_folder="./data")
-    url = "https://www.bilibili.com/video/BV1jpK86hEc8"
-    result = downloader.download(url=url, quality="low")
-    console.print(f"Downloaded: {result.title} to {result.filename}")

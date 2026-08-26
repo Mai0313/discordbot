@@ -1,3 +1,5 @@
+"""Shared result types, enums, and payloads for the casino games."""
+
 from typing import Literal
 from datetime import datetime
 
@@ -14,7 +16,6 @@ SettleOutcome = Literal[
     "dealer_bust",
     "surrender",
 ]
-GameKind = Literal["blackjack", "dragon_gate"]
 BlackjackDealerAction = Literal["hit", "stand"]
 BlackjackDealerStepSource = Literal["auto", "guard"]
 BotAction = Literal["hit", "stand", "double", "split", "surrender"]
@@ -528,9 +529,6 @@ class BlackjackDealerStep(BaseModel):
     total_after: int | None = Field(
         default=None, description="Dealer hand total after this action, when applicable."
     )
-    fallback: bool = Field(
-        default=False, description="True when this step came from a fallback path."
-    )
     forced: bool = Field(default=False, description="True when this step was forced by a guard.")
 
 
@@ -581,7 +579,12 @@ __all__ = [
     "ActionEvAnalysis",
     "BlackjackDealerAction",
     "BlackjackDealerStep",
+    "BlackjackDealerStepSource",
     "BlackjackHandSettlement",
+    "BlackjackHistoryHand",
+    "BlackjackHistoryInsurance",
+    "BlackjackHistoryPayload",
+    "BlackjackHistoryRecord",
     "BlackjackInsuranceSettlement",
     "BlackjackPlayerResult",
     "BlackjackPlayerSettlement",
@@ -589,7 +592,6 @@ __all__ = [
     "Card",
     "DealerOutcome",
     "DragonGatePlayerResult",
-    "GameKind",
     "GameParticipant",
     "GameParticipantIdentity",
     "ParticipantPreparationResult",

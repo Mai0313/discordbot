@@ -3,7 +3,6 @@
 import re
 from typing import Any, Final
 import asyncio
-import threading
 
 import logfire
 from nextcord import Message, DMChannel
@@ -13,7 +12,7 @@ from nextcord.ext import commands
 
 from discordbot.utils.sqlite_config import configure_sqlite_connection
 
-CONTROL_CHARS_RE = re.compile(pattern=r"\x00")
+NULL_BYTE_RE = re.compile(pattern=r"\x00")
 
 # Single shared engine — putting create_engine() on a per-message
 # cached_property leaked the connection pool, dialect cache and inspector
@@ -35,7 +34,6 @@ def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  
     configure_sqlite_connection(dbapi_connection=dbapi_connection, register_stored_integer=False)
 
 
-_MESSAGES_TABLE_LOCK = threading.Lock()
 _MESSAGES_TABLE_READY_FOR: Engine | None = None
 
 _CREATE_MESSAGES_TABLE_SQL: Final[str] = """
@@ -109,10 +107,12 @@ ON CONFLICT (discord_message_id) WHERE discord_message_id IS NOT NULL DO UPDATE 
 def _write_row_sync(row: dict[str, str]) -> None:
     """Ensures the canonical messages table exists and inserts one row.
 
-    SQLite writes run off the event loop via `asyncio.to_thread`; the table
-    readiness marker is therefore guarded with a thread lock. The marker tracks
-    the current engine object so tests can swap `_sql_engine` without leaking
-    readiness from a previous temp DB.
+    SQLite writes run off the event loop via `asyncio.to_thread`, so several
+    threads can reach the DDL at once. Nothing here excludes them and nothing
+    needs to: every CREATE below is `IF NOT EXISTS`, which is the guard. The
+    readiness marker is only there to skip re-issuing the DDL per row, and it
+    tracks the current engine object so tests can swap `_sql_engine` without
+    leaking readiness from a previous temp DB.
 
     Args:
         row: Mapping matching the schema declared in `_CREATE_MESSAGES_TABLE_SQL`.
@@ -120,9 +120,6 @@ def _write_row_sync(row: dict[str, str]) -> None:
     global _MESSAGES_TABLE_READY_FOR  # noqa: PLW0603 -- module-level cache by engine identity
 
     needs_create = _MESSAGES_TABLE_READY_FOR is not _sql_engine
-    if needs_create:
-        with _MESSAGES_TABLE_LOCK:
-            needs_create = _MESSAGES_TABLE_READY_FOR is not _sql_engine
     with _sql_engine.begin() as conn:
         if needs_create:
             conn.execute(statement=text(text=_CREATE_MESSAGES_TABLE_SQL))
@@ -131,8 +128,7 @@ def _write_row_sync(row: dict[str, str]) -> None:
         conn.execute(statement=text(text=_INSERT_MESSAGE_SQL), parameters=row)
 
     if needs_create:
-        with _MESSAGES_TABLE_LOCK:
-            _MESSAGES_TABLE_READY_FOR = _sql_engine
+        _MESSAGES_TABLE_READY_FOR = _sql_engine
 
 
 class MessageLogger(BaseModel):
@@ -157,7 +153,7 @@ class MessageLogger(BaseModel):
         """
         if s is None:
             return ""
-        return CONTROL_CHARS_RE.sub("", s)
+        return NULL_BYTE_RE.sub("", s)
 
     @computed_field
     @property
@@ -312,6 +308,8 @@ class LogMessageCog(commands.Cog):
         Args:
             context: The context of the command.
         """
+        if not self._should_log(message=context.message):
+            return
         asyncio.create_task(MessageLogger(message=context.message).log())  # noqa: RUF006
 
 

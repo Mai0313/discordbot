@@ -15,22 +15,12 @@ import logfire
 from nextcord import File, Message, AllowedMentions
 
 from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner, upload_limit_for
+from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT
 
 if TYPE_CHECKING:
     from nextcord import Thread
 
     from discordbot.cogs.research.agent import ResearchResult
-
-DISCORD_MESSAGE_LIMIT = 2000
-
-
-def _upload_limit(*, thread: "Thread") -> int:
-    """The thread's real upload ceiling (its guild's boost-tier `filesize_limit`).
-
-    A Discord Thread always lives in a guild, so `thread.guild` is never None (no DM fallback:
-    research never runs in a DM); the shared helper returns its `filesize_limit` directly.
-    """
-    return upload_limit_for(guild=thread.guild)
 
 
 def split_report(*, text: str, limit: int = DISCORD_MESSAGE_LIMIT) -> list[str]:
@@ -129,7 +119,9 @@ async def deliver_report(  # noqa: PLR0913 -- the report body plus its completio
     # crosses the limit (the planner's combined-body guard is for a single multi-file edit; here the
     # `.md` is the durable artifact and must attach whenever it individually fits). A file too big on
     # its own is hosted; with hosting off it is silently dropped, exactly as before this fold-in.
-    limit = _upload_limit(thread=thread)
+    # A Discord Thread always lives in a guild (research never runs in a DM), so the shared
+    # helper reads its boost-tier `filesize_limit` with no None-guild fallback in play.
+    limit = upload_limit_for(guild=thread.guild)
     items: list[MediaItem] = [MediaItem(source=report.encode("utf-8"), filename="research.md")]
     if result.image_bytes is not None:
         items.append(MediaItem(source=result.image_bytes, filename="research.png"))
@@ -190,6 +182,11 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
+            # The failed edit already read each `fp` into its multipart body and `Message.edit`
+            # neither closes nor rewinds it, so the fallback below would post empty attachments.
+            # Rewinding is what nextcord's own retry loop does with a File it re-sends.
+            for file in files:
+                file.reset(seek=True)
     try:
         if files:
             await thread.send(content=content, files=files, allowed_mentions=allowed_mentions)

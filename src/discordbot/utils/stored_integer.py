@@ -3,8 +3,14 @@
 from typing import Any, cast
 
 from sqlalchemy import Text, func
+from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.types import TypeDecorator
 from sqlalchemy.sql.elements import ColumnElement
+
+# A mapped column is spelled `Model.column`, which is an `InstrumentedAttribute`
+# rather than a `ColumnElement`; SQLAlchemy coerces it, but the annotation has to
+# say so or every ORM call site is a type error.
+type _StoredIntegerColumn = ColumnElement[Any] | InstrumentedAttribute[Any]
 
 
 def stored_int_to_int(value: object) -> int:
@@ -39,14 +45,14 @@ def sqlite_int_compare_text(left: Any, right: Any) -> int:  # noqa: ANN401 -- SQ
     return (left_int > right_int) - (left_int < right_int)
 
 
-def int_add_text(column: ColumnElement[Any], delta: int) -> ColumnElement[Any]:
+def int_add_text(column: _StoredIntegerColumn, delta: int) -> ColumnElement[Any]:
     """Builds a SQLite expression that adds `delta` to a decimal-text column."""
     return cast(
         "ColumnElement[Any]", func.discordbot_int_add_text(column, stored_int_to_text(value=delta))
     )
 
 
-def int_compare_text(column: ColumnElement[Any], value: int) -> ColumnElement[int]:
+def int_compare_text(column: _StoredIntegerColumn, value: int) -> ColumnElement[int]:
     """Builds a SQLite expression that compares a decimal-text column."""
     return cast(
         "ColumnElement[int]",

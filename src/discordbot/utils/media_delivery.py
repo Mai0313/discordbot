@@ -32,7 +32,7 @@ import dotenv
 import logfire
 from nextcord import File
 from pydantic import Field, BaseModel, ConfigDict, AliasChoices
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings
 
 if TYPE_CHECKING:
     from nextcord import Guild
@@ -186,8 +186,6 @@ class MediaHostingConfig(BaseSettings):
         retention_hours: Hosted files older than this are reaped even under the cap (<=0 disables).
     """
 
-    model_config = SettingsConfigDict(arbitrary_types_allowed=True)
-
     enabled: bool = Field(
         default=True,
         description="Whether oversized media may be hosted externally and linked.",
@@ -225,6 +223,18 @@ class MediaHostingConfig(BaseSettings):
     def cleanup_enabled(self) -> bool:
         """Whether the cleanup loop should run: hosting available AND at least one cap is set."""
         return self.available and (self.max_bytes > 0 or self.retention_hours > 0)
+
+
+class _HostedFile(BaseModel):
+    """One file the hosting service itself wrote, as the serve-dir sweeps see it."""
+
+    model_config = ConfigDict(frozen=True)
+
+    mtime: float = Field(
+        ..., description="Last-modified time in epoch seconds; the eviction and retention order."
+    )
+    size: int = Field(..., description="Size in bytes, counted against the hosting size cap.")
+    path: str = Field(..., description="Path of the file inside the serve directory.")
 
 
 class MediaHostingService(BaseModel):
@@ -431,13 +441,13 @@ class MediaHostingService(BaseModel):
         self.enforce_cap(now=time.time())
         return url
 
-    def _scan_hosted(self, *, serve: Path) -> list[tuple[float, int, str]]:
-        """(mtime, size, path) for every file the service itself wrote (the reaper guard).
+    def _scan_hosted(self, *, serve: Path) -> list[_HostedFile]:
+        """Every file the service itself wrote (the reaper guard).
 
         Only a 32-hex stem + allowlisted suffix, regular files (not symlinks/dirs), non-recursive,
         so a foreign file in the serve dir (an nginx log, a parked clip) is never a candidate.
         """
-        hosted: list[tuple[float, int, str]] = []
+        hosted: list[_HostedFile] = []
         with os.scandir(serve) as entries:
             for entry in entries:
                 if not entry.is_file(follow_symlinks=False):
@@ -448,7 +458,7 @@ class MediaHostingService(BaseModel):
                     stat = entry.stat()
                 except OSError:
                     continue
-                hosted.append((stat.st_mtime, stat.st_size, entry.path))
+                hosted.append(_HostedFile(mtime=stat.st_mtime, size=stat.st_size, path=entry.path))
         return hosted
 
     def enforce_cap(self, *, now: float) -> int:
@@ -468,21 +478,23 @@ class MediaHostingService(BaseModel):
         freed = 0
         with _SERVE_DIR_LOCK:
             files = self._scan_hosted(serve=serve)
-            total = sum(size for _, size, _ in files)
+            total = sum(hosted.size for hosted in files)
             if total <= cap:
                 return 0
             cutoff = now - _EVICTION_GRACE_SECONDS
-            evictable = sorted((f for f in files if f[0] < cutoff), key=lambda f: f[0])
-            for _mtime, size, path in evictable:
+            evictable = sorted(
+                (hosted for hosted in files if hosted.mtime < cutoff), key=lambda f: f.mtime
+            )
+            for hosted in evictable:
                 if total - freed <= cap:
                     break
                 try:
-                    os.unlink(path)
-                    freed += size
+                    os.unlink(hosted.path)
+                    freed += hosted.size
                 except FileNotFoundError:
-                    freed += size
+                    freed += hosted.size
                 except OSError:
-                    logfire.warn("Failed to evict hosted media", path=path, _exc_info=True)
+                    logfire.warn("Failed to evict hosted media", path=hosted.path, _exc_info=True)
         if freed:
             logfire.info("Evicted hosted media over the size cap", freed_bytes=freed)
         return freed
@@ -498,16 +510,16 @@ class MediaHostingService(BaseModel):
         cutoff = now - retention * 3600.0
         deleted = 0
         with _SERVE_DIR_LOCK:
-            for mtime, _size, path in self._scan_hosted(serve=serve):
-                if mtime >= cutoff:
+            for hosted in self._scan_hosted(serve=serve):
+                if hosted.mtime >= cutoff:
                     continue
                 try:
-                    os.unlink(path)
+                    os.unlink(hosted.path)
                     deleted += 1
                 except FileNotFoundError:
                     deleted += 1
                 except OSError:
-                    logfire.warn("Failed to reap expired media", path=path, _exc_info=True)
+                    logfire.warn("Failed to reap expired media", path=hosted.path, _exc_info=True)
         if deleted:
             logfire.info("Reaped expired hosted media", deleted_count=deleted)
         return deleted

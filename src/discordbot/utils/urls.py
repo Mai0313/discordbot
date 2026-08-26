@@ -7,6 +7,7 @@ find the link rather than fail on it.
 """
 
 import re
+from urllib.parse import urlparse
 from collections.abc import Sequence
 
 # Where a URL is allowed to start. `\b` is the natural spelling of "not glued to the end of
@@ -14,8 +15,10 @@ from collections.abc import Sequence
 # after a Chinese character: `看這篇https://example.com` read as no URL at all, which is how a
 # lot of people type (#492). Refusing only an ASCII word character keeps `xhttps://...` out and
 # lets the Chinese in, widening the pattern by one class of characters rather than by a class of
-# strings. Every generic scanner takes its head from here so they cannot drift on where a URL
-# begins.
+# strings. Every scanner takes its head from here — the generic one below and the site patterns
+# in `douyin.py`, `threads.py`, `bilibili.py` and `youtube.py` alike — so they cannot drift on
+# where a URL begins, and `xhttps://v.douyin.com/abc` cannot be refused by one and matched by
+# another.
 URL_START_ANCHOR = r"(?<![A-Za-z0-9_])"
 
 # Generic fallback. `[^\s<>]` stops at whitespace and at the angle brackets Discord and
@@ -27,6 +30,46 @@ URL_RE = re.compile(rf"(?i){URL_START_ANCHOR}https?://[^\s<>]+")
 # Sentence punctuation a URL never really ends on, stripped from the tail of a generic match
 # so `see https://example.com/x.` does not carry the full stop into the URL.
 _TRAILING_PUNCTUATION = ".,;:!?)]}'\"、。，！？）」』"  # noqa: RUF001 -- CJK sentence punctuation is the point
+
+
+def normalized_url(url: str) -> str:
+    """Returns `url` in a form `urlparse` can read a host out of.
+
+    A user-pasted URL may carry no scheme (`v.douyin.com/xxx`, `www.bilibili.com/video/...`),
+    which urlparse reads as a path with no hostname at all; the `//` prefix makes the host
+    parse either way.
+    """
+    return url if "://" in url else f"//{url}"
+
+
+def normalized_host(url: str) -> str:
+    """Returns a URL's lower-cased hostname, or an empty string when there is none to read.
+
+    Accepts a scheme-less paste (see `normalized_url`). Never raises: this runs on raw user
+    input in routing checks that sit ahead of any error handling.
+    """
+    try:
+        return (urlparse(normalized_url(url=url)).hostname or "").lower()
+    except ValueError:
+        # urlparse raises on an unbalanced bracket ("https://[abc/x").
+        return ""
+
+
+def host_matches_domain(host: str, domain: str) -> bool:
+    """Reports whether `host` is `domain` itself or a subdomain of it.
+
+    Whole labels only. This is the rule that keeps a lookalike host out — `douyin.com.attacker.com`
+    is not douyin.com and `evil.com/?x=bilibili.com` has no bilibili host at all — so it must stay
+    exactly this strict, and it lives here so every site checks it the same way.
+
+    Args:
+        host: A hostname, already lower-cased (see `normalized_host`).
+        domain: The lower-cased domain to match against.
+
+    Returns:
+        True when the host is the domain or sits under it.
+    """
+    return host == domain or host.endswith(f".{domain}")
 
 
 def extract_first_url(*, text: str, patterns: Sequence[re.Pattern[str]] = ()) -> str:

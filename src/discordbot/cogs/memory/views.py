@@ -152,11 +152,46 @@ def build_clear_cancelled_embed() -> Embed:
     )
 
 
-class MemoryClearConfirmView(View):
+class _OriginBoundView(View):
+    """A view that remembers the interaction it was sent on, so a timeout can reach it.
+
+    Both memory views are ephemeral, which is why they need this: there is no message
+    object to edit afterwards, so the originating interaction is the only handle back to
+    the prompt. It is also why neither carries an author check — only the invoker can see
+    or press an ephemeral prompt.
+    """
+
+    def __init__(self, timeout: float) -> None:
+        """Initializes the view with no origin; `bind_origin` supplies it after the send."""
+        super().__init__(timeout=timeout)
+        self._origin: Interaction[commands.Bot] | None = None
+
+    def bind_origin(self, interaction: Interaction[commands.Bot]) -> None:
+        """Records the originating interaction so timeout can disable the buttons."""
+        self._origin = interaction
+
+    async def on_timeout(self) -> None:
+        """Disables the buttons once the view goes idle; nothing else happens.
+
+        Inert cleanup: the ephemeral response may already be dismissed or gone, and there
+        is nothing left to degrade. Broad on purpose: nextcord runs `on_timeout` in a bare
+        `create_task`, so a narrower filter would let an aiohttp transport error escape
+        into a task that cannot handle it.
+        """
+        if self._origin is None:
+            return
+        for child in self.children:
+            if isinstance(child, Button):
+                child.disabled = True
+        with contextlib.suppress(Exception):
+            await self._origin.edit_original_message(view=self)
+
+
+class MemoryClearConfirmView(_OriginBoundView):
     """Confirmation buttons guarding an irreversible personal-memory clear.
 
-    The prompt is ephemeral, so only its invoker can see or press it and no
-    author check is needed on top (same as `MemoryPagesView`).
+    An idle prompt disables its buttons and clears nothing: only the confirm button
+    ever calls `clear_scope_memory`.
 
     Attributes:
         scope: The memory scope erased once the clear is confirmed.
@@ -166,11 +201,6 @@ class MemoryClearConfirmView(View):
         """Initializes the confirmation prompt for one scope's pending clear."""
         super().__init__(timeout=MEMORY_VIEW_TIMEOUT_SECONDS)
         self.scope = scope
-        self._origin: Interaction[commands.Bot] | None = None
-
-    def bind_origin(self, interaction: Interaction[commands.Bot]) -> None:
-        """Records the originating interaction so timeout can disable the buttons."""
-        self._origin = interaction
 
     @nextcord.ui.button(label="確認清除", style=ButtonStyle.danger)
     async def confirm_clear(
@@ -219,21 +249,8 @@ class MemoryClearConfirmView(View):
         self.stop()
         await interaction.response.edit_message(embed=build_clear_cancelled_embed(), view=None)
 
-    async def on_timeout(self) -> None:
-        """Disables the buttons once the prompt goes idle; nothing is cleared."""
-        if self._origin is None:
-            return
-        for child in self.children:
-            if isinstance(child, Button):
-                child.disabled = True
-        # Inert cleanup, broad for the same reason as `MemoryPagesView.on_timeout`:
-        # nextcord runs this in a bare `create_task`, and the ephemeral prompt may
-        # already be dismissed.
-        with contextlib.suppress(Exception):
-            await self._origin.edit_original_message(view=self)
 
-
-class MemoryPagesView(View):
+class MemoryPagesView(_OriginBoundView):
     """Ephemeral pagination view for an oversized memory embed, personal or per-server.
 
     Attributes:
@@ -250,12 +267,7 @@ class MemoryPagesView(View):
         self.footer_text = footer_text
         self.title = title
         self.page_index = 0
-        self._origin: Interaction[commands.Bot] | None = None
         self._sync_buttons()
-
-    def bind_origin(self, interaction: Interaction[commands.Bot]) -> None:
-        """Records the originating interaction so timeout can disable the buttons."""
-        self._origin = interaction
 
     def current_embed(self) -> Embed:
         """Returns the embed for the currently displayed page."""
@@ -291,17 +303,3 @@ class MemoryPagesView(View):
         self.page_index = min(self.page_index + 1, len(self.pages) - 1)
         self._sync_buttons()
         await interaction.response.edit_message(embed=self.current_embed(), view=self)
-
-    async def on_timeout(self) -> None:
-        """Disables the buttons once the view goes idle."""
-        if self._origin is None:
-            return
-        for child in self.children:
-            if isinstance(child, Button):
-                child.disabled = True
-        # Inert cleanup: the ephemeral response may already be dismissed or gone,
-        # and there is nothing left to degrade. Broad on purpose: nextcord runs
-        # `on_timeout` in a bare `create_task`, so a narrower filter would let an
-        # aiohttp transport error escape into a task that cannot handle it.
-        with contextlib.suppress(Exception):
-            await self._origin.edit_original_message(view=self)

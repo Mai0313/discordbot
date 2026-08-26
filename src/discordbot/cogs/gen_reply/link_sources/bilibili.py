@@ -30,7 +30,6 @@ from google import genai
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.video import VideoQuality
 from discordbot.utils.bilibili import BILIBILI_URL_RE
@@ -39,6 +38,7 @@ from discordbot.utils.downloader import VideoMetadata, VideoDownloader, download
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
+from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
 
 # Resolution asked of yt-dlp for the clip the model reads: the lowest preset (height<=480).
 # Same rationale as the Douyin builder's: the model samples frames at its own media
@@ -117,16 +117,9 @@ BILIBILI_TIMEOUT_NOTICE = (
 )
 
 
-def _system_block(text: str) -> EasyInputMessageParam:
-    """Wraps one separator/notice string as a low-authority system block."""
-    return EasyInputMessageParam(
-        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
-    )
-
-
 def bilibili_timeout_context_messages() -> list[EasyInputMessageParam]:
     """Blocks injected when the Bilibili build exceeds gen_reply's post-route grace."""
-    return [_system_block(text=BILIBILI_TIMEOUT_NOTICE)]
+    return [system_block(text=BILIBILI_TIMEOUT_NOTICE)]
 
 
 def _render_video_text(metadata: VideoMetadata, url: str) -> str:
@@ -251,7 +244,7 @@ async def build_bilibili_context_messages(
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            return [_system_block(text=BILIBILI_UNREADABLE_NOTICE)]
+            return [system_block(text=BILIBILI_UNREADABLE_NOTICE)]
 
         # A b23.tv short link can resolve to a page that is not a single video (a user
         # space, a collection, a season): yt-dlp reads those SUCCESSFULLY as playlists, so
@@ -270,7 +263,7 @@ async def build_bilibili_context_messages(
                 url=url,
                 resolved_url=metadata.webpage_url,
             )
-            return [_system_block(text=BILIBILI_UNREADABLE_NOTICE)]
+            return [system_block(text=BILIBILI_UNREADABLE_NOTICE)]
 
         text = _render_video_text(metadata=metadata, url=url)
         media_parts: list[ResponseInputFileParam] = []
@@ -288,25 +281,11 @@ async def build_bilibili_context_messages(
                     duration_seconds=metadata.duration_seconds,
                     is_live=metadata.is_live,
                 )
-                return [
-                    _system_block(text=BILIBILI_TOO_LONG_SEPARATOR),
-                    EasyInputMessageParam(
-                        role="user", content=[ResponseInputTextParam(text=text, type="input_text")]
-                    ),
-                ]
+                return link_context_blocks(separator=BILIBILI_TOO_LONG_SEPARATOR, text=text)
             media_parts = await _media_parts(url=url, gemini_client=gemini_client)
 
-    if media_parts:
-        return [
-            _system_block(text=BILIBILI_CONTEXT_SEPARATOR),
-            EasyInputMessageParam(
-                role="user",
-                content=[ResponseInputTextParam(text=text, type="input_text"), *media_parts],
-            ),
-        ]
-    return [
-        _system_block(text=BILIBILI_TEXT_ONLY_SEPARATOR),
-        EasyInputMessageParam(
-            role="user", content=[ResponseInputTextParam(text=text, type="input_text")]
-        ),
-    ]
+    return link_context_blocks(
+        separator=BILIBILI_CONTEXT_SEPARATOR if media_parts else BILIBILI_TEXT_ONLY_SEPARATOR,
+        text=text,
+        media_parts=media_parts,
+    )

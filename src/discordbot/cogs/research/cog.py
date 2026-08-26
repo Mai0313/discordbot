@@ -11,7 +11,7 @@ in-flight research (`store=True` keeps the interaction alive server-side). The c
 the gateway: agent work runs in tracked background tasks.
 """
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 import asyncio
 from functools import cached_property
 import contextlib
@@ -68,6 +68,10 @@ THREAD_NAME_MAX = 90
 # The bot's `dino` app emoji, reacted onto the source message when deep research is launched so
 # the activation reads as distinct from the normal QA pipeline reactions.
 DINO_EMOJI = "<:dino:1517560319281594570>"
+
+# How a launch attempt ended. Both entry points branch on it, so it is a closed set rather than
+# a word each of them spells for itself.
+type StartOutcome = Literal["started", "exists", "unsupported", "error"]
 
 
 def _fallback_thread_name(*, brief: str) -> str:
@@ -262,11 +266,10 @@ class ResearchCogs(commands.Cog):
 
     async def _start_for(
         self, *, owner_id: int, owner_mention: str, brief: str, anchor: "Message"
-    ) -> tuple[str, int | None]:
+    ) -> tuple[StartOutcome, int | None]:
         """Claims the owner's slot, opens the thread, and spawns the research.
 
-        Returns `(outcome, thread_or_existing_id)` where outcome is one of
-        `started` / `exists` / `unsupported` / `error`.
+        Returns `(outcome, thread_or_existing_id)`.
         """
         # A research thread can only hang off a message in a guild text channel; a DM, an existing
         # thread, or a forum post cannot host a nested thread, so refuse before promising research.
@@ -310,7 +313,11 @@ class ResearchCogs(commands.Cog):
             await update_reaction(message=anchor, bot_user=self.bot.user, emoji=DINO_EMOJI)
         self._spawn(
             self._run_research(
-                thread=thread, owner_mention=owner_mention, brief=brief, agent=agent
+                thread=thread,
+                owner_id=owner_id,
+                owner_mention=owner_mention,
+                brief=brief,
+                agent=agent,
             )
         )
         return "started", thread.id
@@ -318,7 +325,7 @@ class ResearchCogs(commands.Cog):
     # ----- research runs ------------------------------------------------------------------
 
     async def _run_research(
-        self, *, thread: "Thread", owner_mention: str, brief: str, agent: str
+        self, *, thread: "Thread", owner_id: int, owner_mention: str, brief: str, agent: str
     ) -> None:
         """Streams the Antigravity research and delivers the report into the thread."""
         status = await self._safe_send(
@@ -354,12 +361,17 @@ class ResearchCogs(commands.Cog):
                 _exc_info=exc,
             )
             await self._fail_run(
-                thread=thread, owner_mention=owner_mention, exc=exc, status=status
+                thread=thread,
+                owner_id=owner_id,
+                owner_mention=owner_mention,
+                exc=exc,
+                status=status,
             )
             return
         try:
             await self._finish(
                 thread=thread,
+                owner_id=owner_id,
                 owner_mention=owner_mention,
                 result=result,
                 agent=agent,
@@ -374,24 +386,37 @@ class ResearchCogs(commands.Cog):
                 _exc_info=exc,
             )
             await self._fail_run(
-                thread=thread, owner_mention=owner_mention, exc=exc, status=status
+                thread=thread,
+                owner_id=owner_id,
+                owner_mention=owner_mention,
+                exc=exc,
+                status=status,
             )
 
     async def _fail_run(
-        self, *, thread: "Thread", owner_mention: str, exc: Exception, status: Message | None
+        self,
+        *,
+        thread: "Thread",
+        owner_id: int,
+        owner_mention: str,
+        exc: Exception,
+        status: Message | None,
     ) -> None:
         """Tells the owner a run died, finalizes its status message, and frees the owner's slot."""
-        await self._post_failure(thread=thread, owner_mention=owner_mention, exc=exc)
+        await self._post_failure(
+            thread=thread, owner_id=owner_id, owner_mention=owner_mention, exc=exc
+        )
         await self._finalize_status(
             status=status, thread=thread, content=f"-# Research failed ({RESEARCH_LABEL})"
         )
         await db.set_phase(thread_id=thread.id, phase="failed")
         self._active_threads.discard(thread.id)
 
-    async def _finish(
+    async def _finish(  # noqa: PLR0913 -- the owner's two handles plus the result's context
         self,
         *,
         thread: "Thread",
+        owner_id: int,
         owner_mention: str,
         result: ResearchResult,
         agent: str,
@@ -406,6 +431,7 @@ class ResearchCogs(commands.Cog):
         if not result.ok:
             await self._post_failure(
                 thread=thread,
+                owner_id=owner_id,
                 owner_mention=owner_mention,
                 reason=_failure_text(status=result.status),
             )
@@ -424,9 +450,7 @@ class ResearchCogs(commands.Cog):
             owner_mention=owner_mention,
             result=result,
             footer=footer,
-            allowed_mentions=_owner_allowed_mentions(
-                owner_id=_owner_id_from_mention(mention=owner_mention)
-            ),
+            allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
             media_delivery=self.media_delivery,
         )
         await db.set_phase(thread_id=thread.id, phase="done")
@@ -467,6 +491,7 @@ class ResearchCogs(commands.Cog):
         self,
         *,
         thread: "Thread",
+        owner_id: int,
         owner_mention: str,
         exc: Exception | None = None,
         reason: str | None = None,
@@ -489,9 +514,7 @@ class ResearchCogs(commands.Cog):
             await thread.send(
                 content=f"{owner_mention} ⚠️",
                 embed=embed,
-                allowed_mentions=_owner_allowed_mentions(
-                    owner_id=_owner_id_from_mention(mention=owner_mention)
-                ),
+                allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
             )
         except Exception as send_exc:
             # Broad: every caller runs its cleanup (phase write, slot release) right after us, so
@@ -582,6 +605,7 @@ class ResearchCogs(commands.Cog):
             return
         await self._finish(
             thread=thread,
+            owner_id=session.owner_id,
             owner_mention=owner_mention,
             result=result,
             agent=session.agent,
@@ -663,12 +687,6 @@ def _failure_text(*, status: str) -> str:
     if status == "cancelled":
         return "研究被取消了"
     return "研究沒有順利完成,等等再試試"
-
-
-def _owner_id_from_mention(*, mention: str) -> int:
-    """Parses a `<@id>` mention back into the user id (0 when it has no digits)."""
-    digits = "".join(ch for ch in mention if ch.isdigit())
-    return int(digits) if digits else 0
 
 
 def _owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:

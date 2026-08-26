@@ -7,10 +7,11 @@ from functools import cache
 from PIL import Image
 from nextcord import File, Embed, Attachment
 
+from discordbot.utils.media_delivery import DISCORD_ATTACHMENT_LIMIT
+
 DEFAULT_EMBED_SPACER_FILENAME: Final[str] = "embed_spacer.png"
 DEFAULT_EMBED_SPACER_WIDTH: Final[int] = 640
 DEFAULT_EMBED_SPACER_HEIGHT: Final[int] = 1
-DISCORD_MAX_FILES_PER_MESSAGE: Final[int] = 10
 _TRANSPARENT_RGBA: Final[tuple[int, int, int, int]] = (0, 0, 0, 0)
 
 
@@ -98,25 +99,23 @@ def embed_spacer_payload(
     rapidly edited messages such as the Blackjack table.
     """
     spacer_url = embed_spacer_url(filename=filename)
-    needs_spacer = any(
-        not _embed_has_real_image(embed=embed, spacer_url=spacer_url) for embed in embeds
-    )
     files: list[File] = list(extra_files or [])
     retained: list[Attachment] = []
-    existing_spacer = (
-        _existing_spacer_attachment(target=target, filename=filename) if is_edit else None
-    )
-    can_upload_spacer = _target_allows_file_uploads(target=target)
-    if needs_spacer and existing_spacer is not None:
-        apply_embed_spacer_image(embeds=embeds, filename=filename)
-        retained.append(existing_spacer)
-    elif needs_spacer and can_upload_spacer and len(files) < DISCORD_MAX_FILES_PER_MESSAGE:
-        apply_embed_spacer_image(embeds=embeds, filename=filename)
-        files.append(build_embed_spacer_file(filename=filename))
-    elif needs_spacer:
-        for embed in embeds:
-            if embed.image and embed.image.url == spacer_url:
-                embed.set_image(url=None)
+    if any(not _embed_has_real_image(embed=embed, spacer_url=spacer_url) for embed in embeds):
+        existing_spacer = (
+            _existing_spacer_attachment(target=target, filename=filename) if is_edit else None
+        )
+        can_upload_spacer = _target_allows_file_uploads(target=target)
+        if existing_spacer is not None:
+            apply_embed_spacer_image(embeds=embeds, filename=filename)
+            retained.append(existing_spacer)
+        elif can_upload_spacer and len(files) < DISCORD_ATTACHMENT_LIMIT:
+            apply_embed_spacer_image(embeds=embeds, filename=filename)
+            files.append(build_embed_spacer_file(filename=filename))
+        else:
+            for embed in embeds:
+                if embed.image and embed.image.url == spacer_url:
+                    embed.set_image(url=None)
     payload: dict[str, Any] = {}
     if files:
         payload["files"] = files

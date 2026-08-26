@@ -194,8 +194,7 @@ def _clear_payload_cache() -> Iterator[None]:
 )
 def test_extract_id_handles_every_url_form(url: str, expected: str) -> None:
     """Each accepted URL shape yields the post id, with modal_id winning over the path."""
-    downloader = DouyinDownloader(output_folder=_SCRATCH_DIR)
-    assert downloader._extract_id(url=url) == expected
+    assert douyin_module._extract_post_id(url=url) == expected
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,7 @@
 
 import json
 import shutil
-from typing import cast
+from typing import Self, cast
 from pathlib import Path
 
 import pytest
@@ -1358,13 +1358,24 @@ def test_download_media_does_not_rebuild_a_removed_scratch_dir(
             del chunk_size
             return [b"clip"]
 
-    def fake_get(**kwargs: object) -> _Response:
-        """Removes the scratch dir the way a caller that gave up would, then answers."""
-        del kwargs
-        shutil.rmtree(path=scratch, ignore_errors=True)
-        return _Response()
+    class _Session:
+        """A session that answers every GET with `_Response`."""
 
-    monkeypatch.setattr(target=threads_module.requests, name="get", value=fake_get)
+        def __enter__(self) -> Self:
+            """Enters the session context."""
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            """Leaves the session context."""
+            return
+
+        def get(self, url: str, **kwargs: object) -> _Response:
+            """Removes the scratch dir the way a caller that gave up would, then answers."""
+            del url, kwargs
+            shutil.rmtree(path=scratch, ignore_errors=True)
+            return _Response()
+
+    monkeypatch.setattr(target=threads_module.requests, name="Session", value=_Session)
     downloader = ThreadsDownloader(output_folder=str(scratch))
 
     with pytest.raises(FileNotFoundError):

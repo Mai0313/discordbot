@@ -157,11 +157,11 @@ async def test_a_batch_run_counts_finished_scopes_and_reports_them_in_store_orde
         await asyncio.sleep(0.01 * (len(scopes) - scopes.index(scope)))
         return RegenerationReport(result="no_evidence")
 
-    monkeypatch.setattr(regen_script, "regenerate_main_memory", _land_in_reverse)
+    monkeypatch.setattr(regen_script, "regenerate_scope_memory", _land_in_reverse)
 
     rows = await regen_script._rebuild_batch(writer=cast("MemoryWriterAI", None), scopes=scopes)
 
-    assert [scope for scope, *_ in rows] == scopes
+    assert [row.scope for row in rows] == scopes
     assert "3/3" in " ".join(capsys.readouterr().out.split())
 
 
@@ -199,7 +199,13 @@ def test_the_report_says_how_many_fact_files_a_run_destroyed_unread(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """What a rebuild removed unread has no other trace offline: logfire reaches nobody."""
-    regen_script._report(rows=[(_USER, "regenerated", {"global": 2}, 3)])
+    regen_script._report(
+        rows=[
+            regen_script._ScopeRow(
+                scope=_USER, result="regenerated", counts={"global": 2}, unreadable_removed=3
+            )
+        ]
+    )
 
     output = " ".join(capsys.readouterr().out.split())
     assert "UNREADABLE: 3 fact file(s) removed unread" in output
@@ -208,13 +214,13 @@ def test_the_report_says_how_many_fact_files_a_run_destroyed_unread(
 async def test_a_scope_key_that_is_not_a_discord_id_becomes_one_error_row() -> None:
     """`read_owner` parses the id, and it used to raise past the handler into the gather."""
     _seed(scope="111.bak")
-    scope, result, _, removed = await regen_script._regen_one(
+    row = await regen_script._regen_one(
         writer=cast("MemoryWriterAI", None), scope="111.bak", semaphore=asyncio.Semaphore(1)
     )
-    assert scope == "111.bak"
-    assert result.startswith("error: ValueError")
+    assert row.scope == "111.bak"
+    assert row.result.startswith("error: ValueError")
     # A run that never reached the store destroyed nothing, and must not imply it did.
-    assert removed == 0
+    assert row.unreadable_removed == 0
 
 
 @pytest.mark.parametrize(

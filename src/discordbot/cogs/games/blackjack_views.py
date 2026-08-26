@@ -10,7 +10,7 @@ import contextlib
 import logfire
 import nextcord
 from nextcord import Embed, Message, ButtonStyle, Interaction
-from nextcord.ui import View, Button
+from nextcord.ui import Item, View, Button
 
 from discordbot.typings.games import (
     Card,
@@ -39,9 +39,7 @@ from discordbot.cogs.games.blackjack import (
     is_five_card_win,
     is_five_card_twenty_one,
 )
-from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.cogs.games.bot_player import (
-    choose_bot_action,
     fallback_insurance,
     build_bot_action_context,
     build_bot_insurance_context,
@@ -52,6 +50,7 @@ from discordbot.cogs.games.settlement import (
 )
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.cogs.games.interactions import (
+    table_edit_kwargs,
     set_view_item_visible,
     disable_view_components,
     edit_message_with_retry,
@@ -69,14 +68,13 @@ from discordbot.cogs.games.presentation import (
     player_result_title,
     settlement_metadata,
     lobby_participant_line,
-    blackjack_outcome_presentation,
 )
 from discordbot.utils.owned_message_views import send_ephemeral_notice
 from discordbot.services.economy.presentation import amount_code, currency_text
 
 if TYPE_CHECKING:
     from random import Random
-    from collections.abc import Coroutine
+    from collections.abc import Callable, Coroutine
 
     from nextcord.ext import commands
 
@@ -88,17 +86,6 @@ MAX_DEALER_DECISION_STEPS: Final[int] = 8
 MAX_BOT_TURN_STEPS: Final[int] = 16
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 BOT_TURN_EDIT_DELAY_SECONDS: Final[float] = 0.4
-
-
-def _blackjack_table_edit_kwargs(
-    *, embeds: list[Embed], view: View | None, target: object | None = None
-) -> dict[str, Any]:
-    """Builds the shared edit payload for Blackjack table renders."""
-    return {
-        "embeds": embeds,
-        "view": view,
-        **embed_spacer_payload(embeds=embeds, is_edit=True, target=target),
-    }
 
 
 def _hand_summary_line(cards: list[Card], suffix: str = "") -> str:
@@ -588,7 +575,7 @@ class BlackjackLobbyView(BaseGameLobbyView):
         )
         await edit_message_with_retry(
             message=message,
-            kwargs_factory=lambda: _blackjack_table_edit_kwargs(
+            kwargs_factory=lambda: table_edit_kwargs(
                 embeds=seat_embeds, view=view, target=message
             ),
         )
@@ -664,21 +651,21 @@ class BlackjackView(View):
                 None,
             )
             if player is None:
-                await interaction.response.send_message(content="你不在這個牌桌", ephemeral=True)
+                await self._send_notice(interaction=interaction, content="你不在這個牌桌")
                 return False
             if player.insurance_resolved:
-                await interaction.response.send_message(content="你已決定過保險", ephemeral=True)
+                await self._send_notice(interaction=interaction, content="你已決定過保險")
                 return False
             return True
         active = self.round_state.active_player()
         if active is not None and interaction.user.id == active.participant.user_id:
             return True
         if active is not None:
-            await interaction.response.send_message(
-                content=f"現在輪到 {active.participant.display_name}", ephemeral=True
+            await self._send_notice(
+                interaction=interaction, content=f"現在輪到 {active.participant.display_name}"
             )
             return False
-        await interaction.response.send_message(content="這局已經不能操作了", ephemeral=True)
+        await self._send_notice(interaction=interaction, content="這局已經不能操作了")
         return False
 
     async def on_timeout(self) -> None:
@@ -696,13 +683,15 @@ class BlackjackView(View):
             self.round_state.stand_all_remaining()
             await self._finalize_locked(message=self.message)
 
-    @nextcord.ui.button(
-        label="再要一張", emoji="🃏", style=ButtonStyle.primary, custom_id="bj:hit", row=0
-    )
-    async def hit(
-        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    async def _run_player_action(
+        self, *, interaction: Interaction[commands.Bot], apply: Callable[..., object]
     ) -> None:
-        """Handles the active player's Hit button."""
+        """Runs one active-player action under the round lock, then refreshes the table.
+
+        `apply` is the `BlackjackRound` method the pressed button performs; the defer,
+        the lock, the stale-action rejection and the re-render around it are the same
+        for every action button.
+        """
         await interaction.response.defer()
         if interaction.message is None or interaction.user is None:
             return
@@ -714,7 +703,7 @@ class BlackjackView(View):
                 await self._finalize_locked(message=interaction.message)
                 return
             try:
-                self.round_state.hit(user_id=interaction.user.id)
+                apply(user_id=interaction.user.id)
             except ValueError:
                 await self._reject_stale_action_locked(
                     interaction=interaction, message=interaction.message
@@ -726,6 +715,15 @@ class BlackjackView(View):
                 return
             await self._edit_in_progress_locked(message=interaction.message)
             await self._maybe_play_bot_turn_locked(message=interaction.message)
+
+    @nextcord.ui.button(
+        label="再要一張", emoji="🃏", style=ButtonStyle.primary, custom_id="bj:hit", row=0
+    )
+    async def hit(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Handles the active player's Hit button."""
+        await self._run_player_action(interaction=interaction, apply=self.round_state.hit)
 
     @nextcord.ui.button(
         label="停手", emoji="✋", style=ButtonStyle.secondary, custom_id="bj:stand", row=0
@@ -734,29 +732,7 @@ class BlackjackView(View):
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
         """Handles the active player's Stand button."""
-        await interaction.response.defer()
-        if interaction.message is None or interaction.user is None:
-            return
-        async with self._round_lock:
-            if self._settled or self.round_state.finished:
-                return
-            active = self.round_state.active_player()
-            if active is None:
-                await self._finalize_locked(message=interaction.message)
-                return
-            try:
-                self.round_state.stand(user_id=interaction.user.id)
-            except ValueError:
-                await self._reject_stale_action_locked(
-                    interaction=interaction, message=interaction.message
-                )
-                return
-            self._state_revision += 1
-            if self.round_state.finished:
-                await self._finalize_locked(message=interaction.message)
-                return
-            await self._edit_in_progress_locked(message=interaction.message)
-            await self._maybe_play_bot_turn_locked(message=interaction.message)
+        await self._run_player_action(interaction=interaction, apply=self.round_state.stand)
 
     @nextcord.ui.button(
         label="加倍", emoji="💰", style=ButtonStyle.success, custom_id="bj:double", row=1
@@ -765,29 +741,7 @@ class BlackjackView(View):
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
         """Doubles the active hand's bet and finishes it after one draw."""
-        await interaction.response.defer()
-        if interaction.message is None or interaction.user is None:
-            return
-        async with self._round_lock:
-            if self._settled or self.round_state.finished:
-                return
-            active = self.round_state.active_player()
-            if active is None:
-                await self._finalize_locked(message=interaction.message)
-                return
-            try:
-                self.round_state.double_down(user_id=interaction.user.id)
-            except ValueError:
-                await self._reject_stale_action_locked(
-                    interaction=interaction, message=interaction.message
-                )
-                return
-            self._state_revision += 1
-            if self.round_state.finished:
-                await self._finalize_locked(message=interaction.message)
-                return
-            await self._edit_in_progress_locked(message=interaction.message)
-            await self._maybe_play_bot_turn_locked(message=interaction.message)
+        await self._run_player_action(interaction=interaction, apply=self.round_state.double_down)
 
     @nextcord.ui.button(
         label="分牌", emoji="🪓", style=ButtonStyle.success, custom_id="bj:split", row=1
@@ -796,29 +750,7 @@ class BlackjackView(View):
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
         """Splits the active pair into two sibling sub-hands."""
-        await interaction.response.defer()
-        if interaction.message is None or interaction.user is None:
-            return
-        async with self._round_lock:
-            if self._settled or self.round_state.finished:
-                return
-            active = self.round_state.active_player()
-            if active is None:
-                await self._finalize_locked(message=interaction.message)
-                return
-            try:
-                self.round_state.split(user_id=interaction.user.id)
-            except ValueError:
-                await self._reject_stale_action_locked(
-                    interaction=interaction, message=interaction.message
-                )
-                return
-            self._state_revision += 1
-            if self.round_state.finished:
-                await self._finalize_locked(message=interaction.message)
-                return
-            await self._edit_in_progress_locked(message=interaction.message)
-            await self._maybe_play_bot_turn_locked(message=interaction.message)
+        await self._run_player_action(interaction=interaction, apply=self.round_state.split)
 
     @nextcord.ui.button(
         label="投降", emoji="🏳️", style=ButtonStyle.danger, custom_id="bj:surrender", row=1
@@ -827,29 +759,7 @@ class BlackjackView(View):
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
         """Surrenders the active hand for a half-bet refund."""
-        await interaction.response.defer()
-        if interaction.message is None or interaction.user is None:
-            return
-        async with self._round_lock:
-            if self._settled or self.round_state.finished:
-                return
-            active = self.round_state.active_player()
-            if active is None:
-                await self._finalize_locked(message=interaction.message)
-                return
-            try:
-                self.round_state.surrender(user_id=interaction.user.id)
-            except ValueError:
-                await self._reject_stale_action_locked(
-                    interaction=interaction, message=interaction.message
-                )
-                return
-            self._state_revision += 1
-            if self.round_state.finished:
-                await self._finalize_locked(message=interaction.message)
-                return
-            await self._edit_in_progress_locked(message=interaction.message)
-            await self._maybe_play_bot_turn_locked(message=interaction.message)
+        await self._run_player_action(interaction=interaction, apply=self.round_state.surrender)
 
     @nextcord.ui.button(
         label="保險 ½", emoji="🛡️", style=ButtonStyle.success, custom_id="bj:insure_yes", row=1
@@ -1114,17 +1024,9 @@ class BlackjackView(View):
             allowed_actions=tuple(allowed),
             is_pair_hand=is_pair_hand,
             bet=hand.bet,
-            balance_remaining=balance_remaining,
             doubled=hand.doubled,
         )
-        chosen_action = choose_bot_action(
-            action_context=action_context,
-            hand_cards=list(hand.cards),
-            hand_total=hand.total(),
-            dealer_up=dealer_up,
-            is_pair_hand=is_pair_hand,
-            allowed_actions=tuple(allowed),
-        )
+        chosen_action = action_context.action_analysis.basic_strategy_action
         applied = self._apply_bot_action(
             user_id=active.participant.user_id, action=chosen_action, allowed=tuple(allowed)
         )
@@ -1211,8 +1113,14 @@ class BlackjackView(View):
             system_avatar_url=self.system_avatar_url,
             dealer_steps=self._dealer_steps,
         )
-        await message.edit(
-            **_blackjack_table_edit_kwargs(embeds=seat_embeds, view=self, target=message)
+        await message.edit(**table_edit_kwargs(embeds=seat_embeds, view=self, target=message))
+
+    async def _send_notice(self, interaction: Interaction[commands.Bot], content: str) -> None:
+        """Sends a private action notice to the interacting user."""
+        await send_ephemeral_notice(
+            interaction=interaction,
+            content=content,
+            log_message="Failed to send Blackjack action notice",
         )
 
     async def _reject_stale_action_locked(
@@ -1302,11 +1210,12 @@ class BlackjackView(View):
         self.clear_items()
         try:
             await asyncio.wait_for(
-                message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=seat_embeds, view=None, target=message)
-                ),
+                message.edit(**table_edit_kwargs(embeds=seat_embeds, view=None, target=message)),
                 timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
+        except nextcord.NotFound:
+            # Opener deleted the public table before the round finished; nothing to render.
+            logfire.info("Blackjack table message gone before final edit", message_id=message.id)
         # Broad on purpose: settlement is already committed, so this render must never
         # raise back into the round and skip the cleanup scheduling below.
         except Exception as exc:
@@ -1347,9 +1256,7 @@ class BlackjackView(View):
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=body_hidden, view=self, target=message)
-                ),
+                message.edit(**table_edit_kwargs(embeds=body_hidden, view=self, target=message)),
                 timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
@@ -1363,9 +1270,7 @@ class BlackjackView(View):
         )
         with contextlib.suppress(Exception):
             await asyncio.wait_for(
-                message.edit(
-                    **_blackjack_table_edit_kwargs(embeds=reveal_body, view=self, target=message)
-                ),
+                message.edit(**table_edit_kwargs(embeds=reveal_body, view=self, target=message)),
                 timeout=GAME_FINAL_EDIT_TIMEOUT_SECONDS,
             )
         await asyncio.sleep(PEEK_REVEAL_DELAY_SECONDS)
@@ -1490,18 +1395,23 @@ class BlackjackView(View):
         """Disables every currently visible action / insurance control."""
         disable_view_components(children=self.children, component_types=(Button,))
 
+    async def on_error(
+        self, error: Exception, item: Item[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Logs active-table component failures instead of only printing to stderr."""
+        logfire.error(
+            "Blackjack action interaction failed",
+            item_label=getattr(item, "label", None),
+            user_id=getattr(interaction.user, "id", None),
+            _exc_info=(type(error), error, error.__traceback__),
+        )
+
 
 __all__: list[str] = [
-    "BLACKJACK_ACTION_TIMEOUT_SECONDS",
     "MAX_BLACKJACK_PLAYERS",
     "BlackjackLobbyView",
     "BlackjackView",
-    "PrepareParticipant",
-    "RefreshParticipants",
-    "blackjack_outcome_presentation",
     "build_blackjack_lobby_embed",
-    "build_dealer_seat_embed",
     "build_final_embeds",
     "build_in_progress_embeds",
-    "build_player_seat_embed",
 ]

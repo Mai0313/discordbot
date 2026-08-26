@@ -45,6 +45,7 @@ from discordbot.typings.context_budgets import (
     MAX_THREADS_MEDIA_PARTS,
 )
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
+from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
 if TYPE_CHECKING:
@@ -194,13 +195,6 @@ THREADS_TIMEOUT_NOTICE = (
 )
 
 
-def _system_block(text: str) -> EasyInputMessageParam:
-    """Wraps one separator/notice string as a low-authority system block."""
-    return EasyInputMessageParam(
-        role="system", content=[ResponseInputTextParam(text=text, type="input_text")]
-    )
-
-
 def threads_timeout_context_messages() -> list[EasyInputMessageParam]:
     """Blocks injected when the Threads parse exceeds gen_reply's post-route grace.
 
@@ -208,7 +202,7 @@ def threads_timeout_context_messages() -> list[EasyInputMessageParam]:
     the "I cannot open this link" fallback; this keeps a deterministic "could not read it in
     time" notice instead.
     """
-    return [_system_block(text=THREADS_TIMEOUT_NOTICE)]
+    return [system_block(text=THREADS_TIMEOUT_NOTICE)]
 
 
 def _defuse_markers(text: str) -> str:
@@ -871,11 +865,11 @@ async def build_threads_context_messages(
             error_type=type(error).__name__,
             _exc_info=error,
         )
-        return [_system_block(text=THREADS_UNAVAILABLE_NOTICE)]
+        return [system_block(text=THREADS_UNAVAILABLE_NOTICE)]
 
     if not conversation.chain:
         logfire.info("Threads post unavailable for context; injecting unavailable notice", url=url)
-        return [_system_block(text=THREADS_UNAVAILABLE_NOTICE)]
+        return [system_block(text=THREADS_UNAVAILABLE_NOTICE)]
 
     # Trim a long chain to the target plus its nearest ancestors before rendering, so the
     # text side is bounded like the media side (the tail is closest to the linked post).
@@ -919,7 +913,7 @@ async def build_threads_context_messages(
             ResponseInputTextParam(text=THREADS_CONTEXT_TRAILER, type="input_text"),
         ]
         return [
-            _system_block(
+            system_block(
                 text=(
                     THREADS_PARTIAL_MEDIA_SEPARATOR
                     if media.has_missing
@@ -946,9 +940,4 @@ async def build_threads_context_messages(
     ]
     text = "\n\n".join([*text_sections, *url_lines, THREADS_CONTEXT_TRAILER])
     separator = THREADS_TEXT_ONLY_SEPARATOR if url_lines else THREADS_CONTEXT_SEPARATOR
-    return [
-        _system_block(text=separator),
-        EasyInputMessageParam(
-            role="user", content=[ResponseInputTextParam(text=text, type="input_text")]
-        ),
-    ]
+    return link_context_blocks(separator=separator, text=text)

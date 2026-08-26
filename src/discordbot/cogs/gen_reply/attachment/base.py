@@ -1,8 +1,10 @@
 """The attachment renderer strategy interface and its shared rendered-part type."""
 
+from typing import TYPE_CHECKING
 from datetime import UTC, datetime, timedelta
 from collections import OrderedDict
 
+import logfire
 from nextcord import Attachment, StickerItem
 from pydantic import BaseModel, ConfigDict, PrivateAttr
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -10,6 +12,13 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Awaitable
+
+# Lazily fetches a source's bytes and mime type. Awaited only when an upload is actually needed,
+# so a renderer that can adopt an already-uploaded file never re-downloads the source.
+type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
 
 # A rendered attachment content part. The Gemini answer model reads a Files-API handle
 # (input_file with a file URI); non-Gemini answer models cannot resolve that URI, so their
@@ -105,3 +114,44 @@ class AttachmentRenderer(BaseModel):
         self._dead_sources.move_to_end(cache_key)
         if len(self._dead_sources) > 128:
             self._dead_sources.popitem(last=False)
+
+    async def _load_source_bytes(
+        self,
+        *,
+        cache_key: int | str,
+        filename: str,
+        load_data: "FileBytesLoader",
+        allow_dead_cache: bool,
+    ) -> tuple[bytes, str] | None:
+        """Fetches one source's bytes and mime type, or None when the fetch failed.
+
+        Call it INSIDE the media slot: the fetch is half of what that slot bounds, and holding
+        the slot across the download and the upload alike is what stops concurrent pipelines
+        buffering dozens of files while they queue for an upload.
+
+        The except is broad because `load_data` is caller-supplied and spans a CDN fetch plus a
+        PIL decode; any failure must degrade to dropping this one attachment rather than blanking
+        the message it belongs to. A history render (`allow_dead_cache`) additionally marks the
+        source dead, so an expired CDN url is not re-fetched on every later reply.
+
+        The unpack happens INSIDE that guard rather than at the caller, so a loader that answers
+        the wrong shape is the same kind of failure as one that raises. Returning the pair
+        unpacked would let a `None` short-circuit with no warning and no dead-source marking, and
+        would let a wrong-arity tuple raise into `input.py`'s attachment `gather`, which has no
+        `return_exceptions` and would lose the whole message's attachments rather than this one.
+        """
+        try:
+            data, content_type = await load_data()
+        except Exception as exc:
+            logfire.warn(
+                "failed to load attachment bytes for upload",
+                filename=filename,
+                cache_key=loggable_cache_key(cache_key=cache_key),
+                allow_dead_cache=allow_dead_cache,
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            if allow_dead_cache:
+                self._mark_dead(cache_key=cache_key)
+            return None
+        return data, content_type

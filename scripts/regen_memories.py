@@ -1,6 +1,6 @@
 """Offline rebuild of file-backed memory from cold-tier evidence.
 
-Rebuilds one scope, or a batch of them, through `regenerate_main_memory` — the same
+Rebuilds one scope, or a batch of them, through `regenerate_scope_memory` — the same
 pure-evidence path `/memory regenerate` runs, which distills the detail tail window plus
 any unconsumed raw entries and never reads the existing facts. That function is already
 scope-agnostic (it resolves the flavor itself), so this script only decides which scopes
@@ -54,6 +54,7 @@ import argparse
 from collections.abc import Sequence
 
 from openai import AsyncOpenAI
+from pydantic import Field, BaseModel, ConfigDict
 from rich.console import Console
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn, MofNCompleteColumn
 
@@ -73,7 +74,7 @@ from discordbot.services.memory.store import (
 from discordbot.services.memory.deltas import partition_raw_entries
 from discordbot.services.memory.writer import MemoryWriterAI
 from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
-from discordbot.services.memory.pipeline import flavor_of, regenerate_main_memory
+from discordbot.services.memory.pipeline import flavor_of, regenerate_scope_memory
 
 if TYPE_CHECKING:
     from openai.types.shared.reasoning_effort import ReasoningEffort
@@ -88,6 +89,31 @@ _CONCURRENCY = 20
 
 # Targets naming more than one scope, which is what makes a run store-scale.
 _BATCH_TARGETS = ("all", "users", "servers")
+
+
+class _ScopeRow(BaseModel):
+    """One scope's line in the closing report.
+
+    Attributes:
+        scope: The scope key this row is about.
+        result: How the rebuild ended, or the exception text when it raised.
+        counts: Facts written per compartment; the previewed observation counts instead
+            on a dry run and on a scope whose rebuild raised before it wrote anything.
+        unreadable_removed: Fact files this run destroyed that no reader could parse.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    scope: str = Field(..., description="The scope key this row is about.")
+    result: str = Field(
+        ..., description="How the rebuild ended, or the exception text.", examples=["regenerated"]
+    )
+    counts: dict[str, int] = Field(
+        ..., description="Facts written per compartment, or previewed observation counts."
+    )
+    unreadable_removed: int = Field(
+        ..., description="Fact files this run removed unread.", examples=[3]
+    )
 
 
 def _scopes_for_target(target: str) -> list[str]:
@@ -177,7 +203,7 @@ def _unreadable_note(removed: int) -> str:
     return f"UNREADABLE: {removed} fact file(s) removed unread" if removed else ""
 
 
-def _report(rows: list[tuple[str, str, dict[str, int], int]]) -> None:
+def _report(rows: list[_ScopeRow]) -> None:
     """Prints one line per scope, flagging what a rebuild of it loses, leaves and destroys.
 
     Deliberately not a `rich.Table`: the notes are the half an operator acts on, and a
@@ -187,14 +213,14 @@ def _report(rows: list[tuple[str, str, dict[str, int], int]]) -> None:
     console.print("[bold]memory regeneration[/bold]")
     # Only the scope is padded. A failed rebuild carries the exception text as its result,
     # so aligning on that column too would let one long error indent every other row.
-    width = max((len(scope) for scope, _, _, _ in rows), default=0)
-    for scope, result, buckets, removed in rows:
-        summary = ", ".join(f"{name}={count}" for name, count in sorted(buckets.items()))
-        console.print(f"{scope:<{width}}  {result}  {summary or '-'}")
+    width = max((len(row.scope) for row in rows), default=0)
+    for row in rows:
+        summary = ", ".join(f"{name}={count}" for name, count in sorted(row.counts.items()))
+        console.print(f"{row.scope:<{width}}  {row.result}  {summary or '-'}")
         notes = (
-            _loss_note(result=result, buckets=buckets),
-            _unaccounted_note(scope=scope),
-            _unreadable_note(removed=removed),
+            _loss_note(result=row.result, buckets=row.counts),
+            _unaccounted_note(scope=row.scope),
+            _unreadable_note(removed=row.unreadable_removed),
         )
         for note in notes:
             if note:
@@ -203,20 +229,20 @@ def _report(rows: list[tuple[str, str, dict[str, int], int]]) -> None:
 
 async def _regen_one(
     writer: MemoryWriterAI, scope: str, semaphore: asyncio.Semaphore
-) -> tuple[str, str, dict[str, int], int]:
+) -> _ScopeRow:
     """Rebuilds one scope, prints its outcome, and returns its report row."""
     removed = 0
     async with semaphore:
         # The script calls the rebuild directly rather than through the reply pipeline,
         # so it needs its own bound: `_memory_semaphore` is entered inside
-        # `regenerate_main_memory`, but nothing else here throttles the fan-out.
+        # `regenerate_scope_memory`, but nothing else here throttles the fan-out.
         try:
             # Inside the handler because it is not safe either: `read_owner` parses the
             # id out of the scope key, so one non-numeric directory under the store (a
             # backup copy, which this tool's own advice invites) used to raise past the
             # gather and throw away every row that had already rebuilt.
             identity = render_owner_identity(owner=read_owner(scope=scope))
-            report = await regenerate_main_memory(scope=scope, writer=writer, identity=identity)
+            report = await regenerate_scope_memory(scope=scope, writer=writer, identity=identity)
             result, removed = report.result, report.unreadable_removed
             counts = _written(scope=scope)
         except Exception as error:
@@ -225,12 +251,10 @@ async def _regen_one(
     # A 145-scope run is several minutes of LLM work, so each scope reports as it lands
     # rather than leaving the closing report as the only output.
     console.print(f"{scope}: {result}")
-    return scope, result, counts, removed
+    return _ScopeRow(scope=scope, result=result, counts=counts, unreadable_removed=removed)
 
 
-async def _rebuild_batch(
-    writer: MemoryWriterAI, scopes: list[str]
-) -> list[tuple[str, str, dict[str, int], int]]:
+async def _rebuild_batch(writer: MemoryWriterAI, scopes: list[str]) -> list[_ScopeRow]:
     """Rebuilds every scope concurrently, advancing one bar over the whole batch.
 
     The bar counts finished scopes out of total rather than tracking any one of them,
@@ -240,7 +264,7 @@ async def _rebuild_batch(
     it instead of fighting its redraw.
     """
     semaphore = asyncio.Semaphore(_CONCURRENCY)
-    rows: dict[str, tuple[str, str, dict[str, int], int]] = {}
+    rows: dict[str, _ScopeRow] = {}
     with Progress(
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
@@ -252,7 +276,7 @@ async def _rebuild_batch(
         pending = [_regen_one(writer=writer, scope=scope, semaphore=semaphore) for scope in scopes]
         for landing in asyncio.as_completed(pending):
             row = await landing
-            rows[row[0]] = row
+            rows[row.scope] = row
             progress.advance(task)
     # Keyed back into store order: which scope happened to finish first is noise, and a
     # report shuffled by it cannot be compared against the previous run's.
@@ -296,7 +320,17 @@ async def _regen_all(model: ModelSettings, target: str, dry_run: bool) -> None:
             "[yellow]This one covers the whole store; commit data/memories first.[/yellow]"
         )
     if dry_run:
-        _report(rows=[(scope, "dry-run", _preview(scope=scope), 0) for scope in scopes])
+        _report(
+            rows=[
+                _ScopeRow(
+                    scope=scope,
+                    result="dry-run",
+                    counts=_preview(scope=scope),
+                    unreadable_removed=0,
+                )
+                for scope in scopes
+            ]
+        )
         return
     if not _confirmed():
         return

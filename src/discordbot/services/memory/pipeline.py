@@ -113,7 +113,7 @@ class _PendingMemoryUpdate(BaseModel):
     """The newest skipped update request, replayed once the in-flight task ends.
 
     Attributes:
-        subject: The phase-1 extraction directive naming the memory target.
+        subject: The phase-1 directive naming the memory target.
         transcript: The rendered phase-1 input captured for the skipped turn
             (already folds in the reply), so the replay needs no re-render.
         writer: The memory writing service to run the replayed update with.
@@ -127,9 +127,7 @@ class _PendingMemoryUpdate(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    subject: str = Field(
-        ..., description="The phase-1 extraction directive naming the memory target."
-    )
+    subject: str = Field(..., description="The phase-1 directive naming the memory target.")
     transcript: str = Field(
         ..., description="The rendered phase-1 input captured for the skipped turn."
     )
@@ -168,9 +166,12 @@ class _PendingMemoryUpdate(BaseModel):
 # guilds at once would otherwise have one conversation's notes replayed under the other's
 # source stamp, filing a `source_only` observation in a compartment the speaker never spoke
 # in. Sources are replayed one after another, each keeping its own subject.
-_inflight_tasks: dict[str, asyncio.Task[None]] = {}
-_pending_updates: dict[str, dict[str, _PendingMemoryUpdate]] = {}
-_inflight_loop: asyncio.AbstractEventLoop | None = None
+#
+# Loop-local, like `_regeneration_tasks` below: an `asyncio.Task` belongs to the loop that
+# created it, so an entry surviving a loop change parks every later turn for that scope
+# behind a task nothing on this loop can ever see finish.
+_inflight_tasks: LoopLocalRegistry[str, asyncio.Task[None]] = LoopLocalRegistry()
+_pending_updates: LoopLocalRegistry[str, dict[str, _PendingMemoryUpdate]] = LoopLocalRegistry()
 
 # Per-scope consolidation attempt times for the cooldown; monotonic, so it does
 # not need a loop-change reset. Tests clear it through the conftest fixture.
@@ -353,7 +354,7 @@ async def clear_scope_memory(scope: str) -> bool:
     # task to finish and discard it; `_finish_memory_update` then finds no
     # pending turn and replays nothing. Each dropped turn's reply is told, or it
     # would keep saying it was still working on memory this clear just erased.
-    for dropped in _pending_updates.pop(scope, {}).values():
+    for dropped in (_pending_updates.pop(key=scope) or {}).values():
         _release_pending_report(pending=dropped)
     critical_task = asyncio.create_task(_clear_scope_critical(scope=scope))
     (removed_files, removed_job), caller_cancelled = await _await_clear_critical(
@@ -454,19 +455,13 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
     report: MemoryWriteReport | None = None,
 ) -> None:
     """Schedules (or defers) one rendered-transcript update, backed by a reply.db row."""
-    global _inflight_loop  # noqa: PLW0603 -- process task de-dupe
-    loop = asyncio.get_running_loop()
-    if _inflight_loop is not loop:
-        _inflight_tasks.clear()
-        _pending_updates.clear()
-        _inflight_loop = loop
     # Stamped here, not inside the worker: a clear landing between this call and
     # the task actually starting must still abort the turn, and a worker that
     # timed itself would read the clear as older than its own work and write on.
     captured_at = time.monotonic()
-    running = _inflight_tasks.get(scope)
+    running = _inflight_tasks.get(key=scope)
     if running is not None and not running.done():
-        by_subject = _pending_updates.setdefault(scope, {})
+        by_subject = _pending_updates.setdefault(key=scope, default={})
         superseded = by_subject.get(subject)
         if superseded is not None:
             transcript = _merged_payload(newer=transcript, older=superseded.transcript)
@@ -507,7 +502,7 @@ def _enqueue_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
             report=report,
         )
     )
-    _inflight_tasks[scope] = task
+    _inflight_tasks.set(key=scope, value=task)
     task.add_done_callback(lambda finished: _finish_memory_update(scope=scope, task=finished))
 
 
@@ -584,14 +579,18 @@ def _merged_report(
     Both are handed the same summary, which is the only honest one available: the two turns'
     notes were reviewed as one payload and there is nothing left that says which note came from
     which reply.
+
+    Each is answered independently. A merge exists because the older reply is still standing
+    there promising work, and that reply is also the likelier of the two to have been deleted
+    under it, so a callback that raises must not take the other one's report with it.
     """
     if newer is None or older is None:
         return newer or older
 
     async def both(summary: MemoryWriteSummary) -> None:
         """Reports one merged outcome to every reply whose notes went into it."""
-        await older(summary)
-        await newer(summary)
+        await _report_writes(report=older, summary=summary)
+        await _report_writes(report=newer, summary=summary)
 
     return both
 
@@ -622,8 +621,8 @@ def _release_pending_report(pending: _PendingMemoryUpdate) -> None:
 
 def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
     """Clears the in-flight slot, logs failures, and replays a pending update."""
-    if _inflight_tasks.get(scope) is task:
-        _inflight_tasks.pop(scope, None)
+    if _inflight_tasks.get(key=scope) is task:
+        _inflight_tasks.pop(key=scope)
     if task.cancelled():
         # Cancelled (e.g. bot shutdown): reading result() would raise
         # CancelledError (a BaseException on 3.11+) out of this callback, and a
@@ -641,15 +640,15 @@ def _finish_memory_update(scope: str, task: asyncio.Task[None]) -> None:
             error_type=type(exc).__name__,
             _exc_info=exc,
         )
-    by_subject = _pending_updates.get(scope)
+    by_subject = _pending_updates.get(key=scope)
     if not by_subject:
-        _pending_updates.pop(scope, None)
+        _pending_updates.pop(key=scope)
         return
     # Oldest source first (dicts keep insertion order), and only one: each replay ends in
     # this same callback, which picks up the next one.
     pending = by_subject.pop(next(iter(by_subject)))
     if not by_subject:
-        _pending_updates.pop(scope, None)
+        _pending_updates.pop(key=scope)
     if cleared_since(scope=scope, started_at=pending.captured_at):
         # The durable clear tombstone owns the privacy guarantee. This remains a
         # best-effort cleanup for store-level clears that only stamped the process.
@@ -680,8 +679,8 @@ async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavo
     """Reviews the turn's memory notes and, past the raw threshold, consolidates.
 
     The reply.db row is written `pending` at the top (awaited, before the lock) so
-    a redeploy mid-extraction resumes this turn; it is marked `done` once phase-1
-    is terminal (extracted, no signal, all dupes, or cleared) and `failed` only
+    a redeploy mid-review resumes this turn; it is marked `done` once phase-1
+    is terminal (staged, no signal, all dupes, or cleared) and `failed` only
     when the LLM call itself fails, so the restart sweep retries just that case.
     Consolidation needs no DB row: `raw.md` is its durable, re-entrant queue.
 
@@ -723,7 +722,7 @@ async def _run_memory_update(  # noqa: PLR0913 -- schedule_memory_update's flavo
         )
         if cleared_since(scope=scope, started_at=captured_at):
             # The clear landed while the row was being written. Its durable tombstone
-            # owns the DB ordering, so drop the in-memory turn before extraction.
+            # owns the DB ordering, so drop the in-memory turn before the review.
             return
         async with scope_lock(scope=scope), _memory_semaphore():
             forced = await _review_and_stage(
@@ -962,7 +961,7 @@ async def _consolidate_locked(
         partition_raw_entries, raw_text=detail_tail, flavor=flavor
     )
     today = datetime.now(UTC).date().isoformat()
-    compartments = _compartments_to_run(scope=scope, buckets=buckets)
+    compartments = _compartments_to_run(buckets=buckets)
     global_reference = ""
     try:
         async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
@@ -1085,8 +1084,9 @@ async def _apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus t
 class _CompartmentInput(BaseModel):
     """The per-compartment half of a consolidation request, before the store is read.
 
-    Split out so `_consolidate_locked` can build the parts that differ per compartment
-    without `_consolidate_compartment` growing a dozen positional arguments.
+    Split out so a caller can build the parts that differ per compartment without
+    `_compartment_request` growing a dozen positional arguments. The incremental fan-out
+    fills all four; a from-scratch rebuild has only the raw bucket and the date.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -1116,20 +1116,17 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
     """
     existing = read_facts(scope=scope, compartment=compartment)
     rendered = render_existing_facts(facts=existing)
-    is_global = compartment == GLOBAL_COMPARTMENT
     result = await writer.consolidate(
-        request=ConsolidationRequest(
-            compartment_note=_compartment_note(compartment=compartment, flavor=flavor),
-            allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
+        request=_compartment_request(
+            compartment=compartment,
+            flavor=flavor,
             existing_facts=rendered,
-            existing_tone="",
-            raw_entries=request_parts.raw_entries,
-            recent_detail=request_parts.recent_detail,
-            tone_evidence="",
-            global_reference="" if is_global else request_parts.global_reference,
-            today=request_parts.today,
-            compact=len(rendered) > COMPACTION_TRIGGER_CHARS,
-            emit_tone=False,
+            parts=request_parts,
+            # Never on a forget-only call, however large the compartment is: compaction
+            # asks the model to merge and condense, and `apply_deltas` then drops every
+            # non-delete it produced with a warning apiece. The block would only buy a
+            # rewrite nobody can apply.
+            compact=not deletes_only and len(rendered) > COMPACTION_TRIGGER_CHARS,
         )
     )
     if result is None:
@@ -1231,18 +1228,8 @@ async def _update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the b
         # never delete the note; only the evidence-complete rebuild may do that.
         return
     result = await writer.consolidate(
-        request=ConsolidationRequest(
-            compartment_note="the user's persona-independent tone note, read in every conversation",
-            allowed_sections=(),
-            existing_facts="",
-            existing_tone=read_tone(scope=scope),
-            raw_entries="",
-            recent_detail="",
-            tone_evidence=tone_evidence,
-            global_reference="",
-            today=today,
-            compact=False,
-            emit_tone=True,
+        request=_tone_request(
+            existing_tone=read_tone(scope=scope), tone_evidence=tone_evidence, today=today
         )
     )
     if result is None or cleared_since(scope=scope, started_at=started_at):
@@ -1250,18 +1237,80 @@ async def _update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the b
     _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
 
 
-def _compartments_to_run(scope: str, buckets: dict[str, str]) -> list[str]:
+def _compartment_request(
+    compartment: str,
+    flavor: MemoryFlavor,
+    existing_facts: str,
+    parts: _CompartmentInput,
+    compact: bool,
+) -> ConsolidationRequest:
+    """Builds one compartment's consolidation request, filling in what never varies.
+
+    The compartment note and the flavor's legal sections are what both callers have to get
+    right and neither varies with the batch, so they are derived here once; the incremental
+    fan-out and the from-scratch rebuild differ only in which blocks they can offer. Neither
+    writes the tone note — `_tone_request` is that call — so `emit_tone` is false for both.
+    """
+    return ConsolidationRequest(
+        compartment_note=_compartment_note(compartment=compartment, flavor=flavor),
+        allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
+        existing_facts=existing_facts,
+        raw_entries=parts.raw_entries,
+        recent_detail=parts.recent_detail,
+        # `global` is never handed its own facts as reference: they are already its
+        # `existing_facts`, and offering them twice only invites the model to restate them.
+        global_reference="" if compartment == GLOBAL_COMPARTMENT else parts.global_reference,
+        today=parts.today,
+        compact=compact,
+        emit_tone=False,
+    )
+
+
+def _tone_request(existing_tone: str, tone_evidence: str, today: str) -> ConsolidationRequest:
+    """Builds the tone note's own request, the one consolidation call that writes no fact.
+
+    Its two callers send the same shape and differ only in whether the current note is
+    offered back: the incremental pass merges into it, while the evidence-complete rebuild
+    deliberately ignores it. Sharing the builder is what stops the compartment note — the
+    line telling the model which tier it is writing — drifting between the two.
+    """
+    return ConsolidationRequest(
+        compartment_note="the user's persona-independent tone note, read in every conversation",
+        allowed_sections=(),
+        raw_entries="",
+        existing_tone=existing_tone,
+        tone_evidence=tone_evidence,
+        today=today,
+        compact=False,
+        emit_tone=True,
+    )
+
+
+def _global_first(compartments: set[str]) -> list[str]:
+    """Orders one run's compartments with `global` leading and the rest by name.
+
+    `global` leads because every later compartment is handed its facts as read-only
+    reference, so it must be up to date before they run. Only the ordering is shared: which
+    compartments go in is the caller's own question, and the two answer it differently.
+    """
+    ordered = [GLOBAL_COMPARTMENT] if GLOBAL_COMPARTMENT in compartments else []
+    ordered.extend(sorted(compartments - {GLOBAL_COMPARTMENT}))
+    return ordered
+
+
+def _compartments_to_run(buckets: dict[str, str]) -> list[str]:
     """Returns the compartments this run touches, `global` first.
 
     Only compartments the batch actually routed evidence to: a call with an empty bucket
-    has nothing to consolidate. `global` leads because every later compartment is handed
-    its facts as read-only reference, so it must be up to date before they run.
+    has nothing to consolidate.
     """
-    ordered = [GLOBAL_COMPARTMENT] if buckets.get(GLOBAL_COMPARTMENT) else []
-    ordered.extend(
-        compartment for compartment in sorted(buckets) if compartment != GLOBAL_COMPARTMENT
+    return _global_first(
+        compartments={
+            compartment
+            for compartment in buckets
+            if compartment != GLOBAL_COMPARTMENT or buckets[compartment]
+        }
     )
-    return ordered
 
 
 def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:
@@ -1340,7 +1389,7 @@ def _tone_is_well_formed(tone_markdown: str) -> bool:
 def regeneration_has_evidence(scope: str) -> bool:
     """Whether any cold-tier evidence exists for a from-scratch rebuild.
 
-    Mirrors the evidence guard inside `regenerate_main_memory` cheaply (no full
+    Mirrors the evidence guard inside `regenerate_scope_memory` cheaply (no full
     window read), so the command can surface "no observations yet" up front
     instead of scheduling a background rebuild that would silently do nothing.
     """
@@ -1358,7 +1407,7 @@ def regeneration_on_cooldown(scope: str) -> bool:
 
 
 def schedule_memory_regeneration(scope: str, writer: MemoryWriterAI, identity: str) -> bool:
-    """Starts a background main-memory rebuild without blocking the command.
+    """Starts a background rebuild of the scope's memory without blocking the command.
 
     Returns False when a rebuild is already in flight for this scope (so the
     caller can report "still rebuilding" instead of double-scheduling the
@@ -1368,7 +1417,7 @@ def schedule_memory_regeneration(scope: str, writer: MemoryWriterAI, identity: s
     if running is not None and not running.done():
         return False
     task = asyncio.create_task(
-        regenerate_main_memory(scope=scope, writer=writer, identity=identity)
+        regenerate_scope_memory(scope=scope, writer=writer, identity=identity)
     )
     _regeneration_tasks.set(key=scope, value=task)
     task.add_done_callback(
@@ -1399,7 +1448,7 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
         )
 
 
-async def regenerate_main_memory(
+async def regenerate_scope_memory(
     scope: str, writer: MemoryWriterAI, identity: str
 ) -> RegenerationReport:
     """Rebuilds every compartment from cold-tier evidence alone.
@@ -1463,20 +1512,17 @@ async def regenerate_main_memory(
                         )
                         continue
                     result = await writer.consolidate(
-                        request=ConsolidationRequest(
-                            compartment_note=_compartment_note(
-                                compartment=compartment, flavor=flavor
-                            ),
-                            allowed_sections=tuple(sorted(sections_for_flavor(flavor=flavor))),
+                        request=_compartment_request(
+                            compartment=compartment,
+                            flavor=flavor,
                             existing_facts="",
-                            existing_tone="",
-                            raw_entries=raw_bucket,
-                            recent_detail="",
-                            tone_evidence="",
-                            global_reference="",
-                            today=today,
+                            parts=_CompartmentInput(
+                                raw_entries=raw_bucket,
+                                recent_detail="",
+                                global_reference="",
+                                today=today,
+                            ),
                             compact=True,
-                            emit_tone=False,
                         )
                     )
                     if result is None:
@@ -1595,21 +1641,9 @@ async def _rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the 
         None
         if not tone_evidence
         else await writer.consolidate(
-            request=ConsolidationRequest(
-                compartment_note=(
-                    "the user's persona-independent tone note, read in every conversation"
-                ),
-                allowed_sections=(),
-                existing_facts="",
-                existing_tone="",
-                raw_entries="",
-                recent_detail="",
-                tone_evidence=tone_evidence,
-                global_reference="",
-                today=today,
-                compact=False,
-                emit_tone=True,
-            )
+            # No `existing_tone`: this pass saw the whole corpus, so it rewrites the note
+            # from the evidence rather than merging into what is already there.
+            request=_tone_request(existing_tone="", tone_evidence=tone_evidence, today=today)
         )
     )
     if cleared_since(scope=scope, started_at=started_at):
@@ -1627,15 +1661,11 @@ def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
     the rebuild empties them; leaving them alone would keep pre-rebuild facts visible
     alongside the new ones with no evidence behind them. Touching one does not always
     mean consolidating it: an entry that turns out to hold neither evidence nor a
-    readable fact is pruned without a model call (`regenerate_main_memory` has the why).
+    readable fact is pruned without a model call (`regenerate_scope_memory` has the why).
     """
-    ordered = [GLOBAL_COMPARTMENT]
-    ordered.extend(
-        compartment
-        for compartment in sorted({*buckets, *list_compartments(scope=scope)})
-        if compartment != GLOBAL_COMPARTMENT
+    return _global_first(
+        compartments={GLOBAL_COMPARTMENT, *buckets, *list_compartments(scope=scope)}
     )
-    return ordered
 
 
 def _replace_compartment(

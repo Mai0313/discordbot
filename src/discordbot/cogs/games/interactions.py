@@ -5,9 +5,22 @@ import asyncio
 from collections.abc import Callable, Iterable
 
 import logfire
-from nextcord import Message
+from nextcord import Embed, Message
 from nextcord.ui import Item, View, Button
 from nextcord.errors import DiscordServerError
+
+from discordbot.utils.discord_embeds import embed_spacer_payload
+
+
+def table_edit_kwargs(
+    *, embeds: list[Embed], view: View | None, target: object | None = None
+) -> dict[str, Any]:
+    """Builds the shared edit payload for a game table render."""
+    return {
+        "embeds": embeds,
+        "view": view,
+        **embed_spacer_payload(embeds=embeds, is_edit=True, target=target),
+    }
 
 
 def disable_view_components(

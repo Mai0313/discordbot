@@ -75,15 +75,6 @@ class AccountSnapshot(BaseModel):
     total_spent: int = Field(..., description="Lifetime gross spent amount.")
 
 
-class AdminAccount(BaseModel):
-    """Read-only economy admin account row."""
-
-    model_config = ConfigDict(frozen=True)
-
-    user_id: int = Field(..., description="Discord user ID of the economy admin account.")
-    name: str = Field(..., description="Last-seen Discord account name.")
-
-
 class LeaderboardEntry(BaseModel):
     """One account row in the balance leaderboard."""
 
@@ -116,20 +107,12 @@ class CreditResult(BaseModel):
     Attributes:
         new_balance: User balance after the credit.
         credited_amount: Amount that landed in balance.
-        principal_repaid: Always zero; long-term loans are repaid explicitly.
-        remaining_debt: Always zero; use portfolio / loan views for active debt.
     """
 
     model_config = ConfigDict(frozen=True)
 
     new_balance: int = Field(..., description="User balance after the credit.")
     credited_amount: int = Field(..., description="Amount that landed in balance.")
-    principal_repaid: int = Field(
-        ..., description="Always zero; long-term loans are repaid explicitly."
-    )
-    remaining_debt: int = Field(
-        ..., description="Always zero; use portfolio / loan views for active debt."
-    )
 
 
 class BalanceAdjustmentResult(BaseModel):
@@ -144,26 +127,6 @@ class BalanceAdjustmentResult(BaseModel):
 
     new_balance: int = Field(..., description="User balance after the adjustment.")
     applied_delta: int = Field(..., description="Signed balance delta that was actually applied.")
-
-
-class WalletDeltaLeg(BaseModel):
-    """One ordered wallet delta requested by another domain service."""
-
-    model_config = ConfigDict(frozen=True)
-
-    delta: int = Field(..., description="Signed wallet delta to apply for this leg.")
-    reason: str = Field(default="", description="Optional reason describing this wallet delta.")
-
-
-class OrderedWalletDeltaResult(BaseModel):
-    """Outcome of applying ordered wallet deltas without netting them."""
-
-    model_config = ConfigDict(frozen=True)
-
-    new_balance: int = Field(..., description="User balance after all ordered deltas are applied.")
-    applied_deltas: tuple[int, ...] = Field(
-        ..., description="Signed deltas that were actually applied, in order."
-    )
 
 
 class JackpotSettlementRequest(BaseModel):
@@ -485,7 +448,6 @@ __all__ = [
     "TRANSFER_TAX_BPS",
     "VIP_PURCHASE_COST",
     "AccountSnapshot",
-    "AdminAccount",
     "BalanceAdjustmentResult",
     "CasinoDailyStats",
     "CasinoLedgerSnapshot",
@@ -505,10 +467,8 @@ __all__ = [
     "LoanProposalStatus",
     "LoanProposalView",
     "LossLeaderboardEntry",
-    "OrderedWalletDeltaResult",
     "PortfolioView",
     "RoundSettlementResult",
     "TransferResult",
     "VipPurchaseResult",
-    "WalletDeltaLeg",
 ]

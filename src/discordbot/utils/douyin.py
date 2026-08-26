@@ -13,7 +13,6 @@ The non-obvious constraints are documented on `DouyinDownloader`.
 import re
 import json
 import time
-import types
 from typing import Any, ClassVar
 from pathlib import Path
 from functools import cached_property
@@ -22,10 +21,16 @@ from collections import OrderedDict
 from urllib.parse import urljoin, parse_qs, urlparse
 
 import logfire
-from pydantic import Field, BaseModel
+from pydantic import Field, BaseModel, ConfigDict
 import requests
 from requests.exceptions import RequestException
 
+from discordbot.utils.urls import (
+    URL_START_ANCHOR,
+    normalized_url,
+    normalized_host,
+    host_matches_domain,
+)
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import (
     DOUYIN_DOWNLOAD_MAX_RETRIES,
@@ -33,6 +38,18 @@ from discordbot.typings.timeouts import (
     DOUYIN_METADATA_TIMEOUT_SECONDS,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
+from discordbot.utils.file_downloads import (
+    TemporaryDownload,
+    DownloadTooLargeError,
+    stream_to_file,
+)
+from discordbot.utils.media_delivery import (
+    MEDIA_ENVELOPE_MARGIN,
+    DISCORD_ATTACHMENT_LIMIT,
+    MediaItem,
+    MediaPlan,
+    MediaDeliveryPlanner,
+)
 
 # Single source of truth for detecting a Douyin URL, kept module level so the expansion cog,
 # gen_reply and `/download_video` all share it, the way `THREADS_URL_RE` is shared by
@@ -44,7 +61,8 @@ from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
 # Only whole labels may precede the host (`(?:[A-Za-z0-9-]+\.)*`) and the `.com` must be followed
 # immediately by `/`, so a lookalike host such as `douyin.com.attacker.com/x` does not match.
 DOUYIN_URL_RE = re.compile(
-    r"https?://(?:[A-Za-z0-9-]+\.)*(?:douyin|iesdouyin)\.com/[A-Za-z0-9_.?=&%/-]*[A-Za-z0-9_/-]"
+    rf"{URL_START_ANCHOR}https?://(?:[A-Za-z0-9-]+\.)*(?:douyin|iesdouyin)\.com"
+    r"/[A-Za-z0-9_.?=&%/-]*[A-Za-z0-9_/-]"
 )
 
 # `_ROUTER_DATA` is assigned in a plain inline <script>. The JSON is matched non-greedily up to
@@ -84,19 +102,13 @@ def is_douyin_url(url: str) -> bool:
     Returns:
         True when the URL's host is douyin.com or iesdouyin.com, or a subdomain of either.
     """
-    normalized = url if "://" in url else f"//{url}"
-    try:
-        host = (urlparse(normalized).hostname or "").lower()
-    except ValueError:
-        # urlparse raises on an unbalanced bracket ("https://[abc/x"), and this runs on raw user
-        # input in the command's routing check, before any error handling wraps it.
-        return False
-    return any(host == allowed or host.endswith(f".{allowed}") for allowed in _ALLOWED_HOSTS)
+    host = normalized_host(url=url)
+    return any(host_matches_domain(host=host, domain=allowed) for allowed in _ALLOWED_HOSTS)
 
 
 def _extract_post_id(url: str) -> str:
     """Reads the aweme id straight out of a URL, or returns an empty string."""
-    parsed = urlparse(url if "://" in url else f"//{url}")
+    parsed = urlparse(normalized_url(url=url))
     # `modal_id` wins over the path: a `/user/<sec_uid>?modal_id=<id>` link carries both and
     # the path would give the profile id.
     modal_ids = parse_qs(parsed.query).get("modal_id")
@@ -126,9 +138,8 @@ def is_douyin_post_url(url: str) -> bool:
     """
     if _extract_post_id(url=url):
         return True
-    normalized = url if "://" in url else f"//{url}"
     try:
-        parsed = urlparse(normalized)
+        parsed = urlparse(normalized_url(url=url))
     except ValueError:
         return False
     if (parsed.hostname or "").lower().startswith("live."):
@@ -176,7 +187,7 @@ class DouyinPost(BaseModel):
     )
 
 
-class DouyinDownload(BaseModel):
+class DouyinDownload(TemporaryDownload):
     """Files downloaded for one Douyin post.
 
     Attributes:
@@ -216,29 +227,6 @@ class DouyinDownload(BaseModel):
         """Deletes every downloaded file."""
         for path in self.filenames:
             path.unlink(missing_ok=True)
-
-    def __enter__(self):
-        """Enters the context manager.
-
-        Returns:
-            This download result.
-        """
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: types.TracebackType | None,
-    ):
-        """Exits the context manager and deletes the downloaded files.
-
-        Args:
-            exc_type: Exception type raised inside the context, if any.
-            exc_val: Exception value raised inside the context, if any.
-            exc_tb: Traceback raised inside the context, if any.
-        """
-        self.unlink()
 
 
 # Parsed share payloads, keyed by aweme id, so a link posted several times in a row costs one
@@ -323,6 +311,87 @@ def douyin_failure_message(error: Exception) -> str:
     if isinstance(error, TimeoutError):
         return "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"
     return "-# 檔案無法下載"
+
+
+class DouyinDelivery(BaseModel):
+    """A planned Douyin send: what goes out, and the size a refusal has to be able to quote.
+
+    `total_mb` rides along rather than being re-read off the download, because reading it is
+    order-sensitive: `DouyinDownload.total_bytes` stats the files and caches the answer, and a
+    successful host moves them out of the temp dir, so the read has to happen BEFORE the plan.
+    Carrying the number here is what stops a later caller re-deriving it from a deleted path —
+    on exactly the oversize path that most needs it.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    plan: MediaPlan = Field(..., description="The attach-vs-host-vs-drop outcome for the files.")
+    total_mb: float = Field(
+        ..., description="Combined size of the download, read before planning.", examples=[12.4]
+    )
+
+
+async def plan_douyin_delivery(
+    *, planner: MediaDeliveryPlanner, result: DouyinDownload, upload_limit: int
+) -> DouyinDelivery:
+    """Decides how one downloaded Douyin post reaches Discord.
+
+    Shared by `/download_video` and the auto-expansion, which differ only in where the upload
+    limit comes from. A gallery rides several attachments on one send and Discord measures the
+    whole multipart body, so it holds back the envelope margin; a lone video is a single-file
+    send and keeps the margin at 0.
+    """
+    items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
+    total_mb = result.total_bytes / 1024 / 1024
+    plan = await planner.plan(
+        items=items,
+        upload_limit=upload_limit,
+        envelope_margin=MEDIA_ENVELOPE_MARGIN if len(items) > 1 else 0,
+    )
+    return DouyinDelivery(plan=plan, total_mb=total_mb)
+
+
+def douyin_delivery_lines(
+    *,
+    result: DouyinDownload,
+    plan: MediaPlan,
+    hosting_available: bool,
+    url: str,
+    dropped_event: str,
+) -> list[str]:
+    """The subtext lines stating what a Douyin send left out, plus any hosted URLs.
+
+    Anything left out is said explicitly rather than silently dropped, so a user seeing a
+    partial gallery knows it is partial. The two causes are reported separately because they are
+    not the same problem: the attachment cap is a Discord limit nothing can change, while a
+    dropped item means delivery itself failed.
+
+    `dropped_event` is the caller's own log message rather than a shared one. That is the whole
+    point of it: `/download_video` and the auto-expansion are told apart in `data/logs` by the
+    event name alone, so merging them would cost the one field that says which path dropped the
+    media.
+
+    Hosted URLs come last and unwrapped: they must stay clickable and, under ~100 MiB, render
+    Discord's inline player.
+    """
+    lines: list[str] = []
+    if result.omitted_images:
+        lines.append(
+            f"-# 已省略 {result.omitted_images} 張圖片 (Discord 單則訊息最多 "
+            f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
+        )
+    if plan.dropped_items:
+        logfire.warn(
+            dropped_event,
+            url=url,
+            dropped_count=len(plan.dropped_items),
+            native_count=len(plan.native),
+            hosted_count=len(plan.hosted_urls),
+            hosting_available=hosting_available,
+        )
+        lines.append(f"-# 有 {len(plan.dropped_items)} 個檔案傳送失敗")
+    lines.extend(plan.hosted_urls)
+    return lines
 
 
 class DouyinDownloader(BaseModel):
@@ -421,7 +490,7 @@ class DouyinDownloader(BaseModel):
             if not is_douyin_url(url=current):
                 raise DouyinError(f"Not a Douyin post link: {url}")
 
-            aweme_id = self._extract_id(url=current)
+            aweme_id = _extract_post_id(url=current)
             if aweme_id:
                 _remember_link_id(url=url, aweme_id=aweme_id)
                 return aweme_id
@@ -432,11 +501,6 @@ class DouyinDownloader(BaseModel):
             current = location
 
         raise DouyinError(f"Could not find a Douyin post id in: {url}")
-
-    @staticmethod
-    def _extract_id(url: str) -> str:
-        """Reads the aweme id straight out of a URL, or returns an empty string."""
-        return _extract_post_id(url=url)
 
     def _redirect_target(self, url: str) -> str:
         """Returns the Location of a single redirect hop, without fetching the body.
@@ -660,16 +724,10 @@ class DouyinDownloader(BaseModel):
         """Streams a remote file into the output folder, retrying a stalled transfer.
 
         The media CDN intermittently stalls mid-transfer, which surfaces as a read timeout
-        rather than an error status, so a failed attempt is retried from scratch. A partial file
-        is removed between attempts: leaving it would let a later `stat()` report a truncated
-        download as a successful one.
-
-        `max_bytes` is a fail-fast guard, not a policy: it exists so a caller whose downstream
-        would reject the file anyway (the Files API caps a single upload at 2 GB) finds out from
-        the `Content-Length` in a couple of seconds instead of spending its whole time budget
-        fetching bytes nobody can use. The streamed re-check backs it up, since `Content-Length`
-        can be absent or wrong. The resulting `DouyinTooLargeError` is deterministic, so it is
-        raised past the retry loop rather than through it.
+        rather than an error status, so a failed attempt is retried from scratch. `stream_to_file`
+        owns the rest: the output folder it must never re-create, the `max_bytes` fail-fast and
+        the removal of a partial file. An oversize file is deterministic — it would be oversize
+        again next time — so it is raised past this loop rather than through it.
 
         Args:
             url: The media URL.
@@ -683,37 +741,22 @@ class DouyinDownloader(BaseModel):
             DouyinTooLargeError: If the media exceeds `max_bytes`.
             DouyinError: If every attempt fails.
         """
-        # Deliberately does NOT create the output folder: `download` makes it once, up front.
-        # A caller that cancels mid-download cannot stop the worker thread (`asyncio.to_thread`
-        # abandons it), so it may remove the scratch dir underneath this loop; re-creating it
-        # here would silently strand every later file. Letting the open fail instead turns that
-        # removal into the stop signal the cancellation could not deliver.
         filepath = Path(self.output_folder) / filename
 
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                with requests.Session() as session:
-                    response = session.get(
-                        url, headers=self._headers(), timeout=self.download_timeout, stream=True
-                    )
-                    response.raise_for_status()
-                    self._reject_oversize_header(response=response, url=url, max_bytes=max_bytes)
-                    written = 0
-                    with filepath.open("wb") as f:
-                        for chunk in response.iter_content(chunk_size=1 << 16):
-                            if not chunk:
-                                continue
-                            written += len(chunk)
-                            if max_bytes is not None and written > max_bytes:
-                                raise DouyinTooLargeError(
-                                    f"Douyin media at {url} exceeds {max_bytes} bytes"
-                                )
-                            f.write(chunk)
-                return filepath
+                return stream_to_file(
+                    url=url,
+                    filepath=filepath,
+                    headers=self._headers(),
+                    timeout=self.download_timeout,
+                    max_bytes=max_bytes,
+                )
+            except DownloadTooLargeError as e:
+                raise DouyinTooLargeError(str(e)) from e
             except RequestException as e:
                 last_error = e
-                filepath.unlink(missing_ok=True)
                 logfire.debug(
                     "Retrying a stalled Douyin media download",
                     url=url,
@@ -723,40 +766,10 @@ class DouyinDownloader(BaseModel):
                     error_type=type(e).__name__,
                     _exc_info=True,
                 )
-            except Exception:
-                # A local write can fail too (a full disk surfaces from `write`, not from the
-                # request), and that is not worth retrying; neither is an oversize file, which
-                # would be oversize again next time. Clean up first: the caller's gallery
-                # cleanup only knows about files it already accepted, so a partial file left here
-                # would survive and take disk space with it.
-                filepath.unlink(missing_ok=True)
-                raise
 
         raise DouyinError(
             f"Failed to download Douyin media from {url}: {last_error}"
         ) from last_error
-
-    @staticmethod
-    def _reject_oversize_header(
-        response: requests.Response, url: str, max_bytes: int | None
-    ) -> None:
-        """Refuses an oversize transfer from its `Content-Length`, before a byte is written.
-
-        Closing the response here is the whole point of the guard: the body is never read, so
-        no file is opened and nothing lands on disk.
-
-        Raises:
-            DouyinTooLargeError: If the declared length exceeds `max_bytes`.
-        """
-        if max_bytes is None:
-            return
-        declared = response.headers.get("Content-Length")
-        if declared is None or not declared.isdigit() or int(declared) <= max_bytes:
-            return
-        response.close()
-        raise DouyinTooLargeError(
-            f"Douyin media at {url} declares {declared} bytes, over the {max_bytes} byte cap"
-        )
 
     def download(
         self,
@@ -831,15 +844,3 @@ class DouyinDownloader(BaseModel):
         return DouyinDownload(
             title=post.title, is_photo=True, filenames=filenames, total_images=len(post.image_urls)
         )
-
-
-if __name__ == "__main__":
-    from rich.console import Console
-
-    console = Console()
-
-    downloader = DouyinDownloader(output_folder="./tmp")
-    url = "https://v.douyin.com/NdlfIZPcgz4"
-    console.print(downloader.parse_metadata(url=url))
-    with downloader.download(url=url) as result:
-        console.print(result)

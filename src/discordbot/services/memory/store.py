@@ -70,8 +70,8 @@ DM_COMPARTMENT = "dm"
 _COMPARTMENT_RE = re.compile(r"^(?:global|dm|g/\d{1,20})$")
 _GUILD_DIR_NAME = "g"
 
-# Raw entries start with a `## <ISO-8601 timestamp>` header line. Extraction
-# output is bullet-style prose, so the date prefix doubles as the split marker.
+# Raw entries start with a `## <ISO-8601 timestamp>` header line. An entry's
+# body is bullet-style prose, so the date prefix doubles as the split marker.
 _RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
 
 # Per-scope file-write locks, rebuilt per event loop by the shared registry.
@@ -184,7 +184,7 @@ def iter_scopes() -> list[str]:
     Walks `data/memories/`: a top-level directory holding memory is a user scope
     (`<user_id>`), and the child directories of `bot_memories/` holding memory are the
     `bot_memories/<server_id>` server scopes. Used by the restart consolidation sweep
-    to find scopes whose raw backlog still needs digesting even when no extraction job
+    to find scopes whose raw backlog still needs digesting even when no review job
     is pending for them.
 
     `bot_memories` is the only directory descended into, and dot directories are
@@ -210,7 +210,7 @@ def iter_scopes() -> list[str]:
 
 
 def _raw_path(scope: str) -> Path:
-    """Returns the raw extraction accumulation path for a scope."""
+    """Returns the path where a scope's raw entries accumulate."""
     return _scope_dir(scope=scope) / "raw.md"
 
 
@@ -307,10 +307,9 @@ def read_memory_document(
 ) -> str:
     """Returns the injectable document for one scope read through `compartments`.
 
-    This is the read path's single entry point and the direct replacement for the old
-    whole-file `read_main_memory`. Facts from every requested compartment are merged and
-    rendered as one document, competing for the size cap by recency inside each section
-    rather than by which compartment they came from, so a large shared tier cannot
+    This is the read path's single entry point. Facts from every requested compartment are
+    merged and rendered as one document, competing for the size cap by recency inside each
+    section rather than by which compartment they came from, so a large shared tier cannot
     silently starve a guild's own memory.
 
     Cached on the scope's write generation: a repeat read of an unchanged scope returns
@@ -406,11 +405,11 @@ class PrunedCompartment(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    unaccounted: list[str] = Field(
-        default=[], description="Names the store never wrote, left where they are."
+    unaccounted: tuple[str, ...] = Field(
+        default=(), description="Names the store never wrote, left where they are."
     )
-    unreadable: list[str] = Field(
-        default=[], description="Fact files removed that no reader could have parsed."
+    unreadable: tuple[str, ...] = Field(
+        default=(), description="Fact files removed that no reader could have parsed."
     )
 
 
@@ -467,8 +466,8 @@ def prune_compartment(scope: str, compartment: str, keep: set[str]) -> PrunedCom
             # compartment that survived is what stops the parent being tried at all.
             directory.parent.rmdir()
     return PrunedCompartment(
-        unaccounted=unaccounted_files(scope=scope, compartment=compartment),
-        unreadable=sorted(unreadable),
+        unaccounted=tuple(unaccounted_files(scope=scope, compartment=compartment)),
+        unreadable=tuple(sorted(unreadable)),
     )
 
 

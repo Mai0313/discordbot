@@ -3,9 +3,10 @@
 from typing import Any, Final
 import asyncio
 from pathlib import Path
+import threading
 
 import logfire
-from nextcord import Message, NotFound, Forbidden, HTTPException
+from nextcord import Message, NotFound, HTTPException
 from pydantic import Field, BaseModel
 from sqlalchemy import Engine, text, event, create_engine
 from nextcord.abc import Messageable
@@ -18,6 +19,10 @@ PUBLIC_MESSAGE_TTL_SECONDS = 180
 _PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/database/games.db")
 _pending_engine: Engine | None = None
 _pending_engine_path: Path | None = None
+# Every caller reaches the engine from an `asyncio.to_thread` worker, so two of them can find
+# the path changed at once; without this the loser disposes the engine the winner just handed
+# out. Only the rebuild runs under it, never a query.
+_PENDING_ENGINE_LOCK = threading.Lock()
 _CREATE_PENDING_PUBLIC_MESSAGES_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS pending_game_message (
     message_id INTEGER PRIMARY KEY,
@@ -67,16 +72,17 @@ def _pending_db_engine() -> Engine:
     global _pending_engine, _pending_engine_path  # noqa: PLW0603 -- testable singleton by DB path
 
     db_path = Path(_PENDING_PUBLIC_MESSAGE_DB_PATH)
-    if _pending_engine is not None and _pending_engine_path == db_path:
-        return _pending_engine
+    with _PENDING_ENGINE_LOCK:
+        if _pending_engine is not None and _pending_engine_path == db_path:
+            return _pending_engine
 
-    if _pending_engine is not None:
-        _pending_engine.dispose()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    _pending_engine = create_engine(url=f"sqlite:///{db_path}")
-    event.listen(_pending_engine, "connect", _configure_sqlite)
-    _pending_engine_path = db_path
-    return _pending_engine
+        if _pending_engine is not None:
+            _pending_engine.dispose()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        _pending_engine = create_engine(url=f"sqlite:///{db_path}")
+        event.listen(_pending_engine, "connect", _configure_sqlite)
+        _pending_engine_path = db_path
+        return _pending_engine
 
 
 def _ensure_pending_table(conn: Connection) -> None:
@@ -230,7 +236,7 @@ async def delete_public_message(message: Message, message_id: int | None = None)
         await message.delete()
     except NotFound:
         pass
-    except (Forbidden, HTTPException):
+    except HTTPException:
         logfire.warn(
             "Failed to delete public response",
             message_id=resolved_message_id,
@@ -262,7 +268,7 @@ async def delete_tracked_public_messages(bot: commands.Bot) -> None:
                 _exc_info=True,
             )
             continue
-        except (Forbidden, HTTPException):
+        except HTTPException:
             logfire.warn(
                 "Failed to fetch stale public response",
                 channel_id=record.channel_id,

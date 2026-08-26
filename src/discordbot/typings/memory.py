@@ -170,11 +170,6 @@ class MemoryWriteSummary(BaseModel):
         default=(), description="What the user asked to have dropped."
     )
 
-    @property
-    def is_empty(self) -> bool:
-        """Whether the turn recorded nothing worth reporting."""
-        return not self.remembered and not self.forgotten and self.private == 0
-
 
 class MemoryCredits(BaseModel):
     """Who the usage footer credits for the memory one reply read.

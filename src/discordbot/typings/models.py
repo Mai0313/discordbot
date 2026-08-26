@@ -1,3 +1,5 @@
+"""The model tiers every runtime call dispatches on, and the shapes a triage call fills in."""
+
 import re
 from typing import Literal, cast
 from datetime import UTC, datetime
@@ -153,7 +155,9 @@ class RuntimeModelCatalog(BaseModel):
     """
 
     key_index: int | None = Field(
-        default=None, description="Gemini key every tier is pinned to; None is unpinned."
+        default=None,
+        description="Gemini key every tier is pinned to; None is unpinned.",
+        examples=[None, 1, 2],
     )
 
     @computed_field
@@ -324,7 +328,7 @@ class RuntimeModelCatalog(BaseModel):
 
         Callers: the note evaluator (`MemoryWriterAI.evaluate`, its `evaluate_model` field)
         and phase-2 consolidation (`MemoryWriterAI.consolidate`, its `consolidate_model`
-        field), which also backs `regenerate_main_memory`, plus `scripts/regen_memories.py`,
+        field), which also backs `regenerate_scope_memory`, plus `scripts/regen_memories.py`,
         which defaults to this tier to drive that rebuild offline.
 
         There is no separate extractor tier any more. #596 moved the decision of what is worth

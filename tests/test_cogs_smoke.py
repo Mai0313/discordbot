@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import time
 from types import TracebackType, SimpleNamespace
-from typing import TYPE_CHECKING, Any, Self, Unpack, TypedDict, cast, get_args
+from typing import TYPE_CHECKING, Any, Self, TypedDict, cast, get_args
 import asyncio
 from pathlib import Path
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from importlib import import_module
 import threading
 import contextlib
 
 import nextcord
 from nextcord import Embed, Guild, Member
-from nextcord.ext import commands
+from nextcord.errors import ApplicationInvokeError
 from logfire._internal.constants import LEVEL_NUMBERS
 
 from discordbot import cli
@@ -72,20 +73,17 @@ from tests.helpers.casting import (
     as_message,
     as_discord_bot,
     as_interaction,
-    as_command_context,
     make_media_hosting_config,
 )
-from tests.helpers.discord_mocks import (
-    FakeUser,
-    DiscordPayload,
-    FakeInteraction,
-    FakeDiscordMessage,
-)
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, AsyncIterator
 
     import pytest
+    from nextcord import Interaction
+    from nextcord.ext import commands
+    from nextcord.errors import ApplicationError
 
 
 class SelfTimeoutCall(TypedDict):
@@ -2742,62 +2740,33 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- test double accepts heterogeneous kwargs
         """Records base reward arguments and returns a fake credit result."""
         rewards.append(kwargs)
-        return CreditResult(
-            new_balance=5_000, credited_amount=5_000, principal_repaid=0, remaining_debt=0
-        )
+        return CreditResult(new_balance=5_000, credited_amount=5_000)
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
-    bot = SimpleNamespace(
-        user=FakeUser(user_id=999, bot=True),
-        process_commands=record_processed,
-        _message_reward_at={},
-    )
-    user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
+    bot = _reward_bot(process_commands=record_processed)
+    user_message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
     await cli.DiscordBot.on_message(
         as_discord_bot(fake=bot), message=as_message(fake=user_message)
     )
     assert processed == [user_message]
     assert rewards[0]["amount"] == cli.BASE_MESSAGE_REWARD_AMOUNT
     await cli.DiscordBot.on_message(
-        as_discord_bot(fake=bot), message=as_message(fake=SimpleNamespace(author=bot.user))
+        as_discord_bot(fake=bot),
+        message=as_message(fake=SimpleNamespace(author=bot.user, guild=None)),
     )
     assert len(processed) == 1
     assert len(rewards) == 1
 
-    sent: list[DiscordPayload] = []
 
-    async def record_context_send(**kwargs: Unpack[DiscordPayload]) -> None:
-        """Records command error responses sent through the context."""
-        sent.append(kwargs)
+async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A raising slash command reaches `./data/logs` naming the type nextcord wrapped.
 
-    context = SimpleNamespace(
-        send=record_context_send,
-        guild=SimpleNamespace(name="Guild", id=1),
-        author=FakeUser(user_id=1),
-        command=SimpleNamespace(qualified_name="demo"),
-    )
-    await cli.DiscordBot.on_command_error(
-        as_discord_bot(fake=bot), as_command_context(fake=context), commands.NotOwner()
-    )
-    await cli.DiscordBot.on_command_error(
-        as_discord_bot(fake=bot),
-        as_command_context(fake=context),
-        commands.MissingPermissions(missing_permissions=["kick_members"]),
-    )
-    await cli.DiscordBot.on_command_error(
-        as_discord_bot(fake=bot),
-        as_command_context(fake=context),
-        commands.BotMissingPermissions(missing_permissions=["send_messages"]),
-    )
-    await cli.DiscordBot.on_command_error(
-        as_discord_bot(fake=bot),
-        as_command_context(fake=context),
-        commands.CommandNotFound("nope"),
-    )
-    assert len(sent) == 4
-
-    # An error the handler has no branch for used to vanish at no level at all; it now
-    # reports the type nextcord wrapped, not the wrapper.
+    This is the only command-error surface the bot actually has: it registers no prefix
+    commands and never passes `command_prefix`, so nextcord defaults it to `()` and
+    `get_context` can never resolve one — which is why the `on_command_*` pair that used to
+    live here could not fire. nextcord's own default prints to `sys.stderr`, which
+    `_TeeStream` does not tee, so before this the traceback reached no file at all.
+    """
     logged: list[dict[str, Any]] = []
 
     def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
@@ -2805,20 +2774,47 @@ async def test_cli_message_and_command_error_branches(monkeypatch: pytest.Monkey
         logged.append(kwargs)
 
     monkeypatch.setattr(cli.logfire, "error", record_error)
-    await cli.DiscordBot.on_command_error(
-        as_discord_bot(fake=bot),
-        as_command_context(fake=context),
-        commands.CommandInvokeError(ValueError("boom")),
+    bot = SimpleNamespace(user=FakeUser(user_id=999, bot=True))
+    interaction = SimpleNamespace(
+        application_command=SimpleNamespace(qualified_name="demo"),
+        guild_id=1,
+        user=FakeUser(user_id=1),
     )
-    assert len(sent) == 4
+    await cli.DiscordBot.on_application_command_error(
+        as_discord_bot(fake=bot),
+        cast("Interaction[commands.Bot]", interaction),
+        cast("ApplicationError", ApplicationInvokeError(ValueError("boom"))),
+    )
     assert logged[-1]["error_type"] == "ValueError"
     assert logged[-1]["command"] == "demo"
+    assert logged[-1]["guild_id"] == 1
 
 
 def test_log_level_setting_accepts_only_real_logfire_levels() -> None:
     """`LOG_LEVEL` is checked against logfire's own table, not a hand-copied list."""
     accepted = set(get_args(LoggingConfig.model_fields["log_level"].annotation))
     assert accepted == set(LEVEL_NUMBERS)
+
+
+def _reward_bot(*, process_commands: object, **state: object) -> SimpleNamespace:
+    """A bot double carrying everything `on_message`'s reward path reads off a real bot.
+
+    These tests invoke `cli.DiscordBot.on_message` UNBOUND with this namespace as `self`, so the
+    double has to answer every attribute the real method reaches for — the cooldown map, its
+    prune stamp, and the prune helper itself. `on_message` calls that helper as an ordinary
+    `self.` method, so it is bound here rather than being reached through the class.
+    """
+    bot = SimpleNamespace(
+        user=FakeUser(user_id=999, bot=True),
+        process_commands=process_commands,
+        _message_reward_at={},
+        _message_reward_pruned_at=0.0,
+    )
+    bot.__dict__.update(state)
+    bot._prune_message_reward_cooldowns = partial(
+        cli.DiscordBot._prune_message_reward_cooldowns, as_discord_bot(fake=bot)
+    )
+    return bot
 
 
 async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
@@ -2829,18 +2825,14 @@ async def test_cli_message_reward_cooldown_suppresses_rapid_repeat(
 
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
         rewards.append(kwargs)
-        return CreditResult(
-            new_balance=10, credited_amount=10, principal_repaid=0, remaining_debt=0
-        )
+        return CreditResult(new_balance=10, credited_amount=10)
 
     async def noop_process(message: SimpleNamespace) -> None:
         del message
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
-    bot = SimpleNamespace(
-        user=FakeUser(user_id=999, bot=True), process_commands=noop_process, _message_reward_at={}
-    )
-    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
+    bot = _reward_bot(process_commands=noop_process)
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
 
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
@@ -2860,25 +2852,20 @@ async def test_cli_message_reward_cooldown_prunes_expired_users(
 
     async def record_reward(**kwargs: Any) -> CreditResult:  # noqa: ANN401 -- command facade double
         rewards.append(kwargs)
-        return CreditResult(
-            new_balance=10, credited_amount=10, principal_repaid=0, remaining_debt=0
-        )
+        return CreditResult(new_balance=10, credited_amount=10)
 
     async def noop_process(message: SimpleNamespace) -> None:
         del message
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=record_reward)
     monkeypatch.setattr(target=cli, name="monotonic", value=lambda: 1_000.0)
-    bot = SimpleNamespace(
-        user=FakeUser(user_id=999, bot=True),
-        process_commands=noop_process,
-        _message_reward_at={1: 900.0, 2: 975.0},
-        _message_reward_pruned_at=0.0,
-    )
+    bot = _reward_bot(process_commands=noop_process, _message_reward_at={1: 900.0, 2: 975.0})
 
     await cli.DiscordBot.on_message(
         as_discord_bot(fake=bot),
-        message=as_message(fake=SimpleNamespace(author=FakeUser(user_id=3, bot=False))),
+        message=as_message(
+            fake=SimpleNamespace(author=FakeUser(user_id=3, bot=False), guild=None)
+        ),
     )
 
     assert 1 not in bot._message_reward_at
@@ -2898,18 +2885,14 @@ async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
         attempts += 1
         if attempts == 1:
             raise RuntimeError("transient DB failure")
-        return CreditResult(
-            new_balance=10, credited_amount=10, principal_repaid=0, remaining_debt=0
-        )
+        return CreditResult(new_balance=10, credited_amount=10)
 
     async def noop_process(message: SimpleNamespace) -> None:
         del message
 
     monkeypatch.setattr(target=cli, name="credit_with_repayment", value=flaky_reward)
-    bot = SimpleNamespace(
-        user=FakeUser(user_id=999, bot=True), process_commands=noop_process, _message_reward_at={}
-    )
-    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False))
+    bot = _reward_bot(process_commands=noop_process)
+    message = SimpleNamespace(author=FakeUser(user_id=1, bot=False), guild=None)
 
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     # The first credit failed, so the slot is rolled back and the next message retries.

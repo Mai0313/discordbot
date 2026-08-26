@@ -46,22 +46,17 @@ _schema_ready_for: AsyncEngine | None = None
 _schema_lock = LoopLocalLock()
 
 
-def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Configures a newly opened games-history SQLite connection."""
-    configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
 @event.listens_for(_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
     """Configures a newly opened SQLite connection."""
-    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
+    configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _configure_sqlite_on_checkout(
     dbapi_connection: object, _connection_record: object, _connection_proxy: object
 ) -> None:
     """Configures pooled connections from test-swapped engines."""
-    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
+    configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 class Base(DeclarativeBase):

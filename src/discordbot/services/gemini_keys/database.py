@@ -30,22 +30,17 @@ from discordbot.utils.sqlite_config import ensure_sqlite_hooks, configure_sqlite
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/llm_keys.db")
 
 
-def _configure_sqlite_connection(dbapi_connection: Any) -> None:  # noqa: ANN401 -- SQLAlchemy connection type depends on the driver
-    """Applies the project's standard PRAGMA setup to a new llm_keys.db connection."""
-    configure_sqlite_connection(dbapi_connection=dbapi_connection)
-
-
 @event.listens_for(_engine.sync_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
     """Configures a newly opened SQLite connection."""
-    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
+    configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 def _configure_sqlite_on_checkout(
     dbapi_connection: object, _connection_record: object, _connection_proxy: object
 ) -> None:
     """Re-applies the PRAGMA setup when a pooled connection is checked out."""
-    _configure_sqlite_connection(dbapi_connection=dbapi_connection)
+    configure_sqlite_connection(dbapi_connection=dbapi_connection)
 
 
 class Base(DeclarativeBase):
@@ -137,6 +132,3 @@ async def record_pick(day: str, key_index: int, count: int) -> None:
             )
         )
         await session.commit()
-
-
-__all__ = ["Base", "GeminiKeyUsageRow", "open_session", "read_day_counts", "record_pick"]

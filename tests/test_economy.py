@@ -26,7 +26,6 @@ from discordbot.services.economy.database import (
     UserWallet,
     JackpotPool,
     UserAccount,
-    AdminAccount,
     CasinoAccount,
     AccountSnapshot,
     JackpotSnapshot,
@@ -44,7 +43,6 @@ from discordbot.services.economy.database import (
     top_losers,
     get_account,
     get_balance,
-    list_admins,
     open_session,
     _database_now,
     _ensure_schema,
@@ -446,15 +444,6 @@ async def test_set_admin_revoke_missing_user_noops() -> None:
     assert await get_account(user_id=42) is None
 
 
-async def test_list_admins_returns_only_admin_accounts() -> None:
-    """Admin listing filters out normal economy users."""
-    await set_admin(user_id=42, name="alice", is_admin=True)
-    await set_admin(user_id=43, name="bob", is_admin=True)
-    await _add_balance(user_id=44, name="carol", amount=10)
-    await set_admin(user_id=43, name="bob", is_admin=False)
-    assert await list_admins() == [AdminAccount(user_id=42, name="alice")]
-
-
 async def test_write_timestamps_use_taiwan_local_time() -> None:
     """Account timestamps are persisted as Taiwan-local wall time."""
     before = datetime.now(tz=TAIWAN_TIMEZONE).replace(tzinfo=None)
@@ -652,16 +641,6 @@ async def test_top_n_orders_by_balance_descending() -> None:
         LeaderboardEntry(user_id=2, name="bob", balance=300, avatar_url="https://cdn/b.png"),
         LeaderboardEntry(user_id=1, name="alice", balance=100, avatar_url="https://cdn/a.png"),
     ]
-
-
-async def test_top_n_excludes_specified_users() -> None:
-    """An excluded account is filtered out even when its balance would top the board."""
-    await _add_balance(user_id=1, name="alice", amount=100)
-    await _add_balance(user_id=2, name="bob", amount=300)
-    await _add_balance(user_id=99, name="house", amount=999)
-    rows = await top_n(limit=10, exclude_user_ids=(99,))
-    assert all(row.user_id != 99 for row in rows)
-    assert rows[0] == LeaderboardEntry(user_id=2, name="bob", balance=300, avatar_url="")
 
 
 async def test_top_n_excludes_leaderboard_hidden_accounts_by_default() -> None:
@@ -1544,7 +1523,7 @@ async def test_top_losers_uses_gross_loss_not_net() -> None:
     await apply_round_settlement(
         player_id=3, player_account_name="carol", player_delta=-200, casino_delta=200
     )
-    rows = await top_losers(limit=10, exclude_user_ids=(99,))
+    rows = await top_losers(limit=10)
     assert rows == [
         LossLeaderboardEntry(user_id=1, name="alice", loss_amount=300, avatar_url=""),
         LossLeaderboardEntry(user_id=3, name="carol", loss_amount=200, avatar_url=""),
@@ -1558,22 +1537,8 @@ async def test_top_losers_orders_by_loss_magnitude() -> None:
         await apply_round_settlement(
             player_id=user_id, player_account_name=name, player_delta=-loss, casino_delta=loss
         )
-    rows = await top_losers(limit=10, exclude_user_ids=(99,))
+    rows = await top_losers(limit=10)
     assert [(row.user_id, row.loss_amount) for row in rows] == [(2, 500), (3, 250), (1, 100)]
-
-
-async def test_top_losers_excludes_specified_users() -> None:
-    """An excluded account is filtered out even when its loss would top the board."""
-    await _add_balance(user_id=1, name="alice", amount=500)
-    await _add_balance(user_id=99, name="house", amount=900)
-    await apply_round_settlement(
-        player_id=1, player_account_name="alice", player_delta=-500, casino_delta=500
-    )
-    await apply_round_settlement(
-        player_id=99, player_account_name="house", player_delta=-900, casino_delta=900
-    )
-    rows = await top_losers(limit=10, exclude_user_ids=(99,))
-    assert [row.user_id for row in rows] == [1]
 
 
 async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> None:
@@ -1594,7 +1559,7 @@ async def test_top_losers_excludes_leaderboard_hidden_accounts_by_default() -> N
         )
         await session.commit()
 
-    rows = await top_losers(limit=10, exclude_user_ids=(99,))
+    rows = await top_losers(limit=10)
     assert rows == [LossLeaderboardEntry(user_id=2, name="bob", loss_amount=400, avatar_url="")]
 
 
@@ -1612,7 +1577,7 @@ async def test_top_losers_can_include_leaderboard_hidden_accounts() -> None:
         )
         await session.commit()
 
-    rows = await top_losers(limit=10, exclude_user_ids=(99,), include_hidden=True)
+    rows = await top_losers(limit=10, include_hidden=True)
     assert rows == [LossLeaderboardEntry(user_id=1, name="alice", loss_amount=500, avatar_url="")]
 
 
@@ -1630,19 +1595,19 @@ async def test_top_losers_ignores_counters_before_today() -> None:
             .values(day_started_at=_taipei_midnight(now=past))
         )
         await session.commit()
-    assert await top_losers(limit=10, exclude_user_ids=(99,)) == []
+    assert await top_losers(limit=10) == []
 
 
 async def test_top_losers_empty_when_no_casino_activity() -> None:
     """Without any daily casino loss counters the leaderboard is empty."""
     await _add_balance(user_id=1, name="alice", amount=100)
-    assert await top_losers(limit=10, exclude_user_ids=(99,)) == []
+    assert await top_losers(limit=10) == []
 
 
 async def test_top_losers_ignores_manual_adjustments() -> None:
     """Manual admin debits do not count as casino losses."""
     await adjust_balance(user_id=1, name="alice", delta=-100, allow_negative=True)
-    assert await top_losers(limit=10, exclude_user_ids=(99,)) == []
+    assert await top_losers(limit=10) == []
 
 
 # VIP blackjack settlement -------------------------------------------------
