@@ -21,7 +21,7 @@ from collections import OrderedDict
 from urllib.parse import urljoin, parse_qs, urlparse
 
 import logfire
-from pydantic import Field, BaseModel, ConfigDict
+from pydantic import Field, BaseModel, ConfigDict, ValidationError, model_validator
 import requests
 from requests.exceptions import RequestException
 
@@ -229,13 +229,139 @@ class DouyinDownload(TemporaryDownload):
             path.unlink(missing_ok=True)
 
 
+class _DouyinPayload(BaseModel):
+    """Base for the objects the share page serves, tolerating an explicit JSON null.
+
+    Douyin writes an absent optional as null rather than omitting it: `images` on a video
+    post, `video` / `play_addr` on a photo one, `url_list` on an image it has no clean copy
+    of. Every field below carries a default, so a null would raise where the `.get(...) or
+    {}` chains this replaced simply fell through. Dropping the key is what makes null and
+    absent the same thing again, at the boundary rather than at each read.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _null_is_absent(cls, data: object) -> object:
+        """Drops explicit nulls so each field falls back to its own default."""
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if value is not None}
+        return data
+
+
+class _DouyinPlayAddr(_DouyinPayload):
+    """A video's play handle.
+
+    Attributes:
+        uri: Douyin's internal video id, which `_play_url` turns into a clean play URL.
+    """
+
+    uri: str = Field(default="", description="Douyin's internal video id.")
+
+
+class _DouyinVideo(_DouyinPayload):
+    """A post's video object, which a photo post also carries for its slideshow render.
+
+    Attributes:
+        play_addr: The play handle naming the clip.
+    """
+
+    play_addr: _DouyinPlayAddr = Field(
+        default_factory=_DouyinPlayAddr, description="The play handle naming the clip."
+    )
+
+
+class _DouyinAuthor(_DouyinPayload):
+    """The posting account.
+
+    Attributes:
+        nickname: Author's display nickname.
+    """
+
+    nickname: str = Field(default="", description="Author's display nickname.")
+
+
+class _DouyinImage(_DouyinPayload):
+    """One image of a photo post.
+
+    Attributes:
+        url_list: Watermark-free URLs for this image, JPEG last.
+    """
+
+    url_list: list[str] = Field(
+        default_factory=list, description="Watermark-free URLs for this image, JPEG last."
+    )
+
+
+class _DouyinItem(_DouyinPayload):
+    """One post, as `item_list[0]` of the share payload.
+
+    Attributes:
+        desc: Post caption.
+        aweme_type: Douyin's post kind; see `_PHOTO_AWEME_TYPES`.
+        author: The posting account.
+        video: The post's video object.
+        images: The post's images, empty for a video.
+    """
+
+    desc: str = Field(default="", description="Post caption.")
+    aweme_type: int | None = Field(
+        default=None, description="Douyin's post kind; see `_PHOTO_AWEME_TYPES`.", examples=[2, 4]
+    )
+    author: _DouyinAuthor = Field(
+        default_factory=_DouyinAuthor, description="The posting account."
+    )
+    video: _DouyinVideo = Field(
+        default_factory=_DouyinVideo, description="The post's video object."
+    )
+    images: list[_DouyinImage] = Field(
+        default_factory=list, description="The post's images, empty for a video."
+    )
+
+
+class _DouyinFilterEntry(_DouyinPayload):
+    """Why Douyin refuses to serve a post it still knows about.
+
+    The three fields are alternative spellings of the same reason and are read in order;
+    which one is populated varies by why the post was filtered.
+
+    Attributes:
+        detail_msg: The fullest wording of the refusal.
+        notice: The short wording of the refusal.
+        filter_reason: The machine-ish reason code.
+    """
+
+    detail_msg: str = Field(default="", description="The fullest wording of the refusal.")
+    notice: str = Field(default="", description="The short wording of the refusal.")
+    filter_reason: str = Field(default="", description="The machine-ish reason code.")
+
+
+class _DouyinVideoInfo(_DouyinPayload):
+    """The `videoInfoRes` object the share page's `_ROUTER_DATA` carries.
+
+    Both lists are empty on a post Douyin serves normally but has nothing to say about,
+    which is why `_first_item` reads them in order rather than branching on either alone.
+
+    Attributes:
+        item_list: The requested post, as a one-entry list.
+        filter_list: Why the post was withheld, when `item_list` is empty.
+    """
+
+    item_list: list[_DouyinItem] = Field(
+        default_factory=list, description="The requested post, as a one-entry list."
+    )
+    filter_list: list[_DouyinFilterEntry] = Field(
+        default_factory=list, description="Why the post was withheld, when `item_list` is empty."
+    )
+
+
 # Parsed share payloads, keyed by aweme id, so a link posted several times in a row costs one
-# fetch. The TTL is deliberately far shorter than the CDN signature lifetime baked into the
+# fetch. Validated rather than raw, so a re-pasted link costs neither the request nor the parse.
+# The TTL is deliberately far shorter than the CDN signature lifetime baked into the
 # image URLs (`x-expires`): serving a cached payload past that point would hand out URLs that
 # 403 on download, which is worse than re-fetching. Bounded like the other long-lived caches in
 # this project (see `cogs/gen_reply/attachment/base.py`) so a long-running bot cannot accumulate one
 # full payload per link it has ever seen.
-_PAYLOAD_CACHE: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
+_PAYLOAD_CACHE: OrderedDict[str, tuple[float, _DouyinVideoInfo]] = OrderedDict()
 _PAYLOAD_CACHE_TTL_SECONDS = 300.0
 _PAYLOAD_CACHE_MAX_ENTRIES = 128
 
@@ -531,8 +657,12 @@ class DouyinDownloader(BaseModel):
         # against the request URL rather than trusting the header verbatim.
         return urljoin(url, location)
 
-    def _fetch_share_payload(self, aweme_id: str) -> dict[str, Any]:
+    def _fetch_share_payload(self, aweme_id: str) -> _DouyinVideoInfo:
         """Fetches and parses the share page for a post id.
+
+        A payload whose shape has moved far enough to fail validation is reported as
+        unreadable, never as unavailable: the two are kept apart everywhere in this module
+        because telling someone their working link is deleted is the worst thing it can do.
 
         Args:
             aweme_id: The numeric post id.
@@ -576,9 +706,13 @@ class DouyinDownloader(BaseModel):
         except json.JSONDecodeError as e:
             raise DouyinError(f"Douyin returned malformed data for {aweme_id}: {e}") from e
 
-        info = self._find_video_info(router_data=router_data)
-        if info is None:
+        raw_info = self._find_video_info(router_data=router_data)
+        if raw_info is None:
             raise DouyinError(f"Douyin returned an unexpected structure for {aweme_id}")
+        try:
+            info = _DouyinVideoInfo.model_validate(raw_info)
+        except ValidationError as e:
+            raise DouyinError(f"Douyin returned an unreadable post {aweme_id}: {e}") from e
 
         with _PAYLOAD_CACHE_LOCK:
             _PAYLOAD_CACHE[aweme_id] = (time.monotonic(), info)
@@ -612,7 +746,7 @@ class DouyinDownloader(BaseModel):
         return None
 
     @staticmethod
-    def _first_item(info: dict[str, Any], aweme_id: str) -> dict[str, Any]:
+    def _first_item(info: _DouyinVideoInfo, aweme_id: str) -> _DouyinItem:
         """Returns the post object, translating Douyin's soft failures into errors.
 
         Douyin answers a deleted, private or region-locked post with HTTP 200, an empty
@@ -629,14 +763,12 @@ class DouyinDownloader(BaseModel):
         Raises:
             DouyinUnavailableError: If Douyin filtered the post out.
         """
-        item_list = info.get("item_list") or []
-        if item_list:
-            return item_list[0]
+        if info.item_list:
+            return info.item_list[0]
 
-        filter_list = info.get("filter_list") or []
-        if filter_list:
-            entry = filter_list[0]
-            reason = entry.get("detail_msg") or entry.get("notice") or entry.get("filter_reason")
+        if info.filter_list:
+            entry = info.filter_list[0]
+            reason = entry.detail_msg or entry.notice or entry.filter_reason
             raise DouyinUnavailableError(f"Douyin will not serve {aweme_id}: {reason}")
         raise DouyinUnavailableError(f"Douyin returned no post for {aweme_id}")
 
@@ -660,28 +792,27 @@ class DouyinDownloader(BaseModel):
         info = self._fetch_share_payload(aweme_id=aweme_id)
         item = self._first_item(info=info, aweme_id=aweme_id)
 
-        images = item.get("images") or []
         # Branch on `aweme_type`, never on the presence of `play_addr`: a photo post also carries
         # a non-empty `video.play_addr` holding a server-rendered slideshow, so a play_addr check
         # would classify every gallery as a video.
-        is_photo = item.get("aweme_type") in _PHOTO_AWEME_TYPES or bool(images)
+        is_photo = item.aweme_type in _PHOTO_AWEME_TYPES or bool(item.images)
 
         return DouyinPost(
             aweme_id=aweme_id,
-            title=(item.get("desc") or "").strip(),
-            author_name=(item.get("author") or {}).get("nickname") or "",
+            title=item.desc.strip(),
+            author_name=item.author.nickname,
             is_photo=is_photo,
             video_id="" if is_photo else self._video_id(item=item),
-            image_urls=self._image_urls(images=images) if is_photo else [],
+            image_urls=self._image_urls(images=item.images) if is_photo else [],
         )
 
     @staticmethod
-    def _video_id(item: dict[str, Any]) -> str:
+    def _video_id(item: _DouyinItem) -> str:
         """Reads the internal video id used to build a play URL."""
-        return ((item.get("video") or {}).get("play_addr") or {}).get("uri") or ""
+        return item.video.play_addr.uri
 
     @staticmethod
-    def _image_urls(images: list[Any]) -> list[str]:
+    def _image_urls(images: list[_DouyinImage]) -> list[str]:
         """Picks one watermark-free URL per image.
 
         Despite the names, `url_list` holds the clean images and `download_url_list` holds the
@@ -692,16 +823,9 @@ class DouyinDownloader(BaseModel):
             images: The post's `images` array.
 
         Returns:
-            One URL per image, skipping malformed entries.
+            One URL per image, skipping any Douyin served no usable URL for.
         """
-        urls: list[str] = []
-        for image in images:
-            if not isinstance(image, dict):
-                continue
-            url_list = [url for url in (image.get("url_list") or []) if isinstance(url, str)]
-            if url_list:
-                urls.append(url_list[-1])
-        return urls
+        return [image.url_list[-1] for image in images if image.url_list]
 
     def _play_url(self, video_id: str, quality: VideoQuality) -> str:
         """Builds the watermark-free play URL for a video.
