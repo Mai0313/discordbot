@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from discordbot.typings.economy import apply_vip_blackjack_bonus
 from discordbot.services.economy.database import (
     transfer,
     get_account,
@@ -14,7 +15,6 @@ from discordbot.services.economy.database import (
     accept_loan_proposal,
     credit_with_repayment,
     apply_round_settlement,
-    apply_vip_blackjack_bonus,
     create_personal_loan_request,
 )
 

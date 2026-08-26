@@ -15,6 +15,7 @@ from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LoanLenderType,
+    monthly_rate_percent_to_bps,
 )
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.cogs.economy.boards import (
@@ -43,7 +44,6 @@ from discordbot.services.economy.database import (
     call_central_bank_loans,
     get_central_bank_status,
     repay_central_bank_loans,
-    monthly_rate_percent_to_bps,
     create_personal_loan_request,
     create_central_bank_loan_request,
 )

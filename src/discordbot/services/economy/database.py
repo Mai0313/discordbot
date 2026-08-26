@@ -117,9 +117,6 @@ _VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
 _CLAMPED_DELTA_MAX_RETRIES: Final[int] = 8
 _JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
 _ECONOMY_LEADERBOARD_CACHE_TTL_SECONDS: Final[float] = 5.0
-# Blackjack VIP perk: 1.2x payout on winning rounds, applied as floor(delta * 6 / 5).
-_VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
-_VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
 
 _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/database/economy.db")
 
@@ -532,37 +529,6 @@ def open_session() -> AsyncSession:
         on_checkout_fn=_configure_sqlite_on_checkout,
     )
     return AsyncSession(bind=_engine, expire_on_commit=False)
-
-
-def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
-    """Converts a user-facing monthly percent into basis points."""
-    return max(
-        MIN_LOAN_MONTHLY_RATE_BPS,
-        min(MAX_LOAN_MONTHLY_RATE_BPS, round(monthly_rate_percent * 100)),
-    )
-
-
-def monthly_rate_bps_to_percent(monthly_rate_bps: int) -> float:
-    """Converts stored monthly basis points into a display percent."""
-    return monthly_rate_bps / 100
-
-
-def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
-    """Applies the VIP 1.2x payout multiplier on a winning player delta.
-
-    The bonus only fires on positive deltas (wins). Pushes and losses pass
-    through unchanged so VIP never softens a loss.
-
-    Args:
-        delta: Pre-bonus player delta for the round.
-        is_vip: VIP status of the account at settlement time.
-
-    Returns:
-        Post-bonus player delta.
-    """
-    if not is_vip or delta <= 0:
-        return delta
-    return delta * _VIP_WIN_MULTIPLIER_NUM // _VIP_WIN_MULTIPLIER_DEN
 
 
 async def _upsert_user_metadata_in_session(
