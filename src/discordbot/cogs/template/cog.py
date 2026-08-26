@@ -5,6 +5,7 @@ from nextcord import Embed, Locale, Message, Interaction
 from nextcord.ext import commands
 
 from discordbot.typings.colors import DISCORD_GREEN
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
 
@@ -49,6 +50,8 @@ class TemplateCogs(commands.Cog):
             Locale.ja: "ボットの応答速度をテストします。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def ping(self, interaction: Interaction[commands.Bot]) -> None:
         """Checks the bot's response time.

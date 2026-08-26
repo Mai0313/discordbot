@@ -20,6 +20,7 @@ from discordbot.utils.douyin import (
     douyin_failure_message,
 )
 from discordbot.typings.video import VideoQuality
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import VIDEO_DOWNLOAD_TIMEOUT_SECONDS
 from discordbot.utils.downloader import DownloadResult, VideoDownloader, download_with_stop_signal
 from discordbot.utils.scratch_dir import scratch_directory
@@ -66,6 +67,8 @@ class VideoCogs(commands.Cog):
             Locale.ja: "YouTube, Facebook, Instagram, X, Tiktok, 抖音 などから動画をダウンロードして送信します。",
         },
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def download_video(
         self,

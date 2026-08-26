@@ -18,6 +18,7 @@ from discordbot.typings.games import (
 )
 from discordbot.utils.avatars import guild_avatar_url
 from discordbot.cogs.games.shoe import BlackjackShoeStore
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.games.wagers import WagerMode, parse_wager_amount, build_wager_participant
 from discordbot.cogs.games.database import fetch_recent_blackjack_rounds
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -261,6 +262,8 @@ class GamesCogs(commands.Cog):
         name_localizations={Locale.zh_TW: "小遊戲", Locale.ja: "ゲーム"},
         description_localizations={Locale.zh_TW: "小遊戲指令", Locale.ja: "ゲームコマンド。"},
         nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
     )
     async def games(self, interaction: Interaction[commands.Bot]) -> None:
         """Slash command group; every game runs from one of its subcommands."""

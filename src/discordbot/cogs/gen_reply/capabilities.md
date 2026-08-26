@@ -36,11 +36,11 @@ A link that is only incidental to the question is left alone.
 - `/memory show` — what I remember about you
 - `/memory regenerate` — rebuild my memory of you from scratch, in the background
 - `/memory clear` — erase everything I remember about you
-- `/memory server show` — what I remember about this server's community
+- `/memory server show` — what I remember about this server's community; only works inside a server I am a member of
 
 ## Research
 
-- `/deep_research` — start a long, fully cited research report in its own thread. Asking me for deep research in conversation kicks off the same thing.
+- `/deep_research` — start a long, fully cited research report in its own thread; only works in an ordinary text channel of a server I am a member of, since it needs to open a thread. Asking me for deep research in conversation kicks off the same thing.
 
 ## Casino games
 
@@ -105,3 +105,20 @@ turned off, the panel is still where everything can be read.
 
 - `/download_video` — download a video from a supported platform, a Douyin link included; a Douyin photo post comes back as images
 - `/ping` — my response latency
+
+## Adding me somewhere
+
+Open my profile and there is an Add App button. It offers two choices: putting me in a server,
+which needs someone who can manage that server, or adding me straight to your own account, which
+nobody else has to approve. The same two choices sit behind
+<https://discord.com/oauth2/authorize?client_id=1134904996178182225>.
+
+On your own account I come with you: my slash commands work in every server you are in, in group
+DMs, and in your DMs with other people, including servers I was never added to. That copy of me
+is yours alone: nobody else in those places sees me there, or can use me through you.
+
+Slash commands are the only part of me that travels that way. Mentioning me, replying to me, and
+the links I expand on my own all need me to be a member of the server itself, so somewhere I have
+not been added, the slash commands are all of me you get. Two of them do not travel either:
+`/deep_research` needs an ordinary text channel to open its thread in, and `/memory server show`
+needs a server whose community memory I keep, so both refuse anywhere I am not a member.
