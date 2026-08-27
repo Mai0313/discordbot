@@ -105,6 +105,7 @@ from discordbot.cogs.gen_reply.prompts import (
     RECALL_SELECT_PROMPT,
 )
 from discordbot.cogs.gen_reply.routing import RouteClassifier
+from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.pipeline import UNROUTED_REPLY, ReplyPipeline
 from discordbot.typings.context_budgets import (
@@ -376,7 +377,7 @@ class FakeMessage:
 
     async def reply(
         self,
-        content: str | None,
+        content: str | None = None,
         file: File | None = None,
         embed: Embed | None = None,
         files: list[File] | None = None,
@@ -874,6 +875,7 @@ def _context_builder(
         bot=cog.bot,
         toolkit=toolkit or _toolkit(cog=cog),
         message=message,
+        surface=TurnSurface.for_message(message=message),
     )
 
 
@@ -897,6 +899,7 @@ def _answer(
         media_delivery=cog.media_delivery,
         toolkit=toolkit or _toolkit(cog=cog),
         message=message,
+        surface=TurnSurface.for_message(message=message),
     )
 
 
@@ -909,6 +912,7 @@ def _media_routes(
         media_delivery=cog.media_delivery,
         toolkit=toolkit or _toolkit(cog=cog),
         message=message,
+        surface=TurnSurface.for_message(message=message),
         answer=_answer(cog=cog, message=message, toolkit=toolkit),
     )
 
@@ -1042,7 +1046,7 @@ def test_build_runtime_instructions_adds_request_time_context() -> None:
     message = FakeMessage(content="hi")
 
     instructions = build_runtime_instructions(
-        system_prompt="SYS", message=as_message(fake=message)
+        system_prompt="SYS", message=as_message(fake=message), guild_id=1
     )
 
     _assert_runtime_time_context(instructions=instructions, system_prompt="SYS")
@@ -1056,7 +1060,7 @@ def test_build_runtime_instructions_names_conversation_location() -> None:
     """
     guild_message = FakeMessage(content="hi")
     instructions = build_runtime_instructions(
-        system_prompt="SYS", message=as_message(fake=guild_message)
+        system_prompt="SYS", message=as_message(fake=guild_message), guild_id=1
     )
     assert "Current conversation location:" in instructions
     assert "a Discord server (guild id 1)" in instructions
@@ -1065,7 +1069,7 @@ def test_build_runtime_instructions_names_conversation_location() -> None:
     dm_message = FakeMessage(content="hi")
     dm_message.guild = None
     dm_instructions = build_runtime_instructions(
-        system_prompt="SYS", message=as_message(fake=dm_message)
+        system_prompt="SYS", message=as_message(fake=dm_message), guild_id=None
     )
     assert "Current conversation location:" in dm_instructions
     assert "a Discord direct message (DM)" in dm_instructions
@@ -2711,6 +2715,7 @@ async def test_voice_config_gate_controls_synthesizer(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
+            surface: object | None = None,
             memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
@@ -2724,7 +2729,8 @@ async def test_voice_config_gate_controls_synthesizer(
             input_builder: object | None = None,
         ) -> None:
             """Records the synthesizer the cog passed."""
-            del message, memory_lookups, input_tokens, output_tokens, model_effort, backend
+            del message, surface, memory_lookups, input_tokens, output_tokens, model_effort
+            del backend
             del image_generator, music_generator, video_generator, media_delivery, input_builder
             # The cog reads these off the streamer after every answer, so a stub without
             # them fails with an AttributeError the reply path's own handler would swallow.
@@ -2768,6 +2774,7 @@ async def test_image_config_gate_controls_generator(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
+            surface: object | None = None,
             memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
@@ -2781,7 +2788,8 @@ async def test_image_config_gate_controls_generator(
             input_builder: object | None = None,
         ) -> None:
             """Records the generator the cog passed."""
-            del message, memory_lookups, input_tokens, output_tokens, model_effort, backend
+            del message, surface, memory_lookups, input_tokens, output_tokens, model_effort
+            del backend
             del voice_generator, music_generator, video_generator, media_delivery, input_builder
             # The cog reads these off the streamer after every answer, so a stub without
             # them fails with an AttributeError the reply path's own handler would swallow.
@@ -4912,6 +4920,7 @@ async def test_gen_reply_routes_and_handlers_without_api(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
+            surface: object | None = None,
             memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
@@ -4925,7 +4934,7 @@ async def test_gen_reply_routes_and_handlers_without_api(
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, backend
+            del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
             del (
                 voice_generator,
                 image_generator,
@@ -6130,6 +6139,7 @@ class _ThreadsStreamer:
     def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
         self,
         message: FakeMessage,
+        surface: object | None = None,
         memory_lookups: MemoryCredits | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
@@ -6143,7 +6153,7 @@ class _ThreadsStreamer:
         input_builder: object | None = None,
     ) -> None:
         """Stores the streaming target message and ignores the rest."""
-        del memory_lookups, input_tokens, output_tokens, model_effort, backend
+        del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
         del (
             voice_generator,
             image_generator,
@@ -8036,6 +8046,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
+            surface: object | None = None,
             memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
@@ -8049,7 +8060,7 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, backend
+            del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
             del (
                 voice_generator,
                 image_generator,
@@ -8144,6 +8155,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
+            surface: object | None = None,
             memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
@@ -8157,7 +8169,7 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, backend
+            del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
             del (
                 voice_generator,
                 image_generator,
@@ -8220,6 +8232,7 @@ async def test_memory_markers_route_by_the_message_not_by_the_note(
         def __init__(  # noqa: PLR0913 -- stub mirrors ResponseStreamer's constructor kwargs
             self,
             message: FakeMessage,
+            surface: object | None = None,
             memory_lookups: MemoryCredits | None = None,
             input_tokens: int = 0,
             output_tokens: int = 0,
@@ -8233,7 +8246,7 @@ async def test_memory_markers_route_by_the_message_not_by_the_note(
             input_builder: object | None = None,
         ) -> None:
             """Stores the streaming target message and the marker payloads."""
-            del memory_lookups, input_tokens, output_tokens, model_effort, backend
+            del surface, memory_lookups, input_tokens, output_tokens, model_effort, backend
             del (
                 voice_generator,
                 image_generator,
@@ -8495,24 +8508,34 @@ def test_memory_read_opens_only_the_permitted_compartments(
         assert fragment not in document
 
 
+def _recall_context_for(*, message: Message) -> RecallContext:
+    """The read context one gateway message produces, through the surface that decides it."""
+    surface = TurnSurface.for_message(message=message)
+    return build_recall_context(
+        author_id=message.author.id,
+        guild_id=surface.guild_id,
+        is_direct_message=surface.is_direct_message,
+    )
+
+
 def test_build_recall_context_by_channel_kind() -> None:
     """Guild sets guild_id; a 1:1 DM sets dm_partner_id; a guildless non-DM channel sets neither."""
     guild_message = FakeMessage(content="hi")
-    guild_context = build_recall_context(message=as_message(fake=guild_message))
+    guild_context = _recall_context_for(message=as_message(fake=guild_message))
     assert guild_context.guild_id == 1
     assert guild_context.dm_partner_id is None
 
     dm_message = FakeMessage(content="hi", author=FakeAuthor(user_id=7))
     dm_message.guild = None
     dm_message.channel = MagicMock(spec=nextcord.DMChannel)
-    dm_context = build_recall_context(message=as_message(fake=dm_message))
+    dm_context = _recall_context_for(message=as_message(fake=dm_message))
     assert dm_context.guild_id is None
     assert dm_context.dm_partner_id == 7
 
     # A group DM has no guild but is not a DMChannel, so it fail-closes to neither.
     group_message = FakeMessage(content="hi")
     group_message.guild = None
-    group_context = build_recall_context(message=as_message(fake=group_message))
+    group_context = _recall_context_for(message=as_message(fake=group_message))
     assert group_context.guild_id is None
     assert group_context.dm_partner_id is None
 
@@ -9522,7 +9545,7 @@ async def test_select_recalled_memories_uses_text_only_transcript() -> None:
     await _context_builder(cog=cog, message=as_message(fake=message)).select_recalled_memories(
         message_list=message_list,
         allowed={1: RecallCandidate(prompt_label="u", credit_label="u")},
-        recall_context=build_recall_context(message=as_message(fake=message)),
+        recall_context=_recall_context_for(message=as_message(fake=message)),
     )
 
     rendered = str(_recorded(cog).responses.create_inputs[-1])

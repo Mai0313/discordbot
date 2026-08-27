@@ -49,6 +49,7 @@ from discordbot.services.memory.store import (
     read_memory_document,
 )
 from discordbot.cogs.gen_reply.prompts import RECALL_SELECT_PROMPT
+from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
@@ -248,6 +249,7 @@ class ReplyContextBuilder(BaseModel):
         bot: The Discord bot instance, whose user id is excluded from every memory allowlist.
         toolkit: The leased Gemini key's toolkit, which owns the input builder and model tiers.
         message: The message being answered.
+        surface: Where this turn is happening, for the history read and the memory compartments.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -262,19 +264,20 @@ class ReplyContextBuilder(BaseModel):
         ..., description="The leased Gemini key's clients, model catalog and input builder."
     )
     message: SkipValidation[Message] = Field(..., description="The message being answered.")
+    surface: TurnSurface = Field(
+        ..., description="Where this turn is happening: its history source and its guild."
+    )
 
     async def fetch_history(self, *, limit: int) -> list[Message]:
-        """Fetches up to `limit` channel-history messages once, trimmed to the char budget.
+        """Fetches up to `limit` history messages once, trimmed to the char budget.
 
         Returned raw so both the optional selector's text-only render and the answer's
-        uploaded render derive from one fetch, without a second walk of history.
+        uploaded render derive from one fetch, without a second walk of history. Where they
+        come from is the surface's question: a channel walk on the gateway path, and the
+        conversation store on the `/ask` one, which is the only history a user-installed app
+        has (it is not a member of the channel and holds no `READ_MESSAGE_HISTORY`).
         """
-        hist_messages: list[Message] = []
-        async for m in self.message.channel.history(
-            limit=limit, before=self.message, oldest_first=True
-        ):
-            hist_messages.append(m)
-        return trim_history_to_budget(messages=hist_messages)
+        return trim_history_to_budget(messages=await self.surface.fetch_history(limit=limit))
 
     async def render_history(
         self, *, hist_messages: list[Message], text_only: bool
@@ -401,6 +404,12 @@ class ReplyContextBuilder(BaseModel):
         selection phase, allowlist, or function tool: it is read directly with zero extra
         LLM latency. Returns "" for a DM (no guild) or an empty memory. Read once per reply
         and shared by the selection and answer phases.
+
+        A `/ask` turn always takes the "" branch, since its synthesized message carries no
+        guild — deliberately, because the write side is gated on a public channel this route can
+        never satisfy and a memory nothing writes back to is one the bot slowly goes stale on.
+        What goes with it is the `## 成員稱呼` table, so the alias widening and the optional
+        third-party selector below have nothing to work from either, exactly as in a DM today.
         """
         if self.message.guild is None:
             return ""
@@ -581,7 +590,11 @@ class ReplyContextBuilder(BaseModel):
         )
 
         # Where this reply is happening, for compartment scoping of every user-memory read.
-        recall_context = build_recall_context(message=self.message)
+        recall_context = build_recall_context(
+            author_id=self.message.author.id,
+            guild_id=self.surface.guild_id,
+            is_direct_message=self.surface.is_direct_message,
+        )
 
         # The message author's tone-preference note is read directly for that one author
         # (their own preference for how the bot should sound, cross-server safe by

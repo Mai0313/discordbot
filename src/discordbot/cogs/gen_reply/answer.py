@@ -27,7 +27,6 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.typings.memory import MemoryWriteSummary
 from discordbot.typings.models import ModelSettings
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
-from discordbot.utils.reactions import update_reaction
 from discordbot.utils.llm_transcript import render_author_identity, render_server_identity
 from discordbot.utils.media_delivery import MediaDeliveryPlanner
 from discordbot.services.memory.store import user_scope, server_scope
@@ -40,6 +39,7 @@ from discordbot.cogs.gen_reply.prompts import (
     REQUEST_TIME_CONTEXT_PROMPT,
     REQUEST_LOCATION_CONTEXT_PROMPT,
 )
+from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.services.memory.writer import subject_source_line, target_centered_memory_messages
 from discordbot.cogs.gen_reply.streaming import (
@@ -59,23 +59,30 @@ from discordbot.cogs.gen_reply.interactions import (
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 
-def build_runtime_instructions(*, system_prompt: str, message: Message) -> str:
+def build_runtime_instructions(
+    *, system_prompt: str, message: Message, guild_id: int | None
+) -> str:
     """Prepends per-request time and conversation-location context to the model instructions.
 
     The location line names the current guild (or DM) with developer authority so the
     model can reason about where it is speaking; the memory rules lean on it as the
     anchor for never attributing a remembered fact to another server.
+
+    `guild_id` is handed in rather than read off the message because `Message.guild` resolves
+    out of the client's own cache: on the `/ask` route that misses for a server the bot was
+    never added to, and a guild conversation would tell the model at developer authority that
+    it is in a DM. `TurnSurface` is what knows better.
     """
     message_created_at_asia_taipei = message.created_at.astimezone(tz=TAIWAN_TIMEZONE)
     request_time_context = REQUEST_TIME_CONTEXT_PROMPT.format(
         message_created_at_asia_taipei=message_created_at_asia_taipei.isoformat(timespec="seconds")
     ).strip()
-    if message.guild is not None:
+    if guild_id is not None:
         # Deliberately id-only: the guild NAME is owner-controlled text and this block
         # rides the developer-authority `instructions` parameter, so embedding it would
         # hand a server owner an instruction-injection surface. The id anchors the
         # location just as well and cannot carry instructions.
-        conversation_location = f"a Discord server (guild id {message.guild.id})"
+        conversation_location = f"a Discord server (guild id {guild_id})"
     else:
         conversation_location = "a Discord direct message (DM)"
     request_location_context = REQUEST_LOCATION_CONTEXT_PROMPT.format(
@@ -153,6 +160,7 @@ class AnswerTurn(BaseModel):
         media_delivery: The attach-vs-host-vs-drop planner handed to the streamer.
         toolkit: The leased Gemini key's clients, generators and model catalog.
         message: The message being answered.
+        surface: Where this turn's replies go, and which guild it is really happening in.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -173,6 +181,9 @@ class AnswerTurn(BaseModel):
         ..., description="The leased Gemini key's clients, generators and model catalog."
     )
     message: SkipValidation[Message] = Field(..., description="The message being answered.")
+    surface: TurnSurface = Field(
+        ..., description="Where this turn's replies go, and which guild it is happening in."
+    )
 
     async def stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the prompt / focus part / noun / span differ per route
         self,
@@ -233,6 +244,7 @@ class AnswerTurn(BaseModel):
             )
             streamer = ResponseStreamer(
                 message=self.message,
+                surface=self.surface,
                 reply=base,
                 # This streamer renders onto the delivered media message itself, so no notice
                 # belonging to the turn -- a retry, the failure embed -- may touch it.
@@ -249,7 +261,9 @@ class AnswerTurn(BaseModel):
                     return await self.client.responses.create(
                         model=model.deployment_name,
                         instructions=build_runtime_instructions(
-                            system_prompt=system_prompt, message=self.message
+                            system_prompt=system_prompt,
+                            message=self.message,
+                            guild_id=self.surface.guild_id,
                         ),
                         input=response_input,
                         reasoning=model.reasoning,
@@ -258,9 +272,13 @@ class AnswerTurn(BaseModel):
                         extra_headers={"x-litellm-end-user-id": self.message.author.name},
                     )
 
-                await stream_answer_with_retry(
+                persona_reply = await stream_answer_with_retry(
                     streamer=streamer, open_stream=open_stream, message_id=self.message.id
                 )
+            # The media routes' persona reply is the only text this turn produced, so it is what
+            # a `/ask` conversation has to carry forward; without it the next turn would see the
+            # request for a picture and no sign that one was ever made.
+            await self.surface.record_turn(answer=persona_reply)
         except Exception as exc:
             logfire.warn(
                 "Media persona reply failed; leaving the delivered media without a reply",
@@ -293,7 +311,7 @@ class AnswerTurn(BaseModel):
         """
         if reply is not None:
             return reply
-        return await self.message.reply(
+        return await self.surface.send(
             content=self.message.author.mention, allowed_mentions=AllowedMentions.none()
         )
 
@@ -409,15 +427,12 @@ class AnswerTurn(BaseModel):
             # Added BEFORE the streamer is built: its `created_at` is what the answer latency is
             # measured from, so leaving this REST round trip inside that window would bias the
             # figure against the one backend that pays for it.
-            await update_reaction(
-                message=self.message,
-                bot_user=self.bot.user,
-                emoji="<:youtube:1517546722535018596>",
-            )
+            await self.surface.mark(emoji="<:youtube:1517546722535018596>", bot_user=self.bot.user)
         # Seed the streamer with the selection request's usage so the footer and chat reward
         # reflect both LLM calls; the answer stream sums its own usage on top.
         streamer = ResponseStreamer(
             message=self.message,
+            surface=self.surface,
             memory_lookups=context.memory_credits,
             input_tokens=context.selection_input_tokens,
             output_tokens=context.selection_output_tokens,
@@ -473,7 +488,9 @@ class AnswerTurn(BaseModel):
                         client=toolkit.gemini_client,
                         model=slow_model.name,
                         system_instruction=build_runtime_instructions(
-                            system_prompt=system_prompt, message=self.message
+                            system_prompt=system_prompt,
+                            message=self.message,
+                            guild_id=self.surface.guild_id,
                         ),
                         steps=to_interactions_input(answer_input=answer_input, youtube_url=yt_url),
                         effort=slow_model.effort,
@@ -481,7 +498,9 @@ class AnswerTurn(BaseModel):
                 return await self.client.responses.create(
                     model=slow_model.deployment_name,
                     instructions=build_runtime_instructions(
-                        system_prompt=system_prompt, message=self.message
+                        system_prompt=system_prompt,
+                        message=self.message,
+                        guild_id=self.surface.guild_id,
                     ),
                     input=answer_input,
                     reasoning=slow_model.reasoning,
@@ -504,6 +523,9 @@ class AnswerTurn(BaseModel):
                 anchor=streamer.reply,
                 brief=streamer.research_brief,
             )
+        # Recorded before the memory review is scheduled, so a conversation the store is meant to
+        # carry survives even if the fire-and-forget review below never lands.
+        await self.surface.record_turn(answer=full_reply)
         self._schedule_memory_updates(context=context, full_reply=full_reply, streamer=streamer)
 
     def _schedule_memory_updates(
@@ -528,8 +550,12 @@ class AnswerTurn(BaseModel):
         )
         # The second subject line names where this conversation happened (guild id
         # or DM); it survives the memory_job round-trip so the pipeline can stamp
-        # each observation's source deterministically.
-        source_line = subject_source_line(guild_id=message.guild.id if message.guild else None)
+        # each observation's source deterministically. Off the surface rather than
+        # `message.guild`, which is None on the `/ask` route even in a server: stamping
+        # `dm` there would file a server conversation's `source_only` observations —
+        # roughly half of them — in the user's private DM compartment, where the read
+        # side of that same conversation would never look for them again.
+        source_line = subject_source_line(guild_id=self.surface.guild_id)
         schedule_memory_update(
             scope=user_scope(user_id=message.author.id),
             subject=f"target_user_id: {message.author.id}\n{source_line}",
@@ -551,7 +577,10 @@ class AnswerTurn(BaseModel):
         # enters the server-wide memory any member can read. Those two gates are invisible to
         # the answer model, which is why a `<write-server-memory>` note written in a DM or a
         # restricted channel is dropped here without a word: the note arrives exactly as any
-        # other would, and the channel decides, not the model.
+        # other would, and the channel decides, not the model. A `/ask` turn always takes the
+        # first branch, since its message carries no guild, and that is the decision rather than
+        # an accident: the bot is not in the channel, so it cannot tell whether `@everyone` can
+        # read it, and a community memory it may write but never read back goes stale unseen.
         if message.guild is None:
             return
         if not source_channel_is_public(message=message):

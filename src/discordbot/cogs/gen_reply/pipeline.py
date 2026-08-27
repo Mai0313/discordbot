@@ -20,7 +20,7 @@ from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.utils.reactions import ReactionStatusChain, update_reaction
+from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.timeouts import LINK_CONTEXT_GRACE_SECONDS
 from discordbot.utils.media_delivery import MediaDeliveryPlanner
@@ -28,6 +28,7 @@ from discordbot.cogs.gen_reply.answer import AnswerTurn
 from discordbot.cogs.gen_reply.context import MessageParts, ReplyContext, ReplyContextBuilder
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 from discordbot.cogs.gen_reply.routing import RouteClassifier
+from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.typings.context_budgets import HISTORY_MESSAGE_LIMIT
 from discordbot.cogs.gen_reply.references import find_youtube_url, link_url_for_source
@@ -76,6 +77,7 @@ class ReplyPipeline(BaseModel):
         usage_recorder: Writes the one usage record this turn produces.
         toolkit: The Gemini key leased for this turn; every Gemini call inherits it.
         message: The message being answered.
+        surface: Where this turn happens: its replies, its history and its guild.
         user_prompt: The mention-stripped request text the media routes render from.
         reactions: The ordered status-reaction chain on the source message.
     """
@@ -101,6 +103,9 @@ class ReplyPipeline(BaseModel):
         ..., description="The Gemini key leased for this turn; every Gemini call inherits it."
     )
     message: SkipValidation[Message] = Field(..., description="The message being answered.")
+    surface: TurnSurface = Field(
+        ..., description="Where this turn happens: its replies, its history and its guild."
+    )
     user_prompt: str = Field(
         ..., description="Mention-stripped request text the media routes render from."
     )
@@ -117,6 +122,7 @@ class ReplyPipeline(BaseModel):
             media_delivery=self.media_delivery,
             toolkit=self.toolkit,
             message=self.message,
+            surface=self.surface,
         )
 
     async def _resolve_link_block(
@@ -241,6 +247,7 @@ class ReplyPipeline(BaseModel):
             media_delivery=self.media_delivery,
             toolkit=self.toolkit,
             message=self.message,
+            surface=self.surface,
             answer=self._answer_turn(),
         )
         handler = routes.handle_image if decision == "IMAGE" else routes.handle_video
@@ -300,7 +307,11 @@ class ReplyPipeline(BaseModel):
         link_tasks: dict[str, LinkTask] = {}
         link_context_deadline: float | None = None
         context_builder = ReplyContextBuilder(
-            client=self.client, bot=self.bot, toolkit=self.toolkit, message=message
+            client=self.client,
+            bot=self.bot,
+            toolkit=self.toolkit,
+            message=message,
+            surface=self.surface,
         )
         classifier = RouteClassifier(client=self.client, toolkit=self.toolkit, message=message)
         try:
@@ -355,10 +366,8 @@ class ReplyPipeline(BaseModel):
                         # Threads post was read, the same one `parse_threads` adds when it expands
                         # a link instead. Added once every builder is started so the REST call
                         # never sits between two of them.
-                        await update_reaction(
-                            message=message,
-                            bot_user=self.bot.user,
-                            emoji="<:threads:1535657820668559380>",
+                        await self.surface.mark(
+                            emoji="<:threads:1535657820668559380>", bot_user=self.bot.user
                         )
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only
@@ -438,6 +447,6 @@ class ReplyPipeline(BaseModel):
                 name=route_decision or UNROUTED_REPLY,
                 user_id=message.author.id,
                 user_name=message.author.name,
-                guild_id=message.guild.id if message.guild else None,
+                guild_id=self.surface.guild_id,
                 channel_id=message.channel.id,
             )
