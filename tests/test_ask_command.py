@@ -413,16 +413,11 @@ async def test_ask_defers_before_anything_slower_than_three_seconds() -> None:
     toolkit = SimpleNamespace(input_builder=SimpleNamespace(get_user_prompt=_echo_prompt))
     ran: list[tuple[TurnSurface, str]] = []
 
-    async def _lease() -> object:
-        """Hands over a toolkit with only the prompt cleaner the command reaches."""
-        return toolkit
-
-    async def _run_turn(*, surface: TurnSurface, toolkit: object, user_prompt: str) -> None:
+    async def _run_turn(*, surface: TurnSurface, user_prompt: str) -> None:
         """Records the turn the command would have run."""
-        del toolkit
         ran.append((surface, user_prompt))
 
-    cog.lease_toolkit = _lease
+    cog.toolkit = toolkit
     cog._run_turn = _run_turn
     interaction = _interaction()
 
@@ -442,16 +437,12 @@ async def test_ask_answers_a_blank_question_without_running_a_turn() -> None:
     cog.bot = SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat"))
     toolkit = SimpleNamespace(input_builder=SimpleNamespace(get_user_prompt=_echo_prompt))
 
-    async def _lease() -> object:
-        """Hands over a toolkit with only the prompt cleaner the command reaches."""
-        return toolkit
-
-    async def _never(*, surface: TurnSurface, toolkit: object, user_prompt: str) -> None:
+    async def _never(*, surface: TurnSurface, user_prompt: str) -> None:
         """Fails if a blank question ever reaches the pipeline."""
-        del surface, toolkit, user_prompt
+        del surface, user_prompt
         raise AssertionError("a blank question must not run a turn")
 
-    cog.lease_toolkit = _lease
+    cog.toolkit = toolkit
     cog._run_turn = _never
     interaction = _interaction()
 

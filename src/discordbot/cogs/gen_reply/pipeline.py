@@ -29,7 +29,7 @@ from discordbot.cogs.gen_reply.context import MessageParts, ReplyContext, ReplyC
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import HISTORY_MESSAGE_LIMIT
 from discordbot.cogs.gen_reply.references import find_youtube_url, link_url_for_source
 from discordbot.cogs.gen_reply.media_reply import MediaReplyRoutes
@@ -75,7 +75,7 @@ class ReplyPipeline(BaseModel):
         config: Runtime LLM config, read for the per-feature kill-switches.
         media_delivery: The process-wide attach-vs-host-vs-drop planner.
         usage_recorder: Writes the one usage record this turn produces.
-        toolkit: The Gemini key leased for this turn; every Gemini call inherits it.
+        toolkit: The clients, generators and caches every phase of this turn is built on.
         message: The message being answered.
         surface: Where this turn happens: its replies, its history and its guild.
         user_prompt: The mention-stripped request text the media routes render from.
@@ -99,8 +99,8 @@ class ReplyPipeline(BaseModel):
     usage_recorder: UsageRecorder = Field(
         ..., description="Writes the one usage record this turn produces."
     )
-    toolkit: GeminiKeyToolkit = Field(
-        ..., description="The Gemini key leased for this turn; every Gemini call inherits it."
+    toolkit: ReplyToolkit = Field(
+        ..., description="The clients, generators and caches every phase of this turn uses."
     )
     message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(

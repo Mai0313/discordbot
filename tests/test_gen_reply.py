@@ -28,7 +28,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.typings.llm import LLMConfig, GeminiKeySlot
+from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.memory import (
     MemoryFact,
@@ -106,7 +106,7 @@ from discordbot.cogs.gen_reply.prompts import (
 )
 from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.pipeline import UNROUTED_REPLY, ReplyPipeline
 from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
@@ -848,26 +848,26 @@ def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     # `__new__` skips `__init__`, so the pipeline's usage record needs its recorder wired
     # here; the autouse `usage_log_isolated_dir` fixture keeps it off the live file.
     cog.usage_recorder = UsageRecorder()
-    toolkit = GeminiKeyToolkit(
-        bot=cast("commands.Bot", cog.bot), openai_client=cog.openai_client, slot=None
+    toolkit = ReplyToolkit(
+        bot=cast("commands.Bot", cog.bot), openai_client=cog.openai_client, gemini_api_key=""
     )
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = toolkit.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):
         handler.__dict__["gemini_client"] = FakeGeminiClient()
-    # Keyed on None because the test deployment configures no Gemini key, so `lease_toolkit`
-    # picks no slot and lands on exactly this entry.
-    cog._toolkits = {None: toolkit}
+    # Seeded into the cached_property's slot, so every path reads this one rather than
+    # building a real toolkit against the test deployment's empty credentials.
+    cog.__dict__["toolkit"] = toolkit
     return cog
 
 
-def _toolkit(cog: ReplyGeneratorCogs) -> GeminiKeyToolkit:
-    """The seeded toolkit `_cog` built, which every path in these tests leases."""
-    return cog._toolkits[None]
+def _toolkit(cog: ReplyGeneratorCogs) -> ReplyToolkit:
+    """The seeded toolkit `_cog` built, which every path in these tests reads."""
+    return cog.toolkit
 
 
 def _context_builder(
-    *, cog: ReplyGeneratorCogs, message: Message, toolkit: GeminiKeyToolkit | None = None
+    *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> ReplyContextBuilder:
     """The context builder `ReplyPipeline` would build for this message."""
     return ReplyContextBuilder(
@@ -880,7 +880,7 @@ def _context_builder(
 
 
 def _classifier(
-    *, cog: ReplyGeneratorCogs, message: Message, toolkit: GeminiKeyToolkit | None = None
+    *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> RouteClassifier:
     """The route/effort classifier `ReplyPipeline` would build for this message."""
     return RouteClassifier(
@@ -889,7 +889,7 @@ def _classifier(
 
 
 def _answer(
-    *, cog: ReplyGeneratorCogs, message: Message, toolkit: GeminiKeyToolkit | None = None
+    *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> AnswerTurn:
     """The answer turn `ReplyPipeline` would build for this message."""
     return AnswerTurn(
@@ -904,7 +904,7 @@ def _answer(
 
 
 def _media_routes(
-    *, cog: ReplyGeneratorCogs, message: Message, toolkit: GeminiKeyToolkit | None = None
+    *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
 ) -> MediaReplyRoutes:
     """The IMAGE / VIDEO routes `ReplyPipeline` would build for this message."""
     return MediaReplyRoutes(
@@ -928,12 +928,7 @@ def _recorded_video(cog: ReplyGeneratorCogs) -> FakeGeminiVideoClient:
 
 
 def _config_stub(**flags: object) -> LLMConfig:
-    """Views a namespace carrying just the flags a test toggles as the cog's LLMConfig.
-
-    `gemini_keys` is always present because `lease_toolkit` reads it on every reply; empty
-    unless a test says otherwise, which is the unconfigured deployment `_cog` is built for.
-    """
-    flags.setdefault("gemini_keys", [])
+    """Views a namespace carrying just the flags a test toggles as the cog's LLMConfig."""
     return cast("LLMConfig", SimpleNamespace(**flags))
 
 
@@ -7977,9 +7972,9 @@ def test_model_settings_and_config_helpers(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
     catalog = RuntimeModelCatalog()
     cog = ReplyGeneratorCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    # A real cog builds no toolkit until a reply leases a key, which is what keeps an
+    # A real cog builds no toolkit until a reply needs one, which is what keeps an
     # unconfigured deployment from constructing a Gemini client it can never use.
-    assert cog._toolkits == {}
+    assert "toolkit" not in cog.__dict__
     assert isinstance(catalog.fast_model, ModelSettings)
     assert "image" in catalog.image_model.name
     assert "omni" in catalog.video_model.name
@@ -9860,105 +9855,3 @@ async def test_on_ready_resume_runs_once(
     while cog._tasks:
         await asyncio.gather(*list(cog._tasks))
     assert calls == 1
-
-
-def test_a_toolkit_binds_every_piece_to_one_key() -> None:
-    """Every part of one reply's toolkit names the same key, dispatch and upload alike.
-
-    Swept rather than spot-checked because the two halves fail differently and only one of
-    them is loud. A tier left unpinned dispatches on the pooled deployment, which the proxy
-    answers from whichever key it likes; an uploader left on another key uploads a file the
-    answer's project cannot read, which fails the whole request. Both are invisible in a diff.
-    """
-    cog = _cog()
-    toolkit = GeminiKeyToolkit(
-        bot=cog.bot,
-        openai_client=cog.openai_client,
-        slot=GeminiKeySlot(index=2, api_key="second-key"),
-    )
-
-    catalog = toolkit.runtime_models
-    dispatched = [
-        catalog.slow_model.deployment_name,
-        catalog.fast_model.deployment_name,
-        catalog.triage_model.deployment_name,
-        catalog.image_model.deployment_name,
-        toolkit.voice_generator.model_name,
-        toolkit.image_generator.image_model.deployment_name,
-        toolkit.prompt_generator.prompt_model.deployment_name,
-        toolkit.memory_writer.evaluate_model.deployment_name,
-        toolkit.server_memory_writer.consolidate_model.deployment_name,
-    ]
-    unpinned = [name for name in dispatched if not name.endswith("-key2")]
-    assert unpinned == [], f"Every dispatch runs on the leased key. Offenders: {unpinned}"
-
-    handler = toolkit.input_builder.attachment_handler
-    assert isinstance(handler, GeminiFileUploader)
-    assert handler.api_key == "second-key"
-
-
-def test_an_unpinned_toolkit_dispatches_and_uploads_as_before() -> None:
-    """No key configured leaves every name bare and the direct client unavailable."""
-    cog = _cog()
-    toolkit = _toolkit(cog=cog)
-
-    assert toolkit.key_index is None
-    assert toolkit.runtime_models.slow_model.deployment_name == (
-        toolkit.runtime_models.slow_model.name
-    )
-    assert toolkit.gemini_client_if_configured is None
-
-
-async def test_consecutive_replies_lease_different_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The second reply of a burst runs on a different key from the first.
-
-    This is the behaviour the whole change exists for: a peak-hour 503 is per project, so two
-    replies landing on one key is the failure mode being designed out.
-    """
-    monkeypatch.setenv(name="GEMINI_API_KEY", value="first")
-    monkeypatch.setenv(name="GEMINI_API_KEY_2", value="second")
-    cog = _cog()
-    cog.config = LLMConfig()
-    cog._toolkits = {}
-
-    first = await cog.lease_toolkit()
-    second = await cog.lease_toolkit()
-    third = await cog.lease_toolkit()
-
-    assert (first.key_index, second.key_index) == (1, 2)
-    # The third comes back to key 1, and to the very same toolkit, because the caches inside
-    # it hold that key's Files API uris.
-    assert third is first
-
-
-async def test_a_pinned_reply_dispatches_the_answer_on_that_key(
-    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The leased key survives all the way from the toolkit to the model the proxy is asked for.
-
-    The AST scan proves each dispatch reads `deployment_name` and the catalog sweep proves
-    every tier carries the pin, but neither runs the two together. This does, so a pin lost
-    between `lease_toolkit` and `responses.create` fails a test rather than quietly landing
-    the reply on the pooled deployment while its uploads sit on another project.
-    """
-    del economy_isolated_db
-    cog = _cog()
-    cog.config = _config_stub(inline_voice_enabled=False, inline_image_enabled=False)
-    pinned = GeminiKeyToolkit(
-        bot=cog.bot,
-        openai_client=cog.openai_client,
-        slot=GeminiKeySlot(index=2, api_key="second-key"),
-    )
-    cog._toolkits = {2: pinned}
-    monkeypatch.setattr(
-        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
-    )
-
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _answer(cog=cog, message=as_message(fake=message), toolkit=pinned).stream_answer(
-        system_prompt="SYS", context=ReplyContext()
-    )
-
-    dispatched = _recorded(cog).responses.create_models
-    assert dispatched == [RuntimeModelCatalog(key_index=2).slow_model.deployment_name]
-    assert dispatched[0].endswith("-key2")

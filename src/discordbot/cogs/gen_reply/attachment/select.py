@@ -19,11 +19,11 @@ def build_attachment_handler(model_name: str, gemini_api_key: str) -> Attachment
     reference path is verified. This is the single place that maps an answer model to its
     attachment handling, so adding a provider changes only here.
 
-    `gemini_api_key` is the reply's leased key, and it has to be passed rather than read from
-    the environment here: the uploaded file is readable only by the project that uploaded it,
-    so an uploader on a different key from the answer's `-key<n>` deployment fails the whole
-    request. An empty string is the unbalanced case (no key configured), which behaves as it
-    always did — the client raises lazily and the attachment is dropped.
+    `gemini_api_key` is passed rather than read from the environment here, so the one credential
+    a deployment answers on is the one it uploads with: an uploaded file is readable only by the
+    project that uploaded it, so an uploader holding a different key from the deployment behind
+    the answer model fails the whole request. An empty string is the no-key case, where the
+    client raises lazily and the attachment is dropped.
 
     `file_api_enabled` overrides the provider branch entirely: a provider whose Files API is
     refusing to resolve references costs the WHOLE reply, since the answer carries the failing

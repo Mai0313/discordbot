@@ -65,6 +65,8 @@ nav:
                       - registry: Reference/discordbot/cogs/gen_reply/link_sources/registry.md
                       - threads: Reference/discordbot/cogs/gen_reply/link_sources/threads.md
                   - answer: Reference/discordbot/cogs/gen_reply/answer.md
+                  - ask_message: Reference/discordbot/cogs/gen_reply/ask_message.md
+                  - ask_store: Reference/discordbot/cogs/gen_reply/ask_store.md
                   - capabilities: Reference/discordbot/cogs/gen_reply/capabilities.md
                   - cog: Reference/discordbot/cogs/gen_reply/cog.md
                   - context: Reference/discordbot/cogs/gen_reply/context.md
@@ -82,6 +84,7 @@ nav:
                   - routing: Reference/discordbot/cogs/gen_reply/routing.md
                   - speculation: Reference/discordbot/cogs/gen_reply/speculation.md
                   - streaming: Reference/discordbot/cogs/gen_reply/streaming.md
+                  - surface: Reference/discordbot/cogs/gen_reply/surface.md
                   - toolkit: Reference/discordbot/cogs/gen_reply/toolkit.md
                   - turn_state: Reference/discordbot/cogs/gen_reply/turn_state.md
               - log_msg:
@@ -112,9 +115,6 @@ nav:
               - economy:
                   - database: Reference/discordbot/services/economy/database.md
                   - presentation: Reference/discordbot/services/economy/presentation.md
-              - gemini_keys:
-                  - balancer: Reference/discordbot/services/gemini_keys/balancer.md
-                  - database: Reference/discordbot/services/gemini_keys/database.md
               - memory:
                   - consolidation: Reference/discordbot/services/memory/consolidation.md
                   - constants: Reference/discordbot/services/memory/constants.md

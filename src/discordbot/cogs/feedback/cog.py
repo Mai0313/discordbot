@@ -38,6 +38,7 @@ from nextcord.ext import tasks, commands
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import NEUTRAL_BLUE, DISCORD_GREEN, DISCORD_YELLOW
 from discordbot.typings.config import FeedbackConfig
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import as_taipei, database_now
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.feedback.auth import AppCredentials, TokenCredentials, GitHubCredentials
@@ -90,7 +91,6 @@ from discordbot.cogs.feedback.database import (
     tickets_awaiting_close_check,
     close_notices_awaiting_delivery,
 )
-from discordbot.services.gemini_keys.balancer import lease_model_catalog
 
 # How often the sweep tries again for reports whose issue was never opened, and how many
 # it takes per pass. Small: the queue is whatever still has no issue number, which is
@@ -142,6 +142,7 @@ class FeedbackCogs(commands.Cog):
         bot: The Discord bot instance that owns this cog.
         config: Reporting settings, including whether reports can be filed at all.
         llm_config: Credentials for the background write-up.
+        runtime_models: Catalog providing the write-up model tier.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -153,6 +154,7 @@ class FeedbackCogs(commands.Cog):
         self.bot = bot
         self.config = FeedbackConfig()
         self.llm_config = LLMConfig()
+        self.runtime_models = RuntimeModelCatalog()
         self._started = False
         # Background work is held here so a task is not garbage collected mid-flight;
         # each one removes itself when it finishes.
@@ -345,9 +347,8 @@ class FeedbackCogs(commands.Cog):
         of the same thing, with no way to tell which one the developer is looking at.
         """
         try:
-            runtime_models = await lease_model_catalog(config=self.llm_config)
             write_up = await write_up_report(
-                client=self.client, model=runtime_models.slow_model, ticket=ticket
+                client=self.client, model=self.runtime_models.slow_model, ticket=ticket
             )
             if write_up is None:
                 logfire.info(
@@ -813,9 +814,11 @@ class FeedbackCogs(commands.Cog):
         comment = closing_comment(comments=comments, closed_at=snapshot.closed_at)
         text = ""
         if comment is not None:
-            runtime_models = await lease_model_catalog(config=self.llm_config)
             translated = await translate_comment(
-                client=self.client, model=runtime_models.fast_model, ticket=ticket, comment=comment
+                client=self.client,
+                model=self.runtime_models.fast_model,
+                ticket=ticket,
+                comment=comment,
             )
             if translated is None:
                 logfire.warn(

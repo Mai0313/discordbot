@@ -1,19 +1,14 @@
-"""Everything one leased Gemini key owns, built once per key and reused.
+"""The clients, generators and caches a reply is built out of, made once and reused.
 
-A reply leases a key and then does every Gemini call of that reply on it, because a Files API
-file is readable only by the project that uploaded it and one request naming files from two
-keys fails outright. This type is what makes that hold without every call site having to know
-a key exists: the pipeline is handed one toolkit and reads its clients, generators, model
-catalog and input builder off it.
+The pipeline is handed one toolkit and reads its clients, generators, model catalog and input
+builder off it, so no call site has to assemble any of that for itself. What is NOT here is
+deliberate: `media_delivery` and `usage_recorder` stay on the cog, being about delivering a
+reply rather than composing one.
 
-Everything here is bound to the key. What is NOT here is deliberate: `openai_client` (the key
-lives in the model name on that path, so one client serves every key), `media_delivery` and
-`usage_recorder` (nothing about them is per-key) all stay on the cog.
-
-Toolkits are cached per key for the life of the process, not per reply. That is the point of
-them: the caches inside — the input builder's rendered-part cache and the uploader's
-re-poll cache — hold uris that are only valid for this key, and rebuilding them every reply
-would re-upload the whole history window every time.
+One toolkit serves the whole process rather than one reply. That is the point of it: the
+caches inside — the input builder's rendered-part cache and the uploader's re-poll cache —
+hold Gemini Files API uris, and rebuilding them per reply would re-upload the whole history
+window every time.
 """
 
 from functools import cached_property
@@ -23,7 +18,6 @@ from openai import AsyncOpenAI
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ext import commands
 
-from discordbot.typings.llm import GeminiKeySlot
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.services.memory.writer import MemoryWriterAI
@@ -41,15 +35,15 @@ from discordbot.services.memory.server_prompts import (
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 
 
-class GeminiKeyToolkit(BaseModel):
-    """The clients, generators and caches bound to one Gemini key.
+class ReplyToolkit(BaseModel):
+    """The clients, generators and caches every reply is composed with.
 
     Attributes:
         bot: The Discord bot instance, passed through to the input builder.
-        openai_client: The shared proxy client; the key rides in the model name, not here.
-        slot: The leased key, or None when the deployment has no Gemini key configured. None
-            leaves every tier unpinned and every direct-to-Google path unavailable, which is
-            exactly what the bot did before it balanced anything.
+        openai_client: The shared LiteLLM-proxy client.
+        gemini_api_key: The Google AI Studio key for the direct-to-Google paths, or empty
+            when the deployment configured none. Empty leaves those paths unavailable, and
+            the Gemini-only features gate themselves off as they already do.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -58,30 +52,24 @@ class GeminiKeyToolkit(BaseModel):
         ..., description="The Discord bot instance, passed through to the input builder."
     )
     openai_client: SkipValidation[AsyncOpenAI] = Field(
-        ..., description="Shared LiteLLM-proxy client; the key rides in the model name."
+        ..., description="Shared LiteLLM-proxy client."
     )
-    slot: GeminiKeySlot | None = Field(
-        ..., description="The leased Gemini key, or None when none is configured."
+    gemini_api_key: str = Field(
+        ..., description="Google AI Studio key for direct-to-Google paths; empty when unset."
     )
-
-    @property
-    def key_index(self) -> int | None:
-        """The leased key's number, or None when unpinned. Logged, never dispatched."""
-        return self.slot.index if self.slot is not None else None
 
     @cached_property
     def runtime_models(self) -> RuntimeModelCatalog:
-        """The model catalog with every tier pinned to this key.
+        """The model catalog every tier is read off.
 
         Returns:
-            A catalog whose tiers carry `key_index`, so each one's `deployment_name` names
-            this key's proxy deployment.
+            The runtime catalog.
         """
-        return RuntimeModelCatalog(key_index=self.key_index)
+        return RuntimeModelCatalog()
 
     @cached_property
     def gemini_client(self) -> genai.Client:
-        """The native Gemini client for every DIRECT-to-Google path on this key.
+        """The native Gemini client for every DIRECT-to-Google path.
 
         DIRECT to Google (no proxy): it serves the runtime paths the LiteLLM proxy cannot.
 
@@ -102,7 +90,7 @@ class GeminiKeyToolkit(BaseModel):
         Returns:
             A Gemini client for native media generation and the Interactions answer turn.
         """
-        return genai.Client(api_key=self.slot.api_key if self.slot is not None else "")
+        return genai.Client(api_key=self.gemini_api_key)
 
     @property
     def gemini_client_if_configured(self) -> genai.Client | None:
@@ -115,7 +103,7 @@ class GeminiKeyToolkit(BaseModel):
         Returns:
             The client, or None when this toolkit holds no key.
         """
-        if self.slot is None:
+        if not self.gemini_api_key.strip():
             return None
         return self.gemini_client
 
@@ -124,11 +112,11 @@ class GeminiKeyToolkit(BaseModel):
         """The text-to-speech engine for spoken QA replies.
 
         Returns:
-            A generator bound to the proxy client and this key's TTS deployment; the caller
+            A generator bound to the proxy client and the TTS deployment; the caller
             still gates it on `allow_voice` and `config.inline_voice_enabled`.
         """
         return VoiceGenerator(
-            client=self.openai_client, model_name=self.runtime_models.tts_model.deployment_name
+            client=self.openai_client, model_name=self.runtime_models.tts_model.name
         )
 
     @cached_property
@@ -136,7 +124,7 @@ class GeminiKeyToolkit(BaseModel):
         """The image renderer shared by the IMAGE route and the `<generate-image>` marker.
 
         Returns:
-            A generator bound to the proxy client and this key's image deployment; the route
+            A generator bound to the proxy client and the image deployment; the route
             calls `render` (raises) while the inline path calls `generate` (best-effort,
             gated on `allow_image` and `config.inline_image_enabled`).
         """
@@ -164,7 +152,7 @@ class GeminiKeyToolkit(BaseModel):
         """The video renderer shared by the VIDEO route and the `<generate-video>` marker.
 
         Returns:
-            A generator bound to this key's DIRECT-to-Google Gemini client and the video model
+            A generator bound to the DIRECT-to-Google Gemini client and the video model
             (the Interactions API is Gemini-only, not reachable via the proxy); the route
             calls `render` (raises) while the inline path calls `generate` (best-effort, gated
             on `allow_video` and `config.video_available`).
@@ -178,7 +166,7 @@ class GeminiKeyToolkit(BaseModel):
         """The music renderer for the QA-route `<generate-music>` marker.
 
         Returns:
-            A generator bound to this key's DIRECT-to-Google Gemini client (Lyria runs on the
+            A generator bound to the DIRECT-to-Google Gemini client (Lyria runs on the
             Interactions API, not the proxy) and the music model; the inline path calls
             `generate` (best-effort, gated on `allow_music` and `config.music_available`).
         """
@@ -188,22 +176,21 @@ class GeminiKeyToolkit(BaseModel):
 
     @cached_property
     def input_builder(self) -> MessageInputBuilder:
-        """The Discord-message-to-Responses-API input builder for this key.
+        """The Discord-message-to-Responses-API input builder.
 
-        Per key rather than shared, and this is the piece that makes the whole design
-        necessary: its rendered-part cache holds Files API uris, which only the key that
-        uploaded them can read.
+        This is the piece that makes the toolkit worth holding onto: its rendered-part cache
+        keeps the Files API uris a message's attachments were uploaded to, so a message that
+        stays in the history window is uploaded once rather than once per reply.
 
         Returns:
-            A builder bound to this bot, this key's pinned model catalog, and an attachment
-            handler holding this key's credential.
+            A builder bound to this bot, the runtime model catalog, and an attachment handler
+            holding the direct Gemini credential.
         """
         return MessageInputBuilder(
             bot=self.bot,
             runtime_models=self.runtime_models,
             attachment_handler=build_attachment_handler(
-                model_name=self.runtime_models.slow_model.name,
-                gemini_api_key=self.slot.api_key if self.slot is not None else "",
+                model_name=self.runtime_models.slow_model.name, gemini_api_key=self.gemini_api_key
             ),
         )
 
@@ -212,7 +199,7 @@ class GeminiKeyToolkit(BaseModel):
         """The per-user memory writing service.
 
         Returns:
-            A writer bound to the proxy client and this key's memory deployments.
+            A writer bound to the proxy client and the memory deployments.
         """
         return MemoryWriterAI(
             client=self.openai_client,
@@ -238,4 +225,4 @@ class GeminiKeyToolkit(BaseModel):
         )
 
 
-__all__ = ["GeminiKeyToolkit"]
+__all__ = ["ReplyToolkit"]
