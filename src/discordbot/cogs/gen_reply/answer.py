@@ -40,7 +40,7 @@ from discordbot.cogs.gen_reply.prompts import (
     REQUEST_LOCATION_CONTEXT_PROMPT,
 )
 from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.services.memory.writer import subject_source_line, target_centered_memory_messages
 from discordbot.cogs.gen_reply.streaming import (
     MEMORY_WRITE_EMOJI,
@@ -158,7 +158,7 @@ class AnswerTurn(BaseModel):
         bot: The Discord bot instance, for its own user (reactions) and the research hop.
         config: Runtime LLM config, read for the inline-marker kill-switches.
         media_delivery: The attach-vs-host-vs-drop planner handed to the streamer.
-        toolkit: The leased Gemini key's clients, generators and model catalog.
+        toolkit: The reply toolkit's clients, generators and model catalog.
         message: The message being answered.
         surface: Where this turn's replies go, and which guild it is really happening in.
     """
@@ -177,8 +177,8 @@ class AnswerTurn(BaseModel):
     media_delivery: MediaDeliveryPlanner = Field(
         ..., description="Attach-vs-host-vs-drop planner handed to the streamer."
     )
-    toolkit: GeminiKeyToolkit = Field(
-        ..., description="The leased Gemini key's clients, generators and model catalog."
+    toolkit: ReplyToolkit = Field(
+        ..., description="The reply toolkit's clients, generators and model catalog."
     )
     message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
@@ -259,7 +259,7 @@ class AnswerTurn(BaseModel):
                 async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
                     """Issues the persona-reply request; called again per retry attempt."""
                     return await self.client.responses.create(
-                        model=model.deployment_name,
+                        model=model.name,
                         instructions=build_runtime_instructions(
                             system_prompt=system_prompt,
                             message=self.message,
@@ -496,7 +496,7 @@ class AnswerTurn(BaseModel):
                         effort=slow_model.effort,
                     )
                 return await self.client.responses.create(
-                    model=slow_model.deployment_name,
+                    model=slow_model.name,
                     instructions=build_runtime_instructions(
                         system_prompt=system_prompt,
                         message=self.message,

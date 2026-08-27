@@ -11,9 +11,9 @@ from nextcord.ext import commands
 
 from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.typings.timeouts import AUTO_UNMUTE_AI_TIMEOUT_SECONDS
 from discordbot.cogs.auto_unmute.prompts import UNMUTE_PROMPT
-from discordbot.services.gemini_keys.balancer import lease_model_catalog
 
 
 class AutoUnmuteCogs(commands.Cog):
@@ -27,6 +27,7 @@ class AutoUnmuteCogs(commands.Cog):
     Attributes:
         bot: The Discord bot instance that owns this cog.
         config: The LLM client configuration loaded for reply generation.
+        runtime_models: Catalog the reply's model tier is read from.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -37,6 +38,7 @@ class AutoUnmuteCogs(commands.Cog):
         """
         self.bot = bot
         self.config = LLMConfig()
+        self.runtime_models = RuntimeModelCatalog()
         self._last_active_channel: dict[int, int] = {}
 
     @cached_property
@@ -190,10 +192,9 @@ class AutoUnmuteCogs(commands.Cog):
             f"Timeout duration: {minutes} minute(s)\n"
             f"Reason: {readable_reason}"
         )
-        runtime_models = await lease_model_catalog(config=self.config)
         return await create_text_or_none(
             client=self.client,
-            model=runtime_models.fast_model,
+            model=self.runtime_models.fast_model,
             instructions=UNMUTE_PROMPT,
             user_text=user_text,
             end_user_id="auto-unmute",

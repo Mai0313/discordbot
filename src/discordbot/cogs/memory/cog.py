@@ -16,6 +16,7 @@ from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.colors import DISCORD_GREEN, DISCORD_YELLOW
+from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.cogs.memory.views import (
     MEMORY_EMBED_COLOR,
@@ -44,7 +45,6 @@ from discordbot.services.memory.regeneration import (
     regeneration_has_evidence,
     schedule_memory_regeneration,
 )
-from discordbot.services.gemini_keys.balancer import lease_model_catalog
 
 _SUCCESS_EMBED_COLOR = DISCORD_GREEN
 _WARN_EMBED_COLOR = DISCORD_YELLOW
@@ -66,6 +66,7 @@ class MemoryCogs(commands.Cog):
     Attributes:
         bot: The Discord bot instance that owns this cog.
         config: The LLM client configuration used for memory regeneration.
+        runtime_models: Catalog providing the memory model settings.
     """
 
     def __init__(self, bot: commands.Bot) -> None:
@@ -76,6 +77,7 @@ class MemoryCogs(commands.Cog):
         """
         self.bot = bot
         self.config = LLMConfig()
+        self.runtime_models = RuntimeModelCatalog()
 
     @cached_property
     def client(self) -> AsyncOpenAI:
@@ -86,22 +88,17 @@ class MemoryCogs(commands.Cog):
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
-    async def build_memory_writer(self) -> MemoryWriterAI:
-        """Builds a memory writing service on a freshly leased Gemini key.
-
-        Per call rather than cached, because the key is: a rebuild is a burst of LLM calls
-        and pinning every one of them to whichever key the cog happened to start on would
-        undo the balancing. Nothing here touches the Files API, so the lease is only about
-        spreading the count.
+    @cached_property
+    def memory_writer(self) -> MemoryWriterAI:
+        """The cached memory writing service used for regeneration.
 
         Returns:
-            A writer bound to this cog's client and the leased key's memory tiers.
+            A writer bound to this cog's client and the memory models.
         """
-        runtime_models = await lease_model_catalog(config=self.config)
         return MemoryWriterAI(
             client=self.client,
-            evaluate_model=runtime_models.memory_writer_model,
-            consolidate_model=runtime_models.memory_writer_model,
+            evaluate_model=self.runtime_models.memory_writer_model,
+            consolidate_model=self.runtime_models.memory_writer_model,
         )
 
     @nextcord.slash_command(
@@ -314,7 +311,7 @@ class MemoryCogs(commands.Cog):
         # command replies immediately; the user checks back with `/memory show`.
         scheduled = schedule_memory_regeneration(
             scope=scope,
-            writer=await self.build_memory_writer(),
+            writer=self.memory_writer,
             identity=render_author_identity(
                 display_name=interaction.user.display_name,
                 username=interaction.user.name,

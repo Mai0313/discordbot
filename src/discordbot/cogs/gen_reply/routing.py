@@ -18,7 +18,7 @@ from openai.types.responses.response_input_param import ResponseInputParam, Easy
 from discordbot.typings.models import EffortGrade, RouteClassification
 from discordbot.typings.timeouts import EFFORT_GRACE_SECONDS
 from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT, EFFORT_PROMPT
-from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 from discordbot.cogs.gen_reply.speculation import await_gated
 
@@ -28,7 +28,7 @@ class RouteClassifier(BaseModel):
 
     Attributes:
         client: The shared LiteLLM-proxy client both calls dispatch on.
-        toolkit: The leased Gemini key's toolkit, which owns the triage model tier.
+        toolkit: The reply toolkit, which owns the triage model tier.
         message: The message being classified.
     """
 
@@ -37,8 +37,8 @@ class RouteClassifier(BaseModel):
     client: SkipValidation[AsyncOpenAI] = Field(
         ..., description="Shared LiteLLM-proxy client both triage calls dispatch on."
     )
-    toolkit: GeminiKeyToolkit = Field(
-        ..., description="The leased Gemini key's clients and model catalog."
+    toolkit: ReplyToolkit = Field(
+        ..., description="The reply toolkit's clients and model catalog."
     )
     message: SkipValidation[Message] = Field(..., description="The message being classified.")
 
@@ -65,7 +65,7 @@ class RouteClassifier(BaseModel):
         try:
             with logfire.span("gen_reply route", message_id=self.message.id):
                 responses = await self.client.responses.parse(
-                    model=triage_model.deployment_name,
+                    model=triage_model.name,
                     instructions=ROUTE_PROMPT,
                     input=cast("ResponseInputParam", message_list),
                     text_format=RouteClassification,
@@ -125,7 +125,7 @@ class RouteClassifier(BaseModel):
         started = time.monotonic()
         with logfire.span("gen_reply effort", message_id=self.message.id):
             responses = await self.client.responses.parse(
-                model=triage_model.deployment_name,
+                model=triage_model.name,
                 instructions=EFFORT_PROMPT,
                 input=cast("ResponseInputParam", message_list),
                 text_format=EffortGrade,

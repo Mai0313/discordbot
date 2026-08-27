@@ -50,7 +50,7 @@ from discordbot.services.memory.store import (
 )
 from discordbot.cogs.gen_reply.prompts import RECALL_SELECT_PROMPT
 from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import (
     HISTORY_CHAR_BUDGET,
     MAX_HISTORY_MEDIA_PARTS,
@@ -247,7 +247,7 @@ class ReplyContextBuilder(BaseModel):
     Attributes:
         client: The shared LiteLLM-proxy client, for the optional memory-selection request.
         bot: The Discord bot instance, whose user id is excluded from every memory allowlist.
-        toolkit: The leased Gemini key's toolkit, which owns the input builder and model tiers.
+        toolkit: The reply toolkit, which owns the input builder and the model tiers.
         message: The message being answered.
         surface: Where this turn is happening, for the history read and the memory compartments.
     """
@@ -260,8 +260,8 @@ class ReplyContextBuilder(BaseModel):
     bot: SkipValidation[commands.Bot] = Field(
         ..., description="The Discord bot instance, excluded from every memory allowlist."
     )
-    toolkit: GeminiKeyToolkit = Field(
-        ..., description="The leased Gemini key's clients, model catalog and input builder."
+    toolkit: ReplyToolkit = Field(
+        ..., description="The reply toolkit's clients, model catalog and input builder."
     )
     message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
@@ -495,7 +495,7 @@ class ReplyContextBuilder(BaseModel):
             render_callable_users_block(allowed=allowed),
         ]
         responses = await self.client.responses.create(
-            model=triage_model.deployment_name,
+            model=triage_model.name,
             instructions=RECALL_SELECT_PROMPT,
             input=selection_input,
             reasoning=triage_model.reasoning,

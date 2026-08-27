@@ -29,7 +29,7 @@ from discordbot.cogs.gen_reply.prompts import (
     VIDEO_REPLY_PROMPT,
 )
 from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
 from discordbot.cogs.gen_reply.references import replied_to_message
@@ -43,7 +43,7 @@ class MediaReplyRoutes(BaseModel):
     Attributes:
         config: Runtime LLM config, read for the two prompt-refine kill-switches.
         media_delivery: Decides whether the generated media attaches or is hosted as a URL.
-        toolkit: The leased Gemini key's generators, clients and model catalog.
+        toolkit: The generators, clients and model catalog this route renders through.
         message: The message that asked for the media.
         surface: Where the delivered media goes.
         answer: The streamer used for the best-effort persona reply once media is delivered.
@@ -57,8 +57,8 @@ class MediaReplyRoutes(BaseModel):
     media_delivery: MediaDeliveryPlanner = Field(
         ..., description="Decides whether generated media attaches or is hosted as a URL."
     )
-    toolkit: GeminiKeyToolkit = Field(
-        ..., description="The leased Gemini key's generators, clients and model catalog."
+    toolkit: ReplyToolkit = Field(
+        ..., description="The generators, clients and model catalog this route renders through."
     )
     message: SkipValidation[Message] = Field(
         ..., description="The message that asked for the media."

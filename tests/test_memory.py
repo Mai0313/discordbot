@@ -2589,12 +2589,7 @@ async def test_memory_regenerate_command_schedules_in_background(
 ) -> None:
     cog = _memory_cog()
     writer_sentinel = object()
-
-    async def fake_build_writer() -> object:
-        """Stands in for the writer the command builds on a freshly leased key."""
-        return writer_sentinel
-
-    monkeypatch.setattr(cog, "build_memory_writer", fake_build_writer)
+    monkeypatch.setattr(cog, "memory_writer", writer_sentinel)
     calls: dict[str, object] = {}
 
     def fake_schedule(scope: str, writer: object, identity: str) -> bool:

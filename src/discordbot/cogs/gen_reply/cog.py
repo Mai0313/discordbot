@@ -1,8 +1,9 @@
 """Cog that routes Discord messages through the AI reply pipeline.
 
 What is left here is what belongs to the PROCESS rather than to one turn: the gateway listeners,
-the clients and per-key toolkits every reply leases, the restart memory resume, and the last-resort
-failure notice. One turn's own work lives in `pipeline.py` and the phase modules beside it.
+the clients and the toolkit every reply composes itself from, the restart memory resume, and the
+last-resort failure notice. One turn's own work lives in `pipeline.py` and the phase modules
+beside it.
 
 `/ask` is the second entry point into that same pipeline, and it exists because the first one
 cannot reach three places a user-installed app can: a server the bot was never added to, a group
@@ -43,13 +44,12 @@ from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_de
 from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import flavor_of, read_owner, iter_scopes
 from discordbot.cogs.gen_reply.surface import TurnSurface
-from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
+from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.cogs.gen_reply.ask_message import build_ask_message, interaction_channel
 from discordbot.services.memory.git_history import memory_git
-from discordbot.services.gemini_keys.balancer import pick_gemini_key
 from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
 
@@ -115,11 +115,6 @@ class ReplyGeneratorCogs(commands.Cog):
         self.bot = bot
         self.config = LLMConfig()
         self.usage_recorder = UsageRecorder()
-        # One toolkit per Gemini key, built on first use and kept for the life of the process.
-        # Keyed by the key number, with None for the unconfigured deployment. Long-lived on
-        # purpose: the caches inside hold Files API uris only that key can read, so rebuilding
-        # per reply would re-upload the whole history window every time.
-        self._toolkits: dict[int | None, GeminiKeyToolkit] = {}
         # Tracked background tasks for the one-shot restart memory resume.
         self._tasks: set[asyncio.Task[None]] = set()
         self._resume_started = False
@@ -139,25 +134,23 @@ class ReplyGeneratorCogs(commands.Cog):
         """
         return AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
 
-    async def lease_toolkit(self) -> GeminiKeyToolkit:
-        """Leases the least-used Gemini key and returns the toolkit bound to it.
+    @cached_property
+    def toolkit(self) -> ReplyToolkit:
+        """The clients, generators and caches every turn composes its reply from.
 
-        One call per unit of work that must not cross keys: a reply, or one background job.
-        Everything downstream then reads its clients and models off the returned toolkit
-        rather than off this cog, which is what keeps a reply's Files API uploads and the
-        request naming them on one Google project.
+        Built on first use and kept for the life of the process, which is what the caches
+        inside it are for: the input builder holds the Files API uris a message's attachments
+        were uploaded to, so a message that stays in the history window is uploaded once
+        rather than once per reply.
 
         Returns:
-            The toolkit for the leased key, or the unpinned one when no key is configured.
+            The process-wide reply toolkit.
         """
-        slot = await pick_gemini_key(config=self.config)
-        index = slot.index if slot is not None else None
-        cached = self._toolkits.get(index)
-        if cached is not None:
-            return cached
-        toolkit = GeminiKeyToolkit(bot=self.bot, openai_client=self.openai_client, slot=slot)
-        self._toolkits[index] = toolkit
-        return toolkit
+        return ReplyToolkit(
+            bot=self.bot,
+            openai_client=self.openai_client,
+            gemini_api_key=self.config.gemini_api_key,
+        )
 
     @cached_property
     def media_delivery(self) -> MediaDeliveryPlanner:
@@ -203,13 +196,10 @@ class ReplyGeneratorCogs(commands.Cog):
         for job in jobs:
             if job.transcript is None:
                 continue
-            # Leased per job rather than once for the sweep: this is the burstiest moment in
-            # the process's life, and one lease would land all of it on a single key. Nothing
-            # here is bound to a key (the memory review reaches no Files API), so the lease is
-            # only about the count.
-            toolkit = await self.lease_toolkit()
             writer = (
-                toolkit.server_memory_writer if job.flavor == "server" else toolkit.memory_writer
+                self.toolkit.server_memory_writer
+                if job.flavor == "server"
+                else self.toolkit.memory_writer
             )
             resume_memory_update(
                 scope=job.scope,
@@ -225,11 +215,10 @@ class ReplyGeneratorCogs(commands.Cog):
         for scope in iter_scopes():
             if not needs_consolidation(scope=scope):
                 continue
-            swept_toolkit = await self.lease_toolkit()
             writer = (
-                swept_toolkit.server_memory_writer
+                self.toolkit.server_memory_writer
                 if flavor_of(scope=scope) == "server"
-                else swept_toolkit.memory_writer
+                else self.toolkit.memory_writer
             )
             self._spawn(
                 consolidate_if_needed(
@@ -273,9 +262,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             await surface.send_unparented(embed=error_embed, **fresh_spacer)
 
-    async def _run_turn(
-        self, *, surface: TurnSurface, toolkit: GeminiKeyToolkit, user_prompt: str
-    ) -> None:
+    async def _run_turn(self, *, surface: TurnSurface, user_prompt: str) -> None:
         """Runs one turn and reports whatever it failed on, whichever entry point started it.
 
         Shared by `on_message` and `/ask` because everything that differs between them is
@@ -293,7 +280,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 config=self.config,
                 media_delivery=self.media_delivery,
                 usage_recorder=self.usage_recorder,
-                toolkit=toolkit,
+                toolkit=self.toolkit,
                 message=message,
                 surface=surface,
                 user_prompt=user_prompt,
@@ -304,7 +291,6 @@ class ReplyGeneratorCogs(commands.Cog):
                 "gen_reply failed",
                 **_message_log_fields(surface=surface),
                 model=dispatched_model.get(),
-                key_index=toolkit.key_index,
                 error_type=type(e).__name__,
                 _exc_info=True,
             )
@@ -383,8 +369,7 @@ class ReplyGeneratorCogs(commands.Cog):
         channel = interaction_channel(interaction=interaction)
         message = build_ask_message(interaction=interaction, question=question, channel=channel)
         surface = TurnSurface.for_interaction(message=message, interaction=interaction)
-        toolkit = await self.lease_toolkit()
-        user_prompt = await toolkit.input_builder.get_user_prompt(content=question)
+        user_prompt = await self.toolkit.input_builder.get_user_prompt(content=question)
         if not user_prompt and attachment is None:
             logfire.debug(
                 "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
@@ -400,7 +385,7 @@ class ReplyGeneratorCogs(commands.Cog):
             sticker_count=0,
             is_dm=surface.guild_id is None,
         )
-        await self._run_turn(surface=surface, toolkit=toolkit, user_prompt=user_prompt)
+        await self._run_turn(surface=surface, user_prompt=user_prompt)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -431,8 +416,7 @@ class ReplyGeneratorCogs(commands.Cog):
             )
             return
 
-        toolkit = await self.lease_toolkit()
-        user_prompt = await toolkit.input_builder.get_user_prompt(content=message.content)
+        user_prompt = await self.toolkit.input_builder.get_user_prompt(content=message.content)
         has_attachment = bool(message.attachments or message.stickers)
         # A forward leaves content/attachments/stickers empty and puts the payload in
         # `message.snapshots`, so it must not be gated out as an empty message here, or the
@@ -444,7 +428,7 @@ class ReplyGeneratorCogs(commands.Cog):
         # just an empty fallback) is what lets an IMAGE/VIDEO route render the forwarded "draw a
         # cat" even when the trigger comment ("@bot please") survives mention-stripping.
         if is_forward and (
-            forwarded := toolkit.input_builder.forwarded_request_text(message=message)
+            forwarded := self.toolkit.input_builder.forwarded_request_text(message=message)
         ):
             user_prompt = f"{user_prompt}\n{forwarded}".strip() if user_prompt else forwarded
 
@@ -465,7 +449,7 @@ class ReplyGeneratorCogs(commands.Cog):
             sticker_count=len(message.stickers),
             is_dm=is_dm,
         )
-        await self._run_turn(surface=surface, toolkit=toolkit, user_prompt=user_prompt)
+        await self._run_turn(surface=surface, user_prompt=user_prompt)
 
 
 def setup(bot: commands.Bot) -> None:

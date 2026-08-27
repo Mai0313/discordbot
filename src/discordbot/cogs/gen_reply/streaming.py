@@ -15,7 +15,6 @@ from nextcord.utils import escape_mentions
 from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
 from discordbot.typings.memory import MemoryCredits
-from discordbot.typings.models import strip_key_suffix
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.utils.model_pricing import get_token_rates
@@ -727,11 +726,9 @@ class ResponseStreamer(BaseModel):
 
     async def _finalize_reply(self) -> str:
         """Writes the usage footer and final reply once the stream is consumed."""
-        # The stream reports the deployment it answered from, so both the price lookup and
-        # the label a human reads take the model out of it. `self.model_name` itself stays
-        # whole, because the logfire record below is where a LiteLLM fallback is spotted.
-        reported_model = strip_key_suffix(deployment_name=self.model_name)
-        input_rate, output_rate = get_token_rates(model_name=reported_model)
+        # The model the stream reports having answered from, which is not always the one that
+        # was dispatched: a LiteLLM fallback shows up here and nowhere else.
+        input_rate, output_rate = get_token_rates(model_name=self.model_name)
         cost = input_rate * self.input_tokens + output_rate * self.output_tokens
 
         self.stored_content = CODED_MENTION_RE.sub(r"\1", self.stored_content)
@@ -783,7 +780,7 @@ class ResponseStreamer(BaseModel):
         # Footer format must stay matchable by `utils/llm_transcript.py::USAGE_FOOTER_RE`; the
         # ⬆/⬇ icons are its anchor.
         model_label = (
-            f"{reported_model} ({self.model_effort})" if self.model_effort else reported_model
+            f"{self.model_name} ({self.model_effort})" if self.model_effort else self.model_name
         )
         usage_footer = f"\n\n-# {model_label} · ⬆ {self.input_tokens:,} ⬇ {self.output_tokens:,} · ${cost:.8f}{memory_line}"
 
@@ -1368,8 +1365,8 @@ async def stream_answer_with_retry(
     the one turn whose failure a user watches happen.
 
     Re-issuing the request is safe because an answer turn is a pure read: nothing is written
-    before the stream completes, and the retry stays on the same client, the same model and
-    the same leased Gemini key, so a Files API uri named in the input keeps resolving. Between
+    before the stream completes, and the retry stays on the same client and the same model, so
+    a Files API uri named in the input keeps resolving. Between
     attempts `reset_for_retry` drops the dead attempt's text and revives the preview editor,
     and `announce_retry` says so on screen, since a silent retry is indistinguishable from a
     model that is simply thinking slowly.
