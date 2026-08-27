@@ -45,7 +45,6 @@ Ask it to animate that same picture and it returns a short video.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites. Douyin is supported too, watermark free and including photo posts. Files too large to upload are served as a link instead.
 - **Virtual currency and finance**: users earn 虛擬歡樂豆 from messages, can transfer balances, buy VIP, use long-term personal credit or central-bank loans, and view leaderboards.
 - **Casino games**: multiplayer `/games blackjack` and `/games dragon_gate` lobbies. Blackjack is dealt by the casino system (deterministic H17), the bot itself joins each round as a player driven by its own deterministic strategy (fractional-Kelly betting and EV-based play), and `/casino` / `/pocat` surface the casino ledger and the bot's wallet.
-- **User reports**: `/feedback` opens a private panel listing that person's own reports by ticket number, with a form that files a new one as a GitHub issue on the configured repository (an LLM tidies the text into it in the background). The maintainer's replies on that issue are readable from the same panel, and a button sends one more line back, so a report is a conversation rather than a write-only mailbox.
 - **Localized commands**: slash command metadata is localized for English, Traditional Chinese, and Japanese. AI replies follow the user's language. There is no help command: ask the bot what it can do and it answers from a single English capability reference, translated into whatever language you asked in.
 
 ## Commands
@@ -57,7 +56,6 @@ Ask it to animate that same picture and it returns a short video.
 | _Douyin URL_                                | Automatically posts the video or photos, unless the bot is mentioned (then it answers about it).                                                 |
 | _Bilibili URL + mention_                    | Watches the linked video and answers about it (a bare link is not auto-expanded).                                                                |
 | `/download_video <url> [quality]`           | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                                                        |
-| `/feedback`                                 | Opens your own private report panel: your reports by ticket number, the developer's replies, and a form to file a new one.                       |
 | `/balance [member]`                         | Privately shows a member's 虛擬歡樂豆 balance, debt, net worth, and VIP status.                                                                  |
 | `/vip`                                      | Buys permanent VIP perks.                                                                                                                        |
 | `/leaderboard`                              | Shows the global top balances.                                                                                                                   |

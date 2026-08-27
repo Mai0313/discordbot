@@ -212,9 +212,8 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and strategic reasoning.
 
-        Dispatched by `_handle_message_reply` (which overrides `effort` with the
-        route-decided level) and by `write_up_report` (the background rewrite of a
-        `/feedback` report into an issue, which nobody waits on). Three more read only
+        Dispatched by `_handle_message_reply`, which overrides `effort` with the
+        route-decided level. Three more read only
         the model NAME and dispatch nothing: `_supported_sources` gates attachment
         modalities on it, `ReplyToolkit.input_builder` picks the attachment handler
         off it through `build_attachment_handler`, and `_run_reply_pipeline` derives each

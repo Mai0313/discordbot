@@ -189,9 +189,3 @@ MAX_BILIBILI_DESCRIPTION_CHARS: Final[int] = 1000
 # accepts a handful, so the provider bounds this from above; the number here is what the two calls
 # agree on.
 MAX_VIDEO_REFERENCE_IMAGES: Final[int] = 3
-
-# How much of a feedback reporter's own words ride into the close-notice translation request.
-# What they are for is telling the model which language to translate into: enough to read the
-# language off, short enough not to crowd out the text being translated, and cut from the front
-# because that is where people state the problem.
-CLOSE_NOTICE_LANGUAGE_SAMPLE_CHARS: Final[int] = 200
