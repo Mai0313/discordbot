@@ -98,19 +98,10 @@ Discord role: being a server admin grants neither, and no command hands one out.
 
 ## Telling the developer something
 
-- `/feedback` — report a problem or ask for a feature, and read what the developer replied
-
-The panel is private to whoever opens it and lists their own reports by ticket number. A new
-report goes to the developer as a public ticket carrying the reporter's Discord name, so they
-can be found and answered; the developer's replies show up in the same panel, and there is a
-button to write back. Only the person who filed a report can see it here.
-
-When a report is settled I send the person who filed it a direct message saying whether it was
-done or will not be done, carrying whatever the developer wrote when settling it, translated
-into the language they reported in. That happens once per report, and only when it is settled;
-replies while it is still being worked on wait in the panel. A report merged into another one
-sends nothing, because its own outcome is not decided yet. If direct messages from me are
-turned off, the panel is still where everything can be read.
+I have no command for this, and I cannot pass a message on myself. Whoever runs me keeps a contact
+in my Discord profile description, so open my profile and read what it says there; that is where a
+problem or a feature request goes. I do not know what that contact is — only that it is written
+there — so read it rather than asking me for it.
 
 ## Tools
 

@@ -47,10 +47,8 @@ _BOUND_NAME_SUFFIXES = ("_timeout", "_timeout_seconds", "_deadline_seconds", "_g
 _VIEW_IDLE_EXPIRY = frozenset({
     "BLACKJACK_ACTION_TIMEOUT_SECONDS",
     "DRAGON_GATE_ACTION_TIMEOUT_SECONDS",
-    "FEEDBACK_VIEW_TIMEOUT_SECONDS",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MEMORY_VIEW_TIMEOUT_SECONDS",
-    "REPORT_FORM_TIMEOUT_SECONDS",
 })
 
 # How long the hosted-media reaper leaves a just-published file alone. Out of scope for the

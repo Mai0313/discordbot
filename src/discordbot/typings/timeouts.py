@@ -16,9 +16,9 @@ gives the wrong answer.
 
 Three omissions are decisions, not oversights.
 
-`MEDIA_HOSTING_RETENTION_HOURS` and `FEEDBACK_SUBMIT_COOLDOWN_SECONDS` stay in the
-environment: neither expiry is a failure, so both fall outside the rule above, and they are
-the only time values a deployment was ever given to tune.
+`MEDIA_HOSTING_RETENTION_HOURS` stays in the environment: its expiry is not a failure, so it
+falls outside the rule above, and it is the only time value a deployment was ever given to
+tune.
 
 Deep research (`cogs/research/agent.py`) is deliberately unbounded. The agent settles
 server-side on its own budget and the SDK bounds each individual request, so a ceiling here
@@ -268,12 +268,6 @@ YTDLP_SOCKET_TIMEOUT_SECONDS: Final[int] = 30
 # Shared by yt-dlp's `retries`, `fragment_retries` and `extractor_retries`, each of which
 # multiplies the socket timeout above.
 YTDLP_RETRIES: Final[int] = 3
-
-# Per-request ceiling on the two GitHub App auth calls and the issue API. Short on purpose:
-# every caller is either on the submit path or on a panel someone is waiting for. A report is
-# never lost when it fires -- the retry loop owns that -- but the user is told their report is
-# queued rather than filed.
-GITHUB_API_TIMEOUT_SECONDS: Final[float] = 15.0
 
 # --------------------------------------------------------------------------------------
 # Discord API

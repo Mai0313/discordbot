@@ -45,7 +45,6 @@
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频。抖音也支持，无水印且包含图文贴文。文件太大无法上传时会改以链接提供。
 - **虚拟欢乐豆与金融系统**：用户可从消息获得虚拟欢乐豆，可转账、购买 VIP、使用长期个人信贷或央行借款，并查看排行榜。
 - **赌场游戏**：多人 `/games blackjack` 与 `/games dragon_gate` lobby。Blackjack 庄家改为赌场系统 (deterministic H17)，bot 本身会以玩家身份入桌并由独立的确定性策略 (fractional-Kelly 下注与 EV 决策) 决策，`/casino` 与 `/pocat` 分别显示赌场账本与 bot 玩家钱包。
-- **问题反馈**：`/feedback` 打开只有本人看得到的面板，用单号列出自己反馈过的问题，并提供表单把新的反馈开成配置好的 repository 上的 GitHub issue（后台会由 LLM 整理成好读的内容）。开发者在该 issue 上的回复会出现在同一个面板里，也有按钮可以再补一句，让反馈是双向的对话而不是单向信箱。
 - **本地化指令**：slash command metadata 支持英文、繁体中文、日文。AI 回复会跟随用户语言。没有 help 指令：直接问 bot 会做什么，它会读一份英文的功能说明并用你提问的语言回答。
 
 ## 指令
@@ -57,7 +56,6 @@
 | _抖音 URL_                                  | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                      |
 | _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                       |
 | `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                     |
-| `/feedback`                                 | 打开只有你看得到的反馈面板：用单号列出你的反馈、开发者的回复，以及开新反馈的表单。     |
 | `/balance [member]`                         | 私密显示成员的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                                |
 | `/vip`                                      | 购买永久 VIP 权益。                                                                    |
 | `/leaderboard`                              | 显示全域余额排行榜。                                                                   |

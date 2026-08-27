@@ -17,7 +17,6 @@ import pytest
 from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from discordbot.cogs.feedback.database import Base as FeedbackBase
 from discordbot.cogs.research.database import Base as ResearchBase
 from discordbot.cogs.gen_reply.ask_store import Base as AskTurnBase
 from discordbot.services.economy.database import Base
@@ -59,20 +58,6 @@ async def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> As
     async with engine.begin() as conn:
         await conn.run_sync(AskTurnBase.metadata.create_all)
     monkeypatch.setattr("discordbot.cogs.gen_reply.ask_store._engine", engine)
-    yield
-    await engine.dispose()
-
-
-@pytest.fixture
-async def feedback_isolated_db(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[None]:
-    """Per-test SQLite file with the user-report schema (feedback.db)."""
-    feedback_db_path = tmp_path / "feedback.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{feedback_db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(FeedbackBase.metadata.create_all)
-    monkeypatch.setattr("discordbot.cogs.feedback.database._engine", engine)
     yield
     await engine.dispose()
 
@@ -164,38 +149,15 @@ def model_price_mirror_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.fixture(autouse=True)
-def feedback_env_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keeps a real deployment's reporting credentials out of every test.
-
-    Autouse because `FeedbackConfig` reads the environment and `.env` is loaded at import,
-    which in a git worktree is the *parent* checkout's file. Without this a machine with a
-    configured GitHub App quietly turns "no credentials" tests into "credentials present"
-    ones — and `model_validate` does not save you: it skips the settings sources only for
-    the keys it is handed, so any field a test does not name still comes from the process
-    environment.
-    """
-    for name in (
-        "FEEDBACK_ENABLED",
-        "FEEDBACK_GITHUB_TOKEN",
-        "FEEDBACK_GITHUB_APP_ID",
-        "FEEDBACK_GITHUB_APP_PRIVATE_KEY_PATH",
-        "FEEDBACK_GITHUB_REPOSITORY",
-        "FEEDBACK_CONTACT",
-        "FEEDBACK_MAX_OPEN_REPORTS",
-        "FEEDBACK_SUBMIT_COOLDOWN_SECONDS",
-    ):
-        monkeypatch.delenv(name=name, raising=False)
-
-
-@pytest.fixture(autouse=True)
 def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
     """Leaves every test a keyless deployment whatever the checkout has configured.
 
-    Autouse for the reason `feedback_env_isolated` is: an unconfigured deployment is what the
-    reply tests are built for — they set the key explicitly when they are about a Gemini-only
-    path — and leaving the real one in place made a test's outcome depend on whether the
-    developer's `.env` happened to be visible, which in a git worktree is the parent
-    checkout's file.
+    Autouse because an unconfigured deployment is what the reply tests are built for — they
+    set the key explicitly when they are about a Gemini-only path — and leaving the real one
+    in place made a test's outcome depend on whether the developer's `.env` happened to be
+    visible, which in a git worktree is the parent checkout's file. `model_validate` does not
+    save you either: it skips the settings sources only for the keys it is handed, so any
+    field a test does not name still comes from the process environment.
 
     The numbered variables go too. Nothing reads them since the key balancer was reverted,
     but they stay live in a real deployment's `.env` for the proxy's own pooled media
