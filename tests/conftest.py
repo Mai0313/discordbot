@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs.feedback.database import Base as FeedbackBase
 from discordbot.cogs.research.database import Base as ResearchBase
+from discordbot.cogs.gen_reply.ask_store import Base as AskTurnBase
 from discordbot.services.economy.database import Base
 from discordbot.services.gemini_keys.balancer import reset_balancer_state
 
@@ -47,6 +48,18 @@ async def research_isolated_db(
     async with engine.begin() as conn:
         await conn.run_sync(ResearchBase.metadata.create_all)
     monkeypatch.setattr("discordbot.cogs.research.database._engine", engine)
+    yield
+    await engine.dispose()
+
+
+@pytest.fixture
+async def ask_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
+    """Per-test SQLite file with the `/ask` conversation schema (reply.db)."""
+    ask_db_path = tmp_path / "reply.db"
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{ask_db_path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(AskTurnBase.metadata.create_all)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.ask_store._engine", engine)
     yield
     await engine.dispose()
 
