@@ -6,6 +6,17 @@ Mention me, reply to me, or send me a direct message. I hold a normal conversati
 questions, summarize what a channel has been talking about, read the images and files people
 attach, and search the web whenever the answer could be out of date.
 
+Somewhere I am not a member — a server I was never added to, a group DM, or your DMs with someone
+else — none of that reaches me, because I never see those messages at all:
+
+- `/ask` — say something to me there anyway, with a file attached if you want
+
+It is the same conversation as anywhere else, and it remembers what we have already said to each
+other in that channel, so you can pick up where you left off. What is missing there cannot be
+added: I cannot read what anyone else typed, I keep no memory of that server's community, and my
+usual reactions have nowhere to sit, so anything I had to drop is written under my reply instead.
+A very long answer can also run out of room, and says so when it does.
+
 I can also produce media as part of a reply when the moment calls for it: speak a line aloud,
 draw one or more images, write and record a short song, or generate a short video from a
 description or from attached images. Attach an image or a video (or reply to a message
@@ -119,6 +130,9 @@ is yours alone: nobody else in those places sees me there, or can use me through
 
 Slash commands are the only part of me that travels that way. Mentioning me, replying to me, and
 the links I expand on my own all need me to be a member of the server itself, so somewhere I have
-not been added, the slash commands are all of me you get. Two of them do not travel either:
+not been added, `/ask` is how you talk to me instead. Two commands do not travel either:
 `/deep_research` needs an ordinary text channel to open its thread in, and `/memory server show`
 needs a server whose community memory I keep, so both refuse anywhere I am not a member.
+
+Only the person who added me can reach me in those places. In a group DM, someone who has not
+added me cannot ask me anything through you.

@@ -4,8 +4,12 @@ What is left here is what belongs to the PROCESS rather than to one turn: the ga
 the clients and per-key toolkits every reply leases, the restart memory resume, and the last-resort
 failure notice. One turn's own work lives in `pipeline.py` and the phase modules beside it.
 
-Every turn runs over a `TurnSurface`, which is where the answer lands, what history it may read
-and whether the source message can be reacted to; `on_message` builds the gateway one.
+`/ask` is the second entry point into that same pipeline, and it exists because the first one
+cannot reach three places a user-installed app can: a server the bot was never added to, a group
+DM, and a DM between two other people. There is no gateway message event in any of them, so
+mentioning the bot, replying to it and the link expansions all do nothing; the command hands the
+conversation back, running the identical turn over a `TurnSurface` that answers through the
+interaction instead of the channel.
 """
 
 from typing import TYPE_CHECKING, Any, TypedDict
@@ -14,7 +18,17 @@ from functools import cached_property
 
 from openai import AsyncOpenAI
 import logfire
-from nextcord import Embed, Message, NotFound, HTTPException
+import nextcord
+from nextcord import (
+    Embed,
+    Locale,
+    Message,
+    NotFound,
+    Attachment,
+    Interaction,
+    SlashOption,
+    HTTPException,
+)
 from nextcord.ext import commands
 
 from discordbot.typings.llm import LLMConfig
@@ -22,6 +36,7 @@ from discordbot.typings.colors import DISCORD_RED
 from discordbot.utils.mentions import has_bot_mention
 from discordbot.utils.reactions import ReactionStatusChain, update_reaction
 from discordbot.utils.usage_log import UsageRecorder
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
@@ -32,6 +47,7 @@ from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
+from discordbot.cogs.gen_reply.ask_message import build_ask_message, interaction_channel
 from discordbot.services.memory.git_history import memory_git
 from discordbot.services.gemini_keys.balancer import pick_gemini_key
 from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
@@ -312,6 +328,79 @@ class ReplyGeneratorCogs(commands.Cog):
                 )
         finally:
             await reactions.flush()
+
+    @nextcord.slash_command(
+        name="ask",
+        description="Talk to me anywhere, even where I cannot see the conversation.",
+        name_localizations={Locale.zh_TW: "問", Locale.ja: "質問"},
+        description_localizations={
+            Locale.zh_TW: "在我讀不到對話的地方跟我說話,例如我沒被加進去的伺服器或群組私訊",
+            Locale.ja: "会話を読めない場所でも話しかけられます（未参加のサーバーやグループDMなど）。",
+        },
+        nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
+    )
+    async def ask(
+        self,
+        interaction: Interaction[commands.Bot],
+        question: str = SlashOption(
+            name="question",
+            description="What you want to say or ask.",
+            name_localizations={Locale.zh_TW: "訊息", Locale.ja: "メッセージ"},
+            description_localizations={
+                Locale.zh_TW: "想跟我說或問的事",
+                Locale.ja: "話しかけたい内容や質問。",
+            },
+            required=True,
+            min_length=1,
+        ),
+        attachment: Attachment | None = SlashOption(
+            name="attachment",
+            description="An image, video, audio clip or document to send with it.",
+            name_localizations={Locale.zh_TW: "附件", Locale.ja: "添付"},
+            description_localizations={
+                Locale.zh_TW: "要一起傳給我的圖片、影片、音檔或文件",
+                Locale.ja: "一緒に送る画像・動画・音声・ファイル。",
+            },
+            required=False,
+        ),
+    ) -> None:
+        """Answers one message through the interaction, where no gateway event ever arrives.
+
+        The response is deferred first and always: Discord invalidates the token after three
+        seconds, and every phase of the turn is slower than that. It is deliberately not
+        ephemeral — in a group DM the answer is the conversation, and the only place the choice
+        would matter is one where Discord may force ephemeral on us regardless.
+
+        Args:
+            interaction: The invocation to answer through.
+            question: What the user wants to say.
+            attachment: An optional file to send with it; the only way to give the bot one here,
+                since there is no message of theirs for it to hang off.
+        """
+        await interaction.response.defer()
+        channel = interaction_channel(interaction=interaction)
+        message = build_ask_message(interaction=interaction, question=question, channel=channel)
+        surface = TurnSurface.for_interaction(message=message, interaction=interaction)
+        toolkit = await self.lease_toolkit()
+        user_prompt = await toolkit.input_builder.get_user_prompt(content=question)
+        if not user_prompt and attachment is None:
+            logfire.debug(
+                "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
+            )
+            await surface.send(content="?")
+            return
+        logfire.info(
+            "gen_reply received",
+            **_message_log_fields(surface=surface),
+            prompt_chars=len(user_prompt),
+            has_attachment=attachment is not None,
+            attachment_count=len(message.attachments),
+            sticker_count=0,
+            is_dm=surface.guild_id is None,
+        )
+        await self._run_turn(surface=surface, toolkit=toolkit, user_prompt=user_prompt)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
