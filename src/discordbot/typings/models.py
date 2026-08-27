@@ -193,14 +193,11 @@ class RuntimeModelCatalog(BaseModel):
 
         Callers: `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
         `_stream_media_persona_reply` (the persona reply that rides generated media),
-        `AutoUnmuteCogs._generate_reply`, `translate_comment` (the maintainer's closing
-        words, put into the language the reporter wrote in).
+        and `AutoUnmuteCogs._generate_reply`.
 
         Each decides what to say rather than how briefly to say it, which is the thinking
         `triage_model` does without. None of them is the deliverable, which is what keeps
-        them below `slow_model`. The translation is the odd one, since its wording is
-        settled before it arrives; it sits here because choosing how a refusal lands in
-        another language is the same kind of judgement, and `triage_model` fills slots.
+        them below `slow_model`.
 
         Returns:
             Flash at `medium`, one snapshot back from `gemini-3.7-flash`, popular enough now
