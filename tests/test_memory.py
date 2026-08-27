@@ -2589,7 +2589,10 @@ async def test_memory_regenerate_command_schedules_in_background(
 ) -> None:
     cog = _memory_cog()
     writer_sentinel = object()
-    monkeypatch.setattr(cog, "memory_writer", writer_sentinel)
+    # Seeded into the cached_property's slot rather than through `setattr`, which reads the
+    # old value first to restore it and would build a real `AsyncOpenAI` off credentials CI
+    # does not have.
+    monkeypatch.setitem(cog.__dict__, "memory_writer", writer_sentinel)
     calls: dict[str, object] = {}
 
     def fake_schedule(scope: str, writer: object, identity: str) -> bool:
