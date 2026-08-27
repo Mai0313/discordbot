@@ -20,7 +20,7 @@ construction, so they live outside the tree.
 import re
 import json
 
-from nextcord import User, Member, Message, DMChannel
+from nextcord import User, Member
 from pydantic import Field, BaseModel
 from nextcord.utils import escape_mentions
 from openai.types.responses.function_tool_param import FunctionToolParam
@@ -87,13 +87,26 @@ class RecallContext(BaseModel):
     )
 
 
-def build_recall_context(*, message: Message) -> RecallContext:
-    """Builds the read context for one incoming message."""
-    is_direct_message = message.guild is None and isinstance(message.channel, DMChannel)
-    return RecallContext(
-        guild_id=message.guild.id if message.guild else None,
-        dm_partner_id=message.author.id if is_direct_message else None,
-    )
+def build_recall_context(
+    *, author_id: int, guild_id: int | None, is_direct_message: bool
+) -> RecallContext:
+    """Builds the read context for one turn, from where that turn is actually happening.
+
+    Both facts are handed in rather than read off the message, because on the `/ask` route the
+    message cannot carry either: it is synthesized over a `PartialMessageable`, so its `guild` is
+    None even in a server and its channel is the same partial type in a 1:1 DM as in a group one.
+    `TurnSurface` is the single place both are decided, which is what keeps this read agreeing
+    with the source stamp the write side puts on the same turn's observations.
+
+    Args:
+        author_id: The user being replied to.
+        guild_id: The guild this conversation is happening in, or None outside one.
+        is_direct_message: Whether this is a 1:1 DM between that author and the bot.
+
+    Returns:
+        The compartments-deciding context for every memory read this turn makes.
+    """
+    return RecallContext(guild_id=guild_id, dm_partner_id=author_id if is_direct_message else None)
 
 
 class RecallCandidate(BaseModel):

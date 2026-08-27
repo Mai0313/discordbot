@@ -48,6 +48,14 @@ class ReactionStatusChain(BaseModel):
     bot_user: SkipValidation[ClientUser | None] = Field(
         ..., description="The bot user that scopes removal of the previous reaction."
     )
+    enabled: bool = Field(
+        default=True,
+        description=(
+            "Whether the message can be reacted to at all. False for a turn whose source "
+            "message is synthesized rather than posted, where every add would be a REST round "
+            "trip that 404s and is then suppressed, one per phase of the turn."
+        ),
+    )
     current_emoji: str | None = Field(
         default=None, description="The most recently scheduled status emoji."
     )
@@ -55,6 +63,8 @@ class ReactionStatusChain(BaseModel):
 
     def advance(self, emoji: str) -> None:
         """Schedules `emoji` to replace the previously scheduled status reaction."""
+        if not self.enabled:
+            return
         previous_task = self._tail
         previous_emoji = self.current_emoji
 

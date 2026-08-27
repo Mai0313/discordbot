@@ -16,7 +16,6 @@ from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
 from discordbot.typings.memory import MemoryCredits
 from discordbot.typings.models import strip_key_suffix
-from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.utils.model_pricing import get_token_rates
@@ -35,6 +34,7 @@ from discordbot.cogs.gen_reply.markers import (
     extract_inline_markers,
     scrub_markers_for_preview,
 )
+from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.generation import (
     VOICE_REPLY_FILENAME,
     VoiceOutcome,
@@ -98,6 +98,11 @@ MEMORY_FORGET_EMOJI = "🩹"
 # content it was about to write anyway.
 MEMORY_PENDING_NOTE = "-# ✏️ 正在整理記憶⋯"
 
+# Closes a reply the surface could not carry to its end. Only `/ask` can reach it, and only on an
+# answer past roughly twelve thousand characters; saying so is what keeps it from reading as the
+# model getting cut off mid-sentence.
+TRUNCATED_NOTICE = "\n-# 回覆太長，這裡放不下後面的內容了"
+
 # The thinking preview is a live glance, not a transcript: keep only the newest few subtext
 # lines so a long think never grows into a wall of text above the reply. The char budget is
 # the load-bearing half, since one thought line is often a whole paragraph that Discord wraps
@@ -140,6 +145,15 @@ class ResponseStreamer(BaseModel):
 
     message: SkipValidation[Message] = Field(
         ..., description="The Discord message being answered and replied to."
+    )
+    surface: TurnSurface | None = Field(
+        default=None,
+        description=(
+            "Where this reply goes; None falls back to replying into the source message's own "
+            "channel. Optional here and nowhere else in the pipeline because that fallback is "
+            "exactly what a streamer built on its own should do, and because the gateway surface "
+            "holds no state to keep."
+        ),
     )
     stored_content: str = Field(default="", description="The accumulated reply text.")
     reasoning_content: str = Field(
@@ -286,6 +300,10 @@ class ResponseStreamer(BaseModel):
     # The memory note currently on the reply, so the outcome can replace the pending one rather
     # than stack under it, and so the answer text handed back to the cog can drop it again.
     _memory_note: str = PrivateAttr(default="")
+    # The dropped-media hint line currently on the reply, tracked for the same second reason:
+    # it is chrome the bot added, so it must not reach the transcript the memory reviewer reads
+    # back or the `/ask` history the next turn replays.
+    _hint_line: str = PrivateAttr(default="")
     # Set when the reply message was deleted while streaming, so the media step knows the
     # difference between "never sent" (a real problem, worth a hint) and "sent then deleted".
     _reply_deleted: bool = PrivateAttr(default=False)
@@ -307,8 +325,21 @@ class ResponseStreamer(BaseModel):
     _url_citations: int | None = PrivateAttr(default=None)
 
     @staticmethod
-    def _split_reply_for_discord(content: str, footer: str) -> tuple[str, list[str]]:
-        """Splits a completed reply into one parent message plus follow-up chunks."""
+    def _split_reply_for_discord(
+        content: str, footer: str, max_messages: int | None = None
+    ) -> tuple[str, list[str]]:
+        """Splits a completed reply into one parent message plus follow-up chunks.
+
+        `max_messages` bounds how many messages the split may occupy, for a surface that cannot
+        create as many as it likes: a user-installed app gets five follow-up POSTs per
+        interaction, and the sixth is refused. Over that bound the answer is cut back to what
+        fits and told so on the last message, because an answer that simply stops reads as the
+        model having been interrupted rather than as the platform running out of room.
+        """
+        if max_messages is not None:
+            room = max_messages * DISCORD_MESSAGE_LIMIT - len(footer) - len(TRUNCATED_NOTICE)
+            if room > 0 and len(content) > room:
+                content = f"{content[:room]}{TRUNCATED_NOTICE}"
         if len(f"{content}{footer}") <= DISCORD_MESSAGE_LIMIT:
             return f"{content}{footer}", []
 
@@ -362,6 +393,15 @@ class ResponseStreamer(BaseModel):
         kept.reverse()
         return "\n".join([header, *(f"-# {line}" for line in kept)])
 
+    def _turn_surface(self) -> TurnSurface:
+        """This reply's surface, defaulting to the source message's own channel.
+
+        Built per call when absent rather than cached, which is safe precisely because the
+        gateway surface holds nothing: its hints go straight out as reactions and it has no
+        interaction response to spend. Only `/ask` passes one in, and that one is the pipeline's.
+        """
+        return self.surface or TurnSurface.for_message(message=self.message)
+
     async def _reply_or_send(self, content: str) -> Message:
         """Replies to the source message, sending unparented if it was deleted.
 
@@ -369,8 +409,9 @@ class ResponseStreamer(BaseModel):
         (unknown message_reference); we log it and send into the same channel instead of
         wasting the whole pipeline. Other HTTP errors still propagate to the caller.
         """
+        surface = self._turn_surface()
         try:
-            return await self.message.reply(content=content)
+            return await surface.send(content=content)
         except HTTPException as exc:
             if exc.code != 50035 and not isinstance(exc, NotFound):
                 raise
@@ -378,7 +419,7 @@ class ResponseStreamer(BaseModel):
                 "Source message deleted before reply; sending unparented",
                 message_id=self.message.id,
             )
-            return await self.message.channel.send(content=content)
+            return await surface.send_unparented(content=content)
 
     async def _write_preview_snapshot(self) -> None:
         """Writes the latest preview snapshot to the Discord reply, skipping no-ops."""
@@ -455,15 +496,23 @@ class ResponseStreamer(BaseModel):
         self._editor_task = None
 
     async def _write_final_message(self, content: str, footer: str) -> None:
-        """Writes the final reply, continuing overflow as follow-up replies in the same channel.
+        """Writes the final reply, continuing overflow as follow-ups on the same surface.
 
         A reply deleted while it streamed (author delete, moderator purge) makes the final edit
         404 with code 10008. That is a normal end, not a failure: the answer is complete and the
         message it belonged to is gone on purpose, so the handle is dropped and nothing is
         re-sent, since re-sending would resurrect exactly what someone just removed.
+
+        The overflow goes through the surface rather than `previous.reply` because on the `/ask`
+        route it must not be a channel send at all: a follow-up there carries a
+        `PartialMessageable`, so replying to it would post into a channel the bot is not in and
+        every answer over the limit would lose its tail.
         """
+        surface = self._turn_surface()
         parent_content, follow_up_chunks = self._split_reply_for_discord(
-            content=content, footer=footer
+            content=content,
+            footer=footer,
+            max_messages=surface.answer_capacity(has_landed_reply=self.reply is not None),
         )
         # Track the parent reply so a later voice attach edits the right message even when
         # the reply is created here (no preview snapshot ran before finalize).
@@ -483,7 +532,7 @@ class ResponseStreamer(BaseModel):
                 return
         previous = self.reply
         for chunk in follow_up_chunks:
-            previous = await previous.reply(content=chunk)
+            previous = await surface.follow_up(previous=previous, content=chunk)
 
     def _on_reasoning_delta(self, delta: str) -> None:
         """Accumulates one reasoning-summary delta, logging the first one's latency."""
@@ -567,7 +616,7 @@ class ResponseStreamer(BaseModel):
         `update_reaction` suppresses its own, and a reply deleted mid-answer (or a rate-limited
         edit) must not cost the retry it is announcing.
         """
-        await update_reaction(message=self.message, bot_user=None, emoji=RETRY_HINT_EMOJI)
+        await self._turn_surface().mark(emoji=RETRY_HINT_EMOJI)
         if self.reply is None:
             return
         notice = self._retry_notice()
@@ -755,6 +804,9 @@ class ResponseStreamer(BaseModel):
             current_answer_streamer.set(None)
 
         await self._attach_generated_media()
+        # Every best-effort hint this turn produced is in by now, so the surface that could not
+        # react gets its one line here rather than an edit per dropped item.
+        await self._write_hint_line()
         logfire.info(
             "gen_reply reply finalized",
             message_id=self.message.id,
@@ -781,13 +833,26 @@ class ResponseStreamer(BaseModel):
         # reviewer reads back and the text every later history render carries. `USAGE_FOOTER_RE`
         # cannot take it out downstream either, since the note sits BEFORE the ⬆⬇ line and that
         # regex only reaches what follows it.
-        return self._without_memory_note(text=self.stored_content)
+        return self._without_added_lines(text=self.stored_content)
 
     def _without_memory_note(self, *, text: str) -> str:
         """Returns `text` with the memory note currently on the reply removed, if any."""
         if not self._memory_note:
             return text
         return text.replace(f"\n{self._memory_note}", "", 1)
+
+    def _without_added_lines(self, *, text: str) -> str:
+        """Returns `text` with every line the bot added to the reply removed.
+
+        Both are chrome rather than something the answer said, and both have to go before the
+        text becomes `full_reply`: that string is the transcript the memory reviewer reads back,
+        the `/ask` turn the store replays, and every later history render. `USAGE_FOOTER_RE`
+        reaches neither, since both sit before the ⬆⬇ line rather than after it.
+        """
+        stripped = self._without_memory_note(text=text)
+        if not self._hint_line:
+            return stripped
+        return stripped.replace(f"\n{self._hint_line}", "", 1)
 
     def _wants_pending_memory_note(self, *, footer_chars: int) -> bool:
         """Whether this reply should say it is still working on the memory the model marked.
@@ -878,14 +943,56 @@ class ResponseStreamer(BaseModel):
         return getattr(channel, "name", None) if channel is not None else None
 
     async def _hint_media_unavailable(self, *, emoji: str) -> None:
-        """Marks the source message so dropped media (voice clip or inline image) is not silent.
+        """Marks that dropped media (voice clip or inline image) is not silent.
 
         The reply stays without the attachment and the user gets no message; this best-effort
-        reaction is the only signal. It rides on the source message as an independent reaction
-        (no `previous`), so the pipeline's status chain never removes it. Failures are suppressed
-        inside `update_reaction`.
+        hint is the only signal. On the gateway path it rides on the source message as an
+        independent reaction (no `previous`), so the pipeline's status chain never removes it,
+        and failures are suppressed inside `update_reaction`. A surface with nothing to react to
+        holds it instead, and `_write_hint_line` puts it on the reply once the media step ends.
         """
-        await update_reaction(message=self.message, bot_user=None, emoji=emoji)
+        await self._turn_surface().hint(emoji=emoji)
+
+    async def _write_hint_line(self) -> None:
+        """Writes the hints a surface without reactions collected, as one line on the reply.
+
+        Placed and tracked exactly like the memory note — before the usage footer, kept by value
+        so `set_memory_note` can rebuild the reply around it and `_without_added_lines` can keep
+        it out of `full_reply`. Best-effort throughout: a hint about a failure must never become
+        one, and there is nothing to write when the reply never landed or the surface reacts.
+        """
+        hints = self._turn_surface().take_hints()
+        if not hints or self.reply is None or not self._usage_footer:
+            return
+        body = self._without_memory_note(text=self.stored_content.removesuffix(self._usage_footer))
+        line = f"-# {''.join(hints)}"
+        updated = f"{body}\n{line}{self._memory_note_suffix()}{self._usage_footer}"
+        if len(updated) > DISCORD_MESSAGE_LIMIT:
+            # Nowhere left to say it. Recorded rather than dropped in silence, since the point of
+            # the hint is that a dropped clip never goes unmentioned.
+            logfire.warn(
+                "No room left on the reply for the dropped-media hints",
+                message_id=self.message.id,
+                hints="".join(hints),
+            )
+            return
+        try:
+            await self.reply.edit(content=updated, allowed_mentions=AllowedMentions.none())
+        except Exception as exc:
+            # Broad on purpose, for the same reason `set_memory_note` is: the reply may be gone,
+            # and a footnote is never worth surfacing a failure for.
+            logfire.warn(
+                "Failed to write the dropped-media hints onto the reply",
+                message_id=self.message.id,
+                error_type=type(exc).__name__,
+            )
+            return
+        self.stored_content = updated
+        self._hint_line = line
+
+    def _memory_note_suffix(self) -> str:
+        """The memory note as it sits inside the content, or "" when the reply carries none."""
+        return f"\n{self._memory_note}" if self._memory_note else ""
 
     def _upload_limit(self) -> int:
         """The destination's real upload ceiling, falling back to Discord's 20MB base in a DM.
@@ -915,9 +1022,7 @@ class ResponseStreamer(BaseModel):
             )
             return None
         # Mark the source message with the bot's `voice` app emoji while the clip synthesizes.
-        await update_reaction(
-            message=self.message, bot_user=None, emoji="<:voice:1517558121092878376>"
-        )
+        await self._turn_surface().mark(emoji="<:voice:1517558121092878376>")
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
         )
@@ -996,9 +1101,7 @@ class ResponseStreamer(BaseModel):
                 cap=MAX_INLINE_IMAGES,
             )
         # Mark the source message with the bot's `image` app emoji while the images render.
-        await update_reaction(
-            message=self.message, bot_user=None, emoji="<:image:1517559727880667226>"
-        )
+        await self._turn_surface().mark(emoji="<:image:1517559727880667226>")
         logfire.info(
             "Generating inline image reply", message_id=self.message.id, image_count=len(prompts)
         )
@@ -1052,7 +1155,7 @@ class ResponseStreamer(BaseModel):
             )
             return None
         # Mark the source message while the clip renders (no custom app emoji for music yet).
-        await update_reaction(message=self.message, bot_user=None, emoji="🎵")
+        await self._turn_surface().mark(emoji="🎵")
         logfire.info("Generating inline music reply", message_id=self.message.id)
         clip = await self.music_generator.generate(user_prompt=self.music_prompt)
         if clip is None:
@@ -1085,9 +1188,7 @@ class ResponseStreamer(BaseModel):
             )
             return None
         # Mark the source message with the bot's `video` app emoji while the clip renders.
-        await update_reaction(
-            message=self.message, bot_user=None, emoji="<:video:1517560671913377842>"
-        )
+        await self._turn_surface().mark(emoji="<:video:1517560671913377842>")
         logfire.info("Generating inline video reply", message_id=self.message.id)
         source_images = await source_images_task if source_images_task is not None else []
         video_bytes = await self.video_generator.generate(
@@ -1218,7 +1319,9 @@ class ResponseStreamer(BaseModel):
             return
         if follow_up is not None:
             try:
-                await reply.reply(content=follow_up, allowed_mentions=AllowedMentions.none())
+                await self._turn_surface().follow_up(
+                    previous=reply, content=follow_up, allowed_mentions=AllowedMentions.none()
+                )
             except Exception as exc:
                 # Broad on purpose: a deleted parent or any Discord HTTP error must never raise
                 # into the reply pipeline. The follow-up IS the delivery of the hosted clip, so a

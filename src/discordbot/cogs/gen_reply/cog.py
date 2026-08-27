@@ -3,6 +3,9 @@
 What is left here is what belongs to the PROCESS rather than to one turn: the gateway listeners,
 the clients and per-key toolkits every reply leases, the restart memory resume, and the last-resort
 failure notice. One turn's own work lives in `pipeline.py` and the phase modules beside it.
+
+Every turn runs over a `TurnSurface`, which is where the answer lands, what history it may read
+and whether the source message can be reacted to; `on_message` builds the gateway one.
 """
 
 from typing import TYPE_CHECKING, Any, TypedDict
@@ -24,6 +27,7 @@ from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import MediaDeliveryPlanner, build_media_delivery_planner
 from discordbot.services.memory.facts import render_owner_identity
 from discordbot.services.memory.store import flavor_of, read_owner, iter_scopes
+from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
@@ -52,14 +56,19 @@ class _MessageLogFields(TypedDict):
     guild_name: str | None
 
 
-def _message_log_fields(message: Message) -> _MessageLogFields:
+def _message_log_fields(*, surface: TurnSurface) -> _MessageLogFields:
     """Standard Discord identifying fields for correlating one reply's logs.
 
     The pipeline-entry log carries the full set; every downstream log carries only
     `message_id` as the correlation key, so a whole turn reconstructs by grepping it.
     `user_name` is the stable handle, `display_name` the per-guild nickname;
     `guild_id` / `guild_name` are None in a DM.
+
+    Read off the surface rather than the message so a `/ask` turn in a server is not logged as
+    a DM. `guild_name` still comes from the message and so stays None there: the bot is not a
+    member of that server and does not know what it is called.
     """
+    message = surface.message
     guild = message.guild
     return {
         "user_id": message.author.id,
@@ -67,7 +76,7 @@ def _message_log_fields(message: Message) -> _MessageLogFields:
         "display_name": message.author.display_name,
         "message_id": message.id,
         "channel_id": message.channel.id,
-        "guild_id": guild.id if guild else None,
+        "guild_id": surface.guild_id,
         "guild_name": guild.name if guild else None,
     }
 
@@ -217,7 +226,7 @@ class ReplyGeneratorCogs(commands.Cog):
         if swept:
             logfire.info("scheduled memory consolidation sweep", count=swept)
 
-    async def _deliver_failure_notice(self, *, message: Message, error_embed: Embed) -> None:
+    async def _deliver_failure_notice(self, *, surface: TurnSurface, error_embed: Embed) -> None:
         """Shows the turn's failure, on the reply it was streaming into where there is one.
 
         Half the turns that fail here already painted something (23 of 46 in one 2026-08-21 log),
@@ -225,13 +234,19 @@ class ReplyGeneratorCogs(commands.Cog):
         no usage footer, reads as an answer that merely stopped. So the streamer is asked first
         and takes the error onto its own message. Everything it turns down -- every failure
         before the answer, and a retry notice already withdrawn -- gets a fresh message here.
+
+        Through the surface rather than `message.reply`, because on the `/ask` route a failure
+        before the first content delta is the whole of what the user ever sees: there is no
+        channel to post into, and Discord would otherwise leave the deferred response hanging
+        until it expired with nothing in it.
         """
         streamer = current_answer_streamer.get()
         if streamer is not None and await streamer.land_failure(embed=error_embed):
             return
+        message = surface.message
         spacer = embed_spacer_payload(embeds=[error_embed], is_edit=False, target=message)
         try:
-            await message.reply(content=None, embed=error_embed, **spacer)
+            await surface.send(embed=error_embed, **spacer)
         except HTTPException as send_error:
             # Source deleted before the error landed (50035): send it unparented. Rebuild
             # the spacer; the failed reply already consumed the single-use spacer file.
@@ -240,7 +255,63 @@ class ReplyGeneratorCogs(commands.Cog):
             fresh_spacer = embed_spacer_payload(
                 embeds=[error_embed], is_edit=False, target=message
             )
-            await message.channel.send(content=None, embed=error_embed, **fresh_spacer)
+            await surface.send_unparented(embed=error_embed, **fresh_spacer)
+
+    async def _run_turn(
+        self, *, surface: TurnSurface, toolkit: GeminiKeyToolkit, user_prompt: str
+    ) -> None:
+        """Runs one turn and reports whatever it failed on, whichever entry point started it.
+
+        Shared by `on_message` and `/ask` because everything that differs between them is
+        already inside the surface: where the answer lands, what history it may read, and
+        whether the source message can be reacted to at all.
+        """
+        message = surface.message
+        reactions = ReactionStatusChain(
+            message=message, bot_user=self.bot.user, enabled=surface.interaction is None
+        )
+        try:
+            await ReplyPipeline(
+                client=self.openai_client,
+                bot=self.bot,
+                config=self.config,
+                media_delivery=self.media_delivery,
+                usage_recorder=self.usage_recorder,
+                toolkit=toolkit,
+                message=message,
+                surface=surface,
+                user_prompt=user_prompt,
+                reactions=reactions,
+            ).run()
+        except Exception as e:
+            logfire.error(
+                "gen_reply failed",
+                **_message_log_fields(surface=surface),
+                model=dispatched_model.get(),
+                key_index=toolkit.key_index,
+                error_type=type(e).__name__,
+                _exc_info=True,
+            )
+            try:
+                reactions.advance(emoji="<:redcross:1517565100838355016>")
+                error_embed = Embed(
+                    title="Something went wrong",
+                    description=f"```\n{extract_friendly_error(exc=e)}\n```",
+                    color=DISCORD_RED,
+                )
+                error_embed.set_footer(text=type(e).__name__)
+                await self._deliver_failure_notice(surface=surface, error_embed=error_embed)
+            except Exception as report_error:
+                # Broad on purpose: this is the last-resort user notice; nothing above it can
+                # recover, and it must not displace the original failure.
+                logfire.warn(
+                    "failed to deliver the pipeline failure notice",
+                    message_id=message.id,
+                    error_type=type(report_error).__name__,
+                    _exc_info=report_error,
+                )
+        finally:
+            await reactions.flush()
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
@@ -263,10 +334,11 @@ class ReplyGeneratorCogs(commands.Cog):
         # Skip a (mentioned) message typed inside a research thread the ResearchCogs cog is
         # actively driving: the thread is its workspace until the report lands, so QA must not
         # answer over the live status edits. The skip lifts the moment the run finishes.
+        surface = TurnSurface.for_message(message=message)
         if in_active_research_thread(bot=self.bot, channel_id=message.channel.id):
             logfire.debug(
                 "gen_reply skipped: the research cog is still writing into this thread",
-                **_message_log_fields(message=message),
+                **_message_log_fields(surface=surface),
             )
             return
 
@@ -289,7 +361,7 @@ class ReplyGeneratorCogs(commands.Cog):
 
         if not user_prompt and not has_attachment and not is_forward:
             logfire.debug(
-                "gen_reply empty prompt; replied with ?", **_message_log_fields(message=message)
+                "gen_reply empty prompt; replied with ?", **_message_log_fields(surface=surface)
             )
             await update_reaction(message=message, bot_user=self.bot.user, emoji="❓")
             await message.reply(content="?")
@@ -297,56 +369,14 @@ class ReplyGeneratorCogs(commands.Cog):
 
         logfire.info(
             "gen_reply received",
-            **_message_log_fields(message=message),
+            **_message_log_fields(surface=surface),
             prompt_chars=len(user_prompt),
             has_attachment=has_attachment,
             attachment_count=len(message.attachments),
             sticker_count=len(message.stickers),
             is_dm=is_dm,
         )
-
-        reactions = ReactionStatusChain(message=message, bot_user=self.bot.user)
-        try:
-            await ReplyPipeline(
-                client=self.openai_client,
-                bot=self.bot,
-                config=self.config,
-                media_delivery=self.media_delivery,
-                usage_recorder=self.usage_recorder,
-                toolkit=toolkit,
-                message=message,
-                user_prompt=user_prompt,
-                reactions=reactions,
-            ).run()
-        except Exception as e:
-            logfire.error(
-                "gen_reply failed",
-                **_message_log_fields(message=message),
-                model=dispatched_model.get(),
-                key_index=toolkit.key_index,
-                error_type=type(e).__name__,
-                _exc_info=True,
-            )
-            try:
-                reactions.advance(emoji="<:redcross:1517565100838355016>")
-                error_embed = Embed(
-                    title="Something went wrong",
-                    description=f"```\n{extract_friendly_error(exc=e)}\n```",
-                    color=DISCORD_RED,
-                )
-                error_embed.set_footer(text=type(e).__name__)
-                await self._deliver_failure_notice(message=message, error_embed=error_embed)
-            except Exception as report_error:
-                # Broad on purpose: this is the last-resort user notice; nothing above it can
-                # recover, and it must not displace the original failure.
-                logfire.warn(
-                    "failed to deliver the pipeline failure notice",
-                    message_id=message.id,
-                    error_type=type(report_error).__name__,
-                    _exc_info=report_error,
-                )
-        finally:
-            await reactions.flush()
+        await self._run_turn(surface=surface, toolkit=toolkit, user_prompt=user_prompt)
 
 
 def setup(bot: commands.Bot) -> None:

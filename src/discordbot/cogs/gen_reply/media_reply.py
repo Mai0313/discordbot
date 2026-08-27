@@ -28,6 +28,7 @@ from discordbot.cogs.gen_reply.prompts import (
     IMAGE_REPLY_PROMPT,
     VIDEO_REPLY_PROMPT,
 )
+from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import GeminiKeyToolkit
 from discordbot.typings.context_budgets import MAX_VIDEO_REFERENCE_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_to_files_api
@@ -44,6 +45,7 @@ class MediaReplyRoutes(BaseModel):
         media_delivery: Decides whether the generated media attaches or is hosted as a URL.
         toolkit: The leased Gemini key's generators, clients and model catalog.
         message: The message that asked for the media.
+        surface: Where the delivered media goes.
         answer: The streamer used for the best-effort persona reply once media is delivered.
     """
 
@@ -61,6 +63,7 @@ class MediaReplyRoutes(BaseModel):
     message: SkipValidation[Message] = Field(
         ..., description="The message that asked for the media."
     )
+    surface: TurnSurface = Field(..., description="Where the delivered media goes.")
     answer: AnswerTurn = Field(
         ..., description="Streams the best-effort persona reply about the delivered media."
     )
@@ -80,18 +83,18 @@ class MediaReplyRoutes(BaseModel):
             items=[item], upload_limit=upload_limit_for(guild=self.message.guild)
         )
         if plan.native:
-            return await self.message.reply(
+            return await self.surface.send(
                 content=self.message.author.mention, file=plan.native[0].to_file()
             )
         if not plan.hosted_urls:
             # Hosting off/failed: attempt the native attach, which raises on oversize and keeps
             # the route on the outer error path exactly as before.
-            return await self.message.reply(
+            return await self.surface.send(
                 content=self.message.author.mention, file=item.to_file()
             )
         # Too big to attach: the hosted URL is the deliverable (pings the author once). The persona
         # reply, if it runs, streams onto its own fresh message so it never clobbers this link.
-        await self.message.reply(content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}")
+        await self.surface.send(content=f"{self.message.author.mention}\n{plan.hosted_urls[0]}")
         return None
 
     async def handle_image(
