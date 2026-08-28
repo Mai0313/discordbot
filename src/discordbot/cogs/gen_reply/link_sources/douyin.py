@@ -37,6 +37,7 @@ from discordbot.utils.douyin import (
 )
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
@@ -161,7 +162,7 @@ async def _fetch_and_upload(
     the separate lever and is already turned down — `AI_INGEST_QUALITY` asks Douyin for its
     lowest preset, so the bytes that arrive are not the ones the expansion posts to Discord.
     """
-    with tempfile.TemporaryDirectory(prefix="douyin-ai-") as download_dir:
+    with scratch_directory(prefix="douyin-ai-") as download_dir:
         downloader = DouyinDownloader(output_folder=download_dir)
         # The Douyin bound covers only the Douyin-facing work. Holding it across the upload
         # would block unrelated links for minutes while talking to Google, which is not what

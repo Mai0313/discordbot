@@ -1,12 +1,16 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
+from types import SimpleNamespace
 from typing import Any
 import asyncio
 from pathlib import Path
+import tempfile
+import threading
 
 import pytest
 
 from discordbot.utils import douyin as douyin_fetch
+from discordbot.utils import scratch_dir
 from discordbot.utils.douyin import (
     DouyinPost,
     DouyinError,
@@ -17,6 +21,7 @@ from discordbot.utils.douyin import (
     DouyinUnavailableError,
 )
 from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
+from discordbot.cogs.gen_reply.speculation import run_until_deadline
 from discordbot.cogs.gen_reply.link_sources import douyin as douyin_builder
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     DOUYIN_BLOCKED_NOTICE,
@@ -124,6 +129,29 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
     resolved_uploads = uploads or _Uploads()
     monkeypatch.setattr(douyin_builder, "upload_as_input_file", resolved_uploads)
     return resolved_uploads, recorded
+
+
+def _race_every_scratch_teardown(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Makes every scratch removal fail the way one racing a live writer does.
+
+    Returns the list each attempt records itself in, so a test can tell a teardown that ran
+    and failed from one the builder never reached.
+    """
+    removed: list[str] = []
+
+    class _RacedTemporaryDirectory(tempfile.TemporaryDirectory[str]):
+        """Loses the race the way a file arriving after the scan makes the closing rmdir lose it."""
+
+        def cleanup(self) -> None:
+            """Removes the tree, then raises what an ENOTEMPTY on the last step raises."""
+            removed.append(self.name)
+            super().cleanup()
+            raise OSError("directory not empty")
+
+    monkeypatch.setattr(
+        scratch_dir, "tempfile", SimpleNamespace(TemporaryDirectory=_RacedTemporaryDirectory)
+    )
+    return removed
 
 
 async def _build(gemini: bool = True, ingest: bool = True) -> list[dict[str, Any]]:
@@ -328,6 +356,83 @@ async def test_the_scratch_directory_is_removed(monkeypatch: pytest.MonkeyPatch)
     assert isinstance(source, Path)
     assert not source.exists()
     assert not source.parent.exists()
+
+
+async def test_a_raced_scratch_teardown_keeps_the_clip_the_build_already_uploaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing removal must not throw away media the model was about to watch.
+
+    The builder returns its parts from inside the scratch directory's own `with`, so before
+    #561 a raised cleanup discarded a finished result: the clip was downloaded and uploaded,
+    and the block still came out as the text-only one, telling the model it had not watched
+    the post it was holding. `scratch_directory` reports the removal instead of raising it.
+    """
+    _stub_douyin(monkeypatch)
+    removed = _race_every_scratch_teardown(monkeypatch)
+
+    blocks = await _build()
+
+    assert removed  # the teardown really ran and really failed
+    assert blocks[0]["content"][0]["text"] == DOUYIN_CONTEXT_SEPARATOR
+    media = [part for part in blocks[1]["content"] if part["type"] == "input_file"]
+    assert [part["file_id"] for part in media] == ["https://files.test/777.mp4"]
+
+
+async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surface(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing removal must not swallow the grace the pipeline is timing the build with.
+
+    `speculation.py::run_until_deadline` is `asyncio.wait_for`, which raises `TimeoutError`
+    only when the builder lets the `CancelledError` out; a builder that returns a value
+    instead has THAT value returned (measured on 3.12.13). A raised cleanup replaces the
+    cancellation with an `OSError` the builder's own broad handler then absorbs, so the
+    expired build used to come back as ordinary caption-only blocks and `pipeline.py` never
+    reached the branch injecting `DOUYIN_TIMEOUT_NOTICE`: a link that never answered was
+    reported to the model as one that answered without its media.
+    """
+    _stub_douyin(monkeypatch)
+    removed = _race_every_scratch_teardown(monkeypatch)
+    release = threading.Event()
+
+    def blocking_download(  # noqa: PLR0913 -- mirrors DouyinDownloader.download exactly
+        self: DouyinDownloader,
+        url: str,
+        quality: str = "best",
+        max_images: int | None = None,
+        max_bytes: int | None = None,
+        post: DouyinPost | None = None,
+    ) -> DouyinDownload:
+        """Blocks the worker thread the way a stalling CDN read does.
+
+        Released by the test rather than slept out: `asyncio.to_thread` cannot cancel this, so
+        a fixed sleep would be charged to the event loop's own shutdown join at teardown.
+        """
+        del url, quality, max_images, max_bytes, post
+        release.wait(timeout=5.0)  # a backstop, so a bug here cannot hang the suite
+        raise AssertionError("should have been abandoned")
+
+    monkeypatch.setattr(target=DouyinDownloader, name="download", value=blocking_download)
+
+    try:
+        with pytest.raises(TimeoutError):
+            await run_until_deadline(
+                awaitable=build_douyin_context_messages(
+                    url=_URL,
+                    answer_model_is_gemini=True,
+                    gemini_client=make_stub_gemini_client(),
+                    allow_media_ingest=True,
+                ),
+                # Far above the microseconds the metadata probe and the scratch dir cost, so a
+                # loaded runner still expires with the worker inside the directory, and far
+                # below the download it is abandoning.
+                deadline=asyncio.get_running_loop().time() + 0.5,
+            )
+    finally:
+        release.set()
+
+    assert removed  # the teardown really ran and really failed
 
 
 async def test_the_douyin_bound_is_never_held_twice_on_one_path(
