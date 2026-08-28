@@ -8,12 +8,15 @@ built over a connection state, on a channel the bot is not a member of. Everythi
 
 from types import SimpleNamespace
 from typing import Any
+from datetime import datetime, timedelta
 
 import pytest
 from nextcord import Message, ChannelType, PartialMessageable
 from nextcord.enums import InteractionContextType
+from nextcord.utils import utcnow
 
 from discordbot.cogs.gen_reply import ask_store
+from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
 from discordbot.cogs.gen_reply.recall import build_recall_context, compartments_for_reading
 from discordbot.services.memory.store import DM_COMPARTMENT, GLOBAL_COMPARTMENT, guild_compartment
@@ -88,9 +91,24 @@ class _FakeAskInteraction:
         self.followup = _FakeFollowup()
         self.edits: list[dict[str, Any]] = []
         self.deferred = False
-        self.response = SimpleNamespace(defer=self._defer)
+        # Settable so a test can move the token's window without inventing a snowflake; the real
+        # property derives it from `id` the same way.
+        self.created_at = utcnow()
+        self.response = SimpleNamespace(defer=self._defer, is_done=lambda: self.deferred)
         self.client = SimpleNamespace(
             user=SimpleNamespace(id=BOT_USER_ID, name="pocat", discriminator="0")
+        )
+
+    @property
+    def expires_at(self) -> datetime:
+        """When Discord invalidates this token, mirroring `nextcord.Interaction.expires_at`.
+
+        Fifteen minutes once the response is deferred and three seconds before it, which is the
+        same split the real property makes. Modelled rather than stubbed to a fixed number,
+        because that split is exactly what `delivery_budget_seconds` relies on being told.
+        """
+        return self.created_at + (
+            timedelta(minutes=15) if self.response.is_done() else timedelta(seconds=3)
         )
 
     async def _defer(self) -> None:
@@ -520,3 +538,56 @@ async def test_a_gateway_surface_still_reacts_instead_of_collecting() -> None:
 
     assert added == ["⚠️"]
     assert surface.take_hints() == []
+
+
+def _deferred_surface(**kwargs: Any) -> TurnSurface:  # noqa: ANN401 -- forwards to the untyped fake
+    """The surface `/ask` builds, after the defer that opens the fifteen-minute window."""
+    interaction = _interaction(**kwargs)
+    interaction.deferred = True
+    return TurnSurface.for_interaction(
+        message=_ask_message(interaction=interaction), interaction=interaction
+    )
+
+
+def test_a_gateway_turn_has_nothing_running_out() -> None:
+    """`on_message` answers into a channel that is simply there, so no route is bounded by it."""
+    message = _ask_message(interaction=_interaction())
+
+    assert TurnSurface.for_message(message=message).delivery_budget_seconds() is None
+
+
+def test_the_delivery_budget_holds_back_what_answering_will_cost() -> None:
+    """A `/ask` turn may spend its token up to the margin the answer itself still needs."""
+    budget = _deferred_surface().delivery_budget_seconds()
+
+    assert budget is not None
+    # Fifteen minutes of token, less the margin, less however long the test took to get here.
+    usable = 15 * 60 - INTERACTION_DELIVERY_MARGIN_SECONDS
+    assert usable - 5.0 < budget <= usable
+
+
+def test_a_window_already_gone_leaves_nothing_to_spend() -> None:
+    """Past the token the budget floors at zero, so a route starts nothing it cannot finish."""
+    interaction = _interaction()
+    interaction.deferred = True
+    interaction.created_at = utcnow() - timedelta(minutes=30)
+    surface = TurnSurface.for_interaction(
+        message=_ask_message(interaction=interaction), interaction=interaction
+    )
+
+    assert surface.delivery_budget_seconds() == 0.0
+
+
+def test_an_undeferred_invocation_has_nothing_to_spend_either() -> None:
+    """Three seconds is what an unanswered interaction really holds, so it may start nothing slow.
+
+    `/ask` defers before it builds its surface, so nothing reaches this today. Pinned because the
+    budget reads `Interaction.expires_at`, which tells the truth about both of Discord's windows
+    rather than assuming the deferred one.
+    """
+    interaction = _interaction()
+    surface = TurnSurface.for_interaction(
+        message=_ask_message(interaction=interaction), interaction=interaction
+    )
+
+    assert surface.delivery_budget_seconds() == 0.0

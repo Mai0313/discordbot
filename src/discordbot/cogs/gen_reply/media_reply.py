@@ -4,6 +4,16 @@ Both routes share one shape. The media is the deliverable, so its generation sta
 error path; everything after delivery is best-effort and must leave the picture or clip on
 screen whatever happens. The persona reply itself lives in `answer.py`, since it is the same act
 as any other streamed reply.
+
+They share a second thing, which only `/ask` made visible (#619). Both generations can outlast the
+surface they were going to answer through: the omni render bounds a whole edit at
+`VIDEO_RENDER_TIMEOUT_SECONDS` plus a `FILES_READY_TIMEOUT_SECONDS` at each end, and the image
+render carries no bound of its own at all beyond the proxy client's, which it can spend twice on
+the empty-payload retry with `PROMPT_REFINE_TIMEOUT_SECONDS` in front. Against a channel that
+costs nothing; against an interaction token it costs the entire turn, because the delivery and
+the failure notice both go through it and both 404 together. So each generation runs inside
+`TurnSurface.delivery_budget_seconds`, which is None on the gateway path and leaves the routes
+exactly as they were there.
 """
 
 import time
@@ -35,6 +45,16 @@ from discordbot.cogs.gen_reply.files_api import upload_to_files_api
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 from discordbot.cogs.gen_reply.speculation import discard_task
+
+# What the route says when it ran out of surface before it ran out of work. Spelled out rather
+# than left to asyncio's own `TimeoutError`, whose message is empty: `extract_friendly_error`
+# falls back to `str(exc)`, so a bare one reaches the user as an empty code block under "Something
+# went wrong" -- the same silence this bound exists to end, with a box drawn round it. It names no
+# duration because the one it would name is Discord's to change.
+WINDOW_EXPIRED_NOTICE = (
+    "This took longer than Discord keeps a slash command open, "
+    "so there was nowhere left to deliver it."
+)
 
 
 class MediaReplyRoutes(BaseModel):
@@ -120,36 +140,40 @@ class MediaReplyRoutes(BaseModel):
             model=toolkit.runtime_models.image_model.name,
             has_source_images=replied_to is not None,
         )
+        window = asyncio.timeout(delay=self.surface.delivery_budget_seconds())
         try:
-            if replied_to is not None:
-                own_bytes, ref_bytes = await asyncio.gather(
-                    toolkit.input_builder.get_image_source_bytes(message=message),
-                    toolkit.input_builder.get_image_source_bytes(message=replied_to),
-                )
-                image_bytes_list = own_bytes + ref_bytes
-            else:
-                image_bytes_list = await toolkit.input_builder.get_image_source_bytes(
-                    message=message
-                )
+            # The bound covers the generation and stops short of `_deliver`: cancelling an image
+            # already uploading is the very outcome it exists to prevent.
+            async with window:
+                if replied_to is not None:
+                    own_bytes, ref_bytes = await asyncio.gather(
+                        toolkit.input_builder.get_image_source_bytes(message=message),
+                        toolkit.input_builder.get_image_source_bytes(message=replied_to),
+                    )
+                    image_bytes_list = own_bytes + ref_bytes
+                else:
+                    image_bytes_list = await toolkit.input_builder.get_image_source_bytes(
+                        message=message
+                    )
 
-            # Refine the raw request into a full generation/edit prompt first (best-effort, raw
-            # prompt on disable / failure); the source bytes ride along so an edit prompt is
-            # grounded in the actual image without a re-download.
-            refined_prompt = await toolkit.prompt_generator.refine(
-                user_prompt=user_prompt,
-                instructions=IMAGE_PROMPT,
-                end_user_id=message.author.name,
-                enabled=self.config.image_refine_prompt_enabled,
-                image_bytes_list=image_bytes_list or None,
-            )
-            # The director above is best-effort and swallows its own failures, so from here the
-            # image model is the only one a failure can be reported against.
-            dispatched_model.set(toolkit.runtime_models.image_model.name)
-            image_bytes = await toolkit.image_generator.render(
-                prompt=refined_prompt,
-                end_user_id=message.author.name,
-                image_bytes_list=image_bytes_list or None,
-            )
+                # Refine the raw request into a full generation/edit prompt first (best-effort,
+                # raw prompt on disable / failure); the source bytes ride along so an edit prompt
+                # is grounded in the actual image without a re-download.
+                refined_prompt = await toolkit.prompt_generator.refine(
+                    user_prompt=user_prompt,
+                    instructions=IMAGE_PROMPT,
+                    end_user_id=message.author.name,
+                    enabled=self.config.image_refine_prompt_enabled,
+                    image_bytes_list=image_bytes_list or None,
+                )
+                # The director above is best-effort and swallows its own failures, so from here
+                # the image model is the only one a failure can be reported against.
+                dispatched_model.set(toolkit.runtime_models.image_model.name)
+                image_bytes = await toolkit.image_generator.render(
+                    prompt=refined_prompt,
+                    end_user_id=message.author.name,
+                    image_bytes_list=image_bytes_list or None,
+                )
             # Send the generated image immediately so the user sees it without waiting on the
             # conversational reply; the reply text streams onto this same message right after.
             reply = await self._deliver(data=image_bytes, filename="generated.png")
@@ -159,10 +183,13 @@ class MediaReplyRoutes(BaseModel):
                 model=toolkit.runtime_models.image_model.name,
                 elapsed_seconds=time.monotonic() - started,
             )
-        except Exception:
+        except Exception as exc:
             # Generation failing IS a real error and stays on the outer error path, but the
-            # speculative context must not leak when we bail before consuming it.
+            # speculative context must not leak when we bail before consuming it. One handler
+            # rather than two, so nothing raised while reporting the window can skip that drain.
             await discard_task(task=context_task, label="prep", message_id=message.id)
+            if window.expired():
+                raise TimeoutError(WINDOW_EXPIRED_NOTICE) from exc
             raise
 
         # The image is already delivered, so from here a failure must never surface as an
@@ -207,55 +234,61 @@ class MediaReplyRoutes(BaseModel):
             message_id=message.id,
             model=toolkit.runtime_models.video_model.name,
         )
+        window = asyncio.timeout(delay=self.surface.delivery_budget_seconds())
         try:
-            replied_to = replied_to_message(message=message)
-            source_messages = [message, *([replied_to] if replied_to is not None else [])]
-            # Find the source video first, by priority (current message, then replied-to); each
-            # message reads at most its first clip. Only when there is no source video do we
-            # download reference images, so an edit is never delayed by media it discards.
-            source_video: tuple[bytes, str] | None = None
-            for source_message in source_messages:
-                videos = await toolkit.input_builder.get_video_sources(message=source_message)
-                if videos:
-                    source_video = videos[0]
-                    break
-            # Both branches end in the same omni render, and the director the else branch runs
-            # first is best-effort, so this is the model a failure past here belongs to.
-            dispatched_model.set(toolkit.runtime_models.video_model.name)
-            if source_video is not None:
-                # A source video is edited in place (task=edit): omni ingests the actual clip, so
-                # the prompt is the literal edit instruction. The director is skipped here — it
-                # only grounds on image parts (a video-only edit would run it blind) and it sits
-                # serially on the time-to-video path; the user's edit request is already specific.
-                # omni takes a single input here, so any accompanying reference images are dropped.
-                video_bytes = await toolkit.video_generator.render(
-                    prompt=user_prompt, reference_image_sources=[], source_video=source_video
-                )
-            else:
-                # No source video: gather the message + replied-to images as subject references,
-                # capped to the same set render sends (omni takes a few), so the director grounds
-                # on exactly those frames and no unused bytes ride the path.
-                image_groups = await asyncio.gather(
-                    *(
-                        toolkit.input_builder.get_image_sources_with_mime(message=m)
-                        for m in source_messages
+            # The bound covers the generation and stops short of `_deliver`: cancelling a clip
+            # already uploading is the very outcome it exists to prevent.
+            async with window:
+                replied_to = replied_to_message(message=message)
+                source_messages = [message, *([replied_to] if replied_to is not None else [])]
+                # Find the source video first, by priority (current message, then replied-to);
+                # each message reads at most its first clip. Only when there is no source video do
+                # we download reference images, so an edit is never delayed by media it discards.
+                source_video: tuple[bytes, str] | None = None
+                for source_message in source_messages:
+                    videos = await toolkit.input_builder.get_video_sources(message=source_message)
+                    if videos:
+                        source_video = videos[0]
+                        break
+                # Both branches end in the same omni render, and the director the else branch runs
+                # first is best-effort, so this is the model a failure past here belongs to.
+                dispatched_model.set(toolkit.runtime_models.video_model.name)
+                if source_video is not None:
+                    # A source video is edited in place (task=edit): omni ingests the actual clip,
+                    # so the prompt is the literal edit instruction. The director is skipped here —
+                    # it only grounds on image parts (a video-only edit would run it blind) and it
+                    # sits serially on the time-to-video path; the user's edit request is already
+                    # specific. omni takes a single input here, so any accompanying reference
+                    # images are dropped.
+                    video_bytes = await toolkit.video_generator.render(
+                        prompt=user_prompt, reference_image_sources=[], source_video=source_video
                     )
-                )
-                images = [pair for group in image_groups for pair in group][
-                    :MAX_VIDEO_REFERENCE_IMAGES
-                ]
-                # Refine the raw request into a full motion/camera prompt first (best-effort, raw
-                # prompt on disable / failure); the reference frames ride along as grounding.
-                refined_prompt = await toolkit.prompt_generator.refine(
-                    user_prompt=user_prompt,
-                    instructions=VIDEO_PROMPT,
-                    end_user_id=message.author.name,
-                    enabled=self.config.video_refine_prompt_enabled,
-                    image_bytes_list=[raw for raw, _ in images] or None,
-                )
-                video_bytes = await toolkit.video_generator.render(
-                    prompt=refined_prompt, reference_image_sources=images
-                )
+                else:
+                    # No source video: gather the message + replied-to images as subject
+                    # references, capped to the same set render sends (omni takes a few), so the
+                    # director grounds on exactly those frames and no unused bytes ride the path.
+                    image_groups = await asyncio.gather(
+                        *(
+                            toolkit.input_builder.get_image_sources_with_mime(message=m)
+                            for m in source_messages
+                        )
+                    )
+                    images = [pair for group in image_groups for pair in group][
+                        :MAX_VIDEO_REFERENCE_IMAGES
+                    ]
+                    # Refine the raw request into a full motion/camera prompt first (best-effort,
+                    # raw prompt on disable / failure); the reference frames ride along as
+                    # grounding.
+                    refined_prompt = await toolkit.prompt_generator.refine(
+                        user_prompt=user_prompt,
+                        instructions=VIDEO_PROMPT,
+                        end_user_id=message.author.name,
+                        enabled=self.config.video_refine_prompt_enabled,
+                        image_bytes_list=[raw for raw, _ in images] or None,
+                    )
+                    video_bytes = await toolkit.video_generator.render(
+                        prompt=refined_prompt, reference_image_sources=images
+                    )
             reply = await self._deliver(data=video_bytes, filename="generated.mp4")
             logfire.info(
                 "gen_reply video delivered",
@@ -264,10 +297,16 @@ class MediaReplyRoutes(BaseModel):
                 total_elapsed_seconds=time.monotonic() - started,
                 bytes=len(video_bytes),
             )
-        except Exception:
+        except Exception as exc:
             # Generation failing IS a real error and stays on the outer error path, but the
-            # speculative context must not leak when we bail before consuming it.
+            # speculative context must not leak when we bail before consuming it. One handler
+            # rather than two, so nothing raised while reporting the window can skip that drain.
             await discard_task(task=context_task, label="prep", message_id=message.id)
+            # `expired()` rather than the exception type: `render`'s own
+            # VIDEO_RENDER_TIMEOUT_SECONDS raises the very same TimeoutError, and only this one
+            # knows the turn has nowhere left to answer.
+            if window.expired():
+                raise TimeoutError(WINDOW_EXPIRED_NOTICE) from exc
             raise
 
         # The video is already delivered, so from here a failure must never surface as an error:

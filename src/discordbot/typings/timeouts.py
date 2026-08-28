@@ -278,6 +278,21 @@ YTDLP_RETRIES: Final[int] = 3
 # exists so a hung edit cannot skip the cleanup scheduling behind it.
 GAME_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 
+# What a `/ask` turn keeps back from the media it is generating, so whatever it produces still has
+# somewhere to land. Discord invalidates an interaction token 15 minutes after the command was
+# invoked and EVERY message such a turn writes goes through it, the deferred "thinking" state
+# included, so a render that finishes late costs the whole turn: the clip 404s, and so does the
+# notice that would have explained it, leaving a thinking state that never resolves. This module
+# owns the margin rather than the window because the window is Discord's --
+# `TurnSurface.delivery_budget_seconds` reads it off nextcord's own `Interaction.expires_at` rather
+# than restating it here, so the one number to change is what we hold in reserve. Sized for the
+# largest attachment Discord accepts plus the error embed behind it, and deliberately NOT for the
+# best-effort persona reply after that: its own Files upload can spend this whole margin, which is
+# why a clip delivered on the last of the budget is handed over without the bot saying a word
+# about it. That is the existing convention (a media persona reply fails silently) rather than a
+# new cost.
+INTERACTION_DELIVERY_MARGIN_SECONDS: Final[float] = 60.0
+
 # --------------------------------------------------------------------------------------
 # Database
 # --------------------------------------------------------------------------------------
