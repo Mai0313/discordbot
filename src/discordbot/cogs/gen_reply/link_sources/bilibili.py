@@ -35,6 +35,7 @@ from discordbot.typings.video import VideoQuality
 from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.downloader import VideoMetadata, VideoDownloader, download_with_stop_signal
+from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
@@ -147,7 +148,7 @@ async def _fetch_and_upload(
     finished file: an over-ceiling clip is simply not uploaded and the caller degrades to the
     text-only block.
     """
-    with tempfile.TemporaryDirectory(prefix="bilibili-ai-") as download_dir:
+    with scratch_directory(prefix="bilibili-ai-") as download_dir:
         downloader = VideoDownloader(output_folder=download_dir)
         # The semaphore covers only the download. Holding it across the upload would block
         # other links for minutes while talking to Google, which is not what it bounds.

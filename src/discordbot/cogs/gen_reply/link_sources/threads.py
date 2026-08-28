@@ -39,6 +39,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 
 from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.typings.context_budgets import (
     MAX_THREADS_POSTS,
     MAX_THREADS_REPLIES,
@@ -659,7 +660,7 @@ async def _ingest_media(*, target: ThreadsOutput, gemini_client: genai.Client) -
     if not plan:
         return IngestedMedia()
     try:
-        with tempfile.TemporaryDirectory(prefix="threads-") as download_dir:
+        with scratch_directory(prefix="threads-ai-") as download_dir:
             async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
                 return IngestedMedia(
                     groups=list(
