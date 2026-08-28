@@ -16,6 +16,22 @@ from google.genai.errors import APIError as GenAIAPIError
 # where the provider's actual JSON body is embedded as a Python bytes literal.
 _BYTES_LITERAL_RE = re.compile(pattern=r"b'((?:[^'\\]|\\.)*)'", flags=re.DOTALL)
 
+# The same chain, read as the run of prefixes it is. Three sites build it, one segment each:
+# every LiteLLM exception class prepends `litellm.<ClassName>: ` (`exceptions.py`), the
+# provider mapping prepends `<Provider>Exception - ` and on some branches a second label with
+# it (`exception_mapping_utils.py`, `Timeout Error: ` and `...Exception BadRequestError - `),
+# and a failure that arrives once the stream is open prepends the provider's canonical status
+# (`_check_streaming_error`, `UNAVAILABLE - `). None of those names is written down here: a
+# segment is recognised by its shape alone -- a code-shaped word ending in `Error`, `Exception`
+# or `Timeout`, or an ALL-CAPS status -- so the wording upstream can move without this going
+# stale, and a provider's own sentence, which is prose, matches none of it. `Timeout` is there
+# because the run is anchored: it is the one exception class in `exceptions.py` named after
+# neither of the other two, so leaving it out costs not that segment but every segment behind
+# it, on the paths that already made the user wait longest.
+_WRAPPER_PREFIX_RE = re.compile(
+    pattern=r"^(?:(?:[A-Z][\w.]* )?[\w.]*(?:Error|Exception|Timeout)(?:: | - )|[A-Z][A-Z0-9_]+ - )+"
+)
+
 # Both SDKs keep the decoded error body on the exception, so it never has to be read back out
 # of the repr their `__str__` builds: `openai` as `.body` (already unwrapped to the `error`
 # object), `google.genai` as `.details` (the whole document).
@@ -54,30 +70,38 @@ def _provider_message(payload: object) -> str | None:
 def extract_friendly_error(exc: BaseException) -> str:
     """Surface the innermost provider error message from an SDK-wrapped APIError.
 
-    Two shapes reach here. A refusal the provider answered as a plain 400 keeps its
+    Three shapes reach here. A refusal the provider answered as a plain 400 keeps its
     body on the exception, but both SDKs render it into their `__str__` as a Python
     dict repr (`Error code: 400 - {'error': ...}`), which is why the decoded body is
     read off the exception instead of parsed back out of that text. A LiteLLM-wrapped
     one nests further: OpenAI's streaming layer constructs
     `APIError(message=error["message"], ...)` from the upstream SSE event, and that
-    `message` is the wrapped exception chain with the provider response stuffed inside
-    as a `b'...'` Python literal, so every embedded bytes literal is walked and parsed
-    as JSON too. Fall back to `str(exc)` when nothing parses, so we never lose the
-    original signal.
+    `message` is the wrapped exception chain. Which of the two remaining shapes it takes
+    records WHEN the request broke rather than what broke: a stream that never opened
+    carries the provider body along unparsed as a `b'...'` Python literal, while one that
+    broke after opening was parsed by LiteLLM and flattened into text, so the wrapper
+    chain is peeled off the front first and every embedded bytes literal is walked and
+    parsed as JSON after. Fall back to `str(exc)` when nothing parses, so we never lose
+    the original signal, and keep the chain rather than nothing at all when peeling it
+    leaves an empty message behind.
 
     Args:
         exc: The exception carrying a decoded error body, or whose string form may
-            contain embedded provider JSON.
+            contain a wrapper chain or embedded provider JSON.
 
     Returns:
-        The provider message from the decoded body or from an embedded JSON bytes
-        literal, or `str(exc)` if no provider message can be extracted.
+        The provider message from the decoded body, from an embedded JSON bytes literal
+        or from behind the wrapper chain, or `str(exc)` if none can be extracted.
     """
     raw = str(exc)
     for attribute in _DECODED_BODY_ATTRIBUTES:
         if (message := _provider_message(payload=getattr(exc, attribute, None))) is not None:
             raw = message
             break
+    if (prefix := _WRAPPER_PREFIX_RE.match(string=raw)) and (
+        peeled := raw[prefix.end() :].strip()
+    ):
+        raw = peeled
     for match in _BYTES_LITERAL_RE.finditer(string=raw):
         try:
             decoded = ast.literal_eval(node_or_string=match.group(0)).decode(

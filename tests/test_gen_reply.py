@@ -3568,6 +3568,57 @@ def test_extract_friendly_error_reads_a_decoded_400_body() -> None:
     assert extract_friendly_error(exc=wrapped) == "quota"
 
 
+def test_extract_friendly_error_peels_a_flattened_litellm_wrapper_chain() -> None:
+    """The provider's own sentence reaches the embed whichever way LiteLLM rendered it.
+
+    Which of the two shapes arrives records WHEN the request broke, not what broke, so the same
+    provider message shows up in both and neither may bring the wrapper chain along with it.
+    """
+    request = httpx.Request(method="POST", url="http://proxy/v1/responses")
+    high_demand = (
+        "This model is currently experiencing high demand. Spikes in demand are usually "
+        "temporary. Please try again later."
+    )
+    chain = "litellm.MidStreamFallbackError: litellm.ServiceUnavailableError: Vertex_ai_beta"
+
+    def _mid_stream(message: str) -> APIError:
+        frame = {"message": message, "type": "None", "param": "None", "code": "503"}
+        return APIError(message=message, request=request, body=frame)
+
+    # The stream never opened, so the handler read the body as bytes and `str()` embedded their
+    # repr: the provider document rides along unparsed.
+    document = {"error": {"code": 503, "message": high_demand, "status": "UNAVAILABLE"}}
+    unopened = f"{chain}Exception - {json.dumps(obj=document).encode()!r}\n"
+    assert extract_friendly_error(exc=_mid_stream(message=unopened)) == high_demand
+
+    # The stream opened and a chunk carried the error object, so LiteLLM parsed it and re-rendered
+    # it as `<canonical status> - <message>`, leaving no bytes literal to find.
+    flattened = f"{chain}Exception - UNAVAILABLE - {high_demand}"
+    assert extract_friendly_error(exc=_mid_stream(message=flattened)) == high_demand
+
+    # The shapes are not per-message: a second message came through the same path in the same
+    # window, and its status is a different canonical one.
+    deadline = "Deadline expired before operation could complete."
+    expired = f"{chain}Exception - DEADLINE_EXCEEDED - {deadline}"
+    assert extract_friendly_error(exc=_mid_stream(message=expired)) == deadline
+
+    # A segment is a run of words rather than one token: the vertex mapping puts a second label
+    # inside the marker on some branches, and the openai one puts one in front of it.
+    blocked = "The response was blocked by the safety filter."
+    labelled = f"litellm.BadRequestError: Vertex_ai_betaException BadRequestError - {blocked}"
+    assert extract_friendly_error(exc=_mid_stream(message=labelled)) == blocked
+
+    # The run is anchored, so a class named after neither `Error` nor `Exception` would cost not
+    # its own segment but every segment behind it. `Timeout` is the only one.
+    timed_out = f"litellm.Timeout: Timeout Error: VertexAIException - {deadline}"
+    assert extract_friendly_error(exc=_mid_stream(message=timed_out)) == deadline
+
+    # Peeling that leaves nothing behind is discarded, since a chain still says more than an
+    # empty embed would.
+    bare = "litellm.APIConnectionError: Vertex_ai_betaException - "
+    assert extract_friendly_error(exc=_mid_stream(message=bare)) == bare
+
+
 def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() -> None:
     """A transient upstream failure is retried; a refusal and an unreadable one are not."""
     request = httpx.Request(method="POST", url="http://proxy/v1/responses")
