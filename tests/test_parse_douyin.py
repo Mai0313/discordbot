@@ -1,11 +1,11 @@
 """Tests for the Douyin-context builder that feeds linked posts to the answer model."""
 
-import time
 from types import SimpleNamespace
 from typing import Any
 import asyncio
 from pathlib import Path
 import tempfile
+import threading
 
 import pytest
 
@@ -394,6 +394,7 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
     """
     _stub_douyin(monkeypatch)
     removed = _race_every_scratch_teardown(monkeypatch)
+    release = threading.Event()
 
     def blocking_download(  # noqa: PLR0913 -- mirrors DouyinDownloader.download exactly
         self: DouyinDownloader,
@@ -403,23 +404,33 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
         max_bytes: int | None = None,
         post: DouyinPost | None = None,
     ) -> DouyinDownload:
-        """Blocks the worker thread the way a stalling CDN read does."""
+        """Blocks the worker thread the way a stalling CDN read does.
+
+        Released by the test rather than slept out: `asyncio.to_thread` cannot cancel this, so
+        a fixed sleep would be charged to the event loop's own shutdown join at teardown.
+        """
         del url, quality, max_images, max_bytes, post
-        time.sleep(1.0)
+        release.wait(timeout=5.0)  # a backstop, so a bug here cannot hang the suite
         raise AssertionError("should have been abandoned")
 
     monkeypatch.setattr(target=DouyinDownloader, name="download", value=blocking_download)
 
-    with pytest.raises(TimeoutError):
-        await run_until_deadline(
-            awaitable=build_douyin_context_messages(
-                url=_URL,
-                answer_model_is_gemini=True,
-                gemini_client=make_stub_gemini_client(),
-                allow_media_ingest=True,
-            ),
-            deadline=asyncio.get_running_loop().time() + 0.05,
-        )
+    try:
+        with pytest.raises(TimeoutError):
+            await run_until_deadline(
+                awaitable=build_douyin_context_messages(
+                    url=_URL,
+                    answer_model_is_gemini=True,
+                    gemini_client=make_stub_gemini_client(),
+                    allow_media_ingest=True,
+                ),
+                # Far above the microseconds the metadata probe and the scratch dir cost, so a
+                # loaded runner still expires with the worker inside the directory, and far
+                # below the download it is abandoning.
+                deadline=asyncio.get_running_loop().time() + 0.5,
+            )
+    finally:
+        release.set()
 
     assert removed  # the teardown really ran and really failed
 
