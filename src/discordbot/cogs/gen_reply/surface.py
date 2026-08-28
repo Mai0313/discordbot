@@ -3,7 +3,8 @@
 Every reply the pipeline writes used to be a reply to a message in a channel the bot is a member
 of. `/ask` has neither half: a user-installed app is not in the channel it was invoked in, so it
 cannot send there, cannot read the history, and cannot react. All it holds is an interaction
-token, which buys unlimited edits of one original response plus a small number of follow-ups.
+token, which buys unlimited edits of one original response plus a small number of follow-ups, and
+only for as long as Discord keeps that token alive.
 
 `TurnSurface` is that difference, and only that difference. It rides beside `message` through the
 classes that already hold one, and `for_message` reproduces today's gateway behaviour exactly, so
@@ -34,8 +35,10 @@ from nextcord import File, Embed, Message, DMChannel, ClientUser, Interaction, A
 from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
 from nextcord.ext import commands
 from nextcord.enums import InteractionContextType
+from nextcord.utils import utcnow
 
 from discordbot.utils.reactions import update_reaction
+from discordbot.typings.timeouts import INTERACTION_DELIVERY_MARGIN_SECONDS
 from discordbot.cogs.gen_reply.ask_store import load_ask_turns, record_ask_turn
 from discordbot.cogs.gen_reply.ask_message import interaction_channel, rebuild_conversation
 
@@ -110,6 +113,29 @@ class TurnSurface(BaseModel):
         if has_landed_reply or not self._original_consumed:
             return remaining + 1
         return remaining
+
+    def delivery_budget_seconds(self) -> float | None:
+        """How long this turn may still spend producing something, or None when nothing expires.
+
+        A gateway turn answers into a channel that is simply there, so it has no budget at all.
+        `/ask` writes everything through an interaction token, and once Discord invalidates that
+        the turn has no surface left at all: the deliverable 404s and so does the notice that
+        would have said why, which is the one failure on this route that ends in silence. So a
+        route slow enough to reach that asks first, and gets what the token has left less the
+        margin it needs to deliver and, failing that, to say what happened.
+
+        The window itself is nextcord's (`Interaction.expires_at`) and is deliberately not
+        restated here, so it stays right if Discord ever moves it. That property reads three
+        seconds until the response is deferred, which is not a trap but the truth about an
+        undeferred interaction; `/ask` defers before it builds this surface.
+
+        Returns:
+            Seconds of useful time left, never negative, or None where nothing is running out.
+        """
+        if self.interaction is None:
+            return None
+        remaining = (self.interaction.expires_at - utcnow()).total_seconds()
+        return max(0.0, remaining - INTERACTION_DELIVERY_MARGIN_SECONDS)
 
     @classmethod
     def for_message(cls, *, message: Message) -> "TurnSurface":

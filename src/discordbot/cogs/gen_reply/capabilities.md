@@ -125,5 +125,9 @@ not been added, `/ask` is how you talk to me instead. Two commands do not travel
 `/deep_research` needs an ordinary text channel to open its thread in, and `/memory server show`
 needs a server whose community memory I keep, so both refuse anywhere I am not a member.
 
+`/ask` also runs on a clock. Discord closes a slash command fifteen minutes after you send it, so
+if I am still making an image or a video when that runs out, I say so rather than going quiet.
+Everything else I do finishes long inside it.
+
 Only the person who added me can reach me in those places. In a group DM, someone who has not
 added me cannot ask me anything through you.

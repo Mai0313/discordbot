@@ -46,7 +46,10 @@ from discordbot.typings.models import (
 from discordbot.services.memory import database as memory_db
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
-from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
+from discordbot.typings.timeouts import (
+    ANSWER_STREAM_MAX_ATTEMPTS,
+    INTERACTION_DELIVERY_MARGIN_SECONDS,
+)
 from discordbot.utils.llm_errors import (
     llm_status_code,
     extract_friendly_error,
@@ -136,7 +139,7 @@ from discordbot.cogs.gen_reply.generation import (
     speechify_discord_markup,
 )
 from discordbot.cogs.gen_reply.references import find_youtube_url, link_url_for_source
-from discordbot.cogs.gen_reply.media_reply import MediaReplyRoutes
+from discordbot.cogs.gen_reply.media_reply import WINDOW_EXPIRED_NOTICE, MediaReplyRoutes
 from discordbot.cogs.gen_reply.speculation import (
     discard_task,
     run_until_deadline,
@@ -904,7 +907,11 @@ def _answer(
 
 
 def _media_routes(
-    *, cog: ReplyGeneratorCogs, message: Message, toolkit: ReplyToolkit | None = None
+    *,
+    cog: ReplyGeneratorCogs,
+    message: Message,
+    toolkit: ReplyToolkit | None = None,
+    surface: TurnSurface | None = None,
 ) -> MediaReplyRoutes:
     """The IMAGE / VIDEO routes `ReplyPipeline` would build for this message."""
     return MediaReplyRoutes(
@@ -912,8 +919,27 @@ def _media_routes(
         media_delivery=cog.media_delivery,
         toolkit=toolkit or _toolkit(cog=cog),
         message=message,
-        surface=TurnSurface.for_message(message=message),
+        surface=surface or TurnSurface.for_message(message=message),
         answer=_answer(cog=cog, message=message, toolkit=toolkit),
+    )
+
+
+def _expiring_surface(*, message: Message, seconds_left: float) -> TurnSurface:
+    """A `/ask` surface with `seconds_left` of useful time before its token runs out.
+
+    Only `expires_at` is modelled, because the media routes read the interaction for nothing
+    else and a route that reaches this bound never gets as far as sending. The fuller invocation
+    fake, including the deferred-versus-undeferred window, lives in `tests/test_ask_command.py`.
+    """
+    return TurnSurface(
+        message=message,
+        interaction=cast(
+            "nextcord.Interaction[commands.Bot]",
+            SimpleNamespace(
+                expires_at=nextcord.utils.utcnow()
+                + timedelta(seconds=seconds_left + INTERACTION_DELIVERY_MARGIN_SECONDS)
+            ),
+        ),
     )
 
 
@@ -5652,6 +5678,85 @@ async def test_handle_video_reply_single_image_sends_mime_no_aspect_ratio() -> N
     assert image_parts[0].get("mime_type", "").startswith("image/")
     assert "aspect_ratio" not in _recorded_video(cog).create_response_formats[0]
     assert _recorded_video(cog).create_configs[0] is None
+
+
+class _NeverFinishes:
+    """A generator whose render outlasts any window a `/ask` turn could give it."""
+
+    async def render(self, **kwargs: object) -> bytes:
+        """Sleeps far past the bound under test rather than returning."""
+        del kwargs
+        await asyncio.sleep(60)
+        return b""
+
+
+async def test_a_video_outliving_the_ask_window_says_so_instead_of_hanging() -> None:
+    """Out of surface before out of work, the route stops while it can still be heard (#619).
+
+    The render is left running rather than made to fail: what is pinned here is that the route
+    gives up on it. A clip that lands after the interaction token dies is delivered into a 404,
+    and so is the notice that would have explained it, so the turn ends in silence under a
+    thinking state that never resolves.
+    """
+    cog = _cog()
+    _toolkit(cog=cog).__dict__["video_generator"] = _NeverFinishes()
+    message = as_message(fake=FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1)))
+
+    with pytest.raises(TimeoutError) as raised:
+        await _media_routes(
+            cog=cog, message=message, surface=_expiring_surface(message=message, seconds_left=0.05)
+        ).handle_video(
+            user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
+        )
+
+    # The message is the whole point: a bare TimeoutError reaches the user as an empty code block.
+    assert str(raised.value) == WINDOW_EXPIRED_NOTICE
+
+
+async def test_an_image_outliving_the_ask_window_says_so_too() -> None:
+    """The IMAGE route shares the failure and the fix: its render carries no bound of its own."""
+    cog = _cog()
+    _toolkit(cog=cog).__dict__["image_generator"] = _NeverFinishes()
+    message = as_message(fake=FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1)))
+
+    with pytest.raises(TimeoutError) as raised:
+        await _media_routes(
+            cog=cog, message=message, surface=_expiring_surface(message=message, seconds_left=0.05)
+        ).handle_image(
+            user_prompt="draw a cat", context_task=asyncio.create_task(_ready_reply_context())
+        )
+
+    assert str(raised.value) == WINDOW_EXPIRED_NOTICE
+
+
+async def test_a_generators_own_timeout_is_not_blamed_on_the_ask_window() -> None:
+    """A slow provider inside a healthy window keeps its own failure, so the window is not blamed.
+
+    `VideoGenerator.render` bounds itself with `VIDEO_RENDER_TIMEOUT_SECONDS` and raises the very
+    same `TimeoutError`, which is why the route reads `expired()` rather than the exception type.
+    Reading the type instead would report every slow render as Discord having closed the command.
+    """
+    cog = _cog()
+
+    class _TimesOutOnItsOwn:
+        """A render that hits its own bound while the surface has plenty of time left."""
+
+        async def render(self, **kwargs: object) -> bytes:
+            """Fails the way `render` does past `VIDEO_RENDER_TIMEOUT_SECONDS`."""
+            del kwargs
+            raise TimeoutError
+
+    _toolkit(cog=cog).__dict__["video_generator"] = _TimesOutOnItsOwn()
+    message = as_message(fake=FakeMessage(content="拍一段影片", author=FakeAuthor(user_id=1)))
+
+    with pytest.raises(TimeoutError) as raised:
+        await _media_routes(
+            cog=cog, message=message, surface=_expiring_surface(message=message, seconds_left=300)
+        ).handle_video(
+            user_prompt="video", context_task=asyncio.create_task(_ready_reply_context())
+        )
+
+    assert str(raised.value) != WINDOW_EXPIRED_NOTICE
 
 
 @pytest.mark.parametrize(
