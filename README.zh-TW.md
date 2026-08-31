@@ -50,9 +50,15 @@ flowchart TD
 
     UP & RT & CX --> R{"分派路線"}
 
-    R -->|QA| Q1["串流回答"]
-    Q1 --> Q2["內嵌標記：<br/>語音 · 圖片 · 音樂 · 影片<br/>深度研究 · 記憶"]
-    R -->|IMAGE| I1["擴寫提示詞，算圖"]
+    R -->|QA| L{"貼上的 Threads、<br/>抖音或 Bilibili 貼文"}
+    L -->|"使用者在問它的內容"| LF["抓那則貼文，上傳它的媒體"]
+    L -->|"只是順手貼的連結"| LS["完全不抓"]
+    LF & LS --> Y{"貼上的 YouTube 影片"}
+    Y -->|"使用者在問它的內容"| YT["Interactions 串流：<br/>Gemini 自己看影片"]
+    Y -->|"其他情況"| QS["Responses 串流"]
+    YT & QS --> Q2["內嵌標記：<br/>語音 · 圖片 · 音樂 · 影片<br/>深度研究 · 記憶"]
+
+    R -->|IMAGE| I1["擴寫提示詞，生成或編輯圖片"]
     I1 --> I2["先送出，再以自己的語氣回覆"]
     R -->|VIDEO| V1["生成或編輯影片"]
     V1 --> V2["先送出，看過再回覆"]
@@ -64,13 +70,13 @@ flowchart TD
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
-    class RT,Q1,I1,I2,MM proxy
-    class UP,V1 direct
+    class RT,QS,I1,I2,MM proxy
+    class UP,LF,YT,V1 direct
 ```
 
-藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google，因為 Gemini Files API、原生的影片與音樂生成，以及深度研究都只有直連這條路。觀看貼上的 YouTube 影片時，那一輪回答也會改走直連，因為 proxy 會把連結當一般網頁抓下來，模型永遠看不到影片本身。
+藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google，因為 Gemini Files API、觀看 YouTube 影片，以及原生的影片與音樂生成都只有直連這條路。
 
-貼上的 Threads、抖音或 Bilibili 貼文，只有在 triage 判斷使用者真的在問它的內容時才會去抓，所以順手貼的連結不花任何成本。回覆文字落地之後的每一件事都是盡力而為：某段媒體算失敗只會讓回覆照樣留著，並多一個小提示。
+那兩個內容分支在用不到的時候完全不花成本。貼上的貼文只有在 router 判斷使用者真的在問它的內容時才會去抓，順手貼的連結一個位元組都不下載；而觀看 YouTube 影片是唯一會讓一輪回答改走直連的情況，因為 proxy 會把連結當一般網頁抓下來，模型永遠看不到影片本身。回覆文字落地之後的每一件事都是盡力而為：某段媒體算失敗只會讓回覆照樣留著，並多一個小提示。
 
 ## 功能
 

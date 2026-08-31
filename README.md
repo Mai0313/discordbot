@@ -50,9 +50,15 @@ flowchart TD
 
     UP & RT & CX --> R{"Route"}
 
-    R -->|QA| Q1["Stream the answer"]
-    Q1 --> Q2["Inline markers:<br/>voice · image · music · video<br/>deep research · memory"]
-    R -->|IMAGE| I1["Refine the prompt, render the image"]
+    R -->|QA| L{"Linked Threads,<br/>Douyin or Bilibili post"}
+    L -->|"the user is asking about it"| LF["Fetch the post, upload its media"]
+    L -->|"incidental link"| LS["Nothing fetched"]
+    LF & LS --> Y{"Linked YouTube video"}
+    Y -->|"the user is asking about it"| YT["Interactions stream:<br/>Gemini watches the video"]
+    Y -->|"otherwise"| QS["Responses stream"]
+    YT & QS --> Q2["Inline markers:<br/>voice · image · music · video<br/>deep research · memory"]
+
+    R -->|IMAGE| I1["Refine the prompt, render or edit the image"]
     I1 --> I2["Send it, then reply in character"]
     R -->|VIDEO| V1["Render or edit the clip"]
     V1 --> V2["Send it, watch it, then reply"]
@@ -64,13 +70,13 @@ flowchart TD
 
     classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
     classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
-    class RT,Q1,I1,I2,MM proxy
-    class UP,V1 direct
+    class RT,QS,I1,I2,MM proxy
+    class UP,LF,YT,V1 direct
 ```
 
-Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly, which is what the Gemini Files API, native video and music generation, and deep research each require. Watching a linked YouTube video swaps that one answer turn onto the direct path too, because the proxy fetches the link as a web page and the model never sees the footage.
+Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly, which is what the Gemini Files API, watching a YouTube video, and native video and music generation each require.
 
-A linked Threads, Douyin, or Bilibili post is only fetched when the triage call says the user is actually asking about it, so an incidental link costs nothing. Everything after the answer text lands is best-effort: a clip that fails to render leaves the reply standing and adds only a small hint.
+The two content branches cost nothing when they do not apply. A linked post is fetched only when the router judges the user is asking about it, so an incidental link downloads nothing at all; and watching a YouTube video is the one thing that moves an answer turn onto the direct path, because the proxy fetches the link as a web page and the model never sees the footage. Everything after the answer text lands is best-effort: a clip that fails to render leaves the reply standing and adds only a small hint.
 
 ## Features
 
