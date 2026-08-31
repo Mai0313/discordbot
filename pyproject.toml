@@ -536,4 +536,6 @@ possibly-missing-attribute = "warn"
 possibly-missing-import = "warn"
 
 [tool.ty.analysis]
-strict-literal-narrowing = true
+# Renamed from `strict-literal-narrowing` in ty 0.0.63. The old name still parses as an
+# alias, and the migration guide linked above has not caught up to the new one yet.
+strict-equality-semantics = true
