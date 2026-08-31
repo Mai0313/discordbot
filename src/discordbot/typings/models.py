@@ -107,8 +107,9 @@ class RuntimeModelCatalog(BaseModel):
     def image_model(self) -> ModelSettings:
         """The model settings for image generation and editing.
 
-        Callers: `ImageGenerator` (its `render` for the IMAGE route `_handle_image_reply`, its
-        best-effort `generate` for the QA-route inline `<generate-image>` marker).
+        Callers: `ImageGenerator` (its `render` for the IMAGE route
+        `MediaReplyRoutes.handle_image`, its best-effort `generate` for the QA-route inline
+        `<generate-image>` marker).
 
         Returns:
             Model settings used with `images.generate` and `images.edit`.
@@ -120,7 +121,7 @@ class RuntimeModelCatalog(BaseModel):
         """The model settings for video generation.
 
         Callers: `VideoGenerator` (its raising `render` for the VIDEO route
-        `_handle_video_reply`, its best-effort `generate` for the QA-route inline
+        `MediaReplyRoutes.handle_video`, its best-effort `generate` for the QA-route inline
         `<generate-video>` marker, which delegates to that same `render`).
 
         Returns:
@@ -173,8 +174,8 @@ class RuntimeModelCatalog(BaseModel):
     def triage_model(self) -> ModelSettings:
         """The model settings for filling a shape the caller has already fixed.
 
-        Callers: `_route_classify`, `_grade_effort`, `_select_recalled_memories`, the research
-        thread title.
+        Callers: `RouteClassifier.classify`, `RouteClassifier.grade_effort`,
+        `ReplyContextBuilder.select_recalled_memories`, the research thread title.
 
         Every one lands in a slot with no room in it: two enums, a list of ids, and a few
         words in the request's own language. Nothing here decides what to write, which is
@@ -192,7 +193,7 @@ class RuntimeModelCatalog(BaseModel):
         """The model settings for prose the model composes itself, short of the answer.
 
         Callers: `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
-        `_stream_media_persona_reply` (the persona reply that rides generated media),
+        `AnswerTurn.stream_media_persona_reply` (the persona reply that rides generated media),
         and `AutoUnmuteCogs._generate_reply`.
 
         Each decides what to say rather than how briefly to say it, which is the thinking
@@ -209,12 +210,12 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and strategic reasoning.
 
-        Dispatched by `_handle_message_reply`, which overrides `effort` with the
+        Dispatched by `AnswerTurn.stream_answer`, which overrides `effort` with the
         route-decided level. Three more read only
         the model NAME and dispatch nothing: `_supported_sources` gates attachment
         modalities on it, `ReplyToolkit.input_builder` picks the attachment handler
-        off it through `build_attachment_handler`, and `_run_reply_pipeline` derives each
-        link-context builder's `answer_model_is_gemini` from it.
+        off it through `build_attachment_handler`, and `ReplyPipeline._start_link_builds`
+        derives each link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
             `gemini-3.1-pro-preview` at `high`, on every hour. The peak-hour split below is
