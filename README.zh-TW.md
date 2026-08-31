@@ -36,6 +36,42 @@ tag bot 並問它會做什麼。這裡沒有 help 指令，它會讀自己的功
 
 ![請 bot 把生成的圖片變成影片](assets/showcase-video-generation.png)
 
+## 一則回覆是怎麼跑的
+
+每一次 tag、DM 與 `/ask` 都走同一條流水線。關鍵路徑上只有一支 triage 呼叫，由它決定路線；其他工作不是在那個決定之前就並行準備好，就是等回覆文字已經上畫面之後才跑。
+
+```mermaid
+flowchart TD
+    U(["tag bot · DM · /ask"]) --> UP & RT & CX
+
+    UP["上傳附件"]
+    RT["路由 + 思考強度"]
+    CX["歷史 · 記憶 · 語氣"]
+
+    UP & RT & CX --> R{"分派路線"}
+
+    R -->|QA| Q1["串流回答"]
+    Q1 --> Q2["內嵌標記：<br/>語音 · 圖片 · 音樂 · 影片<br/>深度研究 · 記憶"]
+    R -->|IMAGE| I1["擴寫提示詞，算圖"]
+    I1 --> I2["先送出，再以自己的語氣回覆"]
+    R -->|VIDEO| V1["生成或編輯影片"]
+    V1 --> V2["先送出，看過再回覆"]
+
+    Q2 --> OUT(["回覆上畫面"])
+    I2 --> OUT
+    V2 --> OUT
+    OUT -.-> MM["背景：整理記憶"]
+
+    classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
+    classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
+    class RT,Q1,I1,I2,MM proxy
+    class UP,V1 direct
+```
+
+藍色的步驟走 OpenAI-compatible proxy，橘色的直接呼叫 Google，因為 Gemini Files API、原生的影片與音樂生成，以及深度研究都只有直連這條路。觀看貼上的 YouTube 影片時，那一輪回答也會改走直連，因為 proxy 會把連結當一般網頁抓下來，模型永遠看不到影片本身。
+
+貼上的 Threads、抖音或 Bilibili 貼文，只有在 triage 判斷使用者真的在問它的內容時才會去抓，所以順手貼的連結不花任何成本。回覆文字落地之後的每一件事都是盡力而為：某段媒體算失敗只會讓回覆照樣留著，並多一個小提示。
+
 ## 功能
 
 - **AI chat**：在 server tag bot 或傳送 DM。它可以回答問題、總結近期聊天、檢查支援的附件、觀看貼上的 YouTube 影片、生成或編輯圖片、用提示或附加圖片生成短影片、編輯引用的影片、以接續 reply 訊息延續長回覆，並在可用時使用 model-provided web tools。它還會在背景慢慢累積對你個人偏好的長期記憶（僅自己可見，且依來源做隱私隔離：在某個伺服器說的私事不會出現在別的伺服器，只有語氣偏好與明顯無害的一般事實會跨伺服器沿用），可用 `/memory show`、`/memory regenerate` 與 `/memory clear` 管理。你也可以直接叫它記住某件事，或告訴它記錯了，回覆下方會有一行小字說明它記下了什麼。

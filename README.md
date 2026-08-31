@@ -36,6 +36,42 @@ Ask it to animate that same picture and it returns a short video.
 
 ![Asking the bot to turn the generated image into a video](assets/showcase-video-generation.png)
 
+## How a reply happens
+
+Every mention, DM, and `/ask` runs the same pipeline. Exactly one triage call sits on the critical path and picks the route; everything else is either prepared in parallel before that decision lands or runs after the answer text is already on screen.
+
+```mermaid
+flowchart TD
+    U(["@mention · DM · /ask"]) --> UP & RT & CX
+
+    UP["Upload attachments"]
+    RT["Route + effort"]
+    CX["History · memory · tone"]
+
+    UP & RT & CX --> R{"Route"}
+
+    R -->|QA| Q1["Stream the answer"]
+    Q1 --> Q2["Inline markers:<br/>voice · image · music · video<br/>deep research · memory"]
+    R -->|IMAGE| I1["Refine the prompt, render the image"]
+    I1 --> I2["Send it, then reply in character"]
+    R -->|VIDEO| V1["Render or edit the clip"]
+    V1 --> V2["Send it, watch it, then reply"]
+
+    Q2 --> OUT(["Reply on screen"])
+    I2 --> OUT
+    V2 --> OUT
+    OUT -.-> MM["Background: memory review"]
+
+    classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
+    classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
+    class RT,Q1,I1,I2,MM proxy
+    class UP,V1 direct
+```
+
+Blue steps run on the OpenAI-compatible proxy; orange ones call Google directly, which is what the Gemini Files API, native video and music generation, and deep research each require. Watching a linked YouTube video swaps that one answer turn onto the direct path too, because the proxy fetches the link as a web page and the model never sees the footage.
+
+A linked Threads, Douyin, or Bilibili post is only fetched when the triage call says the user is actually asking about it, so an incidental link costs nothing. Everything after the answer text lands is best-effort: a clip that fails to render leaves the reply standing and adds only a small hint.
+
 ## Features
 
 - **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos from a prompt or attached images, edit a referenced video, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background — privacy-scoped by source, so something told in one server never surfaces in another (only your tone preferences and clearly harmless general facts carry over) — manageable with `/memory show`, `/memory regenerate`, and `/memory clear`. You can also just ask it to remember something, or tell it that something it remembers is wrong, and a short note under its reply says what it took down.

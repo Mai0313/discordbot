@@ -36,6 +36,42 @@
 
 ![请机器人把生成的图片变成视频](assets/showcase-video-generation.png)
 
+## 一条回复是怎么跑的
+
+每一次标记、DM 与 `/ask` 都走同一条流水线。关键路径上只有一支 triage 调用，由它决定路线；其他工作不是在那个决定之前就并行准备好，就是等回复文字已经上屏之后才跑。
+
+```mermaid
+flowchart TD
+    U(["标记机器人 · DM · /ask"]) --> UP & RT & CX
+
+    UP["上传附件"]
+    RT["路由 + 思考强度"]
+    CX["历史 · 记忆 · 语气"]
+
+    UP & RT & CX --> R{"分派路线"}
+
+    R -->|QA| Q1["流式回答"]
+    Q1 --> Q2["内嵌标记：<br/>语音 · 图片 · 音乐 · 视频<br/>深度研究 · 记忆"]
+    R -->|IMAGE| I1["扩写提示词，算图"]
+    I1 --> I2["先发出，再以自己的语气回复"]
+    R -->|VIDEO| V1["生成或编辑视频"]
+    V1 --> V2["先发出，看过再回复"]
+
+    Q2 --> OUT(["回复上屏"])
+    I2 --> OUT
+    V2 --> OUT
+    OUT -.-> MM["后台：整理记忆"]
+
+    classDef proxy fill:#12607a,stroke:#12607a,color:#ffffff
+    classDef direct fill:#a8481b,stroke:#a8481b,color:#ffffff
+    class RT,Q1,I1,I2,MM proxy
+    class UP,V1 direct
+```
+
+蓝色的步骤走 OpenAI-compatible proxy，橙色的直接调用 Google，因为 Gemini Files API、原生的视频与音乐生成，以及深度研究都只有直连这条路。观看贴上的 YouTube 视频时，那一轮回答也会改走直连，因为 proxy 会把链接当成普通网页抓下来，模型永远看不到视频本身。
+
+贴上的 Threads、抖音或 Bilibili 帖子，只有在 triage 判断用户真的在问它的内容时才会去抓，所以顺手贴的链接不花任何成本。回复文字落地之后的每一件事都是尽力而为：某段媒体算失败只会让回复照样留着，并多一个小提示。
+
 ## 功能
 
 - **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、观看贴上的 YouTube 视频、生成或编辑图片、用提示或附加图片生成短视频、编辑引用的视频、以接续 reply 消息延续长回复，并在可用时使用 model-provided web tools。它还会在后台慢慢积累对你个人偏好的长期记忆（仅自己可见，且按来源做隐私隔离：在某个服务器说的私事不会出现在别的服务器，只有语气偏好与明显无害的一般事实会跨服务器沿用），可用 `/memory show`、`/memory regenerate` 与 `/memory clear` 管理。你也可以直接叫它记住某件事，或告诉它记错了，回复下方会有一行小字说明它记下了什么。
