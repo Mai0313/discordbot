@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py. slow_model's time-of-day branch is parked
-# there and both halves name this snapshot, so a dev run answers as a reply does at any hour.
+# Mirror the @property value in typings/models.py. slow_model splits on the hour there, so this
+# is the off-peak half; a dev run inside the peak window measures a different model than a reply.
 SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="low")
 
 # Both are Literal in the Batch API signature, so they carry the same literal type here.

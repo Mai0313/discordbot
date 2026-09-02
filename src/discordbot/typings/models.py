@@ -20,7 +20,7 @@ class ModelSettings(BaseModel):
     name: str = Field(
         ...,
         description="LiteLLM model string dispatched on the Responses API.",
-        examples=["gemini-3.7-flash", "gemini-3.1-flash-image"],
+        examples=["gemini-3.8-flash", "gemini-3.1-flash-image"],
     )
     # Which efforts a model accepts is per-model and NOT derivable from its name, its family, or
     # a sibling snapshot. The vocabulary itself differs by provider, so a guess is not even wrong
@@ -95,7 +95,7 @@ class RuntimeModelCatalog(BaseModel):
     def is_peak(self) -> bool:
         """Whether runtime model selection is in the peak-hour window.
 
-        No tier reads this today; `slow_model`'s branch on it is parked (see there).
+        Read by `slow_model` alone, which answers on flash inside the window.
 
         Returns:
             True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
@@ -201,7 +201,7 @@ class RuntimeModelCatalog(BaseModel):
         them below `slow_model`.
 
         Returns:
-            Flash at `medium`, one snapshot back from `gemini-3.7-flash`, popular enough now
+            Flash at `medium`, two snapshots back from `gemini-3.8-flash`, popular enough now
             to queue behind its own load (observed 2026-08-20).
         """
         return ModelSettings(name="gemini-3.6-flash", effort="medium")
@@ -218,8 +218,8 @@ class RuntimeModelCatalog(BaseModel):
         derives each link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
-            `gemini-3.1-pro-preview` at `high`, on every hour. The peak-hour split below is
-            parked, not deleted: see the comment there.
+            `gemini-3.8-flash` at `high` inside the peak window, `gemini-3.1-pro-preview` at
+            `high` outside it.
         """
         # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
@@ -235,14 +235,20 @@ class RuntimeModelCatalog(BaseModel):
         # level for the model itself to refuse and then answers from the fallback deployment, so
         # the caller sees an HTTP 200 whose `model` field names a different model. A status code
         # proves nothing here; only the response's own `model` does.
-        # Peak-hour branch parked 2026-08-22: it routed around 3.7 queueing in the busy hours,
-        # which the since-reverted key balancing was attacking from the other side. Both halves
-        # name the same snapshot since 2026-08-23, so uncommenting it restores the branch and
-        # not a split; one of them has to be repointed to buy anything.
-        # if self.is_peak:
-        #     return ModelSettings(
-        #         name="gemini-3.1-pro-preview", effort="high"
-        #     )
+        # Peak-hour branch live again 2026-09-02: Pro queues behind its own load in the busy
+        # hours, so those answer on flash instead. `gemini-3.8-flash` accepts low / medium /
+        # high and NOT `minimal` (Google's thinking table, read 2026-09-02; openrouter does not
+        # list the snapshot yet), which covers both values `EffortGrade` can emit.
+        #
+        # LiteLLM's price table carries no `gemini-3.8-flash` entry, so while that holds a
+        # peak-hour reply prices at `$0.00000000` in the footer and `_supported_sources` reads
+        # the `{"text", "image"}` baseline. That gate feeds BOTH renders, so an audio or video
+        # attachment does not merely go unuploaded inside the window: its `[attachment: video]`
+        # marker never reaches the route or the effort grade either, and the answer model is not
+        # told the file existed. A clip posted with one line of text is therefore answered as if
+        # the line were the whole message, which is a wrong answer rather than a degraded one.
+        if self.is_peak:
+            return ModelSettings(name="gemini-3.8-flash", effort="high")
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
