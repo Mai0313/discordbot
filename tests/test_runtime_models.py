@@ -109,8 +109,10 @@ def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatc
     The one tier whose effort is decided at runtime is also the one dispatched direct to Google,
     where the accepted `thinking_level` set is per-model and a rejection costs the whole reply.
     A pinned snapshot's set can at least be looked up; an alias resolves elsewhere, so it cannot.
-    Which snapshot a branch names is free to change and two branches may legitimately be equal;
-    that none of them is an alias is not free, and nothing else in the tree reports it.
+    Which snapshot a branch names is free to change; that none of them is an alias is not free,
+    and nothing else in the tree reports it. Whether two branches may name the SAME snapshot is
+    not this file's question either way — `tests/test_gen_reply.py` is where the peak split is
+    pinned, so parking the branch again is answered there rather than here.
 
     Every hour of a week is swept rather than one instant per branch the catalog has today: the
     dispatch condition is the catalog's own to change, so a branch added on a second condition

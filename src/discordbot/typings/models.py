@@ -242,7 +242,11 @@ class RuntimeModelCatalog(BaseModel):
         #
         # LiteLLM's price table carries no `gemini-3.8-flash` entry, so while that holds a
         # peak-hour reply prices at `$0.00000000` in the footer and `_supported_sources` reads
-        # the `{"text", "image"}` baseline, dropping audio and video attachments for the window.
+        # the `{"text", "image"}` baseline. That gate feeds BOTH renders, so an audio or video
+        # attachment does not merely go unuploaded inside the window: its `[attachment: video]`
+        # marker never reaches the route or the effort grade either, and the answer model is not
+        # told the file existed. A clip posted with one line of text is therefore answered as if
+        # the line were the whole message, which is a wrong answer rather than a degraded one.
         if self.is_peak:
             return ModelSettings(name="gemini-3.8-flash", effort="high")
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
