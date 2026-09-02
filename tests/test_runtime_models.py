@@ -100,7 +100,7 @@ def test_the_default_effort_is_not_one_gemini_refuses() -> None:
     The tiers that lean on it today dispatch no effort at all, so the value only has to stay
     harmless.
     """
-    assert ModelSettings(name="gemini-3.7-flash").effort not in _REFUSED_EFFORTS
+    assert ModelSettings(name="gemini-3.8-flash").effort not in _REFUSED_EFFORTS
 
 
 def test_no_slow_model_branch_dispatches_an_alias(monkeypatch: pytest.MonkeyPatch) -> None:
