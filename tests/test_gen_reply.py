@@ -8171,11 +8171,10 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
-    # No snapshot is named, so repointing either branch stays a one-line change in the catalog
-    # (#499); what the split is worth is that the window answers on a different model at all.
-    assert peak_start[0] == peak_end[0]
-    assert before_peak[0] == after_peak[0] == weekend[0]
-    assert peak_start[0] != before_peak[0]
+    # The peak branch is parked, so every hour answers on the same model. Asserted across all
+    # five rather than per branch, because the per-branch form passes either way once there is
+    # one branch; the window itself is still guarded above.
+    assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
 async def test_handle_message_reply_selection_offers_tool_then_answers_with_builtins(

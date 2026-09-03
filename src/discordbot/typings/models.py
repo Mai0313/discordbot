@@ -95,7 +95,7 @@ class RuntimeModelCatalog(BaseModel):
     def is_peak(self) -> bool:
         """Whether runtime model selection is in the peak-hour window.
 
-        Read by `slow_model` alone, which answers on flash inside the window.
+        No tier reads this today; `slow_model`'s branch on it is parked (see there).
 
         Returns:
             True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
@@ -218,8 +218,8 @@ class RuntimeModelCatalog(BaseModel):
         derives each link-context builder's `answer_model_is_gemini` from it.
 
         Returns:
-            `gemini-3.8-flash` at `high` inside the peak window, `gemini-3.1-pro-preview` at
-            `high` outside it.
+            `gemini-3.1-pro-preview` at `high`, on every hour. The peak-hour split below is
+            parked, not deleted: see the comment there.
         """
         # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
         # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
@@ -235,20 +235,21 @@ class RuntimeModelCatalog(BaseModel):
         # level for the model itself to refuse and then answers from the fallback deployment, so
         # the caller sees an HTTP 200 whose `model` field names a different model. A status code
         # proves nothing here; only the response's own `model` does.
-        # Peak-hour branch live again 2026-09-02: Pro queues behind its own load in the busy
-        # hours, so those answer on flash instead. `gemini-3.8-flash` accepts low / medium /
-        # high and NOT `minimal` (Google's thinking table, read 2026-09-02; openrouter does not
-        # list the snapshot yet), which covers both values `EffortGrade` can emit.
-        #
-        # LiteLLM's price table carries no `gemini-3.8-flash` entry, so while that holds a
-        # peak-hour reply prices at `$0.00000000` in the footer and `_supported_sources` reads
-        # the `{"text", "image"}` baseline. That gate feeds BOTH renders, so an audio or video
+        # Peak-hour branch parked again 2026-09-03, one day after #633 restored it:
+        # `gemini-3.8-flash` runs into high-demand refusals often enough inside the window that
+        # it costs more replies than Pro's queueing did. Unlike the 2026-08 parking, the two
+        # halves name different snapshots, so uncommenting restores a real split and with it
+        # everything the flash branch carried: `gemini-3.8-flash` accepts low / medium / high
+        # and NOT `minimal` (Google's thinking table, read 2026-09-02; openrouter does not list
+        # the snapshot yet), and LiteLLM's price table has no entry for it, so a peak-hour reply
+        # prices at `$0.00000000` in the footer while `_supported_sources` reads the
+        # `{"text", "image"}` baseline. That gate feeds BOTH renders, so an audio or video
         # attachment does not merely go unuploaded inside the window: its `[attachment: video]`
         # marker never reaches the route or the effort grade either, and the answer model is not
-        # told the file existed. A clip posted with one line of text is therefore answered as if
-        # the line were the whole message, which is a wrong answer rather than a degraded one.
-        if self.is_peak:
-            return ModelSettings(name="gemini-3.8-flash", effort="high")
+        # told the file existed. A clip posted with one line of text is then answered as if the
+        # line were the whole message, which is a wrong answer rather than a degraded one.
+        # if self.is_peak:
+        #     return ModelSettings(name="gemini-3.8-flash", effort="high")
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
