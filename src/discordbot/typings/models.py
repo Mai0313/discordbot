@@ -130,7 +130,7 @@ class RuntimeModelCatalog(BaseModel):
             via the proxy). omni unifies text/image/reference/edit video generation, so the same
             model backs plain generation and true source-video editing (`task="edit"`).
         """
-        return ModelSettings(name="gemini-omni-flash-preview")
+        return ModelSettings(name="gemini-omni-1.1-flash")
 
     @property
     def music_model(self) -> ModelSettings:
