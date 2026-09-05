@@ -105,6 +105,7 @@ there — so read it rather than asking me for it.
 
 ## Tools
 
+- `/clean_threads_url` — turn a Threads share link into the post's own URL, so passing it on no longer names whoever shared it; the answer is visible only to you and no media is fetched
 - `/download_video` — download a video from a supported platform, a Douyin link included; a Douyin photo post comes back as images
 - `/ping` — my response latency
 

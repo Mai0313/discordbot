@@ -23,13 +23,26 @@ from typing import TYPE_CHECKING
 import asyncio
 
 import logfire
-from nextcord import Color, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
+import nextcord
+from nextcord import (
+    Color,
+    Embed,
+    Locale,
+    Message,
+    NotFound,
+    Forbidden,
+    Interaction,
+    SlashOption,
+    HTTPException,
+    AllowedMentions,
+)
 from pydantic import Field, BaseModel, ConfigDict
 from nextcord.ext import commands
 
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
+from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.discord_embeds import embed_spacer_payload
@@ -573,6 +586,67 @@ class ThreadsCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
+
+    @nextcord.slash_command(
+        name="clean_threads_url",
+        description="Turn a Threads share link into the post's own URL.",
+        name_localizations={Locale.zh_TW: "清理串文連結", Locale.ja: "スレッズリンク整理"},
+        description_localizations={
+            Locale.zh_TW: "把 Threads 分享連結還原成貼文本身的網址",
+            Locale.ja: "Threads の共有リンクを投稿本来の URL に戻します。",
+        },
+        nsfw=False,
+        integration_types=INSTALL_CONTEXTS,
+        contexts=INTERACTION_CONTEXTS,
+    )
+    async def clean_threads_url(
+        self,
+        interaction: Interaction[commands.Bot],
+        url: str = SlashOption(
+            description="Threads post link, or the share text containing it", required=True
+        ),
+    ) -> None:
+        """Answers with the canonical URL of the Threads post a link names.
+
+        Ephemeral throughout: what the caller pasted names whoever shared it, so the answer is
+        for them to copy rather than something the channel needs to see. Nothing is downloaded
+        and no post is read, which is why an unreadable post still gets an answer here.
+
+        Args:
+            interaction: The interaction that triggered the command.
+            url: The Threads link to clean, or the share text carrying it.
+        """
+        await interaction.response.defer(ephemeral=True)
+        # The same regex the listener matches on, run over the whole option so pasting a share
+        # blob works here exactly as pasting it into the channel does.
+        match = THREADS_URL_RE.search(string=url)
+        if not match:
+            await interaction.followup.send(
+                content="這裡面沒有 Threads 貼文連結。", ephemeral=True
+            )
+            return
+
+        # No output folder because nothing is ever written: `resolve_clean_url` reads the
+        # redirect and stops there, so the field the downloader keeps for media never gets read.
+        downloader = self.downloader_factory(output_folder="")
+        try:
+            clean_url = await asyncio.to_thread(downloader.resolve_clean_url, url=match.group(0))
+        except RuntimeError as error:
+            logfire.warn(
+                "Could not resolve a Threads share link",
+                url=match.group(0),
+                error_type=type(error).__name__,
+                _exc_info=error,
+            )
+            await interaction.followup.send(content="連不上 Threads,晚點再試。", ephemeral=True)
+            return
+
+        if not clean_url:
+            await interaction.followup.send(
+                content="這個分享連結沒有指向任何貼文。", ephemeral=True
+            )
+            return
+        await interaction.followup.send(content=clean_url, ephemeral=True)
 
     @commands.Cog.listener()
     async def on_message(self, message: Message) -> None:
