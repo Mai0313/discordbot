@@ -1226,6 +1226,61 @@ def test_a_share_link_leading_anywhere_else_is_never_parsed(
     assert len(fetched) == 1
 
 
+def test_resolving_a_clean_url_from_a_canonical_link_asks_threads_nothing(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A link already naming its post has nothing left to resolve, only a query to strip."""
+    fetched = _stub_share_redirect(
+        monkeypatch, final_url=_REPLIES_TARGET_URL, pages=[_thread_html_with_replies()]
+    )
+
+    resolved = downloader.resolve_clean_url(url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt")
+
+    assert resolved == _REPLIES_TARGET_URL
+    assert fetched == []
+
+
+def test_resolving_a_clean_url_from_a_share_link_reads_its_redirect(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The share form names its post nowhere but the redirect, which answers naming the sharer."""
+    fetched = _stub_share_redirect(
+        monkeypatch,
+        final_url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
+        pages=[_thread_html_with_replies()],
+    )
+
+    resolved = downloader.resolve_clean_url(url=_SHARE_URL)
+
+    assert resolved == _REPLIES_TARGET_URL
+    assert fetched == [_SHARE_URL]
+
+
+def test_resolving_a_clean_url_never_depends_on_the_post_being_readable(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole reason this does not go through the parse: the redirect already holds the answer.
+
+    A throttled page is served here, which `extract_post_data` retries and then gives up on. What
+    the caller asked for is the URL, and a post that is private, deleted or throttled still has
+    one, so letting the parse decide would refuse the answer that was already in hand.
+    """
+    _stub_share_redirect(monkeypatch, final_url=_REPLIES_TARGET_URL, pages=[_THROTTLED_PAGE])
+
+    assert downloader.resolve_clean_url(url=_SHARE_URL) == _REPLIES_TARGET_URL
+
+
+def test_resolving_a_clean_url_gives_nothing_when_the_redirect_names_no_post(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing may be handed back here but a post URL, since the pasted one names the sharer."""
+    _stub_share_redirect(
+        monkeypatch, final_url="https://www.threads.com/login", pages=[_thread_html_with_replies()]
+    )
+
+    assert downloader.resolve_clean_url(url=_SHARE_URL) == ""
+
+
 def test_a_malformed_thread_does_not_cost_the_target(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
