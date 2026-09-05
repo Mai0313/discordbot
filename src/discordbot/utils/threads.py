@@ -1327,3 +1327,16 @@ class ThreadsDownloader(BaseModel):
             The parsed conversation; empty when no post is found.
         """
         return self._build_conversation(url=url, download=False)
+
+
+if __name__ == "__main__":
+    """
+    Keep this for self development and testing.
+    DO NOT REMOVE THIS FOR ANY REASON.
+    """
+    from rich.console import Console
+
+    console = Console()
+    downloader = ThreadsDownloader(output_folder="./data")
+    with downloader.parse(url="https://www.threads.com/share/D1CytHQmC/") as conversation:
+        console.print(conversation)
