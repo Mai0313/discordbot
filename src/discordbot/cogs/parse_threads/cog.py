@@ -17,6 +17,10 @@ The one-download rule is per message, not per link: `gen_reply` also reads a Thr
 user only replied to (#377), so a post expanded here is read again when someone replies to
 that message and mentions the bot. That is a separate ask for the comments, which this cog
 has no embed budget to show. It cannot be triggered by replying to the expansion itself.
+
+None of the above reaches `/clean_threads_url`, the cog's slash command, which reads no post
+and downloads nothing: it resolves a share link to the post's own URL and answers the caller
+alone. Nothing is expanded, so there is no second read for the mention rule to prevent.
 """
 
 from typing import TYPE_CHECKING
@@ -603,14 +607,20 @@ class ThreadsCogs(commands.Cog):
         self,
         interaction: Interaction[commands.Bot],
         url: str = SlashOption(
-            description="Threads post link, or the share text containing it", required=True
+            description="Threads post link, or the share text containing it",
+            description_localizations={
+                Locale.zh_TW: "Threads 貼文連結,或含有連結的分享文字",
+                Locale.ja: "Threads の投稿リンク、またはそれを含む共有テキスト",
+            },
+            required=True,
         ),
     ) -> None:
         """Answers with the canonical URL of the Threads post a link names.
 
         Ephemeral throughout: what the caller pasted names whoever shared it, so the answer is
-        for them to copy rather than something the channel needs to see. Nothing is downloaded
-        and no post is read, which is why an unreadable post still gets an answer here.
+        for them to copy rather than something the channel needs to see. A share link costs the
+        one fetch its redirect needs, read no further than the URL that came back; no media is
+        fetched and no post is parsed, which is why a post nobody can read still gets an answer.
 
         Args:
             interaction: The interaction that triggered the command.
@@ -638,7 +648,9 @@ class ThreadsCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            await interaction.followup.send(content="連不上 Threads,晚點再試。", ephemeral=True)
+            # Not worded as a temporary failure: `_fetch_page` raises the same way for a network
+            # error as for a landing page Threads refused, and only the first is worth retrying.
+            await interaction.followup.send(content="這個連結現在拿不到。", ephemeral=True)
             return
 
         if not clean_url:

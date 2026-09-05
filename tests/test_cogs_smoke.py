@@ -473,9 +473,7 @@ async def test_clean_threads_url_answers_the_caller_alone() -> None:
     assert interaction.followup.sent == [
         {"content": "https://www.threads.com/@alice/post/ABC123", "ephemeral": True}
     ]
-    # The trailing slash is gone because the shared regex stops on the last character a code can
-    # end in, which is what keeps a link written mid-sentence from swallowing the punctuation.
-    assert asked == ["https://www.threads.com/share/D1CytHQmC"]
+    assert asked == ["https://www.threads.com/share/D1CytHQmC/"]
 
 
 async def test_clean_threads_url_asks_threads_nothing_about_a_link_it_cannot_use() -> None:
@@ -497,6 +495,45 @@ async def test_clean_threads_url_asks_threads_nothing_about_a_link_it_cannot_use
     assert interaction.followup.sent == [
         {"content": "這裡面沒有 Threads 貼文連結。", "ephemeral": True}
     ]
+
+
+async def test_clean_threads_url_tells_the_two_failures_apart() -> None:
+    """Neither failure may be worded as temporary: only one of them is worth trying again.
+
+    A link that resolved to something other than a post will resolve to it again, and a fetch
+    `_fetch_page` refused is as likely to be a page Threads will not serve as a network blip.
+    """
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    share_url = "https://www.threads.com/share/D1CytHQmC/"
+
+    def stage(outcome: str | RuntimeError) -> FakeInteraction:
+        """Points the cog at a downloader answering with `outcome`, on a fresh interaction."""
+
+        def resolve_clean_url(*, url: str) -> str:
+            """Returns the staged answer, or raises it when that is what was staged."""
+            del url
+            if isinstance(outcome, RuntimeError):
+                raise outcome
+            return outcome
+
+        cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
+            resolve_clean_url=resolve_clean_url
+        )
+        return FakeInteraction()
+
+    landed_on_no_post = stage("")
+    await ThreadsCogs.clean_threads_url.callback(
+        cog, as_interaction(fake=landed_on_no_post), url=share_url
+    )
+    assert landed_on_no_post.followup.sent == [
+        {"content": "這個分享連結沒有指向任何貼文。", "ephemeral": True}
+    ]
+
+    fetch_failed = stage(RuntimeError("boom"))
+    await ThreadsCogs.clean_threads_url.callback(
+        cog, as_interaction(fake=fetch_failed), url=share_url
+    )
+    assert fetch_failed.followup.sent == [{"content": "這個連結現在拿不到。", "ephemeral": True}]
 
 
 async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) -> None:
