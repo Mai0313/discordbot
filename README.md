@@ -95,6 +95,7 @@ The two content branches cost nothing when they do not apply. A linked post is f
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `@bot <message>`                            | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                                                        |
 | _Threads URL_                               | Automatically expands Threads posts and media, unless the bot is mentioned (then it answers about the comments too).                             |
+| `/clean_threads_url <url>`                  | Privately turns a Threads share link into the post's own URL, so passing it on no longer names whoever shared it.                                |
 | _Douyin URL_                                | Automatically posts the video or photos, unless the bot is mentioned (then it answers about it).                                                 |
 | _Bilibili URL + mention_                    | Watches the linked video and answers about it (a bare link is not auto-expanded).                                                                |
 | `/download_video <url> [quality]`           | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                                                        |

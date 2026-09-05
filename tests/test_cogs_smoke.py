@@ -441,6 +441,101 @@ class _RaiseDownloader:
         raise RuntimeError("download failed")
 
 
+async def test_clean_threads_url_answers_the_caller_alone() -> None:
+    """The pasted link names whoever shared it, so the answer is theirs to copy, not the channel's.
+
+    The share text is handed over whole here because that is what a share button copies, and
+    pasting the blob straight in has to work exactly as pasting it into a channel does.
+    """
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    asked: list[str] = []
+
+    def resolve_clean_url(*, url: str) -> str:
+        """Records what it was handed and answers with the post's own URL."""
+        asked.append(url)
+        return "https://www.threads.com/@alice/post/ABC123"
+
+    def factory(output_folder: str) -> SimpleNamespace:
+        """Serves a downloader that resolves without a network of any kind."""
+        del output_folder
+        return SimpleNamespace(resolve_clean_url=resolve_clean_url)
+
+    cog.__dict__["downloader_factory"] = factory
+    interaction = FakeInteraction()
+
+    await ThreadsCogs.clean_threads_url.callback(
+        cog,
+        as_interaction(fake=interaction),
+        url="看看這個 https://www.threads.com/share/D1CytHQmC/ 很好笑",
+    )
+
+    assert interaction.response.deferred_ephemeral is True
+    assert interaction.followup.sent == [
+        {"content": "https://www.threads.com/@alice/post/ABC123", "ephemeral": True}
+    ]
+    assert asked == ["https://www.threads.com/share/D1CytHQmC/"]
+
+
+async def test_clean_threads_url_asks_threads_nothing_about_a_link_it_cannot_use() -> None:
+    """A non-Threads link is refused from the string alone; nothing is fetched to find that out."""
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+
+    def factory(output_folder: str) -> SimpleNamespace:
+        """Fails the test if the command ever builds a downloader for this input."""
+        del output_folder
+        raise AssertionError("no downloader may be built for a link that is not a Threads post")
+
+    cog.__dict__["downloader_factory"] = factory
+    interaction = FakeInteraction()
+
+    await ThreadsCogs.clean_threads_url.callback(
+        cog, as_interaction(fake=interaction), url="https://example.test/whatever"
+    )
+
+    assert interaction.followup.sent == [
+        {"content": "這裡面沒有 Threads 貼文連結。", "ephemeral": True}
+    ]
+
+
+async def test_clean_threads_url_tells_the_two_failures_apart() -> None:
+    """Neither failure may be worded as temporary: only one of them is worth trying again.
+
+    A link that resolved to something other than a post will resolve to it again, and a fetch
+    `_fetch_page` refused is as likely to be a page Threads will not serve as a network blip.
+    """
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    share_url = "https://www.threads.com/share/D1CytHQmC/"
+
+    def stage(outcome: str | RuntimeError) -> FakeInteraction:
+        """Points the cog at a downloader answering with `outcome`, on a fresh interaction."""
+
+        def resolve_clean_url(*, url: str) -> str:
+            """Returns the staged answer, or raises it when that is what was staged."""
+            del url
+            if isinstance(outcome, RuntimeError):
+                raise outcome
+            return outcome
+
+        cog.__dict__["downloader_factory"] = lambda output_folder: SimpleNamespace(
+            resolve_clean_url=resolve_clean_url
+        )
+        return FakeInteraction()
+
+    landed_on_no_post = stage("")
+    await ThreadsCogs.clean_threads_url.callback(
+        cog, as_interaction(fake=landed_on_no_post), url=share_url
+    )
+    assert landed_on_no_post.followup.sent == [
+        {"content": "這個分享連結沒有指向任何貼文。", "ephemeral": True}
+    ]
+
+    fetch_failed = stage(RuntimeError("boom"))
+    await ThreadsCogs.clean_threads_url.callback(
+        cog, as_interaction(fake=fetch_failed), url=share_url
+    )
+    assert fetch_failed.followup.sent == [{"content": "這個連結現在拿不到。", "ephemeral": True}]
+
+
 async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) -> None:
     """Verifies Threads embed building and on_message success/warning/error paths."""
     bot = SimpleNamespace(user=SimpleNamespace(id=999))

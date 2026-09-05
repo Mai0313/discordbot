@@ -37,14 +37,17 @@ from discordbot.utils.file_downloads import stream_to_file
 # canonical `@user/post/<code>`, and the `share/<code>` form the app's share button copies. Both
 # paths are anchored, so a profile or any other Threads page still matches nothing. The shortcode
 # + query tail is matched as ASCII URL characters only and must END on `[A-Za-z0-9_-]` (the only
-# characters a valid Threads code or query value ends in). Restricting to ASCII stops the match
-# at any non-ASCII terminator, and the trailing class strips ASCII sentence punctuation, so a
-# link written mid-sentence is matched cleanly in both English (`.../post/ABC123.`) and zh/ja
-# (`...ABC123。`, `...ABC123】super`) text instead of swallowing the terminator into the code,
-# which would otherwise make the parse fail on an otherwise valid link.
+# characters a valid Threads code or query value ends in), optionally followed by the trailing
+# slash both share buttons copy. Restricting to ASCII stops the match at any non-ASCII terminator,
+# and the trailing class strips ASCII sentence punctuation, so a link written mid-sentence is
+# matched cleanly in both English (`.../post/ABC123.`) and zh/ja (`...ABC123。`,
+# `...ABC123】super`) text instead of swallowing the terminator into the code, which would
+# otherwise make the parse fail on an otherwise valid link. That optional slash is matched rather
+# than left behind because the match is what gets echoed back to a user; giving one shape to every
+# URL this module publishes is `ThreadsURL.clean_url`'s job, not this pattern's.
 THREADS_URL_RE = re.compile(
     rf"{URL_START_ANCHOR}https?://(?:www\.)?threads\.(?:net|com)/(?:@[^/]+/post|share)/"
-    r"[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]"
+    r"[A-Za-z0-9_.?=&%-]*[A-Za-z0-9_-]/?"
 )
 
 # The canonical post path, and the only shape that names its own post. A `share/<code>` link
@@ -108,13 +111,19 @@ class ThreadsURL(BaseModel):
         the one form the platform serves without a redirect; see `_CANONICAL_THREADS_ORIGIN` for
         what was measured. A host this module does not own keeps its origin untouched.
 
+        A trailing slash goes with the query. Both share buttons copy one and `_post_url` builds
+        without one, so leaving it would publish two spellings of the same post and make the two
+        unequal as strings. Trimming is safe on any path this module accepts, every one of which
+        names a post rather than a directory.
+
         Returns:
-            The URL on the canonical origin, with query parameters removed.
+            The URL on the canonical origin, with query parameters and any trailing slash removed.
         """
         parsed = urlparse(self.raw_url)
+        path = parsed.path.rstrip("/")
         if parsed.netloc.lower() in _THREADS_HOSTS:
-            return f"{_CANONICAL_THREADS_ORIGIN}{parsed.path}"
-        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+            return f"{_CANONICAL_THREADS_ORIGIN}{path}"
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
 
     @computed_field
     @cached_property
@@ -1173,6 +1182,43 @@ class ThreadsDownloader(BaseModel):
             attempts=attempt + 1,
         )
         return ThreadsPage()
+
+    def resolve_clean_url(self, *, url: str) -> str:
+        """Resolves a Threads URL to its canonical form without reading the post.
+
+        The share form is what makes this worth a call of its own: both its own code and the
+        `?xmt=` token its redirect answers with are minted per share, so a pasted share link
+        names whoever sent it. Only the redirect names the post, exactly as `extract_post_data`
+        finds it, and that is the whole of the work here. No page is parsed and no media is
+        fetched, so a page answering with nothing readable on it still yields the URL; a fetch
+        that fails outright still raises, since then no redirect was followed either.
+
+        A URL that already names its post is answered from the string alone, costing no request
+        at all; nothing is left to strip but the query.
+
+        Args:
+            url: The Threads post URL, canonical or share form.
+
+        Returns:
+            The canonical post URL, or an empty string when the share link led somewhere that
+            names no post.
+
+        Raises:
+            RuntimeError: The share link could not be fetched.
+        """
+        threads_url = ThreadsURL(raw_url=url)
+        if threads_url.post_code:
+            return threads_url.clean_url
+        resolved = ThreadsURL(raw_url=self._fetch_page(url=threads_url.clean_url).final_url)
+        if not resolved.post_code:
+            logfire.info(
+                "A Threads share link did not lead to a post; it has no clean URL to give",
+                url=threads_url.clean_url,
+                # Query stripped for the reason the docstring gives: the token names the sharer.
+                final_url=resolved.clean_url,
+            )
+            return ""
+        return resolved.clean_url
 
     @staticmethod
     def _post_url(post: Post) -> str:

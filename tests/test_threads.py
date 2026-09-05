@@ -319,11 +319,11 @@ def test_parse(downloader: ThreadsDownloader, url: str, monkeypatch: pytest.Monk
             "貼文【https://www.threads.com/@a/post/ABC123】super",
             "https://www.threads.com/@a/post/ABC123",
         ),
-        # The form the app's share button copies. The trailing slash falls outside the match,
-        # which the platform accepts: the share URL redirects with or without it.
+        # The form both share buttons copy, trailing slash and all. It is kept because the match
+        # is what gets echoed back to a user; `clean_url` is where the slash is normalised away.
         (
             "分享給你 https://www.threads.com/share/DfX81RWN8/ 快看",
-            "https://www.threads.com/share/DfX81RWN8",
+            "https://www.threads.com/share/DfX81RWN8/",
         ),
         (
             "https://www.threads.net/share/DfX81RWN8?xmt=AQF0p6Ufiuvt",
@@ -390,6 +390,13 @@ def test_threads_url_post_code_names_only_a_canonical_post(url: str, expected: s
         # `http` is a redirect of its own, so the scheme collapses too.
         ("http://www.threads.com/@a/post/ABC123", "https://www.threads.com/@a/post/ABC123"),
         ("https://www.threads.net/share/DfX81RWN8", "https://www.threads.com/share/DfX81RWN8"),
+        # The trailing slash both share buttons copy. `_post_url` builds without one, so keeping
+        # it would leave two spellings of one post that compare unequal.
+        ("https://www.threads.com/share/DfX81RWN8/", "https://www.threads.com/share/DfX81RWN8"),
+        (
+            "https://www.threads.com/@a/post/ABC123/?xmt=AQF0p6Ufiuvt",
+            "https://www.threads.com/@a/post/ABC123",
+        ),
     ],
 )
 def test_threads_url_clean_url_aims_at_the_host_that_answers(raw: str, expected: str) -> None:
@@ -1224,6 +1231,61 @@ def test_a_share_link_leading_anywhere_else_is_never_parsed(
 
     assert conversation.chain == []
     assert len(fetched) == 1
+
+
+def test_resolving_a_clean_url_from_a_canonical_link_asks_threads_nothing(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A link already naming its post has nothing left to resolve, only a query to strip."""
+    fetched = _stub_share_redirect(
+        monkeypatch, final_url=_REPLIES_TARGET_URL, pages=[_thread_html_with_replies()]
+    )
+
+    resolved = downloader.resolve_clean_url(url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt")
+
+    assert resolved == _REPLIES_TARGET_URL
+    assert fetched == []
+
+
+def test_resolving_a_clean_url_from_a_share_link_reads_its_redirect(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The share form names its post nowhere but the redirect, which answers naming the sharer."""
+    fetched = _stub_share_redirect(
+        monkeypatch,
+        final_url=f"{_REPLIES_TARGET_URL}?xmt=AQF0p6Ufiuvt",
+        pages=[_thread_html_with_replies()],
+    )
+
+    resolved = downloader.resolve_clean_url(url=_SHARE_URL)
+
+    assert resolved == _REPLIES_TARGET_URL
+    assert fetched == [_SHARE_URL]
+
+
+def test_resolving_a_clean_url_never_depends_on_the_post_being_readable(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The whole reason this does not go through the parse: the redirect already holds the answer.
+
+    A throttled page is served here, which `extract_post_data` retries and then gives up on. The
+    redirect had already named the post before that page was read at all, so letting the parse
+    decide would refuse an answer that was in hand from the first hop.
+    """
+    _stub_share_redirect(monkeypatch, final_url=_REPLIES_TARGET_URL, pages=[_THROTTLED_PAGE])
+
+    assert downloader.resolve_clean_url(url=_SHARE_URL) == _REPLIES_TARGET_URL
+
+
+def test_resolving_a_clean_url_gives_nothing_when_the_redirect_names_no_post(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing may be handed back here but a post URL, since the pasted one names the sharer."""
+    _stub_share_redirect(
+        monkeypatch, final_url="https://www.threads.com/login", pages=[_thread_html_with_replies()]
+    )
+
+    assert downloader.resolve_clean_url(url=_SHARE_URL) == ""
 
 
 def test_a_malformed_thread_does_not_cost_the_target(
