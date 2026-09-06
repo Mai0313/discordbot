@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from nextcord import Embed
 
 from discordbot.typings.emojis import FACEBOOK_EMOJI
-from discordbot.utils.facebook import FacebookPost, FacebookComment
+from discordbot.utils.facebook import FacebookOutput, FacebookConversation
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 
 from tests.helpers.casting import as_bot, as_message
@@ -24,40 +24,45 @@ _GREEN = "<:greencheck:1517565102424068226>"
 _RED = "<:redcross:1517565100838355016>"
 
 
-def _post(**overrides: object) -> FacebookPost:
-    """A readable post, with any field overridden per test."""
+def _post(**overrides: object) -> FacebookConversation:
+    """A readable conversation, with any post or conversation field overridden per test."""
+    comments = overrides.pop("comments", [])
+    selected = overrides.pop("selected_comment_id", "")
     fields: dict[str, object] = {
-        "post_id": _POST_ID,
         "url": _URL,
         "text": "post body",
         "author_name": "Somebody",
         "author_icon_url": "https://scontent.example/avatar.jpg",
         "group_name": "Some Group",
         "image_urls": ["https://scontent.example/a.jpg", "https://scontent.example/b.jpg"],
-        "reaction_count": "1,017",
+        "like_count": 1017,
         "comment_count": 40,
-        "share_count": "37",
-        "created_at": datetime(2026, 9, 5, 8, 47, tzinfo=UTC),
+        "share_count": 37,
+        "taken_at": datetime(2026, 9, 5, 8, 47, tzinfo=UTC),
     }
     fields.update(overrides)
-    return FacebookPost(**fields)  # ty: ignore[invalid-argument-type]
+    return FacebookConversation(
+        chain=[FacebookOutput(**fields)],  # ty: ignore[invalid-argument-type]
+        reply_branches=[[comment] for comment in comments],  # ty: ignore[invalid-argument-type]
+        selected_comment_id=selected,  # ty: ignore[invalid-argument-type]
+    )
 
 
 class _StubDownloader:
     """Stands in for FacebookDownloader, serving one canned outcome."""
 
-    def __init__(self, *, post: FacebookPost | None, error: Exception | None) -> None:
+    def __init__(self, *, post: FacebookConversation | None, error: Exception | None) -> None:
         """Records what the cog asked for and answers with the canned outcome."""
         self.post = post
         self.error = error
         self.seen: list[str] = []
 
-    def extract_post(self, *, url: str) -> FacebookPost:
+    def parse_metadata(self, *, url: str) -> FacebookConversation:
         """Answers with the canned post, or raises the canned error."""
         self.seen.append(url)
         if self.error is not None:
             raise self.error
-        return self.post if self.post is not None else FacebookPost()
+        return self.post if self.post is not None else FacebookConversation()
 
 
 class _FacebookMessage(FakeDiscordMessage):
@@ -79,7 +84,7 @@ def _message(content: str = _URL) -> _FacebookMessage:
 
 
 def _cog(
-    *, post: FacebookPost | None = None, error: Exception | None = None, bot_id: int = 999
+    *, post: FacebookConversation | None = None, error: Exception | None = None, bot_id: int = 999
 ) -> tuple[FacebookCogs, dict[str, _StubDownloader]]:
     """Builds a cog wired to a stub downloader."""
     cog = FacebookCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_id))))
@@ -176,7 +181,7 @@ async def test_images_past_the_cap_are_counted_in_the_footer() -> None:
 
 async def test_a_named_comment_gets_its_own_card_outside_the_gallery() -> None:
     """A different URL is what keeps the comment from being folded in with the pictures."""
-    comment = FacebookComment(
+    comment = FacebookOutput(
         comment_id="1730777104666239",
         text="the one linked",
         author_name="Commenter",
@@ -198,7 +203,7 @@ async def test_a_named_comment_gets_its_own_card_outside_the_gallery() -> None:
 
 async def test_no_comment_card_without_one_named() -> None:
     """A plain link shows the post alone; the preloaded comments are not the whole section."""
-    comment = FacebookComment(comment_id="999", text="some comment")
+    comment = FacebookOutput(comment_id="999", text="some comment")
     cog, _ = _cog(post=_post(comments=[comment]))
     message = _message()
 
@@ -278,7 +283,7 @@ async def test_a_bot_message_is_ignored() -> None:
 
 async def test_an_unreadable_post_is_marked_failed_without_a_message() -> None:
     """A private or deleted post must not put an error message into the channel."""
-    cog, _ = _cog(post=FacebookPost())
+    cog, _ = _cog(post=FacebookConversation())
     message = _message()
 
     await cog.on_message(message=as_message(fake=message))
@@ -313,7 +318,7 @@ async def test_a_long_post_with_a_video_stays_inside_the_description_limit() -> 
 
 async def test_a_long_post_and_a_long_comment_fit_one_message() -> None:
     """Discord counts every embed in a message together and rejects the whole send when over."""
-    comment = FacebookComment(comment_id="222", text="y" * 4000, author_name="Commenter")
+    comment = FacebookOutput(comment_id="222", text="y" * 4000, author_name="Commenter")
     cog, _ = _cog(post=_post(text="x" * 5000, comments=[comment], selected_comment_id="222"))
     message = _message()
 
@@ -329,7 +334,7 @@ async def test_a_long_post_and_a_long_comment_fit_one_message() -> None:
 async def test_the_comment_link_joins_an_existing_query_correctly() -> None:
     """A `permalink.php` post URL already carries a query, so a second `?` breaks the link."""
     url = "https://www.facebook.com/permalink.php?story_fbid=1&id=2"
-    comment = FacebookComment(comment_id="222", text="linked", author_name="C")
+    comment = FacebookOutput(comment_id="222", text="linked", author_name="C")
     cog, _ = _cog(post=_post(url=url, comments=[comment], selected_comment_id="222"))
     message = _message()
 

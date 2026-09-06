@@ -27,9 +27,9 @@ from nextcord.ext import commands
 from discordbot.typings.emojis import FACEBOOK_EMOJI
 from discordbot.utils.facebook import (
     FACEBOOK_URL_RE,
-    FacebookPost,
-    FacebookComment,
+    FacebookOutput,
     FacebookDownloader,
+    FacebookConversation,
     is_facebook_post_url,
 )
 from discordbot.utils.mentions import is_addressed_to_bot
@@ -95,7 +95,7 @@ class FacebookCogs(commands.Cog):
         self.downloader_factory = FacebookDownloader
 
     @staticmethod
-    def _footer_text(*, post: FacebookPost, shown_images: int) -> str:
+    def _footer_text(*, post: FacebookOutput, shown_images: int) -> str:
         """The counter line: where the post lives, how it did, and what was left out.
 
         The group name leads because it is the part a reader cannot get from the post itself,
@@ -103,19 +103,19 @@ class FacebookCogs(commands.Cog):
         placeholder, which is what keeps the line from having a hole in it.
         """
         parts = [post.group_name] if post.group_name else []
-        if post.reaction_count:
-            parts.append(f"👍 {post.reaction_count}")
+        if post.like_count:
+            parts.append(f"👍 {post.like_count:,}")
         if post.comment_count:
             parts.append(f"💬 {post.comment_count:,}")
         if post.share_count:
-            parts.append(f"↗️ {post.share_count}")
+            parts.append(f"↗️ {post.share_count:,}")
         remaining = len(post.image_urls) - shown_images
         if remaining > 0:
             parts.append(f"🖼️ 另有 {remaining} 張")
         return " · ".join(parts)
 
     @staticmethod
-    def _comment_embed(*, comment: FacebookComment, post_url: str, budget: int) -> Embed:
+    def _comment_embed(*, comment: FacebookOutput, post_url: str, budget: int) -> Embed:
         """The card for the one comment a `?comment_id=` link singled out.
 
         Grey rather than Facebook blue, and headed by a line saying what it is: without both, a
@@ -132,13 +132,13 @@ class FacebookCogs(commands.Cog):
             description=f"{_COMMENT_HEADER}\n\n{body}",
             url=f"{post_url}{joiner}comment_id={comment.comment_id}",
             color=Color(value=_COMMENT_COLOR),
-            timestamp=comment.created_at,
+            timestamp=comment.taken_at,
         )
         if comment.author_name:
             embed.set_author(name=comment.author_name, icon_url=comment.author_icon_url or None)
         return embed
 
-    def _build_embeds(self, *, post: FacebookPost) -> list[Embed]:
+    def _build_embeds(self, *, conversation: FacebookConversation) -> list[Embed]:
         """Builds the whole expansion: the post, its images, and the named comment if any.
 
         Images past the first each become a bare embed reusing the post's URL, which is what
@@ -150,8 +150,11 @@ class FacebookCogs(commands.Cog):
         # attach (see `utils/facebook.py`), so the link is the whole of what can be shown. Its
         # length is reserved BEFORE the clip rather than appended after, or a post already at the
         # ceiling carries the hint past it and Discord rejects the send.
+        post = conversation.target
+        if post is None:
+            return []
         hint = _VIDEO_HINT.format(url=post.video_urls[0]) if post.video_urls else ""
-        comment = post.selected_comment
+        comment = conversation.selected_comment
         post_limit = _EMBED_DESCRIPTION_LIMIT - len(hint)
         if comment is not None:
             post_limit = min(post_limit, _EMBED_TOTAL_LENGTH_LIMIT - _COMMENT_RESERVE)
@@ -160,7 +163,7 @@ class FacebookCogs(commands.Cog):
             description=description or None,
             url=post.url,
             color=Color(value=_EMBED_COLOR),
-            timestamp=post.created_at,
+            timestamp=post.taken_at,
         )
         if post.author_name:
             main.set_author(
@@ -256,7 +259,7 @@ class FacebookCogs(commands.Cog):
         downloader = self.downloader_factory()
         try:
             async with asyncio.timeout(delay=FACEBOOK_EXPAND_TIMEOUT_SECONDS):
-                post = await asyncio.to_thread(downloader.extract_post, url=url)
+                conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
         # Broad on purpose: a fetch or parse failure must not escape into the listener; the
         # cross reaction is the user-visible outcome. A timeout lands here as a plain failure.
         except Exception as error:
@@ -270,18 +273,24 @@ class FacebookCogs(commands.Cog):
             await self._mark_failed(message=message, current_emoji=current_emoji)
             return
 
-        if not post.is_readable:
+        target = conversation.target
+        if target is None or not target.is_readable:
             logfire.info(
                 "Facebook post is not readable; nothing to expand", url=url, message_id=message.id
             )
             await self._mark_failed(message=message, current_emoji=current_emoji)
             return
 
-        await self._deliver(message=message, post=post, current_emoji=current_emoji)
+        await self._deliver(
+            message=message, conversation=conversation, current_emoji=current_emoji
+        )
 
-    async def _deliver(self, *, message: Message, post: FacebookPost, current_emoji: str) -> None:
+    async def _deliver(
+        self, *, message: Message, conversation: FacebookConversation, current_emoji: str
+    ) -> None:
         """Posts the expansion and marks the source message done."""
-        embeds = self._build_embeds(post=post)
+        embeds = self._build_embeds(conversation=conversation)
+        post_url = conversation.target.url if conversation.target else ""
         # Broad on purpose: the delivery step must never escape into the listener, and its
         # failures split three ways — the source message went away, the bot lacks a permission,
         # or something unexpected lost the expansion.
@@ -313,14 +322,14 @@ class FacebookCogs(commands.Cog):
             if gone:
                 logfire.info(
                     "Facebook expansion target is gone",
-                    url=post.url,
+                    url=post_url,
                     message_id=message.id,
                     channel_id=message.channel.id,
                 )
             elif isinstance(error, Forbidden):
                 logfire.warn(
                     "Missing permission to post the Facebook expansion",
-                    url=post.url,
+                    url=post_url,
                     message_id=message.id,
                     channel_id=message.channel.id,
                     error_type=type(error).__name__,
@@ -329,7 +338,7 @@ class FacebookCogs(commands.Cog):
             else:
                 logfire.error(
                     "Failed to send Facebook expansion",
-                    url=post.url,
+                    url=post_url,
                     message_id=message.id,
                     channel_id=message.channel.id,
                     error_type=type(error).__name__,

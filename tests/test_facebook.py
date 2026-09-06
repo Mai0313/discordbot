@@ -15,6 +15,7 @@ import pytest
 from discordbot.utils.facebook import (
     FacebookURL,
     FetchedPage,
+    FacebookOutput,
     FacebookDownloader,
     is_facebook_post_url,
 )
@@ -48,6 +49,7 @@ def _story(
         "attachments": [{"styles": {"attachment": {"all_subattachments": {"nodes": nodes}}}}],
         "feedback": {
             "i18n_reaction_count": "1,017",
+            "reaction_count": 1017,
             "share_count": {"count": 37, "is_empty": False},
             "total_comment_count": 40,
         },
@@ -139,6 +141,11 @@ def _downloader(
     return FacebookDownloader()
 
 
+def _parse(downloader: FacebookDownloader, url: str) -> FacebookOutput:
+    """The post out of a parsed conversation, or an empty one when it carried none."""
+    return downloader.parse_metadata(url=url).target or FacebookOutput()
+
+
 def test_a_group_post_url_names_its_post_and_group() -> None:
     """The canonical group form carries both ids in its path."""
     parsed = FacebookURL(raw_url=_PERMALINK)
@@ -223,25 +230,24 @@ def test_a_post_is_read_with_its_text_images_and_counts(monkeypatch: pytest.Monk
     """The whole point: the full body, not the ~190 characters the Open Graph tag carries."""
     downloader = _downloader(monkeypatch, html=_page())
 
-    post = downloader.extract_post(url=_PERMALINK)
+    post = _parse(downloader, _PERMALINK)
 
     assert post.is_readable
-    assert post.post_id == _POST_ID
     assert post.text == "post body"
     assert post.author_name == "Somebody"
     assert post.author_icon_url == "https://scontent.example/avatar.jpg"
     assert post.image_urls == ["https://scontent.example/a.jpg", "https://scontent.example/b.jpg"]
-    assert post.reaction_count == "1,017"
-    assert post.share_count == "37"
+    assert post.like_count == 1017
+    assert post.share_count == 37
     assert post.comment_count == 40
-    assert post.created_at is not None
+    assert post.taken_at is not None
 
 
 def test_the_permalink_is_preferred_over_the_pasted_url(monkeypatch: pytest.MonkeyPatch) -> None:
     """What gets published back into the channel must never carry the sharer's tokens."""
     downloader = _downloader(monkeypatch, html=_page())
 
-    post = downloader.extract_post(url=f"{_SHARE_URL}?rdid=abc")
+    post = _parse(downloader, f"{_SHARE_URL}?rdid=abc")
 
     assert post.url == _PERMALINK
     assert "rdid" not in post.url
@@ -255,13 +261,13 @@ def test_a_comment_id_url_selects_that_comment(monkeypatch: pytest.MonkeyPatch) 
     ]
     downloader = _downloader(monkeypatch, html=_page(comments=comments))
 
-    post = downloader.extract_post(url=f"{_PERMALINK}?comment_id={_COMMENT_ID}")
+    conversation = downloader.parse_metadata(url=f"{_PERMALINK}?comment_id={_COMMENT_ID}")
 
-    selected = post.selected_comment
+    selected = conversation.selected_comment
     assert selected is not None
     assert selected.text == "the one linked"
     assert selected.author_name == "Commenter"
-    assert selected.created_at is not None
+    assert selected.taken_at is not None
 
 
 def test_a_comment_the_page_did_not_preload_selects_nothing(
@@ -272,10 +278,10 @@ def test_a_comment_the_page_did_not_preload_selects_nothing(
         monkeypatch, html=_page(comments=[_comment(comment_id="999", text="another")])
     )
 
-    post = downloader.extract_post(url=f"{_PERMALINK}?comment_id={_COMMENT_ID}")
+    conversation = downloader.parse_metadata(url=f"{_PERMALINK}?comment_id={_COMMENT_ID}")
 
-    assert post.is_readable
-    assert post.selected_comment is None
+    assert conversation.target is not None
+    assert conversation.selected_comment is None
 
 
 def test_a_comment_id_is_recovered_from_the_base64_node_id(
@@ -288,9 +294,9 @@ def test_a_comment_id_is_recovered_from_the_base64_node_id(
     node["id"] = encoded
     downloader = _downloader(monkeypatch, html=_page(comments=[node]))
 
-    post = downloader.extract_post(url=f"{_PERMALINK}?comment_id={_COMMENT_ID}")
+    conversation = downloader.parse_metadata(url=f"{_PERMALINK}?comment_id={_COMMENT_ID}")
 
-    selected = post.selected_comment
+    selected = conversation.selected_comment
     assert selected is not None
     assert selected.text == "decoded me"
 
@@ -301,9 +307,9 @@ def test_a_comment_serialised_twice_is_read_once(monkeypatch: pytest.MonkeyPatch
     full = _comment(comment_id=_COMMENT_ID, text="the real body")
     downloader = _downloader(monkeypatch, html=_page(comments=[stub, full, dict(full)]))
 
-    post = downloader.extract_post(url=_PERMALINK)
+    conversation = downloader.parse_metadata(url=_PERMALINK)
 
-    assert [comment.text for comment in post.comments] == ["the real body"]
+    assert [comment.text for comment in conversation.comments] == ["the real body"]
 
 
 def test_a_group_feed_yields_the_post_the_url_named(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -312,8 +318,8 @@ def test_a_group_feed_yields_the_post_the_url_named(monkeypatch: pytest.MonkeyPa
     wanted = _story(post_id=_POST_ID, text="the linked post")
     downloader = _downloader(monkeypatch, html=_page(stories=[other, wanted]))
 
-    post = downloader.extract_post(
-        url=f"https://www.facebook.com/groups/{_GROUP_ID}?multi_permalinks={_POST_ID}"
+    post = _parse(
+        downloader, f"https://www.facebook.com/groups/{_GROUP_ID}?multi_permalinks={_POST_ID}"
     )
 
     assert post.text == "the linked post"
@@ -327,7 +333,7 @@ def test_a_share_link_takes_its_post_id_from_where_it_landed(
     wanted = _story(post_id=_POST_ID, text="the shared post")
     downloader = _downloader(monkeypatch, html=_page(stories=[other, wanted]))
 
-    post = downloader.extract_post(url=_SHARE_URL)
+    post = _parse(downloader, _SHARE_URL)
 
     assert post.text == "the shared post"
 
@@ -340,7 +346,7 @@ def test_a_login_wall_reads_as_an_unreadable_post(monkeypatch: pytest.MonkeyPatc
         final_url="https://www.facebook.com/login.php?next=x",
     )
 
-    post = downloader.extract_post(url=_PERMALINK)
+    post = _parse(downloader, _PERMALINK)
 
     assert not post.is_readable
     assert post.text == ""
@@ -350,7 +356,7 @@ def test_a_page_with_no_story_payload_reads_as_unreadable(monkeypatch: pytest.Mo
     """A deleted post answers 200 with a page carrying no story at all."""
     downloader = _downloader(monkeypatch, html="<html><body>nothing here</body></html>")
 
-    post = downloader.extract_post(url=_PERMALINK)
+    post = _parse(downloader, _PERMALINK)
 
     assert not post.is_readable
 
@@ -362,7 +368,7 @@ def test_a_video_post_yields_a_permalink_and_no_file(monkeypatch: pytest.MonkeyP
         html=_page(stories=[_story(video_permalink="https://www.facebook.com/watch/?v=1")]),
     )
 
-    post = downloader.extract_post(url=_PERMALINK)
+    post = _parse(downloader, _PERMALINK)
 
     assert post.video_urls == ["https://www.facebook.com/watch/?v=1"]
     assert post.image_urls == []
@@ -379,7 +385,7 @@ def test_the_group_name_comes_from_the_group_the_url_names(
     ]
     downloader = _downloader(monkeypatch, html=_page(groups=groups))
 
-    post = downloader.extract_post(url=_PERMALINK)
+    post = _parse(downloader, _PERMALINK)
 
     assert post.group_name == "The real group"
 
@@ -389,7 +395,7 @@ def test_a_page_post_carries_no_group_name(monkeypatch: pytest.MonkeyPatch) -> N
     groups = [{"__typename": "Group", "id": "111", "name": "A recommended group"}]
     downloader = _downloader(monkeypatch, html=_page(groups=groups))
 
-    post = downloader.extract_post(url=f"https://www.facebook.com/NASA/posts/{_POST_ID}")
+    post = _parse(downloader, f"https://www.facebook.com/NASA/posts/{_POST_ID}")
 
     assert post.group_name == ""
 
@@ -398,7 +404,7 @@ def test_an_image_only_post_is_still_readable(monkeypatch: pytest.MonkeyPatch) -
     """A post with pictures and no words is legitimate, so it must not read as empty."""
     downloader = _downloader(monkeypatch, html=_page(stories=[_story(text="")]))
 
-    post = downloader.extract_post(url=_PERMALINK)
+    post = _parse(downloader, _PERMALINK)
 
     assert post.is_readable
     assert post.text == ""
