@@ -262,6 +262,38 @@ def test_another_post_by_the_same_author_is_not_mistaken_for_this_one(
     assert post.text == "post body"
 
 
+def test_the_node_carrying_the_media_wins_over_a_stub_of_the_same_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The page serialises this post more than once, and the media-less stub can come first.
+
+    Taking the first node matching the shortcode would answer with the stub, and the expansion
+    would go out with the caption but none of the pictures.
+    """
+    stub = _other_post(code=_CODE, caption="a stub of this same post")
+    downloader = _downloader(monkeypatch, html=_page(media=stub, others=[_media()]))
+
+    conversation = downloader.parse_metadata(url=_URL)
+
+    post = conversation.target
+    assert post is not None
+    assert post.text == "post body"
+    assert len(post.image_urls) == 2
+
+
+def test_a_post_serialised_only_as_a_stub_is_still_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Preferring the node with media must not mean refusing a page that carries none of it."""
+    stub = _other_post(code=_CODE, caption="all this page gave")
+    downloader = _downloader(monkeypatch, html=_page(media=stub))
+
+    conversation = downloader.parse_metadata(url=_URL)
+
+    post = conversation.target
+    assert post is not None
+    assert post.text == "all this page gave"
+    assert post.image_urls == []
+
+
 def test_the_comments_come_back_as_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     """Shaped like Threads' reply branches, so one renderer walks either platform."""
     comments = [

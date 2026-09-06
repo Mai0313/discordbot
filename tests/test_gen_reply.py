@@ -4532,25 +4532,27 @@ async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
 def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The switch reaches the link sources that download first and upload after.
+    """The switch reaches every link source that fetches first and uploads after.
 
     Gating the upload alone would still spend a full Douyin / Bilibili download on media that
     can no longer reach the model, and Douyin's is the WAF-sensitive path an incident most
-    wants left alone. Read off the live registry so the wiring is what is pinned.
+    wants left alone. Facebook and Instagram fetch and downscale their images before the upload
+    those images could no longer feed, which is the same cost through a different door. Read off
+    the live registry so the wiring is what is pinned, and asserted over every source that has a
+    media step at all rather than the two it was written for.
     """
     monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
     monkeypatch.setenv(name="DOUYIN_VIDEO_ENABLED", value="true")
     monkeypatch.setenv(name="BILIBILI_VIDEO_ENABLED", value="true")
+    gated = ("douyin", "bilibili", "facebook", "instagram")
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
     on = LLMConfig()
-    assert _link_source(name="douyin").media_ingest_allowed(on)
-    assert _link_source(name="bilibili").media_ingest_allowed(on)
+    assert all(_link_source(name=name).media_ingest_allowed(on) for name in gated)
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     off = LLMConfig()
-    assert not _link_source(name="douyin").media_ingest_allowed(off)
-    assert not _link_source(name="bilibili").media_ingest_allowed(off)
+    assert not any(_link_source(name=name).media_ingest_allowed(off) for name in gated)
 
 
 async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
@@ -7218,7 +7220,7 @@ _CLIP_SOURCE_CASES = {
 async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """Only Threads widened to the replied-to message; the clip sources stay on the current one."""
+    """Only the discussion sources widened to it; the clip sources stay on the current message."""
     builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(

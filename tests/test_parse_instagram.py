@@ -180,6 +180,35 @@ async def test_media_ingest_off_keeps_the_text_and_skips_the_upload(
     assert _separator(blocks) == INSTAGRAM_TEXT_ONLY_SEPARATOR
 
 
+async def test_both_separators_stop_short_of_promising_the_whole_comment_section(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Instagram serves the real list, not Facebook's preload — but not on a viral post.
+
+    Pinned on BOTH because the text-only one is the path every non-Gemini model, every disabled
+    media ingest and every failed image fetch lands on, and it carried no caveat at all.
+    """
+    _serve(monkeypatch, post=_post())
+    _accept_uploads(monkeypatch, uploaded=[])
+
+    with_media = await build_instagram_context_messages(
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=object(),  # ty: ignore[invalid-argument-type]
+        allow_media_ingest=True,
+    )
+    text_only = await build_instagram_context_messages(
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=object(),  # ty: ignore[invalid-argument-type]
+        allow_media_ingest=False,
+    )
+
+    caveat = "the first page rather than every reply"
+    assert caveat in _separator(with_media)
+    assert caveat in _separator(text_only)
+
+
 async def test_the_comments_are_rendered_and_the_linked_one_is_marked(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
