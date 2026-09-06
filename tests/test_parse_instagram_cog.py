@@ -25,7 +25,8 @@ _RED = "<:redcross:1517565100838355016>"
 
 def _post(**overrides: object) -> InstagramConversation:
     """A readable conversation, with any post or conversation field overridden per test."""
-    comments = overrides.pop("comments", [])
+    raw_comments = overrides.pop("comments", [])
+    comments = raw_comments if isinstance(raw_comments, list) else []
     selected = overrides.pop("selected_comment_id", "")
     fields: dict[str, object] = {
         "url": _URL,

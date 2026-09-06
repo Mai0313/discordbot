@@ -26,7 +26,8 @@ _RED = "<:redcross:1517565100838355016>"
 
 def _post(**overrides: object) -> FacebookConversation:
     """A readable conversation, with any post or conversation field overridden per test."""
-    comments = overrides.pop("comments", [])
+    raw_comments = overrides.pop("comments", [])
+    comments = raw_comments if isinstance(raw_comments, list) else []
     selected = overrides.pop("selected_comment_id", "")
     fields: dict[str, object] = {
         "url": _URL,
@@ -185,7 +186,7 @@ async def test_a_named_comment_gets_its_own_card_outside_the_gallery() -> None:
         comment_id="1730777104666239",
         text="the one linked",
         author_name="Commenter",
-        created_at=datetime(2026, 9, 5, 9, 25, tzinfo=UTC),
+        taken_at=datetime(2026, 9, 5, 9, 25, tzinfo=UTC),
     )
     cog, _ = _cog(post=_post(comments=[comment], selected_comment_id="1730777104666239"))
     message = _message()
