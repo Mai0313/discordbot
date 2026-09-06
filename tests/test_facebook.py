@@ -403,3 +403,18 @@ def test_an_image_only_post_is_still_readable(monkeypatch: pytest.MonkeyPatch) -
     assert post.is_readable
     assert post.text == ""
     assert len(post.image_urls) == 2
+
+
+def test_clean_url_keeps_the_owner_id_a_permalink_needs() -> None:
+    """`permalink.php` resolves nothing without the `id` naming the page that owns the post."""
+    parsed = FacebookURL(
+        raw_url=f"https://www.facebook.com/permalink.php?story_fbid={_POST_ID}&id=100077759593577"
+    )
+
+    assert "id=100077759593577" in parsed.clean_url
+    assert parsed.post_id == _POST_ID
+
+
+def test_a_profile_url_is_not_a_post_despite_carrying_an_id() -> None:
+    """`id` is kept but never READ as a post id, or every profile link would look like a post."""
+    assert not is_facebook_post_url(url="https://www.facebook.com/profile.php?id=100077759593577")

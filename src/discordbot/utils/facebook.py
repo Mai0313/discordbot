@@ -79,6 +79,12 @@ _SHARE_PATH_RE = re.compile(r"^/share/(?:p|v|r)/[A-Za-z0-9]+")
 _COMMENT_ID_PARAM = "comment_id"
 _POST_ID_PARAMS = ("story_fbid", "multi_permalinks", "fbid")
 
+# Kept by `clean_url` but never read as a post id. `id` names the page or profile that OWNS the
+# post, and `permalink.php?story_fbid=<post>` cannot resolve without it — dropping it aims the
+# fetch at a URL naming no owner, and the post comes back unreadable. Deliberately NOT in
+# `_POST_ID_PARAMS`: `profile.php?id=<n>` carries the same parameter and is not a post at all.
+_OWNER_ID_PARAMS = ("id",)
+
 # What the page will only hand to a browser. Measured 2026-09-06: this exact set returns the
 # full payload, a bare `User-Agent` returns HTTP 400, and a crawler UA returns an Open Graph
 # shell with the post text cut at ~190 characters.
@@ -147,7 +153,7 @@ class FacebookURL(BaseModel):
         parsed = urlparse(self.raw_url)
         kept: list[str] = []
         query = parse_qs(parsed.query)
-        for name in (*_POST_ID_PARAMS, _COMMENT_ID_PARAM):
+        for name in (*_POST_ID_PARAMS, *_OWNER_ID_PARAMS, _COMMENT_ID_PARAM):
             values = query.get(name)
             if values and values[0]:
                 kept.append(f"{name}={values[0]}")
