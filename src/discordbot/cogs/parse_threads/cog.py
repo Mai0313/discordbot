@@ -266,10 +266,10 @@ class ThreadsCogs(commands.Cog):
             )
         footer_parts = [
             f"❤️ {output.like_count:,}",
-            f"💬 {output.reply_count:,}",
+            f"💬 {output.comment_count:,}",
             f"🔁 {output.repost_count:,}",
             f"🔗 {output.quote_count:,}",
-            f"↗️ {output.reshare_count:,}",
+            f"↗️ {output.share_count:,}",
         ]
         embed.set_footer(text=" | ".join(footer_parts))
         return embed

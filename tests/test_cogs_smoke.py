@@ -309,10 +309,10 @@ def _thread_output(  # noqa: PLR0913 -- one knob per ThreadsOutput field the emb
         author_name=author_name,
         author_icon_url="https://example.test/avatar.png",
         like_count=1,
-        reply_count=2,
+        comment_count=2,
         repost_count=3,
         quote_count=4,
-        reshare_count=5,
+        share_count=5,
         taken_at=datetime(2026, 1, 1, tzinfo=UTC),
         quoted=quoted,
         quoted_unavailable=quoted_unavailable,
@@ -330,10 +330,10 @@ def _long_threads_chain() -> list[ThreadsOutput]:
             video_urls=([] if index == 9 else [f"https://example.test/video-{index}.mp4"]),
         )
         post.like_count = 9_999_999
-        post.reply_count = 9_999_999
+        post.comment_count = 9_999_999
         post.repost_count = 9_999_999
         post.quote_count = 9_999_999
-        post.reshare_count = 9_999_999
+        post.share_count = 9_999_999
         chain.append(post)
     return chain
 

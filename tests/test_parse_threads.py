@@ -47,10 +47,10 @@ def _post(  # noqa: PLR0913 -- one knob per ThreadsOutput field the builder rend
         author_name=author,
         reply_to_username=reply_to,
         like_count=1,
-        reply_count=2,
+        comment_count=2,
         repost_count=3,
         quote_count=4,
-        reshare_count=5,
+        share_count=5,
         quoted=quoted,
         quoted_unavailable=quoted_unavailable,
     )
@@ -316,7 +316,7 @@ async def test_build_caps_chain_posts(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_comments_are_rendered_after_the_chain(monkeypatch: pytest.MonkeyPatch) -> None:
     """The comments under the post carry the discussion, so they ride in the same text block."""
     target = _post(text="target")
-    target.reply_count = 40  # the page ships a ranked sample, so the two counts differ
+    target.comment_count = 40  # the page ships a ranked sample, so the two counts differ
     _stub_parse(
         monkeypatch,
         [target],
@@ -898,7 +898,7 @@ async def test_a_post_whose_comments_the_page_withheld_says_so(
 ) -> None:
     """A throttled page ships no comments; silence would read as 'nobody commented'."""
     target = _post(text="target")
-    target.reply_count = 381
+    target.comment_count = 381
     _stub_parse(monkeypatch, [target])
     _stub_media(monkeypatch, uploads=_Uploads())
 
@@ -916,7 +916,7 @@ async def test_comments_the_page_carried_but_could_not_be_read_are_not_called_mi
 ) -> None:
     """A page whose comments have no readable body did carry them, so saying otherwise is false."""
     target = _post(text="target")
-    target.reply_count = 40
+    target.comment_count = 40
     _stub_parse(
         monkeypatch,
         [target],
@@ -975,7 +975,7 @@ async def test_a_post_with_no_replies_at_all_renders_no_comment_section(
 ) -> None:
     """Nothing is announced when the post genuinely has nothing to announce."""
     target = _post(text="target")
-    target.reply_count = 0
+    target.comment_count = 0
     _stub_parse(monkeypatch, [target])
     _stub_media(monkeypatch, uploads=_Uploads())
 

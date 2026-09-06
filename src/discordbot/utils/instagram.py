@@ -294,11 +294,21 @@ class InstagramConversation(BaseModel):
         """The post the link named, or None when the page carried none."""
         return self.chain[-1] if self.chain else None
 
-    @computed_field
-    @cached_property
+    @property
     def comments(self) -> list[InstagramOutput]:
-        """Every comment, flattened out of the branches in page order."""
+        """Every comment, flattened out of the branches in page order.
+
+        A plain property rather than a computed field, on all three sources: it re-slices data
+        `reply_branches` already carries, so serializing it would put every comment in a dump
+        twice. The two computed fields resolve a POINTER instead, which a dump cannot derive on
+        its own and which is what a hand test wants to see.
+        """
         return [comment for branch in self.reply_branches for comment in branch]
+
+    @property
+    def posts(self) -> list[InstagramOutput]:
+        """Everything the page yielded: the post first, then its comments in page order."""
+        return [*self.chain, *self.comments]
 
     @computed_field
     @cached_property
