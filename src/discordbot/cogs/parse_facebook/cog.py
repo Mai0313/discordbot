@@ -53,6 +53,18 @@ _MAX_IMAGES = 4
 # Discord's own ceiling on `embed.description`. A long post is cut rather than split across a
 # second embed: the whole card is one post, and a reader who wants the tail has the link.
 _EMBED_DESCRIPTION_LIMIT = 4096
+
+# Discord counts every embed's text in one message toward a single ceiling, so the comment card
+# is budgeted against what the post spent rather than clipped on its own: a long post plus a long
+# comment would otherwise sum past it and Discord rejects the WHOLE send, losing the expansion
+# rather than trimming it. `parse_threads/cog.py` carries the same limit for the same reason.
+_EMBED_TOTAL_LENGTH_LIMIT = 6000
+
+# What the post gives up so a comment card always fits beside it. The slack on top covers the
+# footer, the author line, and the fact that Discord counts UTF-16 units, so one emoji costs two
+# where `len` counts one.
+_COMMENT_RESERVE = 2000
+_BUDGET_SLACK = 400
 _TRUNCATION_NOTICE = "\n\n⋯（全文請看原貼文）"
 _VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
 _COMMENT_HEADER = "💬 **指定的留言**"
@@ -103,7 +115,7 @@ class FacebookCogs(commands.Cog):
         return " · ".join(parts)
 
     @staticmethod
-    def _comment_embed(*, comment: FacebookComment, post_url: str) -> Embed:
+    def _comment_embed(*, comment: FacebookComment, post_url: str, budget: int) -> Embed:
         """The card for the one comment a `?comment_id=` link singled out.
 
         Grey rather than Facebook blue, and headed by a line saying what it is: without both, a
@@ -113,9 +125,12 @@ class FacebookCogs(commands.Cog):
         is what keeps it OUT of the image gallery below. Discord merges embeds by URL, so
         reusing the post's here would fold the comment into the pictures.
         """
+        body = _clipped(text=comment.text, limit=max(budget - len(_COMMENT_HEADER), 0))
+        # `&` when the post URL already carries a query, which `permalink.php` links always do.
+        joiner = "&" if "?" in post_url else "?"
         embed = Embed(
-            description=f"{_COMMENT_HEADER}\n\n{_clipped(text=comment.text, limit=3900)}",
-            url=f"{post_url}?comment_id={comment.comment_id}",
+            description=f"{_COMMENT_HEADER}\n\n{body}",
+            url=f"{post_url}{joiner}comment_id={comment.comment_id}",
             color=Color(value=_COMMENT_COLOR),
             timestamp=comment.created_at,
         )
@@ -131,11 +146,16 @@ class FacebookCogs(commands.Cog):
         cards. The comment embed carries its own URL for the same reason inverted: a different
         link is what keeps it OUT of that gallery.
         """
-        description = _clipped(text=post.text, limit=_EMBED_DESCRIPTION_LIMIT)
-        if post.video_urls:
-            # A video post would otherwise render as a card with nothing in it: there is no file
-            # to attach (see `utils/facebook.py`), so the link is the whole of what can be shown.
-            description = f"{description}{_VIDEO_HINT.format(url=post.video_urls[0])}"
+        # A video post would otherwise render as a card with nothing in it: there is no file to
+        # attach (see `utils/facebook.py`), so the link is the whole of what can be shown. Its
+        # length is reserved BEFORE the clip rather than appended after, or a post already at the
+        # ceiling carries the hint past it and Discord rejects the send.
+        hint = _VIDEO_HINT.format(url=post.video_urls[0]) if post.video_urls else ""
+        comment = post.selected_comment
+        post_limit = _EMBED_DESCRIPTION_LIMIT - len(hint)
+        if comment is not None:
+            post_limit = min(post_limit, _EMBED_TOTAL_LENGTH_LIMIT - _COMMENT_RESERVE)
+        description = _clipped(text=post.text, limit=post_limit) + hint
         main = Embed(
             description=description or None,
             url=post.url,
@@ -155,9 +175,19 @@ class FacebookCogs(commands.Cog):
             extra = Embed(url=post.url)
             extra.set_image(url=image_url)
             embeds.append(extra)
-        comment = post.selected_comment
         if comment is not None:
-            embeds.append(self._comment_embed(comment=comment, post_url=post.url))
+            spent = sum(
+                len(text)
+                for text in (description, main.footer.text, main.author.name)
+                if isinstance(text, str)
+            )
+            embeds.append(
+                self._comment_embed(
+                    comment=comment,
+                    post_url=post.url,
+                    budget=_EMBED_TOTAL_LENGTH_LIMIT - spent - _BUDGET_SLACK,
+                )
+            )
         return embeds
 
     async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:

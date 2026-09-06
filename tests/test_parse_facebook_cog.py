@@ -296,3 +296,46 @@ async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
 
     assert message.replies == []
     assert message.reactions[-1] == _RED
+
+
+async def test_a_long_post_with_a_video_stays_inside_the_description_limit() -> None:
+    """The hint is reserved before the clip, or Discord rejects the send and the card is lost."""
+    cog, _ = _cog(post=_post(text="x" * 5000, video_urls=["https://www.facebook.com/watch/?v=1"]))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    description = _embeds(message)[0].description
+    assert description is not None
+    assert len(description) <= 4096
+    assert "點此觀看影片" in description
+
+
+async def test_a_long_post_and_a_long_comment_fit_one_message() -> None:
+    """Discord counts every embed in a message together and rejects the whole send when over."""
+    comment = FacebookComment(comment_id="222", text="y" * 4000, author_name="Commenter")
+    cog, _ = _cog(post=_post(text="x" * 5000, comments=[comment], selected_comment_id="222"))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    total = sum(
+        len(embed.description or "") + len(embed.footer.text or "") + len(embed.author.name or "")
+        for embed in _embeds(message)
+    )
+    assert total <= 6000
+
+
+async def test_the_comment_link_joins_an_existing_query_correctly() -> None:
+    """A `permalink.php` post URL already carries a query, so a second `?` breaks the link."""
+    url = "https://www.facebook.com/permalink.php?story_fbid=1&id=2"
+    comment = FacebookComment(comment_id="222", text="linked", author_name="C")
+    cog, _ = _cog(post=_post(url=url, comments=[comment], selected_comment_id="222"))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    comment_url = _embeds(message)[-1].url
+    assert comment_url is not None
+    assert comment_url.count("?") == 1
+    assert comment_url.endswith("&comment_id=222")
