@@ -29,8 +29,8 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.cogs.gen_reply import streaming as streaming_module
+from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.typings.memory import (
     MemoryFact,
     MemoryOwner,

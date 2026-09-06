@@ -64,12 +64,7 @@ def _accept_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]) -> 
         return b"bytes", "image/jpeg"
 
     async def upload_as_input_file(
-        *,
-        client: object,
-        source: bytes,
-        mime_type: str,
-        filename: str,
-        timeout_seconds: float,
+        *, client: object, source: bytes, mime_type: str, filename: str, timeout_seconds: float
     ) -> dict[str, str]:
         """Stands in for the Files API upload."""
         del client, source, mime_type, timeout_seconds
@@ -89,6 +84,11 @@ def _separator(blocks: list[Any]) -> str:
 def _body(blocks: list[Any]) -> str:
     """The rendered post text the builder injected."""
     return blocks[1]["content"][0]["text"]
+
+
+def _parts(blocks: list[Any]) -> list[Any]:
+    """Every content part of the injected user block, text and uploads alike."""
+    return list(blocks[1]["content"])
 
 
 async def test_a_readable_post_becomes_a_separator_and_its_text(
@@ -124,7 +124,7 @@ async def test_the_images_ride_as_uploaded_parts(monkeypatch: pytest.MonkeyPatch
 
     assert uploaded == ["https://scontent.example/a.jpg"]
     assert _separator(blocks) == FACEBOOK_CONTEXT_SEPARATOR
-    assert blocks[1]["content"][-1]["type"] == "input_file"
+    assert _parts(blocks)[-1]["type"] == "input_file"
 
 
 async def test_media_ingest_off_keeps_the_text_and_skips_the_upload(

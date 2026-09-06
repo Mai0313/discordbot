@@ -44,8 +44,8 @@ from pydantic import Field, BaseModel, ConfigDict
 from nextcord.ext import commands
 
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
-from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.typings.emojis import THREADS_EMOJI
+from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS

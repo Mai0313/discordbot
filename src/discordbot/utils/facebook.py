@@ -463,9 +463,12 @@ class FacebookDownloader(BaseModel):
         video_urls: list[str] = []
         for attachment in story.get("attachments") or []:
             style = _deep_get(attachment, "styles", "attachment")
-            nodes = _deep_get(style, "all_subattachments", "nodes") or []
+            nodes = _deep_get(style, "all_subattachments", "nodes")
             single = _deep_get(style, "media")
-            for item in [*nodes, *([{"media": single}] if single else [])]:
+            items: list[JsonValue] = list(nodes) if isinstance(nodes, list) else []
+            if single is not None:
+                items.append({"media": single})
+            for item in items:
                 media = item.get("media") if isinstance(item, dict) else None
                 if not isinstance(media, dict):
                     continue
@@ -571,7 +574,8 @@ class FacebookDownloader(BaseModel):
             return FacebookPost()
 
         content_story = _deep_get(story, "comet_sections", "content", "story")
-        actors = (content_story or {}).get("actors") or story.get("actors") or []
+        actors_value = _deep_get(content_story, "actors") or story.get("actors")
+        actors = actors_value if isinstance(actors_value, list) else []
         actor = actors[0] if actors and isinstance(actors[0], dict) else {}
         message = _deep_get(
             content_story, "comet_sections", "message_container", "story", "message"
