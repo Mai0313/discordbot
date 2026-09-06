@@ -45,6 +45,7 @@ from nextcord.ext import commands
 
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
 from discordbot.utils.mentions import is_addressed_to_bot
+from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
@@ -684,9 +685,7 @@ class ThreadsCogs(commands.Cog):
         # Persistent marker (added directly, not through the status chain, which replaces its own
         # reaction) saying a Threads post was read. `gen_reply` adds the same one on the path it
         # takes instead of this one, so every read is marked the same way whichever cog did it.
-        await update_reaction(
-            message=message, bot_user=self.bot.user, emoji="<:threads:1535657820668559380>"
-        )
+        await update_reaction(message=message, bot_user=self.bot.user, emoji=THREADS_EMOJI)
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
         try:

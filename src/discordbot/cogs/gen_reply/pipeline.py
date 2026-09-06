@@ -20,6 +20,7 @@ from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.timeouts import LINK_CONTEXT_GRACE_SECONDS
@@ -361,13 +362,14 @@ class ReplyPipeline(BaseModel):
                     link_tasks = self._start_link_builds(
                         selected=set(route.link_context_sources), deadline=link_context_deadline
                     )
-                    if "threads" in link_tasks:
-                        # Persistent marker (added directly, not via the status chain) saying a
-                        # Threads post was read, the same one `parse_threads` adds when it expands
-                        # a link instead. Added once every builder is started so the REST call
-                        # never sits between two of them.
+                    # Persistent markers (added directly, not via the status chain) naming which
+                    # linked post was read, the same ones an expansion cog adds when it expands a
+                    # link instead. Added once every builder is started so the REST calls never
+                    # sit between two of them. Bilibili has no expansion cog, so this is the only
+                    # path that ever marks one.
+                    for source_name in link_tasks:
                         await self.surface.mark(
-                            emoji="<:threads:1535657820668559380>", bot_user=self.bot.user
+                            emoji=LINK_SOURCE_EMOJIS[source_name], bot_user=self.bot.user
                         )
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only

@@ -29,6 +29,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.memory import (
     MemoryFact,
@@ -7124,7 +7125,7 @@ async def test_on_message_injects_threads_context_before_current(
     assert has_threads_context_block(request=answer)
     assert extract_threads_context_block(request=answer) == "MOCK THREADS POST BODY"
     # A persistent marker says the post was read, the same one the expansion cog adds.
-    assert "<:threads:1535657820668559380>" in message.added_reactions
+    assert THREADS_EMOJI in message.added_reactions
 
     # The block lands after memory but before the current message (which stays last).
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]

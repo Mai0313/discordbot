@@ -19,6 +19,7 @@ from discordbot.utils.douyin import (
     DouyinTooLargeError,
     DouyinUnavailableError,
 )
+from discordbot.typings.emojis import DOUYIN_EMOJI
 from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
@@ -160,6 +161,9 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
     assert reply["embeds"][0].description == "caption"
     assert reply["embeds"][0].author.name == "somebody"
     assert message.reactions[-1] == _GREEN
+    # The read marker rides beside the status chain, which only ever removes its own reaction.
+    assert message.reactions[0] == DOUYIN_EMOJI
+    assert all(emoji != DOUYIN_EMOJI for emoji, _ in message.removed)
     # The scratch dir is per invocation and removed with its files once delivery finishes.
     assert not await asyncio.to_thread(Path(made["stub"].output_folder).exists)
 
