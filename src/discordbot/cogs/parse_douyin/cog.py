@@ -45,7 +45,6 @@ from discordbot.utils.douyin import (
     douyin_failure_message,
     douyin_fetch_semaphore,
 )
-from discordbot.typings.douyin import DouyinConfig
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
@@ -69,7 +68,6 @@ class DouyinCogs(commands.Cog):
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
-        config: Runtime configuration carrying the auto-expansion kill-switch.
         media_delivery: Planner deciding which files attach and which are hosted as a URL.
         downloader_factory: Builds the per-invocation downloader, one per scratch directory;
             the seam a test replaces to keep an expansion off the network.
@@ -86,7 +84,6 @@ class DouyinCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.config = DouyinConfig()
         self.media_delivery = build_media_delivery_planner()
         self.downloader_factory = DouyinDownloader
 
@@ -121,9 +118,6 @@ class DouyinCogs(commands.Cog):
         # the module docstring. Checked after the URL match so the common no-link message costs
         # one regex, not two.
         if is_addressed_to_bot(message=message, bot_user=self.bot.user):
-            return
-
-        if not self.config.auto_expand_enabled:
             return
 
         url = match.group(0)
