@@ -50,7 +50,7 @@ flowchart TD
 
     UP & RT & CX --> R{"分派路線"}
 
-    R -->|QA| L{"貼上的 Threads、<br/>抖音或 Bilibili 貼文"}
+    R -->|QA| L{"貼上的 Threads、Facebook、<br/>抖音或 Bilibili 貼文"}
     L -->|"使用者在問它的內容"| LF["抓那則貼文，上傳它的媒體"]
     L -->|"只是順手貼的連結"| LS["完全不抓"]
     LF & LS --> Y{"貼上的 YouTube 影片"}
@@ -82,6 +82,7 @@ flowchart TD
 
 - **AI chat**：在 server tag bot 或傳送 DM。它可以回答問題、總結近期聊天、檢查支援的附件、觀看貼上的 YouTube 影片、生成或編輯圖片、用提示或附加圖片生成短影片、編輯引用的影片、以接續 reply 訊息延續長回覆，並在可用時使用 model-provided web tools。它還會在背景慢慢累積對你個人偏好的長期記憶（僅自己可見，且依來源做隱私隔離：在某個伺服器說的私事不會出現在別的伺服器，只有語氣偏好與明顯無害的一般事實會跨伺服器沿用），可用 `/memory show`、`/memory regenerate` 與 `/memory clear` 管理。你也可以直接叫它記住某件事，或告訴它記錯了，回覆下方會有一行小字說明它記下了什麼。
 - **Threads 解析**：貼上 Threads.net 或 Threads.com URL，bot 會展開貼文、media 與 reply chain，引用別人或自己先前的貼文時也會一起帶出被引用的那篇；改成 tag bot 並附上連結，或是回覆別人貼連結的訊息時 tag bot，它會改為連底下的留言一起讀過再回答。
+- **Facebook 解析**：貼上公開的 Facebook 貼文連結，bot 會把貼文、圖片與互動數字展開到頻道；連結若帶 `comment_id`，底下會再顯示那一則留言。改成 tag bot 並附上連結，或在帶連結的訊息下 tag 它回覆，它會讀貼文加上頁面預先載入的那幾則留言再回答。只讀得到公開貼文，影片貼文會以連結呈現而不是檔案。
 - **抖音解析**：貼上抖音連結，bot 會直接把影片（或圖文貼文的圖片）傳到頻道；改成 tag bot 並附上連結，它會改為看過影片再回答。
 - **Bilibili 問答**：tag bot 並附上 B 站影片連結，它會看過影片再回答。單獨貼連結不會自動展開；`/download_video` 仍可下載檔案。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片。抖音也支援，無浮水印且包含圖文貼文。檔案太大無法上傳時會改以連結提供。
@@ -91,28 +92,29 @@ flowchart TD
 
 ## 指令
 
-| 指令                                        | 功能                                                                                   |
-| ------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `@bot <message>`                            | 和 AI chat。需要 bot 檢查檔案或圖片時，可附上支援的附件。                              |
-| _Threads URL_                               | 自動展開 Threads 貼文與 media；被 tag 時改為連留言一起讀過再回答。                     |
-| `/clean_threads_url <url>`                  | 私密地把 Threads 分享連結還原成貼文本身的網址，轉貼時不會帶出分享者。                  |
-| _抖音 URL_                                  | 自動傳回影片或圖片；被 tag 時改為看過影片再回答。                                      |
-| _Bilibili URL + tag_                        | 看過連結的影片後回答（單獨貼連結不會自動展開）。                                       |
-| `/download_video <url> [quality]`           | 下載影片並傳回 Discord。抖音的圖文貼文會傳回圖片。                                     |
-| `/balance [member]`                         | 私密顯示成員的虛擬歡樂豆餘額、債務、淨資產與 VIP 狀態。                                |
-| `/vip`                                      | 購買永久 VIP 權益。                                                                    |
-| `/leaderboard`                              | 顯示全域餘額排行榜。                                                                   |
-| `/loss_leaderboard`                         | 顯示今日賭場輸局累計排行榜。                                                           |
-| `/credit status\|borrow\|call\|repay`       | 處理個人信貸申請、180 秒批准/拒絕/取消按鈕、還款、催收與狀態。                         |
-| `/central_bank status\|borrow\|call\|repay` | 處理央行借款申請、180 秒批准/拒絕/取消按鈕、還款、催收與可放貸額度。                   |
-| `/give <member> <amount>`                   | 轉帳虛擬歡樂豆給其他成員或 bot。                                                       |
-| `/admin refund_tax\|collect_tax`            | 手動調整成員或 bot 餘額；限定 `economy admin` 帳號 flag，不是 Discord 身分組。         |
-| `/games blackjack <bet>`                    | 開一個多人 Blackjack lobby；`bet` 可輸入含逗號的數字，`0` 就是 all in。                |
-| `/games dragon_gate`                        | 開一個由共享 jackpot pool 支撐的多人射龍門桌。                                         |
-| `/casino`                                   | 顯示賭場系統累積 P&L (跨伺服器)。                                                      |
-| `/pocat`                                    | 顯示 bot 玩家自己的錢包 (等同 `/balance @bot`)。                                       |
-| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 對你記住的內容（regenerate 在背景執行，clear 會先要求確認）。 |
-| `/ping`                                     | 檢查 bot latency。                                                                     |
+| 指令                                        | 功能                                                                                          |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `@bot <message>`                            | 和 AI chat。需要 bot 檢查檔案或圖片時，可附上支援的附件。                                     |
+| _Threads URL_                               | 自動展開 Threads 貼文與 media；被 tag 時改為連留言一起讀過再回答。                            |
+| `/clean_threads_url <url>`                  | 私密地把 Threads 分享連結還原成貼文本身的網址，轉貼時不會帶出分享者。                         |
+| _Facebook URL_                              | 自動展開公開貼文與圖片；被 tag 時改為讀過貼文再回答。帶 `comment_id` 的連結會多顯示那則留言。 |
+| _抖音 URL_                                  | 自動傳回影片或圖片；被 tag 時改為看過影片再回答。                                             |
+| _Bilibili URL + tag_                        | 看過連結的影片後回答（單獨貼連結不會自動展開）。                                              |
+| `/download_video <url> [quality]`           | 下載影片並傳回 Discord。抖音的圖文貼文會傳回圖片。                                            |
+| `/balance [member]`                         | 私密顯示成員的虛擬歡樂豆餘額、債務、淨資產與 VIP 狀態。                                       |
+| `/vip`                                      | 購買永久 VIP 權益。                                                                           |
+| `/leaderboard`                              | 顯示全域餘額排行榜。                                                                          |
+| `/loss_leaderboard`                         | 顯示今日賭場輸局累計排行榜。                                                                  |
+| `/credit status\|borrow\|call\|repay`       | 處理個人信貸申請、180 秒批准/拒絕/取消按鈕、還款、催收與狀態。                                |
+| `/central_bank status\|borrow\|call\|repay` | 處理央行借款申請、180 秒批准/拒絕/取消按鈕、還款、催收與可放貸額度。                          |
+| `/give <member> <amount>`                   | 轉帳虛擬歡樂豆給其他成員或 bot。                                                              |
+| `/admin refund_tax\|collect_tax`            | 手動調整成員或 bot 餘額；限定 `economy admin` 帳號 flag，不是 Discord 身分組。                |
+| `/games blackjack <bet>`                    | 開一個多人 Blackjack lobby；`bet` 可輸入含逗號的數字，`0` 就是 all in。                       |
+| `/games dragon_gate`                        | 開一個由共享 jackpot pool 支撐的多人射龍門桌。                                                |
+| `/casino`                                   | 顯示賭場系統累積 P&L (跨伺服器)。                                                             |
+| `/pocat`                                    | 顯示 bot 玩家自己的錢包 (等同 `/balance @bot`)。                                              |
+| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 對你記住的內容（regenerate 在背景執行，clear 會先要求確認）。        |
+| `/ping`                                     | 檢查 bot latency。                                                                            |
 
 ## 開發
 

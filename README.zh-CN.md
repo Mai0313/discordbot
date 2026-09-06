@@ -50,7 +50,7 @@ flowchart TD
 
     UP & RT & CX --> R{"分派路线"}
 
-    R -->|QA| L{"贴上的 Threads、<br/>抖音或 Bilibili 帖子"}
+    R -->|QA| L{"贴上的 Threads、Facebook、<br/>抖音或 Bilibili 帖子"}
     L -->|"用户在问它的内容"| LF["抓那条帖子，上传它的媒体"]
     L -->|"只是顺手贴的链接"| LS["完全不抓"]
     LF & LS --> Y{"贴上的 YouTube 视频"}
@@ -82,6 +82,7 @@ flowchart TD
 
 - **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、观看贴上的 YouTube 视频、生成或编辑图片、用提示或附加图片生成短视频、编辑引用的视频、以接续 reply 消息延续长回复，并在可用时使用 model-provided web tools。它还会在后台慢慢积累对你个人偏好的长期记忆（仅自己可见，且按来源做隐私隔离：在某个服务器说的私事不会出现在别的服务器，只有语气偏好与明显无害的一般事实会跨服务器沿用），可用 `/memory show`、`/memory regenerate` 与 `/memory clear` 管理。你也可以直接叫它记住某件事，或告诉它记错了，回复下方会有一行小字说明它记下了什么。
 - **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain，引用别人或自己先前的贴文时也会一起带出被引用的那篇；改成 tag 机器人并附上链接，或是回复别人贴链接的消息时 tag 机器人，它会改为连底下的留言一起读过再回答。
+- **Facebook 解析**：贴上公开的 Facebook 帖子链接，机器人会把帖子、图片与互动数字展开到频道；链接若带 `comment_id`，底下会再显示那一则评论。改成 tag 机器人并附上链接，或在带链接的消息下 tag 它回复，它会读帖子加上页面预先加载的那几则评论再回答。只读得到公开帖子，视频帖子会以链接呈现而不是文件。
 - **抖音解析**：贴上抖音链接，机器人会直接把视频（或图文贴文的图片）传到频道；改成 tag 机器人并附上链接，它会改为看过视频再回答。
 - **Bilibili 问答**：tag 机器人并附上 B 站视频链接，它会看过视频再回答。单独贴链接不会自动展开；`/download_video` 仍可下载文件。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频。抖音也支持，无水印且包含图文贴文。文件太大无法上传时会改以链接提供。
@@ -91,28 +92,29 @@ flowchart TD
 
 ## 指令
 
-| 指令                                        | 功能                                                                                   |
-| ------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `@bot <message>`                            | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。                             |
-| _Threads URL_                               | 自动展开 Threads 贴文与媒体；被 tag 时改为连留言一起读过再回答。                       |
-| `/clean_threads_url <url>`                  | 私密地把 Threads 分享链接还原成贴文本身的网址，转贴时不会带出分享者。                  |
-| _抖音 URL_                                  | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                      |
-| _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                       |
-| `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                     |
-| `/balance [member]`                         | 私密显示成员的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                                |
-| `/vip`                                      | 购买永久 VIP 权益。                                                                    |
-| `/leaderboard`                              | 显示全域余额排行榜。                                                                   |
-| `/loss_leaderboard`                         | 显示今日赌场输钱累计排行榜。                                                           |
-| `/credit status\|borrow\|call\|repay`       | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                         |
-| `/central_bank status\|borrow\|call\|repay` | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。                   |
-| `/give <member> <amount>`                   | 转账虚拟欢乐豆给其他成员或 bot。                                                       |
-| `/admin refund_tax\|collect_tax`            | 手动调整成员或 bot 余额；限定 `economy admin` 账号 flag，不是 Discord 身份组。         |
-| `/games blackjack <bet>`                    | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。                |
-| `/games dragon_gate`                        | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                                         |
-| `/casino`                                   | 显示赌场系统累积 P&L (跨服务器)。                                                      |
-| `/pocat`                                    | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                                       |
-| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。 |
-| `/ping`                                     | 检查 bot latency。                                                                     |
+| 指令                                        | 功能                                                                                          |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `@bot <message>`                            | 和 AI 聊天。需要机器人检查文件或图片时，可附上支持的附件。                                    |
+| _Threads URL_                               | 自动展开 Threads 贴文与媒体；被 tag 时改为连留言一起读过再回答。                              |
+| `/clean_threads_url <url>`                  | 私密地把 Threads 分享链接还原成贴文本身的网址，转贴时不会带出分享者。                         |
+| _Facebook URL_                              | 自动展开公开帖子与图片；被 tag 时改为读过帖子再回答。带 `comment_id` 的链接会多显示那则评论。 |
+| _抖音 URL_                                  | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                             |
+| _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                              |
+| `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                            |
+| `/balance [member]`                         | 私密显示成员的虚拟欢乐豆余额、债务、净资产与 VIP 状态。                                       |
+| `/vip`                                      | 购买永久 VIP 权益。                                                                           |
+| `/leaderboard`                              | 显示全域余额排行榜。                                                                          |
+| `/loss_leaderboard`                         | 显示今日赌场输钱累计排行榜。                                                                  |
+| `/credit status\|borrow\|call\|repay`       | 处理个人信贷申请、180 秒批准/拒绝/取消按钮、还款、催收与状态。                                |
+| `/central_bank status\|borrow\|call\|repay` | 处理央行借款申请、180 秒批准/拒绝/取消按钮、还款、催收与可放贷额度。                          |
+| `/give <member> <amount>`                   | 转账虚拟欢乐豆给其他成员或 bot。                                                              |
+| `/admin refund_tax\|collect_tax`            | 手动调整成员或 bot 余额；限定 `economy admin` 账号 flag，不是 Discord 身份组。                |
+| `/games blackjack <bet>`                    | 开一个多人 Blackjack lobby；`bet` 可输入含逗号的数字，`0` 就是 all in。                       |
+| `/games dragon_gate`                        | 开一个由共享 jackpot pool 支撑的多人射龙门桌。                                                |
+| `/casino`                                   | 显示赌场系统累积 P&L (跨服务器)。                                                             |
+| `/pocat`                                    | 显示 bot 玩家自己的钱包 (等同 `/balance @bot`)。                                              |
+| `/memory show\|regenerate\|clear`           | 私密查看、重建或清除 bot 对你记住的内容（regenerate 在后台执行，clear 会先要求确认）。        |
+| `/ping`                                     | 检查 bot latency。                                                                            |
 
 ## 开发
 
