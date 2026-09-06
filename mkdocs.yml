@@ -54,6 +54,7 @@ nav:
                       - bilibili: Reference/discordbot/cogs/gen_reply/link_sources/bilibili.md
                       - douyin: Reference/discordbot/cogs/gen_reply/link_sources/douyin.md
                       - facebook: Reference/discordbot/cogs/gen_reply/link_sources/facebook.md
+                      - instagram: Reference/discordbot/cogs/gen_reply/link_sources/instagram.md
                       - registry: Reference/discordbot/cogs/gen_reply/link_sources/registry.md
                       - threads: Reference/discordbot/cogs/gen_reply/link_sources/threads.md
                   - answer: Reference/discordbot/cogs/gen_reply/answer.md
@@ -90,6 +91,8 @@ nav:
                   - cog: Reference/discordbot/cogs/parse_douyin/cog.md
               - parse_facebook:
                   - cog: Reference/discordbot/cogs/parse_facebook/cog.md
+              - parse_instagram:
+                  - cog: Reference/discordbot/cogs/parse_instagram/cog.md
               - parse_threads:
                   - cog: Reference/discordbot/cogs/parse_threads/cog.md
               - research:
@@ -148,6 +151,7 @@ nav:
               - facebook: Reference/discordbot/utils/facebook.md
               - file_downloads: Reference/discordbot/utils/file_downloads.md
               - images: Reference/discordbot/utils/images.md
+              - instagram: Reference/discordbot/utils/instagram.md
               - interaction_responses: Reference/discordbot/utils/interaction_responses.md
               - llm: Reference/discordbot/utils/llm.md
               - llm_errors: Reference/discordbot/utils/llm_errors.md

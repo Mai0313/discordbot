@@ -38,6 +38,7 @@ safe anywhere.
 - **YouTube**: mention me with a YouTube link, or reply to a message carrying one, and I watch the video before answering.
 - **Threads**: paste a Threads link on its own and I expand the post, its reply chain, the post it quotes, and its media into the channel. Mention me with the link instead and I read the post together with the comments underneath it, then answer about it.
 - **Facebook**: paste a public Facebook post link on its own and I expand the post, its pictures and its counters into the channel; if the link carries a `comment_id`, I show that one comment under it as well. Mention me with the link instead and I read the post plus whichever comments the page loads up front, then answer about it. I can only read public posts, I cannot get at the video file on a video post, and I never see a whole comment section.
+- **Instagram**: paste a public Instagram post link on its own and I expand the caption, its carousel pictures and its counters into the channel; a link that points at one comment shows that comment under it as well. Mention me with the link instead and I read the post together with its comments, then answer about it. I can only read public accounts, and I hand a Reel over as a link rather than watching it.
 - **Douyin**: paste a Douyin link on its own and I post the video, or the images for a photo post. Mention me with the link instead and I watch it and answer about it.
 - **Bilibili**: mention me with a Bilibili video link and I watch it and answer about it.
 

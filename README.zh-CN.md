@@ -50,7 +50,7 @@ flowchart TD
 
     UP & RT & CX --> R{"分派路线"}
 
-    R -->|QA| L{"贴上的 Threads、Facebook、<br/>抖音或 Bilibili 帖子"}
+    R -->|QA| L{"贴上的 Threads、Facebook、Instagram、<br/>抖音或 Bilibili 帖子"}
     L -->|"用户在问它的内容"| LF["抓那条帖子，上传它的媒体"]
     L -->|"只是顺手贴的链接"| LS["完全不抓"]
     LF & LS --> Y{"贴上的 YouTube 视频"}
@@ -83,6 +83,7 @@ flowchart TD
 - **AI 聊天**：在 server 标记机器人或发送 DM。它可以回答问题、总结近期聊天、检查支持的附件、观看贴上的 YouTube 视频、生成或编辑图片、用提示或附加图片生成短视频、编辑引用的视频、以接续 reply 消息延续长回复，并在可用时使用 model-provided web tools。它还会在后台慢慢积累对你个人偏好的长期记忆（仅自己可见，且按来源做隐私隔离：在某个服务器说的私事不会出现在别的服务器，只有语气偏好与明显无害的一般事实会跨服务器沿用），可用 `/memory show`、`/memory regenerate` 与 `/memory clear` 管理。你也可以直接叫它记住某件事，或告诉它记错了，回复下方会有一行小字说明它记下了什么。
 - **Threads 解析**：贴上 Threads.net 或 Threads.com URL，机器人会展开贴文、媒体与 reply chain，引用别人或自己先前的贴文时也会一起带出被引用的那篇；改成 tag 机器人并附上链接，或是回复别人贴链接的消息时 tag 机器人，它会改为连底下的留言一起读过再回答。
 - **Facebook 解析**：贴上公开的 Facebook 帖子链接，机器人会把帖子、图片与互动数字展开到频道；链接若带 `comment_id`，底下会再显示那一则评论。改成 tag 机器人并附上链接，或在带链接的消息下 tag 它回复，它会读帖子加上页面预先加载的那几则评论再回答。只读得到公开帖子，视频帖子会以链接呈现而不是文件。
+- **Instagram 解析**：贴上公开的 Instagram 帖子链接，机器人会把帖子文字、轮播图片与互动数字展开到频道；链接若指向某一则评论，底下会再显示那一则。改成 tag 机器人并附上链接，或在带链接的消息下 tag 它回复，它会读帖子加上底下的评论再回答。只读得到公开账号，Reel 会以链接呈现而不是看过视频。
 - **抖音解析**：贴上抖音链接，机器人会直接把视频（或图文贴文的图片）传到频道；改成 tag 机器人并附上链接，它会改为看过视频再回答。
 - **Bilibili 问答**：tag 机器人并附上 B 站视频链接，它会看过视频再回答。单独贴链接不会自动展开；`/download_video` 仍可下载文件。
 - **视频下载**：`/download_video` 可从 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支持的网站下载视频。抖音也支持，无水印且包含图文贴文。文件太大无法上传时会改以链接提供。
@@ -98,6 +99,7 @@ flowchart TD
 | _Threads URL_                               | 自动展开 Threads 贴文与媒体；被 tag 时改为连留言一起读过再回答。                              |
 | `/clean_threads_url <url>`                  | 私密地把 Threads 分享链接还原成贴文本身的网址，转贴时不会带出分享者。                         |
 | _Facebook URL_                              | 自动展开公开帖子与图片；被 tag 时改为读过帖子再回答。带 `comment_id` 的链接会多显示那则评论。 |
+| _Instagram URL_                             | 自动展开公开帖子与轮播图片；被 tag 时改为读过帖子再回答。指向评论的链接会多显示那则评论。     |
 | _抖音 URL_                                  | 自动传回视频或图片；被 tag 时改为看过视频再回答。                                             |
 | _Bilibili URL + tag_                        | 看过链接的视频后回答（单独贴链接不会自动展开）。                                              |
 | `/download_video <url> [quality]`           | 下载视频并传回 Discord。抖音的图文贴文会传回图片。                                            |
