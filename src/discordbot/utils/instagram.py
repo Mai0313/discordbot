@@ -69,9 +69,10 @@ INSTAGRAM_URL_RE = re.compile(
 )
 
 # The three post shapes, each optionally prefixed by the author's handle. The shortcode charset
-# is Instagram's base64url alphabet.
+# is Instagram's base64url alphabet. `/reels/audio/<id>/` is a sound page rather than a post and
+# is refused here, since it otherwise parses with `audio` as the shortcode.
 _POST_PATH_RE = re.compile(
-    r"^/(?:(?P<user>[A-Za-z0-9_.]+)/)?(?P<kind>p|reel|reels|tv)/(?P<code>[A-Za-z0-9_-]+)"
+    r"^/(?:(?P<user>[A-Za-z0-9_.]+)/)?(?P<kind>p|reel|reels|tv)/(?!audio/)(?P<code>[A-Za-z0-9_-]+)"
 )
 
 # A comment permalink hangs off the post path. It is parsed but never fetched: see the module

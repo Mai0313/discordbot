@@ -104,9 +104,10 @@ _BROWSER_HEADERS = {
 
 _JSON_SCRIPT_RE = re.compile(r'<script type="application/json"[^>]*>(.*?)</script>', re.DOTALL)
 
-# A comment node's id is base64 of `comment:<post_id>_<comment_id>`, which is what makes
-# "the comment this URL names" an exact match rather than a guess. `legacy_fbid` carries the
-# same trailing id directly and is preferred; the decode is the fallback for a node without it.
+# A comment node's id is base64 of `comment:<post_id>_<comment_id>`, which is what makes both
+# "the comment this URL names" and "the post this comment hangs off" exact matches rather than
+# guesses. `legacy_fbid` carries the trailing id directly and wins for that half; the decode is
+# the fallback for a node without it, and the only source for the leading one.
 _COMMENT_ID_RE = re.compile(r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9]+)")
 
 
@@ -395,22 +396,28 @@ def _time_of(*, value: JsonValue) -> datetime | None:
     return datetime.fromtimestamp(value, tz=UTC) if isinstance(value, int) and value else None
 
 
-def _comment_id_of(*, node: dict[str, Any]) -> str:
-    """The comment's own numeric id, from `legacy_fbid` or by decoding its base64 node id."""
+def _comment_ids_of(*, node: dict[str, Any]) -> tuple[str, str]:
+    """The post a comment hangs off and the comment's own id, either half empty when unreadable.
+
+    Both come out of the base64 node id, which is what lets a group feed's other posts be told
+    apart from the one being read; `legacy_fbid` carries only the comment's own half and wins
+    for it, being there even on a node whose id does not decode.
+    """
     legacy = node.get("legacy_fbid")
-    if isinstance(legacy, (int, str)) and str(legacy).isdigit():
-        return str(legacy)
+    comment_id = str(legacy) if isinstance(legacy, (int, str)) and str(legacy).isdigit() else ""
     node_id = node.get("id")
     if not isinstance(node_id, str):
-        return ""
+        return "", comment_id
     try:
         # Padded because Facebook serves these unpadded; the extra `=` are ignored when the
         # length is already a multiple of four.
         decoded = base64.b64decode(node_id + "==").decode(encoding="utf-8", errors="replace")
     except ValueError:
-        return ""
+        return "", comment_id
     match = _COMMENT_ID_RE.match(string=decoded)
-    return match.group("comment") if match else ""
+    if match is None:
+        return "", comment_id
+    return match.group("post"), comment_id or match.group("comment")
 
 
 class FacebookDownloader(BaseModel):
@@ -519,28 +526,38 @@ class FacebookDownloader(BaseModel):
         return image_urls, video_urls
 
     @staticmethod
-    def _comment_branches(*, payloads: list[Any], post_url: str) -> list[list[FacebookOutput]]:
-        """Every preloaded comment, grouped into branches the way Threads groups replies.
+    def _comment_branches(
+        *, payloads: list[Any], post_url: str, post_id: str
+    ) -> list[list[FacebookOutput]]:
+        """Every preloaded comment on THIS post, grouped into branches the way Threads groups replies.
 
-        A comment carries `depth`, so a reply opens no branch of its own and is threaded behind
-        the comment above it instead; a depth-0 comment starts a new one. What comes back is
-        only what the page chose to preload — a handful — never the post's whole comment section.
+        A reply names its own parent in `comment_direct_parent`, so it is threaded behind that
+        comment rather than behind whichever one the page happened to serialise before it; a
+        comment whose parent is absent from the page opens a branch of its own. What comes back
+        is only what the page chose to preload — a handful — never the whole comment section.
+
+        The scan is page-wide because the comments are not nested under the story node, which on
+        a group feed means walking past the neighbouring posts' comments too; each comment's own
+        id says which post it belongs to, and that is what keeps them out.
 
         The page serialises each comment two or three times, once fully and once as a stub for
         its reply expander, so the fullest version of each wins.
         """
         found: dict[str, FacebookOutput] = {}
-        depths: dict[str, int] = {}
+        parents: dict[str, str] = {}
         for payload in payloads:
             for node in _walk(node=payload):
                 if node.get("__typename") != "Comment":
                     continue
-                comment_id = _comment_id_of(node=node)
+                owner_id, comment_id = _comment_ids_of(node=node)
                 text = _text_of(value=node.get("body"))
                 if not comment_id or not text or comment_id in found:
                     continue
-                depth = node.get("depth")
-                depths[comment_id] = depth if isinstance(depth, int) else 0
+                if owner_id and post_id and owner_id != post_id:
+                    continue
+                parent = node.get("comment_direct_parent")
+                if isinstance(parent, dict):
+                    parents[comment_id] = _comment_ids_of(node=parent)[1]
                 found[comment_id] = FacebookOutput(
                     text=text,
                     url=post_url,
@@ -552,11 +569,16 @@ class FacebookDownloader(BaseModel):
                     comment_id=comment_id,
                 )
         branches: list[list[FacebookOutput]] = []
+        index: dict[str, list[FacebookOutput]] = {}
         for comment_id, comment in found.items():
-            if depths.get(comment_id, 0) > 0 and branches:
-                branches[-1].append(comment)
+            parent = parents.get(comment_id)
+            branch = index.get(parent) if parent else None
+            if branch is None:
+                branch = [comment]
+                branches.append(branch)
             else:
-                branches.append([comment])
+                branch.append(comment)
+            index[comment_id] = branch
         return branches
 
     @staticmethod
@@ -649,7 +671,9 @@ class FacebookDownloader(BaseModel):
         )
         return FacebookConversation(
             chain=[post],
-            reply_branches=self._comment_branches(payloads=payloads, post_url=post_url),
+            reply_branches=self._comment_branches(
+                payloads=payloads, post_url=post_url, post_id=post_id
+            ),
             selected_comment_id=facebook_url.comment_id,
         )
 

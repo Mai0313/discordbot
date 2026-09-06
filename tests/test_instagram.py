@@ -163,6 +163,9 @@ def test_every_accepted_spelling_names_the_same_post(url: str) -> None:
         "https://www.instagram.com/c_cylynn/",
         "https://www.instagram.com/explore/tags/cat/",
         "https://www.instagram.com/accounts/login/",
+        # The sound page a reel's audio links to. It sits under `/reels/` like a post does, so
+        # without the exception it parses with `audio` as the shortcode.
+        "https://www.instagram.com/reels/audio/1234567890123456/",
     ],
 )
 def test_a_url_that_names_no_post_is_refused(url: str) -> None:
