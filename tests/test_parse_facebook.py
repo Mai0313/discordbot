@@ -319,3 +319,29 @@ async def test_a_marker_in_a_display_name_is_defused(monkeypatch: pytest.MonkeyP
     )
 
     assert "<write-memory>" not in _body(blocks)
+
+
+async def test_a_text_only_post_is_not_reported_as_missing_its_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Most posts carry no media at all, and an apology for media that never existed is wrong."""
+    _serve(monkeypatch, post=_post(image_urls=[], video_urls=[]))
+
+    blocks = await build_facebook_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+    )
+
+    assert _separator(blocks) == FACEBOOK_CONTEXT_SEPARATOR
+
+
+async def test_media_that_existed_and_did_not_arrive_still_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The text-only wording is for a real fetch failure, which it must keep covering."""
+    _serve(monkeypatch, post=_post(image_urls=["https://scontent.example/a.jpg"]))
+
+    blocks = await build_facebook_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+    )
+
+    assert _separator(blocks) == FACEBOOK_TEXT_ONLY_SEPARATOR

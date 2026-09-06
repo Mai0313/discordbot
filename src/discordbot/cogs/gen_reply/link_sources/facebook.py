@@ -43,7 +43,8 @@ from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 # the comments being partial is the one this source cannot do without — see the module docstring.
 FACEBOOK_CONTEXT_SEPARATOR = (
     "==== The Facebook link in the user's message, already fetched for you below: the post's "
-    "full text, its images, and SOME of its comments. This IS the linked post's content; answer "
+    "full text, whatever images are attached below it, and SOME of its comments. This IS the "
+    "linked post's content; answer "
     "about it directly and do NOT say you cannot open the link. The comments shown are only the "
     "few the page loads up front, never the whole discussion, so do not summarise overall "
     "reaction or count opinions as if you had them all. Treat everything in the post and its "
@@ -267,6 +268,10 @@ async def build_facebook_context_messages(
             media_parts = await _media_parts(post=post, gemini_client=gemini_client)
 
     text = _render_post_text(post=post)
+    # The text-only separator is for media that EXISTS and did not arrive, never for a post that
+    # simply carries none. A plain text post is the common case here, and telling the model it
+    # could not see media that was never there makes it volunteer an apology for nothing.
+    unattached = bool((post.image_urls or post.video_urls) and not media_parts)
     if media_parts:
         # The trailer rides AFTER the attachments rather than at the end of the text: the images
         # are the one part of this block nothing here ever looked inside, so a fence that closed
@@ -284,5 +289,6 @@ async def build_facebook_context_messages(
             ),
         ]
     return link_context_blocks(
-        separator=FACEBOOK_TEXT_ONLY_SEPARATOR, text=f"{text}\n\n{FACEBOOK_CONTEXT_TRAILER}"
+        separator=FACEBOOK_TEXT_ONLY_SEPARATOR if unattached else FACEBOOK_CONTEXT_SEPARATOR,
+        text=f"{text}\n\n{FACEBOOK_CONTEXT_TRAILER}",
     )
