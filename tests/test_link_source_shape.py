@@ -11,12 +11,13 @@ So the classes here are DISCOVERED rather than listed: every `*Conversation` und
 """
 
 from typing import Any, Protocol, cast
-import pkgutil
-import importlib
+from pkgutil import iter_modules
+from importlib import import_module
 
 import pytest
 from pydantic import BaseModel
 
+# Namespace import: the package object itself is the input, for its __path__.
 import discordbot.utils
 
 
@@ -24,9 +25,10 @@ class _Conversation(Protocol):
     """The surface this module exists to hold the three sources to.
 
     Spelled out as a Protocol because the classes under test are DISCOVERED, so the checker sees
-    only `type[BaseModel]` and every read below would be an `unresolved-attribute`. Writing the
-    contract here rather than silencing each read is what makes a member disappearing from one
-    source a type error in this file as well as a failing assertion.
+    only `type[BaseModel]` and every read below would be an `unresolved-attribute`. It buys the
+    reads their types and nothing more: every value reaches it through a `cast`, which is an
+    unchecked assertion, so a member vanishing from one source is caught by the assertions below
+    and never by the checker.
     """
 
     @property
@@ -69,8 +71,8 @@ _OUTPUT_COMPUTED = frozenset({"is_readable"})
 def _conversation_classes() -> dict[str, type[BaseModel]]:
     """Every `*Conversation` model under `discordbot.utils`, by class name."""
     found: dict[str, type[BaseModel]] = {}
-    for module in pkgutil.iter_modules(path=discordbot.utils.__path__):
-        imported = importlib.import_module(name=f"discordbot.utils.{module.name}")
+    for module in iter_modules(path=discordbot.utils.__path__):
+        imported = import_module(name=f"discordbot.utils.{module.name}")
         for name, value in vars(imported).items():
             if not name.endswith("Conversation") or not isinstance(value, type):
                 continue
@@ -79,13 +81,15 @@ def _conversation_classes() -> dict[str, type[BaseModel]]:
     return found
 
 
-def _build(*, cls: type[BaseModel]) -> tuple[_Conversation, BaseModel, BaseModel]:
-    """A one-post, one-reply conversation of the discovered class, plus the two that built it."""
+def _build(
+    *, cls: type[BaseModel], chain_length: int = 1
+) -> tuple[_Conversation, list[BaseModel], BaseModel]:
+    """A conversation of the discovered class, plus the chain and the reply that built it."""
     output = cast("Any", _output_model(cls=cls))
-    post = output(text="the post", url="u")
+    chain = [output(text=f"chain post {index}", url="u") for index in range(chain_length)]
     reply = output(text="a comment", url="u")
-    conversation = cast("Any", cls)(chain=[post], reply_branches=[[reply]])
-    return cast("_Conversation", conversation), post, reply
+    conversation = cast("Any", cls)(chain=chain, reply_branches=[[reply]])
+    return cast("_Conversation", conversation), chain, reply
 
 
 def _output_model(*, cls: type[BaseModel]) -> type[BaseModel]:
@@ -93,7 +97,7 @@ def _output_model(*, cls: type[BaseModel]) -> type[BaseModel]:
     return cast("Any", cls.model_fields["chain"].annotation).__args__[0]
 
 
-def _properties(cls: type) -> set[str]:
+def _properties(*, cls: type) -> set[str]:
     """The public plain properties declared on the class itself."""
     return {
         name
@@ -118,7 +122,7 @@ def test_every_conversation_carries_the_same_surface(name: str) -> None:
 
     assert set(cls.model_fields) == _CONVERSATION_FIELDS
     assert set(cls.model_computed_fields) == _CONVERSATION_COMPUTED
-    assert _properties(cls) >= _CONVERSATION_PROPERTIES
+    assert _properties(cls=cls) >= _CONVERSATION_PROPERTIES
 
 
 @pytest.mark.parametrize("name", sorted(_conversation_classes()))
@@ -135,7 +139,7 @@ def test_every_output_carries_the_common_core(name: str) -> None:
 def test_a_dump_carries_each_comment_once(name: str) -> None:
     """`comments` re-slices `reply_branches`, so serializing it doubles every comment."""
     cls = _conversation_classes()[name]
-    conversation, _post, _reply = _build(cls=cls)
+    conversation, _chain, _reply = _build(cls=cls)
 
     dumped = cls.model_dump(cast("Any", conversation))
 
@@ -146,23 +150,26 @@ def test_a_dump_carries_each_comment_once(name: str) -> None:
 
 @pytest.mark.parametrize("name", sorted(_conversation_classes()))
 def test_target_is_the_last_chain_entry_and_posts_is_everything(name: str) -> None:
-    """`chain` stays a list on Facebook and Instagram, where it is always one element, so that
-    `target` and `posts` mean the same on all three.
+    """`target` is the chain's LAST entry, which is the whole reason the field is a list.
+
+    Only Threads ever serves ancestors, so a one-element chain would pin nothing here and leave
+    "the only entry" passing for "the last one". Facebook and Instagram are handed two anyway:
+    the accessor has to mean the same thing everywhere, whatever their pages actually serve.
     """
     cls = _conversation_classes()[name]
-    conversation, post, reply = _build(cls=cls)
+    conversation, chain, reply = _build(cls=cls, chain_length=2)
 
-    assert conversation.target is post
+    assert conversation.target is chain[-1]
     assert conversation.comments == [reply]
-    assert conversation.posts == [post, reply]
+    assert conversation.posts == [*chain, reply]
 
 
-def test_an_empty_conversation_reads_as_unreadable_everywhere() -> None:
+@pytest.mark.parametrize("name", sorted(_conversation_classes()))
+def test_an_empty_conversation_reads_as_unreadable(name: str) -> None:
     """The degraded outcome every source shares: a login wall, a deletion, a private account."""
-    for cls in _conversation_classes().values():
-        empty = cast("_Conversation", cls())
+    empty = cast("_Conversation", _conversation_classes()[name]())
 
-        assert empty.target is None
-        assert empty.selected_comment is None
-        assert empty.comments == []
-        assert empty.posts == []
+    assert empty.target is None
+    assert empty.selected_comment is None
+    assert empty.comments == []
+    assert empty.posts == []
