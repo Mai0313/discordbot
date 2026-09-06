@@ -865,7 +865,15 @@ class ThreadsConversation(BaseModel):
     @computed_field
     @cached_property
     def target(self) -> ThreadsOutput | None:
-        """The linked post itself, or None when the post could not be read."""
+        """The linked post itself, or None when the post could not be read.
+
+        Cached, which makes "a conversation is built once and never mutated" load-bearing
+        rather than merely true of the code today: pydantic invalidates a `cached_property` on
+        neither an in-place `chain.append(...)` nor a `chain = [...]` assignment, so a mutated
+        conversation keeps answering with its old target. Every source builds both lists as
+        locals and hands them to the constructor finished, and nothing writes to either
+        afterwards. Media downloads run before the object exists, not after.
+        """
         return self.chain[-1] if self.chain else None
 
     @computed_field

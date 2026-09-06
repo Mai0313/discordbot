@@ -306,7 +306,11 @@ class FacebookConversation(BaseModel):
     @computed_field
     @cached_property
     def target(self) -> FacebookOutput | None:
-        """The post the link named, or None when the page carried none."""
+        """The post the link named, or None when the page carried none.
+
+        Cached, so the conversation must be built once and never mutated afterwards; the same
+        rule on `ThreadsConversation.target` has why pydantic makes that load-bearing.
+        """
         return self.chain[-1] if self.chain else None
 
     @property
