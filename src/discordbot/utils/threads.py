@@ -774,10 +774,11 @@ class ThreadsOutput(BaseModel):
         author_icon_url: Post author profile picture URL.
         reply_to_username: Username this post replies to, if any.
         like_count: Number of likes.
-        reply_count: Number of direct replies.
+        comment_count: Number of direct replies, named for the concept the three sources
+            share rather than for Threads' own word for it.
         repost_count: Number of reposts.
         quote_count: Number of quote posts.
-        reshare_count: Total reshare count.
+        share_count: Total reshare count, the same concept Facebook counts as shares.
         taken_at: Post creation time.
         quoted: The post this one quotes, when it quotes a readable one.
         quoted_unavailable: Whether this post quotes a post Threads reports as gone.
@@ -800,10 +801,10 @@ class ThreadsOutput(BaseModel):
         default="", description="Username this post replies to, empty when it replies to nobody"
     )
     like_count: int = Field(default=0, description="Number of likes")
-    reply_count: int = Field(default=0, description="Number of direct replies")
+    comment_count: int = Field(default=0, description="Number of direct replies")
     repost_count: int = Field(default=0, description="Number of reposts")
     quote_count: int = Field(default=0, description="Number of quote posts")
-    reshare_count: int = Field(default=0, description="Total reshare count")
+    share_count: int = Field(default=0, description="Total reshare count")
     taken_at: datetime | None = Field(default=None, description="Post creation time")
     # Its own media stays URL-only in this walk: `video_paths` is always empty here because
     # `_build_output` never downloads for a quoted post, which is also what keeps `parse` and
@@ -820,6 +821,20 @@ class ThreadsOutput(BaseModel):
         examples=[False],
     )
 
+    @computed_field
+    @cached_property
+    def is_readable(self) -> bool:
+        """Whether enough came back to be worth showing.
+
+        Deliberately NOT the rule `Post.is_readable` uses further up this module, which also
+        honours Threads' own unavailable flag and counts a bare author or shortcode as enough,
+        having a permalink to fall back on. That one gates the parse; this is the member the
+        Facebook and Instagram expansions gate on, and it is here so a caller written against
+        any of the three reads one name. `parse_threads/cog.py` answers the same question its
+        own way and does not read this, so the two rules cannot disagree in production today.
+        """
+        return bool(self.text or self.image_urls or self.video_urls)
+
     def unlink(self) -> None:
         """Deletes downloaded video files for this post."""
         for path in self.video_paths:
@@ -829,10 +844,19 @@ class ThreadsOutput(BaseModel):
 class ThreadsConversation(BaseModel):
     """A parsed Threads post: its reply chain plus the comments underneath it.
 
+    `FacebookConversation` and `InstagramConversation` carry this exact surface — the same three
+    fields, the same two computed fields and the same two properties — so a caller written
+    against one source reads the others without learning a second set of rules, and building AI
+    input from any of them is one function rather than three. `tests/test_link_source_shape.py`
+    fails when they drift apart.
+
     Attributes:
         chain: The chain ending at the linked post, ordered `[root, ..., parent, target]`.
         reply_branches: One list per reply branch under the target, each ordered from the
             direct reply outward, so an item's index in its branch is its nesting depth.
+        selected_comment_id: Always empty on Threads, and carried only so the field means the
+            same on all three. Threads gives every reply a post URL of its own, so a link to one
+            makes it this chain's `target` rather than a comment singled out under another post.
     """
 
     chain: list[ThreadsOutput] = Field(
@@ -842,24 +866,45 @@ class ThreadsConversation(BaseModel):
         default_factory=list,
         description="One list per reply branch under the target, direct reply first",
     )
+    selected_comment_id: str = Field(
+        default="", description="Always empty on Threads; a linked reply becomes the target"
+    )
 
-    @property
+    @computed_field
+    @cached_property
     def target(self) -> ThreadsOutput | None:
-        """The linked post itself.
+        """The linked post itself, or None when the post could not be read.
 
-        Returns:
-            The last chain entry, or None when the post could not be read.
+        Cached, which makes "a conversation is built once and never mutated" load-bearing
+        rather than merely true of the code today: pydantic invalidates a `cached_property` on
+        neither an in-place `chain.append(...)` nor a `chain = [...]` assignment, so a mutated
+        conversation keeps answering with its old target. Every source builds both lists as
+        locals and hands them to the constructor finished, and nothing writes to either
+        afterwards. Media downloads run before the object exists, not after.
         """
         return self.chain[-1] if self.chain else None
 
+    @computed_field
+    @cached_property
+    def selected_comment(self) -> ThreadsOutput | None:
+        """Always None on Threads. See `selected_comment_id` for why it cannot be anything else."""
+        return None
+
+    @property
+    def comments(self) -> list[ThreadsOutput]:
+        """Every reply, flattened out of the branches in page order.
+
+        A plain property rather than a computed field, on all three sources: it re-slices data
+        `reply_branches` already carries, so serializing it would put every reply in a dump
+        twice. The two computed fields above resolve a POINTER instead, which a dump cannot
+        derive on its own and which is what a hand test wants to see.
+        """
+        return [reply for branch in self.reply_branches for reply in branch]
+
     @property
     def posts(self) -> list[ThreadsOutput]:
-        """Every post the page yielded.
-
-        Returns:
-            The chain oldest first, then the replies in page order.
-        """
-        return [*self.chain, *(post for branch in self.reply_branches for post in branch)]
+        """Every post the page yielded: the chain oldest first, then the replies in page order."""
+        return [*self.chain, *self.comments]
 
     def unlink(self) -> None:
         """Deletes every downloaded video file this conversation owns."""
@@ -1281,10 +1326,12 @@ class ThreadsDownloader(BaseModel):
             author_icon_url=post.author_icon_url,
             reply_to_username=post.reply_to_username,
             like_count=post.like_count or 0,
-            reply_count=post.reply_count,
+            # `Post` keeps Threads' own words for these because it mirrors Threads' schema;
+            # the output model is where the three sources converge on one vocabulary.
+            comment_count=post.reply_count,
             repost_count=post.repost_count,
             quote_count=post.quote_count,
-            reshare_count=post.reshare_count,
+            share_count=post.reshare_count,
             taken_at=taken_at,
             quoted=quoted,
             # Only ever set when the post DOES quote something and that something came back

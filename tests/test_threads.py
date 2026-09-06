@@ -698,7 +698,7 @@ def test_a_quote_post_carries_the_whole_quoted_post(
     assert quoted.text == "The original argument"
     assert quoted.image_urls == ["https://cdn.example/QUOTED.jpg"]
     assert quoted.like_count == 5
-    assert quoted.reply_count == 1
+    assert quoted.comment_count == 1
     # `canonical_url` is null on every quoted post Threads ships, so the permalink is rebuilt.
     assert quoted.url == "https://www.threads.com/@other_author/post/QUOTED"
 
