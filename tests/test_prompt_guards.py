@@ -6,11 +6,12 @@ kill-switches, and its regexes are blind to backticks and code fences. So any
 / `<forget-memory>` / `<write-server-memory>` block the model writes fires for real and is cut out
 of what the user reads, whatever the model wrapped it in. The memory tags are the quiet ones: they
 spend nothing and render nothing, and what they reach outlives the conversation.
-Quoted linked content is attacker-supplied text, and `_defuse_markers` rewrites those tags on the
-Threads path ONLY: a Douyin caption, a Bilibili title, a page fetched through `urlContext`, a
-transcript and an uploaded file all reach the model undefused. The prompt rule telling the model
-never to echo such a tag verbatim is what covers them, so it is the load-bearing half of that
-defence rather than advice.
+Quoted linked content is attacker-supplied text, and `defuse_markers` rewrites those tags on the
+two DISCUSSION paths only, Threads and Facebook, each of which hands the model thousands of
+characters written by strangers: a Douyin caption, a Bilibili title, a page fetched through
+`urlContext`, a transcript and an uploaded file all reach the model undefused. The prompt rule
+telling the model never to echo such a tag verbatim is what covers them, so it is the load-bearing
+half of that defence rather than advice.
 
 It is pinned here because its absence is invisible to the rest of the suite: every test passed
 while an earlier wording of this same bullet actively licensed the echo ("reproduce it as plain
