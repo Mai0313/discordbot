@@ -15,6 +15,37 @@ DEFAULT_EMBED_SPACER_HEIGHT: Final[int] = 1
 _TRANSPARENT_RGBA: Final[tuple[int, int, int, int]] = (0, 0, 0, 0)
 
 
+def utf16_length(*, value: str) -> int:
+    """Counts UTF-16 code units, the conservative reading of Discord's "characters".
+
+    Discord's docs never define which unit its 4096-per-description and 6000-per-message limits
+    count, so an emoji is priced at the two units it costs on the wire rather than the one
+    `len` sees. `parse_threads/cog.py` predates this and keeps its own copy.
+    """
+    return sum(2 if ord(character) > 0xFFFF else 1 for character in value)
+
+
+def clip_to_utf16_limit(*, text: str, limit: int, notice: str) -> str:
+    """Returns `text` within `limit` UTF-16 units, ending in `notice` when it had to cut.
+
+    The cut is marked so a truncated post never reads as a whole one. A limit with no room for
+    the notice yields the notice alone: the alternative is the negative slice a plain
+    `text[: limit - len(notice)]` takes, which silently returns MORE than was asked for.
+    """
+    if utf16_length(value=text) <= limit:
+        return text
+    room = max(limit - utf16_length(value=notice), 0)
+    kept: list[str] = []
+    spent = 0
+    for character in text:
+        cost = 2 if ord(character) > 0xFFFF else 1
+        if spent + cost > room:
+            break
+        kept.append(character)
+        spent += cost
+    return f"{''.join(kept)}{notice}"
+
+
 def embed_spacer_url(*, filename: str = DEFAULT_EMBED_SPACER_FILENAME) -> str:
     """Returns the attachment URL for a transparent embed spacer image."""
     return f"attachment://{filename}"

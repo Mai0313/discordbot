@@ -6,7 +6,9 @@ from nextcord import Embed
 
 from discordbot.utils.discord_embeds import (
     DEFAULT_EMBED_SPACER_FILENAME,
+    utf16_length,
     embed_spacer_url,
+    clip_to_utf16_limit,
     embed_spacer_payload,
     build_embed_spacer_file,
     apply_embed_spacer_image,
@@ -215,3 +217,28 @@ def test_embed_spacer_payload_removes_stale_spacer_when_file_limit_is_full() -> 
 
     assert payload["files"] == files
     assert not embed.image.url
+
+
+def test_an_emoji_costs_the_two_units_discord_charges_for_it() -> None:
+    """`len` sees one code point where the wire carries two."""
+    assert utf16_length(value="ab") == 2
+    assert utf16_length(value="🐈") == 2
+    assert utf16_length(value="貓") == 1
+
+
+def test_text_within_the_limit_is_returned_untouched() -> None:
+    """Nothing is marked when nothing was cut."""
+    assert clip_to_utf16_limit(text="short", limit=100, notice="…cut") == "short"
+
+
+def test_a_clip_lands_inside_the_limit_when_every_character_costs_two() -> None:
+    """Slicing by `len` would leave twice the units the caller asked for."""
+    clipped = clip_to_utf16_limit(text="🐈" * 500, limit=100, notice="…cut")
+
+    assert utf16_length(value=clipped) <= 100
+    assert clipped.endswith("…cut")
+
+
+def test_a_limit_too_small_for_the_notice_yields_the_notice_alone() -> None:
+    """The negative slice this replaces returned the WHOLE string for a limit of zero."""
+    assert clip_to_utf16_limit(text="x" * 3000, limit=0, notice="…cut") == "…cut"

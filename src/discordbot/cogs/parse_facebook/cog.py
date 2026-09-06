@@ -35,7 +35,7 @@ from discordbot.utils.facebook import (
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import FACEBOOK_EXPAND_TIMEOUT_SECONDS
-from discordbot.utils.discord_embeds import embed_spacer_payload
+from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit, embed_spacer_payload
 
 # Facebook's own blue, so the card reads as a Facebook post at a glance, and a neutral grey for
 # a comment so the two never look like the same kind of thing. Deliberately NOT in
@@ -60,21 +60,14 @@ _EMBED_DESCRIPTION_LIMIT = 4096
 # rather than trimming it. `parse_threads/cog.py` carries the same limit for the same reason.
 _EMBED_TOTAL_LENGTH_LIMIT = 6000
 
-# What the post gives up so a comment card always fits beside it. The slack on top covers the
-# footer, the author line, and the fact that Discord counts UTF-16 units, so one emoji costs two
-# where `len` counts one.
+# What the post gives up so a comment card always fits beside it. Every measurement here is in
+# UTF-16 units (`utf16_length`), Discord's own; the slack on top covers what the budget does not
+# measure at all — the comment card's own author line and the blank line under its header.
 _COMMENT_RESERVE = 2000
 _BUDGET_SLACK = 400
 _TRUNCATION_NOTICE = "\n\n⋯（全文請看原貼文）"
 _VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
 _COMMENT_HEADER = "💬 **指定的留言**"
-
-
-def _clipped(*, text: str, limit: int) -> str:
-    """Returns `text` within `limit`, marking the cut so a truncated post never reads as whole."""
-    if len(text) <= limit:
-        return text
-    return text[: limit - len(_TRUNCATION_NOTICE)] + _TRUNCATION_NOTICE
 
 
 class FacebookCogs(commands.Cog):
@@ -103,15 +96,19 @@ class FacebookCogs(commands.Cog):
         placeholder, which is what keeps the line from having a hole in it.
         """
         parts = [post.group_name] if post.group_name else []
-        if post.like_count:
+        if post.like_count > 0:
             parts.append(f"👍 {post.like_count:,}")
-        if post.comment_count:
+        if post.comment_count > 0:
             parts.append(f"💬 {post.comment_count:,}")
-        if post.share_count:
+        if post.share_count > 0:
             parts.append(f"↗️ {post.share_count:,}")
-        remaining = len(post.image_urls) - shown_images
-        if remaining > 0:
-            parts.append(f"🖼️ 另有 {remaining} 張")
+        remaining_images = len(post.image_urls) - shown_images
+        if remaining_images > 0:
+            parts.append(f"🖼️ 另有 {remaining_images} 張")
+        # Only the first video gets a link, so the rest would otherwise go unmentioned.
+        remaining_videos = len(post.video_urls) - 1
+        if remaining_videos > 0:
+            parts.append(f"🎬 另有 {remaining_videos} 部影片")
         return " · ".join(parts)
 
     @staticmethod
@@ -125,7 +122,11 @@ class FacebookCogs(commands.Cog):
         is what keeps it OUT of the image gallery below. Discord merges embeds by URL, so
         reusing the post's here would fold the comment into the pictures.
         """
-        body = _clipped(text=comment.text, limit=max(budget - len(_COMMENT_HEADER), 0))
+        body = clip_to_utf16_limit(
+            text=comment.text,
+            limit=budget - utf16_length(value=_COMMENT_HEADER),
+            notice=_TRUNCATION_NOTICE,
+        )
         # `&` when the post URL already carries a query, which `permalink.php` links always do.
         joiner = "&" if "?" in post_url else "?"
         embed = Embed(
@@ -155,10 +156,12 @@ class FacebookCogs(commands.Cog):
             return []
         hint = _VIDEO_HINT.format(url=post.video_urls[0]) if post.video_urls else ""
         comment = conversation.selected_comment
-        post_limit = _EMBED_DESCRIPTION_LIMIT - len(hint)
+        post_limit = _EMBED_DESCRIPTION_LIMIT - utf16_length(value=hint)
         if comment is not None:
             post_limit = min(post_limit, _EMBED_TOTAL_LENGTH_LIMIT - _COMMENT_RESERVE)
-        description = _clipped(text=post.text, limit=post_limit) + hint
+        description = (
+            clip_to_utf16_limit(text=post.text, limit=post_limit, notice=_TRUNCATION_NOTICE) + hint
+        )
         main = Embed(
             description=description or None,
             url=post.url,
@@ -180,7 +183,7 @@ class FacebookCogs(commands.Cog):
             embeds.append(extra)
         if comment is not None:
             spent = sum(
-                len(text)
+                utf16_length(value=text)
                 for text in (description, main.footer.text, main.author.name)
                 if isinstance(text, str)
             )

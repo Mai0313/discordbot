@@ -12,6 +12,7 @@ from nextcord import Embed
 
 from discordbot.typings.emojis import INSTAGRAM_EMOJI
 from discordbot.utils.instagram import InstagramOutput, InstagramConversation
+from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_instagram.cog import InstagramCogs
 
 from tests.helpers.casting import as_bot, as_message
@@ -326,3 +327,69 @@ async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
 
     assert message.replies == []
     assert message.reactions[-1] == _RED
+
+
+async def test_the_video_link_points_at_the_post_not_the_expiring_cdn_url() -> None:
+    """`video_versions[0].url` is signed and dies within days; the embed carrying it does not."""
+    clip = "https://instagram.example/clip.mp4?oe=DEADBEEF"
+    cog, _ = _cog(post=_post(image_urls=[], video_urls=[clip]))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    description = _embeds(message)[0].description
+    assert description is not None
+    assert clip not in description
+    assert _URL in description
+
+
+async def test_a_mixed_carousel_counts_the_videos_nothing_linked() -> None:
+    """Counting images alone reported four clips as nothing at all."""
+    cog, _ = _cog(
+        post=_post(
+            image_urls=[f"https://instagram.example/{n}.jpg" for n in range(5)],
+            video_urls=[f"https://instagram.example/{n}.mp4" for n in range(5)],
+        )
+    )
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    footer = _embeds(message)[0].footer.text
+    assert footer is not None
+    assert "🖼️ 另有 1 張" in footer
+    assert "🎬 另有 4 部影片" in footer
+
+
+async def test_a_post_full_of_emoji_is_clipped_by_the_units_discord_counts() -> None:
+    """Discord prices an emoji at the two UTF-16 units it costs, where `len` sees one."""
+    cog, _ = _cog(post=_post(text="🐈" * 4200))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    description = _embeds(message)[0].description
+    assert description is not None
+    assert utf16_length(value=description) <= 4096
+
+
+async def test_a_post_whose_author_hid_its_likes_shows_no_like_count() -> None:
+    """Instagram serves `-1` there rather than omitting the field."""
+    cog, _ = _cog(post=_post(like_count=-1))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    footer = _embeds(message)[0].footer.text
+    assert footer is not None
+    assert "❤️" not in footer
+
+
+async def test_an_author_with_only_a_display_name_still_gets_a_line() -> None:
+    """Dropping the line entirely would read as an anonymous post."""
+    cog, _ = _cog(post=_post(author_name="", author_full_name="晏凌"))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert _embeds(message)[0].author.name == "晏凌"

@@ -12,6 +12,7 @@ from nextcord import Embed
 
 from discordbot.typings.emojis import FACEBOOK_EMOJI
 from discordbot.utils.facebook import FacebookOutput, FacebookConversation
+from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 
 from tests.helpers.casting import as_bot, as_message
@@ -345,3 +346,29 @@ async def test_the_comment_link_joins_an_existing_query_correctly() -> None:
     assert comment_url is not None
     assert comment_url.count("?") == 1
     assert comment_url.endswith("&comment_id=222")
+
+
+async def test_a_post_full_of_emoji_is_clipped_by_the_units_discord_counts() -> None:
+    """A Facebook post runs to 63,206 characters, so an emoji-heavy one reaches this easily."""
+    cog, _ = _cog(post=_post(text="🐈" * 4200))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    description = _embeds(message)[0].description
+    assert description is not None
+    assert utf16_length(value=description) <= 4096
+
+
+async def test_an_album_counts_the_videos_nothing_linked() -> None:
+    """Only the first video gets a hint, so the rest would go unmentioned."""
+    cog, _ = _cog(
+        post=_post(video_urls=[f"https://www.facebook.com/watch/?v={n}" for n in range(3)])
+    )
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    footer = _embeds(message)[0].footer.text
+    assert footer is not None
+    assert "🎬 另有 2 部影片" in footer

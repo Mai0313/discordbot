@@ -35,7 +35,7 @@ from discordbot.utils.instagram import (
 )
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import INSTAGRAM_EXPAND_TIMEOUT_SECONDS
-from discordbot.utils.discord_embeds import embed_spacer_payload
+from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit, embed_spacer_payload
 
 # Instagram's own accent, so the card reads as an Instagram post at a glance, and the same
 # neutral grey `parse_facebook` gives a comment. Deliberately NOT in `typings/colors.py`: that
@@ -57,9 +57,9 @@ _MAX_IMAGES = 4
 _EMBED_DESCRIPTION_LIMIT = 4096
 _EMBED_TOTAL_LENGTH_LIMIT = 6000
 
-# What the post gives up so a comment card always fits beside it, plus the slack that covers the
-# footer, the author line, and the fact that Discord counts UTF-16 units, so one emoji costs two
-# where `len` counts one.
+# What the post gives up so a comment card always fits beside it. Every measurement here is in
+# UTF-16 units (`utf16_length`), Discord's own; the slack on top covers what the budget does not
+# measure at all — the comment card's own author line and the blank line under its header.
 _COMMENT_RESERVE = 2000
 _BUDGET_SLACK = 400
 
@@ -68,18 +68,17 @@ _VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
 _COMMENT_HEADER = "💬 **指定的留言**"
 
 
-def _clipped(*, text: str, limit: int) -> str:
-    """Returns `text` within `limit`, marking the cut so a truncated post never reads as whole."""
-    if len(text) <= limit:
-        return text
-    return text[: limit - len(_TRUNCATION_NOTICE)] + _TRUNCATION_NOTICE
-
-
 def _author_label(*, post: InstagramOutput) -> str:
-    """The author line: the display name when the page carried one, always with the handle."""
+    """The author line: the display name when the page carried one, always with the handle.
+
+    Whichever half the page served is used on its own rather than dropping the line, since an
+    author line missing entirely reads as an anonymous post.
+    """
     if post.author_full_name and post.author_name:
         return f"{post.author_full_name} (@{post.author_name})"
-    return f"@{post.author_name}" if post.author_name else ""
+    if post.author_name:
+        return f"@{post.author_name}"
+    return post.author_full_name
 
 
 class InstagramCogs(commands.Cog):
@@ -101,15 +100,25 @@ class InstagramCogs(commands.Cog):
 
     @staticmethod
     def _footer_text(*, post: InstagramOutput, shown_images: int) -> str:
-        """The counter line, plus what the image cap left behind."""
+        """The counter line, plus what the image cap and the single video hint left behind.
+
+        The videos are counted separately from the images because a mixed carousel is ordinary
+        on Instagram and only its first video gets a link: counting images alone would report a
+        five-image, five-video post as having one picture left over and stay silent about four
+        clips. A count is shown only when it is positive, since Instagram serves `-1` rather
+        than a number for a post whose author hid its likes.
+        """
         parts: list[str] = []
-        if post.like_count:
+        if post.like_count > 0:
             parts.append(f"❤️ {post.like_count:,}")
-        if post.comment_count:
+        if post.comment_count > 0:
             parts.append(f"💬 {post.comment_count:,}")
-        remaining = len(post.image_urls) - shown_images
-        if remaining > 0:
-            parts.append(f"🖼️ 另有 {remaining} 張")
+        remaining_images = len(post.image_urls) - shown_images
+        if remaining_images > 0:
+            parts.append(f"🖼️ 另有 {remaining_images} 張")
+        remaining_videos = len(post.video_urls) - 1
+        if remaining_videos > 0:
+            parts.append(f"🎬 另有 {remaining_videos} 部影片")
         return " · ".join(parts)
 
     @staticmethod
@@ -123,7 +132,11 @@ class InstagramCogs(commands.Cog):
         keeps it OUT of the image gallery, since Discord merges embeds by URL. Instagram will not
         serve that URL's payload to this bot, but it is the right thing to hand a reader.
         """
-        body = _clipped(text=comment.text, limit=max(budget - len(_COMMENT_HEADER), 0))
+        body = clip_to_utf16_limit(
+            text=comment.text,
+            limit=budget - utf16_length(value=_COMMENT_HEADER),
+            notice=_TRUNCATION_NOTICE,
+        )
         embed = Embed(
             description=f"{_COMMENT_HEADER}\n\n{body}",
             url=f"{post_url.rstrip('/')}/c/{comment.comment_id}/",
@@ -146,14 +159,20 @@ class InstagramCogs(commands.Cog):
         post = conversation.target
         if post is None:
             return []
+        # A reel renders as a card with nothing in it otherwise: its media is the clip, and this
+        # cog uploads nothing, so a link is the whole of what can be shown. It points at the
+        # POST rather than at `video_urls[0]`, which is Instagram's own signed CDN URL and
+        # expires within days — the embed does not, so the link in it has to outlive the fetch.
         # The hint's length is reserved BEFORE the clip rather than appended after, or a post
         # already at the ceiling carries the hint past it and Discord rejects the send.
-        hint = _VIDEO_HINT.format(url=post.video_urls[0]) if post.video_urls else ""
+        hint = _VIDEO_HINT.format(url=post.url) if post.video_urls else ""
         comment = conversation.selected_comment
-        post_limit = _EMBED_DESCRIPTION_LIMIT - len(hint)
+        post_limit = _EMBED_DESCRIPTION_LIMIT - utf16_length(value=hint)
         if comment is not None:
             post_limit = min(post_limit, _EMBED_TOTAL_LENGTH_LIMIT - _COMMENT_RESERVE)
-        description = _clipped(text=post.text, limit=post_limit) + hint
+        description = (
+            clip_to_utf16_limit(text=post.text, limit=post_limit, notice=_TRUNCATION_NOTICE) + hint
+        )
         main = Embed(
             description=description or None,
             url=post.url,
@@ -174,7 +193,7 @@ class InstagramCogs(commands.Cog):
             embeds.append(extra)
         if comment is not None:
             spent = sum(
-                len(text)
+                utf16_length(value=text)
                 for text in (description, main.footer.text, main.author.name)
                 if isinstance(text, str)
             )
