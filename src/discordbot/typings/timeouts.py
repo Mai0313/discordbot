@@ -208,6 +208,12 @@ DOUYIN_EXPAND_TIMEOUT_SECONDS: Final[float] = 120.0
 # the very same walk (`LINK_CONTEXT_GRACE_SECONDS`) rather than to a second guess.
 THREADS_EXPAND_TIMEOUT_SECONDS: Final[float] = 180.0
 
+# The same bound for the Facebook expansion, and a third of the Threads one because the work is
+# a third of it: ONE page fetch, then parsing, with no conversation walk and no download at all
+# (the images stay URLs Discord fetches itself). What it really guards is the parse, since the
+# page is ~950KB of JSON that a pathological payload could make slow to walk.
+FACEBOOK_EXPAND_TIMEOUT_SECONDS: Final[float] = 60.0
+
 # Bound on `/download_video`'s whole download step, both the yt-dlp and the Douyin branch.
 # Wider than an auto-expansion because the user asked for this file by name and may be after a
 # long one, and sized under Discord's 15-minute deferred-interaction token so the failure edit
@@ -238,6 +244,11 @@ THREADS_PAGE_TIMEOUT_SECONDS: Final[int] = 15
 # the download is streamed, so `requests` reads this as a gap-between-chunks bound rather than
 # a whole-request one, and a slow-drip CDN can hold it open indefinitely.
 THREADS_MEDIA_READ_TIMEOUT_SECONDS: Final[int] = 15
+
+# Bound on the single Facebook page fetch a post costs. Wider than the Threads one because the
+# response is ~950KB rather than a few tens of KB, and there is only ever one of them per read,
+# so nothing queues behind it.
+FACEBOOK_PAGE_TIMEOUT_SECONDS: Final[int] = 20
 
 # 10s caps the history-render I/O tail: a URL taking longer is almost always a dead/slow CDN
 # that would fail anyway, and a 30s wait let one such source dominate the whole render. Healthy

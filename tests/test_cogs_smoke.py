@@ -29,6 +29,7 @@ from discordbot.utils.threads import ThreadsOutput, ThreadsConversation
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.video.cog import VideoCogs
 from discordbot.typings.config import LoggingConfig
+from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.typings.economy import (
     PortfolioView,
     LoanLenderType,
@@ -575,8 +576,8 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     assert success_message.replies[0]["files"]
     assert success_message.reactions[-1] == "<:greencheck:1517565102424068226>"
     # The read marker rides beside the status chain, which only ever removes its own reaction.
-    assert success_message.reactions[0] == "<:threads:1535657820668559380>"
-    assert all(emoji != "<:threads:1535657820668559380>" for emoji, _ in success_message.removed)
+    assert success_message.reactions[0] == THREADS_EMOJI
+    assert all(emoji != THREADS_EMOJI for emoji, _ in success_message.removed)
     # The parse now carries the comments too, but the expansion shows the chain only: the
     # 10-embed cap belongs to the linked post, and a comment would push its own images out.
     assert all(

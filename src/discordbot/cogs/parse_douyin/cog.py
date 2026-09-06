@@ -45,7 +45,7 @@ from discordbot.utils.douyin import (
     douyin_failure_message,
     douyin_fetch_semaphore,
 )
-from discordbot.typings.douyin import DouyinConfig
+from discordbot.typings.emojis import DOUYIN_EMOJI
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
@@ -69,7 +69,6 @@ class DouyinCogs(commands.Cog):
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
-        config: Runtime configuration carrying the auto-expansion kill-switch.
         media_delivery: Planner deciding which files attach and which are hosted as a URL.
         downloader_factory: Builds the per-invocation downloader, one per scratch directory;
             the seam a test replaces to keep an expansion off the network.
@@ -86,7 +85,6 @@ class DouyinCogs(commands.Cog):
             bot: The Discord bot instance.
         """
         self.bot = bot
-        self.config = DouyinConfig()
         self.media_delivery = build_media_delivery_planner()
         self.downloader_factory = DouyinDownloader
 
@@ -123,10 +121,11 @@ class DouyinCogs(commands.Cog):
         if is_addressed_to_bot(message=message, bot_user=self.bot.user):
             return
 
-        if not self.config.auto_expand_enabled:
-            return
-
         url = match.group(0)
+        # Persistent marker (added directly, not through the status chain, which replaces its own
+        # reaction) saying a Douyin post was read. `gen_reply` adds the same one when it reads the
+        # link into an answer instead, so every read is marked the same way whichever path took it.
+        await update_reaction(message=message, bot_user=self.bot.user, emoji=DOUYIN_EMOJI)
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
         try:
             await self._expand(message=message, url=url, current_emoji=current_emoji)

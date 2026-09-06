@@ -24,7 +24,6 @@ route gate. Here the parse is independent, and the media fetch is bounded intern
 this always returns inside the pipeline's post-route grace.
 """
 
-import re
 from typing import TYPE_CHECKING
 import asyncio
 from pathlib import Path
@@ -46,21 +45,15 @@ from discordbot.typings.context_budgets import (
     MAX_THREADS_MEDIA_PARTS,
 )
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
-from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
+from discordbot.cogs.gen_reply.link_sources import (
+    system_block,
+    defuse_markers,
+    link_context_blocks,
+)
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 
 if TYPE_CHECKING:
     from openai.types.responses.response_input_image_param import ResponseInputImageParam
-
-# The pipeline's own inline markers, opening or closing. Quoted post text is the one place they
-# can arrive written by someone else; `_defuse_markers` has the why. Case-insensitive because
-# `markers.py` extracts case-insensitively, and a defusing pass that is stricter than the
-# extraction it defends against is no defence at all.
-_MARKER_TAG_RE = re.compile(
-    r"</?(generate-(?:voice|image|music|video)|deep-research|write-memory|forget-memory"
-    r"|write-server-memory)>",
-    flags=re.IGNORECASE,
-)
 
 # Closes the quoted block, and is always the LAST part of it (past the attachments on the media
 # path). The guard on the separator opens the data; this one closes it, which matters once the
@@ -206,29 +199,13 @@ def threads_timeout_context_messages() -> list[EasyInputMessageParam]:
     return [system_block(text=THREADS_TIMEOUT_NOTICE)]
 
 
-def _defuse_markers(text: str) -> str:
-    """Breaks the pipeline's own inline markers where they appear inside quoted post text.
-
-    `extract_inline_markers` reads the answer model's OWN output, so a `<generate-video>` tag
-    written into a Threads post or comment becomes a real render the moment the model quotes it
-    back — which is exactly what "what does this comment say" asks it to do. Extraction runs
-    regardless of the kill-switches, so the tag has to stop being a tag here. Cheap to write and
-    cheap to abuse otherwise: a comment on a viral post costs an attacker nothing.
-
-    The memory tags are defused for a different cost. A quoted `<forget-memory>` fires no render
-    and spends nothing, so nothing in the logs looks wrong; it writes into the replied-to user's
-    own long-term memory, and what it can reach there survives every later conversation.
-    """
-    return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
-
-
 def _render_post_text(post: ThreadsOutput, label: str) -> str:
     """Renders one post's metadata (author, time, body, engagement, url) as compact text."""
     lines = [f"[{label}] @{post.author_name}".rstrip()]
     if post.taken_at is not None:
         lines.append(f"Posted: {post.taken_at.isoformat(timespec='seconds')}")
     if post.text:
-        lines.append(_defuse_markers(text=post.text))
+        lines.append(defuse_markers(text=post.text))
     lines.append(
         f"❤️ {post.like_count:,} | 💬 {post.reply_count:,} | 🔁 {post.repost_count:,} | "
         f"🔗 {post.quote_count:,} | ↗️ {post.reshare_count:,}"
@@ -364,7 +341,7 @@ def _render_reply(*, post: ThreadsOutput, depth: int, target_author: str) -> str
     lines = [f"[{_reply_label(post=post, depth=depth, target_author=target_author)}]"]
     lines[0] += f" @{post.author_name} (❤️ {post.like_count:,})"
     if post.text:
-        lines.append(_defuse_markers(text=post.text))
+        lines.append(defuse_markers(text=post.text))
     note = _reply_media_note(post=post)
     if note:
         lines.append(note)
@@ -784,7 +761,7 @@ def _render_conversation_sections(
 
     The quoted post sits between the target and the comments because that is what it is: part of
     what the linked post IS, where the comments are the discussion that followed it. Its body goes
-    through the same `_render_post_text` as a chain post, so `_defuse_markers` covers a text
+    through the same `_render_post_text` as a chain post, so `defuse_markers` covers a text
     written by someone who never joined this conversation, and its permalink rides along like a
     chain post's — one URL naming a post the link already points at, not the page of
     stranger-supplied fetch targets a comment's permalink would be.

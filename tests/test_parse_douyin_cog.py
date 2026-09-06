@@ -2,7 +2,7 @@
 
 import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Unpack, TypedDict, cast
+from typing import Unpack, TypedDict
 import asyncio
 from pathlib import Path
 import tempfile
@@ -19,15 +19,13 @@ from discordbot.utils.douyin import (
     DouyinTooLargeError,
     DouyinUnavailableError,
 )
+from discordbot.typings.emojis import DOUYIN_EMOJI
 from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
 
 from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
 from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
-
-if TYPE_CHECKING:
-    from discordbot.typings.douyin import DouyinConfig
 
 _URL = "https://v.douyin.com/abc123"
 _GREEN = "<:greencheck:1517565102424068226>"
@@ -106,10 +104,6 @@ def _cog(
 ) -> tuple[DouyinCogs, dict[str, _StubDownloader]]:
     """Builds a cog wired to a stub downloader and a hosting-off delivery planner."""
     cog = DouyinCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_id))))
-    # Pinned explicitly: DouyinConfig reads the real environment (typings/douyin.py loads .env
-    # at import), so a dev box with DOUYIN_AUTO_EXPAND_ENABLED=false would silently turn every
-    # test below into a no-op that still passes.
-    cog.config = cast("DouyinConfig", SimpleNamespace(auto_expand_enabled=True))
     # Explicitly disabled planner — never the no-arg default, whose config is `available` on a
     # dev box where .env enables hosting (it would write into the live serve dir).
     cog.media_delivery = MediaDeliveryPlanner(
@@ -167,6 +161,9 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
     assert reply["embeds"][0].description == "caption"
     assert reply["embeds"][0].author.name == "somebody"
     assert message.reactions[-1] == _GREEN
+    # The read marker rides beside the status chain, which only ever removes its own reaction.
+    assert message.reactions[0] == DOUYIN_EMOJI
+    assert all(emoji != DOUYIN_EMOJI for emoji, _ in message.removed)
     # The scratch dir is per invocation and removed with its files once delivery finishes.
     assert not await asyncio.to_thread(Path(made["stub"].output_folder).exists)
 
@@ -208,18 +205,6 @@ async def test_a_bot_author_is_ignored() -> None:
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert made == {}
-
-
-async def test_the_kill_switch_stops_every_request() -> None:
-    """Auto-expansion is the one lever that stops the bot talking to Douyin during a WAF ban."""
-    cog, made = _cog()
-    cog.config = cast("DouyinConfig", SimpleNamespace(auto_expand_enabled=False))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions == []
     assert made == {}
 
 

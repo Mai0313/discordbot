@@ -50,7 +50,7 @@ flowchart TD
 
     UP & RT & CX --> R{"Route"}
 
-    R -->|QA| L{"Linked Threads,<br/>Douyin or Bilibili post"}
+    R -->|QA| L{"Linked Threads, Facebook,<br/>Douyin or Bilibili post"}
     L -->|"the user is asking about it"| LF["Fetch the post, upload its media"]
     L -->|"incidental link"| LS["Nothing fetched"]
     LF & LS --> Y{"Linked YouTube video"}
@@ -82,6 +82,7 @@ The two content branches cost nothing when they do not apply. A linked post is f
 
 - **AI chat**: mention the bot in a server or send a DM. It can answer questions, summarize recent chat, inspect supported attachments, watch a linked YouTube video, generate or edit images, generate short videos from a prompt or attached images, edit a referenced video, continue long replies as follow-up reply messages, and use model-provided web tools when available. It also builds a private per-user long-term memory of your preferences in the background — privacy-scoped by source, so something told in one server never surfaces in another (only your tone preferences and clearly harmless general facts carry over) — manageable with `/memory show`, `/memory regenerate`, and `/memory clear`. You can also just ask it to remember something, or tell it that something it remembers is wrong, and a short note under its reply says what it took down.
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain, plus the post it quotes when it is a quote post. Mention the bot alongside the link instead, or mention it in a reply to a message carrying one, and it reads the post together with the comments under it and answers about it.
+- **Facebook parser**: paste a public Facebook post link and the bot expands the post, its pictures and its counters into the channel; when the link carries a `comment_id`, that one comment is shown under it as well. Mention the bot alongside the link instead, or mention it in a reply to a message carrying one, and it reads the post plus whichever comments the page loads up front and answers about it. Only public posts can be read, and a video post comes back as a link rather than a file.
 - **Douyin parser**: paste a Douyin link and the bot posts the video (or the photo post's images) straight into the channel. Mention the bot alongside the link instead and it watches the clip and answers about it.
 - **Bilibili Q&A**: mention the bot with a Bilibili video link and it watches the video and answers about it. A bare link is not auto-expanded; `/download_video` still downloads the file.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites. Douyin is supported too, watermark free and including photo posts. Files too large to upload are served as a link instead.
@@ -91,28 +92,29 @@ The two content branches cost nothing when they do not apply. A linked post is f
 
 ## Commands
 
-| Command                                     | What it does                                                                                                                                     |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@bot <message>`                            | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                                                        |
-| _Threads URL_                               | Automatically expands Threads posts and media, unless the bot is mentioned (then it answers about the comments too).                             |
-| `/clean_threads_url <url>`                  | Privately turns a Threads share link into the post's own URL, so passing it on no longer names whoever shared it.                                |
-| _Douyin URL_                                | Automatically posts the video or photos, unless the bot is mentioned (then it answers about it).                                                 |
-| _Bilibili URL + mention_                    | Watches the linked video and answers about it (a bare link is not auto-expanded).                                                                |
-| `/download_video <url> [quality]`           | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                                                        |
-| `/balance [member]`                         | Privately shows a member's 虛擬歡樂豆 balance, debt, net worth, and VIP status.                                                                  |
-| `/vip`                                      | Buys permanent VIP perks.                                                                                                                        |
-| `/leaderboard`                              | Shows the global top balances.                                                                                                                   |
-| `/loss_leaderboard`                         | Shows today's accumulated casino losses.                                                                                                         |
-| `/credit status\|borrow\|call\|repay`       | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.                               |
-| `/central_bank status\|borrow\|call\|repay` | Handles central-bank loan requests, 180-second approval/rejection/cancel buttons, repayment, collection, and capacity.                           |
-| `/give <member> <amount>`                   | Transfers 虛擬歡樂豆 to another member or bot.                                                                                                   |
-| `/admin refund_tax\|collect_tax`            | Manual balance adjustments for members or bots; gated on the `economy admin` account flag, not on a Discord role.                                |
-| `/games blackjack <bet>`                    | Opens a multiplayer Blackjack lobby; `bet` accepts comma-formatted numbers, and `0` means all in.                                                |
-| `/games dragon_gate`                        | Opens a multiplayer 射龍門 table backed by the shared jackpot pool.                                                                              |
-| `/casino`                                   | Shows the casino system's cumulative profit and loss.                                                                                            |
-| `/pocat`                                    | Shows the bot player's own wallet (shortcut for `/balance @bot`).                                                                                |
-| `/memory show\|regenerate\|clear`           | Privately shows, rebuilds, or erases what the bot remembers about you; regenerate runs in the background, and clear asks for confirmation first. |
-| `/ping`                                     | Checks bot latency.                                                                                                                              |
+| Command                                     | What it does                                                                                                                                               |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@bot <message>`                            | Chat with the AI. Attach supported files or images when you want the bot to inspect them.                                                                  |
+| _Threads URL_                               | Automatically expands Threads posts and media, unless the bot is mentioned (then it answers about the comments too).                                       |
+| `/clean_threads_url <url>`                  | Privately turns a Threads share link into the post's own URL, so passing it on no longer names whoever shared it.                                          |
+| _Facebook URL_                              | Automatically expands a public post and its pictures, unless the bot is mentioned (then it answers about it). A `comment_id` link also shows that comment. |
+| _Douyin URL_                                | Automatically posts the video or photos, unless the bot is mentioned (then it answers about it).                                                           |
+| _Bilibili URL + mention_                    | Watches the linked video and answers about it (a bare link is not auto-expanded).                                                                          |
+| `/download_video <url> [quality]`           | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                                                                  |
+| `/balance [member]`                         | Privately shows a member's 虛擬歡樂豆 balance, debt, net worth, and VIP status.                                                                            |
+| `/vip`                                      | Buys permanent VIP perks.                                                                                                                                  |
+| `/leaderboard`                              | Shows the global top balances.                                                                                                                             |
+| `/loss_leaderboard`                         | Shows today's accumulated casino losses.                                                                                                                   |
+| `/credit status\|borrow\|call\|repay`       | Handles personal credit requests, 180-second approval/rejection/cancel buttons, repayment, collection, and status.                                         |
+| `/central_bank status\|borrow\|call\|repay` | Handles central-bank loan requests, 180-second approval/rejection/cancel buttons, repayment, collection, and capacity.                                     |
+| `/give <member> <amount>`                   | Transfers 虛擬歡樂豆 to another member or bot.                                                                                                             |
+| `/admin refund_tax\|collect_tax`            | Manual balance adjustments for members or bots; gated on the `economy admin` account flag, not on a Discord role.                                          |
+| `/games blackjack <bet>`                    | Opens a multiplayer Blackjack lobby; `bet` accepts comma-formatted numbers, and `0` means all in.                                                          |
+| `/games dragon_gate`                        | Opens a multiplayer 射龍門 table backed by the shared jackpot pool.                                                                                        |
+| `/casino`                                   | Shows the casino system's cumulative profit and loss.                                                                                                      |
+| `/pocat`                                    | Shows the bot player's own wallet (shortcut for `/balance @bot`).                                                                                          |
+| `/memory show\|regenerate\|clear`           | Privately shows, rebuilds, or erases what the bot remembers about you; regenerate runs in the background, and clear asks for confirmation first.           |
+| `/ping`                                     | Checks bot latency.                                                                                                                                        |
 
 ## Development
 

@@ -53,6 +53,7 @@ nav:
                   - link_sources:
                       - bilibili: Reference/discordbot/cogs/gen_reply/link_sources/bilibili.md
                       - douyin: Reference/discordbot/cogs/gen_reply/link_sources/douyin.md
+                      - facebook: Reference/discordbot/cogs/gen_reply/link_sources/facebook.md
                       - registry: Reference/discordbot/cogs/gen_reply/link_sources/registry.md
                       - threads: Reference/discordbot/cogs/gen_reply/link_sources/threads.md
                   - answer: Reference/discordbot/cogs/gen_reply/answer.md
@@ -87,6 +88,8 @@ nav:
                   - views: Reference/discordbot/cogs/memory/views.md
               - parse_douyin:
                   - cog: Reference/discordbot/cogs/parse_douyin/cog.md
+              - parse_facebook:
+                  - cog: Reference/discordbot/cogs/parse_facebook/cog.md
               - parse_threads:
                   - cog: Reference/discordbot/cogs/parse_threads/cog.md
               - research:
@@ -126,8 +129,8 @@ nav:
               - commands: Reference/discordbot/typings/commands.md
               - config: Reference/discordbot/typings/config.md
               - context_budgets: Reference/discordbot/typings/context_budgets.md
-              - douyin: Reference/discordbot/typings/douyin.md
               - economy: Reference/discordbot/typings/economy.md
+              - emojis: Reference/discordbot/typings/emojis.md
               - games: Reference/discordbot/typings/games.md
               - llm: Reference/discordbot/typings/llm.md
               - memory: Reference/discordbot/typings/memory.md
@@ -142,6 +145,7 @@ nav:
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - douyin: Reference/discordbot/utils/douyin.md
               - downloader: Reference/discordbot/utils/downloader.md
+              - facebook: Reference/discordbot/utils/facebook.md
               - file_downloads: Reference/discordbot/utils/file_downloads.md
               - images: Reference/discordbot/utils/images.md
               - interaction_responses: Reference/discordbot/utils/interaction_responses.md
@@ -167,6 +171,7 @@ nav:
           - cli: Reference/discordbot/cli.md
   - Scripts:
       - agents_dev: Scripts/agents_dev.md
+      - antigravity_dev: Scripts/antigravity_dev.md
       - batch_dev: Scripts/batch_dev.md
       - gen_docs: Scripts/gen_docs.md
       - image_dev: Scripts/image_dev.md

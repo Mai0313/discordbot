@@ -55,6 +55,38 @@ def link_context_blocks(
     ]
 
 
+# The pipeline's own inline markers, opening or closing. Quoted post text is the one place they
+# can arrive written by someone else; `defuse_markers` has the why. Case-insensitive because
+# `markers.py` extracts case-insensitively, and a defusing pass that is stricter than the
+# extraction it defends against is no defence at all.
+_MARKER_TAG_RE = re.compile(
+    r"</?(generate-(?:voice|image|music|video)|deep-research|write-memory|forget-memory"
+    r"|write-server-memory)>",
+    flags=re.IGNORECASE,
+)
+
+
+def defuse_markers(*, text: str) -> str:
+    """Breaks the pipeline's own inline markers where they appear inside quoted post text.
+
+    `extract_inline_markers` reads the answer model's OWN output, so a `<generate-video>` tag
+    written into a linked post or one of its comments becomes a real render the moment the model
+    quotes it back — which is exactly what "what does this comment say" asks it to do. Extraction
+    runs regardless of the kill-switches, so the tag has to stop being a tag here. Cheap to write
+    and cheap to abuse otherwise: a comment on a viral post costs an attacker nothing.
+
+    The memory tags are defused for a different cost. A quoted `<forget-memory>` fires no render
+    and spends nothing, so nothing in the logs looks wrong; it writes into the replied-to user's
+    own long-term memory, and what it can reach there survives every later conversation.
+
+    Shared by the sources that carry a DISCUSSION rather than a caption — Threads and Facebook,
+    each of which hands the model thousands of characters written by strangers. Douyin and
+    Bilibili do not use it: a caption or a video title is one line by its own author, and
+    `tests/test_prompt_guards.py` owns the prompt rule that covers every undefused path.
+    """
+    return _MARKER_TAG_RE.sub(repl=lambda match: f"({match.group(1)})", string=text)
+
+
 class LinkUrlFilter(Protocol):
     """Post-match guard rejecting a matched URL the source cannot read (e.g. a profile)."""
 
