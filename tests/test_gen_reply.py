@@ -176,6 +176,7 @@ from tests.helpers.llm_input import (
     has_threads_context_block,
     extract_user_memory_blocks,
     has_bilibili_context_block,
+    has_facebook_context_block,
     extract_server_memory_block,
     extract_douyin_context_block,
     extract_threads_context_block,
@@ -6387,6 +6388,12 @@ def _link_config() -> LLMConfig:
             has_threads_context_block,
         ),
         (
+            "facebook",
+            "build_facebook_context_messages",
+            "https://www.facebook.com/groups/123/posts/456/",
+            has_facebook_context_block,
+        ),
+        (
             "douyin",
             "build_douyin_context_messages",
             "https://v.douyin.com/abc123",
@@ -7781,7 +7788,7 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
 async def test_on_message_orders_selected_link_blocks_in_registry_order(
     memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
-    selected_sources: list[Literal["threads", "douyin", "bilibili"]],
+    selected_sources: list[Literal["threads", "facebook", "douyin", "bilibili"]],
     expected_separators: list[str],
 ) -> None:
     """Selected sources are injected in registry order, not URL or router-return order.

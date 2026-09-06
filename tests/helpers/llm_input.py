@@ -46,6 +46,12 @@ from discordbot.cogs.gen_reply.link_sources.bilibili import (
     BILIBILI_TOO_LONG_SEPARATOR,
     BILIBILI_TEXT_ONLY_SEPARATOR,
 )
+from discordbot.cogs.gen_reply.link_sources.facebook import (
+    FACEBOOK_TIMEOUT_NOTICE,
+    FACEBOOK_CONTEXT_SEPARATOR,
+    FACEBOOK_UNAVAILABLE_NOTICE,
+    FACEBOOK_TEXT_ONLY_SEPARATOR,
+)
 
 
 class RecordedResponses(Protocol):
@@ -113,6 +119,14 @@ _BILIBILI_SEPARATOR_HEADS = (
 _BILIBILI_NOTICE_HEADS = (
     BILIBILI_UNREADABLE_NOTICE.split("\n", 1)[0],
     BILIBILI_TIMEOUT_NOTICE.split("\n", 1)[0],
+)
+_FACEBOOK_SEPARATOR_HEADS = (
+    FACEBOOK_CONTEXT_SEPARATOR.split("\n", 1)[0],
+    FACEBOOK_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
+)
+_FACEBOOK_NOTICE_HEADS = (
+    FACEBOOK_UNAVAILABLE_NOTICE.split("\n", 1)[0],
+    FACEBOOK_TIMEOUT_NOTICE.split("\n", 1)[0],
 )
 
 _ID_SECTION = re.compile(r"\[id: (\d+)\][^\n]*\n(.*?)(?=\n\n\[id: |\Z)", re.DOTALL)
@@ -273,5 +287,23 @@ def has_bilibili_context_block(request: ResponseInputParam | str) -> bool:
     for _role, text in iter_text_blocks(request=request):
         head = text.split("\n", 1)[0]
         if head in _BILIBILI_SEPARATOR_HEADS or head in _BILIBILI_NOTICE_HEADS:
+            return True
+    return False
+
+
+def extract_facebook_context_block(request: ResponseInputParam | str) -> str | None:
+    """Returns the text of the block following the Facebook separator, or None if absent."""
+    items = list(iter_text_blocks(request=request))
+    for index, (role, text) in enumerate(items):
+        if role == "system" and text.split("\n", 1)[0] in _FACEBOOK_SEPARATOR_HEADS:
+            return items[index + 1][1] if index + 1 < len(items) else ""
+    return None
+
+
+def has_facebook_context_block(request: ResponseInputParam | str) -> bool:
+    """Whether the input carries an injected Facebook separator or notice block."""
+    for _role, text in iter_text_blocks(request=request):
+        head = text.split("\n", 1)[0]
+        if head in _FACEBOOK_SEPARATOR_HEADS or head in _FACEBOOK_NOTICE_HEADS:
             return True
     return False
