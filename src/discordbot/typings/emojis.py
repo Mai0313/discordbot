@@ -24,6 +24,7 @@ BILIBILI_EMOJI: Final[str] = "<:bilibili:1546180944615051344>"
 # than raising mid-reply.
 LINK_SOURCE_EMOJIS: Final[dict[str, str]] = {
     "threads": THREADS_EMOJI,
+    "facebook": FACEBOOK_EMOJI,
     "douyin": DOUYIN_EMOJI,
     "bilibili": BILIBILI_EMOJI,
 }

@@ -175,6 +175,18 @@ MAX_THREADS_REPLIES: Final[int] = 30
 # separate and larger, because attaching a file is far cheaper than tokenizing it.
 MAX_DOUYIN_INGEST_IMAGES: Final[int] = 8
 
+# Cap on images ingested from a Facebook post, sized to match the Douyin one for the same
+# reason: each costs a fetch plus an upload on the reply's critical path. Deliberately larger
+# than what `parse_facebook` renders into the channel (four), because the two bound different
+# things — that one stops the expansion scrolling the channel, this one bounds what the answer
+# pays for.
+MAX_FACEBOOK_INGEST_IMAGES: Final[int] = 8
+
+# Cap on the comments injected below a Facebook post. Logged out the page preloads only a
+# handful (3 observed against a post reporting 40), so this is a backstop against a page that
+# ships an unusually long preload rather than a policy about how much discussion to read.
+MAX_FACEBOOK_COMMENTS: Final[int] = 10
+
 # Render-time cap on the Bilibili description injected as text. Descriptions can run to thousands
 # of characters of tags and sponsor text; the head is where the signal lives.
 MAX_BILIBILI_DESCRIPTION_CHARS: Final[int] = 1000

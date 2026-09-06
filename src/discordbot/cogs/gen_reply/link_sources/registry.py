@@ -18,6 +18,7 @@ from discordbot.typings.llm import LLMConfig
 from discordbot.utils.douyin import DOUYIN_URL_RE, is_douyin_post_url
 from discordbot.utils.threads import THREADS_URL_RE
 from discordbot.utils.bilibili import BILIBILI_URL_RE
+from discordbot.utils.facebook import FACEBOOK_URL_RE, is_facebook_post_url
 from discordbot.cogs.gen_reply.link_sources import LinkContextSource
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     build_douyin_context_messages,
@@ -30,6 +31,10 @@ from discordbot.cogs.gen_reply.link_sources.threads import (
 from discordbot.cogs.gen_reply.link_sources.bilibili import (
     build_bilibili_context_messages,
     bilibili_timeout_context_messages,
+)
+from discordbot.cogs.gen_reply.link_sources.facebook import (
+    build_facebook_context_messages,
+    facebook_timeout_context_messages,
 )
 
 
@@ -82,10 +87,36 @@ async def _build_bilibili_link_context(
     )
 
 
+async def _build_facebook_link_context(
+    *,
+    url: str,
+    answer_model_is_gemini: bool,
+    gemini_client: genai.Client | None,
+    allow_media_ingest: bool,
+) -> list[EasyInputMessageParam]:
+    """Adapts the Facebook builder to the registry signature (a straight pass-through)."""
+    return await build_facebook_context_messages(
+        url=url,
+        answer_model_is_gemini=answer_model_is_gemini,
+        gemini_client=gemini_client,
+        allow_media_ingest=allow_media_ingest,
+    )
+
+
 def _threads_media_ingest_allowed(config: LLMConfig) -> bool:
     """Threads media ingestion has no kill-switch; the Gemini checks alone gate it."""
     del config
     return True
+
+
+def _facebook_media_ingest_allowed(config: LLMConfig) -> bool:
+    """No kill-switch of its own, so `file_api_enabled` and its key are the whole gate.
+
+    Carries `file_api_enabled` for the reason the Douyin predicate does: the images are fetched
+    and downscaled before the upload they could no longer feed, so gating at the upload alone
+    would still spend that work on the reply's critical path.
+    """
+    return config.file_api_enabled and bool(config.gemini_api_key.strip())
 
 
 def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:
@@ -126,6 +157,20 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         build=_build_threads_link_context,
         on_timeout=threads_timeout_context_messages,
         media_ingest_allowed=_threads_media_ingest_allowed,
+    ),
+    LinkContextSource(
+        name="facebook",
+        url_pattern=FACEBOOK_URL_RE,
+        # The regex matches the host, not the path, so a profile or group home page would
+        # otherwise spend a full ~950KB page fetch to establish there is no post.
+        url_filter=is_facebook_post_url,
+        # Opts in for the reason Threads does: what it reads includes the comments under the
+        # post, which the `parse_facebook` expansion deliberately does not show, so asking the
+        # bot about someone else's linked post has something to answer from.
+        search_replied_to_message=True,
+        build=_build_facebook_link_context,
+        on_timeout=facebook_timeout_context_messages,
+        media_ingest_allowed=_facebook_media_ingest_allowed,
     ),
     LinkContextSource(
         name="douyin",

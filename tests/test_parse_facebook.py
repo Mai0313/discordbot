@@ -1,39 +1,33 @@
-"""Tests for the cog that auto-expands Facebook links pasted into a channel.
+"""Tests for the Facebook-context builder that feeds linked posts to the answer model."""
 
-The downloader is stubbed at `downloader_factory`, so nothing here touches the network or the
-parser: what these cover is the cog's own decisions — when it fires, what it renders, and what
-a reader sees when the post cannot be read.
-"""
-
-from types import SimpleNamespace
+from typing import Any
 from datetime import UTC, datetime
 
-from nextcord import Embed
+import pytest
 
-from discordbot.typings.emojis import FACEBOOK_EMOJI
-from discordbot.utils.facebook import FacebookPost, FacebookComment
-from discordbot.cogs.parse_facebook.cog import FacebookCogs
+from discordbot.utils.facebook import FacebookPost, FacebookComment, FacebookDownloader
+from discordbot.cogs.gen_reply.link_sources import facebook as facebook_source
+from discordbot.cogs.gen_reply.link_sources.facebook import (
+    FACEBOOK_TIMEOUT_NOTICE,
+    FACEBOOK_CONTEXT_SEPARATOR,
+    FACEBOOK_UNAVAILABLE_NOTICE,
+    FACEBOOK_TEXT_ONLY_SEPARATOR,
+    build_facebook_context_messages,
+    facebook_timeout_context_messages,
+)
 
-from tests.helpers.casting import as_bot, as_message
-from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
-
-_POST_ID = "1730774811333135"
-_GROUP_ID = "1176671326743489"
-_URL = f"https://www.facebook.com/groups/{_GROUP_ID}/posts/{_POST_ID}/"
-_GREEN = "<:greencheck:1517565102424068226>"
-_RED = "<:redcross:1517565100838355016>"
+_URL = "https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/"
 
 
 def _post(**overrides: object) -> FacebookPost:
     """A readable post, with any field overridden per test."""
     fields: dict[str, object] = {
-        "post_id": _POST_ID,
+        "post_id": "1730774811333135",
         "url": _URL,
         "text": "post body",
         "author_name": "Somebody",
-        "author_icon_url": "https://scontent.example/avatar.jpg",
         "group_name": "Some Group",
-        "image_urls": ["https://scontent.example/a.jpg", "https://scontent.example/b.jpg"],
+        "image_urls": ["https://scontent.example/a.jpg"],
         "reaction_count": "1,017",
         "comment_count": 40,
         "share_count": "37",
@@ -43,256 +37,213 @@ def _post(**overrides: object) -> FacebookPost:
     return FacebookPost(**fields)  # ty: ignore[invalid-argument-type]
 
 
-class _StubDownloader:
-    """Stands in for FacebookDownloader, serving one canned outcome."""
+def _serve(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    post: FacebookPost | None = None,
+    error: Exception | None = None,
+) -> None:
+    """Points the builder's reader at a canned outcome instead of the network."""
 
-    def __init__(self, *, post: FacebookPost | None, error: Exception | None) -> None:
-        """Records what the cog asked for and answers with the canned outcome."""
-        self.post = post
-        self.error = error
-        self.seen: list[str] = []
-
-    def extract_post(self, *, url: str) -> FacebookPost:
+    def extract_post(self: FacebookDownloader, *, url: str) -> FacebookPost:
         """Answers with the canned post, or raises the canned error."""
-        self.seen.append(url)
-        if self.error is not None:
-            raise self.error
-        return self.post if self.post is not None else FacebookPost()
+        del self, url
+        if error is not None:
+            raise error
+        return post if post is not None else FacebookPost()
+
+    monkeypatch.setattr(target=FacebookDownloader, name="extract_post", value=extract_post)
 
 
-class _FacebookMessage(FakeDiscordMessage):
-    """Adds the author/content/guild fields `FacebookCogs.on_message` reads."""
+def _accept_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]) -> None:
+    """Makes the image fetch and upload succeed, recording what was uploaded."""
 
-    def __init__(self, author: FakeUser, content: str, guild: object) -> None:
-        """Builds a message double carrying the fields the cog inspects."""
-        super().__init__()
-        self.author = author
-        self.content = content
-        self.guild = guild
+    async def load_image_bytes(*, source: str) -> tuple[bytes, str]:
+        """Pretends the CDN answered."""
+        uploaded.append(source)
+        return b"bytes", "image/jpeg"
 
+    async def upload_as_input_file(
+        *,
+        client: object,
+        source: bytes,
+        mime_type: str,
+        filename: str,
+        timeout_seconds: float,
+    ) -> dict[str, str]:
+        """Stands in for the Files API upload."""
+        del client, source, mime_type, timeout_seconds
+        return {"type": "input_file", "file_id": filename}
 
-def _message(content: str = _URL) -> _FacebookMessage:
-    """Builds a guild message carrying a Facebook link."""
-    return _FacebookMessage(
-        author=FakeUser(bot=False), content=content, guild=SimpleNamespace(id=100)
+    monkeypatch.setattr(target=facebook_source, name="load_image_bytes", value=load_image_bytes)
+    monkeypatch.setattr(
+        target=facebook_source, name="upload_as_input_file", value=upload_as_input_file
     )
 
 
-def _cog(
-    *, post: FacebookPost | None = None, error: Exception | None = None, bot_id: int = 999
-) -> tuple[FacebookCogs, dict[str, _StubDownloader]]:
-    """Builds a cog wired to a stub downloader."""
-    cog = FacebookCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_id))))
-    made: dict[str, _StubDownloader] = {}
-
-    def factory() -> _StubDownloader:
-        """Records the stub so a test can assert on what it was asked to do."""
-        stub = _StubDownloader(post=post, error=error)
-        made["stub"] = stub
-        return stub
-
-    cog.__dict__["downloader_factory"] = factory
-    return cog, made
+def _separator(blocks: list[Any]) -> str:
+    """The separator text the builder led with."""
+    return blocks[0]["content"][0]["text"]
 
 
-def _embeds(message: _FacebookMessage) -> list[Embed]:
-    """The embeds the cog replied with."""
-    return list(message.replies[0]["embeds"])
+def _body(blocks: list[Any]) -> str:
+    """The rendered post text the builder injected."""
+    return blocks[1]["content"][0]["text"]
 
 
-async def test_a_pasted_link_is_expanded_into_a_card() -> None:
-    """The ordinary case: one post embed carrying the body, the author and the counters."""
-    cog, made = _cog(post=_post())
-    message = _message()
+async def test_a_readable_post_becomes_a_separator_and_its_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordinary case, with no Gemini client so nothing is uploaded."""
+    _serve(monkeypatch, post=_post())
 
-    await cog.on_message(message=as_message(fake=message))
+    blocks = await build_facebook_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+    )
 
-    assert made["stub"].seen == [_URL]
-    assert message.suppressed
-    embeds = _embeds(message)
-    assert embeds[0].description == "post body"
-    assert embeds[0].author.name == "Somebody"
-    assert embeds[0].url == _URL
-    assert message.reactions[-1] == _GREEN
-
-
-async def test_the_footer_names_the_group_and_the_counters() -> None:
-    """The group is the part a reader cannot get from the post itself, so it leads."""
-    cog, _ = _cog(post=_post())
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    footer = _embeds(message)[0].footer.text
-    assert footer is not None
-    assert footer.startswith("Some Group")
-    assert "👍 1,017" in footer
-    assert "💬 40" in footer
-    assert "↗️ 37" in footer
+    assert len(blocks) == 2
+    assert _separator(blocks) == FACEBOOK_TEXT_ONLY_SEPARATOR
+    body = _body(blocks)
+    assert "post body" in body
+    assert "Some Group" in body
+    assert _URL in body
 
 
-async def test_a_page_post_leaves_the_group_out_of_the_footer() -> None:
-    """A page post has no group, and the line must not carry a hole where one would go."""
-    cog, _ = _cog(post=_post(group_name=""))
-    message = _message()
+async def test_the_images_ride_as_uploaded_parts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With a Gemini client the pictures are fetched and uploaded, and the separator says so."""
+    uploaded: list[str] = []
+    _serve(monkeypatch, post=_post(image_urls=["https://scontent.example/a.jpg"]))
+    _accept_uploads(monkeypatch, uploaded=uploaded)
 
-    await cog.on_message(message=as_message(fake=message))
+    blocks = await build_facebook_context_messages(
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=object(),  # ty: ignore[invalid-argument-type]
+        allow_media_ingest=True,
+    )
 
-    footer = _embeds(message)[0].footer.text
-    assert footer is not None
-    assert footer.startswith("👍 1,017")
+    assert uploaded == ["https://scontent.example/a.jpg"]
+    assert _separator(blocks) == FACEBOOK_CONTEXT_SEPARATOR
+    assert blocks[1]["content"][-1]["type"] == "input_file"
 
 
-async def test_extra_images_become_embeds_sharing_the_post_url() -> None:
-    """Sharing the URL is what makes Discord merge them into one gallery under the post."""
-    cog, _ = _cog(post=_post(image_urls=[f"https://scontent.example/{n}.jpg" for n in range(3)]))
-    message = _message()
+async def test_media_ingest_off_keeps_the_text_and_skips_the_upload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The kill-switch predicate must stop the fetch, not just the upload."""
+    uploaded: list[str] = []
+    _serve(monkeypatch, post=_post())
+    _accept_uploads(monkeypatch, uploaded=uploaded)
 
-    await cog.on_message(message=as_message(fake=message))
+    blocks = await build_facebook_context_messages(
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=object(),  # ty: ignore[invalid-argument-type]
+        allow_media_ingest=False,
+    )
 
-    embeds = _embeds(message)
-    assert len(embeds) == 3
-    assert all(embed.url == _URL for embed in embeds)
-    assert [embed.image.url for embed in embeds] == [
-        "https://scontent.example/0.jpg",
-        "https://scontent.example/1.jpg",
-        "https://scontent.example/2.jpg",
+    assert uploaded == []
+    assert _separator(blocks) == FACEBOOK_TEXT_ONLY_SEPARATOR
+
+
+async def test_a_failed_image_leaves_the_post_readable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One expired CDN url must never cost the whole block."""
+    _serve(monkeypatch, post=_post())
+
+    async def load_image_bytes(*, source: str) -> tuple[bytes, str]:
+        """Fails the way an expired signed URL does."""
+        del source
+        raise RuntimeError("410 gone")
+
+    monkeypatch.setattr(target=facebook_source, name="load_image_bytes", value=load_image_bytes)
+
+    blocks = await build_facebook_context_messages(
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=object(),  # ty: ignore[invalid-argument-type]
+        allow_media_ingest=True,
+    )
+
+    assert _separator(blocks) == FACEBOOK_TEXT_ONLY_SEPARATOR
+    assert "post body" in _body(blocks)
+
+
+async def test_the_comments_are_rendered_and_the_linked_one_is_marked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `?comment_id=` link is almost always what the question is about."""
+    comments = [
+        FacebookComment(comment_id="111", text="first", author_name="A"),
+        FacebookComment(comment_id="222", text="the linked one", author_name="B"),
     ]
+    _serve(monkeypatch, post=_post(comments=comments, selected_comment_id="222"))
 
-
-async def test_images_past_the_cap_are_counted_in_the_footer() -> None:
-    """A gallery post must not scroll the channel, and must say what it left behind."""
-    cog, _ = _cog(post=_post(image_urls=[f"https://scontent.example/{n}.jpg" for n in range(7)]))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    embeds = _embeds(message)
-    assert len(embeds) == 4
-    footer = embeds[0].footer.text
-    assert footer is not None
-    assert "另有 3 張" in footer
-
-
-async def test_a_named_comment_gets_its_own_card_outside_the_gallery() -> None:
-    """A different URL is what keeps the comment from being folded in with the pictures."""
-    comment = FacebookComment(
-        comment_id="1730777104666239",
-        text="the one linked",
-        author_name="Commenter",
-        created_at=datetime(2026, 9, 5, 9, 25, tzinfo=UTC),
+    blocks = await build_facebook_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
     )
-    cog, _ = _cog(post=_post(comments=[comment], selected_comment_id="1730777104666239"))
-    message = _message()
 
-    await cog.on_message(message=as_message(fake=message))
-
-    embeds = _embeds(message)
-    comment_embed = embeds[-1]
-    assert comment_embed.description is not None
-    assert "the one linked" in comment_embed.description
-    assert comment_embed.author.name == "Commenter"
-    assert comment_embed.url != _URL
-    assert "comment_id=1730777104666239" in (comment_embed.url or "")
+    body = _body(blocks)
+    assert "first" in body
+    assert "the linked one" in body
+    assert "the comment the user's link points at" in body
+    # The marker sits on the linked comment and nowhere else.
+    assert body.count("the comment the user's link points at") == 1
 
 
-async def test_no_comment_card_without_one_named() -> None:
-    """A plain link shows the post alone; the preloaded comments are not the whole section."""
-    comment = FacebookComment(comment_id="999", text="some comment")
-    cog, _ = _cog(post=_post(comments=[comment]))
-    message = _message()
+async def test_the_block_says_the_comments_are_partial(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The page preloads a handful of a much longer thread, and the model must be told."""
+    comments = [FacebookComment(comment_id="111", text="only one shown", author_name="A")]
+    _serve(monkeypatch, post=_post(comments=comments))
 
-    await cog.on_message(message=as_message(fake=message))
+    blocks = await build_facebook_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+    )
 
-    assert all("指定的留言" not in (embed.description or "") for embed in _embeds(message))
-
-
-async def test_a_video_post_shows_a_link_instead_of_an_empty_card() -> None:
-    """There is no file to attach logged out, so the link is the whole of what can be shown."""
-    cog, _ = _cog(post=_post(image_urls=[], video_urls=["https://www.facebook.com/watch/?v=1"]))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    description = _embeds(message)[0].description
-    assert description is not None
-    assert "點此觀看影片" in description
+    assert "not the whole discussion" in _body(blocks)
+    assert "never the whole discussion" in _separator(blocks)
 
 
-async def test_a_long_post_is_cut_with_a_notice() -> None:
-    """A truncated post must never read as a whole one."""
-    cog, _ = _cog(post=_post(text="x" * 5000))
-    message = _message()
+async def test_an_unreadable_post_becomes_a_notice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A private or deleted post must not leave the model to say it cannot open the link."""
+    _serve(monkeypatch, post=FacebookPost())
 
-    await cog.on_message(message=as_message(fake=message))
+    blocks = await build_facebook_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+    )
 
-    description = _embeds(message)[0].description
-    assert description is not None
-    assert len(description) <= 4096
-    assert description.endswith("（全文請看原貼文）")
-
-
-async def test_the_read_marker_rides_beside_the_status_chain() -> None:
-    """The platform marker says a post was read and is never taken back by the chain."""
-    cog, _ = _cog(post=_post())
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[0] == FACEBOOK_EMOJI
-    assert all(emoji != FACEBOOK_EMOJI for emoji, _ in message.removed)
+    assert len(blocks) == 1
+    assert _separator(blocks) == FACEBOOK_UNAVAILABLE_NOTICE
 
 
-async def test_a_message_addressed_to_the_bot_is_left_alone() -> None:
-    """A mention hands the link to gen_reply, so the cog must not fetch anything."""
-    cog, made = _cog(post=_post())
-    message = _message(content=f"<@999> what is this {_URL}")
+async def test_a_read_failure_never_raises_into_the_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reply pipeline relies on this builder degrading rather than failing."""
+    _serve(monkeypatch, error=RuntimeError("boom"))
 
-    await cog.on_message(message=as_message(fake=message))
+    blocks = await build_facebook_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+    )
 
-    assert made == {}
-    assert message.reactions == []
-
-
-async def test_a_url_that_names_no_post_is_ignored_silently() -> None:
-    """A profile link is not a failure, so it earns no reaction at all."""
-    cog, made = _cog(post=_post())
-    message = _message(content="look https://www.facebook.com/NASA")
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert made == {}
-    assert message.reactions == []
+    assert _separator(blocks) == FACEBOOK_UNAVAILABLE_NOTICE
 
 
-async def test_a_bot_message_is_ignored() -> None:
-    """The bot's own expansion carries the link, and must not expand it again."""
-    cog, made = _cog(post=_post())
-    message = _message()
-    message.author = FakeUser(bot=True)
+def test_the_timeout_notice_is_a_single_block() -> None:
+    """gen_reply injects this when the build outruns the post-route grace."""
+    blocks = facebook_timeout_context_messages()
 
-    await cog.on_message(message=as_message(fake=message))
-
-    assert made == {}
+    assert len(blocks) == 1
+    assert _separator(blocks) == FACEBOOK_TIMEOUT_NOTICE
 
 
-async def test_an_unreadable_post_is_marked_failed_without_a_message() -> None:
-    """A private or deleted post must not put an error message into the channel."""
-    cog, _ = _cog(post=FacebookPost())
-    message = _message()
+async def test_a_video_post_says_it_was_not_watched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Logged out there is no file to read, so the model must not describe the footage."""
+    _serve(
+        monkeypatch, post=_post(image_urls=[], video_urls=["https://www.facebook.com/watch/?v=1"])
+    )
 
-    await cog.on_message(message=as_message(fake=message))
+    blocks = await build_facebook_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+    )
 
-    assert message.replies == []
-    assert message.reactions[-1] == _RED
-
-
-async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
-    """A fetch failure reaches the user as a reaction and nothing else."""
-    cog, _ = _cog(error=RuntimeError("boom"))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.replies == []
-    assert message.reactions[-1] == _RED
+    assert "could not be watched" in _body(blocks)

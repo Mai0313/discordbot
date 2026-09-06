@@ -297,7 +297,7 @@ class RouteClassification(BaseModel):
             "Consumed only on the QA route to decide whether to watch the video."
         ),
     )
-    link_context_sources: list[Literal["threads", "douyin", "bilibili"]] = Field(
+    link_context_sources: list[Literal["threads", "facebook", "douyin", "bilibili"]] = Field(
         default_factory=list,
         description=(
             "Registered linked-post sources whose actual content the user wants analyzed, "
