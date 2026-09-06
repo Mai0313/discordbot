@@ -187,6 +187,16 @@ MAX_FACEBOOK_INGEST_IMAGES: Final[int] = 8
 # ships an unusually long preload rather than a policy about how much discussion to read.
 MAX_FACEBOOK_COMMENTS: Final[int] = 10
 
+# Cap on images ingested from an Instagram post, sized to match the other two for the same
+# reason: each costs a fetch plus an upload on the reply's critical path. A carousel routinely
+# carries nine or ten, so this one really does bind, unlike Facebook's.
+MAX_INSTAGRAM_INGEST_IMAGES: Final[int] = 8
+
+# Cap on the comments injected below an Instagram post. Higher than Facebook's because the page
+# carries the whole list rather than a preload (11 of 11 measured on a public post), so this is
+# what keeps a viral post's discussion from crowding out the rest of the request.
+MAX_INSTAGRAM_COMMENTS: Final[int] = 20
+
 # Render-time cap on the Bilibili description injected as text. Descriptions can run to thousands
 # of characters of tags and sponsor text; the head is where the signal lives.
 MAX_BILIBILI_DESCRIPTION_CHARS: Final[int] = 1000
