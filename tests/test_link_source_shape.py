@@ -7,7 +7,10 @@ apart again — every other test exercises one platform, and a fourth source add
 whichever file was opened first passes all of them.
 
 So the classes here are DISCOVERED rather than listed: every `*Conversation` under
-`discordbot.utils` is swept up, and a new source joins this test by existing.
+`discordbot.utils` is swept up, and every guard below covers a new source without being told
+about it. `test_the_sweep_finds_every_source` is the one deliberate exception — it names the
+three, so a fourth fails it until somebody writes the name down, which is what stops a source
+arriving without anyone having read this file.
 """
 
 from typing import Any, Protocol, cast

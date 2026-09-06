@@ -824,7 +824,15 @@ class ThreadsOutput(BaseModel):
     @computed_field
     @cached_property
     def is_readable(self) -> bool:
-        """Whether enough came back to be worth showing."""
+        """Whether enough came back to be worth showing.
+
+        Deliberately NOT the rule `Post.is_readable` uses further up this module, which also
+        honours Threads' own unavailable flag and counts a bare author or shortcode as enough,
+        having a permalink to fall back on. That one gates the parse; this is the member the
+        Facebook and Instagram expansions gate on, and it is here so a caller written against
+        any of the three reads one name. `parse_threads/cog.py` answers the same question its
+        own way and does not read this, so the two rules cannot disagree in production today.
+        """
         return bool(self.text or self.image_urls or self.video_urls)
 
     def unlink(self) -> None:
