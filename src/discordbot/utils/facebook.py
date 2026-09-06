@@ -700,8 +700,7 @@ if __name__ == "__main__":
 
     console = Console()
     downloader = FacebookDownloader()
-    console.print(
-        downloader.parse_metadata(
-            url="https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/?comment_id=1730777104666239"
-        )
+    metadata = downloader.parse_metadata(
+        url="https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/?comment_id=1730777104666239"
     )
+    console.print(metadata)

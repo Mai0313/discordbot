@@ -517,8 +517,7 @@ if __name__ == "__main__":
 
     console = Console()
     downloader = InstagramDownloader()
-    console.print(
-        downloader.parse_metadata(
-            url="https://www.instagram.com/p/Dc5eNjYkoZE/c/17946527169275440/?img_index=1"
-        )
+    metadata = downloader.parse_metadata(
+        url="https://www.instagram.com/p/Dc5eNjYkoZE/c/17946527169275440/?img_index=1"
     )
+    console.print(metadata)

@@ -1384,5 +1384,5 @@ if __name__ == "__main__":
 
     console = Console()
     downloader = ThreadsDownloader(output_folder="./data")
-    with downloader.parse(url="https://www.threads.com/share/D1CytHQmC/") as conversation:
-        console.print(conversation)
+    metadata = downloader.parse_metadata(url="https://www.threads.com/share/D1CytHQmC/")
+    console.print(metadata)
