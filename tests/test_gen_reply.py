@@ -158,7 +158,9 @@ from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 from discordbot.cogs.gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
+from discordbot.cogs.gen_reply.link_sources.facebook import FACEBOOK_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
+from discordbot.cogs.gen_reply.link_sources.instagram import INSTAGRAM_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
@@ -182,6 +184,8 @@ from tests.helpers.llm_input import (
     extract_douyin_context_block,
     extract_threads_context_block,
     extract_bilibili_context_block,
+    extract_facebook_context_block,
+    extract_instagram_context_block,
 )
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -7420,6 +7424,77 @@ async def test_on_message_injects_bilibili_context_before_current(
 
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     separator_index = headers.index(BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    current_index = next(
+        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
+    )
+    assert separator_index < current_index
+
+
+_DiscussionSource = Literal["facebook", "instagram"]
+
+_DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str, Any, Any]] = {
+    "facebook": (
+        "build_facebook_context_messages",
+        "https://www.facebook.com/groups/123/posts/456/",
+        FACEBOOK_CONTEXT_SEPARATOR,
+        has_facebook_context_block,
+        extract_facebook_context_block,
+    ),
+    "instagram": (
+        "build_instagram_context_messages",
+        "https://www.instagram.com/p/Dc5eNjYkoZE/",
+        INSTAGRAM_CONTEXT_SEPARATOR,
+        has_instagram_context_block,
+        extract_instagram_context_block,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_DISCUSSION_SOURCE_CASES))
+async def test_on_message_injects_a_selected_discussion_source_before_current(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: _DiscussionSource
+) -> None:
+    """The post the router selected reaches the answer input, ahead of the current message.
+
+    Threads and Douyin already pin this; these two were wired without it, so a source whose
+    registry entry was right but whose block never spliced would have gone unnoticed.
+    """
+    builder, url, separator, has_block, extract_block = _DISCUSSION_SOURCE_CASES[name]
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=[name]
+    )
+    cog.config = _link_config()
+    seen: list[tuple[str, bool]] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable block instead of fetching the post."""
+        del answer_model_is_gemini, gemini_client
+        seen.append((url, allow_media_ingest))
+        return [
+            {"role": "system", "content": [{"type": "input_text", "text": separator}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "MOCK POST BODY"}]},
+        ]
+
+    monkeypatch.setattr(f"discordbot.cogs.gen_reply.link_sources.registry.{builder}", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
+    )
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=as_message(fake=message))
+
+    assert seen == [(url, True)]
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert has_block(request=answer)
+    assert extract_block(request=answer) == "MOCK POST BODY"
+
+    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
+    separator_index = headers.index(separator.split("\n", 1)[0])
     current_index = next(
         index for index, head in enumerate(headers) if head.startswith("==== Current Message")
     )

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import pytest
 
 from discordbot.utils.instagram import InstagramOutput, InstagramDownloader, InstagramConversation
+from discordbot.typings.context_budgets import MAX_INSTAGRAM_COMMENTS
 from discordbot.cogs.gen_reply.link_sources import instagram as instagram_source
 from discordbot.cogs.gen_reply.link_sources.instagram import (
     INSTAGRAM_TIMEOUT_NOTICE,
@@ -178,6 +179,30 @@ async def test_media_ingest_off_keeps_the_text_and_skips_the_upload(
 
     assert uploaded == []
     assert _separator(blocks) == INSTAGRAM_TEXT_ONLY_SEPARATOR
+
+
+async def test_the_comment_cap_bounds_what_rides_and_the_header_says_how_many(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Instagram serves the whole list; `MAX_INSTAGRAM_COMMENTS` is what the bot chooses to send.
+
+    The header prints what actually rode, which is the only place a model can see 20 against a
+    comment count of 60 and know the rest was left behind.
+    """
+    comments = [
+        InstagramOutput(comment_id=str(index), text=f"comment {index}", author_name="a")
+        for index in range(MAX_INSTAGRAM_COMMENTS + 5)
+    ]
+    _serve(monkeypatch, post=_post(comments=comments, comment_count=len(comments)))
+
+    blocks = await build_instagram_context_messages(
+        url=_URL, answer_model_is_gemini=False, gemini_client=None, allow_media_ingest=True
+    )
+
+    body = _body(blocks)
+    assert f"[{MAX_INSTAGRAM_COMMENTS} of the post's comments" in body
+    assert f"comment {MAX_INSTAGRAM_COMMENTS - 1}" in body
+    assert f"comment {MAX_INSTAGRAM_COMMENTS}" not in body
 
 
 async def test_both_separators_stop_short_of_promising_the_whole_comment_section(

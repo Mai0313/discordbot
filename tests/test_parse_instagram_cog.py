@@ -234,6 +234,8 @@ async def test_a_long_post_with_a_video_stays_inside_the_description_limit() -> 
     assert description is not None
     assert len(description) <= 4096
     assert "點此觀看影片" in description
+    # Without this the same test passes on a clip that truncated silently.
+    assert "（全文請看原貼文）" in description
 
 
 async def test_a_long_post_and_a_long_comment_fit_one_message() -> None:

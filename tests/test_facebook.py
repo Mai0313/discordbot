@@ -48,7 +48,10 @@ def _story(
         "permalink_url": f"https://www.facebook.com/groups/{_GROUP_ID}/posts/{post_id}/",
         "attachments": [{"styles": {"attachment": {"all_subattachments": {"nodes": nodes}}}}],
         "feedback": {
-            "i18n_reaction_count": "1,017",
+            # `i18n_reaction_count` sits beside this on the real page and is deliberately NOT
+            # read: it is locale-formatted ("1.7萬" under `Accept-Language: zh-TW`), where this
+            # one is the raw number. Measured 2026-09-07: 12 nodes carried the raw key and none
+            # carried the i18n one alone.
             "reaction_count": 1017,
             "share_count": {"count": 37, "is_empty": False},
             "total_comment_count": 40,
