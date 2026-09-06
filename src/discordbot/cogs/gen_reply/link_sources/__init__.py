@@ -79,8 +79,9 @@ def defuse_markers(*, text: str) -> str:
     and spends nothing, so nothing in the logs looks wrong; it writes into the replied-to user's
     own long-term memory, and what it can reach there survives every later conversation.
 
-    Shared by the sources that carry a DISCUSSION rather than a caption — Threads and Facebook,
-    each of which hands the model thousands of characters written by strangers. Douyin and
+    Shared by the sources that carry a DISCUSSION rather than a caption — Threads, Facebook and
+    Instagram, each of which hands the model thousands of characters written by strangers.
+    Douyin and
     Bilibili do not use it: a caption or a video title is one line by its own author, and
     `tests/test_prompt_guards.py` owns the prompt rule that covers every undefused path.
     """

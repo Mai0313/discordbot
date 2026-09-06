@@ -158,7 +158,9 @@ from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 from discordbot.cogs.gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
+from discordbot.cogs.gen_reply.link_sources.facebook import FACEBOOK_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
+from discordbot.cogs.gen_reply.link_sources.instagram import INSTAGRAM_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.attachment.grok_file_api import GrokFileUploader
 from discordbot.cogs.gen_reply.attachment.gemini_file_api import PendingUpload, GeminiFileUploader
 from discordbot.cogs.gen_reply.attachment.openai_file_api import OpenAIFileUploader
@@ -178,9 +180,12 @@ from tests.helpers.llm_input import (
     has_bilibili_context_block,
     has_facebook_context_block,
     extract_server_memory_block,
+    has_instagram_context_block,
     extract_douyin_context_block,
     extract_threads_context_block,
     extract_bilibili_context_block,
+    extract_facebook_context_block,
+    extract_instagram_context_block,
 )
 
 TEST_LLM_MODEL = "test-llm-model"
@@ -4531,25 +4536,27 @@ async def test_inline_renderer_drops_a_clip_without_downloading_it() -> None:
 def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The switch reaches the link sources that download first and upload after.
+    """The switch reaches every link source that fetches first and uploads after.
 
     Gating the upload alone would still spend a full Douyin / Bilibili download on media that
     can no longer reach the model, and Douyin's is the WAF-sensitive path an incident most
-    wants left alone. Read off the live registry so the wiring is what is pinned.
+    wants left alone. Facebook and Instagram fetch and downscale their images before the upload
+    those images could no longer feed, which is the same cost through a different door. Read off
+    the live registry so the wiring is what is pinned, and asserted over every source that has a
+    media step at all rather than the two it was written for.
     """
     monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
     monkeypatch.setenv(name="DOUYIN_VIDEO_ENABLED", value="true")
     monkeypatch.setenv(name="BILIBILI_VIDEO_ENABLED", value="true")
+    gated = ("douyin", "bilibili", "facebook", "instagram")
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
     on = LLMConfig()
-    assert _link_source(name="douyin").media_ingest_allowed(on)
-    assert _link_source(name="bilibili").media_ingest_allowed(on)
+    assert all(_link_source(name=name).media_ingest_allowed(on) for name in gated)
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="false")
     off = LLMConfig()
-    assert not _link_source(name="douyin").media_ingest_allowed(off)
-    assert not _link_source(name="bilibili").media_ingest_allowed(off)
+    assert not any(_link_source(name=name).media_ingest_allowed(off) for name in gated)
 
 
 async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
@@ -6394,6 +6401,12 @@ def _link_config() -> LLMConfig:
             has_facebook_context_block,
         ),
         (
+            "instagram",
+            "build_instagram_context_messages",
+            "https://www.instagram.com/p/Dc5eNjYkoZE/",
+            has_instagram_context_block,
+        ),
+        (
             "douyin",
             "build_douyin_context_messages",
             "https://v.douyin.com/abc123",
@@ -7211,7 +7224,7 @@ _CLIP_SOURCE_CASES = {
 async def test_on_message_skips_a_clip_link_in_the_replied_to_message(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: str
 ) -> None:
-    """Only Threads widened to the replied-to message; the clip sources stay on the current one."""
+    """Only the discussion sources widened to it; the clip sources stay on the current message."""
     builder, url, block, has_block = _CLIP_SOURCE_CASES[name]
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
@@ -7411,6 +7424,77 @@ async def test_on_message_injects_bilibili_context_before_current(
 
     headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
     separator_index = headers.index(BILIBILI_CONTEXT_SEPARATOR.split("\n", 1)[0])
+    current_index = next(
+        index for index, head in enumerate(headers) if head.startswith("==== Current Message")
+    )
+    assert separator_index < current_index
+
+
+_DiscussionSource = Literal["facebook", "instagram"]
+
+_DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str, Any, Any]] = {
+    "facebook": (
+        "build_facebook_context_messages",
+        "https://www.facebook.com/groups/123/posts/456/",
+        FACEBOOK_CONTEXT_SEPARATOR,
+        has_facebook_context_block,
+        extract_facebook_context_block,
+    ),
+    "instagram": (
+        "build_instagram_context_messages",
+        "https://www.instagram.com/p/Dc5eNjYkoZE/",
+        INSTAGRAM_CONTEXT_SEPARATOR,
+        has_instagram_context_block,
+        extract_instagram_context_block,
+    ),
+}
+
+
+@pytest.mark.parametrize("name", list(_DISCUSSION_SOURCE_CASES))
+async def test_on_message_injects_a_selected_discussion_source_before_current(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, name: _DiscussionSource
+) -> None:
+    """The post the router selected reaches the answer input, ahead of the current message.
+
+    Threads and Douyin already pin this; these two were wired without it, so a source whose
+    registry entry was right but whose block never spliced would have gone unnoticed.
+    """
+    builder, url, separator, has_block, extract_block = _DISCUSSION_SOURCE_CASES[name]
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RouteClassification(
+        decision="QA", link_context_sources=[name]
+    )
+    cog.config = _link_config()
+    seen: list[tuple[str, bool]] = []
+
+    async def fake_builder(
+        *, url: str, answer_model_is_gemini: bool, gemini_client: object, allow_media_ingest: bool
+    ) -> list[dict[str, object]]:
+        """Returns a recognizable block instead of fetching the post."""
+        del answer_model_is_gemini, gemini_client
+        seen.append((url, allow_media_ingest))
+        return [
+            {"role": "system", "content": [{"type": "input_text", "text": separator}]},
+            {"role": "user", "content": [{"type": "input_text", "text": "MOCK POST BODY"}]},
+        ]
+
+    monkeypatch.setattr(f"discordbot.cogs.gen_reply.link_sources.registry.{builder}", fake_builder)
+    monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", _ThreadsStreamer)
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **_: None
+    )
+    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", _silent_reaction)
+
+    message = FakeMessage(content=f"<@999> 這在講什麼 {url}", author=FakeAuthor(user_id=1))
+    await cog.on_message(message=as_message(fake=message))
+
+    assert seen == [(url, True)]
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert has_block(request=answer)
+    assert extract_block(request=answer) == "MOCK POST BODY"
+
+    headers = [text.split("\n", 1)[0] for _role, text in iter_text_blocks(request=answer)]
+    separator_index = headers.index(separator.split("\n", 1)[0])
     current_index = next(
         index for index, head in enumerate(headers) if head.startswith("==== Current Message")
     )
@@ -7788,7 +7872,7 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
 async def test_on_message_orders_selected_link_blocks_in_registry_order(
     memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
-    selected_sources: list[Literal["threads", "facebook", "douyin", "bilibili"]],
+    selected_sources: list[Literal["threads", "facebook", "instagram", "douyin", "bilibili"]],
     expected_separators: list[str],
 ) -> None:
     """Selected sources are injected in registry order, not URL or router-return order.

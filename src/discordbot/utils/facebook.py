@@ -25,7 +25,7 @@ page, so the parser walks for a node carrying the fields a story has rather than
 structure. Only the extracted result is modelled.
 
 Video is deliberately out of scope: a logged-out `Video` node carries `permalink_url` and
-`captions_url` but no `playable_url`, so there is no file to fetch. `FacebookPost.video_urls`
+`captions_url` but no `playable_url`, so there is no file to fetch. `FacebookOutput.video_urls`
 therefore holds permalinks for a caller to link to, never something to download.
 """
 
@@ -104,9 +104,10 @@ _BROWSER_HEADERS = {
 
 _JSON_SCRIPT_RE = re.compile(r'<script type="application/json"[^>]*>(.*?)</script>', re.DOTALL)
 
-# A comment node's id is base64 of `comment:<post_id>_<comment_id>`, which is what makes
-# "the comment this URL names" an exact match rather than a guess. `legacy_fbid` carries the
-# same trailing id directly and is preferred; the decode is the fallback for a node without it.
+# A comment node's id is base64 of `comment:<post_id>_<comment_id>`, which is what makes both
+# "the comment this URL names" and "the post this comment hangs off" exact matches rather than
+# guesses. `legacy_fbid` carries the trailing id directly and wins for that half; the decode is
+# the fallback for a node without it, and the only source for the leading one.
 _COMMENT_ID_RE = re.compile(r"^comment:(?P<post>[0-9]+)_(?P<comment>[0-9]+)")
 
 
@@ -232,48 +233,33 @@ class FetchedPage(BaseModel):
         return path.startswith(("/login", "/checkpoint", "/recover"))
 
 
-class FacebookComment(BaseModel):
-    """One comment read off the post page.
+class FacebookOutput(BaseModel):
+    """One post OR one comment, the single shape a conversation is built from.
+
+    Deliberately one type for both, exactly as `ThreadsOutput` and `InstagramOutput` are: a
+    caller that walks one platform's conversation walks the others with the same code. A comment
+    leaves empty the fields it has no version of — it carries no media, no group and no counts
+    of its own.
 
     Attributes:
-        comment_id: The comment's own numeric id, matched against a URL's `?comment_id=`.
-        text: The comment body.
+        text: The post's message, or the comment body.
+        url: The permalink. A comment carries the post's, since Facebook's own comment
+            permalink is a query on it rather than a page of its own.
         author_name: Display name of whoever wrote it.
-        author_icon_url: The author's profile picture URL, empty when the page omitted it.
-        created_at: When the comment was posted, None when the page omitted the timestamp.
-    """
-
-    comment_id: str = Field(..., description="The comment's own numeric id")
-    text: str = Field(default="", description="The comment body")
-    author_name: str = Field(default="", description="Display name of whoever wrote it")
-    author_icon_url: str = Field(default="", description="The author's profile picture URL")
-    created_at: datetime | None = Field(default=None, description="When the comment was posted")
-
-
-class FacebookPost(BaseModel):
-    """One Facebook post, in the neutral shape both callers render from.
-
-    Attributes:
-        post_id: The post's numeric id.
-        url: The canonical permalink, safe to publish (it names no sharer).
-        text: The post's full message text.
-        author_name: Display name of the post's author.
         author_icon_url: The author's profile picture URL.
-        group_name: The group the post was made in, empty for a page or profile post.
+        group_name: The group the POST was made in, empty for a page post and on every comment.
         image_urls: Full-resolution image URLs, in the order the post carries them.
         video_urls: Permalinks for any video attachment; never a downloadable file.
-        reaction_count: Reactions as the page formats them, e.g. "1,017".
-        comment_count: Total comments the page reports, which exceeds what it preloads.
-        share_count: Shares as the page formats them.
-        created_at: When the post was published.
-        comments: The comments the page preloaded, newest ordering as served.
-        selected_comment_id: The comment a `?comment_id=` URL named, empty when none did.
+        like_count: Reactions this post carries; zero on a comment.
+        comment_count: Comments the POST reports, which exceeds what the page preloads.
+        share_count: Shares the post reports; zero on a comment.
+        taken_at: When it was published.
+        comment_id: The comment's own numeric id; empty on the post itself.
     """
 
-    post_id: str = Field(default="", description="The post's numeric id")
-    url: str = Field(default="", description="The canonical permalink, safe to publish")
-    text: str = Field(default="", description="The post's full message text")
-    author_name: str = Field(default="", description="Display name of the post's author")
+    text: str = Field(default="", description="The post's message, or the comment body")
+    url: str = Field(default="", description="The permalink, the post's in both cases")
+    author_name: str = Field(default="", description="Display name of whoever wrote it")
     author_icon_url: str = Field(default="", description="The author's profile picture URL")
     group_name: str = Field(default="", description="The group the post was made in, if any")
     image_urls: list[str] = Field(
@@ -282,12 +268,36 @@ class FacebookPost(BaseModel):
     video_urls: list[str] = Field(
         default_factory=list, description="Permalinks for video attachments, never files"
     )
-    reaction_count: str = Field(default="", description="Reactions as the page formats them")
-    comment_count: int = Field(default=0, description="Total comments the page reports")
-    share_count: str = Field(default="", description="Shares as the page formats them")
-    created_at: datetime | None = Field(default=None, description="When the post was published")
-    comments: list[FacebookComment] = Field(
-        default_factory=list, description="The comments the page preloaded"
+    like_count: int = Field(default=0, description="Reactions this post carries; 0 on a comment")
+    comment_count: int = Field(default=0, description="Comments the post reports")
+    share_count: int = Field(default=0, description="Shares the post reports; 0 on a comment")
+    taken_at: datetime | None = Field(default=None, description="When it was published")
+    comment_id: str = Field(default="", description="The comment's own id; empty on the post")
+
+    @computed_field
+    @cached_property
+    def is_readable(self) -> bool:
+        """Whether enough came back to be worth showing."""
+        return bool(self.text or self.image_urls or self.video_urls)
+
+
+class FacebookConversation(BaseModel):
+    """One Facebook post and the discussion under it, shaped like `ThreadsConversation`.
+
+    Attributes:
+        chain: The post the link names. Always exactly one element — Facebook serves no ancestor
+            posts — but kept as a list so `target` means the same here as it does on Threads.
+        reply_branches: One branch per top-level comment, each ordered from that comment outward
+            through its replies. What the page preloads is a handful of a much longer thread,
+            which is the one thing a caller must not present as the whole discussion.
+        selected_comment_id: The comment a `?comment_id=` URL named, empty when none did.
+    """
+
+    chain: list[FacebookOutput] = Field(
+        default_factory=list, description="The post the link names, as a one-element chain"
+    )
+    reply_branches: list[list[FacebookOutput]] = Field(
+        default_factory=list, description="One branch per top-level comment, replies behind it"
     )
     selected_comment_id: str = Field(
         default="", description="The comment a `?comment_id=` URL named"
@@ -295,8 +305,20 @@ class FacebookPost(BaseModel):
 
     @computed_field
     @cached_property
-    def selected_comment(self) -> FacebookComment | None:
-        """The comment the URL singled out, or None when it named none or it was not preloaded.
+    def target(self) -> FacebookOutput | None:
+        """The post the link named, or None when the page carried none."""
+        return self.chain[-1] if self.chain else None
+
+    @computed_field
+    @cached_property
+    def comments(self) -> list[FacebookOutput]:
+        """Every preloaded comment, flattened out of the branches in page order."""
+        return [comment for branch in self.reply_branches for comment in branch]
+
+    @computed_field
+    @cached_property
+    def selected_comment(self) -> FacebookOutput | None:
+        """The comment the URL singled out, or None when it named none or was not preloaded.
 
         A named comment that is not on the page is the ordinary miss rather than an error: the
         page preloads only the first handful, so a link to an old comment resolves to nothing
@@ -312,12 +334,6 @@ class FacebookPost(BaseModel):
             ),
             None,
         )
-
-    @computed_field
-    @cached_property
-    def is_readable(self) -> bool:
-        """Whether enough of the post came back to be worth showing."""
-        return bool(self.text or self.image_urls or self.video_urls)
 
 
 # What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
@@ -357,31 +373,51 @@ def _text_of(*, value: JsonValue) -> str:
     return _str_of(value=value.get("text")) if isinstance(value, dict) else ""
 
 
-def _count_of(*, value: JsonValue) -> str:
-    """Reads a count that the page serves either as a bare value or wrapped in `{"count": n}`."""
+def _count_of(*, value: JsonValue) -> int:
+    """Reads a count the page serves as a bare value, a `{"count": n}` wrapper, or "1,017".
+
+    An int rather than the page's own formatted string, so every platform's counters are the
+    same type and whoever renders them picks the formatting once.
+    """
     if isinstance(value, dict):
         value = value.get("count")
-    if isinstance(value, (int, str)):
-        return str(value)
-    return ""
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        digits = value.replace(",", "").strip()
+        return int(digits) if digits.isdigit() else 0
+    return 0
 
 
-def _comment_id_of(*, node: dict[str, Any]) -> str:
-    """The comment's own numeric id, from `legacy_fbid` or by decoding its base64 node id."""
+def _time_of(*, value: JsonValue) -> datetime | None:
+    """A unix timestamp as an aware datetime, or None when the page omitted it."""
+    return datetime.fromtimestamp(value, tz=UTC) if isinstance(value, int) and value else None
+
+
+def _comment_ids_of(*, node: dict[str, Any]) -> tuple[str, str]:
+    """The post a comment hangs off and the comment's own id, either half empty when unreadable.
+
+    Both come out of the base64 node id, which is what lets a group feed's other posts be told
+    apart from the one being read; `legacy_fbid` carries only the comment's own half and wins
+    for it, being there even on a node whose id does not decode.
+    """
     legacy = node.get("legacy_fbid")
-    if isinstance(legacy, (int, str)) and str(legacy).isdigit():
-        return str(legacy)
+    comment_id = str(legacy) if isinstance(legacy, (int, str)) and str(legacy).isdigit() else ""
     node_id = node.get("id")
     if not isinstance(node_id, str):
-        return ""
+        return "", comment_id
     try:
         # Padded because Facebook serves these unpadded; the extra `=` are ignored when the
         # length is already a multiple of four.
         decoded = base64.b64decode(node_id + "==").decode(encoding="utf-8", errors="replace")
     except ValueError:
-        return ""
+        return "", comment_id
     match = _COMMENT_ID_RE.match(string=decoded)
-    return match.group("comment") if match else ""
+    if match is None:
+        return "", comment_id
+    return match.group("post"), comment_id or match.group("comment")
 
 
 class FacebookDownloader(BaseModel):
@@ -490,37 +526,60 @@ class FacebookDownloader(BaseModel):
         return image_urls, video_urls
 
     @staticmethod
-    def _comments_of(*, payloads: list[Any]) -> list[FacebookComment]:
-        """Every comment the page preloaded, de-duplicated by id and in page order.
+    def _comment_branches(
+        *, payloads: list[Any], post_url: str, post_id: str
+    ) -> list[list[FacebookOutput]]:
+        """Every preloaded comment on THIS post, grouped into branches the way Threads groups replies.
+
+        A reply names its own parent in `comment_direct_parent`, so it is threaded behind that
+        comment rather than behind whichever one the page happened to serialise before it; a
+        comment whose parent is absent from the page opens a branch of its own. What comes back
+        is only what the page chose to preload — a handful — never the whole comment section.
+
+        The scan is page-wide because the comments are not nested under the story node, which on
+        a group feed means walking past the neighbouring posts' comments too; each comment's own
+        id says which post it belongs to, and that is what keeps them out.
 
         The page serialises each comment two or three times, once fully and once as a stub for
-        its reply expander, so the fullest version of each wins. What comes back is only what
-        the page chose to preload — a handful — never the post's whole comment section.
+        its reply expander, so the fullest version of each wins.
         """
-        found: dict[str, FacebookComment] = {}
+        found: dict[str, FacebookOutput] = {}
+        parents: dict[str, str] = {}
         for payload in payloads:
             for node in _walk(node=payload):
                 if node.get("__typename") != "Comment":
                     continue
-                comment_id = _comment_id_of(node=node)
+                owner_id, comment_id = _comment_ids_of(node=node)
                 text = _text_of(value=node.get("body"))
-                if not comment_id or not text:
+                if not comment_id or not text or comment_id in found:
                     continue
-                if comment_id in found and found[comment_id].text:
+                if owner_id and post_id and owner_id != post_id:
                     continue
-                created = node.get("created_time")
-                found[comment_id] = FacebookComment(
-                    comment_id=comment_id,
+                parent = node.get("comment_direct_parent")
+                if isinstance(parent, dict):
+                    parents[comment_id] = _comment_ids_of(node=parent)[1]
+                found[comment_id] = FacebookOutput(
                     text=text,
+                    url=post_url,
                     author_name=_str_of(value=_deep_get(node, "author", "name")),
                     author_icon_url=_str_of(
                         value=_deep_get(node, "author", "profile_picture", "uri")
                     ),
-                    created_at=datetime.fromtimestamp(created, tz=UTC)
-                    if isinstance(created, int)
-                    else None,
+                    taken_at=_time_of(value=node.get("created_time")),
+                    comment_id=comment_id,
                 )
-        return list(found.values())
+        branches: list[list[FacebookOutput]] = []
+        index: dict[str, list[FacebookOutput]] = {}
+        for comment_id, comment in found.items():
+            parent = parents.get(comment_id)
+            branch = index.get(parent) if parent else None
+            if branch is None:
+                branch = [comment]
+                branches.append(branch)
+            else:
+                branch.append(comment)
+            index[comment_id] = branch
+        return branches
 
     @staticmethod
     def _group_name_of(*, payloads: list[Any], group_id: str) -> str:
@@ -542,19 +601,23 @@ class FacebookDownloader(BaseModel):
                 fallback = fallback or name
         return "" if group_id else fallback
 
-    def extract_post(self, *, url: str) -> FacebookPost:
-        """Reads one public Facebook post, its preloaded comments included.
+    def parse_metadata(self, *, url: str) -> FacebookConversation:
+        """Reads one public Facebook post and the comments the page preloaded with it.
+
+        Named to match `ThreadsDownloader.parse_metadata` and `InstagramDownloader.parse_metadata`,
+        and meaning the same on all three: parse the post and write nothing to disk. There is no
+        `parse` counterpart here because nothing is downloaded — the images ride out as URLs.
 
         A share link names its post only through the redirect it answers with, so the id is
         read off where the fetch landed, exactly as `ThreadsDownloader.extract_post_data` does.
         A redirect to the login wall means the post is not public, which is a normal outcome
-        rather than a failure and comes back as an unreadable post.
+        rather than a failure and comes back as an empty conversation.
 
         Args:
             url: The Facebook post URL in any accepted form.
 
         Returns:
-            The parsed post. Its `is_readable` is False when the page carried nothing.
+            The parsed conversation; its `chain` is empty when the post could not be read.
 
         Raises:
             RuntimeError: The page could not be fetched at all.
@@ -566,7 +629,7 @@ class FacebookDownloader(BaseModel):
                 "A Facebook post is not public; treating it as unreadable",
                 url=facebook_url.clean_url,
             )
-            return FacebookPost()
+            return FacebookConversation()
         landed = FacebookURL(raw_url=fetched.final_url)
         post_id = facebook_url.post_id or landed.post_id
         payloads = list(self._json_payloads(html=fetched.html))
@@ -577,7 +640,7 @@ class FacebookDownloader(BaseModel):
                 url=facebook_url.clean_url,
                 html_length=len(fetched.html),
             )
-            return FacebookPost()
+            return FacebookConversation()
 
         content_story = _deep_get(story, "comet_sections", "content", "story")
         actors_value = _deep_get(content_story, "actors") or story.get("actors")
@@ -587,15 +650,13 @@ class FacebookDownloader(BaseModel):
             content_story, "comet_sections", "message_container", "story", "message"
         )
         image_urls, video_urls = self._media_of(story=story)
-        created = story.get("creation_time")
         permalink = story.get("permalink_url")
         # The permalink the page reports is preferred over the caller's URL for the reason
         # `clean_url` exists: a pasted share link carries the tokens that name whoever shared it.
         post_url = permalink if isinstance(permalink, str) and permalink else landed.clean_url
-        return FacebookPost(
-            post_id=str(story.get("post_id") or post_id),
-            url=post_url,
+        post = FacebookOutput(
             text=_text_of(value=message),
+            url=post_url,
             author_name=_str_of(value=actor.get("name")),
             author_icon_url=_str_of(value=_deep_get(actor, "profile_picture", "uri")),
             group_name=self._group_name_of(
@@ -603,13 +664,16 @@ class FacebookDownloader(BaseModel):
             ),
             image_urls=image_urls,
             video_urls=video_urls,
-            reaction_count=_count_of(value=_deep_get(story, "feedback", "i18n_reaction_count")),
+            like_count=_count_of(value=_deep_get(story, "feedback", "reaction_count")),
             comment_count=_comment_total(story=story),
             share_count=_count_of(value=_deep_get(story, "feedback", "share_count")),
-            created_at=datetime.fromtimestamp(created, tz=UTC)
-            if isinstance(created, int)
-            else None,
-            comments=self._comments_of(payloads=payloads),
+            taken_at=_time_of(value=story.get("creation_time")),
+        )
+        return FacebookConversation(
+            chain=[post],
+            reply_branches=self._comment_branches(
+                payloads=payloads, post_url=post_url, post_id=post_id
+            ),
             selected_comment_id=facebook_url.comment_id,
         )
 
@@ -625,3 +689,19 @@ def _comment_total(*, story: dict[str, Any]) -> int:
         if isinstance(value, int):
             return value
     return 0
+
+
+if __name__ == "__main__":
+    """
+    Keep this for self development and testing.
+    DO NOT REMOVE THIS FOR ANY REASON.
+    """
+    from rich.console import Console
+
+    console = Console()
+    downloader = FacebookDownloader()
+    console.print(
+        downloader.parse_metadata(
+            url="https://www.facebook.com/groups/1176671326743489/posts/1730774811333135/?comment_id=1730777104666239"
+        )
+    )

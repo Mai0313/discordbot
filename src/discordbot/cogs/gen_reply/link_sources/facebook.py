@@ -25,7 +25,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-from discordbot.utils.facebook import FacebookPost, FacebookDownloader
+from discordbot.utils.facebook import FacebookOutput, FacebookDownloader, FacebookConversation
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.typings.context_budgets import MAX_FACEBOOK_COMMENTS, MAX_FACEBOOK_INGEST_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
@@ -98,19 +98,22 @@ def facebook_timeout_context_messages() -> list[EasyInputMessageParam]:
     return [system_block(text=FACEBOOK_TIMEOUT_NOTICE)]
 
 
-def _render_post_text(*, post: FacebookPost) -> str:
+def _render_conversation(*, conversation: FacebookConversation) -> str:
     """Renders the post, its counters and its preloaded comments as compact text.
 
     The comment the URL singled out is labelled rather than moved to the front: its position in
     the thread is part of reading it, and a model told which one was linked can answer about it
     without losing what came before.
     """
+    post = conversation.target
+    if post is None:
+        return ""
     header = f"[Facebook post the user linked] {defuse_markers(text=post.author_name)}".rstrip()
     if post.group_name:
         header = f"{header} — posted in the group {defuse_markers(text=post.group_name)}"
     lines = [header]
-    if post.created_at is not None:
-        lines.append(f"Posted at: {post.created_at.isoformat()}")
+    if post.taken_at is not None:
+        lines.append(f"Posted at: {post.taken_at.isoformat()}")
     if post.text:
         lines.append(defuse_markers(text=post.text))
     if post.image_urls:
@@ -120,9 +123,9 @@ def _render_post_text(*, post: FacebookPost) -> str:
     counters = [
         label
         for label, value in (
-            (f"{post.reaction_count} reactions", post.reaction_count),
-            (f"{post.comment_count} comments in total", post.comment_count),
-            (f"{post.share_count} shares", post.share_count),
+            (f"{post.like_count:,} reactions", post.like_count),
+            (f"{post.comment_count:,} comments in total", post.comment_count),
+            (f"{post.share_count:,} shares", post.share_count),
         )
         if value
     ]
@@ -130,7 +133,7 @@ def _render_post_text(*, post: FacebookPost) -> str:
         lines.append(", ".join(counters))
     lines.append(post.url)
 
-    comments = post.comments[:MAX_FACEBOOK_COMMENTS]
+    comments = conversation.comments[:MAX_FACEBOOK_COMMENTS]
     if comments:
         lines.append(
             f"\n[{len(comments)} of the post's comments, as preloaded by the page — not the "
@@ -139,7 +142,7 @@ def _render_post_text(*, post: FacebookPost) -> str:
         for comment in comments:
             marker = (
                 " (this is the comment the user's link points at)"
-                if comment.comment_id == post.selected_comment_id
+                if comment.comment_id == conversation.selected_comment_id
                 else ""
             )
             author = defuse_markers(text=comment.author_name)
@@ -148,7 +151,7 @@ def _render_post_text(*, post: FacebookPost) -> str:
 
 
 async def _upload_images(
-    *, post: FacebookPost, gemini_client: genai.Client
+    *, post: FacebookOutput, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Fetches and uploads the post's images, keeping whatever succeeded.
 
@@ -189,7 +192,7 @@ async def _upload_images(
 
 
 async def _media_parts(
-    *, post: FacebookPost, gemini_client: genai.Client
+    *, post: FacebookOutput, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Runs the image step under its own bound, degrading to no parts rather than raising.
 
@@ -245,7 +248,7 @@ async def build_facebook_context_messages(
     with logfire.span("gen_reply facebook context"):
         try:
             downloader = FacebookDownloader()
-            post = await asyncio.to_thread(downloader.extract_post, url=url)
+            conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
         # Broad on purpose: a parse error must degrade to the unavailable notice rather than
         # break the reply pipeline, which relies on this builder never raising.
         except Exception as error:
@@ -257,7 +260,8 @@ async def build_facebook_context_messages(
             )
             return [system_block(text=FACEBOOK_UNAVAILABLE_NOTICE)]
 
-        if not post.is_readable:
+        target = conversation.target
+        if target is None or not target.is_readable:
             logfire.info(
                 "Facebook post unavailable for context; injecting unavailable notice", url=url
             )
@@ -265,13 +269,13 @@ async def build_facebook_context_messages(
 
         media_parts: list[ResponseInputFileParam] = []
         if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
-            media_parts = await _media_parts(post=post, gemini_client=gemini_client)
+            media_parts = await _media_parts(post=target, gemini_client=gemini_client)
 
-    text = _render_post_text(post=post)
+    text = _render_conversation(conversation=conversation)
     # The text-only separator is for media that EXISTS and did not arrive, never for a post that
     # simply carries none. A plain text post is the common case here, and telling the model it
     # could not see media that was never there makes it volunteer an apology for nothing.
-    unattached = bool((post.image_urls or post.video_urls) and not media_parts)
+    unattached = bool((target.image_urls or target.video_urls) and not media_parts)
     if media_parts:
         # The trailer rides AFTER the attachments rather than at the end of the text: the images
         # are the one part of this block nothing here ever looked inside, so a fence that closed

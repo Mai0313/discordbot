@@ -214,6 +214,11 @@ THREADS_EXPAND_TIMEOUT_SECONDS: Final[float] = 180.0
 # page is ~950KB of JSON that a pathological payload could make slow to walk.
 FACEBOOK_EXPAND_TIMEOUT_SECONDS: Final[float] = 60.0
 
+# The same bound for the Instagram expansion, and the same number for the same reason: one page
+# fetch and a parse, with nothing downloaded. Its page is smaller than Facebook's (~800KB against
+# ~950KB) but carries the whole comment list, so the walk is the part worth guarding.
+INSTAGRAM_EXPAND_TIMEOUT_SECONDS: Final[float] = 60.0
+
 # Bound on `/download_video`'s whole download step, both the yt-dlp and the Douyin branch.
 # Wider than an auto-expansion because the user asked for this file by name and may be after a
 # long one, and sized under Discord's 15-minute deferred-interaction token so the failure edit
@@ -249,6 +254,10 @@ THREADS_MEDIA_READ_TIMEOUT_SECONDS: Final[int] = 15
 # response is ~950KB rather than a few tens of KB, and there is only ever one of them per read,
 # so nothing queues behind it.
 FACEBOOK_PAGE_TIMEOUT_SECONDS: Final[int] = 20
+
+# Bound on the single Instagram page fetch a post costs. Matches the Facebook one: the response
+# is the same order of magnitude (~800KB) and there is only ever one per read.
+INSTAGRAM_PAGE_TIMEOUT_SECONDS: Final[int] = 20
 
 # 10s caps the history-render I/O tail: a URL taking longer is almost always a dead/slow CDN
 # that would fail anyway, and a 30s wait let one such source dominate the whole render. Healthy

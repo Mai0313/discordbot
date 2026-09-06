@@ -14,6 +14,7 @@ for this module to remove, and collecting them here would be a rename, not a fix
 from typing import Final
 
 FACEBOOK_EMOJI: Final[str] = "<:facebook:1546179601288396810>"
+INSTAGRAM_EMOJI: Final[str] = "<:instagram:1546181126945505340>"
 THREADS_EMOJI: Final[str] = "<:threads:1546180328639434923>"
 DOUYIN_EMOJI: Final[str] = "<:douyin:1546180677710385304>"
 BILIBILI_EMOJI: Final[str] = "<:bilibili:1546180944615051344>"
@@ -25,6 +26,7 @@ BILIBILI_EMOJI: Final[str] = "<:bilibili:1546180944615051344>"
 LINK_SOURCE_EMOJIS: Final[dict[str, str]] = {
     "threads": THREADS_EMOJI,
     "facebook": FACEBOOK_EMOJI,
+    "instagram": INSTAGRAM_EMOJI,
     "douyin": DOUYIN_EMOJI,
     "bilibili": BILIBILI_EMOJI,
 }
@@ -33,6 +35,7 @@ __all__ = [
     "BILIBILI_EMOJI",
     "DOUYIN_EMOJI",
     "FACEBOOK_EMOJI",
+    "INSTAGRAM_EMOJI",
     "LINK_SOURCE_EMOJIS",
     "THREADS_EMOJI",
 ]

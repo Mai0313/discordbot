@@ -52,6 +52,12 @@ from discordbot.cogs.gen_reply.link_sources.facebook import (
     FACEBOOK_UNAVAILABLE_NOTICE,
     FACEBOOK_TEXT_ONLY_SEPARATOR,
 )
+from discordbot.cogs.gen_reply.link_sources.instagram import (
+    INSTAGRAM_TIMEOUT_NOTICE,
+    INSTAGRAM_CONTEXT_SEPARATOR,
+    INSTAGRAM_UNAVAILABLE_NOTICE,
+    INSTAGRAM_TEXT_ONLY_SEPARATOR,
+)
 
 
 class RecordedResponses(Protocol):
@@ -127,6 +133,14 @@ _FACEBOOK_SEPARATOR_HEADS = (
 _FACEBOOK_NOTICE_HEADS = (
     FACEBOOK_UNAVAILABLE_NOTICE.split("\n", 1)[0],
     FACEBOOK_TIMEOUT_NOTICE.split("\n", 1)[0],
+)
+_INSTAGRAM_SEPARATOR_HEADS = (
+    INSTAGRAM_CONTEXT_SEPARATOR.split("\n", 1)[0],
+    INSTAGRAM_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
+)
+_INSTAGRAM_NOTICE_HEADS = (
+    INSTAGRAM_UNAVAILABLE_NOTICE.split("\n", 1)[0],
+    INSTAGRAM_TIMEOUT_NOTICE.split("\n", 1)[0],
 )
 
 _ID_SECTION = re.compile(r"\[id: (\d+)\][^\n]*\n(.*?)(?=\n\n\[id: |\Z)", re.DOTALL)
@@ -305,5 +319,23 @@ def has_facebook_context_block(request: ResponseInputParam | str) -> bool:
     for _role, text in iter_text_blocks(request=request):
         head = text.split("\n", 1)[0]
         if head in _FACEBOOK_SEPARATOR_HEADS or head in _FACEBOOK_NOTICE_HEADS:
+            return True
+    return False
+
+
+def extract_instagram_context_block(request: ResponseInputParam | str) -> str | None:
+    """Returns the text of the block following the Instagram separator, or None if absent."""
+    items = list(iter_text_blocks(request=request))
+    for index, (role, text) in enumerate(items):
+        if role == "system" and text.split("\n", 1)[0] in _INSTAGRAM_SEPARATOR_HEADS:
+            return items[index + 1][1] if index + 1 < len(items) else ""
+    return None
+
+
+def has_instagram_context_block(request: ResponseInputParam | str) -> bool:
+    """Whether the input carries an injected Instagram separator or notice block."""
+    for _role, text in iter_text_blocks(request=request):
+        head = text.split("\n", 1)[0]
+        if head in _INSTAGRAM_SEPARATOR_HEADS or head in _INSTAGRAM_NOTICE_HEADS:
             return True
     return False
