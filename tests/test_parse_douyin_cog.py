@@ -23,7 +23,7 @@ from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
 
-from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
+from tests.helpers.casting import as_bot, as_message, make_forbidden, make_media_hosting_config
 from tests.helpers.discord_mocks import (
     FakeUser,
     FakeDiscordMessage,
@@ -201,6 +201,28 @@ async def test_the_placeholder_is_posted_before_the_post_is_read() -> None:
 
     assert replies_when_the_read_began == [1]
     assert message.reactions[-1] == _GREEN
+
+
+async def test_a_channel_that_refuses_the_placeholder_is_never_read_from() -> None:
+    """A channel that will not take the placeholder will not take the card either.
+
+    Finding that out before the read is the point: Douyin bans on request volume, so a
+    read-only channel must not cost one fetch per pasted link.
+    """
+    cog, made = _cog()
+    message = _message()
+
+    async def refuse(**kwargs: object) -> FakeDiscordMessage:
+        """Refuses the reply the way a channel without Send Messages does."""
+        del kwargs
+        raise make_forbidden()
+
+    message.reply = refuse  # ty: ignore[invalid-assignment]
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert made == {}  # no downloader was ever built, so Douyin was never contacted
+    assert message.reactions[-1] == _RED
 
 
 async def test_a_message_addressed_to_the_bot_is_left_alone() -> None:

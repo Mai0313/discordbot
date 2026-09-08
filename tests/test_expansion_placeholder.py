@@ -1,10 +1,11 @@
 """Tests for the reply slot a link expansion claims before it has anything to show."""
 
-from nextcord import Embed
+import pytest
+from nextcord import Embed, HTTPException
 
 from discordbot.utils.expansion_placeholder import ExpansionPlaceholder, send_expansion_placeholder
 
-from tests.helpers.casting import as_message
+from tests.helpers.casting import as_message, make_forbidden, make_not_found
 from tests.helpers.discord_mocks import FakeDiscordMessage
 
 _TEXT = "-# 正在讀取貼文⋯"
@@ -14,6 +15,7 @@ async def _placeholder() -> tuple[FakeDiscordMessage, ExpansionPlaceholder]:
     """Returns the message carrying the link and the placeholder posted under it."""
     source = FakeDiscordMessage()
     placeholder = await send_expansion_placeholder(message=as_message(fake=source), text=_TEXT)
+    assert placeholder is not None  # a FakeDiscordMessage never refuses the reply
     return source, placeholder
 
 
@@ -69,3 +71,45 @@ async def test_a_removal_that_fails_never_replaces_the_failure_that_called_it() 
     source.reply_messages[0].delete = refuse  # ty: ignore[invalid-assignment]
 
     await placeholder.discard()
+
+
+async def _refusing(error: Exception) -> FakeDiscordMessage:
+    """Builds a message whose reply is refused the way a real channel refuses one."""
+    source = FakeDiscordMessage()
+
+    async def refuse(**kwargs: object) -> FakeDiscordMessage:
+        """Raises instead of posting, keeping the recorded payload out of the way."""
+        del kwargs
+        raise error
+
+    source.reply = refuse  # ty: ignore[invalid-assignment]
+    return source
+
+
+async def test_a_channel_that_refuses_the_placeholder_answers_none() -> None:
+    """A channel that will not take one line will not take the card either.
+
+    Answering None rather than raising is what keeps a read-only channel from logging an
+    unexpected error per pasted link: the caller marks the expansion failed and reads nothing.
+    """
+    source = await _refusing(error=make_forbidden())
+
+    assert await send_expansion_placeholder(message=as_message(fake=source), text=_TEXT) is None
+
+
+async def test_a_link_deleted_before_the_placeholder_answers_none() -> None:
+    """Discord answers 50035 rather than NotFound when the message replied to is gone."""
+    gone = HTTPException(
+        response=make_not_found().response, message={"code": 50035, "message": "Invalid Form Body"}
+    )
+    source = await _refusing(error=gone)
+
+    assert await send_expansion_placeholder(message=as_message(fake=source), text=_TEXT) is None
+
+
+async def test_any_other_send_failure_still_raises() -> None:
+    """Only the two refusals are routine; anything else is the listener's to report."""
+    source = await _refusing(error=RuntimeError("discord exploded"))
+
+    with pytest.raises(RuntimeError):
+        await send_expansion_placeholder(message=as_message(fake=source), text=_TEXT)

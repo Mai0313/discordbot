@@ -241,6 +241,11 @@ class FacebookCogs(commands.Cog):
 
         try:
             placeholder = await send_expansion_placeholder(message=message, text=_PLACEHOLDER_TEXT)
+            if placeholder is None:
+                # A channel that refused the placeholder will refuse the card too, so the
+                # read is never started.
+                await self._mark_failed(message=message, current_emoji=current_emoji)
+                return
             try:
                 await self._expand(
                     message=message, url=url, current_emoji=current_emoji, placeholder=placeholder

@@ -89,6 +89,15 @@ class DouyinCogs(commands.Cog):
         self.media_delivery = build_media_delivery_planner()
         self.downloader_factory = DouyinDownloader
 
+    async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
+        """Replaces the working reaction with the failure cross."""
+        await update_reaction(
+            message=message,
+            bot_user=self.bot.user,
+            emoji="<:redcross:1517565100838355016>",
+            previous=current_emoji,
+        )
+
     @staticmethod
     def _build_embed(post: DouyinPost, url: str) -> Embed:
         """Builds the caption card that accompanies the expanded media."""
@@ -130,6 +139,11 @@ class DouyinCogs(commands.Cog):
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
         try:
             placeholder = await send_expansion_placeholder(message=message, text=_PLACEHOLDER_TEXT)
+            if placeholder is None:
+                # A channel that refused the placeholder will refuse the card too, so Douyin
+                # is never contacted.
+                await self._mark_failed(message=message, current_emoji=current_emoji)
+                return
             try:
                 await self._expand(
                     message=message, url=url, current_emoji=current_emoji, placeholder=placeholder
@@ -149,12 +163,7 @@ class DouyinCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            await update_reaction(
-                message=message,
-                bot_user=self.bot.user,
-                emoji="<:redcross:1517565100838355016>",
-                previous=current_emoji,
-            )
+            await self._mark_failed(message=message, current_emoji=current_emoji)
 
     async def _expand(
         self, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder

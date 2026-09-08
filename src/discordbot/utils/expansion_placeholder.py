@@ -13,10 +13,14 @@ source message is the whole report, which is what every expansion cog already do
 """
 
 import logfire
-from nextcord import File, Embed, Message, AllowedMentions
+from nextcord import File, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 
 from discordbot.utils.discord_embeds import embed_spacer_payload
+
+# What Discord answers when the message being replied to no longer exists. It is a generic
+# invalid-form-body code, so it means this only on a send that carries a message reference.
+_UNSENDABLE_REPLY = 50035
 
 
 class ExpansionPlaceholder(BaseModel):
@@ -92,17 +96,44 @@ class ExpansionPlaceholder(BaseModel):
             )
 
 
-async def send_expansion_placeholder(*, message: Message, text: str) -> ExpansionPlaceholder:
+async def send_expansion_placeholder(
+    *, message: Message, text: str
+) -> ExpansionPlaceholder | None:
     """Claims the reply slot under `message` with a line saying the expansion is coming.
+
+    A refusal here is the whole expansion's answer as well: a channel that will not take this
+    one line will not take the card either, and learning it now costs no fetch. Both refusals
+    are ordinary rather than defects, which is why they are classified here instead of
+    reaching the listener's last-resort handler, where a misconfigured channel would log an
+    error per pasted link.
 
     Args:
         message: The message carrying the link, which the placeholder replies to.
         text: The line to show until the expansion replaces it.
 
     Returns:
-        The placeholder, to deliver onto or discard.
+        The placeholder to deliver onto or discard, or None when the channel refused it and
+        the caller should mark the expansion failed without reading anything.
     """
-    placeholder = await message.reply(
-        content=text, mention_author=False, allowed_mentions=AllowedMentions.none()
-    )
+    try:
+        placeholder = await message.reply(
+            content=text, mention_author=False, allowed_mentions=AllowedMentions.none()
+        )
+    except Forbidden as error:
+        logfire.warn(
+            "Missing permission to post an expansion placeholder",
+            message_id=message.id,
+            channel_id=message.channel.id,
+            error_type=type(error).__name__,
+            _exc_info=error,
+        )
+        return None
+    except HTTPException as error:
+        # A reply to a message that is already gone comes back as 50035, not only as NotFound.
+        if not isinstance(error, NotFound) and error.code != _UNSENDABLE_REPLY:
+            raise
+        logfire.info(
+            "The message to expand is gone", message_id=message.id, channel_id=message.channel.id
+        )
+        return None
     return ExpansionPlaceholder(message=placeholder)

@@ -11,7 +11,7 @@ every fake family across the test modules funnels through the same adapter.
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
-from nextcord import Message, NotFound, Interaction
+from nextcord import Message, NotFound, Forbidden, Interaction
 from nextcord.ext import commands
 
 from discordbot.utils.media_delivery import MediaHostingConfig
@@ -112,6 +112,15 @@ def make_not_found(message: str = "missing") -> NotFound:
     """
     response = cast("ClientResponse", SimpleNamespace(status=404, reason="Not Found"))
     return NotFound(response=response, message=message)
+
+
+def make_forbidden(message: str = "denied") -> Forbidden:
+    """Builds the ``Forbidden`` nextcord raises when the bot lacks a channel permission.
+
+    Same shape as `make_not_found`: only ``status`` / ``reason`` are read off the response.
+    """
+    response = cast("ClientResponse", SimpleNamespace(status=403, reason="Forbidden"))
+    return Forbidden(response=response, message=message)
 
 
 def make_media_hosting_config(
