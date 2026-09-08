@@ -2,8 +2,7 @@
 
 Mirrors `parse_threads`, minus everything that cog needs for a conversation. A Facebook post
 has no ancestors, no quoted post and no reply branches, so there is no embed budget to
-allocate and no omitted-post notice to page: one post embed, its images, and optionally the
-one comment the URL singled out.
+allocate: one post embed, its images, and optionally the one comment the URL singled out.
 
 Expansion is skipped when the message is addressed to the bot (a DM, or an explicit mention):
 `gen_reply` reads the linked post and answers about it, so expanding as well would fetch the
@@ -16,12 +15,20 @@ size ceiling: the only bytes it ever sends are the embed JSON.
 
 There is deliberately no kill-switch. `DOUYIN_AUTO_EXPAND_ENABLED` was the one precedent and
 it was deleted in #636 rather than copied here: turning this off means deleting the cog.
+
+Threads, Facebook, Instagram and Douyin are one feature four times over, and what makes them
+one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
+five reactions and what each of them means, the restart sweep, and the rule that a failed
+expansion says nothing in the channel at all. Read that module before changing anything here
+that a reader would notice, and `tests/test_expansion_contract.py` before adding a fifth
+source. What stays per platform is the card: this one renders one post, its images and the
+comment a URL singled out.
 """
 
 import asyncio
 
 import logfire
-from nextcord import Color, Embed, Message, NotFound, Forbidden
+from nextcord import Color, Embed, Message, NotFound
 from nextcord.ext import commands
 
 from discordbot.typings.emojis import FACEBOOK_EMOJI
@@ -36,7 +43,17 @@ from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import FACEBOOK_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit
-from discordbot.utils.expansion_placeholder import ExpansionPlaceholder, send_expansion_placeholder
+from discordbot.utils.expansion_placeholder import (
+    EXPANSION_DONE_EMOJI,
+    EXPANSION_FAILED_EMOJI,
+    EXPANSION_WORKING_EMOJI,
+    EXPANSION_UNREADABLE_EMOJI,
+    EXPANSION_RETRY_LATER_EMOJI,
+    ExpansionPlaceholder,
+    send_expansion_placeholder,
+    resume_expansion_placeholders,
+    report_expansion_delivery_failure,
+)
 
 # Facebook's own blue, so the card reads as a Facebook post at a glance, and a neutral grey for
 # a comment so the two never look like the same kind of thing. Deliberately NOT in
@@ -68,6 +85,10 @@ _COMMENT_RESERVE = 2000
 _BUDGET_SLACK = 400
 _TRUNCATION_NOTICE = "\n\n⋯（全文請看原貼文）"
 _PLACEHOLDER_TEXT = "-# 正在讀取 Facebook 貼文⋯"
+# Owns this cog's rows in the pending-expansion table. Keyed as in `LINK_SOURCE_EMOJIS`, which
+# `tests/test_link_source_emojis.py` pins, so the four cogs and the reply path name a platform
+# the same way rather than each inventing a spelling.
+_SOURCE = "facebook"
 _VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
 _COMMENT_HEADER = "💬 **指定的留言**"
 
@@ -88,6 +109,18 @@ class FacebookCogs(commands.Cog):
         """
         self.bot = bot
         self.downloader_factory = FacebookDownloader
+        self._resume_started = False
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Runs again the expansions a restart interrupted (once per process).
+
+        `on_ready` fires on every gateway reconnect, so the flag guards it to one sweep.
+        """
+        if self._resume_started:
+            return
+        self._resume_started = True
+        await resume_expansion_placeholders(bot=self.bot, source=_SOURCE, expand=self._expand)
 
     @staticmethod
     def _footer_text(*, post: FacebookOutput, shown_images: int) -> str:
@@ -203,7 +236,7 @@ class FacebookCogs(commands.Cog):
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
-            emoji="<:redcross:1517565100838355016>",
+            emoji=EXPANSION_FAILED_EMOJI,
             previous=current_emoji,
         )
 
@@ -237,10 +270,14 @@ class FacebookCogs(commands.Cog):
         # reaction) saying a Facebook post was read. `gen_reply` adds the same one on the path it
         # takes instead of this one, so every read is marked the same way whichever cog did it.
         await update_reaction(message=message, bot_user=self.bot.user, emoji=FACEBOOK_EMOJI)
-        current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
+        current_emoji = await update_reaction(
+            message=message, bot_user=self.bot.user, emoji=EXPANSION_WORKING_EMOJI
+        )
 
         try:
-            placeholder = await send_expansion_placeholder(message=message, text=_PLACEHOLDER_TEXT)
+            placeholder = await send_expansion_placeholder(
+                message=message, text=_PLACEHOLDER_TEXT, source=_SOURCE, url=url
+            )
             if placeholder is None:
                 # A channel that refused the placeholder will refuse the card too, so the
                 # read is never started.
@@ -282,7 +319,8 @@ class FacebookCogs(commands.Cog):
             async with asyncio.timeout(delay=FACEBOOK_EXPAND_TIMEOUT_SECONDS):
                 conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
         # Broad on purpose: a fetch or parse failure must not escape into the listener; the
-        # cross reaction is the user-visible outcome. A timeout lands here as a plain failure.
+        # reaction is the user-visible outcome. A stall is the one failure that says something
+        # about the post rather than about the bot — the link is fine and works later.
         except Exception as error:
             logfire.warn(
                 "Facebook parse failed",
@@ -291,6 +329,14 @@ class FacebookCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
+            if isinstance(error, TimeoutError):
+                await update_reaction(
+                    message=message,
+                    bot_user=self.bot.user,
+                    emoji=EXPANSION_RETRY_LATER_EMOJI,
+                    previous=current_emoji,
+                )
+                return
             await self._mark_failed(message=message, current_emoji=current_emoji)
             return
 
@@ -299,7 +345,15 @@ class FacebookCogs(commands.Cog):
             logfire.info(
                 "Facebook post is not readable; nothing to expand", url=url, message_id=message.id
             )
-            await self._mark_failed(message=message, current_emoji=current_emoji)
+            # The page came back and there is nothing showable in it, which is the unreadable
+            # mark rather than the failure cross: nothing about the bot went wrong and a retry
+            # would find the same private or deleted post.
+            await update_reaction(
+                message=message,
+                bot_user=self.bot.user,
+                emoji=EXPANSION_UNREADABLE_EMOJI,
+                previous=current_emoji,
+            )
             return
 
         await self._deliver(
@@ -350,41 +404,20 @@ class FacebookCogs(commands.Cog):
 
             await placeholder.deliver(embeds=embeds)
         except Exception as error:
-            # Only the placeholder's own disappearance is routine here. The 50035 an
-            # unsendable reply used to raise is not: on an edit that code is a rejected body,
-            # which is a defect rather than a message that went away.
-            if isinstance(error, NotFound):
-                logfire.info(
-                    "The Facebook expansion placeholder is gone",
-                    url=post_url,
-                    message_id=message.id,
-                    channel_id=message.channel.id,
-                )
-            elif isinstance(error, Forbidden):
-                logfire.warn(
-                    "Missing permission to post the Facebook expansion",
-                    url=post_url,
-                    message_id=message.id,
-                    channel_id=message.channel.id,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
-            else:
-                logfire.error(
-                    "Failed to send Facebook expansion",
-                    url=post_url,
-                    message_id=message.id,
-                    channel_id=message.channel.id,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
+            report_expansion_delivery_failure(
+                error=error,
+                platform="Facebook",
+                url=post_url,
+                message_id=message.id,
+                channel_id=message.channel.id,
+            )
             await self._mark_failed(message=message, current_emoji=current_emoji)
             return
 
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
-            emoji="<:greencheck:1517565102424068226>",
+            emoji=EXPANSION_DONE_EMOJI,
             previous=current_emoji,
         )
 

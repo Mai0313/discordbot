@@ -119,6 +119,22 @@ def usage_log_isolated_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> P
 
 
 @pytest.fixture(autouse=True)
+def expansion_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Points the pending-expansion table at a throwaway `reply.db`.
+
+    Autouse for the reason `usage_log_isolated_dir` is: every expansion cog records its
+    placeholder, the write is swallowed best-effort, so a test missing the swap would pass
+    green while inserting rows into the live `reply.db` — where the next real restart would
+    find them and try to expand a link nobody posted. NullPool closes each connection on
+    return, so this stays a sync fixture; the schema bootstraps lazily on the first write.
+    """
+    engine = create_async_engine(
+        url=f"sqlite+aiosqlite:///{tmp_path / 'expansion_reply.db'}", poolclass=NullPool
+    )
+    monkeypatch.setattr("discordbot.utils.expansion_placeholder._engine", engine)
+
+
+@pytest.fixture(autouse=True)
 def file_api_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pins the Files API kill-switch on for every test.
 

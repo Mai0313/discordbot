@@ -22,9 +22,16 @@ Douyin's WAF bans a share path for tens of minutes once it is hit hard, and this
 sees every message in every channel, so the request-volume bounds in `utils/douyin.py`
 are load-bearing rather than defensive. A blocked request must never be reported as a missing
 post: telling someone their working link is dead is the worst failure this feature can produce.
+
+Threads, Facebook, Instagram and Douyin are one feature four times over, and what makes them
+one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
+five reactions and what each of them means, the restart sweep, and the rule that a failed
+expansion says nothing in the channel at all. Read that module before changing anything here
+that a reader would notice, and `tests/test_expansion_contract.py` before adding a fifth
+source. What stays per platform is the card: this one downloads a clip or a gallery, and is the
+only source with a failure taxonomy rich enough to tell a bot wall from a deleted post.
 """
 
-from typing import ClassVar
 import asyncio
 
 import logfire
@@ -34,6 +41,7 @@ from nextcord.ext import commands
 from discordbot.utils.douyin import (
     DOUYIN_URL_RE,
     DouyinPost,
+    DouyinError,
     DouyinDownload,
     DouyinDownloader,
     DouyinBlockedError,
@@ -55,7 +63,17 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
-from discordbot.utils.expansion_placeholder import ExpansionPlaceholder, send_expansion_placeholder
+from discordbot.utils.expansion_placeholder import (
+    EXPANSION_DONE_EMOJI,
+    EXPANSION_FAILED_EMOJI,
+    EXPANSION_WORKING_EMOJI,
+    EXPANSION_UNREADABLE_EMOJI,
+    EXPANSION_RETRY_LATER_EMOJI,
+    ExpansionPlaceholder,
+    send_expansion_placeholder,
+    resume_expansion_placeholders,
+    report_expansion_delivery_failure,
+)
 
 # Douyin's own palette, so the expansion reads as a Douyin card at a glance. Deliberately NOT
 # in `typings/colors.py`: that palette is Discord's own semantic set (success / failure / info),
@@ -63,6 +81,10 @@ from discordbot.utils.expansion_placeholder import ExpansionPlaceholder, send_ex
 _EMBED_COLOR = 0xFE2C55
 
 _PLACEHOLDER_TEXT = "-# 正在讀取抖音貼文⋯"
+# Owns this cog's rows in the pending-expansion table. Keyed as in `LINK_SOURCE_EMOJIS`, which
+# `tests/test_link_source_emojis.py` pins, so the four cogs and the reply path name a platform
+# the same way rather than each inventing a spelling.
+_SOURCE = "douyin"
 
 
 class DouyinCogs(commands.Cog):
@@ -75,10 +97,6 @@ class DouyinCogs(commands.Cog):
             the seam a test replaces to keep an expansion off the network.
     """
 
-    # A retryable block gets its own reaction so it never reads like the ⚠️ "could not read
-    # this post" outcome; the two are different problems and one of them resolves itself.
-    blocked_emoji: ClassVar[str] = "⏱️"
-
     def __init__(self, bot: commands.Bot):
         """Initializes the DouyinCogs instance.
 
@@ -88,13 +106,25 @@ class DouyinCogs(commands.Cog):
         self.bot = bot
         self.media_delivery = build_media_delivery_planner()
         self.downloader_factory = DouyinDownloader
+        self._resume_started = False
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Runs again the expansions a restart interrupted (once per process).
+
+        `on_ready` fires on every gateway reconnect, so the flag guards it to one sweep.
+        """
+        if self._resume_started:
+            return
+        self._resume_started = True
+        await resume_expansion_placeholders(bot=self.bot, source=_SOURCE, expand=self._expand)
 
     async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
         """Replaces the working reaction with the failure cross."""
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
-            emoji="<:redcross:1517565100838355016>",
+            emoji=EXPANSION_FAILED_EMOJI,
             previous=current_emoji,
         )
 
@@ -136,9 +166,13 @@ class DouyinCogs(commands.Cog):
         # reaction) saying a Douyin post was read. `gen_reply` adds the same one when it reads the
         # link into an answer instead, so every read is marked the same way whichever path took it.
         await update_reaction(message=message, bot_user=self.bot.user, emoji=DOUYIN_EMOJI)
-        current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
+        current_emoji = await update_reaction(
+            message=message, bot_user=self.bot.user, emoji=EXPANSION_WORKING_EMOJI
+        )
         try:
-            placeholder = await send_expansion_placeholder(message=message, text=_PLACEHOLDER_TEXT)
+            placeholder = await send_expansion_placeholder(
+                message=message, text=_PLACEHOLDER_TEXT, source=_SOURCE, url=url
+            )
             if placeholder is None:
                 # A channel that refused the placeholder will refuse the card too, so Douyin
                 # is never contacted.
@@ -166,7 +200,7 @@ class DouyinCogs(commands.Cog):
             await self._mark_failed(message=message, current_emoji=current_emoji)
 
     async def _expand(
-        self, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+        self, *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
     ) -> None:
         """Fetches the post and posts it back, reporting every failure mode distinctly."""
         # A private directory per invocation, because the filenames are derived from the post id:
@@ -222,15 +256,19 @@ class DouyinCogs(commands.Cog):
                 )
 
     async def _report_failure(
-        self, message: Message, url: str, error: Exception, current_emoji: str
+        self, *, message: Message, url: str, error: Exception, current_emoji: str
     ) -> None:
         """Reacts with the outcome the failure actually represents, never a generic error.
 
-        A bot wall is retryable and the post is fine, so it gets its own reaction rather than
-        the ⚠️ that means "this post could not be read", and that reaction is now the whole
-        report: an expansion that produced nothing leaves nothing in the channel, which is
-        what the other three expansion cogs have always done. Douyin's own filter reason lives
-        in the log instead.
+        The reaction is the whole report — an expansion that produced nothing leaves nothing
+        in the channel — so it carries the split on its own, and Douyin's own filter reason
+        lives in the log instead. The three outcomes are the shared vocabulary's, and this
+        cog is the one with a taxonomy rich enough to reach all three: a bot wall and a stall
+        are both retryable with the post itself fine, anything else `DouyinError` covers means
+        Douyin served no usable post, and an error from outside that tree is the bot's own.
+
+        A timeout used to land on the unreadable mark, which is the one thing this module's
+        docstring says must never happen: it told the reader a working link was dead.
         """
         if isinstance(error, DouyinUnavailableError):
             # A deleted or private post is a routine remote outcome, not a defect; the message
@@ -248,13 +286,19 @@ class DouyinCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-        emoji = self.blocked_emoji if isinstance(error, DouyinBlockedError) else "⚠️"
+        if isinstance(error, DouyinBlockedError | TimeoutError):
+            emoji = EXPANSION_RETRY_LATER_EMOJI
+        elif isinstance(error, DouyinError):
+            emoji = EXPANSION_UNREADABLE_EMOJI
+        else:
+            emoji = EXPANSION_FAILED_EMOJI
         await update_reaction(
             message=message, bot_user=self.bot.user, emoji=emoji, previous=current_emoji
         )
 
     async def _deliver(  # noqa: PLR0913 -- the post, its files, and both handles to the channel
         self,
+        *,
         message: Message,
         url: str,
         post: DouyinPost,
@@ -281,44 +325,63 @@ class DouyinCogs(commands.Cog):
                 total_mb=delivery.total_mb,
             )
             await update_reaction(
-                message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
+                message=message,
+                bot_user=self.bot.user,
+                emoji=EXPANSION_UNREADABLE_EMOJI,
+                previous=current_emoji,
             )
             return
 
+        # Broad on purpose: the delivery step must never escape into the listener, and its
+        # failures split three ways — the placeholder went away, the bot lacks a permission,
+        # or something unexpected lost the expansion.
         try:
-            await message.edit(suppress=True)
-        # Deleting the link while the clip was downloading is a withdrawal: before the
-        # placeholder existed the late reply was simply refused, and this keeps that, since a
-        # reply outlives the message it answers.
-        except NotFound:
-            logfire.info(
-                "Douyin expansion target is gone",
+            try:
+                await message.edit(suppress=True)
+            # Deleting the link while the clip was downloading is a withdrawal: before the
+            # placeholder existed the late reply was simply refused, and this keeps that, since
+            # a reply outlives the message it answers.
+            except NotFound:
+                logfire.info(
+                    "Douyin expansion target is gone",
+                    url=url,
+                    message_id=message.id,
+                    channel_id=message.channel.id,
+                )
+                return
+            # Broad on purpose: hiding Discord's own preview is cosmetic and must not abort the
+            # expansion. A persistent Forbidden means the guild lacks Manage Messages.
+            except Exception as error:
+                logfire.warn(
+                    "Could not suppress the source message embed",
+                    message_id=message.id,
+                    guild_id=message.guild.id if message.guild else None,
+                    error_type=type(error).__name__,
+                    _exc_info=error,
+                )
+
+            await self._send(url=url, post=post, result=result, plan=plan, placeholder=placeholder)
+        except Exception as error:
+            report_expansion_delivery_failure(
+                error=error,
+                platform="Douyin",
                 url=url,
                 message_id=message.id,
                 channel_id=message.channel.id,
             )
+            await self._mark_failed(message=message, current_emoji=current_emoji)
             return
-        # Broad on purpose: hiding the source preview is cosmetic, and the expansion below is
-        # already downloaded, so nothing here may abort it. A missing Manage Messages permission
-        # is the common case and is not actionable per message.
-        except Exception as error:
-            logfire.debug(
-                "Could not suppress the source message embed",
-                message_id=message.id,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
 
-        await self._send(url=url, post=post, result=result, plan=plan, placeholder=placeholder)
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
-            emoji="<:greencheck:1517565102424068226>",
+            emoji=EXPANSION_DONE_EMOJI,
             previous=current_emoji,
         )
 
     async def _send(
         self,
+        *,
         url: str,
         post: DouyinPost,
         result: DouyinDownload,
