@@ -72,6 +72,7 @@ dependencies = [
     "google-antigravity>=0.1.12",
     "google-genai>=2.22.0",
     "httpx>=0.28.1",
+    "httpx2>=2.12.0",
     "logfire>=5.0.0",
     "nextcord[speed,voice]>=3.2.0",
     "openai>=3.8.0",
