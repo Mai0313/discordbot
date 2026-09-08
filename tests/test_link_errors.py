@@ -6,11 +6,14 @@ someone a working link is dead. So these pin the mapping status by status rather
 a range check to keep meaning what it meant.
 """
 
+from typing import Self
 from collections.abc import Callable
 
 import pytest
 import requests
 
+from discordbot.utils import douyin as douyin_module
+from discordbot.utils.douyin import DouyinDownloader, DouyinBlockedError
 from discordbot.utils.threads import ThreadsDownloader
 from discordbot.utils.facebook import FacebookDownloader
 from discordbot.utils.instagram import InstagramDownloader
@@ -111,3 +114,32 @@ def test_a_refused_page_leaves_each_reader_as_a_retryable_error(
 
     with pytest.raises(LinkRetryableError):
         downloader._fetch_page(url="https://example.test/p/1")  # ty: ignore[unresolved-attribute]
+
+
+def test_a_stalled_douyin_read_is_retryable_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Douyin raises its own classes, so the shared predicate is what keeps it in step.
+
+    This is the gap that let a real divergence through review: every other test feeds
+    `expansion_failure_emoji` a synthetic exception, so a platform whose reader never raised a
+    retryable class at all still passed. Douyin's own fetch is the one that has to be asked.
+    """
+
+    class _StalledSession:
+        """Answers the way a share page under load does, for the `with` block Douyin opens."""
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *exc_info: object) -> bool:
+            return False
+
+        def get(self, *args: object, **kwargs: object) -> requests.Response:
+            """Never answers, the way a stalled read does not."""
+            del args, kwargs
+            raise requests.ReadTimeout("stalled")
+
+    monkeypatch.setattr(target=douyin_module.requests, name="Session", value=_StalledSession)
+    downloader = DouyinDownloader(output_folder="")
+
+    with pytest.raises(DouyinBlockedError):
+        downloader.parse_metadata(url="https://www.douyin.com/video/7000000000000000000")
