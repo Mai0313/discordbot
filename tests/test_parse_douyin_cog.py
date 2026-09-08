@@ -24,7 +24,12 @@ from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPl
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
 
 from tests.helpers.casting import as_bot, as_message, make_media_hosting_config
-from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
+from tests.helpers.discord_mocks import (
+    FakeUser,
+    FakeDiscordMessage,
+    expansion_payload,
+    placeholder_withdrawn,
+)
 
 _URL = "https://v.douyin.com/abc123"
 _GREEN = "<:greencheck:1517565102424068226>"
@@ -141,8 +146,8 @@ def _message(content: str = _URL, filesize_limit: int = 25 * 1024 * 1024) -> _Do
 
 
 def _reply_body(*, message: FakeDiscordMessage) -> str:
-    """Returns the first reply's text, failing loudly when the cog posted none."""
-    content = message.replies[0]["content"]
+    """Returns the delivered text, failing loudly when nothing reached the placeholder."""
+    content = expansion_payload(message=message)["content"]
     assert content is not None
     return content
 
@@ -155,16 +160,47 @@ async def test_a_pasted_link_is_expanded_with_its_caption() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     assert message.suppressed
-    reply = message.replies[0]
-    assert reply["files"]
-    assert reply["embeds"][0].description == "caption"
-    assert reply["embeds"][0].author.name == "somebody"
+    delivered = expansion_payload(message=message)
+    assert delivered["files"]
+    assert delivered["embeds"][0].description == "caption"
+    assert delivered["embeds"][0].author.name == "somebody"
     assert message.reactions[-1] == _GREEN
     # The read marker rides beside the status chain, which only ever removes its own reaction.
     assert message.reactions[0] == DOUYIN_EMOJI
     assert all(emoji != DOUYIN_EMOJI for emoji, _ in message.removed)
     # The scratch dir is per invocation and removed with its files once delivery finishes.
     assert not await asyncio.to_thread(Path(made["stub"].output_folder).exists)
+
+
+async def test_the_placeholder_is_posted_before_the_post_is_read() -> None:
+    """The whole point of the placeholder: the reply slot is claimed while the read is ahead.
+
+    Claiming it afterwards would leave the card where it was, several messages below the link
+    someone pasted, so the order is what this pins rather than the message itself.
+    """
+    cog, _ = _cog()
+    message = _message()
+    replies_when_the_read_began: list[int] = []
+    build = cog.__dict__["downloader_factory"]
+
+    def watched_factory(output_folder: str) -> _StubDownloader:
+        """Wraps the stub's read so the test can see the channel as it starts."""
+        stub = build(output_folder=output_folder)
+        read = stub.parse_metadata
+
+        def watched(url: str) -> DouyinPost:
+            replies_when_the_read_began.append(len(message.replies))
+            return read(url=url)
+
+        stub.parse_metadata = watched
+        return stub
+
+    cog.__dict__["downloader_factory"] = watched_factory
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert replies_when_the_read_began == [1]
+    assert message.reactions[-1] == _GREEN
 
 
 async def test_a_message_addressed_to_the_bot_is_left_alone() -> None:
@@ -220,7 +256,7 @@ async def test_a_blocked_request_is_never_reported_as_a_missing_post() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == DouyinCogs.blocked_emoji
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
 
 
 async def test_a_deleted_post_is_marked_failed_without_a_message() -> None:
@@ -231,7 +267,7 @@ async def test_a_deleted_post_is_marked_failed_without_a_message() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
 
 
 async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
@@ -242,7 +278,7 @@ async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
 
 
 async def test_an_unexpected_failure_marks_the_message() -> None:
@@ -294,8 +330,8 @@ async def test_an_unhostable_oversize_clip_is_refused() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    assert message.replies == []
-    assert not message.suppressed  # nothing was posted, so the source keeps its own preview
+    assert placeholder_withdrawn(message=message)
+    assert not message.suppressed  # nothing was delivered, so the source keeps its own preview
 
 
 async def test_a_capped_gallery_reports_what_it_left_out() -> None:
@@ -376,7 +412,7 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
 
 
 async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported(
@@ -421,3 +457,4 @@ async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported
 
     assert removed  # the teardown really ran and really failed
     assert message.reactions[-1] == "⚠️"
+    assert placeholder_withdrawn(message=message)

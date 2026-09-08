@@ -148,6 +148,7 @@ nav:
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
               - douyin: Reference/discordbot/utils/douyin.md
               - downloader: Reference/discordbot/utils/downloader.md
+              - expansion_placeholder: Reference/discordbot/utils/expansion_placeholder.md
               - facebook: Reference/discordbot/utils/facebook.md
               - file_downloads: Reference/discordbot/utils/file_downloads.md
               - images: Reference/discordbot/utils/images.md
