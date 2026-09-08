@@ -17,6 +17,7 @@ preload and a Douyin clip are different things and their cards should differ. Th
 the shell around the card.
 """
 
+from types import SimpleNamespace
 from typing import Any
 import inspect
 from pathlib import Path
@@ -33,6 +34,9 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,
 )
+
+from tests.helpers.casting import as_bot, as_message
+from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
 
 _COGS_DIR = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
 
@@ -169,3 +173,21 @@ def test_an_expansion_cog_claims_its_reply_slot_before_it_reacts(module: Any) ->
     body = inspect.getsource(listener)
 
     assert body.index("send_expansion_placeholder(") < body.index("update_reaction(")
+
+
+@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
+async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
+    module: Any,  # noqa: ANN401
+) -> None:
+    """A cross on its own cannot say which link died, and a message can carry two.
+
+    `current_emoji` is None exactly when claiming the reply slot failed, which is both the
+    refused channel and the Discord 5xx that raises straight past it. Behavioural rather than
+    a source scan, because what matters is that the marker lands whichever call site got there.
+    """
+    cog = _cog_class(module=module)(bot=as_bot(fake=SimpleNamespace(user=FakeUser(bot=True))))
+    message = FakeDiscordMessage()
+
+    await cog._mark_failed(message=as_message(fake=message), current_emoji=None)
+
+    assert message.reactions == [LINK_SOURCE_EMOJIS[module._SOURCE], EXPANSION_FAILED_EMOJI]

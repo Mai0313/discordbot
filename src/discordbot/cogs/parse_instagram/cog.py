@@ -243,7 +243,14 @@ class InstagramCogs(commands.Cog):
         return embeds
 
     async def _mark_failed(self, *, message: Message, current_emoji: str | None) -> None:
-        """Replaces the working reaction with the failure cross."""
+        """Paints the failure cross, naming the platform when nothing else on the message does.
+
+        `current_emoji` is None only when claiming the reply slot failed, before either mark
+        went on. The cross alone cannot say WHICH link died, and on a message carrying two
+        that is the whole of what someone needs, so the platform marker goes on first.
+        """
+        if current_emoji is None:
+            await update_reaction(message=message, bot_user=self.bot.user, emoji=INSTAGRAM_EMOJI)
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
@@ -287,15 +294,11 @@ class InstagramCogs(commands.Cog):
             )
             if placeholder is None:
                 # A channel that refused the placeholder will refuse the card too, so the
-                # read is never started. The platform marker still goes on: which source was
-                # detected is the one thing a misconfigured channel leaves nobody able to see.
-                await update_reaction(
-                    message=message, bot_user=self.bot.user, emoji=INSTAGRAM_EMOJI
-                )
+                # read is never started.
                 await self._mark_failed(message=message, current_emoji=current_emoji)
                 return
             # Persistent marker (added directly, not through the status chain, which replaces
-            # its own reaction) saying a Instagram post was read, and the working ring under it.
+            # its own reaction) saying an Instagram post was read, and the working ring under it.
             # Both go on AFTER the reply slot is claimed: they share one per-channel rate-limit
             # bucket that a message send does not, so claiming first is what stops the card
             # queueing behind them. `gen_reply` adds the same marker on the path it takes
