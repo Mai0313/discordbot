@@ -169,6 +169,16 @@ class DouyinBlockedError(DouyinError, LinkRetryableError):
     """A bot wall answered instead of the post. Retryable: the post itself is fine."""
 
 
+class DouyinTransferError(DouyinError, LinkRetryableError):
+    """A media transfer never finished. Retryable, and NOT the bot wall `DouyinBlockedError` is.
+
+    Both earn the same reaction, since the reader's next move is the same either way. They are
+    separate classes because `/download_video` answers with words rather than a mark, and
+    telling someone Douyin is refusing their requests when a CDN read simply stalled sends
+    them off to wait out a wall that was never there.
+    """
+
+
 class DouyinTooLargeError(DouyinError):
     """The media exceeds the caller's cap. Deterministic, so it is never retried."""
 
@@ -445,10 +455,13 @@ douyin_url_locks: KeyedLockManager[str] = KeyedLockManager()
 def douyin_failure_message(error: Exception) -> str:
     """Maps a Douyin failure to the message a user should see.
 
-    A bot wall, a missing post and a stall are kept apart on purpose. Reporting any of them
-    as a deleted post is the single worst outcome this feature can produce: it sends someone
-    off to re-check a link that is perfectly fine. Only `DouyinUnavailableError` — Douyin
-    explicitly filtering the post out — earns that wording.
+    A bot wall, a missing post, a transfer that never finished and a stall are kept apart on
+    purpose. Reporting any of them as a deleted post is the single worst outcome this feature
+    can produce: it sends someone off to re-check a link that is perfectly fine. Only
+    `DouyinUnavailableError` — Douyin explicitly filtering the post out — earns that wording,
+    and only `DouyinBlockedError` earns the one that says Douyin is refusing requests: a
+    stalled CDN read is retryable too, but blaming a wall sends someone off to wait out
+    something that was never there.
 
     `DouyinTooLargeError` has no branch of its own: the one caller left is `/download_video`,
     which arms no `max_bytes`, so nothing on this path can raise it.
@@ -457,6 +470,8 @@ def douyin_failure_message(error: Exception) -> str:
         return "-# 這則貼文已被刪除或設為私人"
     if isinstance(error, DouyinBlockedError):
         return "-# 抖音暫時擋住了請求，請稍後再試"
+    if isinstance(error, DouyinTransferError):
+        return "-# 這次檔案沒抓完,稍後再試一次"
     if isinstance(error, TimeoutError):
         return "-# 抖音回應太慢,這次沒有抓到;稍後再試一次"
     return "-# 檔案無法下載"
@@ -918,9 +933,14 @@ class DouyinDownloader(BaseModel):
                     _exc_info=True,
                 )
 
-        raise DouyinError(
-            f"Failed to download Douyin media from {url}: {last_error}"
-        ) from last_error
+        # Every retry spent on a transfer that kept stalling, which is the ordinary Douyin
+        # failure rather than an exotic one and is emphatically worth trying later. Reported
+        # flat, it read as a post with nothing showable in it — the same conflation the two
+        # fetch sites above stopped making.
+        message = f"Failed to download Douyin media from {url}: {last_error}"
+        if isinstance(last_error, RequestException):
+            raise DouyinTransferError(message) from last_error
+        raise DouyinError(message) from last_error
 
     def download(
         self,

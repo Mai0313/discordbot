@@ -52,6 +52,7 @@ from discordbot.utils.expansion_placeholder import (
     ExpansionPlaceholder,
     expansion_failure_emoji,
     send_expansion_placeholder,
+    report_expansion_read_failure,
     resume_expansion_placeholders,
     report_expansion_delivery_failure,
 )
@@ -346,12 +347,8 @@ class InstagramCogs(commands.Cog):
         # reaction is the user-visible outcome, and which one it is comes off the error's class
         # rather than a check here, so all four cogs answer a refusal the same way.
         except Exception as error:
-            logfire.warn(
-                "Instagram parse failed",
-                url=url,
-                message_id=message.id,
-                error_type=type(error).__name__,
-                _exc_info=error,
+            report_expansion_read_failure(
+                error=error, platform="Instagram", url=url, message_id=message.id
             )
             await update_reaction(
                 message=message,

@@ -7,13 +7,19 @@ a range check to keep meaning what it meant.
 """
 
 from typing import Self
+from pathlib import Path
 from collections.abc import Callable
 
 import pytest
 import requests
 
 from discordbot.utils import douyin as douyin_module
-from discordbot.utils.douyin import DouyinDownloader, DouyinBlockedError
+from discordbot.utils.douyin import (
+    DouyinDownloader,
+    DouyinBlockedError,
+    DouyinTransferError,
+    douyin_failure_message,
+)
 from discordbot.utils.threads import ThreadsDownloader
 from discordbot.utils.facebook import FacebookDownloader
 from discordbot.utils.instagram import InstagramDownloader
@@ -143,3 +149,31 @@ def test_a_stalled_douyin_read_is_retryable_too(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(DouyinBlockedError):
         downloader.parse_metadata(url="https://www.douyin.com/video/7000000000000000000")
+
+
+def test_a_stalled_douyin_download_is_retryable_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The download is Douyin's third request, and the one that stalls in practice.
+
+    Its retries being spent is the ordinary Douyin failure rather than an exotic one, and
+    reported flat it read as a post with nothing showable in it. The two fetch sites are
+    covered above; this is the one a reader actually meets.
+    """
+
+    def stall(**kwargs: object) -> Path:
+        """Never completes, the way a stalling CDN transfer does not."""
+        del kwargs
+        raise requests.ReadTimeout("stalled")
+
+    monkeypatch.setattr(target=douyin_module, name="stream_to_file", value=stall)
+    downloader = DouyinDownloader(output_folder=str(tmp_path))
+
+    with pytest.raises(DouyinTransferError) as raised:
+        downloader._download_to(url="https://example.test/v.mp4", filename="v.mp4")
+
+    # Retryable to the expansion, but NOT the bot wall: `/download_video` answers in words,
+    # and blaming a wall sends someone off to wait out something that was never there.
+    assert isinstance(raised.value, LinkRetryableError)
+    assert not isinstance(raised.value, DouyinBlockedError)
+    assert "擋住" not in douyin_failure_message(error=raised.value)

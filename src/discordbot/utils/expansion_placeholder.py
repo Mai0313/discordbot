@@ -41,7 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.reactions import update_reaction
-from discordbot.utils.link_errors import LinkReadError, LinkRetryableError
+from discordbot.utils.link_errors import LinkReadError, LinkRetryableError, LinkUnavailableError
 from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
@@ -369,6 +369,49 @@ def expansion_failure_emoji(*, error: Exception) -> str:
     if isinstance(error, LinkReadError):
         return EXPANSION_UNREADABLE_EMOJI
     return EXPANSION_FAILED_EMOJI
+
+
+def report_expansion_read_failure(
+    *, error: Exception, platform: str, url: str, message_id: int
+) -> None:
+    """Logs a failed read at the severity `.github/CONTRIBUTING.md#logging` gives its outcome.
+
+    The ladder is keyed on how tolerable the failure is, not on how deep it happened, so the
+    three levels line up with the marks `expansion_failure_emoji` picks rather than with any
+    one platform's habits: a post the platform says is gone is a routine user-driven outcome
+    and its own example of `info`, a read the platform explains any other way is degraded but
+    handled, and an error from outside that tree broke a user-visible deliverable — a
+    `TimeoutError` excepted, which rides `warn` for the same reason it rides the retryable
+    mark: it says the read was too slow, never that the bot is wrong.
+
+    The `info` branch deliberately carries no exception and does carry `reason`: a traceback
+    for a deleted post is noise, while the platform's own words for WHY it refused exist in no
+    other line. That split was Douyin's alone before this; the other three logged a deleted
+    post at `warn` with a traceback, which is what makes a real regression unfindable.
+
+    Args:
+        error: What the read raised.
+        platform: The platform's display name, for the log message.
+        url: The post being expanded.
+        message_id: The source message carrying the link.
+    """
+    if isinstance(error, LinkUnavailableError):
+        logfire.info(
+            f"{platform} post is gone or private",
+            url=url,
+            message_id=message_id,
+            error_type=type(error).__name__,
+            reason=str(error),
+        )
+        return
+    report = logfire.warn if isinstance(error, LinkReadError | TimeoutError) else logfire.error
+    report(
+        f"{platform} read failed",
+        url=url,
+        message_id=message_id,
+        error_type=type(error).__name__,
+        _exc_info=error,
+    )
 
 
 def report_expansion_delivery_failure(
