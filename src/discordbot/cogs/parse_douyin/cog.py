@@ -119,7 +119,7 @@ class DouyinCogs(commands.Cog):
         self._resume_started = True
         await resume_expansion_placeholders(bot=self.bot, source=_SOURCE, expand=self._expand)
 
-    async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
+    async def _mark_failed(self, *, message: Message, current_emoji: str | None) -> None:
         """Replaces the working reaction with the failure cross."""
         await update_reaction(
             message=message,
@@ -162,22 +162,31 @@ class DouyinCogs(commands.Cog):
             return
 
         url = match.group(0)
-        # Persistent marker (added directly, not through the status chain, which replaces its own
-        # reaction) saying a Douyin post was read. `gen_reply` adds the same one when it reads the
-        # link into an answer instead, so every read is marked the same way whichever path took it.
-        await update_reaction(message=message, bot_user=self.bot.user, emoji=DOUYIN_EMOJI)
-        current_emoji = await update_reaction(
-            message=message, bot_user=self.bot.user, emoji=EXPANSION_WORKING_EMOJI
-        )
+        # Nothing is on the message yet, and the outer handler below is reachable before
+        # anything is: claiming the reply slot is itself a step that can fail. Left unset
+        # rather than pre-filled so a failure mark removes a reaction only when one is there.
+        current_emoji: str | None = None
         try:
             placeholder = await send_expansion_placeholder(
                 message=message, text=_PLACEHOLDER_TEXT, source=_SOURCE, url=url
             )
             if placeholder is None:
                 # A channel that refused the placeholder will refuse the card too, so Douyin
-                # is never contacted.
+                # is never contacted. The platform marker still goes on: which source was
+                # detected is the one thing a misconfigured channel leaves nobody able to see.
+                await update_reaction(message=message, bot_user=self.bot.user, emoji=DOUYIN_EMOJI)
                 await self._mark_failed(message=message, current_emoji=current_emoji)
                 return
+            # Persistent marker (added directly, not through the status chain, which replaces
+            # its own reaction) saying a Douyin post was read, and the working ring under it.
+            # Both go on AFTER the reply slot is claimed: they share one per-channel rate-limit
+            # bucket that a message send does not, so claiming first is what stops the card
+            # queueing behind them. `gen_reply` adds the same marker on the path it takes
+            # instead of this one, so every read is marked the same way whichever cog did it.
+            await update_reaction(message=message, bot_user=self.bot.user, emoji=DOUYIN_EMOJI)
+            current_emoji = await update_reaction(
+                message=message, bot_user=self.bot.user, emoji=EXPANSION_WORKING_EMOJI
+            )
             try:
                 await self._expand(
                     message=message, url=url, current_emoji=current_emoji, placeholder=placeholder

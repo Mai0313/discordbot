@@ -151,3 +151,21 @@ def test_an_expansion_cog_spells_no_status_mark_of_its_own(module: Any) -> None:
 
     for literal in _STATUS_LITERALS:
         assert f'"{literal}"' not in body, f"{module.__name__} spells {literal} itself"
+
+
+@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
+def test_an_expansion_cog_claims_its_reply_slot_before_it_reacts(module: Any) -> None:  # noqa: ANN401
+    """The placeholder is what the reader is waiting for, so nothing queues in front of it.
+
+    Both reactions share one rate-limit bucket, which nextcord serializes itself and which is
+    per CHANNEL rather than per message, so a busy channel makes them slower still; a message
+    send is a different bucket and waits on none of it. Reacting first therefore delays the
+    one thing the placeholder exists to put under the link promptly. Read off the source
+    because the ordering is the whole property and there is nothing else to assert against:
+    `tests/test_parse_facebook_cog.py` proves the mechanism on one cog, and this holds the
+    other three to it.
+    """
+    listener = getattr(_cog_class(module=module), "on_message")  # noqa: B009 -- ty cannot see it
+    body = inspect.getsource(listener)
+
+    assert body.index("send_expansion_placeholder(") < body.index("update_reaction(")

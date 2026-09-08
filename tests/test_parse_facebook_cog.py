@@ -6,6 +6,7 @@ a reader sees when the post cannot be read.
 """
 
 from types import SimpleNamespace
+from typing import Any, cast
 from datetime import UTC, datetime
 
 from nextcord import Embed
@@ -16,7 +17,7 @@ from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
 from discordbot.utils.expansion_placeholder import EXPANSION_UNREADABLE_EMOJI
 
-from tests.helpers.casting import as_bot, as_message
+from tests.helpers.casting import as_bot, as_message, make_forbidden
 from tests.helpers.discord_mocks import (
     FakeUser,
     FakeDiscordMessage,
@@ -382,3 +383,50 @@ async def test_an_album_counts_the_videos_nothing_linked() -> None:
     footer = _embeds(message)[0].footer.text
     assert footer is not None
     assert "🎬 另有 2 部影片" in footer
+
+
+async def test_the_reply_slot_is_claimed_before_any_reaction_goes_on() -> None:
+    """The card is what the reader is waiting for, so nothing queues in front of it.
+
+    Both reactions share one per-channel rate-limit bucket that nextcord serializes itself,
+    while a message send waits on none of it, so reacting first only delays the placeholder.
+    `tests/test_expansion_contract.py` holds the other three cogs to the same order; this is
+    the one that proves the order is real rather than a coincidence of source layout.
+    """
+    cog, _ = _cog(post=_post())
+    message = _message()
+    reactions_when_claimed: list[str] = []
+    claim = message.reply
+
+    async def recording_reply(**kwargs: object) -> object:
+        """Snapshots the reaction row at the moment the slot is claimed."""
+        reactions_when_claimed.extend(message.reactions)
+        return await claim(**cast("Any", kwargs))
+
+    message.reply = recording_reply  # ty: ignore[invalid-assignment]
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert reactions_when_claimed == []
+    assert message.reactions[0] == FACEBOOK_EMOJI
+
+
+async def test_a_refused_slot_still_says_which_platform_was_detected() -> None:
+    """The marker is the diagnostic, so the one channel that cannot show a card keeps it.
+
+    A channel granting Add Reactions but not Send Messages is exactly where someone has to
+    work out what went wrong, and the cross alone does not say a Facebook link was even seen.
+    """
+    cog, _ = _cog(post=_post())
+    message = _message()
+
+    async def refuse(**kwargs: object) -> object:
+        """Answers the way a channel the bot cannot post in does."""
+        del kwargs
+        raise make_forbidden()
+
+    message.reply = refuse  # ty: ignore[invalid-assignment]
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.reactions == [FACEBOOK_EMOJI, _RED]
