@@ -447,7 +447,9 @@ class FacebookDownloader(BaseModel):
         """Fetches a page with the browser headers Facebook will only answer in full to.
 
         Raises:
-            RuntimeError: The page could not be fetched.
+            LinkRetryableError: The platform refused the request or never answered.
+            LinkUnavailableError: The platform answered that there is no such page.
+            RuntimeError: The fetch failed in a way HTTP does not classify.
         """
         try:
             response = requests.get(
@@ -635,7 +637,8 @@ class FacebookDownloader(BaseModel):
             The parsed conversation; its `chain` is empty when the post could not be read.
 
         Raises:
-            RuntimeError: The page could not be fetched at all.
+            LinkReadError: The page could not be fetched, in the shape `link_fetch_error`
+                classified it as; `RuntimeError` for a failure HTTP does not classify.
         """
         facebook_url = FacebookURL(raw_url=url)
         fetched = self._fetch_page(url=facebook_url.clean_url)

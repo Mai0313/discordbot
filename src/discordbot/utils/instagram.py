@@ -343,7 +343,9 @@ class InstagramDownloader(BaseModel):
         """Fetches a page with the browser headers the full payload needs.
 
         Raises:
-            RuntimeError: The page could not be fetched.
+            LinkRetryableError: The platform refused the request or never answered.
+            LinkUnavailableError: The platform answered that there is no such page.
+            RuntimeError: The fetch failed in a way HTTP does not classify.
         """
         try:
             response = requests.get(
@@ -476,7 +478,8 @@ class InstagramDownloader(BaseModel):
             The parsed conversation; its `chain` is empty when the post could not be read.
 
         Raises:
-            RuntimeError: The page could not be fetched at all.
+            LinkReadError: The page could not be fetched, in the shape `link_fetch_error`
+                classified it as; `RuntimeError` for a failure HTTP does not classify.
         """
         instagram_url = InstagramURL(raw_url=url)
         if not instagram_url.shortcode:

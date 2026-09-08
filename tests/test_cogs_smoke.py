@@ -51,6 +51,7 @@ from discordbot.cogs.auto_unmute import cog as auto_unmute
 from discordbot.cogs.economy.cog import EconomyCogs
 from discordbot.cogs.games.wagers import parse_wager_amount
 from discordbot.cogs.template.cog import TemplateCogs
+from discordbot.utils.link_errors import LinkRetryableError
 from discordbot.cogs.economy.views import CreditLoanDecisionView, CentralBankLoanDecisionView
 from discordbot.cogs.parse_threads import cog as parse_threads
 from discordbot.cogs.auto_unmute.cog import AutoUnmuteCogs
@@ -2919,3 +2920,27 @@ async def test_cli_message_reward_cooldown_rolls_back_on_credit_failure(
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
     assert attempts == 2
     assert bot._message_reward_at.get(1) is not None
+
+
+async def test_threads_cog_marks_a_throttle_retryable_not_unreadable() -> None:
+    """The one Threads outcome that actually happens, and it used to say the wrong thing.
+
+    Over the 19 days of `data/logs` kept on this machine, no Threads read raised at all;
+    every failure was a page carrying no post JSON. `utils/threads.py` calls that the
+    platform's soft throttle in as many words and used to hand back an empty page, which is
+    also what a private post answers with, so the channel was told a working link was dead.
+    """
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ThreadsCogs(bot=as_bot(fake=bot))
+    _wire_threads(
+        cog=cog, downloader=ThreadsDownloaderStub(results=LinkRetryableError("throttle"))
+    )
+    message = FakeDiscordMessage()
+    message.__dict__["author"] = FakeUser(bot=False)
+    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
+    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
+    assert placeholder_withdrawn(message=message)

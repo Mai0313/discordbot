@@ -21,7 +21,7 @@ import requests
 
 # What HTTP says to try the same request again for, with no judgement of our own on top: 429 is
 # the server asking for exactly that, and a 5xx is the server saying the failure is its own.
-_RETRYABLE_STATUS = frozenset({429})
+_TOO_MANY_REQUESTS = 429
 # What the server answers when it has looked and there is nothing to serve.
 _UNAVAILABLE_STATUS = frozenset({404, 410})
 
@@ -38,6 +38,29 @@ class LinkUnavailableError(LinkReadError):
     """The platform answered and there is no readable post in it (deleted, private, gone)."""
 
 
+def is_retryable_fetch_failure(*, error: requests.RequestException) -> bool:
+    """Reports whether a failed request is worth making again, exactly as HTTP frames it.
+
+    Split out from `link_fetch_error` because Douyin raises its own error classes rather than
+    these, and a transport failure has to mean the same thing on all four platforms or the
+    reaction stops meaning anything.
+
+    Args:
+        error: What `requests` raised.
+
+    Returns:
+        True for a request that never got an answer, a 429, or a 5xx.
+    """
+    # `Timeout` subclasses `ConnectionError` for `ConnectTimeout` only, so both are named.
+    if isinstance(error, requests.Timeout | requests.ConnectionError):
+        return True
+    # `Response.__bool__` is `self.ok`, so a 429 and a 503 are both FALSY: testing the response
+    # for truth here would classify nothing and raise nothing while looking correct.
+    if error.response is None:
+        return False
+    return error.response.status_code == _TOO_MANY_REQUESTS or error.response.status_code >= 500
+
+
 def link_fetch_error(*, error: requests.RequestException, url: str) -> RuntimeError:
     """Maps a failed page fetch to the error whose class says what the reader should do.
 
@@ -51,16 +74,8 @@ def link_fetch_error(*, error: requests.RequestException, url: str) -> RuntimeEr
         transport failure is unambiguous, and a plain `RuntimeError` everywhere else.
     """
     message = f"Failed to fetch HTML from {url}: {error}"
-    # No response at all: the request never got an answer, which is about the network rather
-    # than about the post. `Timeout` is a subclass of `ConnectionError` for `ConnectTimeout`
-    # only, so both are named.
-    if isinstance(error, requests.Timeout | requests.ConnectionError):
+    if is_retryable_fetch_failure(error=error):
         return LinkRetryableError(message)
-    status = getattr(error.response, "status_code", None)
-    if status is None:
-        return RuntimeError(message)
-    if status in _RETRYABLE_STATUS or status >= 500:
-        return LinkRetryableError(message)
-    if status in _UNAVAILABLE_STATUS:
+    if error.response is not None and error.response.status_code in _UNAVAILABLE_STATUS:
         return LinkUnavailableError(message)
     return RuntimeError(message)

@@ -29,7 +29,11 @@ from discordbot.typings.timeouts import (
     THREADS_MEDIA_READ_TIMEOUT_SECONDS,
     THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS,
 )
-from discordbot.utils.link_errors import link_fetch_error
+from discordbot.utils.link_errors import (
+    LinkRetryableError,
+    link_fetch_error,
+    is_retryable_fetch_failure,
+)
 from discordbot.utils.file_downloads import stream_to_file
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
@@ -1153,7 +1157,8 @@ class ThreadsDownloader(BaseModel):
             The Path to the downloaded file.
 
         Raises:
-            RuntimeError: If the HTTP fetch fails.
+            LinkRetryableError: The CDN refused the transfer or never answered.
+            RuntimeError: The transfer failed in a way HTTP does not classify.
             OSError: If the file cannot be written. A caller that removed the scratch dir gets
                 `FileNotFoundError` here, deliberately.
         """
@@ -1167,8 +1172,14 @@ class ThreadsDownloader(BaseModel):
                 headers=headers,
                 timeout=THREADS_MEDIA_READ_TIMEOUT_SECONDS,
             )
-        except requests.RequestException as e:
-            raise RuntimeError(f"Failed to download media from {url}: {e}") from e
+        # The page is not the only request Threads answers: a signed CDN URL can be throttled
+        # or time out on its own, and a reader told "this post cannot be read" because one
+        # image 429'd is the same lie the page path stopped telling.
+        except requests.RequestException as error:
+            message = f"Failed to download media from {url}: {error}"
+            if is_retryable_fetch_failure(error=error):
+                raise LinkRetryableError(message) from error
+            raise RuntimeError(message) from error
 
     def extract_post_data(self, url: str) -> ThreadsPage:
         """Extracts the target post, its parents, and its replies from a Threads URL.
@@ -1222,12 +1233,19 @@ class ThreadsDownloader(BaseModel):
                 html_length=len(fetched.html),
             )
             time.sleep(THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS)
+        # Every retry spent and the page still carries no post JSON, which this module already
+        # calls the platform's soft throttle. Raising rather than answering with an empty page
+        # is what lets the caller tell it from a page that DID answer without the post in it:
+        # the two used to arrive identically, so a throttle was reported as a post that cannot
+        # be read, which is the one thing the reaction vocabulary must never say.
         logfire.warn(
-            "Threads kept answering without any post JSON; treating the post as unreadable",
+            "Threads kept answering without any post JSON; treating it as a throttle",
             post_code=post_code,
             attempts=attempt + 1,
         )
-        return ThreadsPage()
+        raise LinkRetryableError(
+            f"Threads answered {attempt + 1} times with no post JSON for {post_code}"
+        )
 
     def resolve_clean_url(self, *, url: str) -> str:
         """Resolves a Threads URL to its canonical form without reading the post.
@@ -1250,7 +1268,9 @@ class ThreadsDownloader(BaseModel):
             names no post.
 
         Raises:
-            RuntimeError: The share link could not be fetched.
+            LinkReadError: The share link could not be fetched, in the shape
+                `link_fetch_error` classified it as.
+            RuntimeError: The fetch failed in a way HTTP does not classify.
         """
         threads_url = ThreadsURL(raw_url=url)
         if threads_url.post_code:

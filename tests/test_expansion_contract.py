@@ -195,7 +195,6 @@ async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     assert message.reactions == [LINK_SOURCE_EMOJIS[module._SOURCE], EXPANSION_FAILED_EMOJI]
 
 
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
 @pytest.mark.parametrize(
     ("error", "expected"),
     [
@@ -207,18 +206,15 @@ async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     ids=["refused", "stalled", "gone", "broke"],
 )
 def test_one_failure_earns_the_same_mark_on_every_platform(
-    module: Any,  # noqa: ANN401
-    error: Exception,
-    expected: str,
+    error: Exception, expected: str
 ) -> None:
     """The vocabulary is only worth anything if the same failure reads the same everywhere.
 
-    Each cog routes its own read failure through `expansion_failure_emoji`, so this is what
-    stops one of them growing a private `isinstance` branch and quietly answering ⚠️ where the
-    others answer ⏱️ — the mistake that tells a reader their working link is dead.
+    This pins the mapping itself; `test_an_expansion_cog_decides_no_failure_mark_of_its_own`
+    is what says every cog actually goes through it. Parametrizing this one over the modules
+    too would have looked like four platforms were checked while testing one function
+    four times.
     """
-    del module  # the mapping is shared; the parametrize is what proves no cog opted out
-
     assert expansion_failure_emoji(error=error) == expected
 
 

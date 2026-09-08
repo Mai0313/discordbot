@@ -18,6 +18,7 @@ from discordbot.utils.threads import (
     ThreadsOutput,
     ThreadsDownloader,
 )
+from discordbot.utils.link_errors import LinkRetryableError
 
 
 @pytest.fixture
@@ -1064,13 +1065,18 @@ def test_a_page_that_answered_without_the_post_is_not_retried(
 def test_the_empty_page_retries_are_bounded(
     downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A throttle that never clears must not keep the reply pipeline waiting indefinitely."""
+    """A throttle that never clears must not keep the reply pipeline waiting indefinitely.
+
+    It ends as a retryable error rather than an empty page: an empty page is also what a
+    private or deleted post answers with, and the two arriving identically is what made a
+    throttle reach the channel as "this post cannot be read".
+    """
     fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE])
 
-    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+    with pytest.raises(LinkRetryableError):
+        downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
     assert len(fetched) == threads_module.THREADS_EMPTY_PAGE_RETRIES + 1
-    assert conversation.chain == []
 
 
 def test_the_retry_deadline_stops_further_attempts(
@@ -1082,10 +1088,10 @@ def test_the_retry_deadline_stops_further_attempts(
         target=threads_module, name="THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS", value=0.0
     )
 
-    conversation = downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+    with pytest.raises(LinkRetryableError):
+        downloader.parse_metadata(url=_REPLIES_TARGET_URL)
 
     assert len(fetched) == 1
-    assert conversation.chain == []
 
 
 _SHARE_URL = "https://www.threads.com/share/DfX81RWN8"

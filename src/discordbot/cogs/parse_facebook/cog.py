@@ -324,8 +324,8 @@ class FacebookCogs(commands.Cog):
 
         The read is one blocking page fetch plus a walk over ~950KB of JSON, so it runs off the
         event loop. A post that comes back unreadable is a private, deleted or login-walled one:
-        that is the ordinary outcome for a link someone pasted, and it is reported with the same
-        cross as a failure because from the channel's side there is no difference worth drawing.
+        that is an ordinary outcome for a link someone pasted rather than a defect, so it takes
+        the unreadable mark and never the cross, which says the bot itself broke.
         """
         downloader = self.downloader_factory()
         try:

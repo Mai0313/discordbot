@@ -564,8 +564,10 @@ class ThreadsCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            # Not worded as a temporary failure: `_fetch_page` raises the same way for a network
-            # error as for a landing page Threads refused, and only the first is worth retrying.
+            # Deliberately one line for every outcome: `_fetch_page` can now tell a refusal
+            # from a page that answered, but this command is ephemeral and answers one person
+            # who is waiting, so a second wording buys them nothing they can act on. The
+            # expansion path is where that split is worth spending a reaction on.
             await interaction.followup.send(content="這個連結現在拿不到。", ephemeral=True)
             return
 

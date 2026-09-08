@@ -37,7 +37,12 @@ from discordbot.typings.timeouts import (
     DOUYIN_DOWNLOAD_TIMEOUT_SECONDS,
     DOUYIN_METADATA_TIMEOUT_SECONDS,
 )
-from discordbot.utils.link_errors import LinkReadError, LinkRetryableError, LinkUnavailableError
+from discordbot.utils.link_errors import (
+    LinkReadError,
+    LinkRetryableError,
+    LinkUnavailableError,
+    is_retryable_fetch_failure,
+)
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
 from discordbot.utils.file_downloads import (
     TemporaryDownload,
@@ -166,6 +171,18 @@ class DouyinBlockedError(DouyinError, LinkRetryableError):
 
 class DouyinTooLargeError(DouyinError):
     """The media exceeds the caller's cap. Deterministic, so it is never retried."""
+
+
+def _douyin_fetch_error(*, error: RequestException, message: str) -> DouyinError:
+    """Wraps a failed Douyin request in the class that says whether it is worth retrying.
+
+    A bot wall is not the only thing Douyin refuses with: a 429, a 5xx or a connection that
+    never answered all mean the same "come back later" the WAF does, and reporting one as a
+    missing post is what this module's docstring calls the worst failure it can produce.
+    """
+    if is_retryable_fetch_failure(error=error):
+        return DouyinBlockedError(message)
+    return DouyinError(message)
 
 
 class DouyinPost(BaseModel):
@@ -655,7 +672,9 @@ class DouyinDownloader(BaseModel):
                 location = response.headers.get("Location", "")
                 response.close()
         except RequestException as e:
-            raise DouyinError(f"Failed to resolve Douyin link {url}: {e}") from e
+            raise _douyin_fetch_error(
+                error=e, message=f"Failed to resolve Douyin link {url}: {e}"
+            ) from e
 
         if not location:
             return ""
@@ -697,7 +716,9 @@ class DouyinDownloader(BaseModel):
                 response.raise_for_status()
                 html = response.text
         except RequestException as e:
-            raise DouyinError(f"Failed to fetch Douyin post {aweme_id}: {e}") from e
+            raise _douyin_fetch_error(
+                error=e, message=f"Failed to fetch Douyin post {aweme_id}: {e}"
+            ) from e
 
         match = _ROUTER_DATA_RE.search(html)
         if not match:
