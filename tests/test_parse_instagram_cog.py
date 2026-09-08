@@ -14,6 +14,7 @@ from discordbot.typings.emojis import INSTAGRAM_EMOJI
 from discordbot.utils.instagram import InstagramOutput, InstagramConversation
 from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_instagram.cog import InstagramCogs
+from discordbot.utils.expansion_placeholder import EXPANSION_UNREADABLE_EMOJI
 
 from tests.helpers.casting import as_bot, as_message
 from tests.helpers.discord_mocks import (
@@ -314,15 +315,19 @@ async def test_a_bot_message_is_ignored() -> None:
     assert made == {}
 
 
-async def test_an_unreadable_post_is_marked_failed_without_a_message() -> None:
-    """A private account must not put an error message into the channel."""
+async def test_an_unreadable_post_is_marked_read_but_unshowable() -> None:
+    """A private account is the post's own state, so it earns the unreadable mark, not the cross.
+
+    The cross says the bot broke. Nothing did: the page came back and carries nothing
+    showable, which is what every other expansion cog answers ⚠️ for.
+    """
     cog, _ = _cog(post=InstagramConversation())
     message = _message()
 
     await cog.on_message(message=as_message(fake=message))
 
     assert placeholder_withdrawn(message=message)
-    assert message.reactions[-1] == _RED
+    assert message.reactions[-1] == EXPANSION_UNREADABLE_EMOJI
 
 
 async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:

@@ -66,7 +66,7 @@ def authored_link_texts(*, message: Message) -> list[str]:
     Narrower than `message_link_texts` by exactly one thing: an embed card never counts,
     neither the message's own nor a forwarded snapshot's. One hop out an embed is a card the
     author did not write, and the bot's own Threads expansion is the common one:
-    `parse_threads._build_embed_plan` emits one permalink per post in the reply chain, ROOT first,
+    `parse_threads._build_embeds` emits one permalink per post in the reply chain, ROOT first,
     so a scan keyed on it would read the thread's top post rather than the one the human
     linked — and it disappears entirely when an oversize video pushes hosted URLs into
     `content`. A link a person typed always lives in `content` (or in the content of what they

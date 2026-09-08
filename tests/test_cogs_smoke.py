@@ -66,6 +66,7 @@ from discordbot.services.economy.database import (
     BalanceAdjustmentResult,
 )
 from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
+from discordbot.utils.expansion_placeholder import EXPANSION_RETRY_LATER_EMOJI
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
 from tests.helpers.embeds import assert_embed_has_field, assert_embed_title_prefix
@@ -554,7 +555,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     target = _thread_output(
         image_urls=["https://example.test/1.png", "https://example.test/2.png"]
     )
-    embeds = cog._build_embed_plan(results=[parent, target]).embeds
+    embeds = cog._build_embeds(results=[parent, target])
     assert len(embeds) == 3
     first_description = embeds[0].description
     assert first_description is not None
@@ -619,6 +620,9 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     write — the same mechanism `parse_douyin` and `/download_video` get from their own `with`
     block. The exit is deliberately not called on this path: the walk is still driving that
     generator on its own thread.
+
+    The mark is the retryable one rather than the cross, which is the shared vocabulary all
+    four expansion cogs answer with: the post is fine and the same link works later.
     """
     monkeypatch.setattr(parse_threads, "THREADS_EXPAND_TIMEOUT_SECONDS", 0.05)
     cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
@@ -632,7 +636,7 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.reactions[-1] == "<:redcross:1517565100838355016>"
+    assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
     scratch = Path(downloader.output_folders[0])
     assert not await asyncio.to_thread(scratch.exists)
     assert downloader.parsed[0].exited is False
@@ -700,23 +704,17 @@ async def test_threads_cog_trims_long_chain_to_the_message_wide_embed_limit() ->
     """Far ancestors are removed before a total over 6000 can make Discord reject the reply."""
     cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
 
-    plan = cog._build_embed_plan(results=_long_threads_chain())
-    embeds = plan.embeds
+    embeds = cog._build_embeds(results=_long_threads_chain())
 
     assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     authors = [cast("str", embed.author.name) for embed in embeds if embed.author]
     assert authors[-1].startswith("user-9-")
     assert any(author.startswith("user-8-") for author in authors)
     assert not any(author.startswith("user-0-") for author in authors)
-    assert plan.omitted_posts[0].author_name.startswith("user-0-")
-
-
-def test_threads_embed_plan_is_a_frozen_model() -> None:
-    """The completed allocation remains an immutable model value."""
-    plan = parse_threads._EmbedPlan(embeds=[], omitted_posts=[])
-
-    assert plan.model_config["frozen"] is True
-    assert plan.model_copy(update={"embeds": []}).embeds == []
+    # What was left behind is stated on the target's own card rather than in a follow-up
+    # reply, which is where the other three cogs say it too.
+    target_embed = next(embed for embed in embeds if authors[-1] == (embed.author.name or ""))
+    assert "📝 另有 2 篇未展開" in cast("str", target_embed.footer.text)
 
 
 async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None:
@@ -731,7 +729,7 @@ async def test_threads_cog_keeps_the_target_quote_and_nearest_ancestor() -> None
         image_urls=["https://example.test/quoted-1.png", "https://example.test/quoted-2.png"],
     )
 
-    embeds = cog._build_embed_plan(results=[root, parent, target]).embeds
+    embeds = cog._build_embeds(results=[root, parent, target])
 
     assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     descriptions = [embed.description or "" for embed in embeds]
@@ -753,14 +751,13 @@ async def test_threads_cog_drops_an_over_budget_post_with_its_gallery() -> None:
         image_urls=[f"https://example.test/quoted-{index}.png" for index in range(4)],
     )
 
-    plan = cog._build_embed_plan(results=[parent, target])
-    embeds = plan.embeds
+    embeds = cog._build_embeds(results=[parent, target])
 
     assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert [embed.author.name for embed in embeds if embed.author] == ["parent", "target"]
     assert all(not embed.image for embed in embeds)
     assert all("被引用的貼文" not in (embed.description or "") for embed in embeds)
-    assert [post.author_name for post in plan.omitted_posts] == ["quoted"]
+    assert "📝 另有 1 篇未展開" in cast("str", embeds[-1].footer.text)
 
 
 async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
@@ -768,7 +765,7 @@ async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
     cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
     chain = [_thread_output(text="😀" * 500, author_name=f"user-{index}") for index in range(10)]
 
-    embeds = cog._build_embed_plan(results=chain).embeds
+    embeds = cog._build_embeds(results=chain)
 
     assert parse_threads._utf16_length(value="😀") == 2
     assert len(embeds) < len(chain)
@@ -782,8 +779,12 @@ async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
     ]
 
 
-async def test_threads_cog_delivers_a_trimmed_chain_instead_of_failing() -> None:
-    """An overflow is delivered with permalink fallbacks and a success reaction."""
+async def test_threads_cog_delivers_a_trimmed_chain_in_one_message() -> None:
+    """An overflow is one card that says what it left out, never a second reply.
+
+    A follow-up reply lands wherever the channel has got to, several messages below the
+    embeds it describes, which is exactly what the placeholder exists to prevent.
+    """
     bot = SimpleNamespace(user=SimpleNamespace(id=999))
     cog = ThreadsCogs(bot=as_bot(fake=bot))
     _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=_long_threads_chain()))
@@ -794,112 +795,27 @@ async def test_threads_cog_delivers_a_trimmed_chain_instead_of_failing() -> None
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert len(message.replies) == 2  # the placeholder, then the permalink notice
+    assert len(message.replies) == 1  # the placeholder the card was edited onto, and nothing else
     embeds = expansion_payload(message=message)["embeds"]
     assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
-    notice = cast("str", message.replies[1]["content"])
-    assert "未展開" in notice
-    omitted_urls = [
-        post.url for post in cog._build_embed_plan(results=_long_threads_chain()).omitted_posts
-    ]
-    assert all(f"<{url}>" in notice for url in omitted_urls)
+    assert "篇未展開" in cast("str", embeds[-1].footer.text)
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
 
 
-def test_threads_cog_paginates_omitted_post_links() -> None:
-    """Every omitted permalink survives once the notice needs a second message."""
-    posts = [_thread_output(author_name=f"user-{index}-" + "a" * 30) for index in range(30)]
+async def test_threads_cog_states_the_images_the_embed_cap_left_behind() -> None:
+    """Ten slots is the whole budget, so a bigger carousel is trimmed and counted.
 
-    pages = parse_threads._omitted_post_notice_pages(posts=posts)
+    The same shape `parse_facebook` and `parse_instagram` use for their own image caps.
+    """
+    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
+    target = _thread_output(
+        image_urls=[f"https://example.test/image-{index}.png" for index in range(15)]
+    )
 
-    assert 1 < len(pages) <= parse_threads._MAX_OMITTED_NOTICE_PAGES
-    assert all(parse_threads._utf16_length(value=page) <= 2000 for page in pages)
-    combined = "\n".join(pages)
-    assert all(f"<{post.url}>" in combined for post in posts)
-    assert "未列出" not in combined
+    embeds = cog._build_embeds(results=[target])
 
-
-def test_threads_cog_caps_the_notice_and_counts_what_it_drops() -> None:
-    """A chain past the page cap states its remainder instead of emitting more replies."""
-    posts = [_thread_output(author_name=f"user-{index}-" + "a" * 30) for index in range(100)]
-
-    pages = parse_threads._omitted_post_notice_pages(posts=posts)
-
-    assert len(pages) == parse_threads._MAX_OMITTED_NOTICE_PAGES
-    assert all(parse_threads._utf16_length(value=page) <= 2000 for page in pages)
-    combined = "\n".join(pages)
-    # The header keeps naming every omitted post, and the closing line accounts for the
-    # permalinks that did not fit, so the two together still add up to the real total.
-    assert f"有 {len(posts)} 篇貼文未展開" in combined
-    listed = sum(f"<{post.url}>" in combined for post in posts)
-    assert f"其中 {len(posts) - listed} 篇的連結因訊息長度限制未列出." in pages[-1]
-
-
-def test_threads_cog_counts_a_permalink_no_page_could_hold() -> None:
-    """An unrenderable line is dropped into the count rather than refusing the notice."""
-    posts = [_thread_output(author_name="a" * 3000), _thread_output(author_name="bob")]
-
-    pages = parse_threads._omitted_post_notice_pages(posts=posts)
-
-    assert len(pages) == 1
-    assert parse_threads._utf16_length(value=pages[0]) <= 2000
-    assert "<https://www.threads.net/@bob/post/abc>" in pages[0]
-    assert "其中 1 篇的連結因訊息長度限制未列出." in pages[0]
-
-
-async def test_threads_cog_keeps_the_expansion_when_a_notice_reply_fails() -> None:
-    """A follow-up failure must not relabel an expansion that is already on screen."""
-    bot = SimpleNamespace(user=SimpleNamespace(id=999))
-    cog = ThreadsCogs(bot=as_bot(fake=bot))
-    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=_long_threads_chain()))
-    message = FakeDiscordMessage()
-    message.__dict__["author"] = FakeUser(bot=False)
-    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
-    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-    expansion_reply = message.reply
-    reactions_when_the_notice_ran: list[str] = []
-
-    async def reply_then_fail(**kwargs: object) -> FakeDiscordMessage:
-        # The placeholder is the first reply and has to succeed; the notice is the second.
-        if message.replies:
-            reactions_when_the_notice_ran.extend(message.reactions)
-            raise RuntimeError("the source message went away")
-        return await expansion_reply(**cast("Any", kwargs))
-
-    message.reply = reply_then_fail  # ty: ignore[invalid-assignment]
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert len(message.replies) == 1
-    assert expansion_payload(message=message)["embeds"]
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
-    # The ✅ is already painted by the time a notice is attempted, so a follow-up that hangs
-    # rather than failing cannot leave the expansion looking unfinished either.
-    assert reactions_when_the_notice_ran[-1] == "<:greencheck:1517565102424068226>"
-
-
-async def test_threads_cog_delivers_when_the_notice_cannot_be_built(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A notice-building failure costs the permalinks, never the rendered expansion."""
-    bot = SimpleNamespace(user=SimpleNamespace(id=999))
-    cog = ThreadsCogs(bot=as_bot(fake=bot))
-    _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=_long_threads_chain()))
-    message = FakeDiscordMessage()
-    message.__dict__["author"] = FakeUser(bot=False)
-    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
-    message.__dict__["guild"] = SimpleNamespace(filesize_limit=25 * 1024 * 1024)
-
-    def exploding_pages(*, posts: list[ThreadsOutput]) -> list[str]:
-        del posts
-        raise ValueError("a permalink fallback exceeds Discord's message limit")
-
-    monkeypatch.setattr(parse_threads, "_omitted_post_notice_pages", exploding_pages)
-    await cog.on_message(message=as_message(fake=message))
-
-    assert len(message.replies) == 1
-    assert expansion_payload(message=message)["embeds"]
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
+    assert len(embeds) == 10
+    assert "🖼️ 另有 5 張" in cast("str", embeds[0].footer.text)
 
 
 async def test_threads_cog_keeps_the_expansion_when_the_scratch_cleanup_fails() -> None:
@@ -944,7 +860,7 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
         """Records the message and error type of each log it is bound to."""
         logged.append((message_text, kwargs["error_type"]))
 
-    def exploding_plan(*, results: list[ThreadsOutput]) -> parse_threads._EmbedPlan:
+    def exploding_plan(*, results: list[ThreadsOutput]) -> list[Embed]:
         del results
         raise RuntimeError("the embed plan blew up")
 
@@ -952,7 +868,7 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
     # The cleanup is a warning rather than an error now: the scratch directory around it removes
     # what a failing unlink left, so it is a degraded step rather than a leak nobody clears.
     monkeypatch.setattr(parse_threads.logfire, "warn", record)
-    cog._build_embed_plan = exploding_plan  # ty: ignore[invalid-assignment]
+    cog._build_embeds = exploding_plan  # ty: ignore[invalid-assignment]
     await cog.on_message(message=as_message(fake=message))
 
     assert downloader.parsed[0].exited
@@ -977,7 +893,7 @@ async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:
     target = _thread_output(text="這根本是胡說", image_urls=["https://example.test/1.png"])
     target.quoted = quoted
 
-    embeds = cog._build_embed_plan(results=[target]).embeds
+    embeds = cog._build_embeds(results=[target])
 
     assert len(embeds) == 2
     # The target owns the message, so it stays first and the quoted post hangs off the end. That
@@ -1009,7 +925,7 @@ async def test_threads_cog_keeps_the_commentary_beside_a_quoted_gallery() -> Non
     target = _thread_output(text="一句話評論")
     target.quoted = quoted
 
-    embeds = cog._build_embed_plan(results=[target]).embeds
+    embeds = cog._build_embeds(results=[target])
 
     assert len(embeds) == 10
     assert embeds[0].description == "一句話評論"
@@ -1025,7 +941,7 @@ async def test_threads_cog_notes_a_quoted_post_that_is_gone() -> None:
     target = _thread_output(text="回應一下")
     target.quoted_unavailable = True
 
-    embeds = cog._build_embed_plan(results=[target]).embeds
+    embeds = cog._build_embeds(results=[target])
 
     assert len(embeds) == 1
     assert embeds[0].description is not None
@@ -1048,7 +964,7 @@ async def test_threads_cog_reserves_the_quoted_posts_slot_against_an_ancestors_g
     target = _thread_output(text="commentary")
     target.quoted = _thread_output(text="the post being argued with", author_name="bob")
 
-    embeds = cog._build_embed_plan(results=[ancestor, target]).embeds
+    embeds = cog._build_embeds(results=[ancestor, target])
 
     assert len(embeds) == 10
     descriptions = [embed.description or "" for embed in embeds]
@@ -1069,7 +985,7 @@ async def test_threads_cog_says_nothing_about_an_ancestors_quote() -> None:
     root = _thread_output(text="root commentary", author_name="root")
     root.quoted_unavailable = True
 
-    embeds = cog._build_embed_plan(results=[root, _thread_output(text="target")]).embeds
+    embeds = cog._build_embeds(results=[root, _thread_output(text="target")])
 
     assert embeds[0].description == "root commentary"
     assert all("引用的貼文目前無法瀏覽" not in (embed.description or "") for embed in embeds)
@@ -1085,7 +1001,7 @@ async def test_threads_cog_measures_the_rendered_description_against_the_embed_l
     target = _thread_output(text="t")
     target.quoted = _thread_output(text="q" * 4096, author_name="bob")
 
-    embeds = cog._build_embed_plan(results=[target]).embeds
+    embeds = cog._build_embeds(results=[target])
 
     # The guard now reads exactly this quantity, so it sees the overflow the raw text hid.
     assert max(len(embed.description or "") for embed in embeds) > 4096

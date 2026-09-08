@@ -22,6 +22,7 @@ from discordbot.typings.emojis import DOUYIN_EMOJI
 from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
+from discordbot.utils.expansion_placeholder import EXPANSION_RETRY_LATER_EMOJI
 
 from tests.helpers.casting import as_bot, as_message, make_forbidden, make_media_hosting_config
 from tests.helpers.discord_mocks import (
@@ -271,13 +272,14 @@ async def test_a_blocked_request_is_never_reported_as_a_missing_post() -> None:
     The reaction is the only thing keeping the two apart now that a failure says nothing in
     the channel, which is what makes ⏱️ load-bearing rather than decorative: ⚠️ means the
     post could not be read, ⏱️ means the request was refused and the same link works later.
+    All four expansion cogs answer with the same five marks, so the reader learns them once.
     """
     cog, _ = _cog(download_error=DouyinBlockedError("bot wall"))
     message = _message()
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.reactions[-1] == DouyinCogs.blocked_emoji
+    assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
     assert placeholder_withdrawn(message=message)
 
 
@@ -433,7 +435,7 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.reactions[-1] == "⚠️"
+    assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
     assert placeholder_withdrawn(message=message)
 
 
@@ -444,7 +446,7 @@ async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported
 
     The timeout leaves the download thread running (`asyncio.to_thread` cannot cancel it), so the
     scratch removal walks a directory something is still writing into and can raise. Raised, that
-    lands in `on_message`'s outer handler, which paints the generic ❌ over the ⚠️ the timeout
+    lands in `on_message`'s outer handler, which paints the generic ❌ over the ⏱️ the timeout
     just explained and logs a defect that never happened.
     """
     monkeypatch.setattr(parse_douyin, "DOUYIN_EXPAND_TIMEOUT_SECONDS", 0.05)
@@ -478,5 +480,5 @@ async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported
     await cog.on_message(message=as_message(fake=message))
 
     assert removed  # the teardown really ran and really failed
-    assert message.reactions[-1] == "⚠️"
+    assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
     assert placeholder_withdrawn(message=message)

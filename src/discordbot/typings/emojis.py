@@ -6,9 +6,14 @@ channel, while `gen_reply` marks one it read into an answer instead, and
 `tests/test_package_layering.py` forbids a cog reaching across to another for it. Bilibili
 has no expansion cog at all, so the reply path is the only thing that ever marks it.
 
-Scope is the platform markers alone. The status emoji the cogs share (greencheck, redcross,
-the working-link ring) stay inline where they are used: they carry no cross-layer duplication
-for this module to remove, and collecting them here would be a rename, not a fix.
+Scope is the platform markers alone. The status emoji an auto-expansion answers with moved
+to `utils/expansion_placeholder.py` instead, beside the protocol that gives each of them its
+meaning: they are one feature's vocabulary rather than a cross-layer marker, and the shared
+restart sweep needs them anyway. `gen_reply` still spells its own three inline, since its
+reactions track a reply turn rather than an expansion outcome.
+
+The keys below are also what the expansion cogs name their `pending_expansion` rows by, so a
+platform is spelled one way across the reply path, the four cogs and that table.
 """
 
 from typing import Final
