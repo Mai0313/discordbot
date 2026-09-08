@@ -4,6 +4,7 @@ import pytest
 from nextcord import Embed, Message, HTTPException
 
 from discordbot.utils.expansion_placeholder import (
+    EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
     ExpansionPlaceholder,
     send_expansion_placeholder,
@@ -11,7 +12,7 @@ from discordbot.utils.expansion_placeholder import (
 )
 
 from tests.helpers.casting import as_bot, as_message, make_forbidden, make_not_found
-from tests.helpers.discord_mocks import FakeDiscordMessage
+from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
 
 _TEXT = "-# 正在讀取貼文⋯"
 _SOURCE = "threads"
@@ -163,6 +164,8 @@ class _FakeBot:
     def __init__(self, *, channel: _FakeChannel | None) -> None:
         """Holds the channel `get_channel` answers with, or None for one that is gone."""
         self.channel = channel
+        # The sweep scopes its reaction removals to the bot, as every reaction path does.
+        self.user = FakeUser(user_id=999, bot=True)
 
     def get_channel(self, channel_id: int, /) -> _FakeChannel | None:
         """Answers from the cache, as nextcord's own does."""
@@ -305,3 +308,28 @@ async def test_a_channel_the_bot_can_no_longer_reach_drops_the_row() -> None:
     )
 
     assert expand.calls == []
+
+
+async def test_a_resumed_expansion_that_raises_still_marks_the_source() -> None:
+    """The sweep is the listener's outer handler on this path, so it owes the same cross.
+
+    `_expand` reports its own failures and returns, but not every step is inside its guards —
+    a rendered plan blowing up is staged in the Threads suite. Without the mark the source
+    keeps the working ring for good, which is the never-resolving state the sweep exists to
+    clear, moved off the placeholder and onto the reaction.
+    """
+    source, placeholder_message, channel = await _interrupted()
+
+    async def explode(
+        *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+    ) -> None:
+        """Fails the way a step outside `_expand`'s own guards does."""
+        del message, url, current_emoji, placeholder
+        raise RuntimeError("the embed plan blew up")
+
+    await resume_expansion_placeholders(
+        bot=as_bot(fake=_FakeBot(channel=channel)), source=_SOURCE, expand=explode
+    )
+
+    assert source.reactions[-1] == EXPANSION_FAILED_EMOJI
+    assert placeholder_message.deleted is True

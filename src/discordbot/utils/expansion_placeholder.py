@@ -40,6 +40,7 @@ from sqlalchemy.orm import Mapped, DeclarativeBase, mapped_column
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from discordbot.utils.timezone import database_now as _database_now
+from discordbot.utils.reactions import update_reaction
 from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
@@ -437,9 +438,22 @@ async def _resume_one(
             current_emoji=EXPANSION_WORKING_EMOJI,
             placeholder=placeholder,
         )
+    # `_expand` reports its own failures and returns, so this is the unexpected one — and on
+    # the listener path the cog's outer handler paints the cross for exactly that. This sweep
+    # IS that handler's counterpart, and without the mark the source keeps the working ring
+    # with no outcome ever painted: the never-resolving state the sweep exists to clear,
+    # moved off the placeholder and onto the reaction. Re-raised so the caller still logs it.
+    except Exception:
+        await update_reaction(
+            message=source_message,
+            bot_user=bot.user,
+            emoji=EXPANSION_FAILED_EMOJI,
+            previous=EXPANSION_WORKING_EMOJI,
+        )
+        raise
     finally:
-        # The same line the listener runs: every failure inside `_expand` returns rather than
-        # raising, so this covers all of them, and it is a no-op once delivered.
+        # The same line the listener runs, covering every failure `_expand` returns on, and a
+        # no-op once delivered.
         await placeholder.discard()
 
 
