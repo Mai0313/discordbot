@@ -21,6 +21,14 @@ has no embed budget to show. It cannot be triggered by replying to the expansion
 None of the above reaches `/clean_threads_url`, the cog's slash command, which reads no post
 and downloads nothing: it resolves a share link to the post's own URL and answers the caller
 alone. Nothing is expanded, so there is no second read for the mention rule to prevent.
+
+Threads, Facebook, Instagram and Douyin are one feature four times over, and what makes them
+one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
+five reactions and what each of them means, the restart sweep, and the rule that a failed
+expansion says nothing in the channel at all. Read that module before changing anything here
+that a reader would notice, and `tests/test_expansion_contract.py` before adding a fifth
+source. What stays per platform is the card: this one walks a whole conversation and has ten
+embed slots to allocate over it.
 """
 
 from typing import TYPE_CHECKING
@@ -28,18 +36,7 @@ import asyncio
 
 import logfire
 import nextcord
-from nextcord import (
-    Color,
-    Embed,
-    Locale,
-    Message,
-    NotFound,
-    Forbidden,
-    Interaction,
-    SlashOption,
-    AllowedMentions,
-)
-from pydantic import Field, BaseModel, ConfigDict
+from nextcord import Color, Embed, Locale, Message, NotFound, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
@@ -55,7 +52,17 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
-from discordbot.utils.expansion_placeholder import ExpansionPlaceholder, send_expansion_placeholder
+from discordbot.utils.expansion_placeholder import (
+    EXPANSION_DONE_EMOJI,
+    EXPANSION_FAILED_EMOJI,
+    EXPANSION_WORKING_EMOJI,
+    EXPANSION_UNREADABLE_EMOJI,
+    EXPANSION_RETRY_LATER_EMOJI,
+    ExpansionPlaceholder,
+    send_expansion_placeholder,
+    resume_expansion_placeholders,
+    report_expansion_delivery_failure,
+)
 
 if TYPE_CHECKING:
     from nextcord.types.embed import Embed as EmbedData
@@ -76,29 +83,18 @@ _QUOTED_UNAVAILABLE_HINT = "\n\n🔗 *引用的貼文目前無法瀏覽(可能�
 _MAX_EMBEDS_PER_MESSAGE = 10
 _EMBED_DESCRIPTION_LIMIT = 4096
 _EMBED_TOTAL_LENGTH_LIMIT = 6000
-_MESSAGE_CONTENT_LIMIT = 2000
 
-# The chain this cog walks has no depth cap of its own (`MAX_THREADS_POSTS` is gen_reply's), so
-# the permalink fallback needs one, or a deep enough thread paginates into arbitrarily many
-# follow-up replies under a single link. Three pages carry roughly sixty permalinks at the
-# measured line length, past any chain seen live; whatever is left is stated as a count.
-_MAX_OMITTED_NOTICE_PAGES = 3
-_OMITTED_NOTICE_HEADER = "-# 因 Discord embed 限制, 有 {count} 篇貼文未展開. 可從以下原始連結查看:"
-_OMITTED_NOTICE_REMAINDER = "-# 其中 {count} 篇的連結因訊息長度限制未列出."
+# Held back from the message-wide budget for the remainder notes, which are appended to the
+# target's footer after selection has already measured it: what a post gave up is not known
+# until every slot is spent. Sixty-four UTF-16 units is well past the longest pair of notes
+# (emoji count double), and `parse_facebook` holds back `_BUDGET_SLACK` for the same reason.
+_REMAINDER_RESERVE = 64
+
 _PLACEHOLDER_TEXT = "-# 正在讀取 Threads 貼文⋯"
-
-
-class _EmbedPlan(BaseModel):
-    """Rendered embeds plus posts that need a permalink fallback."""
-
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
-
-    embeds: list[Embed] = Field(
-        ..., description="Embeds selected within Discord's message limits.", examples=[[]]
-    )
-    omitted_posts: list[ThreadsOutput] = Field(
-        ..., description="Posts represented by permalink fallbacks.", examples=[[]]
-    )
+# Owns this cog's rows in the pending-expansion table. Keyed as in `LINK_SOURCE_EMOJIS`, which
+# `tests/test_link_source_emojis.py` pins, so the four cogs and the reply path name a platform
+# the same way rather than each inventing a spelling.
+_SOURCE = "threads"
 
 
 def _utf16_length(value: str) -> int:
@@ -120,61 +116,6 @@ def _embed_text_length(embed: Embed) -> int:
         text_parts.extend((field["name"], field["value"]))
 
     return sum(_utf16_length(value=value) for value in text_parts)
-
-
-def _omitted_post_line(post: ThreadsOutput) -> str:
-    """Renders one omitted post as a permalink line."""
-    if post.url:
-        return f"- @{post.author_name}: <{post.url}>"
-    return f"- @{post.author_name}: 原始連結無法取得"
-
-
-def _closed_with_remainder(page: str, *, unlisted: int) -> str:
-    """Closes the last page with the count of permalinks it could not carry.
-
-    Trailing lines are handed back to that count until the closing line fits, so the notice
-    reports what it dropped instead of growing another reply to hold it.
-    """
-    lines = page.split("\n")
-    while True:
-        closed = "\n".join([*lines, _OMITTED_NOTICE_REMAINDER.format(count=unlisted)])
-        if len(lines) == 1 or _utf16_length(value=closed) <= _MESSAGE_CONTENT_LIMIT:
-            return closed
-        lines.pop()
-        unlisted += 1
-
-
-def _omitted_post_notice_pages(posts: list[ThreadsOutput]) -> list[str]:
-    """Paginates permalink fallbacks for posts that could not fit in the embeds.
-
-    Never raises and never exceeds `_MAX_OMITTED_NOTICE_PAGES`: a line no page could hold, and
-    every line past the cap, is handed to the closing count instead. The notice exists so an
-    over-budget chain degrades rather than dropping posts silently, so it must not be able to
-    cost the expansion it reports on. The header states the true total either way.
-    """
-    if not posts:
-        return []
-
-    header = _OMITTED_NOTICE_HEADER.format(count=len(posts))
-    pages: list[str] = []
-    current = header
-    listed = 0
-    for post in posts:
-        line = _omitted_post_line(post=post)
-        if _utf16_length(value=f"{header}\n{line}") > _MESSAGE_CONTENT_LIMIT:
-            continue
-        candidate = f"{current}\n{line}"
-        if _utf16_length(value=candidate) > _MESSAGE_CONTENT_LIMIT:
-            if len(pages) + 1 >= _MAX_OMITTED_NOTICE_PAGES:
-                break
-            pages.append(current)
-            candidate = f"{header}\n{line}"
-        current = candidate
-        listed += 1
-    if listed < len(posts):
-        current = _closed_with_remainder(page=current, unlisted=len(posts) - listed)
-    pages.append(current)
-    return pages
 
 
 def _allocate_embed_slots(
@@ -201,23 +142,21 @@ def _allocate_embed_slots(
     return slots
 
 
-def _collect_omitted_posts(
-    *, trimmed_posts: list[ThreadsOutput], candidate_posts: list[ThreadsOutput], slots: list[int]
-) -> list[ThreadsOutput]:
-    """Returns unrendered posts once each, excluding an equivalent shown permalink."""
-    shown_urls = {
-        post.url for index, post in enumerate(candidate_posts) if slots[index] and post.url
-    }
-    omitted_posts: list[ThreadsOutput] = []
-    seen_urls = set(shown_urls)
-    unshown_posts = (post for index, post in enumerate(candidate_posts) if not slots[index])
-    for post in [*trimmed_posts, *unshown_posts]:
-        if post.url and post.url in seen_urls:
-            continue
-        omitted_posts.append(post)
-        if post.url:
-            seen_urls.add(post.url)
-    return omitted_posts
+def _remainder_notes(*, omitted_posts: int, omitted_images: int) -> list[str]:
+    """States what the ten embed slots could not carry, the way the other cogs state it.
+
+    An over-budget expansion shows the ten most relevant slots and says how much it left
+    behind, rather than growing follow-up replies to hold the rest: those land wherever the
+    channel has got to, several messages under the card describing them. `parse_facebook` and
+    `parse_instagram` say the same thing about their own image caps in the same place, so a
+    reader learns what is missing from the card itself whichever platform it came from.
+    """
+    notes = []
+    if omitted_images > 0:
+        notes.append(f"🖼️ 另有 {omitted_images} 張")
+    if omitted_posts > 0:
+        notes.append(f"📝 另有 {omitted_posts} 篇未展開")
+    return notes
 
 
 class ThreadsCogs(commands.Cog):
@@ -239,6 +178,18 @@ class ThreadsCogs(commands.Cog):
         self.bot = bot
         self.downloader_factory = ThreadsDownloader
         self.media_delivery = build_media_delivery_planner()
+        self._resume_started = False
+
+    @commands.Cog.listener()
+    async def on_ready(self) -> None:
+        """Runs again the expansions a restart interrupted (once per process).
+
+        `on_ready` fires on every gateway reconnect, so the flag guards it to one sweep.
+        """
+        if self._resume_started:
+            return
+        self._resume_started = True
+        await resume_expansion_placeholders(bot=self.bot, source=_SOURCE, expand=self._expand)
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:
@@ -329,7 +280,7 @@ class ThreadsCogs(commands.Cog):
         The target is kept whatever its own text costs; every other post has to fit.
         """
         selected: set[int] = set()
-        text_budget = _EMBED_TOTAL_LENGTH_LIMIT
+        text_budget = _EMBED_TOTAL_LENGTH_LIMIT - _REMAINDER_RESERVE
         for index in priority:
             is_quoted = index == quoted_index
             main_embed = self._build_post_embeds(
@@ -350,8 +301,8 @@ class ThreadsCogs(commands.Cog):
             text_budget -= length
         return selected
 
-    def _build_embed_plan(self, results: list[ThreadsOutput]) -> _EmbedPlan:
-        """Builds embeds and permalink fallbacks for a Threads reply chain.
+    def _build_embeds(self, results: list[ThreadsOutput]) -> list[Embed]:
+        """Builds the whole expansion for a Threads reply chain, ten embeds at most.
 
         Args:
             results: Ordered chain `[root, ..., direct_parent, target]`.
@@ -362,10 +313,11 @@ class ThreadsCogs(commands.Cog):
         # order, target, quoted, direct parent, on up the chain. An ancestor that loses the
         # image race still earns a text-only context embed, but only from slots no image needed.
         # A chain deeper than the embed cap can't show every post; keep the target and its
-        # nearest ancestors, which are the most relevant context, and link the rest below.
-        trimmed_results: list[ThreadsOutput] = []
+        # nearest ancestors, which are the most relevant context, and count the rest in the
+        # target's footer.
+        trimmed = 0
         if len(results) > _MAX_EMBEDS_PER_MESSAGE:
-            trimmed_results = results[:-_MAX_EMBEDS_PER_MESSAGE]
+            trimmed = len(results) - _MAX_EMBEDS_PER_MESSAGE
             results = results[-_MAX_EMBEDS_PER_MESSAGE:]
         chain_depth = len(results)
         # The post the target quotes is not a chain member: it is what the target is talking
@@ -400,59 +352,66 @@ class ThreadsCogs(commands.Cog):
         slots = _allocate_embed_slots(posts=posts, priority=priority, reserved=reserved)
 
         embeds: list[Embed] = []
+        target_index = chain_depth - 1
+        target_embed: Embed | None = None
         for index, output in enumerate(posts):
             if slots[index] == 0:
                 continue
             is_quoted = index == quoted_index
-            embeds.extend(
-                self._build_post_embeds(
-                    output=output,
-                    color=(
-                        _QUOTED_POST_COLOR
-                        if is_quoted
-                        else self._gradient_color(index=index, total=chain_depth)
-                    ),
-                    image_count=min(slots[index], len(output.image_urls)),
-                    is_target=index == chain_depth - 1,
-                    is_quoted=is_quoted,
-                )
+            built = self._build_post_embeds(
+                output=output,
+                color=(
+                    _QUOTED_POST_COLOR
+                    if is_quoted
+                    else self._gradient_color(index=index, total=chain_depth)
+                ),
+                image_count=min(slots[index], len(output.image_urls)),
+                is_target=index == target_index,
+                is_quoted=is_quoted,
             )
+            if index == target_index:
+                target_embed = built[0]
+            embeds.extend(built)
 
-        omitted_posts = _collect_omitted_posts(
-            trimmed_posts=trimmed_results, candidate_posts=posts, slots=slots
-        )
-        return _EmbedPlan(embeds=embeds, omitted_posts=omitted_posts)
+        # Counted after allocation rather than during it: what a post gave up is only known
+        # once every slot is spent. The count rides the target's footer because the target is
+        # the post that was linked, so it is the card a reader is looking at. Only its own
+        # images are counted — an ancestor's are context the expansion never promised.
+        if target_embed is not None:
+            notes = _remainder_notes(
+                omitted_posts=trimmed + sum(1 for slot in slots if slot == 0),
+                omitted_images=len(posts[target_index].image_urls) - slots[target_index],
+            )
+            if notes:
+                carried = [part for part in (target_embed.footer.text, *notes) if part]
+                target_embed.set_footer(text=" | ".join(carried))
+        return embeds
 
     async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
         """Swaps the progress reaction for the failure cross."""
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
-            emoji="<:redcross:1517565100838355016>",
+            emoji=EXPANSION_FAILED_EMOJI,
             previous=current_emoji,
         )
 
-    async def _deliver(  # noqa: PLR0913 -- the walk, its rendered plan, and both channel handles
+    async def _deliver(  # noqa: PLR0913 -- the walk, its rendered embeds, and both channel handles
         self,
         *,
         message: Message,
         url: str,
         results: list[ThreadsOutput],
-        embed_plan: _EmbedPlan,
+        embeds: list[Embed],
         current_emoji: str,
         placeholder: ExpansionPlaceholder,
     ) -> None:
         """Plans the target's media, delivers the expansion and marks the source done.
 
-        The embed plan arrives already built rather than being rebuilt here, so the
-        description-length guard in `on_message` measured the very list that gets sent.
-
-        Only the expansion itself can fail this step. The permalink fallbacks are built and sent
-        afterwards, past the ✅ and behind their own guard, because they exist to describe what
-        the expansion left out and must never be able to take the expansion down with them.
+        The embeds arrive already built rather than being rebuilt here, so the
+        description-length guard in `_expand_conversation` measured the very list that gets sent.
         """
         target = results[-1]
-        embeds = embed_plan.embeds
         # Broad on purpose: the delivery step must never escape into the listener, and its
         # failures split three ways — the placeholder went away, the bot lacks a permission,
         # or something unexpected lost the expansion.
@@ -485,7 +444,10 @@ class ThreadsCogs(commands.Cog):
                     dropped=len(plan.dropped_items),
                 )
                 await update_reaction(
-                    message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
+                    message=message,
+                    bot_user=self.bot.user,
+                    emoji=EXPANSION_UNREADABLE_EMOJI,
+                    previous=current_emoji,
                 )
                 return
 
@@ -521,83 +483,22 @@ class ThreadsCogs(commands.Cog):
                 files=files,
             )
         except Exception as error:
-            # Only the placeholder's own disappearance is routine here. The 50035 an
-            # unsendable reply used to raise is not: on an edit that code is a rejected body,
-            # which is a defect rather than a message that went away.
-            if isinstance(error, NotFound):
-                logfire.info(
-                    "The Threads expansion placeholder is gone",
-                    url=url,
-                    message_id=message.id,
-                    channel_id=message.channel.id,
-                )
-            elif isinstance(error, Forbidden):
-                logfire.warn(
-                    "Missing permission to post the Threads expansion",
-                    url=url,
-                    message_id=message.id,
-                    channel_id=message.channel.id,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
-            else:
-                logfire.error(
-                    "Failed to send Threads expansion",
-                    url=url,
-                    message_id=message.id,
-                    channel_id=message.channel.id,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
+            report_expansion_delivery_failure(
+                error=error,
+                platform="Threads",
+                url=url,
+                message_id=message.id,
+                channel_id=message.channel.id,
+            )
             await self._mark_failed(message=message, current_emoji=current_emoji)
             return
 
-        # The expansion is on screen, so it is marked done before the permalink fallbacks are
-        # posted. Those only report what the embeds could not carry, and nothing that happens
-        # to them may reduce what the user already has or relabel it as a failure.
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
-            emoji="<:greencheck:1517565102424068226>",
+            emoji=EXPANSION_DONE_EMOJI,
             previous=current_emoji,
         )
-        await self._post_omitted_notices(message=message, url=url, posts=embed_plan.omitted_posts)
-
-    async def _post_omitted_notices(
-        self, *, message: Message, url: str, posts: list[ThreadsOutput]
-    ) -> None:
-        """Builds and posts the permalink fallbacks as follow-up replies, best effort.
-
-        The two steps are guarded separately so the log names the one that failed: building is
-        pure and should not be able to fail at all, while a send meets a channel that may have
-        changed under it. Both are broad on purpose — the expansion is already delivered and
-        marked done, so a failure here costs only the permalink list and must never travel back
-        to the delivery's failure path.
-        """
-        try:
-            notices = _omitted_post_notice_pages(posts=posts)
-        except Exception as error:
-            logfire.warn(
-                "Could not build the Threads permalink fallbacks",
-                url=url,
-                message_id=message.id,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
-            return
-        try:
-            for notice in notices:
-                await message.reply(
-                    content=notice, mention_author=False, allowed_mentions=AllowedMentions.none()
-                )
-        except Exception as error:
-            logfire.warn(
-                "Could not post the Threads permalink fallbacks",
-                url=url,
-                message_id=message.id,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
 
     @nextcord.slash_command(
         name="clean_threads_url",
@@ -693,10 +594,14 @@ class ThreadsCogs(commands.Cog):
         # reaction) saying a Threads post was read. `gen_reply` adds the same one on the path it
         # takes instead of this one, so every read is marked the same way whichever cog did it.
         await update_reaction(message=message, bot_user=self.bot.user, emoji=THREADS_EMOJI)
-        current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
+        current_emoji = await update_reaction(
+            message=message, bot_user=self.bot.user, emoji=EXPANSION_WORKING_EMOJI
+        )
 
         try:
-            placeholder = await send_expansion_placeholder(message=message, text=_PLACEHOLDER_TEXT)
+            placeholder = await send_expansion_placeholder(
+                message=message, text=_PLACEHOLDER_TEXT, source=_SOURCE, url=url
+            )
             if placeholder is None:
                 # A channel that refused the placeholder will refuse the card too, so the
                 # read is never started.
@@ -749,9 +654,9 @@ class ThreadsCogs(commands.Cog):
             try:
                 async with asyncio.timeout(delay=THREADS_EXPAND_TIMEOUT_SECONDS):
                     conversation = await asyncio.to_thread(parse_cm.__enter__)
-            # Broad on purpose: a fetch failure must not escape into the listener; the ❌
-            # reaction is the user-visible outcome. A timeout is reported as a plain
-            # failure, never as a missing post.
+            # Broad on purpose: a fetch failure must not escape into the listener; the
+            # reaction is the user-visible outcome. A stall never reads as a missing post —
+            # under the shared vocabulary it is the retryable mark, since the link is fine.
             except Exception as error:
                 # No exit call here: the walk is still driving that generator on its own
                 # thread, so throwing into it would be a second driver. Returning removes
@@ -764,6 +669,14 @@ class ThreadsCogs(commands.Cog):
                     error_type=type(error).__name__,
                     _exc_info=error,
                 )
+                if isinstance(error, TimeoutError):
+                    await update_reaction(
+                        message=message,
+                        bot_user=self.bot.user,
+                        emoji=EXPANSION_RETRY_LATER_EMOJI,
+                        previous=current_emoji,
+                    )
+                    return
                 await self._mark_failed(message=message, current_emoji=current_emoji)
                 return
             try:
@@ -813,7 +726,10 @@ class ThreadsCogs(commands.Cog):
         if not results:
             logfire.info("Threads parse returned no post; treating as unavailable", url=url)
             await update_reaction(
-                message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
+                message=message,
+                bot_user=self.bot.user,
+                emoji=EXPANSION_UNREADABLE_EMOJI,
+                previous=current_emoji,
             )
             return
 
@@ -823,17 +739,16 @@ class ThreadsCogs(commands.Cog):
             # Logged because it is common — measured at 15 of 96 live quote relations —
             # and otherwise invisible in `data/logs`.
             logfire.info("A Threads post quotes a post Threads no longer serves", url=url)
-        embed_plan = self._build_embed_plan(results=results)
+        embeds = self._build_embeds(results=results)
         # Measured on the RENDERED descriptions rather than on `target.text`: the quoted
         # post's marker prefix, an ancestor's video hint and the unavailable hint are all
         # appended by `_build_post_embeds` AFTER any check on the raw body, so a text
         # sitting just under the limit crossed it and turned a ⚠️ skip into a Discord 400
         # and a ❌. A body past the limit cannot be rescued by hosting, so it stays the ⚠️
-        # refusal. (Image count is not guarded: _build_embed_plan caps the message at 10
+        # refusal. (Image count is not guarded: _build_embeds caps the message at 10
         # embeds and shows as many images as fit.)
         longest_text = max(
-            (_utf16_length(value=embed.description or "") for embed in embed_plan.embeds),
-            default=0,
+            (_utf16_length(value=embed.description or "") for embed in embeds), default=0
         )
         if longest_text > _EMBED_DESCRIPTION_LIMIT:
             logfire.info(
@@ -842,7 +757,10 @@ class ThreadsCogs(commands.Cog):
                 text_length=longest_text,
             )
             await update_reaction(
-                message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
+                message=message,
+                bot_user=self.bot.user,
+                emoji=EXPANSION_UNREADABLE_EMOJI,
+                previous=current_emoji,
             )
             return
 
@@ -850,7 +768,7 @@ class ThreadsCogs(commands.Cog):
             message=message,
             url=url,
             results=results,
-            embed_plan=embed_plan,
+            embeds=embeds,
             current_emoji=current_emoji,
             placeholder=placeholder,
         )
