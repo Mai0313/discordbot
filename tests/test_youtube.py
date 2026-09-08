@@ -142,11 +142,18 @@ def _interaction_events() -> list[SimpleNamespace]:
         ),
         SimpleNamespace(
             event_type="step.delta",
+            metadata=None,
             delta=SimpleNamespace(type="thought_summary", content=SimpleNamespace(text="hmm")),
         ),
-        SimpleNamespace(event_type="step.delta", delta=SimpleNamespace(type="text", text="Hello")),
         SimpleNamespace(
-            event_type="step.delta", delta=SimpleNamespace(type="text", text=" world")
+            event_type="step.delta",
+            metadata=None,
+            delta=SimpleNamespace(type="text", text="Hello"),
+        ),
+        SimpleNamespace(
+            event_type="step.delta",
+            metadata=None,
+            delta=SimpleNamespace(type="text", text=" world"),
         ),
         SimpleNamespace(
             event_type="interaction.completed",
@@ -154,7 +161,6 @@ def _interaction_events() -> list[SimpleNamespace]:
                 model="gemini-3.1-pro-preview",
                 usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34),
             ),
-            metadata=None,
         ),
     ]
 
@@ -196,6 +202,29 @@ async def test_adapt_interactions_stream_remaps_to_responses_events() -> None:
     # An empty list would count as zero citations and read as an ungrounded answer.
     assert _ns(event=out[-1]).response.output is None
     assert _ns(event=out[0]).response.output is None
+
+
+async def test_adapt_interactions_stream_falls_back_to_step_delta_usage() -> None:
+    """A completed event with no usage of its own reports the last `total_usage` streamed.
+
+    google-genai 2.22 moved `total_usage` onto `step.delta`, and `interaction.usage` is optional
+    on a streaming payload, so without this the footer and the turn's token fields read zero.
+    """
+    events = _interaction_events()
+    events[2].metadata = SimpleNamespace(
+        total_usage=SimpleNamespace(total_input_tokens=7, total_output_tokens=9)
+    )
+    events[-1].interaction.usage = None
+
+    out = [
+        event
+        async for event in adapt_interactions_stream(
+            stream=as_interaction_event_stream(fake=_aiter(events=events))
+        )
+    ]
+
+    assert _ns(event=out[-1]).response.usage.input_tokens == 7
+    assert _ns(event=out[-1]).response.usage.output_tokens == 9
 
 
 async def _raise_from_error_event(error: object) -> APIError:
