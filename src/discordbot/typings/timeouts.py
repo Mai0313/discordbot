@@ -26,14 +26,14 @@ could only abandon a run that is still working.
 
 And a bound that wraps a single LLM call purely as a liveness backstop belongs nowhere
 rather than here, because the backend already owns that deadline. Measured in this project's
-env: `openai` 2.46.0 defaults to `Timeout(connect=5.0, read=600, write=600, pool=600)` with
+env: `openai` 3.8.0 defaults to `Timeout(connect=5.0, read=600, write=600, pool=600)` with
 `max_retries=2`, and nothing here passes `max_retries`, so an `AsyncOpenAI` call bounds itself
 at roughly half an hour rather than at 600s. That is a real ceiling but a loose one, which is
 why the test for deleting such a wrapper is whether anything is WAITING, not whether the
 numbers match: on background work nobody waits for, half an hour is a liveness backstop doing
 its job, and a tighter wrapper would only be restating it for free.
 
-The LLM bounds that DO appear below are the ones that survive that test. `google-genai` 2.13.0
+The LLM bounds that DO appear below are the ones that survive that test. `google-genai` 2.22.0
 defaults to `timeout=None`, so on a direct-to-Google path the wrapper is the only bound there
 is; everything else here is a product deadline that happens to sit on an LLM call -- a number
 chosen because something downstream must not wait, not because the provider might hang.

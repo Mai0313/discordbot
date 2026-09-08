@@ -2,11 +2,12 @@
 
 from agents import Agent, Runner, set_tracing_disabled
 from google import genai
+from openai import AsyncOpenAI
 import orjson
 from rich.console import Console
 from agents.result import RunResult
 from google.genai.interactions import AllowlistParam, EnvironmentParam, AllowlistEntryParam
-from agents.extensions.models.litellm_model import LitellmModel
+from agents.models.openai_responses import OpenAIResponsesModel
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
@@ -15,13 +16,13 @@ from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
 console = Console()
 config = LLMConfig()
 
-# LitellmModel expects LiteLLM provider-prefixed names instead of the model
-# aliases used by the OpenAI-compatible request path in cogs/gen_reply/cog.py.
-AGENT_MODEL = ModelSettings(name="gemini/gemini-3.8-flash", effort="minimal")
+# The OpenAI-compatible path takes the proxy's own model aliases, the same ones
+# cogs/gen_reply/cog.py sends.
+AGENT_MODEL = ModelSettings(name="gemini-3.8-flash", effort="minimal")
 
 
 def gen_reply_oai(user_prompt: str) -> RunResult:
-    """Runs a dev reply through OpenAI Agents with the LiteLLM model adapter.
+    """Runs a dev reply through OpenAI Agents against the proxy's Responses API.
 
     Args:
         user_prompt (str): User message to send as the single prompt input.
@@ -33,11 +34,9 @@ def gen_reply_oai(user_prompt: str) -> RunResult:
     agent = Agent(
         name="Assistant",
         instructions=REPLY_PROMPT,
-        model=LitellmModel(
+        model=OpenAIResponsesModel(
             model=AGENT_MODEL.name,
-            base_url=config.base_url,
-            api_key=config.api_key,
-            should_replay_reasoning_content=lambda _context: True,
+            openai_client=AsyncOpenAI(base_url=config.base_url, api_key=config.api_key),
         ),
     )
 
