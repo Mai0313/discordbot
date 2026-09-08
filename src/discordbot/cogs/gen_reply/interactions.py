@@ -191,11 +191,10 @@ async def adapt_interactions_stream(
                         SimpleNamespace(type="response.reasoning_summary_text.delta", delta=text),
                     )
         elif event.event_type == "interaction.completed":
-            # Usage rides the completed interaction; `metadata.total_usage` is optional and
-            # often absent, so read the interaction first and only fall back to metadata.
+            # Usage rides the completed interaction; the `metadata.total_usage` fallback that
+            # used to sit beside it went with google-genai 2.22 dropping this event's `metadata`,
+            # which leaves `total_usage` on `step.delta` alone.
             usage = event.interaction.usage
-            if usage is None and event.metadata is not None:
-                usage = event.metadata.total_usage
             usage_ns = (
                 SimpleNamespace(
                     input_tokens=usage.total_input_tokens or 0,
