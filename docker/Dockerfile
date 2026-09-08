@@ -28,6 +28,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         # binary the commit queue is a silent no-op in every deployment.
         git
 
+# yt-dlp has deprecated YouTube extraction without a JavaScript runtime, and deno is the only one
+# it enables by default, so having it on PATH is the whole wiring. What it buys is a bet rather
+# than a fix: measured 2026-09-08 it changes nothing today, the same 43 formats resolve either
+# way, because the clients yt-dlp currently picks need no nsig decryption. It is here for when
+# those get retired, since the ones that replace them will not run without it.
+COPY --from=denoland/deno:bin /deno /usr/local/bin/deno
+
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-dev --frozen --no-install-project
