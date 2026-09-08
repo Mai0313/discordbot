@@ -54,6 +54,7 @@ import requests
 
 from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.timeouts import INSTAGRAM_PAGE_TIMEOUT_SECONDS
+from discordbot.utils.link_errors import link_fetch_error
 
 _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
 
@@ -351,7 +352,7 @@ class InstagramDownloader(BaseModel):
             response.raise_for_status()
             return FetchedPage(html=response.text, final_url=response.url)
         except requests.RequestException as error:
-            raise RuntimeError(f"Failed to fetch HTML from {url}: {error}") from error
+            raise link_fetch_error(error=error, url=url) from error
 
     @staticmethod
     def _json_payloads(*, html: str) -> Iterator[Any]:

@@ -29,6 +29,7 @@ from discordbot.typings.timeouts import (
     THREADS_MEDIA_READ_TIMEOUT_SECONDS,
     THREADS_EMPTY_PAGE_RETRY_DEADLINE_SECONDS,
 )
+from discordbot.utils.link_errors import link_fetch_error
 from discordbot.utils.file_downloads import stream_to_file
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
@@ -951,8 +952,8 @@ class ThreadsDownloader(BaseModel):
             response = requests.get(url=url, headers=headers, timeout=THREADS_PAGE_TIMEOUT_SECONDS)
             response.raise_for_status()
             return FetchedPage(html=response.text, final_url=response.url)
-        except requests.RequestException as e:
-            raise RuntimeError(f"Failed to fetch HTML from {url}: {e}") from e
+        except requests.RequestException as error:
+            raise link_fetch_error(error=error, url=url) from error
 
     @staticmethod
     def _find_thread_nodes(

@@ -37,6 +37,7 @@ from discordbot.typings.timeouts import (
     DOUYIN_DOWNLOAD_TIMEOUT_SECONDS,
     DOUYIN_METADATA_TIMEOUT_SECONDS,
 )
+from discordbot.utils.link_errors import LinkReadError, LinkRetryableError, LinkUnavailableError
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
 from discordbot.utils.file_downloads import (
     TemporaryDownload,
@@ -147,15 +148,19 @@ def is_douyin_post_url(url: str) -> bool:
     return len([segment for segment in parsed.path.split("/") if segment]) == 1
 
 
-class DouyinError(RuntimeError):
-    """Base error for every Douyin lookup failure."""
+class DouyinError(LinkReadError):
+    """Base error for every Douyin lookup failure.
+
+    Sits under the shared tree so the reaction an expansion answers with is picked the same
+    way here as for the three platforms that had no taxonomy of their own.
+    """
 
 
-class DouyinUnavailableError(DouyinError):
+class DouyinUnavailableError(DouyinError, LinkUnavailableError):
     """The post exists as an id but Douyin will not serve it (deleted, private, region locked)."""
 
 
-class DouyinBlockedError(DouyinError):
+class DouyinBlockedError(DouyinError, LinkRetryableError):
     """A bot wall answered instead of the post. Retryable: the post itself is fine."""
 
 
