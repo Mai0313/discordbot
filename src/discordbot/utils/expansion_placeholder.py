@@ -380,7 +380,9 @@ def report_expansion_read_failure(
     three levels line up with the marks `expansion_failure_emoji` picks rather than with any
     one platform's habits: a post the platform says is gone is a routine user-driven outcome
     and its own example of `info`, a read the platform explains any other way is degraded but
-    handled, and an error from outside that tree broke a user-visible deliverable.
+    handled, and an error from outside that tree broke a user-visible deliverable — a
+    `TimeoutError` excepted, which rides `warn` for the same reason it rides the retryable
+    mark: it says the read was too slow, never that the bot is wrong.
 
     The `info` branch deliberately carries no exception and does carry `reason`: a traceback
     for a deleted post is noise, while the platform's own words for WHY it refused exist in no

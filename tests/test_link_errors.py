@@ -14,7 +14,12 @@ import pytest
 import requests
 
 from discordbot.utils import douyin as douyin_module
-from discordbot.utils.douyin import DouyinDownloader, DouyinBlockedError
+from discordbot.utils.douyin import (
+    DouyinDownloader,
+    DouyinBlockedError,
+    DouyinTransferError,
+    douyin_failure_message,
+)
 from discordbot.utils.threads import ThreadsDownloader
 from discordbot.utils.facebook import FacebookDownloader
 from discordbot.utils.instagram import InstagramDownloader
@@ -164,5 +169,11 @@ def test_a_stalled_douyin_download_is_retryable_too(
     monkeypatch.setattr(target=douyin_module, name="stream_to_file", value=stall)
     downloader = DouyinDownloader(output_folder=str(tmp_path))
 
-    with pytest.raises(DouyinBlockedError):
+    with pytest.raises(DouyinTransferError) as raised:
         downloader._download_to(url="https://example.test/v.mp4", filename="v.mp4")
+
+    # Retryable to the expansion, but NOT the bot wall: `/download_video` answers in words,
+    # and blaming a wall sends someone off to wait out something that was never there.
+    assert isinstance(raised.value, LinkRetryableError)
+    assert not isinstance(raised.value, DouyinBlockedError)
+    assert "擋住" not in douyin_failure_message(error=raised.value)
