@@ -44,6 +44,7 @@ import requests
 
 from discordbot.utils.urls import URL_START_ANCHOR, host_matches_domain
 from discordbot.typings.timeouts import FACEBOOK_PAGE_TIMEOUT_SECONDS
+from discordbot.utils.link_errors import link_fetch_error
 
 # Every host Facebook serves posts on. `fb.watch` and `fb.com` are the short forms its own share
 # sheet emits; the mobile hosts are matched so a pasted one is recognised as a post URL, and
@@ -446,7 +447,9 @@ class FacebookDownloader(BaseModel):
         """Fetches a page with the browser headers Facebook will only answer in full to.
 
         Raises:
-            RuntimeError: The page could not be fetched.
+            LinkRetryableError: The platform refused the request or never answered.
+            LinkUnavailableError: The platform answered that there is no such page.
+            RuntimeError: The fetch failed in a way HTTP does not classify.
         """
         try:
             response = requests.get(
@@ -455,7 +458,7 @@ class FacebookDownloader(BaseModel):
             response.raise_for_status()
             return FetchedPage(html=response.text, final_url=response.url)
         except requests.RequestException as error:
-            raise RuntimeError(f"Failed to fetch HTML from {url}: {error}") from error
+            raise link_fetch_error(error=error, url=url) from error
 
     @staticmethod
     def _json_payloads(*, html: str) -> Iterator[Any]:
@@ -634,7 +637,8 @@ class FacebookDownloader(BaseModel):
             The parsed conversation; its `chain` is empty when the post could not be read.
 
         Raises:
-            RuntimeError: The page could not be fetched at all.
+            LinkReadError: The page could not be fetched, in the shape `link_fetch_error`
+                classified it as; `RuntimeError` for a failure HTTP does not classify.
         """
         facebook_url = FacebookURL(raw_url=url)
         fetched = self._fetch_page(url=facebook_url.clean_url)

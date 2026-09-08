@@ -27,12 +27,14 @@ import pytest
 from nextcord.ext import commands
 
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
+from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
     EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,
+    expansion_failure_emoji,
 )
 
 from tests.helpers.casting import as_bot, as_message
@@ -191,3 +193,40 @@ async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
     await cog._mark_failed(message=as_message(fake=message), current_emoji=None)
 
     assert message.reactions == [LINK_SOURCE_EMOJIS[module._SOURCE], EXPANSION_FAILED_EMOJI]
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (LinkRetryableError("429"), EXPANSION_RETRY_LATER_EMOJI),
+        (TimeoutError(), EXPANSION_RETRY_LATER_EMOJI),
+        (LinkUnavailableError("410"), EXPANSION_UNREADABLE_EMOJI),
+        (RuntimeError("the parser blew up"), EXPANSION_FAILED_EMOJI),
+    ],
+    ids=["refused", "stalled", "gone", "broke"],
+)
+def test_one_failure_earns_the_same_mark_on_every_platform(
+    error: Exception, expected: str
+) -> None:
+    """The vocabulary is only worth anything if the same failure reads the same everywhere.
+
+    This pins the mapping itself; `test_an_expansion_cog_decides_no_failure_mark_of_its_own`
+    is what says every cog actually goes through it. Parametrizing this one over the modules
+    too would have looked like four platforms were checked while testing one function
+    four times.
+    """
+    assert expansion_failure_emoji(error=error) == expected
+
+
+@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
+def test_an_expansion_cog_decides_no_failure_mark_of_its_own(module: Any) -> None:  # noqa: ANN401
+    """A cog reading the error's type itself is how the four stop agreeing.
+
+    `parse_douyin` keeps one `isinstance` for its LOGGING split, which is a different
+    question: a deleted post is routine and Douyin's own reason for it exists in no other
+    line. What no cog may do is pick the reaction that way.
+    """
+    source = Path(inspect.getsourcefile(module) or "").read_text(encoding="utf-8")
+
+    assert "expansion_failure_emoji(" in source
+    assert "isinstance(error, TimeoutError)" not in source

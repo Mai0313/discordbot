@@ -54,6 +54,7 @@ import requests
 
 from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.timeouts import INSTAGRAM_PAGE_TIMEOUT_SECONDS
+from discordbot.utils.link_errors import link_fetch_error
 
 _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
 
@@ -342,7 +343,9 @@ class InstagramDownloader(BaseModel):
         """Fetches a page with the browser headers the full payload needs.
 
         Raises:
-            RuntimeError: The page could not be fetched.
+            LinkRetryableError: The platform refused the request or never answered.
+            LinkUnavailableError: The platform answered that there is no such page.
+            RuntimeError: The fetch failed in a way HTTP does not classify.
         """
         try:
             response = requests.get(
@@ -351,7 +354,7 @@ class InstagramDownloader(BaseModel):
             response.raise_for_status()
             return FetchedPage(html=response.text, final_url=response.url)
         except requests.RequestException as error:
-            raise RuntimeError(f"Failed to fetch HTML from {url}: {error}") from error
+            raise link_fetch_error(error=error, url=url) from error
 
     @staticmethod
     def _json_payloads(*, html: str) -> Iterator[Any]:
@@ -475,7 +478,8 @@ class InstagramDownloader(BaseModel):
             The parsed conversation; its `chain` is empty when the post could not be read.
 
         Raises:
-            RuntimeError: The page could not be fetched at all.
+            LinkReadError: The page could not be fetched, in the shape `link_fetch_error`
+                classified it as; `RuntimeError` for a failure HTTP does not classify.
         """
         instagram_url = InstagramURL(raw_url=url)
         if not instagram_url.shortcode:

@@ -41,6 +41,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from discordbot.utils.timezone import database_now as _database_now
 from discordbot.utils.reactions import update_reaction
+from discordbot.utils.link_errors import LinkReadError, LinkRetryableError
 from discordbot.utils.sqlite_config import SqliteBootstrap
 from discordbot.utils.discord_embeds import embed_spacer_payload
 
@@ -345,6 +346,29 @@ async def send_expansion_placeholder(
         return None
     await _record_pending(placeholder=placeholder, source_message=message, source=source, url=url)
     return ExpansionPlaceholder(message=placeholder)
+
+
+def expansion_failure_emoji(*, error: Exception) -> str:
+    """Picks the mark a failed read earns, the same way for every platform.
+
+    The three outcomes are the shared vocabulary's, read off the exception's CLASS rather than
+    its message: a platform refusing the request or a transport that never answered is the
+    retryable mark, since the link is fine and works later; anything else `LinkReadError`
+    covers means the platform answered and there is no post in it; and an error from outside
+    that tree is the bot's own. `utils/link_errors.py` owns which fetch failures are classified
+    at all and why a 403 deliberately is not.
+
+    Args:
+        error: What the read raised.
+
+    Returns:
+        One of the `EXPANSION_*_EMOJI` outcome marks.
+    """
+    if isinstance(error, LinkRetryableError | TimeoutError):
+        return EXPANSION_RETRY_LATER_EMOJI
+    if isinstance(error, LinkReadError):
+        return EXPANSION_UNREADABLE_EMOJI
+    return EXPANSION_FAILED_EMOJI
 
 
 def report_expansion_delivery_failure(

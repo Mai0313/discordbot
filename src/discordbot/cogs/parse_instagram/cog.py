@@ -49,8 +49,8 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
     EXPANSION_UNREADABLE_EMOJI,
-    EXPANSION_RETRY_LATER_EMOJI,
     ExpansionPlaceholder,
+    expansion_failure_emoji,
     send_expansion_placeholder,
     resume_expansion_placeholders,
     report_expansion_delivery_failure,
@@ -335,16 +335,16 @@ class InstagramCogs(commands.Cog):
 
         The read is one blocking page fetch plus a walk over ~800KB of JSON, so it runs off the
         event loop. A post that comes back unreadable is a private, deleted or login-walled one:
-        that is the ordinary outcome for a link someone pasted, and it is reported with the same
-        cross as a failure because from the channel's side there is no difference worth drawing.
+        that is an ordinary outcome for a link someone pasted rather than a defect, so it takes
+        the unreadable mark and never the cross, which says the bot itself broke.
         """
         downloader = self.downloader_factory()
         try:
             async with asyncio.timeout(delay=INSTAGRAM_EXPAND_TIMEOUT_SECONDS):
                 conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
         # Broad on purpose: a fetch or parse failure must not escape into the listener; the
-        # reaction is the user-visible outcome. A stall is the one failure that says something
-        # about the post rather than about the bot — the link is fine and works later.
+        # reaction is the user-visible outcome, and which one it is comes off the error's class
+        # rather than a check here, so all four cogs answer a refusal the same way.
         except Exception as error:
             logfire.warn(
                 "Instagram parse failed",
@@ -353,15 +353,12 @@ class InstagramCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            if isinstance(error, TimeoutError):
-                await update_reaction(
-                    message=message,
-                    bot_user=self.bot.user,
-                    emoji=EXPANSION_RETRY_LATER_EMOJI,
-                    previous=current_emoji,
-                )
-                return
-            await self._mark_failed(message=message, current_emoji=current_emoji)
+            await update_reaction(
+                message=message,
+                bot_user=self.bot.user,
+                emoji=expansion_failure_emoji(error=error),
+                previous=current_emoji,
+            )
             return
 
         target = conversation.target
