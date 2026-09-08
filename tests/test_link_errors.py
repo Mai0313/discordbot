@@ -7,6 +7,7 @@ a range check to keep meaning what it meant.
 """
 
 from typing import Self
+from pathlib import Path
 from collections.abc import Callable
 
 import pytest
@@ -143,3 +144,25 @@ def test_a_stalled_douyin_read_is_retryable_too(monkeypatch: pytest.MonkeyPatch)
 
     with pytest.raises(DouyinBlockedError):
         downloader.parse_metadata(url="https://www.douyin.com/video/7000000000000000000")
+
+
+def test_a_stalled_douyin_download_is_retryable_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The download is Douyin's third request, and the one that stalls in practice.
+
+    Its retries being spent is the ordinary Douyin failure rather than an exotic one, and
+    reported flat it read as a post with nothing showable in it. The two fetch sites are
+    covered above; this is the one a reader actually meets.
+    """
+
+    def stall(**kwargs: object) -> Path:
+        """Never completes, the way a stalling CDN transfer does not."""
+        del kwargs
+        raise requests.ReadTimeout("stalled")
+
+    monkeypatch.setattr(target=douyin_module, name="stream_to_file", value=stall)
+    downloader = DouyinDownloader(output_folder=str(tmp_path))
+
+    with pytest.raises(DouyinBlockedError):
+        downloader._download_to(url="https://example.test/v.mp4", filename="v.mp4")

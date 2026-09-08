@@ -26,6 +26,7 @@ import importlib
 import pytest
 from nextcord.ext import commands
 
+from discordbot.utils import expansion_placeholder as expansion_module
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
 from discordbot.utils.expansion_placeholder import (
@@ -35,6 +36,7 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,
     expansion_failure_emoji,
+    report_expansion_read_failure,
 )
 
 from tests.helpers.casting import as_bot, as_message
@@ -230,3 +232,78 @@ def test_an_expansion_cog_decides_no_failure_mark_of_its_own(module: Any) -> Non
 
     assert "expansion_failure_emoji(" in source
     assert "isinstance(error, TimeoutError)" not in source
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (LinkUnavailableError("410"), "info"),
+        (LinkRetryableError("429"), "warn"),
+        (TimeoutError(), "warn"),
+        (RuntimeError("the parser blew up"), "error"),
+    ],
+    ids=["gone", "refused", "stalled", "broke"],
+)
+def test_a_read_failure_is_logged_at_the_severity_its_outcome_earns(
+    error: Exception, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ladder is keyed on how tolerable the failure is, not on how deep it happened.
+
+    A deleted post logged at `warn` with a traceback is what makes a real regression
+    unfindable, and it is `.github/CONTRIBUTING.md#logging`'s own example of `info`.
+    """
+    levels: list[str] = []
+    for level in ("info", "warn", "error"):
+        monkeypatch.setattr(
+            target=expansion_module.logfire,
+            name=level,
+            value=lambda _message, level=level, **fields: levels.append(level),
+        )
+
+    report_expansion_read_failure(
+        error=error, platform="Threads", url="https://example.test/p/1", message_id=7
+    )
+
+    assert levels == [expected]
+
+
+def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A traceback for a deleted post is noise; the platform's own words are not.
+
+    Douyin's filter reason exists in no other line, which is why the `info` branch keeps it
+    while dropping the exception the ladder says that level usually does not carry.
+    """
+    recorded: dict[str, object] = {}
+    monkeypatch.setattr(
+        target=expansion_module.logfire,
+        name="info",
+        value=lambda _message, **fields: recorded.update(fields),
+    )
+
+    report_expansion_read_failure(
+        error=LinkUnavailableError("Douyin will not serve 123: filtered"),
+        platform="Douyin",
+        url="https://example.test/p/1",
+        message_id=7,
+    )
+
+    assert "filtered" in str(recorded["reason"])
+    assert "_exc_info" not in recorded
+    assert recorded["message_id"] == 7
+
+
+@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
+def test_an_expansion_cog_decides_no_log_severity_of_its_own(module: Any) -> None:  # noqa: ANN401
+    """One failure, one severity, whichever platform it came from.
+
+    Douyin owned this split alone and was right; the other three logged every read failure at
+    `warn`, a post the platform said was deleted included. Sharing the call is what stops that
+    drifting apart again, and it is also what gives every one of them the `message_id` the
+    Douyin line used to be missing.
+    """
+    source = Path(inspect.getsourcefile(module) or "").read_text(encoding="utf-8")
+
+    assert "report_expansion_read_failure(" in source
+    assert "parse failed" not in source

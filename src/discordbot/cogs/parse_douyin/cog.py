@@ -43,7 +43,6 @@ from discordbot.utils.douyin import (
     DouyinPost,
     DouyinDownload,
     DouyinDownloader,
-    DouyinUnavailableError,
     douyin_url_locks,
     is_douyin_post_url,
     plan_douyin_delivery,
@@ -69,6 +68,7 @@ from discordbot.utils.expansion_placeholder import (
     ExpansionPlaceholder,
     expansion_failure_emoji,
     send_expansion_placeholder,
+    report_expansion_read_failure,
     resume_expansion_placeholders,
     report_expansion_delivery_failure,
 )
@@ -273,28 +273,14 @@ class DouyinCogs(commands.Cog):
         """Reacts with the outcome the failure actually represents, never a generic error.
 
         The reaction is the whole report — an expansion that produced nothing leaves nothing
-        in the channel — so it carries the split on its own, and Douyin's own filter reason
-        lives in the log instead. Which mark that is comes off the error's class, in the
-        shared `expansion_failure_emoji`; what stays here is the LOGGING split, because a
-        deleted post is a routine remote outcome and Douyin's own reason for it exists
-        nowhere but this line.
+        in the channel — and both halves of what to say about it now come off the error's
+        class: `expansion_failure_emoji` for the mark and `report_expansion_read_failure` for
+        the severity. The logging split this used to own alone is the one the other three
+        adopted, Douyin's filter reason included.
         """
-        if isinstance(error, DouyinUnavailableError):
-            # A deleted or private post is a routine remote outcome, not a defect; the message
-            # is the only place Douyin's own filter reason lives.
-            logfire.info(
-                "Douyin post is deleted or private",
-                url=url,
-                error_type=type(error).__name__,
-                reason=str(error),
-            )
-        else:
-            logfire.warn(
-                "Douyin expansion failed",
-                url=url,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
+        report_expansion_read_failure(
+            error=error, platform="Douyin", url=url, message_id=message.id
+        )
         await update_reaction(
             message=message,
             bot_user=self.bot.user,

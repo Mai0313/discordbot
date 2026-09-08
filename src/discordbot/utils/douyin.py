@@ -918,9 +918,14 @@ class DouyinDownloader(BaseModel):
                     _exc_info=True,
                 )
 
-        raise DouyinError(
-            f"Failed to download Douyin media from {url}: {last_error}"
-        ) from last_error
+        # Every retry spent on a transfer that kept stalling, which is the ordinary Douyin
+        # failure rather than an exotic one and is emphatically worth trying later. Reported
+        # flat, it read as a post with nothing showable in it — the same conflation the two
+        # fetch sites above stopped making.
+        message = f"Failed to download Douyin media from {url}: {last_error}"
+        if isinstance(last_error, RequestException):
+            raise _douyin_fetch_error(error=last_error, message=message) from last_error
+        raise DouyinError(message) from last_error
 
     def download(
         self,

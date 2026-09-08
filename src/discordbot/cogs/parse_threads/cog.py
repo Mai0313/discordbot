@@ -60,6 +60,7 @@ from discordbot.utils.expansion_placeholder import (
     ExpansionPlaceholder,
     expansion_failure_emoji,
     send_expansion_placeholder,
+    report_expansion_read_failure,
     resume_expansion_placeholders,
     report_expansion_delivery_failure,
 )
@@ -677,12 +678,8 @@ class ThreadsCogs(commands.Cog):
                 # thread, so throwing into it would be a second driver. Returning removes
                 # the directory instead, which both deletes whatever it wrote and fails
                 # its next write.
-                logfire.warn(
-                    "Threads parse failed",
-                    url=url,
-                    message_id=message.id,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
+                report_expansion_read_failure(
+                    error=error, platform="Threads", url=url, message_id=message.id
                 )
                 await update_reaction(
                     message=message,
