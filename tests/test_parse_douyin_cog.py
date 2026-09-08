@@ -16,7 +16,6 @@ from discordbot.utils.douyin import (
     DouyinError,
     DouyinDownload,
     DouyinBlockedError,
-    DouyinTooLargeError,
     DouyinUnavailableError,
 )
 from discordbot.typings.emojis import DOUYIN_EMOJI
@@ -209,49 +208,41 @@ async def test_a_bot_author_is_ignored() -> None:
 
 
 async def test_a_blocked_request_is_never_reported_as_a_missing_post() -> None:
-    """A WAF block is retryable and the link is fine, so it gets its own reaction and wording."""
+    """A WAF block is retryable and the link is fine, so it gets its own reaction.
+
+    The reaction is the only thing keeping the two apart now that a failure says nothing in
+    the channel, which is what makes ⏱️ load-bearing rather than decorative: ⚠️ means the
+    post could not be read, ⏱️ means the request was refused and the same link works later.
+    """
     cog, _ = _cog(download_error=DouyinBlockedError("bot wall"))
     message = _message()
 
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == DouyinCogs.blocked_emoji
-    body = _reply_body(message=message)
-    assert "稍後再試" in body
-    assert "刪除" not in body  # never conflated with a deleted or private post
+    assert message.replies == []
 
 
-async def test_a_deleted_post_says_so() -> None:
-    """A post Douyin refuses to serve is reported as deleted or private, not as a block."""
+async def test_a_deleted_post_is_marked_failed_without_a_message() -> None:
+    """A post Douyin refuses to serve leaves the same reaction and nothing else."""
     cog, _ = _cog(download_error=DouyinUnavailableError("filtered"))
     message = _message()
 
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    assert "刪除" in _reply_body(message=message)
+    assert message.replies == []
 
 
-async def test_an_oversize_post_points_at_the_command() -> None:
-    """A refused download still leaves the user somewhere to go instead of a dead end."""
-    cog, _ = _cog(download_error=DouyinTooLargeError("too big"))
-    message = _message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == "⚠️"
-    assert "/download_video" in _reply_body(message=message)
-
-
-async def test_a_parse_failure_still_answers() -> None:
-    """Any other failure reports plainly rather than leaving the source message unmarked."""
+async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
+    """A failure before the download reaches the user as a reaction and nothing else."""
     cog, _ = _cog(parse_error=DouyinError("unreadable"))
     message = _message()
 
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    assert message.replies[0]["content"] == "-# 檔案無法下載"
+    assert message.replies == []
 
 
 async def test_an_unexpected_failure_marks_the_message() -> None:
@@ -291,15 +282,19 @@ async def test_an_oversize_clip_is_hosted_as_a_url(tmp_path: Path) -> None:
     assert message.reactions[-1] == _GREEN
 
 
-async def test_an_unhostable_oversize_clip_says_so() -> None:
-    """With hosting off there is nothing to link, so the size is stated instead of dropped."""
+async def test_an_unhostable_oversize_clip_is_refused() -> None:
+    """With hosting off there is nothing to link, so the post is refused with a reaction.
+
+    The size the refusal used to quote is logged instead: an expansion that delivers nothing
+    leaves nothing behind, the same as a post that could not be read.
+    """
     cog, _ = _cog()
     message = _message(filesize_limit=4)
 
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    assert "檔案大小超過" in _reply_body(message=message)
+    assert message.replies == []
     assert not message.suppressed  # nothing was posted, so the source keeps its own preview
 
 
@@ -381,9 +376,7 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    body = _reply_body(message=message)
-    assert "稍後再試" in body
-    assert "刪除" not in body
+    assert message.replies == []
 
 
 async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported(
@@ -428,4 +421,3 @@ async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported
 
     assert removed  # the teardown really ran and really failed
     assert message.reactions[-1] == "⚠️"
-    assert "稍後再試" in _reply_body(message=message)

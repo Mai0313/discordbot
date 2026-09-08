@@ -42,7 +42,6 @@ from discordbot.utils.douyin import (
     is_douyin_post_url,
     plan_douyin_delivery,
     douyin_delivery_lines,
-    douyin_failure_message,
     douyin_fetch_semaphore,
 )
 from discordbot.typings.emojis import DOUYIN_EMOJI
@@ -201,8 +200,10 @@ class DouyinCogs(commands.Cog):
         """Reacts with the outcome the failure actually represents, never a generic error.
 
         A bot wall is retryable and the post is fine, so it gets its own reaction rather than
-        the ⚠️ that means "this post could not be read". The reason is stated in the reply, so
-        a reader is never left guessing which of the two happened.
+        the ⚠️ that means "this post could not be read", and that reaction is now the whole
+        report: an expansion that produced nothing leaves nothing in the channel, which is
+        what the other three expansion cogs have always done. Douyin's own filter reason lives
+        in the log instead.
         """
         if isinstance(error, DouyinUnavailableError):
             # A deleted or private post is a routine remote outcome, not a defect; the message
@@ -224,11 +225,6 @@ class DouyinCogs(commands.Cog):
         await update_reaction(
             message=message, bot_user=self.bot.user, emoji=emoji, previous=current_emoji
         )
-        await message.reply(
-            content=douyin_failure_message(error=error),
-            mention_author=False,
-            allowed_mentions=AllowedMentions.none(),
-        )
 
     async def _deliver(
         self,
@@ -247,13 +243,17 @@ class DouyinCogs(commands.Cog):
         plan = delivery.plan
 
         if not plan.native and not plan.hosted_urls:
+            # The size is stated here rather than in the channel, which is the only place it
+            # would otherwise exist: the ⚠️ says the post could not be delivered and nothing
+            # else is left behind, as with every other expansion refusal.
+            logfire.warn(
+                "Douyin media could not be attached or hosted; refusing the post",
+                url=url,
+                message_id=message.id,
+                total_mb=delivery.total_mb,
+            )
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
-            )
-            await message.reply(
-                content=f"-# 檔案大小超過 {delivery.total_mb:.1f}MB,無法傳送",
-                mention_author=False,
-                allowed_mentions=AllowedMentions.none(),
             )
             return
 
