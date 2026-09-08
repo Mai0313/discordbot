@@ -76,7 +76,13 @@ from tests.helpers.casting import (
     as_interaction,
     make_media_hosting_config,
 )
-from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
+from tests.helpers.discord_mocks import (
+    FakeUser,
+    FakeInteraction,
+    FakeDiscordMessage,
+    expansion_payload,
+    placeholder_withdrawn,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Awaitable, AsyncIterator
@@ -573,7 +579,8 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     )
     await cog.on_message(message=as_message(fake=success_message))
     assert success_message.suppressed
-    assert success_message.replies[0]["files"]
+    delivered = expansion_payload(message=success_message)
+    assert delivered["files"]
     assert success_message.reactions[-1] == "<:greencheck:1517565102424068226>"
     # The read marker rides beside the status chain, which only ever removes its own reaction.
     assert success_message.reactions[0] == THREADS_EMOJI
@@ -581,8 +588,7 @@ async def test_threads_cog_builds_embeds_and_handles_messages(tmp_path: Path) ->
     # The parse now carries the comments too, but the expansion shows the chain only: the
     # 10-embed cap belongs to the linked post, and a comment would push its own images out.
     assert all(
-        _STUB_COMMENT_TEXT not in (embed.description or "")
-        for embed in success_message.replies[0]["embeds"]
+        _STUB_COMMENT_TEXT not in (embed.description or "") for embed in delivered["embeds"]
     )
 
     warning_message = FakeDiscordMessage()
@@ -788,8 +794,8 @@ async def test_threads_cog_delivers_a_trimmed_chain_instead_of_failing() -> None
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert len(message.replies) == 2
-    embeds = message.replies[0]["embeds"]
+    assert len(message.replies) == 2  # the placeholder, then the permalink notice
+    embeds = expansion_payload(message=message)["embeds"]
     assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     notice = cast("str", message.replies[1]["content"])
     assert "未展開" in notice
@@ -853,18 +859,19 @@ async def test_threads_cog_keeps_the_expansion_when_a_notice_reply_fails() -> No
     expansion_reply = message.reply
     reactions_when_the_notice_ran: list[str] = []
 
-    async def reply_then_fail(**kwargs: object) -> None:
+    async def reply_then_fail(**kwargs: object) -> FakeDiscordMessage:
+        # The placeholder is the first reply and has to succeed; the notice is the second.
         if message.replies:
             reactions_when_the_notice_ran.extend(message.reactions)
             raise RuntimeError("the source message went away")
-        await expansion_reply(**cast("Any", kwargs))
+        return await expansion_reply(**cast("Any", kwargs))
 
     message.reply = reply_then_fail  # ty: ignore[invalid-assignment]
 
     await cog.on_message(message=as_message(fake=message))
 
     assert len(message.replies) == 1
-    assert message.replies[0]["embeds"]
+    assert expansion_payload(message=message)["embeds"]
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
     # The ✅ is already painted by the time a notice is attempted, so a follow-up that hangs
     # rather than failing cannot leave the expansion looking unfinished either.
@@ -891,7 +898,7 @@ async def test_threads_cog_delivers_when_the_notice_cannot_be_built(
     await cog.on_message(message=as_message(fake=message))
 
     assert len(message.replies) == 1
-    assert message.replies[0]["embeds"]
+    assert expansion_payload(message=message)["embeds"]
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
 
 
@@ -913,7 +920,7 @@ async def test_threads_cog_keeps_the_expansion_when_the_scratch_cleanup_fails() 
     # The cleanup really ran and really failed, so the ✅ below is the guard's doing.
     assert downloader.parsed[0].exited
     assert len(message.replies) == 1
-    assert message.replies[0]["embeds"]
+    assert expansion_payload(message=message)["embeds"]
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
 
 
@@ -949,7 +956,7 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
     await cog.on_message(message=as_message(fake=message))
 
     assert downloader.parsed[0].exited
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
     assert message.reactions[-1] == "<:redcross:1517565100838355016>"
     # The step that lost the expansion is logged with its own cause rather than with the
     # OSError the cleanup used to overwrite it with, and the cleanup gets its own line.
@@ -1098,7 +1105,7 @@ async def test_threads_cog_refuses_an_oversize_quoted_post_with_a_warning() -> N
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions[-1] == "⚠️"
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
 
 
 async def test_threads_cog_skips_a_message_addressed_to_the_bot() -> None:
@@ -1157,7 +1164,7 @@ async def test_threads_cog_hosts_oversized_video(tmp_path: Path) -> None:
     await cog.on_message(message=as_message(fake=message))
 
     # The video was hosted (its URL rides the reply content) and moved out of the temp dir.
-    content = message.replies[0].get("content") or ""
+    content = expansion_payload(message=message).get("content") or ""
     assert any(line.startswith("https://media.test/") for line in content.splitlines())
     assert not video_file.exists()
     assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
@@ -1195,7 +1202,7 @@ async def test_threads_cog_mixes_native_and_hosted_videos(tmp_path: Path) -> Non
 
     await cog.on_message(message=as_message(fake=message))
 
-    content = message.replies[0].get("content") or ""
+    content = expansion_payload(message=message).get("content") or ""
     hosted = [line for line in content.splitlines() if line.startswith("https://media.test/")]
     assert len(hosted) == 1  # only the oversize clip was linked
     assert big.exists() is False  # the big clip was moved into the serve dir
@@ -1230,7 +1237,7 @@ async def test_threads_cog_refuses_oversized_video_when_hosting_off(tmp_path: Pa
 
     # No host available + oversize -> whole-post ⚠️ refusal, no reply, and the file is left in place.
     assert message.reactions[-1] == "⚠️"
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
     assert video_file.exists() is True
 
 

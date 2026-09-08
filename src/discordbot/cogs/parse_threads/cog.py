@@ -37,7 +37,6 @@ from nextcord import (
     Forbidden,
     Interaction,
     SlashOption,
-    HTTPException,
     AllowedMentions,
 )
 from pydantic import Field, BaseModel, ConfigDict
@@ -50,13 +49,13 @@ from discordbot.utils.reactions import update_reaction
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
-from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
     MediaItem,
     upload_limit_for,
     build_media_delivery_planner,
 )
+from discordbot.utils.expansion_placeholder import ExpansionPlaceholder, send_expansion_placeholder
 
 if TYPE_CHECKING:
     from nextcord.types.embed import Embed as EmbedData
@@ -86,6 +85,7 @@ _MESSAGE_CONTENT_LIMIT = 2000
 _MAX_OMITTED_NOTICE_PAGES = 3
 _OMITTED_NOTICE_HEADER = "-# 因 Discord embed 限制, 有 {count} 篇貼文未展開. 可從以下原始連結查看:"
 _OMITTED_NOTICE_REMAINDER = "-# 其中 {count} 篇的連結因訊息長度限制未列出."
+_PLACEHOLDER_TEXT = "-# 正在讀取 Threads 貼文⋯"
 
 
 class _EmbedPlan(BaseModel):
@@ -432,7 +432,7 @@ class ThreadsCogs(commands.Cog):
             previous=current_emoji,
         )
 
-    async def _deliver(
+    async def _deliver(  # noqa: PLR0913 -- the walk, its rendered plan, and both channel handles
         self,
         *,
         message: Message,
@@ -440,8 +440,9 @@ class ThreadsCogs(commands.Cog):
         results: list[ThreadsOutput],
         embed_plan: _EmbedPlan,
         current_emoji: str,
+        placeholder: ExpansionPlaceholder,
     ) -> None:
-        """Plans the target's media, posts the expansion and marks the source done.
+        """Plans the target's media, delivers the expansion and marks the source done.
 
         The embed plan arrives already built rather than being rebuilt here, so the
         description-length guard in `on_message` measured the very list that gets sent.
@@ -453,7 +454,7 @@ class ThreadsCogs(commands.Cog):
         target = results[-1]
         embeds = embed_plan.embeds
         # Broad on purpose: the delivery step must never escape into the listener, and its
-        # failures split three ways — the source message went away, the bot lacks a permission,
+        # failures split three ways — the placeholder went away, the bot lacks a permission,
         # or something unexpected lost the expansion.
         try:
             # Videos too big to attach are hosted on the external static server and linked
@@ -492,6 +493,17 @@ class ThreadsCogs(commands.Cog):
 
             try:
                 await message.edit(suppress=True)
+            # Deleting the link while the post was being read is a withdrawal: before the
+            # placeholder existed the late reply was simply refused, and this keeps that,
+            # since a reply outlives the message it answers.
+            except NotFound:
+                logfire.info(
+                    "Threads expansion target is gone",
+                    url=url,
+                    message_id=message.id,
+                    channel_id=message.channel.id,
+                )
+                return
             # Broad on purpose: hiding Discord's own preview is cosmetic and must not abort the
             # expansion. A persistent Forbidden means the guild lacks Manage Messages.
             except Exception as error:
@@ -503,23 +515,18 @@ class ThreadsCogs(commands.Cog):
                     _exc_info=error,
                 )
 
-            await message.reply(
+            await placeholder.deliver(
                 content="\n".join(plan.hosted_urls) if plan.hosted_urls else None,
                 embeds=embeds,
-                mention_author=False,
-                allowed_mentions=AllowedMentions.none(),
-                **embed_spacer_payload(
-                    embeds=embeds, is_edit=False, target=message, extra_files=files
-                ),
+                files=files,
             )
         except Exception as error:
-            # A reply to a deleted source comes back as HTTP 50035, not only as NotFound.
-            gone = isinstance(error, NotFound) or (
-                isinstance(error, HTTPException) and error.code == 50035
-            )
-            if gone:
+            # Only the placeholder's own disappearance is routine here. The 50035 an
+            # unsendable reply used to raise is not: on an edit that code is a rejected body,
+            # which is a defect rather than a message that went away.
+            if isinstance(error, NotFound):
                 logfire.info(
-                    "Threads expansion target is gone",
+                    "The Threads expansion placeholder is gone",
                     url=url,
                     message_id=message.id,
                     channel_id=message.channel.id,
@@ -689,7 +696,22 @@ class ThreadsCogs(commands.Cog):
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
         try:
-            await self._expand(message=message, url=url, current_emoji=current_emoji)
+            placeholder = await send_expansion_placeholder(message=message, text=_PLACEHOLDER_TEXT)
+            if placeholder is None:
+                # A channel that refused the placeholder will refuse the card too, so the
+                # read is never started.
+                await self._mark_failed(message=message, current_emoji=current_emoji)
+                return
+            try:
+                await self._expand(
+                    message=message, url=url, current_emoji=current_emoji, placeholder=placeholder
+                )
+            finally:
+                # Every failure and refusal below returns rather than raising, so this one
+                # line covers all of them: an expansion that delivered nothing leaves nothing
+                # behind. Once delivered it is a no-op, which is what lets the permalink
+                # notices run past it.
+                await placeholder.discard()
         # Broad on purpose: the listener's last line of defence, covering the steps between the
         # parse and the delivery so nothing escapes into the dispatcher.
         except Exception as error:
@@ -702,7 +724,9 @@ class ThreadsCogs(commands.Cog):
             )
             await self._mark_failed(message=message, current_emoji=current_emoji)
 
-    async def _expand(self, *, message: Message, url: str, current_emoji: str) -> None:
+    async def _expand(
+        self, *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+    ) -> None:
         """Parses the post inside a scratch directory and hands the walk to `_expand_conversation`.
 
         Owns the parse lifecycle alone: opening the walk under the wall-clock bound, reporting a
@@ -748,6 +772,7 @@ class ThreadsCogs(commands.Cog):
                     url=url,
                     conversation=conversation,
                     current_emoji=current_emoji,
+                    placeholder=placeholder,
                 )
             finally:
                 # Closes the walk's generator and unlinks its media before the directory
@@ -775,6 +800,7 @@ class ThreadsCogs(commands.Cog):
         url: str,
         conversation: "ThreadsConversation",
         current_emoji: str,
+        placeholder: ExpansionPlaceholder,
     ) -> None:
         """Decides whether a parsed conversation can be shown, and delivers it when it can.
 
@@ -826,6 +852,7 @@ class ThreadsCogs(commands.Cog):
             results=results,
             embed_plan=embed_plan,
             current_emoji=current_emoji,
+            placeholder=placeholder,
         )
 
 

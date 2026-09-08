@@ -126,7 +126,8 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - `OPENAI_BASE_URL` usually points at LiteLLM. Provider-specific behavior should be expressed through model names, `ModelSettings`, tools, or `extra_body`.
 - Do not import provider-native SDKs such as `google-genai` or `anthropic` into request paths. Development scripts may use them.
 - Runtime model strings for `./src` live in `RuntimeModelCatalog` in `src/discordbot/typings/models.py`; update that catalog instead of hardcoding names at call sites.
-- Preserve the reaction-based progress UX for AI replies and parsers. The bot should not send intermediate "thinking" messages.
+- Preserve the reaction-based progress UX for AI replies. The bot should not send intermediate "thinking" messages there.
+- A link expansion is the exception, and it takes video delivery's shape rather than a status message of its own: the cog replies with one subtext line as it starts and edits that same message into the finished card, so the card cannot drift away from the link while the post is being read. A failure deletes it and the reaction is the whole report.
 - Video delivery keeps progress text on the deferred original message, then edits that same message with the final file and source URL.
 
 ## Long-Term Memory

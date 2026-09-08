@@ -28,7 +28,7 @@ from typing import ClassVar
 import asyncio
 
 import logfire
-from nextcord import Embed, Message, AllowedMentions
+from nextcord import Embed, Message, NotFound
 from nextcord.ext import commands
 
 from discordbot.utils.douyin import (
@@ -42,7 +42,6 @@ from discordbot.utils.douyin import (
     is_douyin_post_url,
     plan_douyin_delivery,
     douyin_delivery_lines,
-    douyin_failure_message,
     douyin_fetch_semaphore,
 )
 from discordbot.typings.emojis import DOUYIN_EMOJI
@@ -50,18 +49,20 @@ from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
-from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.media_delivery import (
     DISCORD_ATTACHMENT_LIMIT,
     MediaPlan,
     upload_limit_for,
     build_media_delivery_planner,
 )
+from discordbot.utils.expansion_placeholder import ExpansionPlaceholder, send_expansion_placeholder
 
 # Douyin's own palette, so the expansion reads as a Douyin card at a glance. Deliberately NOT
 # in `typings/colors.py`: that palette is Discord's own semantic set (success / failure / info),
 # and a third party's brand red belongs to the one card that wears it, not to the shared vocabulary.
 _EMBED_COLOR = 0xFE2C55
+
+_PLACEHOLDER_TEXT = "-# 正在讀取抖音貼文⋯"
 
 
 class DouyinCogs(commands.Cog):
@@ -87,6 +88,15 @@ class DouyinCogs(commands.Cog):
         self.bot = bot
         self.media_delivery = build_media_delivery_planner()
         self.downloader_factory = DouyinDownloader
+
+    async def _mark_failed(self, *, message: Message, current_emoji: str) -> None:
+        """Replaces the working reaction with the failure cross."""
+        await update_reaction(
+            message=message,
+            bot_user=self.bot.user,
+            emoji="<:redcross:1517565100838355016>",
+            previous=current_emoji,
+        )
 
     @staticmethod
     def _build_embed(post: DouyinPost, url: str) -> Embed:
@@ -128,7 +138,21 @@ class DouyinCogs(commands.Cog):
         await update_reaction(message=message, bot_user=self.bot.user, emoji=DOUYIN_EMOJI)
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
         try:
-            await self._expand(message=message, url=url, current_emoji=current_emoji)
+            placeholder = await send_expansion_placeholder(message=message, text=_PLACEHOLDER_TEXT)
+            if placeholder is None:
+                # A channel that refused the placeholder will refuse the card too, so Douyin
+                # is never contacted.
+                await self._mark_failed(message=message, current_emoji=current_emoji)
+                return
+            try:
+                await self._expand(
+                    message=message, url=url, current_emoji=current_emoji, placeholder=placeholder
+                )
+            finally:
+                # Every failure below returns rather than raising, so this one line covers
+                # all of them: an expansion that delivered nothing leaves nothing behind.
+                # Once delivered it is a no-op.
+                await placeholder.discard()
         except Exception as error:
             # Broad on purpose: this is the listener's last boundary, and the cross reaction
             # below is the only thing that tells the user the expansion is not coming.
@@ -139,14 +163,11 @@ class DouyinCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-            await update_reaction(
-                message=message,
-                bot_user=self.bot.user,
-                emoji="<:redcross:1517565100838355016>",
-                previous=current_emoji,
-            )
+            await self._mark_failed(message=message, current_emoji=current_emoji)
 
-    async def _expand(self, message: Message, url: str, current_emoji: str) -> None:
+    async def _expand(
+        self, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+    ) -> None:
         """Fetches the post and posts it back, reporting every failure mode distinctly."""
         # A private directory per invocation, because the filenames are derived from the post id:
         # two expansions of the same post in one shared temp dir would write the same paths,
@@ -192,7 +213,12 @@ class DouyinCogs(commands.Cog):
 
             with result:
                 await self._deliver(
-                    message=message, url=url, post=post, result=result, current_emoji=current_emoji
+                    message=message,
+                    url=url,
+                    post=post,
+                    result=result,
+                    current_emoji=current_emoji,
+                    placeholder=placeholder,
                 )
 
     async def _report_failure(
@@ -201,8 +227,10 @@ class DouyinCogs(commands.Cog):
         """Reacts with the outcome the failure actually represents, never a generic error.
 
         A bot wall is retryable and the post is fine, so it gets its own reaction rather than
-        the ⚠️ that means "this post could not be read". The reason is stated in the reply, so
-        a reader is never left guessing which of the two happened.
+        the ⚠️ that means "this post could not be read", and that reaction is now the whole
+        report: an expansion that produced nothing leaves nothing in the channel, which is
+        what the other three expansion cogs have always done. Douyin's own filter reason lives
+        in the log instead.
         """
         if isinstance(error, DouyinUnavailableError):
             # A deleted or private post is a routine remote outcome, not a defect; the message
@@ -224,21 +252,17 @@ class DouyinCogs(commands.Cog):
         await update_reaction(
             message=message, bot_user=self.bot.user, emoji=emoji, previous=current_emoji
         )
-        await message.reply(
-            content=douyin_failure_message(error=error),
-            mention_author=False,
-            allowed_mentions=AllowedMentions.none(),
-        )
 
-    async def _deliver(
+    async def _deliver(  # noqa: PLR0913 -- the post, its files, and both handles to the channel
         self,
         message: Message,
         url: str,
         post: DouyinPost,
         result: DouyinDownload,
         current_emoji: str,
+        placeholder: ExpansionPlaceholder,
     ) -> None:
-        """Posts the downloaded media plus its caption card, then marks the source done."""
+        """Edits the downloaded media plus its caption card onto the placeholder."""
         delivery = await plan_douyin_delivery(
             planner=self.media_delivery,
             result=result,
@@ -247,21 +271,36 @@ class DouyinCogs(commands.Cog):
         plan = delivery.plan
 
         if not plan.native and not plan.hosted_urls:
+            # The size is stated here rather than in the channel, which is the only place it
+            # would otherwise exist: the ⚠️ says the post could not be delivered and nothing
+            # else is left behind, as with every other expansion refusal.
+            logfire.warn(
+                "Douyin media could not be attached or hosted; refusing the post",
+                url=url,
+                message_id=message.id,
+                total_mb=delivery.total_mb,
+            )
             await update_reaction(
                 message=message, bot_user=self.bot.user, emoji="⚠️", previous=current_emoji
             )
-            await message.reply(
-                content=f"-# 檔案大小超過 {delivery.total_mb:.1f}MB,無法傳送",
-                mention_author=False,
-                allowed_mentions=AllowedMentions.none(),
-            )
             return
 
+        try:
+            await message.edit(suppress=True)
+        # Deleting the link while the clip was downloading is a withdrawal: before the
+        # placeholder existed the late reply was simply refused, and this keeps that, since a
+        # reply outlives the message it answers.
+        except NotFound:
+            logfire.info(
+                "Douyin expansion target is gone",
+                url=url,
+                message_id=message.id,
+                channel_id=message.channel.id,
+            )
+            return
         # Broad on purpose: hiding the source preview is cosmetic, and the expansion below is
         # already downloaded, so nothing here may abort it. A missing Manage Messages permission
         # is the common case and is not actionable per message.
-        try:
-            await message.edit(suppress=True)
         except Exception as error:
             logfire.debug(
                 "Could not suppress the source message embed",
@@ -270,7 +309,7 @@ class DouyinCogs(commands.Cog):
                 _exc_info=error,
             )
 
-        await self._send(message=message, url=url, post=post, result=result, plan=plan)
+        await self._send(url=url, post=post, result=result, plan=plan, placeholder=placeholder)
         await update_reaction(
             message=message,
             bot_user=self.bot.user,
@@ -279,9 +318,14 @@ class DouyinCogs(commands.Cog):
         )
 
     async def _send(
-        self, message: Message, url: str, post: DouyinPost, result: DouyinDownload, plan: MediaPlan
+        self,
+        url: str,
+        post: DouyinPost,
+        result: DouyinDownload,
+        plan: MediaPlan,
+        placeholder: ExpansionPlaceholder,
     ) -> None:
-        """Sends the expansion, stating anything that was left out rather than dropping it."""
+        """Delivers the expansion, stating anything left out rather than dropping it."""
         lines = douyin_delivery_lines(
             result=result,
             plan=plan,
@@ -292,14 +336,8 @@ class DouyinCogs(commands.Cog):
 
         files = [item.to_file() for item in plan.native]
         embeds = [self._build_embed(post=post, url=url)]
-        await message.reply(
-            content="\n".join(lines) if lines else None,
-            embeds=embeds,
-            mention_author=False,
-            allowed_mentions=AllowedMentions.none(),
-            **embed_spacer_payload(
-                embeds=embeds, is_edit=False, target=message, extra_files=files
-            ),
+        await placeholder.deliver(
+            content="\n".join(lines) if lines else None, embeds=embeds, files=files
         )
 
 

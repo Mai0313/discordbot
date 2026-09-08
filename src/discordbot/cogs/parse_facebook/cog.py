@@ -21,7 +21,7 @@ it was deleted in #636 rather than copied here: turning this off means deleting 
 import asyncio
 
 import logfire
-from nextcord import Color, Embed, Message, NotFound, Forbidden, HTTPException, AllowedMentions
+from nextcord import Color, Embed, Message, NotFound, Forbidden
 from nextcord.ext import commands
 
 from discordbot.typings.emojis import FACEBOOK_EMOJI
@@ -35,7 +35,8 @@ from discordbot.utils.facebook import (
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import FACEBOOK_EXPAND_TIMEOUT_SECONDS
-from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit, embed_spacer_payload
+from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit
+from discordbot.utils.expansion_placeholder import ExpansionPlaceholder, send_expansion_placeholder
 
 # Facebook's own blue, so the card reads as a Facebook post at a glance, and a neutral grey for
 # a comment so the two never look like the same kind of thing. Deliberately NOT in
@@ -66,6 +67,7 @@ _EMBED_TOTAL_LENGTH_LIMIT = 6000
 _COMMENT_RESERVE = 2000
 _BUDGET_SLACK = 400
 _TRUNCATION_NOTICE = "\n\n⋯（全文請看原貼文）"
+_PLACEHOLDER_TEXT = "-# 正在讀取 Facebook 貼文⋯"
 _VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
 _COMMENT_HEADER = "💬 **指定的留言**"
 
@@ -238,7 +240,21 @@ class FacebookCogs(commands.Cog):
         current_emoji = await update_reaction(message=message, bot_user=self.bot.user, emoji="🔗")
 
         try:
-            await self._expand(message=message, url=url, current_emoji=current_emoji)
+            placeholder = await send_expansion_placeholder(message=message, text=_PLACEHOLDER_TEXT)
+            if placeholder is None:
+                # A channel that refused the placeholder will refuse the card too, so the
+                # read is never started.
+                await self._mark_failed(message=message, current_emoji=current_emoji)
+                return
+            try:
+                await self._expand(
+                    message=message, url=url, current_emoji=current_emoji, placeholder=placeholder
+                )
+            finally:
+                # Every failure below returns rather than raising, so this one line covers
+                # all of them: an expansion that delivered nothing leaves nothing behind.
+                # Once delivered it is a no-op.
+                await placeholder.discard()
         # Broad on purpose: the listener's last line of defence, so nothing escapes into the
         # dispatcher and every failure still reaches the user as a reaction.
         except Exception as error:
@@ -251,7 +267,9 @@ class FacebookCogs(commands.Cog):
             )
             await self._mark_failed(message=message, current_emoji=current_emoji)
 
-    async def _expand(self, *, message: Message, url: str, current_emoji: str) -> None:
+    async def _expand(
+        self, *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
+    ) -> None:
         """Reads the post under a wall-clock bound and hands a readable one to `_deliver`.
 
         The read is one blocking page fetch plus a walk over ~950KB of JSON, so it runs off the
@@ -285,21 +303,40 @@ class FacebookCogs(commands.Cog):
             return
 
         await self._deliver(
-            message=message, conversation=conversation, current_emoji=current_emoji
+            message=message,
+            conversation=conversation,
+            current_emoji=current_emoji,
+            placeholder=placeholder,
         )
 
     async def _deliver(
-        self, *, message: Message, conversation: FacebookConversation, current_emoji: str
+        self,
+        *,
+        message: Message,
+        conversation: FacebookConversation,
+        current_emoji: str,
+        placeholder: ExpansionPlaceholder,
     ) -> None:
-        """Posts the expansion and marks the source message done."""
+        """Edits the expansion onto the placeholder and marks the source message done."""
         embeds = self._build_embeds(conversation=conversation)
         post_url = conversation.target.url if conversation.target else ""
         # Broad on purpose: the delivery step must never escape into the listener, and its
-        # failures split three ways — the source message went away, the bot lacks a permission,
+        # failures split three ways — the placeholder went away, the bot lacks a permission,
         # or something unexpected lost the expansion.
         try:
             try:
                 await message.edit(suppress=True)
+            # Deleting the link while the post was being read is a withdrawal: before the
+            # placeholder existed the late reply was simply refused, and this keeps that,
+            # since a reply outlives the message it answers.
+            except NotFound:
+                logfire.info(
+                    "Facebook expansion target is gone",
+                    url=post_url,
+                    message_id=message.id,
+                    channel_id=message.channel.id,
+                )
+                return
             # Broad on purpose: hiding Discord's own preview is cosmetic and must not abort the
             # expansion. A persistent Forbidden means the guild lacks Manage Messages.
             except Exception as error:
@@ -311,20 +348,14 @@ class FacebookCogs(commands.Cog):
                     _exc_info=error,
                 )
 
-            await message.reply(
-                embeds=embeds,
-                mention_author=False,
-                allowed_mentions=AllowedMentions.none(),
-                **embed_spacer_payload(embeds=embeds, is_edit=False, target=message),
-            )
+            await placeholder.deliver(embeds=embeds)
         except Exception as error:
-            # A reply to a deleted source comes back as HTTP 50035, not only as NotFound.
-            gone = isinstance(error, NotFound) or (
-                isinstance(error, HTTPException) and error.code == 50035
-            )
-            if gone:
+            # Only the placeholder's own disappearance is routine here. The 50035 an
+            # unsendable reply used to raise is not: on an edit that code is a rejected body,
+            # which is a defect rather than a message that went away.
+            if isinstance(error, NotFound):
                 logfire.info(
-                    "Facebook expansion target is gone",
+                    "The Facebook expansion placeholder is gone",
                     url=post_url,
                     message_id=message.id,
                     channel_id=message.channel.id,

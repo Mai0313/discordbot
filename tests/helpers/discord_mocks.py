@@ -34,6 +34,7 @@ class DiscordPayload(TypedDict, total=False):
     ephemeral: bool
     suppress: bool
     allowed_mentions: AllowedMentions
+    mention_author: bool
     attachments: list[Attachment]
     message_id: int
 
@@ -136,6 +137,7 @@ class FakeDiscordMessage:
         self.reactions: list[str] = []
         self.removed: list[tuple[str, FakeUser]] = []
         self.replies: list[DiscordPayload] = []
+        self.reply_messages: list[FakeDiscordMessage] = []
         self.deleted = False
         self.suppressed = False
 
@@ -153,13 +155,43 @@ class FakeDiscordMessage:
         """Records a removed reaction."""
         self.removed.append((emoji, member))
 
-    async def reply(self, **kwargs: Unpack[DiscordPayload]) -> None:
-        """Records a message reply payload."""
+    async def reply(self, **kwargs: Unpack[DiscordPayload]) -> FakeDiscordMessage:
+        """Records a reply payload and answers with the message it created.
+
+        A real `Message.reply` hands back the posted message, and the expansion cogs keep
+        theirs to edit later. A double answering None turns that into an `AttributeError`
+        deep inside the cog instead of the assertion the test came for.
+        """
         self.replies.append(kwargs)
+        posted = FakeDiscordMessage()
+        self.reply_messages.append(posted)
+        return posted
 
     async def delete(self) -> None:
         """Records message deletion."""
         self.deleted = True
+
+
+def expansion_payload(*, message: FakeDiscordMessage) -> DiscordPayload:
+    """Returns what an expansion cog edited onto the placeholder it replied with.
+
+    Every link expansion claims its reply slot before it has anything to show, so the card a
+    test is looking for is an edit of the first reply rather than a reply of its own.
+    """
+    placeholder = message.reply_messages[0]
+    assert placeholder.edits, "the expansion never reached its placeholder"
+    return placeholder.edits[-1]
+
+
+def placeholder_withdrawn(*, message: FakeDiscordMessage) -> bool:
+    """Whether the placeholder was taken back with nothing delivered onto it.
+
+    That is what a failed expansion leaves: the reaction says what happened and the channel
+    keeps no trace of a card that never came. The reply count is part of it, so a cog that
+    withdrew the placeholder and then explained itself in a second message still fails.
+    """
+    placeholder = message.reply_messages[0]
+    return len(message.replies) == 1 and placeholder.deleted and not placeholder.edits
 
 
 class FakeGuild:

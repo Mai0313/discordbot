@@ -16,7 +16,12 @@ from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_instagram.cog import InstagramCogs
 
 from tests.helpers.casting import as_bot, as_message
-from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
+from tests.helpers.discord_mocks import (
+    FakeUser,
+    FakeDiscordMessage,
+    expansion_payload,
+    placeholder_withdrawn,
+)
 
 _CODE = "Dc5eNjYkoZE"
 _URL = f"https://www.instagram.com/p/{_CODE}/"
@@ -101,8 +106,8 @@ def _cog(
 
 
 def _embeds(message: _InstagramMessage) -> list[Embed]:
-    """The embeds the cog replied with."""
-    return list(message.replies[0]["embeds"])
+    """The embeds the cog delivered onto its placeholder."""
+    return list(expansion_payload(message=message)["embeds"])
 
 
 async def test_a_pasted_link_is_expanded_into_a_card() -> None:
@@ -316,7 +321,7 @@ async def test_an_unreadable_post_is_marked_failed_without_a_message() -> None:
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
     assert message.reactions[-1] == _RED
 
 
@@ -327,7 +332,7 @@ async def test_a_parse_failure_is_marked_failed_without_a_message() -> None:
 
     await cog.on_message(message=as_message(fake=message))
 
-    assert message.replies == []
+    assert placeholder_withdrawn(message=message)
     assert message.reactions[-1] == _RED
 
 
