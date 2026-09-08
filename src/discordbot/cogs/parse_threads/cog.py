@@ -57,8 +57,8 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
     EXPANSION_UNREADABLE_EMOJI,
-    EXPANSION_RETRY_LATER_EMOJI,
     ExpansionPlaceholder,
+    expansion_failure_emoji,
     send_expansion_placeholder,
     resume_expansion_placeholders,
     report_expansion_delivery_failure,
@@ -668,8 +668,8 @@ class ThreadsCogs(commands.Cog):
                 async with asyncio.timeout(delay=THREADS_EXPAND_TIMEOUT_SECONDS):
                     conversation = await asyncio.to_thread(parse_cm.__enter__)
             # Broad on purpose: a fetch failure must not escape into the listener; the
-            # reaction is the user-visible outcome. A stall never reads as a missing post —
-            # under the shared vocabulary it is the retryable mark, since the link is fine.
+            # reaction is the user-visible outcome, and which one it is comes off the error's
+            # class rather than a check here, so all four cogs answer a refusal the same way.
             except Exception as error:
                 # No exit call here: the walk is still driving that generator on its own
                 # thread, so throwing into it would be a second driver. Returning removes
@@ -682,15 +682,12 @@ class ThreadsCogs(commands.Cog):
                     error_type=type(error).__name__,
                     _exc_info=error,
                 )
-                if isinstance(error, TimeoutError):
-                    await update_reaction(
-                        message=message,
-                        bot_user=self.bot.user,
-                        emoji=EXPANSION_RETRY_LATER_EMOJI,
-                        previous=current_emoji,
-                    )
-                    return
-                await self._mark_failed(message=message, current_emoji=current_emoji)
+                await update_reaction(
+                    message=message,
+                    bot_user=self.bot.user,
+                    emoji=expansion_failure_emoji(error=error),
+                    previous=current_emoji,
+                )
                 return
             try:
                 await self._expand_conversation(

@@ -13,9 +13,13 @@ from nextcord import Embed
 
 from discordbot.typings.emojis import FACEBOOK_EMOJI
 from discordbot.utils.facebook import FacebookOutput, FacebookConversation
+from discordbot.utils.link_errors import LinkRetryableError
 from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
-from discordbot.utils.expansion_placeholder import EXPANSION_UNREADABLE_EMOJI
+from discordbot.utils.expansion_placeholder import (
+    EXPANSION_UNREADABLE_EMOJI,
+    EXPANSION_RETRY_LATER_EMOJI,
+)
 
 from tests.helpers.casting import as_bot, as_message, make_forbidden
 from tests.helpers.discord_mocks import (
@@ -430,3 +434,20 @@ async def test_a_refused_slot_still_says_which_platform_was_detected() -> None:
     await cog.on_message(message=as_message(fake=message))
 
     assert message.reactions == [FACEBOOK_EMOJI, _RED]
+
+
+async def test_a_platform_under_load_is_marked_retryable_not_broken() -> None:
+    """The whole chain: a refused fetch reaches the channel as ⏱️, never as the cross.
+
+    `tests/test_link_errors.py` proves the reader raises it and
+    `tests/test_expansion_contract.py` proves all four cogs map it the same way; this is the
+    one test that walks both halves, because a 429 answered as ❌ tells the reader the bot is
+    broken when the link is fine and works in a minute.
+    """
+    cog, _ = _cog(error=LinkRetryableError("429 from Facebook"))
+    message = _message()
+
+    await cog.on_message(message=as_message(fake=message))
+
+    assert message.reactions[-1] == EXPANSION_RETRY_LATER_EMOJI
+    assert placeholder_withdrawn(message=message)

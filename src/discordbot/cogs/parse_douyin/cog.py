@@ -41,10 +41,8 @@ from nextcord.ext import commands
 from discordbot.utils.douyin import (
     DOUYIN_URL_RE,
     DouyinPost,
-    DouyinError,
     DouyinDownload,
     DouyinDownloader,
-    DouyinBlockedError,
     DouyinUnavailableError,
     douyin_url_locks,
     is_douyin_post_url,
@@ -68,8 +66,8 @@ from discordbot.utils.expansion_placeholder import (
     EXPANSION_FAILED_EMOJI,
     EXPANSION_WORKING_EMOJI,
     EXPANSION_UNREADABLE_EMOJI,
-    EXPANSION_RETRY_LATER_EMOJI,
     ExpansionPlaceholder,
+    expansion_failure_emoji,
     send_expansion_placeholder,
     resume_expansion_placeholders,
     report_expansion_delivery_failure,
@@ -276,13 +274,10 @@ class DouyinCogs(commands.Cog):
 
         The reaction is the whole report — an expansion that produced nothing leaves nothing
         in the channel — so it carries the split on its own, and Douyin's own filter reason
-        lives in the log instead. The three outcomes are the shared vocabulary's, and this
-        cog is the one with a taxonomy rich enough to reach all three: a bot wall and a stall
-        are both retryable with the post itself fine, anything else `DouyinError` covers means
-        Douyin served no usable post, and an error from outside that tree is the bot's own.
-
-        A timeout used to land on the unreadable mark, which is the one thing this module's
-        docstring says must never happen: it told the reader a working link was dead.
+        lives in the log instead. Which mark that is comes off the error's class, in the
+        shared `expansion_failure_emoji`; what stays here is the LOGGING split, because a
+        deleted post is a routine remote outcome and Douyin's own reason for it exists
+        nowhere but this line.
         """
         if isinstance(error, DouyinUnavailableError):
             # A deleted or private post is a routine remote outcome, not a defect; the message
@@ -300,14 +295,11 @@ class DouyinCogs(commands.Cog):
                 error_type=type(error).__name__,
                 _exc_info=error,
             )
-        if isinstance(error, DouyinBlockedError | TimeoutError):
-            emoji = EXPANSION_RETRY_LATER_EMOJI
-        elif isinstance(error, DouyinError):
-            emoji = EXPANSION_UNREADABLE_EMOJI
-        else:
-            emoji = EXPANSION_FAILED_EMOJI
         await update_reaction(
-            message=message, bot_user=self.bot.user, emoji=emoji, previous=current_emoji
+            message=message,
+            bot_user=self.bot.user,
+            emoji=expansion_failure_emoji(error=error),
+            previous=current_emoji,
         )
 
     async def _deliver(  # noqa: PLR0913 -- the post, its files, and both handles to the channel
