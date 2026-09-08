@@ -164,6 +164,11 @@ async def adapt_interactions_stream(
     token seed from the earlier selection call; a per-step emit would double-count.
     """
     model_name = ""
+    # The fallback for a completed event carrying no usage of its own. google-genai 2.22 moved
+    # `total_usage` off that event onto `step.delta`, so it has to be caught on the way past
+    # rather than read at the end; without it a stream that reports usage only per step leaves
+    # the footer and the turn's token fields reading zero.
+    streamed_usage = None
     # Branch on `event.event_type` directly (not a copied local) so the discriminated
     # InteractionSSEEvent union narrows to the member that carries the field being read.
     async for event in stream:
@@ -177,6 +182,8 @@ async def adapt_interactions_stream(
                 ),
             )
         elif event.event_type == "step.delta":
+            if event.metadata is not None and event.metadata.total_usage is not None:
+                streamed_usage = event.metadata.total_usage
             delta = event.delta
             if delta.type == "text":
                 yield cast(
@@ -191,11 +198,9 @@ async def adapt_interactions_stream(
                         SimpleNamespace(type="response.reasoning_summary_text.delta", delta=text),
                     )
         elif event.event_type == "interaction.completed":
-            # Usage rides the completed interaction; `metadata.total_usage` is optional and
-            # often absent, so read the interaction first and only fall back to metadata.
-            usage = event.interaction.usage
-            if usage is None and event.metadata is not None:
-                usage = event.metadata.total_usage
+            # Usage rides the completed interaction; `interaction.usage` is optional on a
+            # streaming payload, so the last `total_usage` seen above stands in for it.
+            usage = event.interaction.usage or streamed_usage
             usage_ns = (
                 SimpleNamespace(
                     input_tokens=usage.total_input_tokens or 0,

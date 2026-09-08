@@ -14,7 +14,10 @@ from collections import Counter
 from unittest.mock import MagicMock
 
 from PIL import Image
-import httpx
+
+# openai 3.x builds its exceptions on httpx2, so a request or response handed to one has to
+# come from there. google-genai is still on httpx 0.x, and both live in the environment.
+import httpx2
 from openai import APIError, APITimeoutError, BadRequestError, APIConnectionError
 import pytest
 import nextcord
@@ -2702,7 +2705,7 @@ async def test_voice_generator_swallows_provider_errors() -> None:
 
 async def test_voice_generator_reports_timeout() -> None:
     """A request timeout is reported as TIMEOUT so the caller can hint distinctly."""
-    speech = _FakeSpeech(error=APITimeoutError(request=httpx.Request("POST", "http://proxy")))
+    speech = _FakeSpeech(error=APITimeoutError(request=httpx2.Request("POST", "http://proxy")))
     synth = VoiceGenerator(client=_fake_audio_client(speech=speech), model_name="tts-test")
 
     clip = await synth.generate(text="嗆你", end_user_id="tester")
@@ -2893,7 +2896,9 @@ def _interactions_turn_events() -> list[SimpleNamespace]:
             event_type="interaction.created", interaction=SimpleNamespace(model=TEST_LLM_MODEL)
         ),
         SimpleNamespace(
-            event_type="step.delta", delta=SimpleNamespace(type="text", text="watched it")
+            event_type="step.delta",
+            metadata=None,
+            delta=SimpleNamespace(type="text", text="watched it"),
         ),
         SimpleNamespace(
             event_type="interaction.completed",
@@ -2901,7 +2906,6 @@ def _interactions_turn_events() -> list[SimpleNamespace]:
                 model=TEST_LLM_MODEL,
                 usage=SimpleNamespace(total_input_tokens=12, total_output_tokens=34),
             ),
-            metadata=None,
         ),
     ]
 
@@ -3582,8 +3586,8 @@ def test_extract_friendly_error_reads_a_decoded_400_body() -> None:
 
     # `_make_status_error` unwraps the `error` object into `.body` before raising, and renders
     # the whole document into the message as a Python dict repr.
-    request = httpx.Request(method="POST", url="http://proxy/v1/images/generations")
-    response = httpx.Response(status_code=400, request=request, json=body)
+    request = httpx2.Request(method="POST", url="http://proxy/v1/images/generations")
+    response = httpx2.Response(status_code=400, request=request, json=body)
     proxied = BadRequestError(f"Error code: 400 - {body}", response=response, body=body["error"])
     assert extract_friendly_error(exc=proxied) == refusal
 
@@ -3607,7 +3611,7 @@ def test_extract_friendly_error_peels_a_flattened_litellm_wrapper_chain() -> Non
     Which of the two shapes arrives records WHEN the request broke, not what broke, so the same
     provider message shows up in both and neither may bring the wrapper chain along with it.
     """
-    request = httpx.Request(method="POST", url="http://proxy/v1/responses")
+    request = httpx2.Request(method="POST", url="http://proxy/v1/responses")
     high_demand = (
         "This model is currently experiencing high demand. Spikes in demand are usually "
         "temporary. Please try again later."
@@ -3654,7 +3658,7 @@ def test_extract_friendly_error_peels_a_flattened_litellm_wrapper_chain() -> Non
 
 def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() -> None:
     """A transient upstream failure is retried; a refusal and an unreadable one are not."""
-    request = httpx.Request(method="POST", url="http://proxy/v1/responses")
+    request = httpx2.Request(method="POST", url="http://proxy/v1/responses")
 
     # The shape this exists for. LiteLLM reports a mid-stream provider failure as an SSE error
     # frame holding `ProxyException.to_dict()`, whose `code` is a decimal STRING, and openai's
@@ -3677,7 +3681,7 @@ def test_is_retryable_llm_error_reads_the_status_out_of_every_wrapper_shape() ->
 
     # A status the SDK typed wins over the body, and an unreadable failure is not retried:
     # a status that cannot be read is as likely to be a refusal as an outage.
-    response = httpx.Response(status_code=400, request=request, json={})
+    response = httpx2.Response(status_code=400, request=request, json={})
     assert is_retryable_llm_error(exc=BadRequestError("no", response=response, body=None)) is False
     assert is_retryable_llm_error(exc=APIError(message="?", request=request, body=None)) is False
     assert is_retryable_llm_error(exc=RuntimeError("boom")) is False
@@ -3706,7 +3710,7 @@ def _mid_stream_unavailable() -> APIError:
     """The exact exception a Vertex 503 reaches the bot as, through LiteLLM and openai."""
     return APIError(
         message="litellm.MidStreamFallbackError: litellm.ServiceUnavailableError: ...",
-        request=httpx.Request(method="POST", url="http://proxy/v1/responses"),
+        request=httpx2.Request(method="POST", url="http://proxy/v1/responses"),
         body={"message": "high demand", "type": "None", "param": "None", "code": "503"},
     )
 
@@ -3807,9 +3811,9 @@ async def test_a_non_retryable_answer_failure_never_re_opens_the_stream(
     message = FakeMessage()
     streamer = ResponseStreamer(message=message)
     opened = 0
-    request = httpx.Request(method="POST", url="http://proxy/v1/responses")
+    request = httpx2.Request(method="POST", url="http://proxy/v1/responses")
     refusal = BadRequestError(
-        "blocked", response=httpx.Response(status_code=400, request=request, json={}), body=None
+        "blocked", response=httpx2.Response(status_code=400, request=request, json={}), body=None
     )
 
     async def open_stream() -> AsyncIterator[ResponseStreamEvent]:
