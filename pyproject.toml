@@ -97,7 +97,6 @@ Repository = "https://github.com/Mai0313/discordbot"
 [project.scripts]
 cli = "discordbot.cli:main"
 discordbot = "discordbot.cli:main"
-update = "discordbot.cli:update"
 
 [dependency-groups]
 dev = [

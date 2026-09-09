@@ -95,7 +95,19 @@ class DiscordBot(commands.Bot):
         logfire.info("Cogs Loaded", cogs=cog_files)
 
     async def on_connect(self) -> None:
-        """Called when the bot has successfully connected to Discord."""
+        """Called when the bot has successfully connected to Discord.
+
+        The rebuild is what this override owes the `Client.on_connect` it replaces.
+        `ConnectionState.parse_ready` empties the local application-command registry on every
+        READY, and an empty one sends the next interaction whose guild does not resolve — a DM,
+        a group DM, a user install in a server the bot is not in — down nextcord's lazy-load
+        path into a global `delete_unknown` pass that deletes every command Discord holds, with
+        nothing in `data/logs` saying so. Measured 2026-09-09: one reconnect, then one DM
+        command, then all 17 gone for twelve hours. It runs before the `user` guard because a
+        registry left empty is not a logging concern, and it reaches no API. The re-sync the
+        base method also does stays dropped on purpose; `on_ready` owns that, once per process.
+        """
+        self.add_all_application_commands()
         bot_user = self.user
         if bot_user is None:
             return
