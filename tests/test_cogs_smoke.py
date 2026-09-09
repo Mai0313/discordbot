@@ -2810,6 +2810,69 @@ async def test_cli_reports_a_failing_slash_command(monkeypatch: pytest.MonkeyPat
     assert logged[-1]["guild_id"] == 1
 
 
+async def test_cli_reports_an_exception_from_any_event_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wider half of the same gap the test above closes.
+
+    `_run_event` funnels every unhandled exception from every event handler and every cog
+    listener into `on_error`, whose default prints to `sys.stderr` — untee'd, so an
+    `on_message` or an expansion cog's `on_ready` sweep that raised left no line at all.
+    """
+    logged: list[dict[str, Any]] = []
+
+    def record_error(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the unhandled-event log."""
+        logged.append(kwargs)
+
+    monkeypatch.setattr(cli.logfire, "error", record_error)
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        # Dispatched with the failing handler's own arguments, so the call carries one:
+        # a signature narrowed to the event name alone binds this test but not a real event.
+        await cli.DiscordBot.on_error(
+            as_discord_bot(fake=SimpleNamespace()), "on_message", SimpleNamespace()
+        )
+
+    assert logged[-1]["event_method"] == "on_message"
+    assert isinstance(logged[-1]["_exc_info"], ValueError)
+
+
+async def test_cli_counts_registered_commands_and_survives_a_failed_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zero here against a non-zero local count is the wiped-registry signature.
+
+    It is a diagnostic taken on the way into the sync, so a read that fails costs a log
+    field rather than the boot.
+    """
+    warned: list[dict[str, Any]] = []
+
+    def record_warn(_message: str, **kwargs: Any) -> None:  # noqa: ANN401 -- logfire accepts arbitrary fields
+        """Records the could-not-read warning."""
+        warned.append(kwargs)
+
+    monkeypatch.setattr(cli.logfire, "warn", record_warn)
+
+    async def two_registered(**_kwargs: Any) -> list[object]:  # noqa: ANN401 -- nextcord's own signature
+        """Stands in for Discord answering with two registered commands."""
+        return [object(), object()]
+
+    async def refused(**_kwargs: Any) -> list[object]:  # noqa: ANN401 -- nextcord's own signature
+        """Stands in for Discord refusing the read."""
+        raise RuntimeError("refused")
+
+    reading = SimpleNamespace(
+        application_id=7, http=SimpleNamespace(get_global_commands=two_registered)
+    )
+    assert await cli.DiscordBot._count_registered_commands(as_discord_bot(fake=reading)) == 2
+
+    failing = SimpleNamespace(application_id=7, http=SimpleNamespace(get_global_commands=refused))
+    assert await cli.DiscordBot._count_registered_commands(as_discord_bot(fake=failing)) is None
+    assert warned
+
+
 def test_log_level_setting_accepts_only_real_logfire_levels() -> None:
     """`LOG_LEVEL` is checked against logfire's own table, not a hand-copied list."""
     accepted = set(get_args(LoggingConfig.model_fields["log_level"].annotation))

@@ -1,6 +1,7 @@
 """Discord bot entry point and runtime event handlers."""
 
 import os
+import sys
 from time import monotonic
 import asyncio
 import logging
@@ -113,6 +114,63 @@ class DiscordBot(commands.Bot):
             return
         logfire.info("Bot Connected", bot_name=bot_user.name, bot_id=bot_user.id)
 
+    async def _count_registered_commands(self) -> int | None:
+        """How many application commands Discord holds, read BEFORE the sync overwrites the answer.
+
+        A zero here against a non-zero local count is the entire signature of the registry
+        having been wiped, and no other line in the process says it: the sync repairs the
+        damage on its way past and leaves the log looking like an ordinary boot.
+
+        `sync_all_application_commands` makes this identical request itself and takes a `data=`
+        to skip it, so this looks like a free saving. It is not: `with_localizations=False` is
+        what keeps a count cheap, while the sync's deep check compares `name_localizations` and
+        `description_localizations`, so feeding it this payload would fail every command and
+        re-upsert all of them on every boot.
+
+        Returns:
+            The count Discord reports, or None when it could not be read.
+        """
+        application_id = self.application_id
+        if application_id is None:
+            return None
+        try:
+            registered = await self.http.get_global_commands(
+                application_id=application_id, with_localizations=False
+            )
+        except Exception as exc:
+            # Broad on purpose: this is a diagnostic, and a boot must not fail because one
+            # could not be taken. Losing the count costs a log field, not a command.
+            logfire.warn(
+                "Could not read the registered command count",
+                error_type=type(exc).__name__,
+                _exc_info=exc,
+            )
+            return None
+        return len(registered)
+
+    async def on_error(self, event_method: str, *args: object, **kwargs: object) -> None:
+        """Records an exception that nextcord's own default would print where nothing reads it.
+
+        `Client._run_event` funnels every unhandled exception from every event handler and
+        every cog listener here, and the default implementation prints it to `sys.stderr`,
+        which `_TeeStream` does not tee into `./data/logs` — the same gap
+        `on_application_command_error` exists to close, one door wider. Measured across every
+        log file this project has kept: not one such traceback was ever captured.
+
+        Called from inside `_run_event`'s `except` block, so the live exception is still on
+        `sys.exc_info()`; a None there is a no-op for logfire rather than a second failure.
+
+        Args:
+            event_method: Name of the event whose handler raised.
+            args: Positional arguments the handler was dispatched with.
+            kwargs: Keyword arguments the handler was dispatched with.
+        """
+        logfire.error(
+            "Unhandled exception in an event handler",
+            event_method=event_method,
+            _exc_info=sys.exc_info()[1],
+        )
+
     async def on_ready(self) -> None:
         """Called when the bot is ready; performs first-time-only setup.
 
@@ -137,7 +195,19 @@ class DiscordBot(commands.Bot):
             system=f"{platform.system()} {platform.release()} ({os.name})",
         )
 
+        registered_before = await self._count_registered_commands()
+        sync_started_at = monotonic()
         await self.sync_all_application_commands()
+        # The only line that says what the sync did. Its duration is bimodal rather than a
+        # spectrum -- about a second when everything already matched and nothing was written,
+        # about a minute when the whole set was -- and `registered_before` is what tells those
+        # two apart from a count instead of from a stopwatch.
+        logfire.info(
+            "Application commands synced",
+            registered_before=registered_before,
+            local_count=len(self.get_application_commands()),
+            elapsed_seconds=round(monotonic() - sync_started_at, 3),
+        )
         self.status_task.start()
         self.price_table_task.start()
 
