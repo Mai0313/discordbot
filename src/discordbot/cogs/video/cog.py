@@ -11,12 +11,9 @@ from nextcord.ext import commands
 from discordbot.utils.urls import extract_first_url
 from discordbot.utils.douyin import (
     DOUYIN_URL_RE,
-    DouyinDelivery,
     DouyinDownload,
     DouyinDownloader,
     is_douyin_url,
-    plan_douyin_delivery,
-    douyin_delivery_lines,
     douyin_failure_message,
 )
 from discordbot.typings.video import VideoQuality
@@ -29,6 +26,11 @@ from discordbot.utils.media_delivery import (
     MediaItem,
     upload_limit_for,
     build_media_delivery_planner,
+)
+from discordbot.utils.douyin_delivery import (
+    DouyinDelivery,
+    plan_douyin_delivery,
+    douyin_delivery_lines,
 )
 
 # The labels Discord shows for the `quality` option, keyed to the presets themselves so a

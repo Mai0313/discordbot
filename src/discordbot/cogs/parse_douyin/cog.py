@@ -45,8 +45,6 @@ from discordbot.utils.douyin import (
     DouyinDownloader,
     douyin_url_locks,
     is_douyin_post_url,
-    plan_douyin_delivery,
-    douyin_delivery_lines,
     douyin_fetch_semaphore,
 )
 from discordbot.typings.emojis import DOUYIN_EMOJI
@@ -60,6 +58,7 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
+from discordbot.utils.douyin_delivery import plan_douyin_delivery, douyin_delivery_lines
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
