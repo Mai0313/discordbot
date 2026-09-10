@@ -189,8 +189,14 @@ def _douyin_fetch_error(*, error: RequestException, message: str) -> DouyinError
     return DouyinError(message)
 
 
-class DouyinPost(BaseModel):
+class DouyinMetadata(BaseModel):
     """Metadata for a single Douyin post, parsed without downloading anything.
+
+    The `Metadata` half of this package's convention rather than the `Conversation` half, and
+    deliberately so: a Douyin post has no ancestors and the page serves no comments, so building
+    it as a conversation would mean a `chain` of exactly one and a `reply_branches` nothing can
+    ever fill. A field no platform populates is worse than an absent one — the reason
+    `share_count` is not in the shared nine either.
 
     Attributes:
         aweme_id: Douyin's numeric post id.
@@ -727,7 +733,7 @@ class DouyinDownloader(PlatformDownloader):
             raise DouyinUnavailableError(f"Douyin will not serve {aweme_id}: {reason}")
         raise DouyinUnavailableError(f"Douyin returned no post for {aweme_id}")
 
-    def parse_metadata(self, *, url: str) -> DouyinPost:
+    def parse_metadata(self, *, url: str) -> DouyinMetadata:
         """Parses a Douyin URL into post metadata WITHOUT downloading any media.
 
         The expansion cog and the reply pipeline both need the caption and media URLs before (or
@@ -752,7 +758,7 @@ class DouyinDownloader(PlatformDownloader):
         # would classify every gallery as a video.
         is_photo = item.aweme_type in _PHOTO_AWEME_TYPES or bool(item.images)
 
-        return DouyinPost(
+        return DouyinMetadata(
             aweme_id=aweme_id,
             title=item.desc.strip(),
             author_name=item.author.nickname,
@@ -861,7 +867,7 @@ class DouyinDownloader(PlatformDownloader):
         quality: VideoQuality = "best",
         max_images: int | None = None,
         max_bytes: int | None = None,
-        post: DouyinPost | None = None,
+        post: DouyinMetadata | None = None,
     ) -> DouyinDownload:
         """Downloads a Douyin post's media.
 
@@ -888,7 +894,7 @@ class DouyinDownloader(PlatformDownloader):
         return self._download_video(post=resolved, quality=quality, max_bytes=max_bytes)
 
     def _download_video(
-        self, post: DouyinPost, quality: VideoQuality, max_bytes: int | None = None
+        self, post: DouyinMetadata, quality: VideoQuality, max_bytes: int | None = None
     ) -> DouyinDownload:
         """Downloads the watermark-free video for a post."""
         if not post.video_id:
@@ -902,7 +908,7 @@ class DouyinDownloader(PlatformDownloader):
         return DouyinDownload(title=post.title, is_photo=False, filenames=[filepath])
 
     def _download_images(
-        self, post: DouyinPost, max_images: int | None, max_bytes: int | None = None
+        self, post: DouyinMetadata, max_images: int | None, max_bytes: int | None = None
     ) -> DouyinDownload:
         """Downloads a photo post's images, honouring the caller's cap."""
         if not post.image_urls:

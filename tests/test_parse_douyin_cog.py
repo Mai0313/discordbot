@@ -16,9 +16,9 @@ from discordbot.cogs.parse_douyin import cog as parse_douyin
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.parse_douyin.cog import DouyinCogs
 from discordbot.services.platforms.douyin import (
-    DouyinPost,
     DouyinError,
     DouyinDownload,
+    DouyinMetadata,
     DouyinBlockedError,
     DouyinUnavailableError,
 )
@@ -43,7 +43,7 @@ class _StubDownloader:
     def __init__(  # noqa: PLR0913 -- one canned outcome per stage the cog can hit
         self,
         output_folder: str,
-        post: DouyinPost | None = None,
+        post: DouyinMetadata | None = None,
         files: list[tuple[str, bytes]] | None = None,
         parse_error: Exception | None = None,
         download_error: Exception | None = None,
@@ -51,15 +51,15 @@ class _StubDownloader:
     ) -> None:
         """Records the scratch dir and the canned outcome for each stage."""
         self.output_folder = output_folder
-        self.post = post or DouyinPost(aweme_id="1", title="caption", author_name="somebody")
+        self.post = post or DouyinMetadata(aweme_id="1", title="caption", author_name="somebody")
         self.files = files if files is not None else [("1.mp4", b"video-bytes")]
         self.parse_error = parse_error
         self.download_error = download_error
         self.total_images = total_images
         self.download_calls = 0
-        self.received_post: DouyinPost | None = None
+        self.received_post: DouyinMetadata | None = None
 
-    def parse_metadata(self, url: str) -> DouyinPost:
+    def parse_metadata(self, url: str) -> DouyinMetadata:
         """Returns the canned post, or raises the canned parse failure."""
         del url
         if self.parse_error is not None:
@@ -72,7 +72,7 @@ class _StubDownloader:
         quality: str = "best",
         max_images: int | None = None,
         max_bytes: int | None = None,
-        post: DouyinPost | None = None,
+        post: DouyinMetadata | None = None,
     ) -> DouyinDownload:
         """Writes the canned files into the scratch dir, or raises the canned failure."""
         del url, quality, max_images, max_bytes
@@ -97,7 +97,7 @@ class _StubDownloader:
 class _StubOptions(TypedDict, total=False):
     """Canned per-stage outcomes a test forwards through `_cog` to the stub downloader."""
 
-    post: DouyinPost | None
+    post: DouyinMetadata | None
     files: list[tuple[str, bytes]] | None
     parse_error: Exception | None
     download_error: Exception | None
@@ -189,7 +189,7 @@ async def test_the_placeholder_is_posted_before_the_post_is_read() -> None:
         stub = build(output_folder=output_folder)
         read = stub.parse_metadata
 
-        def watched(url: str) -> DouyinPost:
+        def watched(url: str) -> DouyinMetadata:
             replies_when_the_read_began.append(len(message.replies))
             return read(url=url)
 
@@ -361,7 +361,7 @@ async def test_an_unhostable_oversize_clip_is_refused() -> None:
 async def test_a_capped_gallery_reports_what_it_left_out() -> None:
     """A gallery trimmed by Discord's attachment cap says so rather than silently dropping."""
     cog, _ = _cog(
-        post=DouyinPost(aweme_id="1", title="gallery", author_name="a", is_photo=True),
+        post=DouyinMetadata(aweme_id="1", title="gallery", author_name="a", is_photo=True),
         files=[(f"1_{index}.jpg", b"x" * (index + 1)) for index in range(3)],
         total_images=12,
     )
@@ -422,7 +422,7 @@ async def test_a_stalled_expansion_gives_up_and_frees_the_slot(
     monkeypatch.setattr(parse_douyin, "DOUYIN_EXPAND_TIMEOUT_SECONDS", 0.05)
     cog, _ = _cog()
 
-    def never_returns(url: str) -> DouyinPost:
+    def never_returns(url: str) -> DouyinMetadata:
         """Blocks the worker thread the way a stalling CDN read does."""
         del url
         time.sleep(1.0)
@@ -466,7 +466,7 @@ async def test_a_raced_scratch_teardown_keeps_the_failure_the_expansion_reported
     )
     cog, _ = _cog()
 
-    def never_returns(url: str) -> DouyinPost:
+    def never_returns(url: str) -> DouyinMetadata:
         """Blocks the worker thread the way a stalling CDN read does."""
         del url
         time.sleep(1.0)

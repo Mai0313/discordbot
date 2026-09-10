@@ -52,8 +52,8 @@ from discordbot.utils.media_delivery import (
 from discordbot.utils.douyin_delivery import plan_douyin_delivery, douyin_delivery_lines
 from discordbot.services.platforms.douyin import (
     DOUYIN_URL_RE,
-    DouyinPost,
     DouyinDownload,
+    DouyinMetadata,
     DouyinDownloader,
     douyin_url_locks,
     is_douyin_post_url,
@@ -133,7 +133,7 @@ class DouyinCogs(commands.Cog):
         )
 
     @staticmethod
-    def _build_embed(post: DouyinPost, url: str) -> Embed:
+    def _build_embed(post: DouyinMetadata, url: str) -> Embed:
         """Builds the caption card that accompanies the expanded media."""
         embed = Embed(description=post.title, url=url, color=_EMBED_COLOR)
         if post.author_name:
@@ -292,7 +292,7 @@ class DouyinCogs(commands.Cog):
         *,
         message: Message,
         url: str,
-        post: DouyinPost,
+        post: DouyinMetadata,
         result: DouyinDownload,
         current_emoji: str,
         placeholder: ExpansionPlaceholder,
@@ -374,7 +374,7 @@ class DouyinCogs(commands.Cog):
         self,
         *,
         url: str,
-        post: DouyinPost,
+        post: DouyinMetadata,
         result: DouyinDownload,
         plan: MediaPlan,
         placeholder: ExpansionPlaceholder,
