@@ -1,6 +1,6 @@
 """Douyin URL parsing, share-page scraping, and media download helpers.
 
-Douyin is deliberately NOT handled by `utils.downloader`'s yt-dlp path. yt-dlp's `DouyinIE`
+Douyin is deliberately NOT handled by `services.platforms.ytdlp`'s yt-dlp path. yt-dlp's `DouyinIE`
 fetches `www.douyin.com/aweme/v1/web/aweme/detail/` unsigned, which Douyin answers with an
 empty body, so it fails outright unless the caller supplies cookies. It also only ever yields
 a video (never a photo post) and tops out at 720p on the samples tested.
@@ -44,7 +44,7 @@ from discordbot.utils.link_errors import (
     is_retryable_fetch_failure,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
-from discordbot.utils.file_downloads import (
+from discordbot.services.platforms.file_downloads import (
     TemporaryDownload,
     DownloadTooLargeError,
     stream_to_file,

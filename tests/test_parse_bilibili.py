@@ -8,8 +8,8 @@ import threading
 
 import pytest
 
-from discordbot.utils.downloader import VideoMetadata, DownloadResult, VideoDownloader
 from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
+from discordbot.services.platforms.ytdlp import VideoMetadata, DownloadResult, VideoDownloader
 from discordbot.cogs.gen_reply.link_sources import bilibili as bilibili_builder
 from discordbot.cogs.gen_reply.link_sources.bilibili import (
     BILIBILI_CONTEXT_SEPARATOR,

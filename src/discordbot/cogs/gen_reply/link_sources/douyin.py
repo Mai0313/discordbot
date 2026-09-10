@@ -25,7 +25,12 @@ import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.utils.douyin import (
+from discordbot.typings.video import VideoQuality
+from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.utils.scratch_dir import scratch_directory
+from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
+from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
+from discordbot.services.platforms.douyin import (
     DouyinPost,
     DouyinDownload,
     DouyinDownloader,
@@ -35,11 +40,6 @@ from discordbot.utils.douyin import (
     douyin_url_locks,
     douyin_fetch_semaphore,
 )
-from discordbot.typings.video import VideoQuality
-from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
-from discordbot.utils.scratch_dir import scratch_directory
-from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
-from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
 
 # Resolution asked of Douyin for the clip the model reads: the lowest preset (540p).

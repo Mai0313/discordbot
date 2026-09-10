@@ -1,12 +1,12 @@
 """Facebook post URL parsing and page extraction.
 
 Shared by `parse_facebook` (which expands a pasted link into embeds) and `gen_reply` (which
-reads the post into answer context), the same split `utils/threads.py` serves.
+reads the post into answer context), the same split `services/platforms/threads.py` serves.
 
 Unlike its Threads counterpart this module downloads nothing. Both callers work from the image
 URLs alone: the cog hands them to Discord, which fetches them itself, and the reply builder
 passes them to `load_image_bytes`, which is where every link source already gets image bytes
-(`utils/threads.py` keeps a downloader only for the video files that path writes to disk, and
+(`services/platforms/threads.py` keeps a downloader only for the video files that path writes to disk, and
 there are none here). So there is no scratch directory anywhere in this feature.
 
 Two things about this source differ from Threads and shape everything below.
@@ -18,7 +18,7 @@ GraphQL payload in it, needs the complete header set in `_BROWSER_HEADERS`: meas
 2026-09-06, dropping `Sec-Fetch-Mode` alone is enough to lose it. The mobile hosts
 (`m.`, `mbasic.`, `touch.`) redirect to a login page and are never worth trying.
 
-And the payload is not a schema this module can mirror the way `utils/threads.py` mirrors
+And the payload is not a schema this module can mirror the way `services/platforms/threads.py` mirrors
 Threads'. The post sits somewhere inside one of ~58 `<script type="application/json">` blocks
 whose shape is dominated by Facebook's own module loader, repeated two or three times per
 page, so the parser walks for a node carrying the fields a story has rather than validating a
@@ -52,7 +52,7 @@ from discordbot.utils.link_errors import link_fetch_error
 _FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com", "fb.watch"})
 _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 
-# Deliberately host-anchored rather than path-anchored, the shape `utils/douyin.py` uses: a
+# Deliberately host-anchored rather than path-anchored, the shape `services/platforms/douyin.py` uses: a
 # Facebook post is spelled at least six ways (`/share/p/<code>`, `/groups/<id>/posts/<id>`,
 # `/groups/<id>/permalink/<id>`, `/<page>/posts/<id>`, `/permalink.php?story_fbid=`, and a
 # group feed carrying `?multi_permalinks=`), and a path pattern covering all six would also
@@ -76,7 +76,7 @@ _SHARE_PATH_RE = re.compile(r"^/share/(?:p|v|r)/[A-Za-z0-9]+")
 # A comment id is the whole point of the `?comment_id=` form, so it survives `clean_url` while
 # every other query parameter is dropped. `rdid` and `share_url` are the reason the rest go:
 # both are minted per share, so echoing them names whoever sent the link to the channel — the
-# same trap `utils/threads.py` documents for the `?xmt=` token.
+# same trap `services/platforms/threads.py` documents for the `?xmt=` token.
 _COMMENT_ID_PARAM = "comment_id"
 _POST_ID_PARAMS = ("story_fbid", "multi_permalinks", "fbid")
 
@@ -352,7 +352,7 @@ class FacebookConversation(BaseModel):
 
 
 # What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
-# project's checker refuses outright, and mirroring the union `utils/threads.py` walks with. Every
+# project's checker refuses outright, and mirroring the union `services/platforms/threads.py` walks with. Every
 # read below goes through one of the narrowing helpers under it, so a page that serves an
 # unexpected shape yields an empty field instead of raising into a caller mid-expansion.
 JsonValue = dict[str, Any] | list[Any] | str | float | None

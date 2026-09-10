@@ -11,10 +11,10 @@ from datetime import UTC, datetime
 from nextcord import Embed
 
 from discordbot.typings.emojis import INSTAGRAM_EMOJI
-from discordbot.utils.instagram import InstagramOutput, InstagramConversation
 from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_instagram.cog import InstagramCogs
 from discordbot.utils.expansion_placeholder import EXPANSION_UNREADABLE_EMOJI
+from discordbot.services.platforms.instagram import InstagramOutput, InstagramConversation
 
 from tests.helpers.casting import as_bot, as_message
 from tests.helpers.discord_mocks import (

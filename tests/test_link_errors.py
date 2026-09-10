@@ -13,22 +13,22 @@ from collections.abc import Callable
 import pytest
 import requests
 
-from discordbot.utils import douyin as douyin_module
-from discordbot.utils.douyin import (
-    DouyinDownloader,
-    DouyinBlockedError,
-    DouyinTransferError,
-    douyin_failure_message,
-)
-from discordbot.utils.threads import ThreadsDownloader
-from discordbot.utils.facebook import FacebookDownloader
-from discordbot.utils.instagram import InstagramDownloader
 from discordbot.utils.link_errors import (
     LinkReadError,
     LinkRetryableError,
     LinkUnavailableError,
     link_fetch_error,
 )
+from discordbot.services.platforms import douyin as douyin_module
+from discordbot.services.platforms.douyin import (
+    DouyinDownloader,
+    DouyinBlockedError,
+    DouyinTransferError,
+    douyin_failure_message,
+)
+from discordbot.services.platforms.threads import ThreadsDownloader
+from discordbot.services.platforms.facebook import FacebookDownloader
+from discordbot.services.platforms.instagram import InstagramDownloader
 
 
 def _http_error(*, status: int) -> requests.HTTPError:

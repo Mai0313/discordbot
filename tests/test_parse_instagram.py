@@ -5,9 +5,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from discordbot.utils.instagram import InstagramOutput, InstagramDownloader, InstagramConversation
 from discordbot.typings.context_budgets import MAX_INSTAGRAM_COMMENTS
 from discordbot.cogs.gen_reply.link_sources import instagram as instagram_source
+from discordbot.services.platforms.instagram import (
+    InstagramOutput,
+    InstagramDownloader,
+    InstagramConversation,
+)
 from discordbot.cogs.gen_reply.link_sources.instagram import (
     INSTAGRAM_TIMEOUT_NOTICE,
     INSTAGRAM_CONTEXT_TRAILER,

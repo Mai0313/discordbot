@@ -25,7 +25,6 @@ from discordbot.cogs.video import cog as video
 from discordbot.cogs.economy import cog as economy
 from discordbot.cogs.economy import views
 from discordbot.typings.games import GameParticipant
-from discordbot.utils.threads import ThreadsOutput, ThreadsConversation
 from discordbot.cogs.games.cog import GamesCogs
 from discordbot.cogs.video.cog import VideoCogs
 from discordbot.typings.config import LoggingConfig
@@ -67,6 +66,7 @@ from discordbot.services.economy.database import (
     BalanceAdjustmentResult,
 )
 from discordbot.cogs.games.blackjack_views import BlackjackLobbyView
+from discordbot.services.platforms.threads import ThreadsOutput, ThreadsConversation
 from discordbot.utils.expansion_placeholder import EXPANSION_RETRY_LATER_EMOJI
 from discordbot.cogs.games.dragon_gate_views import DragonGateLobbyView
 
@@ -2989,7 +2989,7 @@ async def test_threads_cog_marks_a_throttle_retryable_not_unreadable() -> None:
     """The one Threads outcome that actually happens, and it used to say the wrong thing.
 
     Over the 19 days of `data/logs` kept on this machine, no Threads read raised at all;
-    every failure was a page carrying no post JSON. `utils/threads.py` calls that the
+    every failure was a page carrying no post JSON. `services/platforms/threads.py` calls that the
     platform's soft throttle in as many words and used to hand back an empty page, which is
     also what a private post answers with, so the channel was told a working link was dead.
     """

@@ -1,7 +1,7 @@
 """Instagram post URL parsing and page extraction.
 
 Shared by `parse_instagram` (which expands a pasted link into embeds) and `gen_reply` (which
-reads the post into answer context), the same split `utils/threads.py` and `utils/facebook.py`
+reads the post into answer context), the same split `services/platforms/threads.py` and `services/platforms/facebook.py`
 serve. The three modules deliberately agree on both halves of their surface.
 
 `parse_metadata` is the entry point on all three and means the same thing on each: parse the
@@ -80,7 +80,7 @@ _POST_PATH_RE = re.compile(
 # docstring for what that URL answers with.
 _COMMENT_PATH_RE = re.compile(r"/c/(?P<comment>[0-9]+)")
 
-# What the page will only hand to a browser, the same set `utils/facebook.py` needs. A crawler
+# What the page will only hand to a browser, the same set `services/platforms/facebook.py` needs. A crawler
 # UA does get a page here (unlike Facebook, which answers 400), but it is a 650KB shell whose
 # post payload is missing the carousel and every comment.
 _BROWSER_HEADERS = {
@@ -103,7 +103,7 @@ _JSON_SCRIPT_RE = re.compile(r'<script type="application/json"[^>]*>(.*?)</scrip
 _MEDIA_TYPE_VIDEO = 2
 
 # What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
-# project's checker refuses, and mirroring the union `utils/facebook.py` walks with.
+# project's checker refuses, and mirroring the union `services/platforms/facebook.py` walks with.
 JsonValue = dict[str, Any] | list[Any] | str | float | None
 
 

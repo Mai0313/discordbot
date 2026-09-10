@@ -34,7 +34,7 @@ from discordbot.utils.link_errors import (
     link_fetch_error,
     is_retryable_fetch_failure,
 )
-from discordbot.utils.file_downloads import stream_to_file
+from discordbot.services.platforms.file_downloads import stream_to_file
 
 # Single source of truth for detecting a Threads post URL, shared by the parse_threads
 # cog (which expands it into embeds) and gen_reply (which self-parses it into answer

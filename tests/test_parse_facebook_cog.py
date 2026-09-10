@@ -12,10 +12,10 @@ from datetime import UTC, datetime
 from nextcord import Embed
 
 from discordbot.typings.emojis import FACEBOOK_EMOJI
-from discordbot.utils.facebook import FacebookOutput, FacebookConversation
 from discordbot.utils.link_errors import LinkRetryableError
 from discordbot.utils.discord_embeds import utf16_length
 from discordbot.cogs.parse_facebook.cog import FacebookCogs
+from discordbot.services.platforms.facebook import FacebookOutput, FacebookConversation
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_UNREADABLE_EMOJI,
     EXPANSION_RETRY_LATER_EMOJI,

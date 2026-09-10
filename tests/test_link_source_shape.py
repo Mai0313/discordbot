@@ -7,10 +7,10 @@ apart again — every other test exercises one platform, and a fourth source add
 whichever file was opened first passes all of them.
 
 So the classes here are DISCOVERED rather than listed: every `*Conversation` under
-`discordbot.utils` is swept up, and every guard below covers a new source without being told
-about it. `test_the_sweep_finds_every_source` is the one deliberate exception — it names the
-three, so a fourth fails it until somebody writes the name down, which is what stops a source
-arriving without anyone having read this file.
+`discordbot.services.platforms` is swept up, and every guard below covers a new source without
+being told about it. `test_the_sweep_finds_every_source` is the one deliberate exception — it
+names the three, so a fourth fails it until somebody writes the name down, which is what stops a
+source arriving without anyone having read this file.
 """
 
 from typing import Any, Protocol, cast
@@ -21,7 +21,7 @@ import pytest
 from pydantic import BaseModel
 
 # Namespace import: the package object itself is the input, for its __path__.
-import discordbot.utils
+import discordbot.services.platforms
 
 
 class _Conversation(Protocol):
@@ -72,10 +72,10 @@ _OUTPUT_COMPUTED = frozenset({"is_readable"})
 
 
 def _conversation_classes() -> dict[str, type[BaseModel]]:
-    """Every `*Conversation` model under `discordbot.utils`, by class name."""
+    """Every `*Conversation` model under `discordbot.services.platforms`, by class name."""
     found: dict[str, type[BaseModel]] = {}
-    for module in iter_modules(path=discordbot.utils.__path__):
-        imported = import_module(name=f"discordbot.utils.{module.name}")
+    for module in iter_modules(path=discordbot.services.platforms.__path__):
+        imported = import_module(name=f"discordbot.services.platforms.{module.name}")
         for name, value in vars(imported).items():
             if not name.endswith("Conversation") or not isinstance(value, type):
                 continue

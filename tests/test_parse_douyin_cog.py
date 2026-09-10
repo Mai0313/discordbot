@@ -11,17 +11,17 @@ import pytest
 from nextcord import Message
 
 from discordbot.utils import scratch_dir
-from discordbot.utils.douyin import (
+from discordbot.typings.emojis import DOUYIN_EMOJI
+from discordbot.cogs.parse_douyin import cog as parse_douyin
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
+from discordbot.cogs.parse_douyin.cog import DouyinCogs
+from discordbot.services.platforms.douyin import (
     DouyinPost,
     DouyinError,
     DouyinDownload,
     DouyinBlockedError,
     DouyinUnavailableError,
 )
-from discordbot.typings.emojis import DOUYIN_EMOJI
-from discordbot.cogs.parse_douyin import cog as parse_douyin
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
-from discordbot.cogs.parse_douyin.cog import DouyinCogs
 from discordbot.utils.expansion_placeholder import EXPANSION_RETRY_LATER_EMOJI
 
 from tests.helpers.casting import as_bot, as_message, make_forbidden, make_media_hosting_config

@@ -39,7 +39,6 @@ import nextcord
 from nextcord import Color, Embed, Locale, Message, NotFound, Interaction, SlashOption
 from nextcord.ext import commands
 
-from discordbot.utils.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
 from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
@@ -52,6 +51,7 @@ from discordbot.utils.media_delivery import (
     upload_limit_for,
     build_media_delivery_planner,
 )
+from discordbot.services.platforms.threads import THREADS_URL_RE, ThreadsOutput, ThreadsDownloader
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
@@ -68,7 +68,7 @@ from discordbot.utils.expansion_placeholder import (
 if TYPE_CHECKING:
     from nextcord.types.embed import Embed as EmbedData
 
-    from discordbot.utils.threads import ThreadsConversation
+    from discordbot.services.platforms.threads import ThreadsConversation
 
 # Stripe for the post a quote post quotes. Deliberately off the greyscale chain gradient
 # (`_gradient_color`, which spans 0x40-0xC0 and reserves pure black for "no stripe"): a quoted

@@ -11,9 +11,9 @@ import re
 
 from nextcord import Message
 
-from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
+from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.link_sources import LinkContextSource
 
 

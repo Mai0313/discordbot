@@ -17,7 +17,7 @@ a working link. One neutral notice covers every metadata failure; the determinis
 case gets its own wording because "try again later" would be false for it.
 
 Concurrency is a plain semaphore with no per-URL lock and no payload cache, unlike
-`utils/douyin.py`: Bilibili has no Douyin-grade WAF economics, yt-dlp keeps no reusable
+`services/platforms/douyin.py`: Bilibili has no Douyin-grade WAF economics, yt-dlp keeps no reusable
 payload a second waiter could adopt (a lock would serialize duplicates without saving any
 work), and this module has a single caller since there is no Bilibili auto-expand cog. The
 semaphore only bounds concurrent multi-hundred-MB downloads on the host.
@@ -32,14 +32,18 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 from discordbot.typings.video import VideoQuality
-from discordbot.utils.bilibili import BILIBILI_URL_RE
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
-from discordbot.utils.downloader import VideoMetadata, VideoDownloader, download_with_stop_signal
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 from discordbot.typings.context_budgets import MAX_BILIBILI_DESCRIPTION_CHARS
 from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
+from discordbot.services.platforms.ytdlp import (
+    VideoMetadata,
+    VideoDownloader,
+    download_with_stop_signal,
+)
 from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
+from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
 
 # Resolution asked of yt-dlp for the clip the model reads: the lowest preset (height<=480).
 # Same rationale as the Douyin builder's: the model samples frames at its own media

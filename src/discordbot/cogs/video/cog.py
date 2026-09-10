@@ -9,17 +9,9 @@ from nextcord import File, Locale, Interaction, SlashOption, AllowedMentions
 from nextcord.ext import commands
 
 from discordbot.utils.urls import extract_first_url
-from discordbot.utils.douyin import (
-    DOUYIN_URL_RE,
-    DouyinDownload,
-    DouyinDownloader,
-    is_douyin_url,
-    douyin_failure_message,
-)
 from discordbot.typings.video import VideoQuality
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
 from discordbot.typings.timeouts import VIDEO_DOWNLOAD_TIMEOUT_SECONDS
-from discordbot.utils.downloader import DownloadResult, VideoDownloader, download_with_stop_signal
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.media_delivery import (
     DISCORD_ATTACHMENT_LIMIT,
@@ -31,6 +23,18 @@ from discordbot.utils.douyin_delivery import (
     DouyinDelivery,
     plan_douyin_delivery,
     douyin_delivery_lines,
+)
+from discordbot.services.platforms.ytdlp import (
+    DownloadResult,
+    VideoDownloader,
+    download_with_stop_signal,
+)
+from discordbot.services.platforms.douyin import (
+    DOUYIN_URL_RE,
+    DouyinDownload,
+    DouyinDownloader,
+    is_douyin_url,
+    douyin_failure_message,
 )
 
 # The labels Discord shows for the `quality` option, keyed to the presets themselves so a

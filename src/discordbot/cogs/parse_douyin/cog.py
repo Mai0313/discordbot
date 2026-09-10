@@ -19,7 +19,7 @@ pipeline skips those), and one the router sends to IMAGE / VIDEO (those routes d
 link context). Both are rare enough to accept rather than couple the cogs together.
 
 Douyin's WAF bans a share path for tens of minutes once it is hit hard, and this listener
-sees every message in every channel, so the request-volume bounds in `utils/douyin.py`
+sees every message in every channel, so the request-volume bounds in `services/platforms/douyin.py`
 are load-bearing rather than defensive. A blocked request must never be reported as a missing
 post: telling someone their working link is dead is the worst failure this feature can produce.
 
@@ -38,15 +38,6 @@ import logfire
 from nextcord import Embed, Message, NotFound
 from nextcord.ext import commands
 
-from discordbot.utils.douyin import (
-    DOUYIN_URL_RE,
-    DouyinPost,
-    DouyinDownload,
-    DouyinDownloader,
-    douyin_url_locks,
-    is_douyin_post_url,
-    douyin_fetch_semaphore,
-)
 from discordbot.typings.emojis import DOUYIN_EMOJI
 from discordbot.utils.mentions import is_addressed_to_bot
 from discordbot.utils.reactions import update_reaction
@@ -59,6 +50,15 @@ from discordbot.utils.media_delivery import (
     build_media_delivery_planner,
 )
 from discordbot.utils.douyin_delivery import plan_douyin_delivery, douyin_delivery_lines
+from discordbot.services.platforms.douyin import (
+    DOUYIN_URL_RE,
+    DouyinPost,
+    DouyinDownload,
+    DouyinDownloader,
+    douyin_url_locks,
+    is_douyin_post_url,
+    douyin_fetch_semaphore,
+)
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,

@@ -7,7 +7,7 @@ not is the same kind of number spent on a different kind of decision -- animatio
 cache TTLs, retry cadences, `@tasks.loop` intervals, and the idle expiry of a Discord view.
 Those stay beside the code they pace, where reading them in context is worth more than
 reading them next to each other, and pulling them here would make both halves harder to
-read. The line cuts through `cogs/games/blackjack_views.py` and `utils/threads.py`, which
+read. The line cuts through `cogs/games/blackjack_views.py` and `services/platforms/threads.py`, which
 each hold one of both kinds two lines apart.
 
 A retry count sits here when it multiplies a bound rather than being one: a 30s socket

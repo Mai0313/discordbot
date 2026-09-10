@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from discordbot.utils.instagram import (
+from discordbot.services.platforms.instagram import (
     FetchedPage,
     InstagramURL,
     InstagramDownloader,

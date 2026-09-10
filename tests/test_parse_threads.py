@@ -5,11 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
 from discordbot.typings.context_budgets import (
     MAX_THREADS_POSTS,
     MAX_THREADS_REPLIES,
     MAX_THREADS_MEDIA_PARTS,
+)
+from discordbot.services.platforms.threads import (
+    ThreadsOutput,
+    ThreadsDownloader,
+    ThreadsConversation,
 )
 from discordbot.cogs.gen_reply.link_sources import threads as threads_builder
 from discordbot.cogs.gen_reply.link_sources.threads import (

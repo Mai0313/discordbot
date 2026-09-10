@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from discordbot.utils.facebook import (
+from discordbot.services.platforms.facebook import (
     FacebookURL,
     FetchedPage,
     FacebookOutput,

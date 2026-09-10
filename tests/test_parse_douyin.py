@@ -9,9 +9,10 @@ import threading
 
 import pytest
 
-from discordbot.utils import douyin as douyin_fetch
 from discordbot.utils import scratch_dir
-from discordbot.utils.douyin import (
+from discordbot.services.platforms import douyin as douyin_fetch
+from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
+from discordbot.services.platforms.douyin import (
     DouyinPost,
     DouyinError,
     DouyinDownload,
@@ -20,7 +21,6 @@ from discordbot.utils.douyin import (
     DouyinTooLargeError,
     DouyinUnavailableError,
 )
-from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
 from discordbot.cogs.gen_reply.speculation import run_until_deadline
 from discordbot.cogs.gen_reply.link_sources import douyin as douyin_builder
 from discordbot.cogs.gen_reply.link_sources.douyin import (

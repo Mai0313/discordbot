@@ -5,7 +5,7 @@ the difference between "the platform refused us, the link is fine" and "there is
 Douyin could already tell those apart because it has its own error tree; Threads, Facebook and
 Instagram wrapped every fetch failure in a bare `RuntimeError`, so a 429 reached the reader as
 the cross that means the bot broke. This module is the vocabulary the other three were missing,
-and `utils/douyin.py` re-parents its own tree onto it rather than keeping a second one.
+and `services/platforms/douyin.py` re-parents its own tree onto it rather than keeping a second one.
 
 Every class here is a `RuntimeError`, which is what keeps it a drop-in: the callers that already
 catch `RuntimeError` around a parse — `/clean_threads_url` among them — keep catching these.
