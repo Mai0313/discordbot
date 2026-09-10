@@ -36,7 +36,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-from discordbot.utils.threads import ThreadsOutput, ThreadsDownloader, ThreadsConversation
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.typings.context_budgets import (
@@ -45,6 +44,11 @@ from discordbot.typings.context_budgets import (
     MAX_THREADS_MEDIA_PARTS,
 )
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
+from discordbot.services.platforms.threads import (
+    ThreadsOutput,
+    ThreadsDownloader,
+    ThreadsConversation,
+)
 from discordbot.cogs.gen_reply.link_sources import (
     system_block,
     defuse_markers,

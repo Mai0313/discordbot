@@ -1,12 +1,12 @@
 """Facebook post URL parsing and page extraction.
 
 Shared by `parse_facebook` (which expands a pasted link into embeds) and `gen_reply` (which
-reads the post into answer context), the same split `utils/threads.py` serves.
+reads the post into answer context), the same split `services/platforms/threads.py` serves.
 
 Unlike its Threads counterpart this module downloads nothing. Both callers work from the image
 URLs alone: the cog hands them to Discord, which fetches them itself, and the reply builder
 passes them to `load_image_bytes`, which is where every link source already gets image bytes
-(`utils/threads.py` keeps a downloader only for the video files that path writes to disk, and
+(`services/platforms/threads.py` keeps a downloader only for the video files that path writes to disk, and
 there are none here). So there is no scratch directory anywhere in this feature.
 
 Two things about this source differ from Threads and shape everything below.
@@ -18,7 +18,7 @@ GraphQL payload in it, needs the complete header set in `_BROWSER_HEADERS`: meas
 2026-09-06, dropping `Sec-Fetch-Mode` alone is enough to lose it. The mobile hosts
 (`m.`, `mbasic.`, `touch.`) redirect to a login page and are never worth trying.
 
-And the payload is not a schema this module can mirror the way `utils/threads.py` mirrors
+And the payload is not a schema this module can mirror the way `services/platforms/threads.py` mirrors
 Threads'. The post sits somewhere inside one of ~58 `<script type="application/json">` blocks
 whose shape is dominated by Facebook's own module loader, repeated two or three times per
 page, so the parser walks for a node carrying the fields a story has rather than validating a
@@ -45,6 +45,11 @@ import requests
 from discordbot.utils.urls import URL_START_ANCHOR, host_matches_domain
 from discordbot.typings.timeouts import FACEBOOK_PAGE_TIMEOUT_SECONDS
 from discordbot.utils.link_errors import link_fetch_error
+from discordbot.services.platforms.base import (
+    PlatformOutput,
+    PlatformDownloader,
+    PlatformConversation,
+)
 
 # Every host Facebook serves posts on. `fb.watch` and `fb.com` are the short forms its own share
 # sheet emits; the mobile hosts are matched so a pasted one is recognised as a post URL, and
@@ -52,7 +57,7 @@ from discordbot.utils.link_errors import link_fetch_error
 _FACEBOOK_DOMAINS = frozenset({"facebook.com", "fb.com", "fb.watch"})
 _CANONICAL_FACEBOOK_ORIGIN = "https://www.facebook.com"
 
-# Deliberately host-anchored rather than path-anchored, the shape `utils/douyin.py` uses: a
+# Deliberately host-anchored rather than path-anchored, the shape `services/platforms/douyin.py` uses: a
 # Facebook post is spelled at least six ways (`/share/p/<code>`, `/groups/<id>/posts/<id>`,
 # `/groups/<id>/permalink/<id>`, `/<page>/posts/<id>`, `/permalink.php?story_fbid=`, and a
 # group feed carrying `?multi_permalinks=`), and a path pattern covering all six would also
@@ -76,7 +81,7 @@ _SHARE_PATH_RE = re.compile(r"^/share/(?:p|v|r)/[A-Za-z0-9]+")
 # A comment id is the whole point of the `?comment_id=` form, so it survives `clean_url` while
 # every other query parameter is dropped. `rdid` and `share_url` are the reason the rest go:
 # both are minted per share, so echoing them names whoever sent the link to the channel — the
-# same trap `utils/threads.py` documents for the `?xmt=` token.
+# same trap `services/platforms/threads.py` documents for the `?xmt=` token.
 _COMMENT_ID_PARAM = "comment_id"
 _POST_ID_PARAMS = ("story_fbid", "multi_permalinks", "fbid")
 
@@ -234,7 +239,7 @@ class FetchedPage(BaseModel):
         return path.startswith(("/login", "/checkpoint", "/recover"))
 
 
-class FacebookOutput(BaseModel):
+class FacebookOutput(PlatformOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
     Deliberately one type for both, exactly as `ThreadsOutput` and `InstagramOutput` are: a
@@ -242,93 +247,31 @@ class FacebookOutput(BaseModel):
     leaves empty the fields it has no version of — it carries no media, no group and no counts
     of its own.
 
+    Two of the inherited fields mean something slightly narrower here. `url` is the POST's
+    permalink even on a comment, since Facebook's own comment permalink is a query on it rather
+    than a page of its own; and `comment_count` is what the post REPORTS, which exceeds what the
+    page preloads.
+
     Attributes:
-        text: The post's message, or the comment body.
-        url: The permalink. A comment carries the post's, since Facebook's own comment
-            permalink is a query on it rather than a page of its own.
-        author_name: Display name of whoever wrote it.
-        author_icon_url: The author's profile picture URL.
         group_name: The group the POST was made in, empty for a page post and on every comment.
-        image_urls: Full-resolution image URLs, in the order the post carries them.
-        video_urls: Permalinks for any video attachment; never a downloadable file.
-        like_count: Reactions this post carries; zero on a comment.
-        comment_count: Comments the POST reports, which exceeds what the page preloads.
         share_count: Shares the post reports; zero on a comment.
-        taken_at: When it was published.
         comment_id: The comment's own numeric id; empty on the post itself.
     """
 
-    text: str = Field(default="", description="The post's message, or the comment body")
-    url: str = Field(default="", description="The permalink, the post's in both cases")
-    author_name: str = Field(default="", description="Display name of whoever wrote it")
-    author_icon_url: str = Field(default="", description="The author's profile picture URL")
     group_name: str = Field(default="", description="The group the post was made in, if any")
-    image_urls: list[str] = Field(
-        default_factory=list, description="Full-resolution image URLs in post order"
-    )
-    video_urls: list[str] = Field(
-        default_factory=list, description="Permalinks for video attachments, never files"
-    )
-    like_count: int = Field(default=0, description="Reactions this post carries; 0 on a comment")
-    comment_count: int = Field(default=0, description="Comments the post reports")
     share_count: int = Field(default=0, description="Shares the post reports; 0 on a comment")
-    taken_at: datetime | None = Field(default=None, description="When it was published")
     comment_id: str = Field(default="", description="The comment's own id; empty on the post")
 
-    @computed_field
-    @cached_property
-    def is_readable(self) -> bool:
-        """Whether enough came back to be worth showing."""
-        return bool(self.text or self.image_urls or self.video_urls)
 
-
-class FacebookConversation(BaseModel):
+class FacebookConversation(PlatformConversation[FacebookOutput]):
     """One Facebook post and the discussion under it, shaped like `ThreadsConversation`.
 
-    Attributes:
-        chain: The post the link names. Always exactly one element — Facebook serves no ancestor
-            posts — but kept as a list so `target` means the same here as it does on Threads.
-        reply_branches: One branch per top-level comment, each ordered from that comment outward
-            through its replies. What the page preloads is a handful of a much longer thread,
-            which is the one thing a caller must not present as the whole discussion.
-        selected_comment_id: The comment a `?comment_id=` URL named, empty when none did.
+    What the three inherited fields mean on Facebook. `chain` always has exactly one element —
+    Facebook serves no ancestor posts — and is a list only so `target` means the same here as it
+    does on Threads. `reply_branches` holds one branch per top-level comment, and what the page
+    preloads is a handful of a much longer thread, which is the one thing a caller must not
+    present as the whole discussion. `selected_comment_id` is whatever a `?comment_id=` URL named.
     """
-
-    chain: list[FacebookOutput] = Field(
-        default_factory=list, description="The post the link names, as a one-element chain"
-    )
-    reply_branches: list[list[FacebookOutput]] = Field(
-        default_factory=list, description="One branch per top-level comment, replies behind it"
-    )
-    selected_comment_id: str = Field(
-        default="", description="The comment a `?comment_id=` URL named"
-    )
-
-    @computed_field
-    @cached_property
-    def target(self) -> FacebookOutput | None:
-        """The post the link named, or None when the page carried none.
-
-        Cached, so the conversation must be built once and never mutated afterwards; the same
-        rule on `ThreadsConversation.target` has why pydantic makes that load-bearing.
-        """
-        return self.chain[-1] if self.chain else None
-
-    @property
-    def comments(self) -> list[FacebookOutput]:
-        """Every preloaded comment, flattened out of the branches in page order.
-
-        A plain property rather than a computed field, on all three sources: it re-slices data
-        `reply_branches` already carries, so serializing it would put every comment in a dump
-        twice. The two computed fields resolve a POINTER instead, which a dump cannot derive on
-        its own and which is what a hand test wants to see.
-        """
-        return [comment for branch in self.reply_branches for comment in branch]
-
-    @property
-    def posts(self) -> list[FacebookOutput]:
-        """Everything the page yielded: the post first, then its comments in page order."""
-        return [*self.chain, *self.comments]
 
     @computed_field
     @cached_property
@@ -352,7 +295,7 @@ class FacebookConversation(BaseModel):
 
 
 # What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
-# project's checker refuses outright, and mirroring the union `utils/threads.py` walks with. Every
+# project's checker refuses outright, and mirroring the union `services/platforms/threads.py` walks with. Every
 # read below goes through one of the narrowing helpers under it, so a page that serves an
 # unexpected shape yields an empty field instead of raising into a caller mid-expansion.
 JsonValue = dict[str, Any] | list[Any] | str | float | None
@@ -435,7 +378,7 @@ def _comment_ids_of(*, node: dict[str, Any]) -> tuple[str, str]:
     return match.group("post"), comment_id or match.group("comment")
 
 
-class FacebookDownloader(BaseModel):
+class FacebookDownloader(PlatformDownloader):
     """Reads a public Facebook post out of its page.
 
     Holds no state and writes nothing to disk, so one instance serves every caller; it is a

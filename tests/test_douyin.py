@@ -14,8 +14,11 @@ from collections.abc import Callable, Iterator
 import pytest
 
 from discordbot.cogs.video import cog as video
-import discordbot.utils.douyin as douyin_module
-from discordbot.utils.douyin import (
+from discordbot.typings.video import VideoQuality
+from discordbot.cogs.video.cog import VideoCogs
+from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
+import discordbot.services.platforms.douyin as douyin_module
+from discordbot.services.platforms.douyin import (
     DOUYIN_URL_RE,
     DouyinError,
     DouyinDownload,
@@ -26,9 +29,6 @@ from discordbot.utils.douyin import (
     is_douyin_url,
     is_douyin_post_url,
 )
-from discordbot.typings.video import VideoQuality
-from discordbot.cogs.video.cog import VideoCogs
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 
 from tests.helpers.casting import as_bot, make_media_hosting_config
 from tests.helpers.discord_mocks import FakeInteraction

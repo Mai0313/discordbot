@@ -34,13 +34,6 @@ from nextcord.ext import commands
 
 from discordbot.typings.emojis import INSTAGRAM_EMOJI
 from discordbot.utils.mentions import is_addressed_to_bot
-from discordbot.utils.instagram import (
-    INSTAGRAM_URL_RE,
-    InstagramOutput,
-    InstagramDownloader,
-    InstagramConversation,
-    is_instagram_post_url,
-)
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import INSTAGRAM_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit
@@ -55,6 +48,13 @@ from discordbot.utils.expansion_placeholder import (
     report_expansion_read_failure,
     resume_expansion_placeholders,
     report_expansion_delivery_failure,
+)
+from discordbot.services.platforms.instagram import (
+    INSTAGRAM_URL_RE,
+    InstagramOutput,
+    InstagramDownloader,
+    InstagramConversation,
+    is_instagram_post_url,
 )
 
 # Instagram's own accent, so the card reads as an Instagram post at a glance, and the same

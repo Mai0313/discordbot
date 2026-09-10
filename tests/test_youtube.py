@@ -7,8 +7,8 @@ from collections.abc import AsyncIterator
 import pytest
 from google.genai.errors import APIError
 
-from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.utils.llm_errors import extract_friendly_error, is_retryable_llm_error
+from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.gen_reply.interactions import to_interactions_input, adapt_interactions_stream
 
 from tests.helpers.casting import step_dicts, as_interaction_event_stream

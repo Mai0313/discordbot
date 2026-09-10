@@ -127,6 +127,16 @@ nav:
                   - store: Reference/discordbot/services/memory/store.md
                   - tone: Reference/discordbot/services/memory/tone.md
                   - writer: Reference/discordbot/services/memory/writer.md
+              - platforms:
+                  - base: Reference/discordbot/services/platforms/base.md
+                  - bilibili: Reference/discordbot/services/platforms/bilibili.md
+                  - douyin: Reference/discordbot/services/platforms/douyin.md
+                  - facebook: Reference/discordbot/services/platforms/facebook.md
+                  - file_downloads: Reference/discordbot/services/platforms/file_downloads.md
+                  - instagram: Reference/discordbot/services/platforms/instagram.md
+                  - threads: Reference/discordbot/services/platforms/threads.md
+                  - youtube: Reference/discordbot/services/platforms/youtube.md
+                  - ytdlp: Reference/discordbot/services/platforms/ytdlp.md
           - typings:
               - colors: Reference/discordbot/typings/colors.md
               - commands: Reference/discordbot/typings/commands.md
@@ -144,16 +154,12 @@ nav:
               - amount_parsing: Reference/discordbot/utils/amount_parsing.md
               - asyncio_locks: Reference/discordbot/utils/asyncio_locks.md
               - avatars: Reference/discordbot/utils/avatars.md
-              - bilibili: Reference/discordbot/utils/bilibili.md
               - discord_embeds: Reference/discordbot/utils/discord_embeds.md
-              - douyin: Reference/discordbot/utils/douyin.md
-              - downloader: Reference/discordbot/utils/downloader.md
+              - douyin_delivery: Reference/discordbot/utils/douyin_delivery.md
               - expansion_placeholder: Reference/discordbot/utils/expansion_placeholder.md
-              - facebook: Reference/discordbot/utils/facebook.md
-              - file_downloads: Reference/discordbot/utils/file_downloads.md
               - images: Reference/discordbot/utils/images.md
-              - instagram: Reference/discordbot/utils/instagram.md
               - interaction_responses: Reference/discordbot/utils/interaction_responses.md
+              - link_errors: Reference/discordbot/utils/link_errors.md
               - llm: Reference/discordbot/utils/llm.md
               - llm_errors: Reference/discordbot/utils/llm_errors.md
               - llm_transcript: Reference/discordbot/utils/llm_transcript.md
@@ -168,11 +174,9 @@ nav:
               - scratch_dir: Reference/discordbot/utils/scratch_dir.md
               - sqlite_config: Reference/discordbot/utils/sqlite_config.md
               - stored_integer: Reference/discordbot/utils/stored_integer.md
-              - threads: Reference/discordbot/utils/threads.md
               - timezone: Reference/discordbot/utils/timezone.md
               - urls: Reference/discordbot/utils/urls.md
               - usage_log: Reference/discordbot/utils/usage_log.md
-              - youtube: Reference/discordbot/utils/youtube.md
           - cli: Reference/discordbot/cli.md
   - Scripts:
       - agents_dev: Scripts/agents_dev.md

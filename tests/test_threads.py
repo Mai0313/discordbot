@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from discordbot.utils import threads as threads_module
-from discordbot.utils.threads import (
+from discordbot.utils.link_errors import LinkRetryableError
+from discordbot.services.platforms import threads as threads_module
+from discordbot.services.platforms.threads import (
     THREADS_URL_RE,
     Post,
     ThreadData,
@@ -18,7 +19,6 @@ from discordbot.utils.threads import (
     ThreadsOutput,
     ThreadsDownloader,
 )
-from discordbot.utils.link_errors import LinkRetryableError
 
 
 @pytest.fixture

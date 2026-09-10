@@ -8,15 +8,15 @@ import threading
 import pytest
 from requests.exceptions import RequestException
 
-from discordbot.utils import downloader as downloader_module
 from discordbot.utils.urls import normalized_host, extract_first_url, host_matches_domain
-from discordbot.utils.douyin import DOUYIN_URL_RE, DouyinDownloader
 from discordbot.typings.video import VideoQuality
-from discordbot.utils.threads import THREADS_URL_RE
-from discordbot.utils.youtube import YOUTUBE_URL_RE
 from discordbot.cogs.video.cog import QUALITY_CHOICES, VideoCogs
-from discordbot.utils.bilibili import BILIBILI_URL_RE
-from discordbot.utils.downloader import VideoDownloader, DownloadStoppedError
+from discordbot.services.platforms import ytdlp as downloader_module
+from discordbot.services.platforms.ytdlp import VideoDownloader, DownloadStoppedError
+from discordbot.services.platforms.douyin import DOUYIN_URL_RE, DouyinDownloader
+from discordbot.services.platforms.threads import THREADS_URL_RE
+from discordbot.services.platforms.youtube import YOUTUBE_URL_RE
+from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
 
 from tests.helpers.casting import as_bot
 
@@ -57,7 +57,7 @@ def _install_youtube_dl_stub(
             """Returns the filename yt-dlp would prepare for the result."""
             return (tmp_path / f"{info['id']}.{info['ext']}").as_posix()
 
-    monkeypatch.setattr("discordbot.utils.downloader.YoutubeDL", _YoutubeDLStub)
+    monkeypatch.setattr("discordbot.services.platforms.ytdlp.YoutubeDL", _YoutubeDLStub)
     return captured_params, captured_calls
 
 
@@ -212,7 +212,7 @@ def _install_metadata_stub(
             captured_calls.append({"url": url, "download": download})
             return info
 
-    monkeypatch.setattr("discordbot.utils.downloader.YoutubeDL", _YoutubeDLStub)
+    monkeypatch.setattr("discordbot.services.platforms.ytdlp.YoutubeDL", _YoutubeDLStub)
     return captured_params, captured_calls
 
 

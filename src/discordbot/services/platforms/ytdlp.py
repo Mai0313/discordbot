@@ -28,7 +28,8 @@ from discordbot.typings.timeouts import (
     YTDLP_SOCKET_TIMEOUT_SECONDS,
     SHARE_RESOLVE_TIMEOUT_SECONDS,
 )
-from discordbot.utils.file_downloads import TemporaryDownload
+from discordbot.services.platforms.base import PlatformDownloader
+from discordbot.services.platforms.file_downloads import TemporaryDownload
 
 
 class DownloadStoppedError(Exception):
@@ -85,7 +86,7 @@ class VideoMetadata(BaseModel):
     )
 
 
-class VideoDownloader(BaseModel):
+class VideoDownloader(PlatformDownloader):
     """Downloads videos with yt-dlp and local project defaults.
 
     Attributes:
@@ -266,7 +267,7 @@ class VideoDownloader(BaseModel):
             filename = Path(ydl.prepare_filename(info))
             return DownloadResult(title=title, filename=filename)
 
-    def parse_metadata(self, url: str) -> VideoMetadata:
+    def parse_metadata(self, *, url: str) -> VideoMetadata:
         """Reads a video's metadata via yt-dlp without downloading any media.
 
         Deliberately not the `dry_run=True` preset: that branch flips `quiet` off and

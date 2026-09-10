@@ -8,6 +8,7 @@ shows up as a tangle months later, which is the state this replaced.
 
 import ast
 from pathlib import Path
+from functools import cache
 
 import pytest
 
@@ -34,7 +35,7 @@ def _imported_modules(module: Path) -> set[str]:
     )
 
 
-def _imports_in(source: str, parent: str) -> set[str]:
+def _imports_in(source: str, parent: str, scope: str = "discordbot.") -> set[str]:
     """Returns every `discordbot.*` module name a source file imports, relative ones resolved.
 
     Reads `TYPE_CHECKING` and function-local imports too: they are still edges in the
@@ -43,6 +44,10 @@ def _imports_in(source: str, parent: str) -> set[str]:
 
     Takes the source rather than the path so the relative forms can be asserted directly;
     no module in the package writes one today.
+
+    `scope` is what the result is narrowed to. It defaults to this package, which is all the
+    layering rules below need, and is widened to everything by the Discord-free guard — the one
+    question here that turns on a third-party name.
     """
     found: set[str] = set()
     for node in ast.walk(ast.parse(source=source)):
@@ -62,7 +67,7 @@ def _imports_in(source: str, parent: str) -> set[str]:
         prefix = f"{base}.{node.module}" if node.module else base
         found.add(prefix)
         found.update(f"{prefix}.{alias.name}" for alias in node.names)
-    return {name for name in found if name.startswith("discordbot.")}
+    return {name for name in found if name.startswith(scope)}
 
 
 def _modules(root: Path) -> list[Path]:
@@ -116,6 +121,91 @@ def test_a_lower_layer_never_imports_a_higher_one(layer: str, forbidden: tuple[s
             if imported.startswith(forbidden):
                 offenders.append(f"{module.relative_to(_PACKAGE).as_posix()} -> {imported}")
     assert not offenders, f"{layer} importing a higher layer: {sorted(offenders)}"
+
+
+def _module_file(name: str) -> Path | None:
+    """The file a dotted `discordbot.*` name refers to, or None when it names nothing on disk.
+
+    An import yields both `discordbot.x.y` and `discordbot.x.y.SomeName`, so a name that resolves
+    to no file is a member of its parent rather than a miss — hence walking up rather than failing.
+    """
+    parts = name.split(".")[1:]
+    while parts:
+        candidate = _PACKAGE.joinpath(*parts)
+        if candidate.with_suffix(".py").is_file():
+            return candidate.with_suffix(".py")
+        if (candidate / "__init__.py").is_file():
+            return candidate / "__init__.py"
+        parts.pop()
+    return None
+
+
+@cache
+def _import_roots(module: Path) -> frozenset[str]:
+    """The top-level package of every import in a file, this one's own included."""
+    names = _imports_in(
+        source=module.read_text(encoding="utf-8"), parent=_relative_import_base(module), scope=""
+    )
+    return frozenset(name.split(".", maxsplit=1)[0] for name in names)
+
+
+def _reachable_within_package(module: Path) -> dict[Path, str]:
+    """Every module in this package reachable from one, mapped to the path that got there.
+
+    Following the graph to a fixed point rather than reading one file is the whole point: an
+    import two hops away pulls its dependencies in just as surely as a direct one, and the
+    violation this guards against is exactly the hop nobody looked at.
+
+    The package root is seeded rather than discovered. Python executes `discordbot/__init__.py` for
+    every import in the tree, so it is an unconditional dependency of all of them, but no import
+    statement names it in a form the walk can resolve — `_module_file("discordbot")` has no path
+    segments left to try, and a bare `import discordbot` does not survive the scanner's prefix
+    filter either. A dynamic import is the one edge that stays invisible; that is inherent to
+    reading the AST and is not worth machinery.
+    """
+    start = module.relative_to(_PACKAGE).as_posix()
+    root = _PACKAGE / "__init__.py"
+    seen = {module: start, root: f"{start} -> __init__.py"}
+    queue = [module, root]
+    while queue:
+        current = queue.pop()
+        for name in _imported_modules(current):
+            found = _module_file(name=name)
+            if found is None or found in seen:
+                continue
+            seen[found] = f"{seen[current]} -> {found.relative_to(_PACKAGE).as_posix()}"
+            queue.append(found)
+    return seen
+
+
+def test_services_never_reaches_discord() -> None:
+    """`services/` is the Discord-free layer, and until now nothing but prose said so.
+
+    The layering scan above reads `discordbot.*` edges only, so `import nextcord` inside a service
+    — or inside anything a service imports — was invisible to every test in the suite. That was
+    affordable while `services/` held a ledger and a memory store, neither of which has a Discord
+    surface to be tempted by. `services/platforms/` is what changes it: its job is to turn a link
+    into something a channel shows, the send sits one import away, and `utils/douyin_delivery.py`
+    exists precisely because that one import was there.
+
+    Transitive on purpose. A direct-import check is satisfied by moving the offending line one
+    module over, which is the same edge wearing a hat.
+    """
+    modules = _modules(_PACKAGE / "services")
+
+    # `rglob` on a directory that is not there yields nothing, so a renamed or mistyped start path
+    # would leave this scanning zero modules and passing. The other two discovery sweeps in this
+    # change carry the same tripwire for the same reason. Anchored on the package this guard exists
+    # for rather than on a module inside it, so nothing here depends on which files that package
+    # happens to hold.
+    assert _PACKAGE / "services" / "platforms" / "__init__.py" in modules, "scan found no services"
+
+    offenders: list[str] = []
+    for module in modules:
+        for reached, path in sorted(_reachable_within_package(module=module).items()):
+            if "nextcord" in _import_roots(reached):
+                offenders.append(path)
+    assert not offenders, f"services reaching nextcord: {sorted(set(offenders))}"
 
 
 def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:

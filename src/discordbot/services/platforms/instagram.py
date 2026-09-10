@@ -1,7 +1,7 @@
 """Instagram post URL parsing and page extraction.
 
 Shared by `parse_instagram` (which expands a pasted link into embeds) and `gen_reply` (which
-reads the post into answer context), the same split `utils/threads.py` and `utils/facebook.py`
+reads the post into answer context), the same split `services/platforms/threads.py` and `services/platforms/facebook.py`
 serve. The three modules deliberately agree on both halves of their surface.
 
 `parse_metadata` is the entry point on all three and means the same thing on each: parse the
@@ -55,6 +55,11 @@ import requests
 from discordbot.utils.urls import URL_START_ANCHOR
 from discordbot.typings.timeouts import INSTAGRAM_PAGE_TIMEOUT_SECONDS
 from discordbot.utils.link_errors import link_fetch_error
+from discordbot.services.platforms.base import (
+    PlatformOutput,
+    PlatformDownloader,
+    PlatformConversation,
+)
 
 _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
 
@@ -80,7 +85,7 @@ _POST_PATH_RE = re.compile(
 # docstring for what that URL answers with.
 _COMMENT_PATH_RE = re.compile(r"/c/(?P<comment>[0-9]+)")
 
-# What the page will only hand to a browser, the same set `utils/facebook.py` needs. A crawler
+# What the page will only hand to a browser, the same set `services/platforms/facebook.py` needs. A crawler
 # UA does get a page here (unlike Facebook, which answers 400), but it is a 650KB shell whose
 # post payload is missing the carousel and every comment.
 _BROWSER_HEADERS = {
@@ -103,7 +108,7 @@ _JSON_SCRIPT_RE = re.compile(r'<script type="application/json"[^>]*>(.*?)</scrip
 _MEDIA_TYPE_VIDEO = 2
 
 # What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
-# project's checker refuses, and mirroring the union `utils/facebook.py` walks with.
+# project's checker refuses, and mirroring the union `services/platforms/facebook.py` walks with.
 JsonValue = dict[str, Any] | list[Any] | str | float | None
 
 
@@ -223,97 +228,35 @@ class FetchedPage(BaseModel):
         return path.startswith(("/accounts/login", "/challenge", "/accounts/suspended"))
 
 
-class InstagramOutput(BaseModel):
+class InstagramOutput(PlatformOutput):
     """One post OR one comment, the single shape a conversation is built from.
 
     Deliberately one type for both, exactly as `ThreadsOutput` is: a caller that walks a
     Threads conversation walks this one with the same code. A comment simply leaves the fields
     a comment has no version of empty — it carries no media of its own and no comment count.
 
+    Two inherited fields mean something narrower here. `url` is the POST's permalink even on a
+    comment, since a comment permalink is not fetchable (see the module docstring) and would only
+    publish a dead link; `comment_count` is zero on a comment.
+
     Attributes:
-        text: The caption, or the comment body.
-        url: The permalink. For a comment this is the post's, since a comment permalink is not
-            fetchable (see the module docstring) and would only publish a dead link.
-        author_name: The author's handle, without the leading `@`.
         author_full_name: The author's display name, which comments do not carry.
-        author_icon_url: The author's profile picture URL.
-        image_urls: Original-resolution image URLs, in carousel order.
-        video_urls: Playable video URLs, in carousel order.
-        like_count: Likes this post or comment carries.
-        comment_count: Comments the POST reports; zero on a comment.
-        taken_at: When it was published.
         comment_id: The comment's own numeric id; empty on the post itself.
     """
 
-    text: str = Field(default="", description="The caption, or the comment body")
-    url: str = Field(default="", description="The permalink, the post's in both cases")
-    author_name: str = Field(default="", description="The author's handle")
     author_full_name: str = Field(default="", description="The author's display name")
-    author_icon_url: str = Field(default="", description="The author's profile picture URL")
-    image_urls: list[str] = Field(
-        default_factory=list, description="Original-resolution image URLs in carousel order"
-    )
-    video_urls: list[str] = Field(
-        default_factory=list, description="Playable video URLs in carousel order"
-    )
-    like_count: int = Field(default=0, description="Likes this post or comment carries")
-    comment_count: int = Field(default=0, description="Comments the post reports; 0 on a comment")
-    taken_at: datetime | None = Field(default=None, description="When it was published")
     comment_id: str = Field(default="", description="The comment's own id; empty on the post")
 
-    @computed_field
-    @cached_property
-    def is_readable(self) -> bool:
-        """Whether enough came back to be worth showing."""
-        return bool(self.text or self.image_urls or self.video_urls)
 
-
-class InstagramConversation(BaseModel):
+class InstagramConversation(PlatformConversation[InstagramOutput]):
     """One Instagram post and the discussion under it, shaped like `ThreadsConversation`.
 
-    Attributes:
-        chain: The post the link names. Always exactly one element — Instagram has no ancestor
-            posts — but kept as a list so `target` means the same here as it does on Threads.
-        reply_branches: One branch per top-level comment, each ordered from that comment
-            outward through its replies.
-        selected_comment_id: The comment a `/c/<id>/` permalink named, empty when none did.
+    What the three inherited fields mean on Instagram. `chain` always has exactly one element —
+    Instagram serves no ancestor posts — and is a list only so `target` means the same here as it
+    does on Threads. `reply_branches` holds one branch per top-level comment, and unlike Facebook
+    that is the WHOLE comment list rather than a preload. `selected_comment_id` is whatever a
+    `/c/<id>/` permalink named.
     """
-
-    chain: list[InstagramOutput] = Field(
-        default_factory=list, description="The post the link names, as a one-element chain"
-    )
-    reply_branches: list[list[InstagramOutput]] = Field(
-        default_factory=list, description="One branch per top-level comment, replies behind it"
-    )
-    selected_comment_id: str = Field(
-        default="", description="The comment a `/c/<id>/` permalink named"
-    )
-
-    @computed_field
-    @cached_property
-    def target(self) -> InstagramOutput | None:
-        """The post the link named, or None when the page carried none.
-
-        Cached, so the conversation must be built once and never mutated afterwards; the same
-        rule on `ThreadsConversation.target` has why pydantic makes that load-bearing.
-        """
-        return self.chain[-1] if self.chain else None
-
-    @property
-    def comments(self) -> list[InstagramOutput]:
-        """Every comment, flattened out of the branches in page order.
-
-        A plain property rather than a computed field, on all three sources: it re-slices data
-        `reply_branches` already carries, so serializing it would put every comment in a dump
-        twice. The two computed fields resolve a POINTER instead, which a dump cannot derive on
-        its own and which is what a hand test wants to see.
-        """
-        return [comment for branch in self.reply_branches for comment in branch]
-
-    @property
-    def posts(self) -> list[InstagramOutput]:
-        """Everything the page yielded: the post first, then its comments in page order."""
-        return [*self.chain, *self.comments]
 
     @computed_field
     @cached_property
@@ -331,7 +274,7 @@ class InstagramConversation(BaseModel):
         )
 
 
-class InstagramDownloader(BaseModel):
+class InstagramDownloader(PlatformDownloader):
     """Reads a public Instagram post out of its page.
 
     Holds no state and writes nothing to disk, so one instance serves every caller; it is a

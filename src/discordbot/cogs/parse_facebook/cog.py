@@ -32,17 +32,17 @@ from nextcord import Color, Embed, Message, NotFound
 from nextcord.ext import commands
 
 from discordbot.typings.emojis import FACEBOOK_EMOJI
-from discordbot.utils.facebook import (
+from discordbot.utils.mentions import is_addressed_to_bot
+from discordbot.utils.reactions import update_reaction
+from discordbot.typings.timeouts import FACEBOOK_EXPAND_TIMEOUT_SECONDS
+from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit
+from discordbot.services.platforms.facebook import (
     FACEBOOK_URL_RE,
     FacebookOutput,
     FacebookDownloader,
     FacebookConversation,
     is_facebook_post_url,
 )
-from discordbot.utils.mentions import is_addressed_to_bot
-from discordbot.utils.reactions import update_reaction
-from discordbot.typings.timeouts import FACEBOOK_EXPAND_TIMEOUT_SECONDS
-from discordbot.utils.discord_embeds import utf16_length, clip_to_utf16_limit
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
@@ -184,7 +184,7 @@ class FacebookCogs(commands.Cog):
         link is what keeps it OUT of that gallery.
         """
         # A video post would otherwise render as a card with nothing in it: there is no file to
-        # attach (see `utils/facebook.py`), so the link is the whole of what can be shown. Its
+        # attach (see `services/platforms/facebook.py`), so the link is the whole of what can be shown. Its
         # length is reserved BEFORE the clip rather than appended after, or a post already at the
         # ceiling carries the hint past it and Discord rejects the send.
         post = conversation.target

@@ -9,18 +9,18 @@ import threading
 
 import pytest
 
-from discordbot.utils import douyin as douyin_fetch
 from discordbot.utils import scratch_dir
-from discordbot.utils.douyin import (
-    DouyinPost,
+from discordbot.services.platforms import douyin as douyin_fetch
+from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
+from discordbot.services.platforms.douyin import (
     DouyinError,
     DouyinDownload,
+    DouyinMetadata,
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTooLargeError,
     DouyinUnavailableError,
 )
-from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
 from discordbot.cogs.gen_reply.speculation import run_until_deadline
 from discordbot.cogs.gen_reply.link_sources import douyin as douyin_builder
 from discordbot.cogs.gen_reply.link_sources.douyin import (
@@ -37,9 +37,9 @@ from tests.helpers.casting import step_dicts, make_stub_gemini_client
 _URL = "https://v.douyin.com/abc123"
 
 
-def _post(is_photo: bool = False, images: int = 0) -> DouyinPost:
+def _post(is_photo: bool = False, images: int = 0) -> DouyinMetadata:
     """Builds the parsed metadata the builder renders into its text block."""
-    return DouyinPost(
+    return DouyinMetadata(
         aweme_id="777",
         title="一段影片的說明",
         author_name="某個作者",
@@ -81,7 +81,7 @@ class _Uploads:
 def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder can hit
     monkeypatch: pytest.MonkeyPatch,
     *,
-    post: DouyinPost | None = None,
+    post: DouyinMetadata | None = None,
     files: list[str] | None = None,
     parse_error: Exception | None = None,
     download_error: Exception | None = None,
@@ -91,7 +91,7 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
     resolved_post = post or _post()
     recorded: dict[str, object] = {}
 
-    def fake_parse_metadata(self: DouyinDownloader, url: str) -> DouyinPost:
+    def fake_parse_metadata(self: DouyinDownloader, *, url: str) -> DouyinMetadata:
         """Returns the canned post, or raises the canned parse failure."""
         del url
         if parse_error is not None:
@@ -104,7 +104,7 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
         quality: str = "best",
         max_images: int | None = None,
         max_bytes: int | None = None,
-        post: DouyinPost | None = None,
+        post: DouyinMetadata | None = None,
     ) -> DouyinDownload:
         """Writes canned files into the builder's scratch dir, or raises."""
         del url
@@ -209,7 +209,7 @@ async def test_the_parsed_post_is_handed_to_the_download(monkeypatch: pytest.Mon
 
     await _build()
 
-    assert isinstance(recorded["post"], DouyinPost)
+    assert isinstance(recorded["post"], DouyinMetadata)
 
 
 async def test_a_gallery_is_capped_and_uploaded_as_images(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -402,7 +402,7 @@ async def test_a_raced_scratch_teardown_still_lets_the_post_route_deadline_surfa
         quality: str = "best",
         max_images: int | None = None,
         max_bytes: int | None = None,
-        post: DouyinPost | None = None,
+        post: DouyinMetadata | None = None,
     ) -> DouyinDownload:
         """Blocks the worker thread the way a stalling CDN read does.
 

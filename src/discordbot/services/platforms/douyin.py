@@ -1,6 +1,6 @@
 """Douyin URL parsing, share-page scraping, and media download helpers.
 
-Douyin is deliberately NOT handled by `utils.downloader`'s yt-dlp path. yt-dlp's `DouyinIE`
+Douyin is deliberately NOT handled by `services.platforms.ytdlp`'s yt-dlp path. yt-dlp's `DouyinIE`
 fetches `www.douyin.com/aweme/v1/web/aweme/detail/` unsigned, which Douyin answers with an
 empty body, so it fails outright unless the caller supplies cookies. It also only ever yields
 a video (never a photo post) and tops out at 720p on the samples tested.
@@ -21,7 +21,7 @@ from collections import OrderedDict
 from urllib.parse import urljoin, parse_qs, urlparse
 
 import logfire
-from pydantic import Field, BaseModel, ConfigDict, ValidationError, model_validator
+from pydantic import Field, BaseModel, ValidationError, model_validator
 import requests
 from requests.exceptions import RequestException
 
@@ -44,17 +44,11 @@ from discordbot.utils.link_errors import (
     is_retryable_fetch_failure,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
-from discordbot.utils.file_downloads import (
+from discordbot.services.platforms.base import PlatformDownloader
+from discordbot.services.platforms.file_downloads import (
     TemporaryDownload,
     DownloadTooLargeError,
     stream_to_file,
-)
-from discordbot.utils.media_delivery import (
-    MEDIA_ENVELOPE_MARGIN,
-    DISCORD_ATTACHMENT_LIMIT,
-    MediaItem,
-    MediaPlan,
-    MediaDeliveryPlanner,
 )
 
 # Single source of truth for detecting a Douyin URL, kept module level so the expansion cog,
@@ -195,8 +189,14 @@ def _douyin_fetch_error(*, error: RequestException, message: str) -> DouyinError
     return DouyinError(message)
 
 
-class DouyinPost(BaseModel):
+class DouyinMetadata(BaseModel):
     """Metadata for a single Douyin post, parsed without downloading anything.
+
+    The `Metadata` half of this package's convention rather than the `Conversation` half, and
+    deliberately so: a Douyin post has no ancestors and the page serves no comments, so building
+    it as a conversation would mean a `chain` of exactly one and a `reply_branches` nothing can
+    ever fill. A field no platform populates is worse than an absent one — the reason
+    `share_count` is not in the shared nine either.
 
     Attributes:
         aweme_id: Douyin's numeric post id.
@@ -477,88 +477,7 @@ def douyin_failure_message(error: Exception) -> str:
     return "-# 檔案無法下載"
 
 
-class DouyinDelivery(BaseModel):
-    """A planned Douyin send: what goes out, and the size a refusal has to be able to quote.
-
-    `total_mb` rides along rather than being re-read off the download, because reading it is
-    order-sensitive: `DouyinDownload.total_bytes` stats the files and caches the answer, and a
-    successful host moves them out of the temp dir, so the read has to happen BEFORE the plan.
-    Carrying the number here is what stops a later caller re-deriving it from a deleted path —
-    on exactly the oversize path that most needs it.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    plan: MediaPlan = Field(..., description="The attach-vs-host-vs-drop outcome for the files.")
-    total_mb: float = Field(
-        ..., description="Combined size of the download, read before planning.", examples=[12.4]
-    )
-
-
-async def plan_douyin_delivery(
-    *, planner: MediaDeliveryPlanner, result: DouyinDownload, upload_limit: int
-) -> DouyinDelivery:
-    """Decides how one downloaded Douyin post reaches Discord.
-
-    Shared by `/download_video` and the auto-expansion, which differ only in where the upload
-    limit comes from. A gallery rides several attachments on one send and Discord measures the
-    whole multipart body, so it holds back the envelope margin; a lone video is a single-file
-    send and keeps the margin at 0.
-    """
-    items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
-    total_mb = result.total_bytes / 1024 / 1024
-    plan = await planner.plan(
-        items=items,
-        upload_limit=upload_limit,
-        envelope_margin=MEDIA_ENVELOPE_MARGIN if len(items) > 1 else 0,
-    )
-    return DouyinDelivery(plan=plan, total_mb=total_mb)
-
-
-def douyin_delivery_lines(
-    *,
-    result: DouyinDownload,
-    plan: MediaPlan,
-    hosting_available: bool,
-    url: str,
-    dropped_event: str,
-) -> list[str]:
-    """The subtext lines stating what a Douyin send left out, plus any hosted URLs.
-
-    Anything left out is said explicitly rather than silently dropped, so a user seeing a
-    partial gallery knows it is partial. The two causes are reported separately because they are
-    not the same problem: the attachment cap is a Discord limit nothing can change, while a
-    dropped item means delivery itself failed.
-
-    `dropped_event` is the caller's own log message rather than a shared one. That is the whole
-    point of it: `/download_video` and the auto-expansion are told apart in `data/logs` by the
-    event name alone, so merging them would cost the one field that says which path dropped the
-    media.
-
-    Hosted URLs come last and unwrapped: they must stay clickable and, under ~100 MiB, render
-    Discord's inline player.
-    """
-    lines: list[str] = []
-    if result.omitted_images:
-        lines.append(
-            f"-# 已省略 {result.omitted_images} 張圖片 (Discord 單則訊息最多 "
-            f"{DISCORD_ATTACHMENT_LIMIT} 個附件)"
-        )
-    if plan.dropped_items:
-        logfire.warn(
-            dropped_event,
-            url=url,
-            dropped_count=len(plan.dropped_items),
-            native_count=len(plan.native),
-            hosted_count=len(plan.hosted_urls),
-            hosting_available=hosting_available,
-        )
-        lines.append(f"-# 有 {len(plan.dropped_items)} 個檔案傳送失敗")
-    lines.extend(plan.hosted_urls)
-    return lines
-
-
-class DouyinDownloader(BaseModel):
+class DouyinDownloader(PlatformDownloader):
     """Downloads Douyin videos and photo posts via the server-rendered share page.
 
     Four constraints drive this implementation, each verified against the live site:
@@ -814,7 +733,7 @@ class DouyinDownloader(BaseModel):
             raise DouyinUnavailableError(f"Douyin will not serve {aweme_id}: {reason}")
         raise DouyinUnavailableError(f"Douyin returned no post for {aweme_id}")
 
-    def parse_metadata(self, url: str) -> DouyinPost:
+    def parse_metadata(self, *, url: str) -> DouyinMetadata:
         """Parses a Douyin URL into post metadata WITHOUT downloading any media.
 
         The expansion cog and the reply pipeline both need the caption and media URLs before (or
@@ -839,7 +758,7 @@ class DouyinDownloader(BaseModel):
         # would classify every gallery as a video.
         is_photo = item.aweme_type in _PHOTO_AWEME_TYPES or bool(item.images)
 
-        return DouyinPost(
+        return DouyinMetadata(
             aweme_id=aweme_id,
             title=item.desc.strip(),
             author_name=item.author.nickname,
@@ -948,7 +867,7 @@ class DouyinDownloader(BaseModel):
         quality: VideoQuality = "best",
         max_images: int | None = None,
         max_bytes: int | None = None,
-        post: DouyinPost | None = None,
+        post: DouyinMetadata | None = None,
     ) -> DouyinDownload:
         """Downloads a Douyin post's media.
 
@@ -975,7 +894,7 @@ class DouyinDownloader(BaseModel):
         return self._download_video(post=resolved, quality=quality, max_bytes=max_bytes)
 
     def _download_video(
-        self, post: DouyinPost, quality: VideoQuality, max_bytes: int | None = None
+        self, post: DouyinMetadata, quality: VideoQuality, max_bytes: int | None = None
     ) -> DouyinDownload:
         """Downloads the watermark-free video for a post."""
         if not post.video_id:
@@ -989,7 +908,7 @@ class DouyinDownloader(BaseModel):
         return DouyinDownload(title=post.title, is_photo=False, filenames=[filepath])
 
     def _download_images(
-        self, post: DouyinPost, max_images: int | None, max_bytes: int | None = None
+        self, post: DouyinMetadata, max_images: int | None, max_bytes: int | None = None
     ) -> DouyinDownload:
         """Downloads a photo post's images, honouring the caller's cap."""
         if not post.image_urls:

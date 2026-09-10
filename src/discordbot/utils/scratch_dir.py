@@ -8,7 +8,7 @@ in the system temp dir. What the directory is FOR past that differs per site, so
 into the others. The two expansions and their two link builders make its removal the stop signal
 itself — their writers open into a folder they never rebuild, so the next write fails — while the
 two yt-dlp branches (`/download_video`'s and the Bilibili builder's) stop their worker with a
-`threading.Event` and a bounded join (`utils/downloader.py::download_with_stop_signal`, which
+`threading.Event` and a bounded join (`services/platforms/ytdlp.py::download_with_stop_signal`, which
 re-creates the output dir per DASH format and so could not use the directory for this), and reach
 the removal as a live writer only in the case it logs, where the worker ignored that join window.
 

@@ -25,7 +25,6 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-from discordbot.utils.facebook import FacebookOutput, FacebookDownloader, FacebookConversation
 from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.typings.context_budgets import MAX_FACEBOOK_COMMENTS, MAX_FACEBOOK_INGEST_IMAGES
 from discordbot.cogs.gen_reply.files_api import upload_as_input_file
@@ -33,6 +32,11 @@ from discordbot.cogs.gen_reply.link_sources import (
     system_block,
     defuse_markers,
     link_context_blocks,
+)
+from discordbot.services.platforms.facebook import (
+    FacebookOutput,
+    FacebookDownloader,
+    FacebookConversation,
 )
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
 

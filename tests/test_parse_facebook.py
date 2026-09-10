@@ -5,8 +5,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from discordbot.utils.facebook import FacebookOutput, FacebookDownloader, FacebookConversation
 from discordbot.cogs.gen_reply.link_sources import facebook as facebook_source
+from discordbot.services.platforms.facebook import (
+    FacebookOutput,
+    FacebookDownloader,
+    FacebookConversation,
+)
 from discordbot.cogs.gen_reply.link_sources.facebook import (
     FACEBOOK_TIMEOUT_NOTICE,
     FACEBOOK_CONTEXT_TRAILER,

@@ -2,7 +2,7 @@
 
 import pytest
 
-from discordbot.utils.bilibili import BILIBILI_URL_RE
+from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
 
 
 @pytest.mark.parametrize(

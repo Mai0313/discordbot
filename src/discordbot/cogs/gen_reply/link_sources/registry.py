@@ -15,12 +15,12 @@ from google import genai
 from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.utils.douyin import DOUYIN_URL_RE, is_douyin_post_url
-from discordbot.utils.threads import THREADS_URL_RE
-from discordbot.utils.bilibili import BILIBILI_URL_RE
-from discordbot.utils.facebook import FACEBOOK_URL_RE, is_facebook_post_url
-from discordbot.utils.instagram import INSTAGRAM_URL_RE, is_instagram_post_url
+from discordbot.services.platforms.douyin import DOUYIN_URL_RE, is_douyin_post_url
+from discordbot.services.platforms.threads import THREADS_URL_RE
 from discordbot.cogs.gen_reply.link_sources import LinkContextSource
+from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
+from discordbot.services.platforms.facebook import FACEBOOK_URL_RE, is_facebook_post_url
+from discordbot.services.platforms.instagram import INSTAGRAM_URL_RE, is_instagram_post_url
 from discordbot.cogs.gen_reply.link_sources.douyin import (
     build_douyin_context_messages,
     douyin_timeout_context_messages,

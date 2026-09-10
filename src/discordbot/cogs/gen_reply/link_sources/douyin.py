@@ -25,9 +25,14 @@ import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
-from discordbot.utils.douyin import (
-    DouyinPost,
+from discordbot.typings.video import VideoQuality
+from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
+from discordbot.utils.scratch_dir import scratch_directory
+from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
+from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
+from discordbot.services.platforms.douyin import (
     DouyinDownload,
+    DouyinMetadata,
     DouyinDownloader,
     DouyinBlockedError,
     DouyinTooLargeError,
@@ -35,11 +40,6 @@ from discordbot.utils.douyin import (
     douyin_url_locks,
     douyin_fetch_semaphore,
 )
-from discordbot.typings.video import VideoQuality
-from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
-from discordbot.utils.scratch_dir import scratch_directory
-from discordbot.typings.context_budgets import MAX_DOUYIN_INGEST_IMAGES
-from discordbot.cogs.gen_reply.files_api import FILES_API_MAX_BYTES, upload_as_input_file
 from discordbot.cogs.gen_reply.link_sources import system_block, link_context_blocks
 
 # Resolution asked of Douyin for the clip the model reads: the lowest preset (540p).
@@ -114,7 +114,7 @@ def douyin_timeout_context_messages() -> list[EasyInputMessageParam]:
     return [system_block(text=DOUYIN_TIMEOUT_NOTICE)]
 
 
-def _render_post_text(post: DouyinPost, url: str) -> str:
+def _render_post_text(post: DouyinMetadata, url: str) -> str:
     """Renders the post's caption, author and source link as compact text."""
     lines = [f"[Douyin post the user linked] @{post.author_name}".rstrip()]
     if post.title:
@@ -152,7 +152,7 @@ async def _upload_media(
 
 
 async def _fetch_and_upload(
-    *, url: str, post: DouyinPost, gemini_client: genai.Client
+    *, url: str, post: DouyinMetadata, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Downloads the post's media into a scratch dir and uploads it; [] on any failure.
 
@@ -181,7 +181,7 @@ async def _fetch_and_upload(
 
 
 async def _media_parts(
-    *, url: str, post: DouyinPost, gemini_client: genai.Client
+    *, url: str, post: DouyinMetadata, gemini_client: genai.Client
 ) -> list[ResponseInputFileParam]:
     """Runs the media step under its own bound, degrading to no parts rather than raising.
 
