@@ -44,6 +44,7 @@ from discordbot.utils.link_errors import (
     is_retryable_fetch_failure,
 )
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalSemaphore
+from discordbot.services.platforms.base import PlatformDownloader
 from discordbot.services.platforms.file_downloads import (
     TemporaryDownload,
     DownloadTooLargeError,
@@ -470,7 +471,7 @@ def douyin_failure_message(error: Exception) -> str:
     return "-# 檔案無法下載"
 
 
-class DouyinDownloader(BaseModel):
+class DouyinDownloader(PlatformDownloader):
     """Downloads Douyin videos and photo posts via the server-rendered share page.
 
     Four constraints drive this implementation, each verified against the live site:
@@ -726,7 +727,7 @@ class DouyinDownloader(BaseModel):
             raise DouyinUnavailableError(f"Douyin will not serve {aweme_id}: {reason}")
         raise DouyinUnavailableError(f"Douyin returned no post for {aweme_id}")
 
-    def parse_metadata(self, url: str) -> DouyinPost:
+    def parse_metadata(self, *, url: str) -> DouyinPost:
         """Parses a Douyin URL into post metadata WITHOUT downloading any media.
 
         The expansion cog and the reply pipeline both need the caption and media URLs before (or

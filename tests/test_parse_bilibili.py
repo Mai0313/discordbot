@@ -87,7 +87,7 @@ def _stub_bilibili(  # noqa: PLR0913 -- one canned outcome per stage the builder
     resolved = metadata or _metadata()
     recorded: dict[str, list[str]] = {"downloads": []}
 
-    def fake_parse_metadata(self: VideoDownloader, url: str) -> VideoMetadata:
+    def fake_parse_metadata(self: VideoDownloader, *, url: str) -> VideoMetadata:
         """Returns the canned metadata, or raises the canned parse failure."""
         del url
         if parse_error is not None:

@@ -91,7 +91,7 @@ def _stub_douyin(  # noqa: PLR0913 -- one canned outcome per stage the builder c
     resolved_post = post or _post()
     recorded: dict[str, object] = {}
 
-    def fake_parse_metadata(self: DouyinDownloader, url: str) -> DouyinPost:
+    def fake_parse_metadata(self: DouyinDownloader, *, url: str) -> DouyinPost:
         """Returns the canned post, or raises the canned parse failure."""
         del url
         if parse_error is not None:

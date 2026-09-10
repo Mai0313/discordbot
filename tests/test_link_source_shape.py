@@ -11,10 +11,26 @@ So the classes here are DISCOVERED rather than listed: every `*Conversation` und
 being told about it. `test_the_sweep_finds_every_source` is the one deliberate exception — it
 names the three, so a fourth fails it until somebody writes the name down, which is what stops a
 source arriving without anyone having read this file.
+
+A sweep driven by a name also collects the base the platforms are built FROM.
+`PlatformConversation` ends in `Conversation`, is a `BaseModel` and is defined in this package, so
+it satisfies every part of the filter — and then fails the guards for a reason that says nothing
+about any platform: its `chain` is annotated with the bare TypeVar, so `_output_model` hands back
+`OutputT` rather than a model.
+
+It is excluded on the one property that actually separates the two: the base still carries an
+UNBOUND type parameter, and a platform that named its Output has none left. Not
+`__pydantic_generic_metadata__["args"]`, which records what a specialised ALIAS was handed and is
+therefore empty on the base and on all three platforms alike — a filter reading it cannot tell them
+apart at all, and collects either all four or none.
+
+Which is exactly the hole the exclusion itself could hide, so `test_the_sweep_finds_every_source`
+asserts what was excluded as well as what was kept: a platform accidentally written as a generic
+would otherwise vanish from the sweep and pass every guard below by covering nothing.
 """
 
 from typing import Any, Protocol, cast
-from pkgutil import iter_modules
+from pkgutil import walk_packages
 from importlib import import_module
 
 import pytest
@@ -71,17 +87,43 @@ _OUTPUT_FIELDS = frozenset({
 _OUTPUT_COMPUTED = frozenset({"is_readable"})
 
 
-def _conversation_classes() -> dict[str, type[BaseModel]]:
-    """Every `*Conversation` model under `discordbot.services.platforms`, by class name."""
+def _all_conversation_classes() -> dict[str, type[BaseModel]]:
+    """Every `*Conversation` model under `discordbot.services.platforms`, base included.
+
+    `walk_packages` rather than `iter_modules`, so a platform written as a subpackage is still
+    found. With the top level alone its classes reach neither this sweep nor the tripwire, and a
+    name nothing collected cannot make a set-equality assertion fail — it passes by matching an
+    expectation that also does not list it.
+    """
     found: dict[str, type[BaseModel]] = {}
-    for module in iter_modules(path=discordbot.services.platforms.__path__):
-        imported = import_module(name=f"discordbot.services.platforms.{module.name}")
+    for module in walk_packages(
+        path=discordbot.services.platforms.__path__, prefix="discordbot.services.platforms."
+    ):
+        imported = import_module(name=module.name)
         for name, value in vars(imported).items():
             if not name.endswith("Conversation") or not isinstance(value, type):
                 continue
             if issubclass(value, BaseModel) and value.__module__ == imported.__name__:
                 found[name] = value
     return found
+
+
+def _conversation_classes() -> dict[str, type[BaseModel]]:
+    """The platform conversations: everything above that bound its Output."""
+    return {
+        name: value
+        for name, value in _all_conversation_classes().items()
+        if not value.__pydantic_generic_metadata__["parameters"]
+    }
+
+
+def _generic_conversation_classes() -> set[str]:
+    """What the filter excluded — the bases, and anything that forgot to name its Output."""
+    return {
+        name
+        for name, value in _all_conversation_classes().items()
+        if value.__pydantic_generic_metadata__["parameters"]
+    }
 
 
 def _build(
@@ -101,21 +143,34 @@ def _output_model(*, cls: type[BaseModel]) -> type[BaseModel]:
 
 
 def _properties(*, cls: type) -> set[str]:
-    """The public plain properties declared on the class itself."""
+    """The public plain properties a caller can read off the class, inherited ones included.
+
+    Walks the MRO rather than the class itself because `comments` and `posts` now come from
+    `PlatformConversation`, which is the point of having it. Nothing is lost by looking wider: the
+    assertion that matters is that these two are NOT computed fields, and the exact-equality check
+    on `model_computed_fields` is what proves that.
+    """
     return {
         name
-        for name, value in vars(cls).items()
+        for klass in cls.__mro__
+        for name, value in vars(klass).items()
         if isinstance(value, property) and not name.startswith("_")
     }
 
 
 def test_the_sweep_finds_every_source() -> None:
-    """A guard over a set it failed to collect would pass by finding nothing."""
+    """A guard over a set it failed to collect would pass by finding nothing.
+
+    Both halves are named, because the sweep can lose a source two ways: by not reaching its
+    module, and by excluding it as a generic. The second is the exclusion this file relies on, so
+    what it removed is asserted too — `PlatformConversation` and nothing else.
+    """
     assert set(_conversation_classes()) == {
         "ThreadsConversation",
         "FacebookConversation",
         "InstagramConversation",
     }
+    assert _generic_conversation_classes() == {"PlatformConversation"}
 
 
 @pytest.mark.parametrize("name", sorted(_conversation_classes()))
