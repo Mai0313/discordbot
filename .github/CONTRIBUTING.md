@@ -42,9 +42,9 @@ make gen-docs
 
 - `src/discordbot/cli.py`: bot entry point, intent setup, cog loading, global message reward, and application-command sync.
 - `src/discordbot/cogs/`: nextcord cogs, one directory each. `cogs/<name>/cog.py` is the module the loader imports; everything beside it in that directory is that cog's own code.
-- `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the memory store). Discord-free, and never imports from `cogs/`.
+- `src/discordbot/services/`: domain engines shared by more than one cog (the economy ledger, the memory store, the per-platform link readers in `services/platforms/`). Discord-free, and never imports from `cogs/`, both enforced by `tests/test_package_layering.py`.
 - `src/discordbot/typings/`: shared Pydantic models, settings, enums, and pure domain types.
-- `src/discordbot/utils/`: generic helpers with no domain state — downloader, image, Threads, LiteLLM pricing.
+- `src/discordbot/utils/`: generic helpers with no domain state — images, embeds, LiteLLM pricing, the scratch directory, the link-error vocabulary.
 - `tests/`: pytest suite.
 - `scripts/`: local maintenance and development tools.
 - `data/`: runtime data; SQLite databases live in `data/database/`, alongside logs, cached prices, and other runtime files. Do not commit generated runtime data.
