@@ -160,6 +160,7 @@ from discordbot.cogs.gen_reply.attachment.inline import InlineRenderer
 from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 from discordbot.cogs.gen_reply.link_sources.douyin import DOUYIN_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.threads import THREADS_CONTEXT_SEPARATOR
+from discordbot.cogs.gen_reply.link_sources.twitter import TWITTER_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.bilibili import BILIBILI_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.facebook import FACEBOOK_CONTEXT_SEPARATOR
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
@@ -179,6 +180,7 @@ from tests.helpers.llm_input import (
     has_memory_context_block,
     extract_callable_user_ids,
     has_threads_context_block,
+    has_twitter_context_block,
     extract_user_memory_blocks,
     has_bilibili_context_block,
     has_facebook_context_block,
@@ -186,6 +188,7 @@ from tests.helpers.llm_input import (
     has_instagram_context_block,
     extract_douyin_context_block,
     extract_threads_context_block,
+    extract_twitter_context_block,
     extract_bilibili_context_block,
     extract_facebook_context_block,
     extract_instagram_context_block,
@@ -3234,13 +3237,18 @@ def test_link_url_for_source_prefers_the_current_message(monkeypatch: pytest.Mon
         # A real BV id (BV plus exactly 10 base-62 chars): a short one does not match
         # `BILIBILI_URL_RE` at all, so the assertion below would hold for the wrong reason.
         ("bilibili", "https://www.bilibili.com/video/BV1jpK86hEc8"),
+        ("twitter", "https://x.com/Dbacks/status/1628549742539194368"),
     ],
 )
-def test_link_url_for_source_leaves_the_clip_sources_on_the_current_message(
+def test_link_url_for_source_leaves_the_narrow_sources_on_the_current_message(
     monkeypatch: pytest.MonkeyPatch, name: str, url: str
 ) -> None:
-    """Douyin and Bilibili never widen to the replied-to message: their value is the clip, and both
-    are rate-limit sensitive, so a passing mention one hop away is not worth a fetch.
+    """Three sources never widen to the replied-to message, for two different reasons.
+
+    Douyin and Bilibili carry a clip rather than a discussion and both are rate-limit sensitive,
+    so a passing mention one hop away is not worth a fetch. Twitter opts out because its endpoint
+    serves no replies at all: the three that DO widen are answering "what are people saying under
+    this", and a second read of a Twitter link finds exactly what the expansion already showed.
     """
     monkeypatch.setattr("discordbot.cogs.gen_reply.references.Message", FakeMessage)
     referenced = FakeMessage(content=f"看看這個 {url}")
@@ -4552,7 +4560,7 @@ def test_the_file_api_kill_switch_stops_link_media_before_it_is_fetched(
     monkeypatch.setenv(name="GEMINI_API_KEY", value="test-key")
     monkeypatch.setenv(name="DOUYIN_VIDEO_ENABLED", value="true")
     monkeypatch.setenv(name="BILIBILI_VIDEO_ENABLED", value="true")
-    gated = ("douyin", "bilibili", "facebook", "instagram")
+    gated = ("douyin", "bilibili", "facebook", "instagram", "twitter")
 
     monkeypatch.setenv(name="FILE_API_ENABLED", value="true")
     on = LLMConfig()
@@ -6422,6 +6430,12 @@ def _link_config() -> LLMConfig:
             "https://www.bilibili.com/video/BV1jpK86hEc8",
             has_bilibili_context_block,
         ),
+        (
+            "twitter",
+            "build_twitter_context_messages",
+            "https://x.com/Dbacks/status/1628549742539194368",
+            has_twitter_context_block,
+        ),
     ],
 )
 async def test_on_message_does_not_start_incidental_link_context(
@@ -7434,7 +7448,7 @@ async def test_on_message_injects_bilibili_context_before_current(
     assert separator_index < current_index
 
 
-_DiscussionSource = Literal["facebook", "instagram"]
+_DiscussionSource = Literal["facebook", "instagram", "twitter"]
 
 _DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str, Any, Any]] = {
     "facebook": (
@@ -7451,6 +7465,13 @@ _DISCUSSION_SOURCE_CASES: dict[_DiscussionSource, tuple[str, str, str, Any, Any]
         has_instagram_context_block,
         extract_instagram_context_block,
     ),
+    "twitter": (
+        "build_twitter_context_messages",
+        "https://x.com/Dbacks/status/1628549742539194368",
+        TWITTER_CONTEXT_SEPARATOR,
+        has_twitter_context_block,
+        extract_twitter_context_block,
+    ),
 }
 
 
@@ -7460,7 +7481,7 @@ async def test_on_message_injects_a_selected_discussion_source_before_current(
 ) -> None:
     """The post the router selected reaches the answer input, ahead of the current message.
 
-    Threads and Douyin already pin this; these two were wired without it, so a source whose
+    Threads and Douyin already pin this; the three here were wired without it, so a source whose
     registry entry was right but whose block never spliced would have gone unnoticed.
     """
     builder, url, separator, has_block, extract_block = _DISCUSSION_SOURCE_CASES[name]
@@ -7876,7 +7897,9 @@ async def test_on_message_bilibili_grace_timeout_injects_notice(
 async def test_on_message_orders_selected_link_blocks_in_registry_order(
     memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
-    selected_sources: list[Literal["threads", "facebook", "instagram", "douyin", "bilibili"]],
+    selected_sources: list[
+        Literal["threads", "facebook", "instagram", "twitter", "douyin", "bilibili"]
+    ],
     expected_separators: list[str],
 ) -> None:
     """Selected sources are injected in registry order, not URL or router-return order.

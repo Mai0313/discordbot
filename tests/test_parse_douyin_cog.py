@@ -272,7 +272,7 @@ async def test_a_blocked_request_is_never_reported_as_a_missing_post() -> None:
     The reaction is the only thing keeping the two apart now that a failure says nothing in
     the channel, which is what makes ⏱️ load-bearing rather than decorative: ⚠️ means the
     post could not be read, ⏱️ means the request was refused and the same link works later.
-    All four expansion cogs answer with the same five marks, so the reader learns them once.
+    All five expansion cogs answer with the same five marks, so the reader learns them once.
     """
     cog, _ = _cog(download_error=DouyinBlockedError("bot wall"))
     message = _message()

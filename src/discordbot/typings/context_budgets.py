@@ -192,6 +192,13 @@ MAX_FACEBOOK_COMMENTS: Final[int] = 10
 # carries nine or ten, so this one really does bind, unlike Facebook's.
 MAX_INSTAGRAM_INGEST_IMAGES: Final[int] = 8
 
+# Cap on images ingested from a Twitter post. Four is the platform's OWN limit, so this binds on
+# nothing and is here for the reason the Instagram one is: the cost is a fetch plus an upload each,
+# on the reply's critical path, and a platform that raises its limit should not silently raise what
+# one reply spends. Twitter's video is deliberately not ingested at all, matching Facebook and
+# Instagram — the clip rides as a link the model is told it did not watch.
+MAX_TWITTER_INGEST_IMAGES: Final[int] = 4
+
 # Cap on the comments injected below an Instagram post. Higher than Facebook's because the page
 # carries the whole list rather than a preload (11 of 11 measured on a public post), so this is
 # what keeps a viral post's discussion from crowding out the rest of the request.

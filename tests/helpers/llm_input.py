@@ -39,6 +39,12 @@ from discordbot.cogs.gen_reply.link_sources.threads import (
     THREADS_UNAVAILABLE_NOTICE,
     THREADS_TEXT_ONLY_SEPARATOR,
 )
+from discordbot.cogs.gen_reply.link_sources.twitter import (
+    TWITTER_TIMEOUT_NOTICE,
+    TWITTER_CONTEXT_SEPARATOR,
+    TWITTER_UNAVAILABLE_NOTICE,
+    TWITTER_TEXT_ONLY_SEPARATOR,
+)
 from discordbot.cogs.gen_reply.link_sources.bilibili import (
     BILIBILI_TIMEOUT_NOTICE,
     BILIBILI_CONTEXT_SEPARATOR,
@@ -133,6 +139,14 @@ _FACEBOOK_SEPARATOR_HEADS = (
 _FACEBOOK_NOTICE_HEADS = (
     FACEBOOK_UNAVAILABLE_NOTICE.split("\n", 1)[0],
     FACEBOOK_TIMEOUT_NOTICE.split("\n", 1)[0],
+)
+_TWITTER_SEPARATOR_HEADS = (
+    TWITTER_CONTEXT_SEPARATOR.split("\n", 1)[0],
+    TWITTER_TEXT_ONLY_SEPARATOR.split("\n", 1)[0],
+)
+_TWITTER_NOTICE_HEADS = (
+    TWITTER_UNAVAILABLE_NOTICE.split("\n", 1)[0],
+    TWITTER_TIMEOUT_NOTICE.split("\n", 1)[0],
 )
 _INSTAGRAM_SEPARATOR_HEADS = (
     INSTAGRAM_CONTEXT_SEPARATOR.split("\n", 1)[0],
@@ -319,6 +333,24 @@ def has_facebook_context_block(request: ResponseInputParam | str) -> bool:
     for _role, text in iter_text_blocks(request=request):
         head = text.split("\n", 1)[0]
         if head in _FACEBOOK_SEPARATOR_HEADS or head in _FACEBOOK_NOTICE_HEADS:
+            return True
+    return False
+
+
+def extract_twitter_context_block(request: ResponseInputParam | str) -> str | None:
+    """Returns the text of the block following the Twitter separator, or None if absent."""
+    items = list(iter_text_blocks(request=request))
+    for index, (role, text) in enumerate(items):
+        if role == "system" and text.split("\n", 1)[0] in _TWITTER_SEPARATOR_HEADS:
+            return items[index + 1][1] if index + 1 < len(items) else ""
+    return None
+
+
+def has_twitter_context_block(request: ResponseInputParam | str) -> bool:
+    """Whether the input carries an injected Twitter separator or notice block."""
+    for _role, text in iter_text_blocks(request=request):
+        head = text.split("\n", 1)[0]
+        if head in _TWITTER_SEPARATOR_HEADS or head in _TWITTER_NOTICE_HEADS:
             return True
     return False
 

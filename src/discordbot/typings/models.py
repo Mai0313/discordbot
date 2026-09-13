@@ -298,7 +298,7 @@ class RouteClassification(BaseModel):
         ),
     )
     link_context_sources: list[
-        Literal["threads", "facebook", "instagram", "douyin", "bilibili"]
+        Literal["threads", "facebook", "instagram", "twitter", "douyin", "bilibili"]
     ] = Field(
         default_factory=list,
         description=(

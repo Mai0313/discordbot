@@ -1,6 +1,6 @@
 """Pins the entry point every platform downloader answers on.
 
-`tests/test_link_source_shape.py` holds the three conversation MODELS to one surface and says
+`tests/test_link_source_shape.py` holds the conversation MODELS to one surface and says
 nothing about what produces them — which is how five downloaders answering the same question ended
 up disagreeing on how to ask it. Two allowed a positional `url` where three were keyword-only, and
 two spelled the download half `download` while one called it `parse`. None of that was visible to
@@ -8,8 +8,8 @@ any test.
 
 So the classes here are DISCOVERED, the same way and for the same reason: every `*Downloader` under
 `discordbot.services.platforms` is swept up, and each guard covers a new platform without being
-told about it. `test_the_sweep_finds_every_downloader` is the deliberate exception — it names the
-five, so a sixth fails until somebody writes the name down and reads this file.
+told about it. `test_the_sweep_finds_every_downloader` is the deliberate exception — it names them
+all, so a new one fails until somebody writes the name down and reads this file.
 
 `PlatformDownloader` is excluded BY IDENTITY rather than by the module it lives in. Sweeping it
 would check the base against itself — its `parse_metadata` is the `NotImplementedError` stub every
@@ -31,12 +31,13 @@ from pydantic import BaseModel
 import discordbot.services.platforms
 from discordbot.services.platforms.base import PlatformDownloader
 
-# Every platform reading a link today. A sixth has to be written in here, which is the step that
+# Every platform reading a link today. A new one has to be written in here, which is the step that
 # makes someone read the rules above.
 _EXPECTED = frozenset({
     "ThreadsDownloader",
     "FacebookDownloader",
     "InstagramDownloader",
+    "TwitterDownloader",
     "DouyinDownloader",
     "VideoDownloader",
 })
@@ -151,7 +152,7 @@ def test_a_download_folder_is_required_when_it_exists(name: str) -> None:
 def test_a_parse_half_takes_the_same_keyword_only_url(name: str) -> None:
     """`parse` is optional, but a platform that has one spells its url like `parse_metadata` does.
 
-    Only Threads has it today. Three platforms write files, but their second methods have nothing
+    Only Threads has it. Three platforms write files, but their second methods have nothing
     a base could hold them to: Threads yields a conversation from a context manager, because what
     it cleans up hangs off that conversation, while Douyin and yt-dlp spell theirs `download` and
     return a `TemporaryDownload`, taking their own options alongside the url. That is why the base

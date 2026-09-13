@@ -1,6 +1,6 @@
 """What a failed read of a linked post means, shared by every platform that reads one.
 
-The four expansion cogs answer with a reaction and nothing else, so the reaction has to carry
+The five expansion cogs answer with a reaction and nothing else, so the reaction has to carry
 the difference between "the platform refused us, the link is fine" and "there is no post here".
 Douyin could already tell those apart because it has its own error tree; Threads, Facebook and
 Instagram wrapped every fetch failure in a bare `RuntimeError`, so a 429 reached the reader as
@@ -42,7 +42,7 @@ def is_retryable_fetch_failure(*, error: requests.RequestException) -> bool:
     """Reports whether a failed request is worth making again, exactly as HTTP frames it.
 
     Split out from `link_fetch_error` because Douyin raises its own error classes rather than
-    these, and a transport failure has to mean the same thing on all four platforms or the
+    these, and a transport failure has to mean the same thing on all five platforms or the
     reaction stops meaning anything.
 
     Args:

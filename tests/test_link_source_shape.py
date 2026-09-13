@@ -1,6 +1,6 @@
-"""Pins the one shape Threads, Facebook and Instagram parse into.
+"""Pins the one shape Threads, Facebook, Instagram and Twitter parse into.
 
-The three sources converged on purpose: a caller written against one reads the others without
+The sources converged on purpose: a caller written against one reads the others without
 learning a second set of rules, which is what lets the link-source builders and the expansion
 cogs share a vocabulary instead of three. Nothing else in the suite would notice them drifting
 apart again — every other test exercises one platform, and a fourth source added by copying
@@ -9,7 +9,7 @@ whichever file was opened first passes all of them.
 So the classes here are DISCOVERED rather than listed: every `*Conversation` under
 `discordbot.services.platforms` is swept up, and every guard below covers a new source without
 being told about it. `test_the_sweep_finds_every_source` is the one deliberate exception — it
-names the three, so a fourth fails it until somebody writes the name down, which is what stops a
+names them all, so a new one fails it until somebody writes the name down, which is what stops a
 source arriving without anyone having read this file.
 
 A sweep driven by a name also collects the base the platforms are built FROM.
@@ -21,8 +21,8 @@ about any platform: its `chain` is annotated with the bare TypeVar, so `_output_
 It is excluded on the one property that actually separates the two: the base still carries an
 UNBOUND type parameter, and a platform that named its Output has none left. Not
 `__pydantic_generic_metadata__["args"]`, which records what a specialised ALIAS was handed and is
-therefore empty on the base and on all three platforms alike — a filter reading it cannot tell them
-apart at all, and collects either all four or none.
+therefore empty on the base and on every platform alike — a filter reading it cannot tell them
+apart at all, and collects either all of them or none.
 
 Which is exactly the hole the exclusion itself could hide, so `test_the_sweep_finds_every_source`
 asserts what was excluded as well as what was kept: a platform accidentally written as a generic
@@ -41,7 +41,7 @@ import discordbot.services.platforms
 
 
 class _Conversation(Protocol):
-    """The surface this module exists to hold the three sources to.
+    """The surface this module exists to hold every source to.
 
     Spelled out as a Protocol because the classes under test are DISCOVERED, so the checker sees
     only `type[BaseModel]` and every read below would be an `unresolved-attribute`. It buys the
@@ -68,11 +68,13 @@ _CONVERSATION_FIELDS = frozenset({"chain", "reply_branches", "selected_comment_i
 _CONVERSATION_COMPUTED = frozenset({"target", "selected_comment"})
 _CONVERSATION_PROPERTIES = frozenset({"comments", "posts"})
 
-# What a caller may read off any post or comment from any of the three. Each source carries more
-# on top — Threads its `video_paths`, `quoted` and repost/quote counters, Facebook its
-# `group_name`, Instagram its `author_full_name` — and those are the platform's own reality
-# rather than drift. `share_count` is deliberately NOT here: Threads and Facebook publish one and
-# Instagram does not, and a field nothing populates is worse than an absent one.
+# What a caller may read off any post or comment from any source. Each carries more on top —
+# Threads its `video_paths`, `quoted` and repost/quote counters, Facebook its `group_name`,
+# Instagram its `author_full_name`, Twitter its `video_poster_urls` and `is_truncated` — and those
+# are the platform's own reality rather than drift. `share_count` is deliberately NOT here: Threads
+# and Facebook publish one and Instagram does not, and a field nothing populates is worse than an
+# absent one. `retweet_count` is absent for the same reason: Twitter reports one for an embedded
+# post and never for the post asked for.
 _OUTPUT_FIELDS = frozenset({
     "text",
     "url",
@@ -169,6 +171,7 @@ def test_the_sweep_finds_every_source() -> None:
         "ThreadsConversation",
         "FacebookConversation",
         "InstagramConversation",
+        "TwitterConversation",
     }
     assert _generic_conversation_classes() == {"PlatformConversation"}
 

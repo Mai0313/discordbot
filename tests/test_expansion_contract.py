@@ -1,13 +1,14 @@
 """What every auto-expansion cog owes, checked against all of them at once.
 
-A pasted Threads, Facebook, Instagram or Douyin link is the same feature four times over, and
+A pasted Threads, Facebook, Instagram, Douyin or Twitter link is the same feature five times
+over, and
 the whole point of it is that a reader learns it once: the same reply slot under the link, the
 same five reactions meaning the same five things, the same silence in the channel when it does
-not work out. Four cogs drifting apart is what that promise fails as, and it fails quietly —
+not work out. Five cogs drifting apart is what that promise fails as, and it fails quietly —
 every cog passes its own tests while the set of them stops agreeing.
 
 So the cogs are discovered rather than listed: an expansion cog is one importing
-`send_expansion_placeholder`, which is the shared reply slot itself, so a fifth one is held to
+`send_expansion_placeholder`, which is the shared reply slot itself, so a sixth one is held to
 the contract without anyone remembering to add it here. The one place a count is written down
 is `test_every_expansion_cog_is_accounted_for`, which fails until a new source is named — that
 is what stops a source arriving with nobody having read this file.
@@ -89,7 +90,7 @@ def _cog_class(module: Any) -> type:  # noqa: ANN401 -- a module object has no u
 def test_every_expansion_cog_is_accounted_for() -> None:
     """The one written-down list, so a new source cannot arrive unread.
 
-    Everything else here is discovered. This is the tripwire: a fifth expansion cog fails
+    Everything else here is discovered. This is the tripwire: a sixth expansion cog fails
     exactly one test, and the fix is to read this file and add its name.
     """
     assert {module.__name__.split(".")[-2] for module in _MODULES} == {
@@ -97,6 +98,7 @@ def test_every_expansion_cog_is_accounted_for() -> None:
         "parse_facebook",
         "parse_instagram",
         "parse_threads",
+        "parse_twitter",
     }
 
 

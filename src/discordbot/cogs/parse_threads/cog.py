@@ -22,11 +22,11 @@ None of the above reaches `/clean_threads_url`, the cog's slash command, which r
 and downloads nothing: it resolves a share link to the post's own URL and answers the caller
 alone. Nothing is expanded, so there is no second read for the mention rule to prevent.
 
-Threads, Facebook, Instagram and Douyin are one feature four times over, and what makes them
-one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
+Threads, Facebook, Instagram, Douyin and Twitter are one feature five times over, and what makes
+them one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
 five reactions and what each of them means, the restart sweep, and the rule that a failed
 expansion says nothing in the channel at all. Read that module before changing anything here
-that a reader would notice, and `tests/test_expansion_contract.py` before adding a fifth
+that a reader would notice, and `tests/test_expansion_contract.py` before adding a sixth
 source. What stays per platform is the card: this one walks a whole conversation and has ten
 embed slots to allocate over it.
 """
@@ -93,7 +93,7 @@ _REMAINDER_RESERVE = 64
 
 _PLACEHOLDER_TEXT = "-# 正在讀取 Threads 貼文⋯"
 # Owns this cog's rows in the pending-expansion table. Keyed as in `LINK_SOURCE_EMOJIS`, which
-# `tests/test_link_source_emojis.py` pins, so the four cogs and the reply path name a platform
+# `tests/test_link_source_emojis.py` pins, so the five cogs and the reply path name a platform
 # the same way rather than each inventing a spelling.
 _SOURCE = "threads"
 
@@ -672,7 +672,7 @@ class ThreadsCogs(commands.Cog):
                     conversation = await asyncio.to_thread(parse_cm.__enter__)
             # Broad on purpose: a fetch failure must not escape into the listener; the
             # reaction is the user-visible outcome, and which one it is comes off the error's
-            # class rather than a check here, so all four cogs answer a refusal the same way.
+            # class rather than a check here, so all five cogs answer a refusal the same way.
             except Exception as error:
                 # No exit call here: the walk is still driving that generator on its own
                 # thread, so throwing into it would be a second driver. Returning removes

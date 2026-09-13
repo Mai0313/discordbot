@@ -50,7 +50,7 @@ flowchart TD
 
     UP & RT & CX --> R{"Route"}
 
-    R -->|QA| L{"Linked Threads, Facebook, Instagram,<br/>Douyin or Bilibili post"}
+    R -->|QA| L{"Linked Threads, Facebook, Instagram,<br/>Twitter, Douyin or Bilibili post"}
     L -->|"the user is asking about it"| LF["Fetch the post, upload its media"]
     L -->|"incidental link"| LS["Nothing fetched"]
     LF & LS --> Y{"Linked YouTube video"}
@@ -84,6 +84,7 @@ The two content branches cost nothing when they do not apply. A linked post is f
 - **Threads parser**: paste a Threads.net or Threads.com URL and the bot expands the post, media, and reply chain, plus the post it quotes when it is a quote post. Mention the bot alongside the link instead, or mention it in a reply to a message carrying one, and it reads the post together with the comments under it and answers about it.
 - **Facebook parser**: paste a public Facebook post link and the bot expands the post, its pictures and its counters into the channel; when the link carries a `comment_id`, that one comment is shown under it as well. Mention the bot alongside the link instead, or mention it in a reply to a message carrying one, and it reads the post plus whichever comments the page loads up front and answers about it. Only public posts can be read, and a video post comes back as a link rather than a file.
 - **Instagram parser**: paste a public Instagram post link and the bot expands the caption, the carousel images and the counters into the channel; a link pointing at one comment shows that comment too. Mention the bot alongside the link instead, or mention it in a reply to a message carrying one, and it reads the post together with its comments and answers about it. Only public accounts can be read, and a Reel comes back as a link rather than watched footage.
+- **Twitter parser**: paste an x.com link and the bot expands the post, its pictures, the post it replies to and the post it quotes into the channel; a video shows its poster frame and a link, since nothing is downloaded. Mention the bot alongside the link instead and it reads the post and answers about it. The replies underneath are never available — Twitter serves a count and none of them — and a long post arrives cut off after its opening.
 - **Douyin parser**: paste a Douyin link and the bot posts the video (or the photo post's images) straight into the channel. Mention the bot alongside the link instead and it watches the clip and answers about it.
 - **Bilibili Q&A**: mention the bot with a Bilibili video link and it watches the video and answers about it. A bare link is not auto-expanded; `/download_video` still downloads the file.
 - **Video downloader**: `/download_video` downloads videos from YouTube, TikTok, Instagram, X, Facebook, Bilibili, and other yt-dlp supported sites. Douyin is supported too, watermark free and including photo posts. Files too large to upload are served as a link instead.
@@ -100,6 +101,7 @@ The two content branches cost nothing when they do not apply. A linked post is f
 | `/clean_threads_url <url>`                  | Privately turns a Threads share link into the post's own URL, so passing it on no longer names whoever shared it.                                          |
 | _Facebook URL_                              | Automatically expands a public post and its pictures, unless the bot is mentioned (then it answers about it). A `comment_id` link also shows that comment. |
 | _Instagram URL_                             | Automatically expands a public post and its carousel, unless the bot is mentioned (then it answers about it). A comment link also shows that comment.      |
+| _Twitter URL_                               | Automatically expands the post, its pictures and the posts around it, unless the bot is mentioned (then it answers about it). Replies are never available. |
 | _Douyin URL_                                | Automatically posts the video or photos, unless the bot is mentioned (then it answers about it).                                                           |
 | _Bilibili URL + mention_                    | Watches the linked video and answers about it (a bare link is not auto-expanded).                                                                          |
 | `/download_video <url> [quality]`           | Downloads a video and sends it back to Discord. A Douyin photo post comes back as images.                                                                  |

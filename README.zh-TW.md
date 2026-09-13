@@ -50,7 +50,7 @@ flowchart TD
 
     UP & RT & CX --> R{"分派路線"}
 
-    R -->|QA| L{"貼上的 Threads、Facebook、Instagram、<br/>抖音或 Bilibili 貼文"}
+    R -->|QA| L{"貼上的 Threads、Facebook、Instagram、<br/>Twitter、抖音或 Bilibili 貼文"}
     L -->|"使用者在問它的內容"| LF["抓那則貼文，上傳它的媒體"]
     L -->|"只是順手貼的連結"| LS["完全不抓"]
     LF & LS --> Y{"貼上的 YouTube 影片"}
@@ -84,6 +84,7 @@ flowchart TD
 - **Threads 解析**：貼上 Threads.net 或 Threads.com URL，bot 會展開貼文、media 與 reply chain，引用別人或自己先前的貼文時也會一起帶出被引用的那篇；改成 tag bot 並附上連結，或是回覆別人貼連結的訊息時 tag bot，它會改為連底下的留言一起讀過再回答。
 - **Facebook 解析**：貼上公開的 Facebook 貼文連結，bot 會把貼文、圖片與互動數字展開到頻道；連結若帶 `comment_id`，底下會再顯示那一則留言。改成 tag bot 並附上連結，或在帶連結的訊息下 tag 它回覆，它會讀貼文加上頁面預先載入的那幾則留言再回答。只讀得到公開貼文，影片貼文會以連結呈現而不是檔案。
 - **Instagram 解析**：貼上公開的 Instagram 貼文連結，bot 會把貼文文字、輪播圖片與互動數字展開到頻道；連結若指向某一則留言，底下會再顯示那一則。改成 tag bot 並附上連結，或在帶連結的訊息下 tag 它回覆，它會讀貼文加上底下的留言再回答。只讀得到公開帳號，Reel 會以連結呈現而不是看過影片。
+- **Twitter 解析**：貼上 x.com 連結，bot 會把貼文、圖片、它回覆的那一則和它引用的那一則一起展開到頻道；影片只放縮圖和連結，因為這條路徑什麼都不下載。改成 tag bot 並附上連結，它會讀過貼文再回答。有兩樣東西永遠拿不到：底下的留言（Twitter 只給一個數字，一則都不給），以及長貼文的全文（只拿得到開頭）。
 - **抖音解析**：貼上抖音連結，bot 會直接把影片（或圖文貼文的圖片）傳到頻道；改成 tag bot 並附上連結，它會改為看過影片再回答。
 - **Bilibili 問答**：tag bot 並附上 B 站影片連結，它會看過影片再回答。單獨貼連結不會自動展開；`/download_video` 仍可下載檔案。
 - **影片下載**：`/download_video` 可從 YouTube、TikTok、Instagram、X、Facebook、Bilibili，以及其他 yt-dlp 支援的網站下載影片。抖音也支援，無浮水印且包含圖文貼文。檔案太大無法上傳時會改以連結提供。
@@ -100,6 +101,7 @@ flowchart TD
 | `/clean_threads_url <url>`                  | 私密地把 Threads 分享連結還原成貼文本身的網址，轉貼時不會帶出分享者。                         |
 | _Facebook URL_                              | 自動展開公開貼文與圖片；被 tag 時改為讀過貼文再回答。帶 `comment_id` 的連結會多顯示那則留言。 |
 | _Instagram URL_                             | 自動展開公開貼文與輪播圖片；被 tag 時改為讀過貼文再回答。指向留言的連結會多顯示那則留言。     |
+| _Twitter URL_                               | 自動展開貼文、圖片與前後那兩則；被 tag 時改為讀過再回答。留言永遠拿不到。                     |
 | _抖音 URL_                                  | 自動傳回影片或圖片；被 tag 時改為看過影片再回答。                                             |
 | _Bilibili URL + tag_                        | 看過連結的影片後回答（單獨貼連結不會自動展開）。                                              |
 | `/download_video <url> [quality]`           | 下載影片並傳回 Discord。抖音的圖文貼文會傳回圖片。                                            |

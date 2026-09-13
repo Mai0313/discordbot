@@ -14,9 +14,9 @@ over: this repo's answer to an unimplemented member is a raise, and an ABC would
 forgotten override while saying nothing about the signature — which is the half that actually
 drifted. `tests/test_platform_shape.py` is what holds the signature.
 
-**A second method is deliberately NOT declared here, and the reason is the return type.** Two of
-the five write nothing to disk at all — Facebook and Instagram hand image URLs to Discord, which
-fetches them itself. The three that do write have nothing a base could hold them to: Threads'
+**A second method is deliberately NOT declared here, and the reason is the return type.** Three
+of the six write nothing to disk at all — Facebook, Instagram and Twitter hand image URLs to
+Discord, which fetches them itself. The three that do write have nothing a base could hold them to: Threads'
 `parse` yields a `ThreadsConversation` from a context manager, because what it has to clean up
 hangs off that conversation, while Douyin's and yt-dlp's `download` return a `TemporaryDownload`
 and take their own options (a quality preset, an image cap, an already-parsed post, a stop

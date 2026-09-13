@@ -57,6 +57,7 @@ nav:
                       - instagram: Reference/discordbot/cogs/gen_reply/link_sources/instagram.md
                       - registry: Reference/discordbot/cogs/gen_reply/link_sources/registry.md
                       - threads: Reference/discordbot/cogs/gen_reply/link_sources/threads.md
+                      - twitter: Reference/discordbot/cogs/gen_reply/link_sources/twitter.md
                   - answer: Reference/discordbot/cogs/gen_reply/answer.md
                   - ask_message: Reference/discordbot/cogs/gen_reply/ask_message.md
                   - ask_store: Reference/discordbot/cogs/gen_reply/ask_store.md
@@ -95,6 +96,8 @@ nav:
                   - cog: Reference/discordbot/cogs/parse_instagram/cog.md
               - parse_threads:
                   - cog: Reference/discordbot/cogs/parse_threads/cog.md
+              - parse_twitter:
+                  - cog: Reference/discordbot/cogs/parse_twitter/cog.md
               - research:
                   - agent: Reference/discordbot/cogs/research/agent.md
                   - cog: Reference/discordbot/cogs/research/cog.md
@@ -135,6 +138,7 @@ nav:
                   - file_downloads: Reference/discordbot/services/platforms/file_downloads.md
                   - instagram: Reference/discordbot/services/platforms/instagram.md
                   - threads: Reference/discordbot/services/platforms/threads.md
+                  - twitter: Reference/discordbot/services/platforms/twitter.md
                   - youtube: Reference/discordbot/services/platforms/youtube.md
                   - ytdlp: Reference/discordbot/services/platforms/ytdlp.md
           - typings:

@@ -1,7 +1,8 @@
 """Whether a message is addressed to the bot, shared by the reply pipeline and the link cogs.
 
 `gen_reply` answers a message only when it is a DM or explicitly mentions the bot. The link
-expansion cogs (`parse_threads`, `parse_facebook`, `parse_instagram`, `parse_douyin`) use the
+expansion cogs (`parse_threads`, `parse_facebook`, `parse_instagram`, `parse_douyin`,
+`parse_twitter`) use the
 same test in reverse: a message the reply pipeline will answer is left alone, so a link in ONE
 message is either expanded into the channel or answered about, never both. Across two messages
 it can be both: `gen_reply` also reads a Threads, Facebook or Instagram link the user only
