@@ -97,6 +97,7 @@ def test_every_expansion_cog_is_accounted_for() -> None:
         "parse_facebook",
         "parse_instagram",
         "parse_threads",
+        "parse_twitter",
     }
 
 
