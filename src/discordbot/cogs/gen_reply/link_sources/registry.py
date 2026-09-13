@@ -17,6 +17,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 from discordbot.typings.llm import LLMConfig
 from discordbot.services.platforms.douyin import DOUYIN_URL_RE, is_douyin_post_url
 from discordbot.services.platforms.threads import THREADS_URL_RE
+from discordbot.services.platforms.twitter import TWITTER_URL_RE
 from discordbot.cogs.gen_reply.link_sources import LinkContextSource
 from discordbot.services.platforms.bilibili import BILIBILI_URL_RE
 from discordbot.services.platforms.facebook import FACEBOOK_URL_RE, is_facebook_post_url
@@ -28,6 +29,10 @@ from discordbot.cogs.gen_reply.link_sources.douyin import (
 from discordbot.cogs.gen_reply.link_sources.threads import (
     build_threads_context_messages,
     threads_timeout_context_messages,
+)
+from discordbot.cogs.gen_reply.link_sources.twitter import (
+    build_twitter_context_messages,
+    twitter_timeout_context_messages,
 )
 from discordbot.cogs.gen_reply.link_sources.bilibili import (
     build_bilibili_context_messages,
@@ -108,6 +113,22 @@ async def _build_facebook_link_context(
     )
 
 
+async def _build_twitter_link_context(
+    *,
+    url: str,
+    answer_model_is_gemini: bool,
+    gemini_client: genai.Client | None,
+    allow_media_ingest: bool,
+) -> list[EasyInputMessageParam]:
+    """Adapts the Twitter builder to the registry signature (a straight pass-through)."""
+    return await build_twitter_context_messages(
+        url=url,
+        answer_model_is_gemini=answer_model_is_gemini,
+        gemini_client=gemini_client,
+        allow_media_ingest=allow_media_ingest,
+    )
+
+
 async def _build_instagram_link_context(
     *,
     url: str,
@@ -136,6 +157,15 @@ def _facebook_media_ingest_allowed(config: LLMConfig) -> bool:
     Carries `file_api_enabled` for the reason the Douyin predicate does: the images are fetched
     and downscaled before the upload they could no longer feed, so gating at the upload alone
     would still spend that work on the reply's critical path.
+    """
+    return config.file_api_enabled and bool(config.gemini_api_key.strip())
+
+
+def _twitter_media_ingest_allowed(config: LLMConfig) -> bool:
+    """No kill-switch of its own, so `file_api_enabled` and its key are the whole gate.
+
+    Carries `file_api_enabled` for the reason the Facebook predicate does: the images are fetched
+    and downscaled before the upload they could no longer feed.
     """
     return config.file_api_enabled and bool(config.gemini_api_key.strip())
 
@@ -214,6 +244,19 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         build=_build_instagram_link_context,
         on_timeout=instagram_timeout_context_messages,
         media_ingest_allowed=_instagram_media_ingest_allowed,
+    ),
+    LinkContextSource(
+        name="twitter",
+        # Path-anchored on `/status/<digits>`, so unlike Facebook, Instagram and Douyin no
+        # `url_filter` is needed: a profile or the home page never matches in the first place.
+        url_pattern=TWITTER_URL_RE,
+        # Deliberately NOT opting in, unlike the three other post sources. They do because what
+        # they fetch includes the comments their own expansion does not show, so a mention on
+        # someone else's link has something new to answer from. Twitter's endpoint serves no
+        # replies at all, so a second read of the same link would find exactly what the first did.
+        build=_build_twitter_link_context,
+        on_timeout=twitter_timeout_context_messages,
+        media_ingest_allowed=_twitter_media_ingest_allowed,
     ),
     LinkContextSource(
         name="douyin",

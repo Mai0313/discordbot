@@ -253,7 +253,11 @@ class _VideoVariant(_TwitterPayload):
     Read off `mediaDetails[].video_info.variants` rather than the top-level `video.variants`: the
     two describe the same renditions under DIFFERENT key names (`content_type`/`url` here,
     `type`/`src` there) and only this one carries `bitrate`, which is the whole basis for picking
-    a rendition. The first entry is always the HLS manifest, which has no bitrate and is not a file.
+    a rendition.
+
+    A video leads with the HLS manifest, which has no bitrate and is not a file; an animated GIF
+    carries no manifest at all and exactly one `video/mp4` at `bitrate: 0`. Filtering on the
+    content type rather than skipping the first entry is what makes one reader serve both.
     """
 
     bitrate: int = Field(default=0, description="Bits per second; absent on the HLS manifest")
@@ -272,8 +276,13 @@ class _MediaDetail(_TwitterPayload):
 
     `mediaDetails` is the only authoritative media list. The sibling `photos` and `video` keys are
     lossy convenience views: `photos` silently drops videos from a mixed post and loses their
-    position, and `video` holds at most one. Measured on a post carrying photo/video/photo/photo,
-    where `photos` returned three entries and the video's place in the order was gone.
+    position, and `video` holds at most one.
+
+    Mixed media is rare enough to miss: a 417-post sample contained none, and post
+    1885011383672000609 is one — `mediaDetails` reads photo/video/photo/photo while `photos`
+    returns three entries with the clip's place in the order gone. Both `photos` and `mediaDetails`
+    are absent entirely on a post with no media, and `photos` is present-but-empty on a video, so
+    every media field here defaults and none is required.
     """
 
     type: str = Field(default="", description="`photo`, `video` or `animated_gif`")

@@ -1,7 +1,7 @@
 """Custom emoji marking which platform's link the bot just read.
 
 Shared because two layers put the SAME marker on the same message and cannot import each
-other: an expansion cog (`parse_threads`, `parse_douyin`) marks a link it expanded into the
+other: an expansion cog (`parse_threads`, `parse_twitter`, ...) marks a link it expanded into the
 channel, while `gen_reply` marks one it read into an answer instead, and
 `tests/test_package_layering.py` forbids a cog reaching across to another for it. Bilibili
 has no expansion cog at all, so the reply path is the only thing that ever marks it.
@@ -21,6 +21,7 @@ from typing import Final
 FACEBOOK_EMOJI: Final[str] = "<:facebook:1546179601288396810>"
 INSTAGRAM_EMOJI: Final[str] = "<:instagram:1546181126945505340>"
 THREADS_EMOJI: Final[str] = "<:threads:1546180328639434923>"
+TWITTER_EMOJI: Final[str] = "<:twitter:1548725749974962306>"
 DOUYIN_EMOJI: Final[str] = "<:douyin:1546180677710385304>"
 BILIBILI_EMOJI: Final[str] = "<:bilibili:1546180944615051344>"
 
@@ -32,6 +33,7 @@ LINK_SOURCE_EMOJIS: Final[dict[str, str]] = {
     "threads": THREADS_EMOJI,
     "facebook": FACEBOOK_EMOJI,
     "instagram": INSTAGRAM_EMOJI,
+    "twitter": TWITTER_EMOJI,
     "douyin": DOUYIN_EMOJI,
     "bilibili": BILIBILI_EMOJI,
 }
@@ -43,4 +45,5 @@ __all__ = [
     "INSTAGRAM_EMOJI",
     "LINK_SOURCE_EMOJIS",
     "THREADS_EMOJI",
+    "TWITTER_EMOJI",
 ]
