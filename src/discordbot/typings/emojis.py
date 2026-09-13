@@ -13,7 +13,7 @@ restart sweep needs them anyway. `gen_reply` still spells its own three inline, 
 reactions track a reply turn rather than an expansion outcome.
 
 The keys below are also what the expansion cogs name their `pending_expansion` rows by, so a
-platform is spelled one way across the reply path, the four cogs and that table.
+platform is spelled one way across the reply path, the five cogs and that table.
 """
 
 from typing import Final

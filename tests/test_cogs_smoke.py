@@ -623,7 +623,7 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     generator on its own thread.
 
     The mark is the retryable one rather than the cross, which is the shared vocabulary all
-    four expansion cogs answer with: the post is fine and the same link works later.
+    five expansion cogs answer with: the post is fine and the same link works later.
     """
     monkeypatch.setattr(parse_threads, "THREADS_EXPAND_TIMEOUT_SECONDS", 0.05)
     cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))

@@ -23,11 +23,11 @@ sees every message in every channel, so the request-volume bounds in `services/p
 are load-bearing rather than defensive. A blocked request must never be reported as a missing
 post: telling someone their working link is dead is the worst failure this feature can produce.
 
-Threads, Facebook, Instagram and Douyin are one feature four times over, and what makes them
-one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
+Threads, Facebook, Instagram, Douyin and Twitter are one feature five times over, and what makes
+them one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
 five reactions and what each of them means, the restart sweep, and the rule that a failed
 expansion says nothing in the channel at all. Read that module before changing anything here
-that a reader would notice, and `tests/test_expansion_contract.py` before adding a fifth
+that a reader would notice, and `tests/test_expansion_contract.py` before adding a sixth
 source. What stays per platform is the card: this one downloads a clip or a gallery, and is the
 only source with a failure taxonomy rich enough to tell a bot wall from a deleted post.
 """
@@ -79,7 +79,7 @@ _EMBED_COLOR = 0xFE2C55
 
 _PLACEHOLDER_TEXT = "-# 正在讀取抖音貼文⋯"
 # Owns this cog's rows in the pending-expansion table. Keyed as in `LINK_SOURCE_EMOJIS`, which
-# `tests/test_link_source_emojis.py` pins, so the four cogs and the reply path name a platform
+# `tests/test_link_source_emojis.py` pins, so the five cogs and the reply path name a platform
 # the same way rather than each inventing a spelling.
 _SOURCE = "douyin"
 

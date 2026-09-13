@@ -440,7 +440,7 @@ async def test_a_platform_under_load_is_marked_retryable_not_broken() -> None:
     """The whole chain: a refused fetch reaches the channel as ⏱️, never as the cross.
 
     `tests/test_link_errors.py` proves the reader raises it and
-    `tests/test_expansion_contract.py` proves all four cogs map it the same way; this is the
+    `tests/test_expansion_contract.py` proves all five cogs map it the same way; this is the
     one test that walks both halves, because a 429 answered as ❌ tells the reader the bot is
     broken when the link is fine and works in a minute.
     """

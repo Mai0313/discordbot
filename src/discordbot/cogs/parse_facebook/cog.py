@@ -16,11 +16,11 @@ size ceiling: the only bytes it ever sends are the embed JSON.
 There is deliberately no kill-switch. `DOUYIN_AUTO_EXPAND_ENABLED` was the one precedent and
 it was deleted in #636 rather than copied here: turning this off means deleting the cog.
 
-Threads, Facebook, Instagram and Douyin are one feature four times over, and what makes them
-one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
+Threads, Facebook, Instagram, Douyin and Twitter are one feature five times over, and what makes
+them one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
 five reactions and what each of them means, the restart sweep, and the rule that a failed
 expansion says nothing in the channel at all. Read that module before changing anything here
-that a reader would notice, and `tests/test_expansion_contract.py` before adding a fifth
+that a reader would notice, and `tests/test_expansion_contract.py` before adding a sixth
 source. What stays per platform is the card: this one renders one post, its images and the
 comment a URL singled out.
 """
@@ -87,7 +87,7 @@ _BUDGET_SLACK = 400
 _TRUNCATION_NOTICE = "\n\n⋯（全文請看原貼文）"
 _PLACEHOLDER_TEXT = "-# 正在讀取 Facebook 貼文⋯"
 # Owns this cog's rows in the pending-expansion table. Keyed as in `LINK_SOURCE_EMOJIS`, which
-# `tests/test_link_source_emojis.py` pins, so the four cogs and the reply path name a platform
+# `tests/test_link_source_emojis.py` pins, so the five cogs and the reply path name a platform
 # the same way rather than each inventing a spelling.
 _SOURCE = "facebook"
 _VIDEO_HINT = "\n\n🎬 [點此觀看影片]({url})"
@@ -334,7 +334,7 @@ class FacebookCogs(commands.Cog):
                 conversation = await asyncio.to_thread(downloader.parse_metadata, url=url)
         # Broad on purpose: a fetch or parse failure must not escape into the listener; the
         # reaction is the user-visible outcome, and which one it is comes off the error's class
-        # rather than a check here, so all four cogs answer a refusal the same way.
+        # rather than a check here, so all five cogs answer a refusal the same way.
         except Exception as error:
             report_expansion_read_failure(
                 error=error, platform="Facebook", url=url, message_id=message.id
