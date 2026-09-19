@@ -335,8 +335,9 @@ class AnswerTurn(BaseModel):
         carries its own guild / public-channel guards. `allow_voice` enables a
         spoken clip, `allow_image` an inline generated image, `allow_music` an inline generated
         music clip, and `allow_video` an inline generated video clip when the answer model marks
-        the reply for it. All four are QA only: the media persona reply is built with none of
-        the generators, so a marker in one is stripped and produces nothing. `describe_capabilities` injects the feature reference that replaced
+        the reply for it. All four are QA only: the media persona reply is built with none of the
+        generators, so a marker in one is stripped and produces nothing.
+        `describe_capabilities` injects the feature reference that replaced
         `/help`, carried by QA alone since a persona reply riding generated media is not fielding
         a question about the bot. `yt_url`, set only when the router asked
         to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API

@@ -63,7 +63,8 @@ async def upload_to_files_api(
     `file_api_enabled` kill-switch sit here rather than at each caller: a switched-off upload
     takes the same path a failed one already takes. It is the backstop, not the saving — callers
     fetch the media BEFORE calling this, so the switch only avoids that fetch where the caller
-    checks it too, which is every link source that has a media gate at all.
+    checks it too. The Threads builder is the one that does not and still pays its CDN reads
+    with the switch off.
 
     `source` accepts a path as well as bytes (mirroring `MediaItem`) because the SDK's
     `files.upload` takes `str | os.PathLike | io.IOBase`: a clip already written to a temp

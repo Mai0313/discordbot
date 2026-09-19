@@ -127,7 +127,7 @@ class OpenAIFileUploader(AttachmentRenderer):
     async def _upload_file(
         self, filename: str, data: bytes, content_type: str, purpose: OpenAIFilePurpose
     ) -> UploadedFile | None:
-        """Uploads bytes to OpenAI Files API and returns `(file_id, expires_at)`."""
+        """Uploads bytes to OpenAI Files API and returns the uploaded handle."""
         started = time.monotonic()
         logfire.debug(
             "openai upload start", filename=filename, content_type=content_type, bytes=len(data)

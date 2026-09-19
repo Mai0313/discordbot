@@ -21,7 +21,9 @@ class LoadedMedia(BaseModel):
     )
     mime_type: str = Field(
         ...,
-        description="The media's real MIME type, which the upload needs and the part does not carry.",
+        description=(
+            "The media's real MIME type, which the upload needs and the part does not carry."
+        ),
         examples=["image/jpeg", "video/mp4"],
     )
 
@@ -30,11 +32,17 @@ class UploadedFile(BaseModel):
     """A file the provider has accepted and will serve until it expires."""
 
     uri: str = Field(
-        ..., description="The full provider uri a content part references the file by."
+        ...,
+        description=(
+            "The handle a content part references the file by: a full uri where the provider "
+            "serves one, a bare file id elsewhere."
+        ),
     )
     expires_at: datetime = Field(
         ...,
-        description="When the provider drops the file, which is also how long a render may be reused.",
+        description=(
+            "When the provider drops the file, which is also how long a render may be reused."
+        ),
     )
 
 

@@ -162,7 +162,7 @@ class GrokFileUploader(AttachmentRenderer):
     async def _upload_file(
         self, filename: str, data: bytes, content_type: str
     ) -> UploadedFile | None:
-        """Uploads bytes to the xAI Files API and returns `(file_id, expires_at)`.
+        """Uploads bytes to the xAI Files API and returns the uploaded handle.
 
         `content_type` is logged rather than sent, the upload carrying only a filename (see the
         module docstring). The timeout is this call's only deadline, since the SDK's own covers

@@ -151,7 +151,7 @@ class AnthropicFileUploader(AttachmentRenderer):
     async def _upload_file(
         self, filename: str, data: bytes, content_type: str
     ) -> UploadedFile | None:
-        """Uploads bytes to the Anthropic Files API and returns `(file_id, expires_at)`.
+        """Uploads bytes to the Anthropic Files API and returns the uploaded handle.
 
         The SDK sets `files-api-2025-04-14` for this upload call automatically; the separate
         answer request that later references the file must send that beta header itself (see
