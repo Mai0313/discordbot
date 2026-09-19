@@ -15,10 +15,9 @@ from collections.abc import Sequence
 # after a Chinese character: `看這篇https://example.com` read as no URL at all, which is how a
 # lot of people type (#492). Refusing only an ASCII word character keeps `xhttps://...` out and
 # lets the Chinese in, widening the pattern by one class of characters rather than by a class of
-# strings. Every scanner takes its head from here — the generic one below and the site patterns
-# in `douyin.py`, `threads.py`, `bilibili.py` and `youtube.py` alike — so they cannot drift on
-# where a URL begins, and `xhttps://v.douyin.com/abc` cannot be refused by one and matched by
-# another.
+# strings. Every scanner takes its head from here, the generic one below and every site pattern
+# alike, so they cannot drift on where a URL begins and `xhttps://v.douyin.com/abc` cannot be
+# refused by one and matched by another.
 URL_START_ANCHOR = r"(?<![A-Za-z0-9_])"
 
 # Generic fallback. `[^\s<>]` stops at whitespace and at the angle brackets Discord and
