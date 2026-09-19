@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from discordbot.typings.media import LoadedMedia
 from discordbot.services.platforms.twitter import (
     TwitterOutput,
     TwitterDownloader,
@@ -66,10 +67,10 @@ def _serve(
 def _accept_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]) -> None:
     """Makes the image fetch and upload succeed, recording what was uploaded."""
 
-    async def load_image_bytes(*, source: str) -> tuple[bytes, str]:
+    async def load_image_bytes(*, source: str) -> LoadedMedia:
         """Pretends the CDN answered."""
         uploaded.append(source)
-        return b"bytes", "image/jpeg"
+        return LoadedMedia(data=b"bytes", mime_type="image/jpeg")
 
     async def upload_as_input_file(
         *, client: object, source: bytes, mime_type: str, filename: str, timeout_seconds: float
@@ -322,7 +323,7 @@ async def test_a_failed_image_leaves_the_post_readable(monkeypatch: pytest.Monke
     """One refused CDN url must cost that image and not the post."""
     _serve(monkeypatch, post=_post())
 
-    async def load_image_bytes(*, source: str) -> tuple[bytes, str]:
+    async def load_image_bytes(*, source: str) -> LoadedMedia:
         """Refuses every fetch."""
         del source
         raise RuntimeError("cdn said no")
@@ -352,11 +353,11 @@ async def test_one_refused_image_does_not_cost_the_others(monkeypatch: pytest.Mo
     second = "https://pbs.twimg.com/media/b.jpg?name=orig"
     _serve(monkeypatch, post=_post(image_urls=[first, second]))
 
-    async def load_image_bytes(*, source: str) -> tuple[bytes, str]:
+    async def load_image_bytes(*, source: str) -> LoadedMedia:
         """Refuses the first image and serves the second."""
         if source == first:
             raise RuntimeError("cdn said no")
-        return b"bytes", "image/jpeg"
+        return LoadedMedia(data=b"bytes", mime_type="image/jpeg")
 
     async def upload_as_input_file(
         *, client: object, source: bytes, mime_type: str, filename: str, timeout_seconds: float

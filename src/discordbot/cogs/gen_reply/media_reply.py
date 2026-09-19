@@ -18,6 +18,7 @@ exactly as they were there.
 
 import time
 import base64
+from typing import TYPE_CHECKING
 import asyncio
 
 import logfire
@@ -45,6 +46,9 @@ from discordbot.cogs.gen_reply.files_api import upload_to_files_api
 from discordbot.cogs.gen_reply.references import replied_to_message
 from discordbot.cogs.gen_reply.turn_state import dispatched_model
 from discordbot.cogs.gen_reply.speculation import discard_task
+
+if TYPE_CHECKING:
+    from discordbot.typings.media import LoadedMedia
 
 # What the route says when it ran out of surface before it ran out of work. Spelled out rather
 # than left to asyncio's own `TimeoutError`, whose message is empty: `extract_friendly_error`
@@ -244,7 +248,7 @@ class MediaReplyRoutes(BaseModel):
                 # Find the source video first, by priority (current message, then replied-to);
                 # each message reads at most its first clip. Only when there is no source video do
                 # we download reference images, so an edit is never delayed by media it discards.
-                source_video: tuple[bytes, str] | None = None
+                source_video: LoadedMedia | None = None
                 for source_message in source_messages:
                     videos = await toolkit.input_builder.get_video_sources(message=source_message)
                     if videos:
@@ -273,7 +277,7 @@ class MediaReplyRoutes(BaseModel):
                             for m in source_messages
                         )
                     )
-                    images = [pair for group in image_groups for pair in group][
+                    images = [loaded for group in image_groups for loaded in group][
                         :MAX_VIDEO_REFERENCE_IMAGES
                     ]
                     # Refine the raw request into a full motion/camera prompt first (best-effort,
@@ -284,7 +288,7 @@ class MediaReplyRoutes(BaseModel):
                         instructions=VIDEO_PROMPT,
                         end_user_id=message.author.name,
                         enabled=self.config.video_refine_prompt_enabled,
-                        image_bytes_list=[raw for raw, _ in images] or None,
+                        image_bytes_list=[loaded.data for loaded in images] or None,
                     )
                     video_bytes = await toolkit.video_generator.render(
                         prompt=refined_prompt, reference_image_sources=images

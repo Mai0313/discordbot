@@ -122,9 +122,8 @@ class OpenAIFileUploader(AttachmentRenderer):
             )
             if loaded is None:
                 return None
-            data, content_type = loaded
             return await self._upload_file(
-                filename=filename, data=data, content_type=content_type, purpose=purpose
+                filename=filename, data=loaded.data, content_type=loaded.mime_type, purpose=purpose
             )
 
     async def _upload_file(

@@ -31,11 +31,11 @@ async def _upload_each(
         `load_image_bytes` downscales to the provider's effective resolution, which matters
         because these are full-resolution originals.
         """
-        data, mime_type = await load_image_bytes(source=image_url)
+        loaded = await load_image_bytes(source=image_url)
         return await upload_as_input_file(
             client=gemini_client,
-            source=data,
-            mime_type=mime_type,
+            source=loaded.data,
+            mime_type=loaded.mime_type,
             filename=f"{platform.lower()}_image_{index}.jpg",
             timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
         )

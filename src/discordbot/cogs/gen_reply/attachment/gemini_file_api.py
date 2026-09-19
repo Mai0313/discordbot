@@ -241,9 +241,8 @@ class GeminiFileUploader(AttachmentRenderer):
             )
             if loaded is None:
                 return None
-            data, content_type = loaded
             result = await self._upload_file(
-                filename=filename, data=data, content_type=content_type
+                filename=filename, data=loaded.data, content_type=loaded.mime_type
             )
         if isinstance(result, PendingUpload):
             self._pending_uploads[cache_key] = result

@@ -14,6 +14,7 @@ from tenacity.wait import wait_fixed, wait_random
 from nextcord.utils import escape_mentions
 from openai.types.responses import ResponseOutputItem, ResponseStreamEvent
 
+from discordbot.typings.media import LoadedMedia
 from discordbot.typings.memory import MemoryCredits
 from discordbot.typings.timeouts import ANSWER_STREAM_MAX_ATTEMPTS
 from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
@@ -1039,8 +1040,8 @@ class ResponseStreamer(BaseModel):
             return None
         return MediaItem(source=clip.audio, filename=VOICE_REPLY_FILENAME)
 
-    async def _load_marker_source_images(self) -> list[tuple[bytes, str]]:
-        """Best-effort source images (current + replied-to message) as `(bytes, mime)` pairs.
+    async def _load_marker_source_images(self) -> list[LoadedMedia]:
+        """Best-effort source images from the current and replied-to message.
 
         Shared by the inline `<generate-image>` edit (which needs only the bytes) and the inline
         `<generate-video>` reference path (which needs the mime, since omni rejects an image content
@@ -1068,7 +1069,7 @@ class ResponseStreamer(BaseModel):
             return []
 
     async def _build_image_candidates(
-        self, *, source_images_task: asyncio.Task[list[tuple[bytes, str]]] | None
+        self, *, source_images_task: asyncio.Task[list[LoadedMedia]] | None
     ) -> list[MediaItem]:
         """Renders the <generate-image> requests to PNG candidates, in order; [] when none delivered.
 
@@ -1105,7 +1106,7 @@ class ResponseStreamer(BaseModel):
         # When the user uploaded image(s), feed them so an inline <generate-image> edits them instead of
         # generating a fresh picture (mirrors the IMAGE route); best-effort, [] when none / failure.
         source_images = await source_images_task if source_images_task is not None else []
-        source_bytes = [raw for raw, _ in source_images]
+        source_bytes = [loaded.data for loaded in source_images]
         # Render every requested image concurrently so a slow one never delays the others.
         images = await asyncio.gather(
             *(
@@ -1162,7 +1163,7 @@ class ResponseStreamer(BaseModel):
         return MediaItem(source=clip.audio, filename=music_filename(mime_type=clip.mime_type))
 
     async def _build_video_candidate(
-        self, *, source_images_task: asyncio.Task[list[tuple[bytes, str]]] | None
+        self, *, source_images_task: asyncio.Task[list[LoadedMedia]] | None
     ) -> MediaItem | None:
         """Generates the <generate-video> clip to an MP4 candidate, or None when not delivered.
 

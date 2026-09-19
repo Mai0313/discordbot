@@ -156,8 +156,9 @@ class GrokFileUploader(AttachmentRenderer):
             )
             if loaded is None:
                 return None
-            data, content_type = loaded
-            return await self._upload_file(filename=filename, data=data, content_type=content_type)
+            return await self._upload_file(
+                filename=filename, data=loaded.data, content_type=loaded.mime_type
+            )
 
     async def _upload_file(
         self, filename: str, data: bytes, content_type: str

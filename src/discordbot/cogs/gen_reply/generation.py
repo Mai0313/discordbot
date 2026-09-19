@@ -65,6 +65,7 @@ from openai.types.responses.response_input_image_param import ResponseInputImage
 
 from discordbot.utils.llm import output_text_or_empty
 from discordbot.utils.images import convert_base64_to_data_uri
+from discordbot.typings.media import LoadedMedia
 from discordbot.typings.models import ModelSettings
 from discordbot.typings.timeouts import (
     VOICE_TIMEOUT_SECONDS,
@@ -549,8 +550,8 @@ class VideoGenerator(BaseModel):
         self,
         *,
         prompt: str,
-        reference_image_sources: list[tuple[bytes, str]],
-        source_video: tuple[bytes, str] | None = None,
+        reference_image_sources: list[LoadedMedia],
+        source_video: LoadedMedia | None = None,
     ) -> bytes:
         """Renders one video to MP4 bytes via the native Gemini (omni) Interactions API; raises.
 
@@ -595,15 +596,15 @@ class VideoGenerator(BaseModel):
             task_label = "edit"
         elif reference_image_sources:
             content = [TextContentParam(type="text", text=text)]
-            # Each image MUST carry its real mime type: omni rejects an image content block with an
-            # empty mime ("Unsupported MIME type: "). The mime already rides in the source tuple.
+            # Each image MUST carry its real mime type: omni rejects an image content block with
+            # an empty mime ("Unsupported MIME type: ").
             content.extend(
                 ImageContentParam(
                     type="image",
-                    data=base64.b64encode(raw).decode(),
-                    mime_type=cast("ImageContentMimeType", mime),
+                    data=base64.b64encode(loaded.data).decode(),
+                    mime_type=cast("ImageContentMimeType", loaded.mime_type),
                 )
-                for raw, mime in reference_image_sources[:MAX_VIDEO_REFERENCE_IMAGES]
+                for loaded in reference_image_sources[:MAX_VIDEO_REFERENCE_IMAGES]
             )
             task_label = "infer_image"
         else:
@@ -647,7 +648,7 @@ class VideoGenerator(BaseModel):
         return await self._download_output_video(uri=video.uri)
 
     async def generate(
-        self, *, user_prompt: str, reference_image_sources: list[tuple[bytes, str]] | None = None
+        self, *, user_prompt: str, reference_image_sources: list[LoadedMedia] | None = None
     ) -> bytes | None:
         """Renders one inline `<generate-video>` clip to MP4 bytes; None on any failure or timeout.
 
@@ -697,7 +698,7 @@ class VideoGenerator(BaseModel):
                 )
                 await asyncio.sleep(2.0)
 
-    async def _upload_source_video(self, *, source_video: tuple[bytes, str]) -> str:
+    async def _upload_source_video(self, *, source_video: LoadedMedia) -> str:
         """Uploads a source clip to the Files API and returns its ACTIVE uri; raises on failure.
 
         The edit path feeds the actual clip (not a poster frame), so the video IS the primary
@@ -706,9 +707,9 @@ class VideoGenerator(BaseModel):
         (`FILES_READY_TIMEOUT_SECONDS`) because a raw clip is far larger than an image
         and can sit in PROCESSING longer than the reply-upload's window.
         """
-        data, mime = source_video
         uploaded = await self.client.aio.files.upload(
-            file=BytesIO(data), config={"mime_type": mime, "display_name": "source.mp4"}
+            file=BytesIO(source_video.data),
+            config={"mime_type": source_video.mime_type, "display_name": "source.mp4"},
         )
         file_name = uploaded.name
         if file_name is None:

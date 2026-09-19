@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from discordbot.typings.media import LoadedMedia
 from discordbot.typings.context_budgets import (
     MAX_THREADS_POSTS,
     MAX_THREADS_REPLIES,
@@ -122,11 +123,11 @@ def _stub_media(
 ) -> None:
     """Stubs the image fetch and the Files API upload so no network or SDK is touched."""
 
-    async def fake_load_image_bytes(source: str) -> tuple[bytes, str]:
+    async def fake_load_image_bytes(source: str) -> LoadedMedia:
         """Returns canned downscaled image bytes for a URL source."""
         if image_fetch_fails:
             raise RuntimeError(f"cdn url expired: {source}")
-        return b"image-bytes", "image/jpeg"
+        return LoadedMedia(data=b"image-bytes", mime_type="image/jpeg")
 
     def fake_download_media(self: ThreadsDownloader, url: str, filename: str) -> Path:
         """Writes a stand-in clip into the builder's scratch directory."""

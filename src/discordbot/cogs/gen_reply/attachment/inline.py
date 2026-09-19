@@ -54,7 +54,7 @@ class InlineRenderer(AttachmentRenderer):
         allow_dead_cache: bool = False,
     ) -> tuple[RenderedPart, datetime] | None:
         try:
-            file_bytes, content_type = await load_image_bytes(source=source)
+            loaded = await load_image_bytes(source=source)
         except Exception as exc:
             # Broad on purpose: `load_image_bytes` spans a CDN fetch, a PIL decode and a
             # downscale re-encode, so the type is what names the failing step.
@@ -68,7 +68,7 @@ class InlineRenderer(AttachmentRenderer):
             return None
         image_part = ResponseInputImageParam(
             type="input_image",
-            image_url=_data_uri(data=file_bytes, mime_type=content_type),
+            image_url=_data_uri(data=loaded.data, mime_type=loaded.mime_type),
             detail="auto",
         )
         return image_part, _inline_expiry()
@@ -98,7 +98,7 @@ class InlineRenderer(AttachmentRenderer):
             )
             return None
         try:
-            file_bytes, _ = await load_attachment_bytes(attachment=attachment)
+            loaded = await load_attachment_bytes(attachment=attachment)
         except Exception as exc:
             # Broad on purpose: `attachment.read()` surfaces nextcord HTTPException/NotFound,
             # aiohttp client errors and timeouts; all of them just drop this one part.
@@ -111,7 +111,7 @@ class InlineRenderer(AttachmentRenderer):
             )
             return None
         return self._inline_file_part(
-            filename=attachment.filename, data=file_bytes, mime_type=mime_type
+            filename=attachment.filename, data=loaded.data, mime_type=mime_type
         )
 
     def _inline_file_part(

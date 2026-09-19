@@ -1,8 +1,6 @@
 """Shared byte loaders for attachment rendering (image fetch + downscale, mime resolution).
 
-Used by every renderer strategy, by the IMAGE route's raw-bytes path and by the Threads link
-builder, so the download/downscale logic lives in one place independent of how the bytes are
-later consumed.
+The download and downscale live in one place, independent of how the bytes are later consumed.
 """
 
 import asyncio
@@ -11,21 +9,21 @@ from mimetypes import guess_type
 from nextcord import Attachment, StickerItem
 
 from discordbot.utils.images import get_image_data, shrink_image_bytes
+from discordbot.typings.media import LoadedMedia
 
 
-async def load_image_bytes(source: Attachment | StickerItem | str) -> tuple[bytes, str]:
+async def load_image_bytes(source: Attachment | StickerItem | str) -> LoadedMedia:
     """Fetches and downscales an image source to upload-ready bytes and MIME type.
 
-    URL sources fetch over the network and attachments decode/re-encode, so the blocking
-    work runs off the event loop. Raises on any fetch/decode failure. This bounds nothing
-    itself: the Gemini uploader holds its media semaphore across the call, while the inline
-    renderer, the IMAGE route and the Threads link builder do not, so each of those fans
-    out as wide as whatever it passes in (the Threads builder slices to its own media-part
-    budget first, the other two do not).
+    URL sources fetch over the network and attachments decode/re-encode, so the blocking work
+    runs off the event loop. Raises on any fetch/decode failure.
+
+    This bounds nothing itself, so a caller that fans out over many sources bounds its own
+    concurrency or does not.
     """
     if isinstance(source, str):
         file_bytes = await asyncio.to_thread(get_image_data, image_file=source)
-        return file_bytes, "image/jpeg"
+        return LoadedMedia(data=file_bytes, mime_type="image/jpeg")
     if isinstance(source, Attachment):
         content_type = source.content_type or guess_type(source.filename)[0] or "image/png"
     else:
@@ -54,6 +52,8 @@ def attachment_mime(attachment: Attachment) -> str:
     return content_type.split(";")[0].strip()
 
 
-async def load_attachment_bytes(attachment: Attachment) -> tuple[bytes, str]:
+async def load_attachment_bytes(attachment: Attachment) -> LoadedMedia:
     """Reads a file attachment's bytes alongside its resolved MIME type."""
-    return await attachment.read(), attachment_mime(attachment=attachment)
+    return LoadedMedia(
+        data=await attachment.read(), mime_type=attachment_mime(attachment=attachment)
+    )
