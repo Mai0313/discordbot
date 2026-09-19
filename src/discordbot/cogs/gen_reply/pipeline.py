@@ -193,8 +193,8 @@ class ReplyPipeline(BaseModel):
             link_url = link_url_for_source(source=link_source, message=self.message)
             if link_url is None:
                 # The router named this source, but its URL is not where the source is
-                # allowed to look (Threads alone walks the reply chain), so the answer
-                # silently goes without the post the user was pointing at.
+                # allowed to look: only a source that opts into the replied-to scan reads one
+                # there. So the answer silently goes without the post the user pointed at.
                 logfire.info(
                     "gen_reply selected link source has no readable URL; skipping it",
                     source=link_source.name,
