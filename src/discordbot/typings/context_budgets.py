@@ -165,9 +165,10 @@ MAX_THREADS_POSTS: Final[int] = 6
 
 # Cap on the comments rendered below the target, counted across every branch. Kept on its own axis
 # rather than sharing `MAX_THREADS_POSTS`: the chain is the context leading UP to the linked post,
-# the comments are the discussion under it, and one should never squeeze the other out. Sized to
-# roughly what one page ships (the sampled pages carry 0-46 comments, median 3), so it is a
-# backstop rather than a policy; `_select_replies` decides what a trim actually drops.
+# the comments are the discussion under it, and one should never squeeze the other out. It is a
+# backstop rather than a policy, and since #657 it is one that never fires: the page ships at most
+# ten reply branches with a cursor for the rest that nothing follows, measured 2026-09-19 at 9-14
+# comments against 48-121 reported. `_select_replies` decides what a trim actually drops.
 MAX_THREADS_REPLIES: Final[int] = 30
 
 # Cap on images ingested from a Douyin photo post. Each costs a download plus an upload, and a
