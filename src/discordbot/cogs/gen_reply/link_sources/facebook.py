@@ -23,13 +23,13 @@ import asyncio
 from google import genai
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.context_budgets import MAX_FACEBOOK_COMMENTS, MAX_FACEBOOK_INGEST_IMAGES
 from discordbot.cogs.gen_reply.link_sources import (
+    PostSeparators,
     system_block,
     defuse_markers,
-    link_context_blocks,
+    post_context_blocks,
 )
 from discordbot.services.platforms.facebook import FacebookDownloader, FacebookConversation
 from discordbot.cogs.gen_reply.link_sources.image_ingest import (
@@ -94,6 +94,13 @@ FACEBOOK_TIMEOUT_NOTICE = (
     "==== We tried to read the Facebook link in the user's message but it did not respond in "
     "time, so its content could not be read for this reply. Tell the user this plainly and "
     "suggest they try again; do not invent the post's contents. ===="
+)
+
+
+FACEBOOK_SEPARATORS = PostSeparators(
+    attached=FACEBOOK_CONTEXT_SEPARATOR,
+    text_only=FACEBOOK_TEXT_ONLY_SEPARATOR,
+    trailer=FACEBOOK_CONTEXT_TRAILER,
 )
 
 
@@ -210,27 +217,9 @@ async def build_facebook_context_messages(
             )
 
     text = _render_conversation(conversation=conversation, attached_images=len(media_parts))
-    # The text-only separator is for media that EXISTS and did not arrive, never for a post that
-    # simply carries none. A plain text post is the common case here, and telling the model it
-    # could not see media that was never there makes it volunteer an apology for nothing.
-    unattached = bool((target.image_urls or target.video_urls) and not media_parts)
-    if media_parts:
-        # The trailer rides AFTER the attachments rather than at the end of the text: the images
-        # are the one part of this block nothing here ever looked inside, so a fence that closed
-        # before them would leave an instruction-shaped screenshot sitting past the end-of-data
-        # marker.
-        return [
-            system_block(text=FACEBOOK_CONTEXT_SEPARATOR),
-            EasyInputMessageParam(
-                role="user",
-                content=[
-                    ResponseInputTextParam(text=text, type="input_text"),
-                    *media_parts,
-                    ResponseInputTextParam(text=FACEBOOK_CONTEXT_TRAILER, type="input_text"),
-                ],
-            ),
-        ]
-    return link_context_blocks(
-        separator=FACEBOOK_TEXT_ONLY_SEPARATOR if unattached else FACEBOOK_CONTEXT_SEPARATOR,
-        text=f"{text}\n\n{FACEBOOK_CONTEXT_TRAILER}",
+    return post_context_blocks(
+        text=text,
+        media_parts=media_parts,
+        post_carries_media=bool(target.image_urls or target.video_urls),
+        separators=FACEBOOK_SEPARATORS,
     )

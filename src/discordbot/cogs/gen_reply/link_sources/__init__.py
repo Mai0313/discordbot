@@ -57,6 +57,64 @@ def link_context_blocks(
     ]
 
 
+class PostSeparators(BaseModel):
+    """What a source says around a post it could read, in that source's own words.
+
+    Three strings rather than one, because which of the first two opens the block is decided by
+    what actually arrived rather than by what the post has.
+
+    Attributes:
+        attached: Opens the block when the post's media really is below it.
+        text_only: Opens it instead when media EXISTS and did not arrive, so the model says what
+            it has rather than inventing a scene. Never used for a post that simply carries none,
+            which would have it apologise for nothing.
+        trailer: Closes the quoted block, and is always its last part.
+    """
+
+    attached: str = Field(..., description="Opens the block when the media is below it.")
+    text_only: str = Field(..., description="Opens it when media exists and did not arrive.")
+    trailer: str = Field(..., description="Closes the quoted block, always last.")
+
+
+def post_context_blocks(
+    *,
+    text: str,
+    media_parts: Sequence[ResponseInputFileParam],
+    post_carries_media: bool,
+    separators: PostSeparators,
+) -> list[EasyInputMessageParam]:
+    """Assembles the blocks for a post that could be read.
+
+    The trailer rides AFTER the attachments rather than at the end of the text: the images are
+    the one part of this block nothing ever looked inside, so a fence that closed before them
+    would leave an instruction-shaped screenshot sitting past the end-of-data marker. That is
+    the reason this lives in one place rather than once per source.
+
+    Args:
+        text: The rendered post.
+        media_parts: Whatever the upload actually produced, which is not what the post carries.
+        post_carries_media: Whether the post has media at all, deciding which separator opens it.
+        separators: The source's own wording.
+
+    Returns:
+        Input blocks ready to splice into the answer input.
+    """
+    if media_parts:
+        return [
+            system_block(text=separators.attached),
+            EasyInputMessageParam(
+                role="user",
+                content=[
+                    ResponseInputTextParam(text=text, type="input_text"),
+                    *media_parts,
+                    ResponseInputTextParam(text=separators.trailer, type="input_text"),
+                ],
+            ),
+        ]
+    opener = separators.text_only if post_carries_media else separators.attached
+    return link_context_blocks(separator=opener, text=f"{text}\n\n{separators.trailer}")
+
+
 # The pipeline's own inline markers, opening or closing. Quoted post text is the one place they
 # can arrive written by someone else; `defuse_markers` has the why. Case-insensitive because
 # `markers.py` extracts case-insensitively, and a defusing pass that is stricter than the
