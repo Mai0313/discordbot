@@ -1,22 +1,19 @@
 """One reply turn's memory lifetime, from the notes it wrote to the clear that ends it.
 
-The pipeline is keyed by an opaque scope (see ``store``), so the same orchestration drives
-both per-user and per-server (bot self) memory. The flavor-specific bits are injected:
-``subject`` names the memory target and ``writer`` carries the flavor's prompts.
+The pipeline is keyed by an opaque scope (see ``store``), so the same orchestration drives both
+per-user and per-server memory. The flavor-specific bits are injected: ``subject`` names the
+memory target and ``writer`` carries the flavor's prompts.
 
-Two things live here, and they are the two ends of one protocol rather than two subsystems
-sharing a file. The turn reviews the reply's memory notes, stages what survives, and checks
-``cleared_since`` before every write it makes; ``clear_scope_memory`` is what stamps that
-flag, and its docstring is the only thing that says why each of those checks has to sit
-immediately before its write with no ``await`` in between. Splitting them would file the
-guard away from what it guards against.
+The turn and the clear are the two ends of one protocol rather than two subsystems sharing a
+file. The turn reviews the reply's memory notes, stages what survives, and checks
+``cleared_since`` before every write it makes; ``clear_scope_memory`` is what stamps that flag,
+and its docstring is the only thing that says why each of those checks has to sit immediately
+before its write with no ``await`` in between. Splitting them would file the guard away from
+what it guards against.
 
-Everything below is a module of its own: ``inflight`` holds the one-job-per-scope queue, the
-process-wide semaphore and the reply.db bookkeeping, ``consolidation`` the compartment
-fan-out, ``regeneration`` the from-scratch rebuild, ``tone`` the unpartitioned tone tier.
-None of them imports this module back. The turn body ``inflight`` runs reaches it as an
-argument rather than an import, and a staged turn meets the fan-out at exactly one call
-(``consolidate_after_turn``), which is what let that cluster leave in #613.
+Everything below is a module of its own, and none of them imports this one back: the turn body
+that ``inflight`` runs reaches it as an argument rather than an import, and a staged turn meets
+the compartment fan-out at exactly one call.
 """
 
 import asyncio
@@ -159,7 +156,7 @@ async def clear_scope_memory(scope: str) -> bool:
     #
     # Commits the deletion so the working tree stops carrying it, which is all this can
     # do: the commits before it still hold the content, and no reachable-object pruning
-    # changes that. Local history outliving a clear is a recorded decision on #408.
+    # changes that; `git_history.py` says why that is the intended outcome rather than a gap.
     memory_git.enqueue(scope=scope, reason="clear")
     # A user-driven, irreversible erase of their own data, and the only trace of it outside
     # reply.db's own `cleared` row, since nothing about it is visible in the files afterwards.

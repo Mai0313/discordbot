@@ -15,8 +15,8 @@ that):
   check re-run against the same raw batch and the same existing facts will not, so it
   would freeze the scope's memory permanently while burning a consolidation call every
   cooldown. Only shape failures — the call itself failing, or a mass deletion — reject.
-* **Aging.** `last_confirmed` is code-stamped, so the freshness rules that used to be
-  prose in the consolidation prompt are a sweep here. Stable facts age by displacement
+* **Aging.** `last_confirmed` is code-stamped, so the freshness rules are a deterministic
+  sweep here rather than something a prompt has to re-apply. Stable facts age by displacement
   against the freshest fact *in the same compartment*, so an active guild cannot evict
   the memory of one the user visits less often.
 """
@@ -63,23 +63,17 @@ _GUILD_SOURCE_RE = re.compile(r"^guild (?P<guild_id>\d+)$")
 
 
 class DeltaOutcome(BaseModel):
-    """What one compartment's delta batch did.
-
-    Attributes:
-        created: Facts written that did not exist before.
-        updated: Existing facts rewritten in place.
-        deleted: Facts removed.
-        dropped: Deltas refused individually (unknown section, empty body, bad id).
-        rejected: Why the whole batch was refused, or "" when it was applied.
-        written: Ids this batch created or updated, so a rebuild can drop the rest.
-    """
+    """What one compartment's delta batch did."""
 
     model_config = ConfigDict(frozen=True)
 
     created: int = Field(default=0, description="Facts written that did not exist before.")
     updated: int = Field(default=0, description="Existing facts rewritten in place.")
     deleted: int = Field(default=0, description="Facts removed.")
-    dropped: int = Field(default=0, description="Deltas refused individually.")
+    dropped: int = Field(
+        default=0,
+        description="Deltas refused individually: unknown section, empty body, or bad id.",
+    )
     rejected: str = Field(default="", description="Why the batch was refused; empty when applied.")
     written: tuple[str, ...] = Field(
         default=(),
@@ -122,11 +116,10 @@ def partition_forget_requests(raw_text: str, compartments: tuple[str, ...]) -> d
 
     Deliberately separate from `partition_raw_entries` rather than a bucket alongside the
     observations, because a forget must never share a consolidation call with them. The call
-    that carries one is applied with `deletes_only`, and that flag is per call: on a turn that
-    both remembered and forgot something, a combined bucket would leave nothing but a prompt
-    line stopping the model from writing the forget's own sentence into a compartment it was
-    copied into precisely because it could not reach the fact any other way. Keeping the two
-    apart costs one extra call on a mixed turn and keeps the guarantee structural.
+    that carries one is applied with `deletes_only`, and that flag is per CALL: a combined
+    bucket on a turn that both remembered and forgot something would leave nothing but a prompt
+    line stopping the model writing the forget's own sentence into a compartment it was copied
+    into precisely because it could not reach the fact any other way.
 
     A request is COPIED into every compartment its speaker could read from, since the fact it
     names may be stored in any of them; `_forget_targets` decides which. An empty
@@ -180,19 +173,14 @@ def tone_evidence_from_raw(raw_text: str) -> str:
     Tone is the one tier that is cross-server safe by construction, so it must not be
     partitioned: nearly half of all observations are `source_only`, and a bucket-gated
     tone note would simply stop updating for those conversations. Each line carries its
-    `evidence_kind` and then the summary, in the order the entries were appended, and
-    the prompt is explicit that this block feeds the note alone, that the ordering is
-    oldest-first (its "a later stated preference wins" rule has no other clock) and
-    that the tag is not to be copied into the note.
+    `evidence_kind` and then the summary, oldest-first — the note's "a later stated
+    preference wins" rule has no other clock.
 
-    The kind is what tells a preference the user stated apart from one inferred off
-    their own behaviour, and the note is a merge of many batches, so without it every
-    bullet reads alike and the note converges on whichever reading has the most bullets.
-    That is not hypothetical: a user who asked in DM to be addressed respectfully, then
-    trash-talked the bot across a guild for weeks, ended up with a note saying they
-    wanted trash-talk back. The one stated preference lost to five inferred ones, and
-    the compartment calls never had this problem because `<raw_entries>` carries the
-    kind to them already.
+    The kind is what tells a preference the user stated apart from one inferred off their
+    own behaviour, and the note is a merge of many batches, so without it every bullet reads
+    alike and the note converges on whichever reading has the most bullets. That is not
+    hypothetical: one stated preference has lost to a run of inferred ones here and the note
+    came out reversed.
     """
     lines: list[str] = []
     for _, block in _iter_observations(text=raw_text):
@@ -244,10 +232,8 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     present in both — the one ordering that cannot widen a fact's reach.
 
     `deletes_only` refuses every create and update in the batch, and is set when the bucket
-    carried nothing but forget requests. It is what makes a broadcast forget structurally safe
-    rather than safe by prompt: the compartments it reaches beyond the one holding the fact are
-    handed a sentence that may be `source_only`, and this stops any of them writing it down
-    however the model reads it.
+    carried nothing but forget requests; `partition_forget_requests` owns why a forget arrives
+    in a call of its own.
     """
     existing = {fact.fact_id: fact for fact in read_facts(scope=scope, compartment=compartment)}
     allowed = sections_for_flavor(flavor=flavor)
@@ -300,8 +286,7 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
     ceiling = max(MAX_NET_FACT_DELETIONS_FLOOR, len(existing) // 2)
     if not allow_mass_delete and net_loss > ceiling:
         # Net rather than raw deletes: merging several near-duplicates into one is
-        # consolidation's whole job, and the median scope holds a handful of facts, so
-        # a raw-delete ceiling would refuse the common case.
+        # consolidation's whole job, so a raw-delete ceiling would refuse the common case.
         return DeltaOutcome(dropped=dropped, rejected="mass deletion")
     for fact_id in sorted(to_delete):
         delete_fact(scope=scope, compartment=compartment, fact_id=fact_id)
@@ -361,15 +346,14 @@ def _resolve_delta(  # noqa: PLR0911 -- one early return per way a delta can be 
 def _subject_id_of(delta: MemoryFactDelta) -> int | None:
     """Returns the member id this delta names, or None when it names nothing usable.
 
-    The field is model-authored free text and only `member_alias` renders it
-    (`facts.py::_render_fact_line`), so on every other section a junk id costs the field
-    and nothing else — where casting it unguarded cost the whole fan-out, `apply_deltas`
-    raising past a broad handler that abandons the compartments still queued behind it
-    (#527). An alias row that resolves to None is dropped in `_resolve_delta` instead,
-    because there the id IS the row.
+    The field is model-authored free text and only `member_alias` renders it, so on every
+    other section a junk id costs the field and nothing else — where raising instead would
+    abort the whole fan-out, `apply_deltas` going up past a broad handler that abandons the
+    compartments still queued behind it. An alias row that resolves to None is dropped in
+    `_resolve_delta` instead, because there the id IS the row.
 
-    The test and the cast live in one place so they cannot disagree again, and it takes
-    both halves: `isdigit` accepts a "²" that `int()` refuses, and `isdecimal` alone still
+    The test and the cast live in one place so they cannot disagree, and it takes both
+    halves: `isdigit` accepts a "²" that `int()` refuses, and `isdecimal` alone still
     accepts a digit string longer than CPython converts.
     """
     if not delta.subject_id.isdecimal():
@@ -377,7 +361,7 @@ def _subject_id_of(delta: MemoryFactDelta) -> int | None:
     try:
         return int(delta.subject_id)
     except ValueError:
-        # Past the int-conversion limit, the same way `utils/amount_parsing.py` handles it.
+        # Past the int-conversion limit.
         return None
 
 
@@ -386,7 +370,7 @@ def _delta_body(delta: MemoryFactDelta) -> str:
 
     The model's `text` is not read for that section at all: it is asked for the member's
     name and aliases as fields instead, so the row cannot come out as a sentence with a
-    personal aside attached to it (#464).
+    personal aside attached to it.
     """
     if delta.section == "member_alias":
         return render_member_alias_text(display_name=delta.display_name, aliases=delta.aliases)
@@ -413,8 +397,7 @@ def _fact_sharing_keys(delta: MemoryFactDelta, existing: dict[str, MemoryFact]) 
 def sweep_stale_facts(scope: str, compartment: str, today: datetime) -> int:
     """Deletes facts the freshness rules have aged out, returning how many went.
 
-    Two rules, both formerly prose in the consolidation prompt and now deterministic
-    because the dates are code-stamped:
+    Two rules, deterministic because `last_confirmed` is code-stamped:
 
     * a `recent` fact expires `RECENT_CONTEXT_TTL_DAYS` after it was last confirmed;
     * a `stable` fact is displaced once it falls `STABLE_FRESHNESS_WINDOW_DAYS` behind
@@ -455,7 +438,8 @@ def _compartment_for_block(block: str) -> str:
     """Routes one observation block to its compartment from its stamped fields."""
     fields = _fields_of(block=block)
     if fields.get("sharing") != "source_only":
-        # `global`, and anything predating the stamped fields, is cross-server safe.
+        # Anything not marked `source_only`, a block with no `sharing` field included, is
+        # cross-server safe.
         return GLOBAL_COMPARTMENT
     source = fields.get("source", "")
     if source == "dm":

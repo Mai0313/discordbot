@@ -6,10 +6,9 @@ every compartment is distilled from the detail tail plus any unconsumed raw entr
 whatever the rebuild did not re-emit is deleted. It is the one path allowed to lose most of
 a compartment at once, because replacing the whole set is what it is for.
 
-Two entry points, one path: `/memory regenerate` schedules it in the background under the
-running bot's scope lock, and `scripts/regen_memories.py` drives the same coroutine offline.
-They are NOT equivalent — the script is a second process, and its closing `clear_raw`
-unlinks whatever `raw.md` gained while it worked.
+It runs either inside the bot under the scope lock, or offline in a second process — where
+it is NOT equivalent, since its closing `clear_raw` unlinks whatever `raw.md` gained while
+it worked.
 """
 
 import time
@@ -68,20 +67,14 @@ _last_regeneration: dict[str, float] = {}
 
 # Per-scope in-flight regeneration tasks so a manual rebuild runs in the
 # background without blocking the command, and a second request while one is
-# still running cannot double-schedule the rebuild. Kept separate from the reply
-# turn queue because regeneration is a distinct, user-triggered job.
+# still running cannot double-schedule the rebuild.
 _regeneration_tasks: LoopLocalRegistry[str, asyncio.Task["RegenerationReport"]] = (
     LoopLocalRegistry()
 )
 
 
 class RegenerationReport(BaseModel):
-    """What one from-scratch rebuild did, for a caller with no logfire to read.
-
-    Attributes:
-        result: How the rebuild ended.
-        unreadable_removed: Fact files it destroyed that no reader could parse.
-    """
+    """What one from-scratch rebuild did, for a caller with no logfire to read."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -160,11 +153,8 @@ async def regenerate_scope_memory(
 
     The existing facts are deliberately NOT fed to the model: the rebuild distills the
     detail tail window plus any unconsumed raw entries from scratch, e.g. to redo an
-    unsatisfying consolidation with another model. Facts the rebuild did not re-emit are
-    then deleted, which is the one path allowed to lose most of a compartment at once:
-    replacing the whole set is what it is for, and that exemption is also what let the
-    #408 compartment migration run through here instead of needing a writer of its own.
-    `scripts/regen_memories.py` drives the same path offline.
+    unsatisfying consolidation with another model, and facts it did not re-emit are then
+    deleted.
 
     On an LLM failure the compartment is left exactly as it was, and the raw batch is
     retired only when every compartment rebuilt. The report carries what the run removed
@@ -189,19 +179,14 @@ async def regenerate_scope_memory(
         evidence = "\n\n".join(part for part in (recent_detail, raw_entries) if part)
         if not evidence:
             return RegenerationReport(result="no_evidence")
-        # Recorded at attempt time, not success time, so repeated LLM failures
-        # are rate-limited by the same cooldown.
         _last_regeneration[scope] = time.monotonic()
         buckets = partition_raw_entries(raw_text=evidence, flavor=flavor)
         today = datetime.now(UTC).date().isoformat()
-        # Every compartment that has evidence, plus every one that still has files, so a
-        # compartment whose evidence is gone is emptied rather than left stale.
         compartments = _compartments_to_rebuild(scope=scope, buckets=buckets)
         try:
-            # Bounded as a whole like the incremental fan-out, and for the same reason: the
-            # individual calls carry no deadline of their own (`constants.py` has why), so
-            # this is the only thing standing between a stuck rebuild and a scope lock held
-            # for as long as the client will keep one compartment's request alive.
+            # The individual calls carry no deadline of their own, so this is the only
+            # thing standing between a stuck rebuild and a scope lock held for as long as
+            # the client will keep one compartment's request alive.
             async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
                 for compartment in compartments:
                     raw_bucket = buckets.get(compartment, "")
@@ -231,9 +216,6 @@ async def regenerate_scope_memory(
                         )
                     )
                     if result is None:
-                        # The LLM path logs the cause but not the scope, and the command
-                        # already told the user a rebuild was scheduled, so this is its
-                        # only attribution.
                         logfire.warn(
                             "Memory regeneration LLM call failed; memory left untouched",
                             scope=scope,
@@ -277,8 +259,8 @@ async def regenerate_scope_memory(
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
         report_injection_size(scope=scope, flavor=flavor)
         if raw_entries:
-            # The rebuild consumed the raw batch; retire it to the cold tier
-            # exactly like a consolidation so it cannot be re-ingested.
+            # The rebuild consumed the raw batch; retire it to the cold tier so it
+            # cannot be re-ingested.
             append_detail(scope=scope, text=raw_entries)
             clear_raw(scope=scope)
         memory_git.enqueue(scope=scope, reason="rebuild")
@@ -303,10 +285,9 @@ async def _reapply_forgets(  # noqa: PLR0913 -- the scope's identity plus the co
     ever asked for.
 
     Replaying the requests afterwards fixes that without weakening anything: each runs as its
-    own `deletes_only` call, the same shape the incremental path uses, so the forget's own
-    sentence still cannot be written anywhere. Feeding the requests INTO the rebuild instead
-    would have put a possibly-private sentence in front of a call whose whole job is creating
-    facts, which is the one thing `deletes_only` exists to prevent.
+    own `deletes_only` call, so the forget's own sentence still cannot be written anywhere.
+    Feeding a forget INTO the rebuild instead would hand a possibly-private sentence to a call
+    whose whole job is creating facts.
 
     Best-effort: the rebuild has already landed by this point, and a failure here leaves a
     resurrected fact rather than a broken store. The next forget removes it again.
@@ -353,8 +334,7 @@ def _replace_compartment(
     it, so comparing against the post-apply state would only re-delete what the batch
     already deleted and leave every stale fact standing.
 
-    The mass-delete guard is off here for the reason it was skipped by the old whole-file
-    rebuild: replacing the entire set is what this path is for.
+    The mass-delete guard is off here: replacing the entire set is what this path is for.
     """
     outcome = apply_deltas(
         scope=scope,
@@ -377,15 +357,10 @@ def _prune_rebuilt_compartment(scope: str, compartment: str, keep: set[str]) -> 
     (`prune_compartment` carries the why). What it could not account for is reported
     here instead, since the store never removes a file it did not write.
 
-    What it DID remove unread is reported here too, and returned for the offline
-    rebuild's own report. Renaming a section or a durability value makes every fact
-    carrying the old one unparsable, so the next rebuild of a scope drops all of them in
-    one pass; a run that says only what it spared reads as one that destroyed nothing.
-
-    Shared with the skip path, which prunes a compartment it never handed to the model,
-    so a file the store never wrote is named there on the same terms — and so is the
-    unreadable one, which is the ONLY thing that path ever removes: a compartment reaches
-    it precisely when nothing in it could be read.
+    What it DID remove unread is reported and returned. Renaming a section or a durability
+    value makes every fact carrying the old one unparsable, so the next rebuild of a scope
+    drops all of them in one pass; a run that says only what it spared reads as one that
+    destroyed nothing.
     """
     pruned = prune_compartment(scope=scope, compartment=compartment, keep=keep)
     if pruned.unaccounted:

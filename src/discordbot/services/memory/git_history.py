@@ -8,8 +8,8 @@ this quietly rather than filling an ignored directory with one nobody asked for.
 Three properties are what make committing from inside a running bot safe:
 
 * **One worker.** Every invocation goes through a single queue and one process-wide
-  lock. ``MEMORY_GLOBAL_CONCURRENCY`` is 24, and ``git commit`` takes ``.git/index.lock``,
-  so unserialised commits would start failing exactly when the store is busiest.
+  lock. Memory writes run concurrently and ``git commit`` takes ``.git/index.lock``, so
+  unserialised commits would start failing exactly when the store is busiest.
 * **Under the scope lock.** A delta batch is N renames, not one atomic replace, so a
   commit taken mid-batch would record a tree that never existed. The worker takes the
   same ``scope_lock`` the writer used; it is background work, so waiting costs nothing.
@@ -75,7 +75,6 @@ class MemoryGitService(BaseModel):
     def start(self) -> None:
         """Starts the single worker, if git history is enabled and a repository exists.
 
-        Called from a cog's `on_ready`, so the queue is created on the running loop.
         Deliberately not lazy: an unstarted service drops every request instead of
         binding a queue to whichever loop happened to enqueue first.
         """

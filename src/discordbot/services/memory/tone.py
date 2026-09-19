@@ -38,18 +38,9 @@ async def update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the ba
 ) -> None:
     """Rewrites the per-user tone note from the WHOLE batch, in its own call.
 
-    Tone is the one tier that is cross-server safe by construction, so it is the one
-    thing that must not be partitioned: nearly half of all observations are
-    `source_only`, and a tone note fed only the `global` bucket would simply stop
-    updating for those conversations.
-
-    That is exactly why it gets its own call rather than riding on the `global`
-    compartment's. A compartment call sees only the evidence routed to the compartment
-    it writes, which is what makes "a guild-locked observation cannot reach `global/`"
-    structural; handing that same call the unpartitioned tone evidence would have
-    demoted the boundary back to a rule the prompt asks the model to follow. Here the
-    deltas are discarded by CODE — this call cannot write a fact anywhere, whatever it
-    returns — so the unpartitioned input is safe by the same structural argument.
+    It gets a call of its own rather than riding on the `global` compartment's, whose input
+    is partitioned by construction. Here the deltas are discarded by CODE — this call cannot
+    write a fact anywhere, whatever it returns — which is what makes unpartitioned input safe.
 
     Best-effort throughout: the note is a small always-read tier and the next
     consolidation repairs a bad write, so a failure never touches the raw batch.
@@ -81,10 +72,9 @@ async def rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the c
 ) -> None:
     """Rebuilds the tone note from the whole evidence corpus, in its own call.
 
-    Unlike an incremental consolidation — whose empty tone output only means "no tone
-    signal in this batch" — this pass saw everything, so no signal anywhere means a
-    surviving note is stale and would keep injecting a preference the evidence no longer
-    supports. This is the only path allowed to delete the note.
+    This pass saw everything, so no signal anywhere means a surviving note is stale and
+    would keep injecting a preference the evidence no longer supports. It is the only path
+    allowed to delete the note.
     """
     if flavor != "user":
         return
@@ -109,10 +99,8 @@ async def rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the c
 def _tone_request(existing_tone: str, tone_evidence: str, today: str) -> ConsolidationRequest:
     """Builds the tone note's own request, the one consolidation call that writes no fact.
 
-    Its two callers send the same shape and differ only in whether the current note is
-    offered back: the incremental pass merges into it, while the evidence-complete rebuild
-    deliberately ignores it. Sharing the builder is what stops the compartment note — the
-    line telling the model which tier it is writing — drifting between the two.
+    Sharing the builder is what stops the compartment note — the line telling the model
+    which tier it is writing — drifting between the calls that make it.
     """
     return ConsolidationRequest(
         compartment_note="the user's persona-independent tone note, read in every conversation",
@@ -129,10 +117,8 @@ def _tone_request(existing_tone: str, tone_evidence: str, today: str) -> Consoli
 def _write_tone_result(scope: str, tone_markdown: str) -> None:
     """Persists a tone-note call's output when it is acceptable for this scope.
 
-    User scopes only, and only a note starting with the exact `## 語氣偏好` header;
-    an empty or malformed output never deletes the existing note — the tier is
-    best-effort and the next consolidation repairs it. Only `rebuild_tone_note`,
-    which saw the whole evidence corpus, may clear it.
+    An empty or malformed output never deletes the existing note: the tier is best-effort
+    and the next consolidation repairs it. Only the evidence-complete rebuild may clear it.
     """
     if flavor_of(scope=scope) != "user":
         return
