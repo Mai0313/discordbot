@@ -29,6 +29,7 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.cogs.gen_reply.markers import MARKER_TAG_NAMES
 
 
 def system_block(*, text: str) -> EasyInputMessageParam:
@@ -115,14 +116,11 @@ def post_context_blocks(
     return link_context_blocks(separator=opener, text=f"{text}\n\n{separators.trailer}")
 
 
-# The pipeline's own inline markers, opening or closing. Quoted post text is the one place they
-# can arrive written by someone else; `defuse_markers` has the why. Case-insensitive because
-# `markers.py` extracts case-insensitively, and a defusing pass that is stricter than the
-# extraction it defends against is no defence at all.
+# The pipeline's own inline markers, opening or closing, derived from the extractor's own set so
+# a tag added there cannot be missed here. Case-insensitive because the extraction is, and a
+# defusing pass stricter than what it defends against is no defence at all.
 _MARKER_TAG_RE = re.compile(
-    r"</?(generate-(?:voice|image|music|video)|deep-research|write-memory|forget-memory"
-    r"|write-server-memory)>",
-    flags=re.IGNORECASE,
+    rf"</?({'|'.join(re.escape(name) for name in MARKER_TAG_NAMES)})>", flags=re.IGNORECASE
 )
 
 

@@ -32,6 +32,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.typings.memory import (
@@ -2210,10 +2211,10 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes(
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
-    async def _load(*, message: object) -> list[tuple[bytes, str]]:
-        """Stands in for the input builder loading the message's uploaded image (bytes, mime)."""
+    async def _load(*, message: object) -> list[LoadedMedia]:
+        """Stands in for the input builder loading the message's uploaded image."""
         del message
-        return [(b"uploaded-bytes", "image/png")]
+        return [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
 
     builder = SimpleNamespace(get_image_sources_with_mime=_load)
 
@@ -2538,10 +2539,10 @@ async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
-    async def _load(*, message: object) -> list[tuple[bytes, str]]:
-        """Stands in for the input builder loading the message's uploaded image (bytes, mime)."""
+    async def _load(*, message: object) -> list[LoadedMedia]:
+        """Stands in for the input builder loading the message's uploaded image."""
         del message
-        return [(b"uploaded-bytes", "image/png")]
+        return [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
 
     builder = SimpleNamespace(get_image_sources_with_mime=_load)
 
@@ -2553,7 +2554,9 @@ async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db
 
     # The uploaded (bytes, mime) pair rides through to generate, so the inline <generate-video>
     # animates it and omni infers the task.
-    assert generator.reference_sources == [[(b"uploaded-bytes", "image/png")]]
+    assert generator.reference_sources == [
+        [LoadedMedia(data=b"uploaded-bytes", mime_type="image/png")]
+    ]
     assert generator.calls == ["a wave crashing on rocks at sunset"]
 
 
@@ -3561,12 +3564,12 @@ async def test_media_semaphore_bounds_media_io_concurrency(
     uploader = _fake_uploader()
     state = {"active": 0, "peak": 0}
 
-    async def _slow_load() -> tuple[bytes, str]:
+    async def _slow_load() -> LoadedMedia:
         state["active"] += 1
         state["peak"] = max(state["peak"], state["active"])
         await asyncio.sleep(0.01)
         state["active"] -= 1
-        return b"x", "image/png"
+        return LoadedMedia(data=b"x", mime_type="image/png")
 
     results = await asyncio.gather(*[
         uploader._resolve_file_upload(
@@ -4226,7 +4229,8 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         cache_key="note.txt",
     )
     assert file_rendered is not None
-    file_part, file_expiry = file_rendered
+    file_part = file_rendered.part
+    file_expiry = file_rendered.expires_at
     assert file_part["type"] == "input_file"
     assert file_part["file_id"] == "https://files.test/note.txt"
     assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
@@ -4238,7 +4242,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         cache_key="pixel.png",
     )
     assert image_rendered is not None
-    image_part, _image_expiry = image_rendered
+    image_part = image_rendered.part
     assert image_part["type"] == "input_file"
     assert image_part["file_id"] == "https://files.test/pixel.png"
 
@@ -4290,7 +4294,9 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     uploaded = await active._upload_file(
         filename="doc.pdf", data=b"x", content_type="application/pdf"
     )
-    assert uploaded == ("https://files.test/doc.pdf", datetime(2099, 1, 1, tzinfo=UTC))
+    assert uploaded == UploadedFile(
+        uri="https://files.test/doc.pdf", expires_at=datetime(2099, 1, 1, tzinfo=UTC)
+    )
 
     # Terminal non-active state: the file is dropped.
     failed = _uploader(FakeGeminiFiles(final_state=FileState.FAILED))
@@ -4357,10 +4363,10 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
 
     load_calls = 0
 
-    async def _load() -> tuple[bytes, str]:
+    async def _load() -> LoadedMedia:
         nonlocal load_calls
         load_calls += 1
-        return b"x", "video/mp4"
+        return LoadedMedia(data=b"x", mime_type="video/mp4")
 
     # First reference times out while still PROCESSING: dropped for now, cached as pending.
     first = await uploader._resolve_file_upload(cache_key="vid", filename="v.mp4", load_data=_load)
@@ -4384,7 +4390,9 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     second = await uploader._resolve_file_upload(
         cache_key="vid", filename="v.mp4", load_data=_load
     )
-    assert second == ("https://files.test/v.mp4", datetime(2099, 1, 1, tzinfo=UTC))
+    assert second == UploadedFile(
+        uri="https://files.test/v.mp4", expires_at=datetime(2099, 1, 1, tzinfo=UTC)
+    )
     assert "vid" not in uploader._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]  # no second upload
     assert load_calls == 1  # adopt path did not re-download the source
@@ -4414,7 +4422,8 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
         cache_key="pic.png",
     )
     assert image_rendered is not None
-    image_part, image_expiry = image_rendered
+    image_part = image_rendered.part
+    image_expiry = image_rendered.expires_at
     assert image_part["type"] == "input_image"
     assert image_part["file_id"] == "file-test"
     assert image_part["detail"] == "auto"
@@ -4426,7 +4435,7 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
     )
     url_image_rendered = await renderer.render_image(source=url, cache_key=url)
     assert url_image_rendered is not None
-    url_image_part, _url_image_expiry = url_image_rendered
+    url_image_part = url_image_rendered.part
     assert url_image_part["type"] == "input_image"
     assert url_image_part["file_id"] == "file-test"
 
@@ -4435,7 +4444,8 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
         cache_key="notes.txt",
     )
     assert file_rendered is not None
-    file_part, file_expiry = file_rendered
+    file_part = file_rendered.part
+    file_expiry = file_rendered.expires_at
     assert file_part["type"] == "input_file"
     assert file_part["file_id"] == "file-test"
     assert file_part["filename"] == "notes.txt"
@@ -4581,7 +4591,8 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
         cache_key="notes.txt",
     )
     assert file_rendered is not None
-    file_part, file_expiry = file_rendered
+    file_part = file_rendered.part
+    file_expiry = file_rendered.expires_at
     assert file_part["type"] == "input_file"
     assert file_part["file_id"] == "file-xai"
     assert file_part["filename"] == "notes.txt"
@@ -4595,7 +4606,7 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
         cache_key="pic.png",
     )
     assert image_rendered is not None
-    image_part, _image_expiry = image_rendered
+    image_part = image_rendered.part
     assert image_part["type"] == "input_image"
     image_url = image_part["image_url"]
     assert image_url is not None
@@ -4681,8 +4692,7 @@ async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
         filename="notes.txt", data=b"hello", content_type="text/plain"
     )
     assert uploaded is not None
-    _file_id, expires_at = uploaded
-    assert expires_at > datetime.now(tz=UTC) + timedelta(days=29)
+    assert uploaded.expires_at > datetime.now(tz=UTC) + timedelta(days=29)
 
 
 async def test_non_gemini_answer_model_inlines_attachments() -> None:
@@ -4697,7 +4707,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
         cache_key="pic.png",
     )
     assert image_rendered is not None
-    image_part, _image_expiry = image_rendered
+    image_part = image_rendered.part
     assert image_part["type"] == "input_image"
     image_url = image_part["image_url"]
     assert image_url is not None
@@ -4710,7 +4720,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
         cache_key="notes.txt",
     )
     assert text_rendered is not None
-    text_part, _text_expiry = text_rendered
+    text_part = text_rendered.part
     assert text_part["type"] == "input_text"
     assert "hello world" in text_part["text"]
     assert "notes.txt" in text_part["text"]
@@ -4723,7 +4733,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
         cache_key="doc.pdf",
     )
     assert pdf_rendered is not None
-    pdf_part, _pdf_expiry = pdf_rendered
+    pdf_part = pdf_rendered.part
     assert pdf_part["type"] == "input_file"
     assert pdf_part["file_data"].startswith("data:application/pdf;base64,")
     assert "file_id" not in pdf_part
@@ -5593,10 +5603,10 @@ async def test_handle_video_reply_edits_source_video(monkeypatch: pytest.MonkeyP
     """A source video is edited in place: uploaded and sent to omni with task=edit, no director."""
     cog = _cog()
 
-    async def fake_video_sources(builder: object, message: object) -> list[tuple[bytes, str]]:
+    async def fake_video_sources(builder: object, message: object) -> list[LoadedMedia]:
         """Returns a fake raw source clip for the message."""
         del builder, message
-        return [(b"clip", "video/mp4")]
+        return [LoadedMedia(data=b"clip", mime_type="video/mp4")]
 
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.input.MessageInputBuilder.get_video_sources", fake_video_sources
@@ -9878,11 +9888,14 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
 
     async def fake_render_image(
         self: object, source: object, cache_key: object, allow_dead_cache: bool = False
-    ) -> tuple[dict[str, str], datetime]:
+    ) -> RenderedAttachment:
         """Records each rendered source instead of hitting the network."""
         del self, cache_key, allow_dead_cache
         rendered_urls.append(str(source))
-        return {"type": "input_image", "image_url": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
+        return RenderedAttachment(
+            part={"type": "input_image", "image_url": str(source), "detail": "auto"},
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
 
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.attachment.gemini_file_api.GeminiFileUploader.render_image",

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from discordbot.typings.media import LoadedMedia
 from discordbot.typings.context_budgets import MAX_INSTAGRAM_COMMENTS, MAX_INSTAGRAM_INGEST_IMAGES
 from discordbot.cogs.gen_reply.link_sources import image_ingest
 from discordbot.services.platforms.instagram import (
@@ -69,10 +70,10 @@ def _serve(
 def _accept_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]) -> None:
     """Makes the image fetch and upload succeed, recording what was uploaded."""
 
-    async def load_image_bytes(*, source: str) -> tuple[bytes, str]:
+    async def load_image_bytes(*, source: str) -> LoadedMedia:
         """Pretends the CDN answered."""
         uploaded.append(source)
-        return b"bytes", "image/jpeg"
+        return LoadedMedia(data=b"bytes", mime_type="image/jpeg")
 
     async def upload_as_input_file(
         *, client: object, source: bytes, mime_type: str, filename: str, timeout_seconds: float
@@ -315,7 +316,7 @@ async def test_a_failed_image_leaves_the_post_readable(monkeypatch: pytest.Monke
     """One expired CDN url must never cost the whole block."""
     _serve(monkeypatch, post=_post())
 
-    async def load_image_bytes(*, source: str) -> tuple[bytes, str]:
+    async def load_image_bytes(*, source: str) -> LoadedMedia:
         """Fails the way an expired signed URL does."""
         del source
         raise RuntimeError("410 gone")

@@ -160,9 +160,10 @@ def history_media_over_budget(
     showed only a marker, which reads as the pipeline losing files at random.
 
     Counting is off `collect_attachment_sources` rather than the modality-gated list, so it
-    stays free of the per-message log the gate emits; the gate dropped nothing at all across
-    the day this was measured, and over-counting can only refuse an attachment the answer was
-    never going to be sent.
+    stays free of the per-message log the gate emits. That over-counts whenever the gate drops
+    something — an archive or an office document always, audio and video when the price table is
+    empty — and the budget a dropped source spends is then taken from an older message whose
+    images WOULD have been sent (#660).
 
     The newest message carrying attachments is exempt, so a single post of many images is
     never reduced to nothing but markers while the budget sits unspent. That makes the cap a
@@ -445,10 +446,9 @@ class ReplyContextBuilder(BaseModel):
                 allowed=deterministic_allowed, memory=server_memory, include_absent=False
             )
             if source_channel_is_public(message=self.message):
-                # No credit label: the conversation never names these members, so
-                # `recall_user_memories` credits them by their bare id. Deliberately NOT the
-                # identity their own memory carries, which is the display name of whichever
-                # guild's consolidation last wrote that fact (see `RecallCandidate`).
+                # No credit label, because nothing in this channel names these members;
+                # `RecallCandidate` owns what the footer does about that and why no name is
+                # pulled from anywhere else.
                 optional_allowed = {
                     user_id: RecallCandidate(prompt_label=label)
                     for user_id, label in allowlist_ids_from_server_memory(

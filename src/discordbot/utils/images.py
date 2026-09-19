@@ -11,6 +11,7 @@ import base64
 from PIL import Image
 import requests
 
+from discordbot.typings.media import LoadedMedia
 from discordbot.typings.timeouts import IMAGE_FETCH_TIMEOUT_SECONDS
 
 _DATA_URI_RE = re.compile(pattern=r"^data:image/(?:jpg|jpeg|png|gif|bmp|webp);base64,")
@@ -49,7 +50,7 @@ def get_pil_image(image_file: str) -> Image.Image:
 _MAX_IMAGE_DIMENSION = 3072
 
 
-def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
+def shrink_image_bytes(payload: bytes, content_type: str) -> LoadedMedia:
     """Downscales an image to the provider's effective resolution and re-encodes it.
 
     Photos re-encode as JPEG quality 95 (near-lossless, a fraction of PNG photo
@@ -66,29 +67,30 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> tuple[bytes, str]:
     Returns:
         The (possibly re-encoded) image bytes and their MIME type.
     """
+    unchanged = LoadedMedia(data=payload, mime_type=content_type)
     if content_type == "image/gif":
-        return payload, content_type
+        return unchanged
     try:
         image = Image.open(fp=BytesIO(initial_bytes=payload))
         if getattr(image, "is_animated", False):
-            return payload, content_type
+            return unchanged
         keep_png = image.mode in {"RGBA", "LA", "PA", "P"}
         within_bounds = max(image.size) <= _MAX_IMAGE_DIMENSION
         if within_bounds and (content_type == "image/jpeg" or keep_png):
-            return payload, content_type
+            return unchanged
         image.thumbnail(
             size=(_MAX_IMAGE_DIMENSION, _MAX_IMAGE_DIMENSION), resample=Image.Resampling.LANCZOS
         )
         buffered = BytesIO()
         if keep_png:
             image.save(fp=buffered, format="PNG")
-            return buffered.getvalue(), "image/png"
+            return LoadedMedia(data=buffered.getvalue(), mime_type="image/png")
         image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)
-        return buffered.getvalue(), "image/jpeg"
+        return LoadedMedia(data=buffered.getvalue(), mime_type="image/jpeg")
     except Exception:
         # An undecodable or exotic payload is sent as-is; the API rejects it the
         # same way it would have before the shrink existed.
-        return payload, content_type
+        return unchanged
 
 
 def get_image_data(image_file: str) -> bytes:

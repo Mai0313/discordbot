@@ -21,9 +21,9 @@ from pydantic import Field, BaseModel, PrivateAttr
 from google.genai.types import FileState
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
+from discordbot.typings.media import UploadedFile, RenderedAttachment, PendingUploadRepoll
 from discordbot.typings.timeouts import ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.attachment.base import (
-    RenderedPart,
     FileBytesLoader,
     AttachmentRenderer,
     media_semaphore,
@@ -105,7 +105,7 @@ class GeminiFileUploader(AttachmentRenderer):
         source: Attachment | StickerItem | str,
         cache_key: int | str,
         allow_dead_cache: bool = False,
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         source_name = resolve_source_filename(source=source, url_fallback="image.png")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,
@@ -115,15 +115,16 @@ class GeminiFileUploader(AttachmentRenderer):
         )
         if uploaded is None:
             return None
-        file_id, expires_at = uploaded
         # The input_file filename is cosmetic (the LiteLLM bridge drops it); the route's
         # attachment marker is derived from message metadata, not from this part.
-        part = ResponseInputFileParam(type="input_file", file_id=file_id, filename=source_name)
-        return part, expires_at
+        part = ResponseInputFileParam(
+            type="input_file", file_id=uploaded.uri, filename=source_name
+        )
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -140,27 +141,19 @@ class GeminiFileUploader(AttachmentRenderer):
         )
         if uploaded is None:
             return None
-        file_id, expires_at = uploaded
         part = ResponseInputFileParam(
-            type="input_file", file_id=file_id, filename=attachment.filename
+            type="input_file", file_id=uploaded.uri, filename=attachment.filename
         )
-        return part, expires_at
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
-    async def _repoll_pending_upload(
-        self, cache_key: int | str
-    ) -> tuple[bool, tuple[str, datetime] | None]:
-        """Re-polls a prior pending upload once, without re-downloading the source.
-
-        Returns `(handled, result)`: `handled=True` means stop and use `result` (an ACTIVE
-        `(uri, expiry)`, or `None` if it is still PROCESSING); `handled=False` means there is
-        no usable pending entry, so the caller should fall through to a fresh upload.
-        """
+    async def _repoll_pending_upload(self, cache_key: int | str) -> PendingUploadRepoll:
+        """Re-polls a prior pending upload once, without re-downloading the source."""
         pending = self._pending_uploads.get(cache_key)
         if pending is None:
-            return False, None
+            return PendingUploadRepoll(handled=False)
         if datetime.now(tz=UTC) >= pending.expires_at:
             self._pending_uploads.pop(cache_key, None)
-            return False, None
+            return PendingUploadRepoll(handled=False)
         try:
             uploaded = await self.gemini_client.aio.files.get(name=pending.name)
         except Exception as exc:
@@ -175,7 +168,7 @@ class GeminiFileUploader(AttachmentRenderer):
                 _exc_info=exc,
             )
             self._pending_uploads.pop(cache_key, None)
-            return False, None
+            return PendingUploadRepoll(handled=False)
         logfire.debug(
             "gemini pending upload repoll",
             cache_key=loggable_cache_key(cache_key=cache_key),
@@ -184,14 +177,16 @@ class GeminiFileUploader(AttachmentRenderer):
         )
         if uploaded.state == FileState.ACTIVE:
             self._pending_uploads.pop(cache_key, None)
-            return True, (pending.uri, pending.expires_at)
+            return PendingUploadRepoll(
+                handled=True, uploaded=UploadedFile(uri=pending.uri, expires_at=pending.expires_at)
+            )
         if uploaded.state == FileState.PROCESSING:
             # Still cooking; keep it and retry on the next reference.
             self._pending_uploads.move_to_end(cache_key)
-            return True, None
+            return PendingUploadRepoll(handled=True)
         # Terminal non-active state: drop it and let the caller re-upload.
         self._pending_uploads.pop(cache_key, None)
-        return False, None
+        return PendingUploadRepoll(handled=False)
 
     async def _resolve_file_upload(
         self,
@@ -199,7 +194,7 @@ class GeminiFileUploader(AttachmentRenderer):
         filename: str,
         load_data: "FileBytesLoader",
         allow_dead_cache: bool = False,
-    ) -> tuple[str, datetime] | None:
+    ) -> UploadedFile | None:
         """Returns an ACTIVE file (uri, expiry), re-polling a prior pending upload first.
 
         A source whose first upload timed out while still PROCESSING is cached as a
@@ -215,9 +210,9 @@ class GeminiFileUploader(AttachmentRenderer):
         keeps being adopted even after its Discord CDN url has expired and a re-download
         would fail.
         """
-        handled, adopted = await self._repoll_pending_upload(cache_key=cache_key)
-        if handled:
-            return adopted
+        repoll = await self._repoll_pending_upload(cache_key=cache_key)
+        if repoll.handled:
+            return repoll.uploaded
         # The dead-source skip is for history scrollback only (an expired CDN url that
         # re-fails every turn); current/reference renders never opt in, so one transient
         # failure on a just-posted attachment is not poisoned for the next reply.
@@ -241,9 +236,8 @@ class GeminiFileUploader(AttachmentRenderer):
             )
             if loaded is None:
                 return None
-            data, content_type = loaded
             result = await self._upload_file(
-                filename=filename, data=data, content_type=content_type
+                filename=filename, data=loaded.data, content_type=loaded.mime_type
             )
         if isinstance(result, PendingUpload):
             self._pending_uploads[cache_key] = result
@@ -255,7 +249,7 @@ class GeminiFileUploader(AttachmentRenderer):
 
     async def _upload_file(  # noqa: PLR0911 -- one best-effort upload with several distinct degrade-to-None paths
         self, filename: str, data: bytes, content_type: str
-    ) -> tuple[str, datetime] | PendingUpload | None:
+    ) -> UploadedFile | PendingUpload | None:
         """Uploads bytes to the Gemini Files API, polling to ACTIVE within the bound.
 
         Sending attachments by file URI instead of inlined base64 keeps oversized
@@ -366,4 +360,4 @@ class GeminiFileUploader(AttachmentRenderer):
             elapsed_seconds=time.monotonic() - started,
             state="active",
         )
-        return file_uri, expires_at
+        return UploadedFile(uri=file_uri, expires_at=expires_at)

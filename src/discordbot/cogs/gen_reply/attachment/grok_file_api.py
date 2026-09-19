@@ -52,9 +52,9 @@ from pydantic import Field
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.media import UploadedFile, RenderedAttachment
 from discordbot.typings.timeouts import GROK_FILE_UPLOAD_TIMEOUT_SECONDS
 from discordbot.cogs.gen_reply.attachment.base import (
-    RenderedPart,
     FileBytesLoader,
     AttachmentRenderer,
     media_semaphore,
@@ -106,7 +106,7 @@ class GrokFileUploader(AttachmentRenderer):
         source: Attachment | StickerItem | str,
         cache_key: int | str,
         allow_dead_cache: bool = False,
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         """Renders an image inline, since xAI resolves no file id for image input."""
         return await self.image_renderer.render_image(
             source=source, cache_key=cache_key, allow_dead_cache=allow_dead_cache
@@ -114,7 +114,7 @@ class GrokFileUploader(AttachmentRenderer):
 
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -131,11 +131,10 @@ class GrokFileUploader(AttachmentRenderer):
         )
         if uploaded is None:
             return None
-        file_id, expires_at = uploaded
         part = ResponseInputFileParam(
-            type="input_file", file_id=file_id, filename=attachment.filename
+            type="input_file", file_id=uploaded.uri, filename=attachment.filename
         )
-        return part, expires_at
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def _resolve_file_upload(
         self,
@@ -143,7 +142,7 @@ class GrokFileUploader(AttachmentRenderer):
         filename: str,
         load_data: "FileBytesLoader",
         allow_dead_cache: bool = False,
-    ) -> tuple[str, datetime] | None:
+    ) -> UploadedFile | None:
         """Returns an uploaded xAI file id and its expiry."""
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
@@ -156,13 +155,14 @@ class GrokFileUploader(AttachmentRenderer):
             )
             if loaded is None:
                 return None
-            data, content_type = loaded
-            return await self._upload_file(filename=filename, data=data, content_type=content_type)
+            return await self._upload_file(
+                filename=filename, data=loaded.data, content_type=loaded.mime_type
+            )
 
     async def _upload_file(
         self, filename: str, data: bytes, content_type: str
-    ) -> tuple[str, datetime] | None:
-        """Uploads bytes to the xAI Files API and returns `(file_id, expires_at)`.
+    ) -> UploadedFile | None:
+        """Uploads bytes to the xAI Files API and returns the uploaded handle.
 
         `content_type` is logged rather than sent, the upload carrying only a filename (see the
         module docstring). The timeout is this call's only deadline, since the SDK's own covers
@@ -213,4 +213,4 @@ class GrokFileUploader(AttachmentRenderer):
             file_id=uploaded.id,
             elapsed_seconds=time.monotonic() - started,
         )
-        return uploaded.id, expires_at
+        return UploadedFile(uri=uploaded.id, expires_at=expires_at)

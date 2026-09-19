@@ -7,10 +7,8 @@ from collections import OrderedDict
 import logfire
 from nextcord import Attachment, StickerItem
 from pydantic import BaseModel, ConfigDict, PrivateAttr
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
-from openai.types.responses.response_input_text_param import ResponseInputTextParam
-from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
+from discordbot.typings.media import LoadedMedia, RenderedAttachment
 from discordbot.utils.asyncio_locks import LoopLocalSemaphore
 
 if TYPE_CHECKING:
@@ -18,13 +16,7 @@ if TYPE_CHECKING:
 
 # Lazily fetches a source's bytes and mime type. Awaited only when an upload is actually needed,
 # so a renderer that can adopt an already-uploaded file never re-downloads the source.
-type FileBytesLoader = Callable[[], Awaitable[tuple[bytes, str]]]
-
-# A rendered attachment content part. The Gemini answer model reads a Files-API handle
-# (input_file with a file URI); non-Gemini answer models cannot resolve that URI, so their
-# attachments are inlined per type instead: images as input_image base64, PDFs as input_file
-# base64 file_data, and text/code files as input_text.
-type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseInputFileParam
+type FileBytesLoader = Callable[[], Awaitable[LoadedMedia]]
 
 # A source whose byte fetch fails (typically an expired Discord/Threads CDN url that sits in
 # history scrollback) is skipped for this long so it is not re-fetched and re-warned on every
@@ -83,13 +75,13 @@ class AttachmentRenderer(BaseModel):
         source: Attachment | StickerItem | str,
         cache_key: int | str,
         allow_dead_cache: bool = False,
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         """Renders an image source (attachment, sticker, or URL) to a content part."""
         raise NotImplementedError
 
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         """Renders a non-image file attachment to a content part."""
         raise NotImplementedError
 
@@ -122,7 +114,7 @@ class AttachmentRenderer(BaseModel):
         filename: str,
         load_data: "FileBytesLoader",
         allow_dead_cache: bool,
-    ) -> tuple[bytes, str] | None:
+    ) -> LoadedMedia | None:
         """Fetches one source's bytes and mime type, or None when the fetch failed.
 
         Call it INSIDE the media slot: the fetch is half of what that slot bounds, and holding
@@ -134,14 +126,12 @@ class AttachmentRenderer(BaseModel):
         the message it belongs to. A history render (`allow_dead_cache`) additionally marks the
         source dead, so an expired CDN url is not re-fetched on every later reply.
 
-        The unpack happens INSIDE that guard rather than at the caller, so a loader that answers
-        the wrong shape is the same kind of failure as one that raises. Returning the pair
-        unpacked would let a `None` short-circuit with no warning and no dead-source marking, and
-        would let a wrong-arity tuple raise into `input.py`'s attachment `gather`, which has no
-        `return_exceptions` and would lose the whole message's attachments rather than this one.
+        The await happens INSIDE that guard rather than at the caller, so a loader that fails is
+        this one attachment's problem: `input.py` gathers the renders without `return_exceptions`,
+        so an escaping error would lose the whole message's attachments rather than this one.
         """
         try:
-            data, content_type = await load_data()
+            loaded = await load_data()
         except Exception as exc:
             logfire.warn(
                 "failed to load attachment bytes for upload",
@@ -154,4 +144,4 @@ class AttachmentRenderer(BaseModel):
             if allow_dead_cache:
                 self._mark_dead(cache_key=cache_key)
             return None
-        return data, content_type
+        return loaded

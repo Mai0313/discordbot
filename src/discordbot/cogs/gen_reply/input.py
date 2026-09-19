@@ -14,6 +14,7 @@ from nextcord.ext import commands
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
+from discordbot.typings.media import LoadedMedia, RenderedPart, RenderedAttachment
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.model_pricing import get_supported_modalities
 from discordbot.utils.llm_transcript import (
@@ -22,11 +23,7 @@ from discordbot.utils.llm_transcript import (
     sanitize_identity,
 )
 from discordbot.cogs.gen_reply.generation import VOICE_REPLY_FILENAME
-from discordbot.cogs.gen_reply.attachment.base import (
-    RenderedPart,
-    AttachmentRenderer,
-    loggable_cache_key,
-)
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
 from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes, load_attachment_bytes
 
 if TYPE_CHECKING:
@@ -333,7 +330,7 @@ class MessageInputBuilder(BaseModel):
             supported.append(source)
         return supported
 
-    async def get_image_sources_with_mime(self, message: Message) -> list[tuple[bytes, str]]:
+    async def get_image_sources_with_mime(self, message: Message) -> list[LoadedMedia]:
         """Returns downscaled (bytes, MIME) pairs of a message's image sources.
 
         Image editing feeds raw pixels to `images.edit`, so it loads bytes directly
@@ -344,7 +341,7 @@ class MessageInputBuilder(BaseModel):
         one (an empty mime 400s "Unsupported MIME type: "); the IMAGE route, which needs only the
         pixels, drops it via `get_image_source_bytes`.
         """
-        tasks: list[Coroutine[object, object, tuple[bytes, str]]] = []
+        tasks: list[Coroutine[object, object, LoadedMedia]] = []
         for source in self.collect_attachment_sources(message=message):
             if source.kind == "image":
                 tasks.append(load_image_bytes(source=source.handle))
@@ -357,13 +354,13 @@ class MessageInputBuilder(BaseModel):
                     error_type=type(item).__name__,
                     _exc_info=item,
                 )
-        return [item for item in loaded if isinstance(item, tuple)]
+        return [item for item in loaded if isinstance(item, LoadedMedia)]
 
     async def get_image_source_bytes(self, message: Message) -> list[bytes]:
         """Returns downscaled bytes of a message's image sources for the IMAGE route."""
-        return [raw for raw, _ in await self.get_image_sources_with_mime(message=message)]
+        return [loaded.data for loaded in await self.get_image_sources_with_mime(message=message)]
 
-    async def get_video_sources(self, message: Message) -> list[tuple[bytes, str]]:
+    async def get_video_sources(self, message: Message) -> list[LoadedMedia]:
         """Best-effort (bytes, MIME) of the FIRST raw video attachment, for omni editing.
 
         omni edits a single clip (`task="edit"`) and the VIDEO route only ever uses one, so this
@@ -452,13 +449,13 @@ class MessageInputBuilder(BaseModel):
 
     async def _render_attachment_parts(
         self, sources: list[AttachmentSource], allow_dead_cache: bool = False
-    ) -> list[tuple[RenderedPart, datetime] | None]:
+    ) -> list[RenderedAttachment | None]:
         """Renders every supported source to a content part + expiry; failures stay None.
 
         Each source renders concurrently, so a message with several attachments pays
         roughly one upload's latency (Gemini) or one download's latency (inline), not the sum.
         """
-        tasks: list[Coroutine[object, object, tuple[RenderedPart, datetime] | None]] = []
+        tasks: list[Coroutine[object, object, RenderedAttachment | None]] = []
         for source in sources:
             if source.kind == "image":
                 tasks.append(
@@ -521,7 +518,7 @@ class MessageInputBuilder(BaseModel):
         rendered = await self._render_attachment_parts(
             sources=sources, allow_dead_cache=allow_dead_cache
         )
-        resolved = [item[0] for item in rendered if item is not None]
+        resolved = [item.part for item in rendered if item is not None]
         logfire.debug(
             "gen_reply attachment render done",
             message_id=message.id,
@@ -533,7 +530,7 @@ class MessageInputBuilder(BaseModel):
         # the earliest across its files, so the whole entry re-renders before any handle
         # in it expires.
         if None not in rendered:
-            expires_at = min(item[1] for item in rendered if item is not None)
+            expires_at = min(item.expires_at for item in rendered if item is not None)
             self._attachment_cache[cache_key] = (expires_at, [part.copy() for part in resolved])
             if len(self._attachment_cache) > 128:
                 self._attachment_cache.popitem(last=False)

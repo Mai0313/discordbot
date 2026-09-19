@@ -115,6 +115,8 @@ Four things therefore never appear in a comment or docstring:
 
 **Comparing this file's number to another file's is coupling.** Say what this number is for. The exception is a constant defined as an expression over another, where the relationship *is* the code.
 
+**Dropping a count is not the same as writing a universal.** "Douyin and Bilibili check this, Threads does not" becomes "every source that has a gate checks this" and is now false, because the one source that does not is a source with a gate. Name the exception: an outlier a reader has to know about is a fact, not a roster, and it is the half worth keeping when the list goes.
+
 **None of this deletes the only copy of a reason.** Where the shortest true form of a reason is a piece of history, a measured figure or a name from another file, keep it and compress it. A warning, a "do not", and a "re-measure before changing this" are reasons rather than narration: the comment saying a column cannot be dropped on a deployed database is the only thing stopping someone dropping it.
 
 **A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first.

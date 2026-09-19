@@ -19,8 +19,8 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.media import UploadedFile, RenderedAttachment
 from discordbot.cogs.gen_reply.attachment.base import (
-    RenderedPart,
     FileBytesLoader,
     AttachmentRenderer,
     media_semaphore,
@@ -61,7 +61,7 @@ class OpenAIFileUploader(AttachmentRenderer):
         source: Attachment | StickerItem | str,
         cache_key: int | str,
         allow_dead_cache: bool = False,
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,
@@ -72,13 +72,12 @@ class OpenAIFileUploader(AttachmentRenderer):
         )
         if uploaded is None:
             return None
-        file_id, expires_at = uploaded
-        part = ResponseInputImageParam(type="input_image", file_id=file_id, detail="auto")
-        return part, expires_at
+        part = ResponseInputImageParam(type="input_image", file_id=uploaded.uri, detail="auto")
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -96,11 +95,10 @@ class OpenAIFileUploader(AttachmentRenderer):
         )
         if uploaded is None:
             return None
-        file_id, expires_at = uploaded
         part = ResponseInputFileParam(
-            type="input_file", file_id=file_id, filename=attachment.filename
+            type="input_file", file_id=uploaded.uri, filename=attachment.filename
         )
-        return part, expires_at
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def _resolve_file_upload(
         self,
@@ -109,7 +107,7 @@ class OpenAIFileUploader(AttachmentRenderer):
         load_data: "FileBytesLoader",
         purpose: OpenAIFilePurpose,
         allow_dead_cache: bool = False,
-    ) -> tuple[str, datetime] | None:
+    ) -> UploadedFile | None:
         """Returns an uploaded OpenAI file id and its cache expiry."""
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
@@ -122,15 +120,14 @@ class OpenAIFileUploader(AttachmentRenderer):
             )
             if loaded is None:
                 return None
-            data, content_type = loaded
             return await self._upload_file(
-                filename=filename, data=data, content_type=content_type, purpose=purpose
+                filename=filename, data=loaded.data, content_type=loaded.mime_type, purpose=purpose
             )
 
     async def _upload_file(
         self, filename: str, data: bytes, content_type: str, purpose: OpenAIFilePurpose
-    ) -> tuple[str, datetime] | None:
-        """Uploads bytes to OpenAI Files API and returns `(file_id, expires_at)`."""
+    ) -> UploadedFile | None:
+        """Uploads bytes to OpenAI Files API and returns the uploaded handle."""
         started = time.monotonic()
         logfire.debug(
             "openai upload start", filename=filename, content_type=content_type, bytes=len(data)
@@ -170,4 +167,4 @@ class OpenAIFileUploader(AttachmentRenderer):
             file_id=uploaded.id,
             elapsed_seconds=time.monotonic() - started,
         )
-        return uploaded.id, expires_at
+        return UploadedFile(uri=uploaded.id, expires_at=expires_at)

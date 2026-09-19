@@ -118,14 +118,13 @@ class RecallCandidate(BaseModel):
     names, so it stays the short Discord label and never carries the table's community prose.
 
     A table-only member has no Discord label here, so their `credit_label` stays None and the
-    footer counts them instead of naming them. There is deliberately no name pulled from
-    somewhere else: the guild member cache is empty for them (the bot runs without the members
-    intent, so nextcord never caches a plain message author), and the identity the memory store
-    stamps is the display name of whichever guild's consolidation last wrote that fact, which
-    would put another server's nickname in this channel's footer. What changed is the fallback,
-    not that reasoning: the bare id it used to print reads as a memory the bot just wrote rather
-    than as a person it read (measured on a real user), and it names someone the channel cannot
-    resolve anyway, so `和另 N 人` says the same true thing without publishing a snowflake.
+    footer counts them (`和另 N 人`) instead of naming them. There is deliberately no name pulled
+    from anywhere else: the guild member cache is empty for them, since the bot runs without the
+    members intent and nextcord never caches a plain message author, and the identity the memory
+    store stamps is the display name of whichever guild's consolidation last wrote that fact,
+    which would put another server's nickname in this channel's footer. A bare id is no better —
+    it reads as something the bot just recorded about them, and names someone the channel cannot
+    resolve anyway.
 
     Attributes:
         prompt_label: Label the model reads, community aliases included.

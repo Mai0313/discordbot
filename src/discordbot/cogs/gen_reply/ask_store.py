@@ -43,8 +43,6 @@ _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/databas
 class Base(DeclarativeBase):
     """Base class for the `/ask` conversation model (its own metadata, not research's)."""
 
-    pass
-
 
 class AskTurnRow(Base):
     """One `/ask` exchange: what was asked, and what the bot answered.

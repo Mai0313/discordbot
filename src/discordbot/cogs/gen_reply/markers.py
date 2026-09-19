@@ -32,6 +32,7 @@ that name, and eight hand-written triples is eight places for one of them to be 
 """
 
 import re
+from typing import Final
 
 from pydantic import Field, BaseModel
 
@@ -50,6 +51,9 @@ MAX_INLINE_IMAGES = 9
 MAX_MEMORY_NOTES = 5
 
 
+_MARKER_NAMES: Final[list[str]] = []
+
+
 class _Marker:
     """One marker tag plus the three patterns every marker is read through.
 
@@ -59,6 +63,8 @@ class _Marker:
     """
 
     def __init__(self, name: str) -> None:
+        self.name = name
+        _MARKER_NAMES.append(name)
         self.open = f"<{name}>"
         self.close = f"</{name}>"
         self.block = re.compile(rf"<{name}>(.*?)</{name}>", re.IGNORECASE | re.DOTALL)
@@ -96,6 +102,10 @@ _DEEP_RESEARCH = _Marker("deep-research")
 _WRITE_MEMORY = _Marker("write-memory")
 _FORGET_MEMORY = _Marker("forget-memory")
 _WRITE_SERVER_MEMORY = _Marker("write-server-memory")
+
+# Every tag this module knows, built as each marker is declared so a pass that has to neutralise
+# them all cannot be left behind when one is added.
+MARKER_TAG_NAMES: Final[tuple[str, ...]] = tuple(_MARKER_NAMES)
 
 # Tag literals are the single source of truth shared by the prompt instructions and this parser.
 VOICE_OPEN = _VOICE.open
