@@ -151,59 +151,32 @@ def _threads_media_ingest_allowed(config: LLMConfig) -> bool:
     return True
 
 
-def _facebook_media_ingest_allowed(config: LLMConfig) -> bool:
-    """No kill-switch of its own, so `file_api_enabled` and its key are the whole gate.
+def _needs_files_api(config: LLMConfig) -> bool:
+    """A source with no kill-switch of its own: the Files API and its key are the whole gate.
 
-    Carries `file_api_enabled` for the reason the Douyin predicate does: the images are fetched
-    and downscaled before the upload they could no longer feed, so gating at the upload alone
-    would still spend that work on the reply's critical path.
-    """
-    return config.file_api_enabled and bool(config.gemini_api_key.strip())
-
-
-def _twitter_media_ingest_allowed(config: LLMConfig) -> bool:
-    """No kill-switch of its own, so `file_api_enabled` and its key are the whole gate.
-
-    Carries `file_api_enabled` for the reason the Facebook predicate does: the images are fetched
-    and downscaled before the upload they could no longer feed.
-    """
-    return config.file_api_enabled and bool(config.gemini_api_key.strip())
-
-
-def _instagram_media_ingest_allowed(config: LLMConfig) -> bool:
-    """No kill-switch of its own, so `file_api_enabled` and its key are the whole gate.
-
-    Carries `file_api_enabled` for the reason the Facebook predicate does: the images are
-    fetched and downscaled before the upload they could no longer feed.
+    `file_api_enabled` belongs here rather than only at the upload, because the media is fetched
+    and downscaled before the upload it could no longer feed, so gating at the upload alone would
+    still spend that work on the reply's critical path.
     """
     return config.file_api_enabled and bool(config.gemini_api_key.strip())
 
 
 def _douyin_media_ingest_allowed(config: LLMConfig) -> bool:
-    """The Douyin kill-switch plus the direct-Gemini key its Files API upload needs.
+    """The Douyin kill-switch on top of the shared Files API gate.
 
-    `file_api_enabled` belongs here rather than only at the upload: the clip is downloaded
-    first and the upload skipped after, so gating it there alone would still spend the whole
-    fetch on a WAF-sensitive path for media that can no longer reach the model.
+    The clip is downloaded first, on a WAF-sensitive path, so the switch has to be read before
+    the fetch rather than at the upload.
     """
-    return (
-        config.douyin_video_enabled
-        and config.file_api_enabled
-        and bool(config.gemini_api_key.strip())
-    )
+    return config.douyin_video_enabled and _needs_files_api(config=config)
 
 
 def _bilibili_media_ingest_allowed(config: LLMConfig) -> bool:
-    """The Bilibili kill-switch plus the direct-Gemini key its Files API upload needs.
+    """The Bilibili kill-switch on top of the shared Files API gate.
 
-    Carries `file_api_enabled` for the reason the Douyin predicate does, minus the WAF: a
-    30-minute video is downloaded in full before the upload it can no longer feed.
+    Same reason as Douyin minus the WAF: a 30-minute video is downloaded in full before the
+    upload it can no longer feed.
     """
-    return (
-        config.bilibili_video_enabled
-        and config.file_api_enabled
-        and bool(config.gemini_api_key.strip())
-    )
+    return config.bilibili_video_enabled and _needs_files_api(config=config)
 
 
 LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
@@ -230,7 +203,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         search_replied_to_message=True,
         build=_build_facebook_link_context,
         on_timeout=facebook_timeout_context_messages,
-        media_ingest_allowed=_facebook_media_ingest_allowed,
+        media_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
         name="instagram",
@@ -243,7 +216,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         search_replied_to_message=True,
         build=_build_instagram_link_context,
         on_timeout=instagram_timeout_context_messages,
-        media_ingest_allowed=_instagram_media_ingest_allowed,
+        media_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
         name="twitter",
@@ -256,7 +229,7 @@ LINK_CONTEXT_SOURCES: tuple[LinkContextSource, ...] = (
         # replies at all, so a second read of the same link would find exactly what the first did.
         build=_build_twitter_link_context,
         on_timeout=twitter_timeout_context_messages,
-        media_ingest_allowed=_twitter_media_ingest_allowed,
+        media_ingest_allowed=_needs_files_api,
     ),
     LinkContextSource(
         name="douyin",
