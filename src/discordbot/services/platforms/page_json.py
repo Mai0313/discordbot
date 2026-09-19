@@ -15,8 +15,9 @@ from datetime import UTC, datetime
 from collections.abc import Iterator
 
 # The full set a browser sends. Anything less is served a different page: a refusal, or a shell
-# carrying Open Graph tags and none of the post's own payload. Which of those, and how much is
-# lost, is the platform's own business and is recorded at its fetch.
+# carrying Open Graph tags and none of the post's own payload. Each platform's module docstring
+# says which of those it answers with, and when that was last checked — the answer is theirs to
+# change, so a date is what says whether it is still true.
 BROWSER_HEADERS: Final[dict[str, str]] = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

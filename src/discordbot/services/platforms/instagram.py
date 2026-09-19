@@ -6,7 +6,10 @@ answer context. `base.py` owns the contract both of them are written against.
 Logged out, the page ships the whole post — full caption, every carousel image at original
 resolution, the counters, AND the complete comment list — inside JSON script blocks, under a
 module whose own name says who it is for (`PolarisLoggedOutDesktopWWWMedia`). The comments are
-the whole list rather than a preload, which is what the injected block is allowed to claim.
+the whole list rather than a preload, which is the only thing entitling the injected block to
+say so; measured 2026-09-07 against a 9-image post reporting 11 comments, all 11 came back. A
+crawler-shaped `User-Agent` is served a 650KB shell instead, with no carousel and no comments,
+so the full browser header set is what makes any of that true.
 
 The chain is always exactly one element, since Instagram serves no ancestor posts. The shape is
 carried anyway so a caller reads every platform without learning a second set of rules.
@@ -19,8 +22,9 @@ what they omit — no `carousel_media` list, no `like_count`, no `taken_at` — 
 test is the shortcode from the URL, so `_find_media` matches on that and never on position.
 
 A comment URL cannot be fetched. `/p/<code>/c/<comment_id>/` answers HTTP 200 with a page
-carrying no post payload at all, so `clean_url` strips the comment segment and the id is carried
-separately in `comment_id`. Everything in the query goes the same way, `img_index` included;
+carrying no post payload at all — 503KB and no media node, against 805KB and a full one for the
+bare post — so `clean_url` strips the comment segment and the id is carried separately in
+`comment_id`. Everything in the query goes the same way, `img_index` included;
 `stkn` is the reason it has to, being a per-share token that names whoever passed the link on.
 
 Image candidates are ordered widest first and carry no dimensions of their own, so

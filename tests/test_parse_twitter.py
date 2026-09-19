@@ -341,7 +341,7 @@ async def test_a_failed_image_leaves_the_post_readable(monkeypatch: pytest.Monke
 
 
 async def test_one_refused_image_does_not_cost_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The per-item independence `_upload_images` asks `gather` for, with two items to lose.
+    """The per-item independence the shared ingest asks `gather` for, with two items to lose.
 
     With one image a sequential loop that raises and a per-item gather that does not reach the
     same text-only block, so nothing separates them; the second image is what makes the

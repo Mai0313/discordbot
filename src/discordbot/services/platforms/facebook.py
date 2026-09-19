@@ -11,8 +11,8 @@ Two things about this source shape everything below.
 The page is only served to something that looks like a browser. A bare `User-Agent` gets an HTTP
 400 and a crawler-shaped one gets a 348KB shell carrying nothing but Open Graph tags, whose
 description is truncated at ~190 characters. The full ~950KB page, with the post's own GraphQL
-payload in it, needs the complete header set: dropping `Sec-Fetch-Mode` alone is enough to lose
-it. The mobile hosts (`m.`, `mbasic.`, `touch.`) redirect to a login page and are never worth
+payload in it, needs the complete header set: measured 2026-09-06, dropping `Sec-Fetch-Mode`
+alone is enough to lose it. The mobile hosts (`m.`, `mbasic.`, `touch.`) redirect to a login page and are never worth
 trying.
 
 And the payload is not a schema this module can mirror. The post sits somewhere inside one of
