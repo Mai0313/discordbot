@@ -47,6 +47,11 @@ def message_link_texts(*, message: Message, strip_usage_footer: bool) -> list[st
     """
     content = message.content or ""
     content_present = bool(content.strip())
+    # Stripped here and again at the end, and the order is load-bearing rather than redundant:
+    # `USAGE_FOOTER_RE` is anchored on the blank line before the footer, so a `.strip()` first
+    # destroys that anchor and the whole footer survives — memory labels, and any URL inside
+    # them, included. Whether content is PRESENT is read off the raw text above for the same
+    # reason: a message that is only a footer has content, it just renders empty.
     if strip_usage_footer:
         content = USAGE_FOOTER_RE.sub("", content)
     content = content.strip()

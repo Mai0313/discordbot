@@ -992,14 +992,6 @@ class ResponseStreamer(BaseModel):
         """The memory note as it sits inside the content, or "" when the reply carries none."""
         return f"\n{self._memory_note}" if self._memory_note else ""
 
-    def _upload_limit(self) -> int:
-        """The destination's real upload ceiling, falling back to Discord's 20MB base in a DM.
-
-        A boosted guild's 50/100MB is honored via nextcord's `filesize_limit`; a DM has no guild
-        to query, so it falls back to Discord's non-Nitro base of 20MB (shared helper).
-        """
-        return upload_limit_for(guild=self.message.guild)
-
     async def _build_voice_candidate(self) -> MediaItem | None:
         """Synthesizes the <generate-voice> segment to a WAV candidate, or None when not delivered.
 
@@ -1254,7 +1246,9 @@ class ResponseStreamer(BaseModel):
         if not items:
             return
         plan = await self.media_delivery.plan(
-            items=items, upload_limit=self._upload_limit(), envelope_margin=MEDIA_ENVELOPE_MARGIN
+            items=items,
+            upload_limit=upload_limit_for(guild=self.message.guild),
+            envelope_margin=MEDIA_ENVELOPE_MARGIN,
         )
         files = [item.to_file() for item in plan.native]
         await self._finalize_media_edit(reply=reply, files=files, hosted_urls=plan.hosted_urls)
