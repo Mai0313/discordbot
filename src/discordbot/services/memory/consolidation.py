@@ -262,10 +262,12 @@ async def _consolidate_locked(
         raw_entries=raw_entries,
         today=today,
     )
-    # Every compartment ran, so age the ones this batch did not touch too: a guild the
-    # user has stopped visiting otherwise keeps its `recent` facts forever and hands them
-    # back on their next visit, which is the aging the whole-file rewrite used to do for
-    # free. Synchronous and after the clear guard, like every other write here.
+    # Age every compartment, not just the ones this batch touched: a guild the user has
+    # stopped visiting otherwise keeps its `recent` facts forever and hands them back on
+    # their next visit. The ones that did consolidate were already swept inside the
+    # fan-out, and that is not redundant — a timeout or a clear returns before this line,
+    # so the per-compartment sweep is the only aging those runs get. Synchronous and after
+    # the clear guard, like every other write here.
     for compartment in list_compartments(scope=scope):
         sweep_stale_facts(scope=scope, compartment=compartment, today=today_utc())
     report_injection_size(scope=scope, flavor=flavor)
@@ -472,18 +474,11 @@ def global_first(compartments: set[str]) -> list[str]:
 
 
 def _compartments_to_run(buckets: dict[str, str]) -> list[str]:
-    """Returns the compartments this run touches, `global` first.
+    """Returns the compartments this batch routed evidence to, `global` first.
 
-    Only compartments the batch actually routed evidence to: a call with an empty bucket
-    has nothing to consolidate.
+    Every key is one: the partition only creates a bucket when something lands in it.
     """
-    return global_first(
-        compartments={
-            compartment
-            for compartment in buckets
-            if compartment != GLOBAL_COMPARTMENT or buckets[compartment]
-        }
-    )
+    return global_first(compartments=set(buckets))
 
 
 def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:

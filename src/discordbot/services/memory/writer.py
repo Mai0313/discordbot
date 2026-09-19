@@ -599,9 +599,9 @@ def render_turn_payload(
     """Bundles one turn's transcript and its inline memory notes into a single stored string.
 
     The notes ride inside the `transcript` column rather than in columns of their own. This
-    repo has no migration mechanism (`_ensure_schema` is one `create_all`, which never alters
-    an existing table) and `clear_job` is the one memory DB call not wrapped in best-effort
-    handling, so a new column would take `/memory clear` down on a deployed bot. What the
+    repo has no migration mechanism — schema setup is one `create_all`, which creates but never
+    alters — and `clear_job` is the one memory DB call not wrapped in best-effort handling, so a
+    new column would take `/memory clear` down on a deployed bot. What the
     column holds is still one thing: everything the background turn needs to run.
 
     Appended AFTER the transcript's own truncation, so a long conversation can never push the

@@ -156,6 +156,11 @@ def _forget_targets(block: str, compartments: tuple[str, ...]) -> tuple[str, ...
     there. Copying wider would let a forget spoken in one guild reach a fact stored for
     another, and copying narrower would leave the ordinary case, forgetting something the bot
     just told them, unable to reach a fact that happens to live in `global/`.
+
+    A `source` that is neither of those shapes falls open to every compartment rather than to
+    none, so a stamping change cannot silently drop a user's forget on the floor. Code writes
+    that field and only ever writes those two shapes, so the branch is unreachable today; it is
+    the direction to fail in, not a case being handled.
     """
     source = _fields_of(block=block).get("source", "")
     if source == "dm" or not source:
