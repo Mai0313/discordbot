@@ -1,19 +1,15 @@
 """Custom emoji marking which platform's link the bot just read.
 
-Shared because two layers put the SAME marker on the same message and cannot import each
-other: an expansion cog (`parse_threads`, `parse_twitter`, ...) marks a link it expanded into the
-channel, while `gen_reply` marks one it read into an answer instead, and
-`tests/test_package_layering.py` forbids a cog reaching across to another for it. Bilibili
-has no expansion cog at all, so the reply path is the only thing that ever marks it.
+Shared because two layers put the SAME marker on the same message and cannot import each other:
+the expansion shell marks a link it expanded into the channel, while the reply pipeline marks one
+it read into an answer instead, and `tests/test_package_layering.py` forbids a cog reaching
+across to another for it. A platform with no expansion cog is marked by the reply path alone.
 
-Scope is the platform markers alone. The status emoji an auto-expansion answers with moved
-to `utils/expansion_placeholder.py` instead, beside the protocol that gives each of them its
-meaning: they are one feature's vocabulary rather than a cross-layer marker, and the shared
-restart sweep needs them anyway. `gen_reply` still spells its own three inline, since its
-reactions track a reply turn rather than an expansion outcome.
+Scope is the platform markers alone; the status marks an auto-expansion answers with live beside
+the protocol that gives each of them its meaning.
 
-The keys below are also what the expansion cogs name their `pending_expansion` rows by, so a
-platform is spelled one way across the reply path, the five cogs and that table.
+The keys below are also what an expansion names its `pending_expansion` rows by, so a platform is
+spelled one way wherever it is named.
 """
 
 from typing import Final

@@ -768,7 +768,6 @@ async def test_threads_cog_counts_astral_emoji_as_utf16_units() -> None:
 
     embeds = cog._build_embeds(results=chain)
 
-    assert parse_threads._utf16_length(value="😀") == 2
     assert len(embeds) < len(chain)
     assert sum(parse_threads._embed_text_length(embed=embed) for embed in embeds) <= 6000
     assert [embed.author.name for embed in embeds if embed.author] == [
@@ -878,9 +877,7 @@ async def test_threads_cog_logs_both_a_failed_step_and_the_cleanup_that_failed_a
     # The step that lost the expansion is logged with its own cause rather than with the
     # OSError the cleanup used to overwrite it with, and the cleanup gets its own line.
     assert ("Could not clean up the Threads scratch files", "OSError") in logged
-    assert ("Threads expansion failed outside the parse and delivery steps", "RuntimeError") in (
-        logged
-    )
+    assert ("Threads expansion failed outside the read and the send", "RuntimeError") in logged
 
 
 async def test_threads_cog_shows_the_post_a_quote_post_quotes() -> None:

@@ -1,31 +1,25 @@
-"""The reply slot an expansion cog claims before it has anything to put in it.
+"""The reply slot an expansion claims before it has anything to put in it.
 
-An expansion takes seconds: `parse_threads` walks a whole conversation, `parse_douyin`
-downloads the clip. In a busy channel that is long enough for other people to talk, and the
-finished card then lands several messages below the link it belongs to, which is worst for
-exactly the reader it was posted for — someone tagged in it has to work out which link the
-card came from. So the cog replies with one line the moment it starts and edits that same
-message into the finished expansion: the card sits under the link whatever happened in
-between.
+An expansion takes seconds. In a busy channel that is long enough for other people to talk, and
+the finished card then lands several messages below the link it belongs to, which is worst for
+exactly the reader it was posted for — someone tagged in it has to work out which link the card
+came from. So the cog replies with one line the moment it starts and edits that same message into
+the finished expansion: the card sits under the link whatever happened in between.
 
-A failure leaves NOTHING behind. `discard` removes the placeholder and the reaction on the
-source message is the whole report, which is what every expansion cog already does.
+A failure leaves NOTHING behind. `discard` removes the placeholder, and the reaction on the source
+message is the whole report.
 
-The one failure that rule could not cover is a restart, which kills the expansion mid-read
-with the placeholder already posted and nothing left running to withdraw it. So a posted
-placeholder is a row in `pending_expansion` (`data/database/reply.db`) from the moment it
-lands until it is either delivered onto or discarded, and `resume_expansion_placeholders` is
-the entry point a cog calls on `on_ready` to run the interrupted expansion again. What it
-runs is the cog's own `_expand`, unchanged and with the same arguments the listener passes,
-so a resumed expansion succeeds or fails exactly as a fresh one does — and a failed one ends
-in the same `discard`, which is what turns the stale placeholder back into nothing.
+The one failure that rule cannot cover is a restart, which kills the expansion mid-read with the
+placeholder already posted and nothing left running to withdraw it. So a posted placeholder is a
+row in `pending_expansion` (`data/database/reply.db`) from the moment it lands until it is either
+delivered onto or discarded, and `resume_expansion_placeholders` runs the interrupted expansion
+again on `on_ready`. What it runs is the cog's own `_expand` with the arguments the listener
+passes, so a resumed expansion succeeds or fails exactly as a fresh one does — and a failed one
+ends in the same `discard`, which turns the stale placeholder back into nothing.
 
-The table is new rather than a column on an existing one, which is what makes it safe on a
-deployed bot: `SqliteBootstrap.ensure_schema` is one `create_all`, which creates but never
-alters, so the repo's lack of a migration mechanism does not bite. Engine and bootstrap
-follow `cogs/gen_reply/ask_store.py`: a module-level `AsyncEngine` singleton on the shared
-`reply.db` with its own `Base`, distinct from the `research`, `ask_turn` and `memory_job`
-tables in the same file.
+The rows live in a table of their own rather than a column on an existing one, which is what makes
+it safe on a deployed bot: `SqliteBootstrap.ensure_schema` is one `create_all`, which creates but
+never alters, and this repo has no migration mechanism.
 """
 
 from typing import Final, Protocol, runtime_checkable
@@ -50,9 +44,9 @@ from discordbot.utils.discord_embeds import embed_spacer_payload
 _UNSENDABLE_REPLY = 50035
 
 # The whole reaction vocabulary an auto-expansion answers with, shared so one symbol means one
-# thing whichever platform was linked. Every cog reports through exactly these four and adds
-# nothing to the channel, so the reaction IS the report and a reader who learns it once reads
-# every expansion. What separates them is what the reader should do next:
+# thing whichever platform was linked. Nothing else reaches the channel, so the reaction IS the
+# report and a reader who learns it once reads every expansion. What separates them is what the
+# reader should do next:
 #
 #   WORKING     the expansion is under way. Also what the restart sweep hands `_expand`, since
 #               it cannot ask the interrupted listener what it had scheduled.
@@ -64,8 +58,8 @@ _UNSENDABLE_REPLY = 50035
 #               private, or past a Discord limit no retry can get under.
 #   FAILED      the bot broke. Nothing about the post explains it, and it is worth a log.
 #
-# `gen_reply` spells three of these inline for its own reply turn; that is a different surface
-# with a different lifecycle, and this vocabulary is the auto-expansion contract alone.
+# This vocabulary is the auto-expansion contract alone. A reply turn is a different surface with
+# a different lifecycle and spells its own marks.
 EXPANSION_WORKING_EMOJI: Final[str] = "🔗"
 EXPANSION_DONE_EMOJI: Final[str] = "<:greencheck:1517565102424068226>"
 EXPANSION_RETRY_LATER_EMOJI: Final[str] = "⏱️"
@@ -351,12 +345,11 @@ async def send_expansion_placeholder(
 def expansion_failure_emoji(*, error: Exception) -> str:
     """Picks the mark a failed read earns, the same way for every platform.
 
-    The three outcomes are the shared vocabulary's, read off the exception's CLASS rather than
-    its message: a platform refusing the request or a transport that never answered is the
-    retryable mark, since the link is fine and works later; anything else `LinkReadError`
-    covers means the platform answered and there is no post in it; and an error from outside
-    that tree is the bot's own. `utils/link_errors.py` owns which fetch failures are classified
-    at all and why a 403 deliberately is not.
+    Read off the exception's CLASS rather than its message: a platform refusing the request or a
+    transport that never answered is the retryable mark, since the link is fine and works later;
+    anything else `LinkReadError` covers means the platform answered and there is no post in it;
+    and an error from outside that tree is the bot's own. `utils/link_errors.py` owns which fetch
+    failures are classified at all and why a 403 deliberately is not.
 
     Args:
         error: What the read raised.
@@ -377,17 +370,17 @@ def report_expansion_read_failure(
     """Logs a failed read at the severity `.github/CONTRIBUTING.md#logging` gives its outcome.
 
     The ladder is keyed on how tolerable the failure is, not on how deep it happened, so the
-    three levels line up with the marks `expansion_failure_emoji` picks rather than with any
-    one platform's habits: a post the platform says is gone is a routine user-driven outcome
-    and its own example of `info`, a read the platform explains any other way is degraded but
-    handled, and an error from outside that tree broke a user-visible deliverable — a
-    `TimeoutError` excepted, which rides `warn` for the same reason it rides the retryable
-    mark: it says the read was too slow, never that the bot is wrong.
+    levels line up with the marks `expansion_failure_emoji` picks rather than with any one
+    platform's habits: a post the platform says is gone is a routine user-driven outcome and its
+    own example of `info`, a read the platform explains any other way is degraded but handled,
+    and an error from outside that tree broke a user-visible deliverable — a `TimeoutError`
+    excepted, which rides `warn` for the same reason it rides the retryable mark: it says the
+    read was too slow, never that the bot is wrong.
 
-    The `info` branch deliberately carries no exception and does carry `reason`: a traceback
-    for a deleted post is noise, while the platform's own words for WHY it refused exist in no
-    other line. That split was Douyin's alone before this; the other three logged a deleted
-    post at `warn` with a traceback, which is what makes a real regression unfindable.
+    The `info` branch deliberately carries no exception and does carry `reason`: a traceback for
+    a deleted post is noise, while the platform's own words for WHY it refused exist in no other
+    line, and a deleted post logged at `warn` with a traceback is what makes a real regression
+    unfindable.
 
     Args:
         error: What the read raised.
@@ -505,11 +498,11 @@ async def _resume_one(
             current_emoji=EXPANSION_WORKING_EMOJI,
             placeholder=placeholder,
         )
-    # `_expand` reports its own failures and returns, so this is the unexpected one — and on
-    # the listener path the cog's outer handler paints the cross for exactly that. This sweep
-    # IS that handler's counterpart, and without the mark the source keeps the working ring
-    # with no outcome ever painted: the never-resolving state the sweep exists to clear,
-    # moved off the placeholder and onto the reaction. Re-raised so the caller still logs it.
+    # `_expand` reports its own failures and returns, so this is the unexpected one, which on
+    # the listener path the outer handler paints the cross for. This sweep is that handler's
+    # counterpart: without the mark the source keeps the working ring with no outcome ever
+    # painted, which is the never-resolving state the sweep exists to clear, moved off the
+    # placeholder and onto the reaction. Re-raised so the caller still logs it.
     except Exception:
         await update_reaction(
             message=source_message,
@@ -529,11 +522,10 @@ async def resume_expansion_placeholders(
 ) -> None:
     """Runs again every expansion of `source` that a restart interrupted.
 
-    The entry point is the whole of what is new: what runs is the cog's own `_expand`, with
-    the arguments its listener passes, so a resumed expansion delivers, refuses or fails
-    exactly as a fresh one does. One row at a time, because a restart's backlog would
-    otherwise hit a platform with every stale link at once — which for Douyin is the request
-    volume its WAF bans on.
+    What runs is the cog's own `_expand` with the arguments its listener passes, so a resumed
+    expansion delivers, refuses or fails exactly as a fresh one does. One row at a time, because
+    a restart's backlog would otherwise hit a platform with every stale link at once, which is
+    the request volume a WAF bans on.
 
     Args:
         bot: The bot, used to resolve the channel both messages live in.

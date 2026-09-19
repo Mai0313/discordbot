@@ -99,7 +99,27 @@ def setup(bot: commands.Bot) -> None:
 - Accept normal positional-only idioms such as `len(value)`, `str(value)`, `Path("file")`, exception constructors, variadic collectors, and `logfire.info("message")`.
 - Avoid intermediate one-level aliases when directly using the original object is clearer.
 - Do not blanket `# noqa`. Use the narrowest rule-specific ignore with a short reason.
-- Keep comments focused on non-obvious behavior. Do not narrate the code or reference PR numbers in comments.
+
+## Comments
+
+A comment earns its place only when deleting it would let the next reader break the code. Write the trap, the invariant, or the constraint that is not visible from the code. Everything else is what `git log`, the pull request and the issue are for.
+
+**One fact, one home.** The home is the file that changes when the fact changes. Prose about a set of files belongs to the module that owns the set; its members carry a pointer that never needs editing.
+
+Four things therefore never appear in a comment or docstring:
+
+- **A count of anything outside this file.** "one feature five times over", "all five cogs", "three of the six", "exactly eleven kill-switches". Write "every expansion cog" — the registry, the base class or the test is the enumeration, and it cannot go stale.
+- **A list of sibling modules, callers or test files.** A caller list is wrong the day someone adds a caller, and nothing checks it.
+- **History.** "#636 deleted this", "was a prompt rule, now a code sweep", "this used to". The reason survives; the story of how it got here does not.
+- **A measurement's provenance.** Keep the conclusion the number justifies, drop where it came from. A date survives only for a claim about an external system that moves under us — a provider limit, a platform's page shape — where staleness is the point.
+
+**Comparing this file's number to another file's is coupling.** Say what this number is for. The exception is a constant defined as an expression over another, where the relationship *is* the code.
+
+**None of this deletes the only copy of a reason.** Where the shortest true form of a reason is a piece of history, a measured figure or a name from another file, keep it and compress it. A warning, a "do not", and a "re-measure before changing this" are reasons rather than narration: the comment saying a column cannot be dropped on a deployed database is the only thing stopping someone dropping it.
+
+**A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first.
+
+`CLAUDE.md` is an index. When a fact is written in the code, `CLAUDE.md` carries the pointer to it rather than a second copy.
 
 ## Logging
 
@@ -128,7 +148,7 @@ Pick the level from how tolerable the failure is, not from how deep in the stack
 - Runtime model strings for `./src` live in `RuntimeModelCatalog` in `src/discordbot/typings/models.py`; update that catalog instead of hardcoding names at call sites.
 - Preserve the reaction-based progress UX for AI replies. The bot should not send intermediate "thinking" messages there.
 - A link expansion is the exception, and it takes video delivery's shape rather than a status message of its own: the cog replies with one subtext line as it starts and edits that same message into the finished card, so the card cannot drift away from the link while the post is being read. A failure deletes it and the reaction is the whole report. That placeholder is persisted, so a restart runs the interrupted expansion again instead of leaving a line that never resolves. It is also claimed before any reaction goes on, since reactions share a per-channel rate-limit bucket that a message send does not.
-- The five expansion cogs (Threads, Facebook, Instagram, Douyin, Twitter) are one feature five times over, and the shell around the card is shared in `src/discordbot/utils/expansion_placeholder.py`: the reply slot, the restart sweep, and one reaction vocabulary — ✅ delivered, ⏱️ refused or stalled and worth retrying, ⚠️ nothing showable in what the platform served, ❌ the bot broke. Which one a read failure earns comes off the exception's class (`src/discordbot/utils/link_errors.py`), so no cog decides it with an `isinstance` of its own. Behaviour a reader would notice belongs to all five in the same change; only the card differs per platform. `tests/test_expansion_contract.py` checks the shell and fails until a new source is written into it.
+- An auto-expansion cog subclasses `ExpansionCog` (`src/discordbot/utils/expansion_cog.py`), which owns the listener, the reply slot, the restart sweep, the failure classification and one reaction vocabulary — ✅ delivered, ⏱️ refused or stalled and worth retrying, ⚠️ nothing showable in what the platform served, ❌ the bot broke. Which one a read failure earns comes off the exception's class (`src/discordbot/utils/link_errors.py`), so no cog decides it. A cog supplies its URL pattern, its constants, a `read` and a `build_delivery`; only the card differs per platform. `tests/test_expansion_contract.py` holds every cog to that and fails until a new source is written into it.
 - An expansion never posts a second message. Anything the card cannot carry is counted inside it — a follow-up reply lands wherever the channel has got to, which is exactly what the placeholder exists to prevent.
 - Video delivery keeps progress text on the deferred original message, then edits that same message with the final file and source URL.
 

@@ -1,21 +1,19 @@
 """What every auto-expansion cog owes, checked against all of them at once.
 
-A pasted Threads, Facebook, Instagram, Douyin or Twitter link is the same feature five times
-over, and
-the whole point of it is that a reader learns it once: the same reply slot under the link, the
-same five reactions meaning the same five things, the same silence in the channel when it does
-not work out. Five cogs drifting apart is what that promise fails as, and it fails quietly —
-every cog passes its own tests while the set of them stops agreeing.
+A pasted link is the same feature on every platform, and the whole point of it is that a reader
+learns it once: the same reply slot under the link, the same reactions meaning the same things,
+the same silence in the channel when it does not work out. Cogs drifting apart is what that
+promise fails as, and it fails quietly — every cog passes its own tests while the set of them
+stops agreeing.
 
-So the cogs are discovered rather than listed: an expansion cog is one importing
-`send_expansion_placeholder`, which is the shared reply slot itself, so a sixth one is held to
-the contract without anyone remembering to add it here. The one place a count is written down
-is `test_every_expansion_cog_is_accounted_for`, which fails until a new source is named — that
-is what stops a source arriving with nobody having read this file.
+Most of the shell now lives in `utils/expansion_cog.py`, so most of this file asserts that a cog
+did NOT take a piece of it back: not its own status mark, not its own failure classification, not
+its own listener. The one written-down list is `test_every_expansion_cog_is_accounted_for`, which
+fails until a new source is named — that is what stops a source arriving with nobody having read
+this file.
 
 What deliberately is NOT here: how a post is rendered. A Threads chain, a Facebook comment
-preload and a Douyin clip are different things and their cards should differ. The contract is
-the shell around the card.
+preload and a Douyin clip are different things and their cards should differ.
 """
 
 from types import SimpleNamespace
@@ -30,6 +28,7 @@ from nextcord.ext import commands
 from discordbot.utils import expansion_placeholder as expansion_module
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
 from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
+from discordbot.utils.expansion_cog import ExpansionCog
 from discordbot.utils.expansion_placeholder import (
     EXPANSION_DONE_EMOJI,
     EXPANSION_FAILED_EMOJI,
@@ -45,10 +44,10 @@ from tests.helpers.discord_mocks import FakeUser, FakeDiscordMessage
 
 _COGS_DIR = Path(__file__).resolve().parents[1] / "src" / "discordbot" / "cogs"
 
-# Every status mark an expansion may answer with now lives in one module, so a literal left in
-# a cog is the drift this file exists to catch: it is what lets one platform quietly answer ⚠️
-# where the others answer ⏱️. The platform markers in `typings/emojis.py` are not status marks
-# and stay where they are.
+# Every status mark an expansion may answer with lives in one module, so a literal left in a cog
+# is the drift this file exists to catch: it is what lets one platform quietly answer ⚠️ where the
+# others answer ⏱️. The platform markers in `typings/emojis.py` are not status marks and stay
+# where they are.
 _STATUS_LITERALS = (
     EXPANSION_WORKING_EMOJI,
     EXPANSION_DONE_EMOJI,
@@ -57,43 +56,60 @@ _STATUS_LITERALS = (
     EXPANSION_FAILED_EMOJI,
 )
 
+# Calls that decide an outcome for every platform at once. A cog making one of them is deciding
+# for itself again, which is how the marks and the log levels stopped agreeing before the shell
+# existed.
+_SHARED_DECISIONS = (
+    "expansion_failure_emoji(",
+    "report_expansion_read_failure(",
+    "report_expansion_delivery_failure(",
+    "send_expansion_placeholder(",
+)
 
-def _expansion_cog_modules() -> list[Any]:
-    """Imports every cog module that claims a reply slot, which is what makes it an expansion."""
-    modules = []
+
+def _expansion_cog_classes() -> list[type[ExpansionCog[Any]]]:
+    """Every cog class built on the shared expansion shell.
+
+    Discovered by the base class rather than by a string in the source, so a cog that stops
+    importing one helper cannot drop out of this file's coverage without anyone noticing.
+    """
+    found: list[type[ExpansionCog[Any]]] = []
     for entry in sorted(_COGS_DIR.iterdir()):
         source = entry / "cog.py"
         if entry.name.startswith("_") or not source.is_file():
             continue
-        if "send_expansion_placeholder" not in source.read_text(encoding="utf-8"):
-            continue
-        modules.append(importlib.import_module(f"discordbot.cogs.{entry.name}.cog"))
-    return modules
+        module = importlib.import_module(f"discordbot.cogs.{entry.name}.cog")
+        for value in vars(module).values():
+            if (
+                inspect.isclass(value)
+                and issubclass(value, ExpansionCog)
+                and value is not ExpansionCog
+                and value.__module__ == module.__name__
+            ):
+                found.append(value)
+    return found
 
 
-_MODULES = _expansion_cog_modules()
+_COGS = _expansion_cog_classes()
 
 
-def _cog_class(module: Any) -> type:  # noqa: ANN401 -- a module object has no useful annotation
-    """Returns the one `commands.Cog` subclass a cog module defines."""
-    classes = [
-        value
-        for value in vars(module).values()
-        if inspect.isclass(value)
-        and issubclass(value, commands.Cog)
-        and value.__module__ == module.__name__
-    ]
-    assert len(classes) == 1, f"{module.__name__} defines {len(classes)} cogs"
-    return classes[0]
+def _cog_id(cog: type) -> str:
+    """Names a parametrized case after the cog package it came from."""
+    return cog.__module__.split(".")[-2]
+
+
+def _cog_source(cog: type) -> str:
+    """Reads a cog module's own source, for the checks that are about what it does not do."""
+    return Path(inspect.getsourcefile(cog) or "").read_text(encoding="utf-8")
 
 
 def test_every_expansion_cog_is_accounted_for() -> None:
     """The one written-down list, so a new source cannot arrive unread.
 
-    Everything else here is discovered. This is the tripwire: a sixth expansion cog fails
-    exactly one test, and the fix is to read this file and add its name.
+    Everything else here is discovered. This is the tripwire: a new expansion cog fails exactly
+    one test, and the fix is to read this file and add its name.
     """
-    assert {module.__name__.split(".")[-2] for module in _MODULES} == {
+    assert {_cog_id(cog=cog) for cog in _COGS} == {
         "parse_douyin",
         "parse_facebook",
         "parse_instagram",
@@ -102,101 +118,110 @@ def test_every_expansion_cog_is_accounted_for() -> None:
     }
 
 
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
-def test_an_expansion_cog_names_its_platform_the_shared_way(module: Any) -> None:  # noqa: ANN401
-    """`_SOURCE` keys the pending-expansion rows and must be the project's own spelling.
+def test_the_discovery_finds_something() -> None:
+    """An empty parameter set skips every test below it and reports success.
 
-    A key nothing else uses would look fine until a restart: the sweep reads its own rows by
-    that string, so a private spelling resumes nothing and reports nothing either.
+    That is how this file went quietly blank once already: the probe was a string in the source,
+    the string moved into the shared shell, and eight parametrized tests turned into skips.
     """
-    assert module._SOURCE in LINK_SOURCE_EMOJIS
+    assert _COGS
+
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+def test_an_expansion_cog_names_its_platform_the_shared_way(cog: type[ExpansionCog[Any]]) -> None:
+    """`SOURCE` keys the pending-expansion rows, the marker lookup and the resume sweep.
+
+    A key nothing else uses would look fine until a restart: the sweep reads its own rows by that
+    string, so a private spelling resumes nothing and reports nothing either. It is also what the
+    shell subscripts for the platform marker, so a stray spelling raises mid-expansion.
+    """
+    assert cog.SOURCE in LINK_SOURCE_EMOJIS
 
 
 def test_no_two_expansion_cogs_share_a_source_key() -> None:
     """Two cogs on one key would each resume the other's interrupted expansions."""
-    keys = [module._SOURCE for module in _MODULES]
+    keys = [cog.SOURCE for cog in _COGS]
 
     assert len(set(keys)) == len(keys)
 
 
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
-def test_an_expansion_cog_resumes_what_a_restart_interrupted(module: Any) -> None:  # noqa: ANN401
-    """Without the `on_ready` entry point a restart leaves a placeholder that never resolves.
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+def test_an_expansion_cog_declares_what_the_shell_asks_it_for(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """A cog that leaves a hook unfilled does nothing at all, and says nothing about it."""
+    assert cog.PLATFORM
+    assert cog.PLACEHOLDER_TEXT
+    assert cog.URL_PATTERN.pattern
+    assert cog.read is not ExpansionCog.read
+    assert cog.build_delivery is not ExpansionCog.build_delivery
 
-    That is the failure this contract was written for: the cog itself still works, so nothing
-    goes red, and the channel keeps a line saying an expansion is coming that never is.
+
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+def test_an_expansion_cog_keeps_the_shared_listener(cog: type[ExpansionCog[Any]]) -> None:
+    """The listener, the restart sweep and the expansion body are the shell's, not a cog's.
+
+    Overriding any of them is how the reply slot, the reaction order and the resume contract
+    stopped agreeing when each cog held its own copy. `_expand` in particular is what
+    `resume_expansion_placeholders` calls with the listener's own four arguments, so a cog
+    redefining it can break a restart and nothing else.
     """
-    cog = _cog_class(module=module)
-
-    assert hasattr(cog, "on_ready"), f"{cog.__name__} never sweeps its interrupted expansions"
-
-
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
-def test_an_expansion_cog_can_be_handed_back_its_own_expansion(module: Any) -> None:  # noqa: ANN401
-    """The sweep calls `_expand` with the listener's own four arguments, keyword-only.
-
-    Nothing in the type checker sees this: `ExpansionRetry` is satisfied structurally at the
-    call site, and a cog whose `_expand` grew a fifth required argument would raise a
-    `TypeError` inside a swallowed handler on the next restart and nowhere else.
-    """
-    expand = getattr(_cog_class(module=module), "_expand")  # noqa: B009 -- ty cannot see it
-    parameters = inspect.signature(expand).parameters
-
-    assert {"message", "url", "current_emoji", "placeholder"} <= set(parameters)
-    for name in ("message", "url", "current_emoji", "placeholder"):
-        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+    assert cog.on_message is ExpansionCog.on_message
+    assert cog.on_ready is ExpansionCog.on_ready
+    assert cog._expand is ExpansionCog._expand
+    assert cog._mark_failed is ExpansionCog._mark_failed
 
 
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
-def test_an_expansion_cog_spells_no_status_mark_of_its_own(module: Any) -> None:  # noqa: ANN401
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+def test_an_expansion_cog_spells_no_status_mark_of_its_own(cog: type[ExpansionCog[Any]]) -> None:
     """One symbol, one meaning, whichever platform was linked.
 
     The reaction is the entire report — an expansion that produced nothing says nothing in the
-    channel — so a cog inventing its own mark, or reusing a shared one for a different
-    outcome, is the whole feature's vocabulary coming apart. Sharing the constants is what
-    makes that a diff someone reads rather than a drift nobody notices.
+    channel — so a cog inventing its own mark, or reusing a shared one for a different outcome,
+    is the whole feature's vocabulary coming apart.
     """
-    source = Path(inspect.getsourcefile(module) or "").read_text(encoding="utf-8")
-    body = "\n".join(line for line in source.split("\n") if not line.lstrip().startswith("#"))
+    body = "\n".join(
+        line for line in _cog_source(cog=cog).split("\n") if not line.lstrip().startswith("#")
+    )
 
     for literal in _STATUS_LITERALS:
-        assert f'"{literal}"' not in body, f"{module.__name__} spells {literal} itself"
+        assert f'"{literal}"' not in body, f"{cog.__module__} spells {literal} itself"
 
 
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
-def test_an_expansion_cog_claims_its_reply_slot_before_it_reacts(module: Any) -> None:  # noqa: ANN401
-    """The placeholder is what the reader is waiting for, so nothing queues in front of it.
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
+def test_an_expansion_cog_decides_no_shared_outcome_of_its_own(
+    cog: type[ExpansionCog[Any]],
+) -> None:
+    """A cog reading the error's type itself is how the platforms stop agreeing.
 
-    Both reactions share one rate-limit bucket, which nextcord serializes itself and which is
-    per CHANNEL rather than per message, so a busy channel makes them slower still; a message
-    send is a different bucket and waits on none of it. Reacting first therefore delays the
-    one thing the placeholder exists to put under the link promptly. Read off the source
-    because the ordering is the whole property and there is nothing else to assert against:
-    `tests/test_parse_facebook_cog.py` proves the mechanism on one cog, and this holds the
-    other three to it.
+    Every one of these calls answers the same question for every platform, so the shell makes
+    them and a cog that makes one again has taken the decision back. `parse_douyin` used to own
+    the logging split alone and was right; the others logged a deleted post at `warn` with a
+    traceback, which is what makes a real regression unfindable.
     """
-    listener = getattr(_cog_class(module=module), "on_message")  # noqa: B009 -- ty cannot see it
-    body = inspect.getsource(listener)
+    source = _cog_source(cog=cog)
 
-    assert body.index("send_expansion_placeholder(") < body.index("update_reaction(")
+    for call in _SHARED_DECISIONS:
+        assert call not in source, f"{cog.__module__} makes the shared decision {call}"
+    assert "isinstance(error, TimeoutError)" not in source
 
 
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
+@pytest.mark.parametrize("cog", _COGS, ids=_cog_id)
 async def test_a_failure_with_nothing_on_the_message_still_names_the_platform(
-    module: Any,  # noqa: ANN401
+    cog: type[ExpansionCog[Any]],
 ) -> None:
     """A cross on its own cannot say which link died, and a message can carry two.
 
-    `current_emoji` is None exactly when claiming the reply slot failed, which is both the
-    refused channel and the Discord 5xx that raises straight past it. Behavioural rather than
-    a source scan, because what matters is that the marker lands whichever call site got there.
+    `current_emoji` is None exactly when claiming the reply slot failed, which is both the refused
+    channel and the Discord 5xx that raises straight past it. Behavioural rather than a source
+    scan, because what matters is that the marker lands whichever call site got there.
     """
-    cog = _cog_class(module=module)(bot=as_bot(fake=SimpleNamespace(user=FakeUser(bot=True))))
+    instance = cog(bot=as_bot(fake=SimpleNamespace(user=FakeUser(bot=True))))
     message = FakeDiscordMessage()
 
-    await cog._mark_failed(message=as_message(fake=message), current_emoji=None)
+    await instance._mark_failed(message=as_message(fake=message), current_emoji=None)
 
-    assert message.reactions == [LINK_SOURCE_EMOJIS[module._SOURCE], EXPANSION_FAILED_EMOJI]
+    assert message.reactions == [LINK_SOURCE_EMOJIS[cog.SOURCE], EXPANSION_FAILED_EMOJI]
 
 
 @pytest.mark.parametrize(
@@ -214,26 +239,11 @@ def test_one_failure_earns_the_same_mark_on_every_platform(
 ) -> None:
     """The vocabulary is only worth anything if the same failure reads the same everywhere.
 
-    This pins the mapping itself; `test_an_expansion_cog_decides_no_failure_mark_of_its_own`
-    is what says every cog actually goes through it. Parametrizing this one over the modules
-    too would have looked like four platforms were checked while testing one function
-    four times.
+    This pins the mapping itself; `test_an_expansion_cog_decides_no_shared_outcome_of_its_own` is
+    what says every cog actually goes through it. Parametrizing this one over the cogs too would
+    have looked like every platform was checked while testing one function repeatedly.
     """
     assert expansion_failure_emoji(error=error) == expected
-
-
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
-def test_an_expansion_cog_decides_no_failure_mark_of_its_own(module: Any) -> None:  # noqa: ANN401
-    """A cog reading the error's type itself is how the four stop agreeing.
-
-    `parse_douyin` keeps one `isinstance` for its LOGGING split, which is a different
-    question: a deleted post is routine and Douyin's own reason for it exists in no other
-    line. What no cog may do is pick the reaction that way.
-    """
-    source = Path(inspect.getsourcefile(module) or "").read_text(encoding="utf-8")
-
-    assert "expansion_failure_emoji(" in source
-    assert "isinstance(error, TimeoutError)" not in source
 
 
 @pytest.mark.parametrize(
@@ -251,8 +261,8 @@ def test_a_read_failure_is_logged_at_the_severity_its_outcome_earns(
 ) -> None:
     """The ladder is keyed on how tolerable the failure is, not on how deep it happened.
 
-    A deleted post logged at `warn` with a traceback is what makes a real regression
-    unfindable, and it is `.github/CONTRIBUTING.md#logging`'s own example of `info`.
+    A deleted post logged at `warn` with a traceback is what makes a real regression unfindable,
+    and it is `.github/CONTRIBUTING.md#logging`'s own example of `info`.
     """
     levels: list[str] = []
     for level in ("info", "warn", "error"):
@@ -274,8 +284,8 @@ def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
 ) -> None:
     """A traceback for a deleted post is noise; the platform's own words are not.
 
-    Douyin's filter reason exists in no other line, which is why the `info` branch keeps it
-    while dropping the exception the ladder says that level usually does not carry.
+    Douyin's filter reason exists in no other line, which is why the `info` branch keeps it while
+    dropping the exception the ladder says that level usually does not carry.
     """
     recorded: dict[str, object] = {}
     monkeypatch.setattr(
@@ -296,16 +306,11 @@ def test_a_routine_remote_outcome_carries_its_reason_and_no_traceback(
     assert recorded["message_id"] == 7
 
 
-@pytest.mark.parametrize("module", _MODULES, ids=lambda module: module.__name__.split(".")[-2])
-def test_an_expansion_cog_decides_no_log_severity_of_its_own(module: Any) -> None:  # noqa: ANN401
-    """One failure, one severity, whichever platform it came from.
+def test_the_shell_is_not_itself_a_loadable_cog() -> None:
+    """`_load_cogs_sync` scans `cogs/` one level deep, so the base must not live there.
 
-    Douyin owned this split alone and was right; the other three logged every read failure at
-    `warn`, a post the platform said was deleted included. Sharing the call is what stops that
-    drifting apart again, and it is also what gives every one of them the `message_id` the
-    Douyin line used to be missing.
+    It is a `commands.Cog` subclass with listeners of its own; a copy under `cogs/` would be
+    loaded and would answer every message with a `NotImplementedError`.
     """
-    source = Path(inspect.getsourcefile(module) or "").read_text(encoding="utf-8")
-
-    assert "report_expansion_read_failure(" in source
-    assert "parse failed" not in source
+    assert issubclass(ExpansionCog, commands.Cog)
+    assert not (_COGS_DIR / "expansion_cog").exists()

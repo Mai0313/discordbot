@@ -20,7 +20,7 @@ def utf16_length(*, value: str) -> int:
 
     Discord's docs never define which unit its 4096-per-description and 6000-per-message limits
     count, so an emoji is priced at the two units it costs on the wire rather than the one
-    `len` sees. `parse_threads/cog.py` predates this and keeps its own copy.
+    `len` sees.
     """
     return sum(2 if ord(character) > 0xFFFF else 1 for character in value)
 
