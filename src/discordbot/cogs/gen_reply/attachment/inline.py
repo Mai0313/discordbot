@@ -9,11 +9,8 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
-from discordbot.cogs.gen_reply.attachment.base import (
-    RenderedPart,
-    AttachmentRenderer,
-    loggable_cache_key,
-)
+from discordbot.typings.media import RenderedAttachment
+from discordbot.cogs.gen_reply.attachment.base import AttachmentRenderer, loggable_cache_key
 from discordbot.cogs.gen_reply.attachment.loaders import (
     attachment_mime,
     load_image_bytes,
@@ -52,7 +49,7 @@ class InlineRenderer(AttachmentRenderer):
         source: Attachment | StickerItem | str,
         cache_key: int | str,
         allow_dead_cache: bool = False,
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         try:
             loaded = await load_image_bytes(source=source)
         except Exception as exc:
@@ -71,11 +68,11 @@ class InlineRenderer(AttachmentRenderer):
             image_url=_data_uri(data=loaded.data, mime_type=loaded.mime_type),
             detail="auto",
         )
-        return image_part, _inline_expiry()
+        return RenderedAttachment(part=image_part, expires_at=_inline_expiry())
 
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -116,7 +113,7 @@ class InlineRenderer(AttachmentRenderer):
 
     def _inline_file_part(
         self, filename: str, data: bytes, mime_type: str
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         """Inlines a non-image file, or drops it.
 
         PDFs inline as base64 `input_file` (the one document type OpenAI / Anthropic accept
@@ -129,7 +126,7 @@ class InlineRenderer(AttachmentRenderer):
                 filename=filename,
                 file_data=_data_uri(data=data, mime_type=mime_type),
             )
-            return pdf_part, _inline_expiry()
+            return RenderedAttachment(part=pdf_part, expires_at=_inline_expiry())
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
@@ -142,4 +139,4 @@ class InlineRenderer(AttachmentRenderer):
         text_part = ResponseInputTextParam(
             type="input_text", text=f"[attached file: {filename}]\n{text}"
         )
-        return text_part, _inline_expiry()
+        return RenderedAttachment(part=text_part, expires_at=_inline_expiry())

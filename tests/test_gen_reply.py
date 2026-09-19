@@ -32,7 +32,7 @@ from openai.types.responses.response_input_text_param import ResponseInputTextPa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.media import LoadedMedia
+from discordbot.typings.media import LoadedMedia, UploadedFile, RenderedAttachment
 from discordbot.cogs.gen_reply import streaming as streaming_module
 from discordbot.typings.emojis import THREADS_EMOJI
 from discordbot.typings.memory import (
@@ -4229,7 +4229,8 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         cache_key="note.txt",
     )
     assert file_rendered is not None
-    file_part, file_expiry = file_rendered
+    file_part = file_rendered.part
+    file_expiry = file_rendered.expires_at
     assert file_part["type"] == "input_file"
     assert file_part["file_id"] == "https://files.test/note.txt"
     assert file_expiry == datetime(2099, 1, 1, tzinfo=UTC)
@@ -4241,7 +4242,7 @@ async def test_gen_reply_message_content_and_attachment_helpers(
         cache_key="pixel.png",
     )
     assert image_rendered is not None
-    image_part, _image_expiry = image_rendered
+    image_part = image_rendered.part
     assert image_part["type"] == "input_file"
     assert image_part["file_id"] == "https://files.test/pixel.png"
 
@@ -4293,7 +4294,9 @@ async def test_upload_file_polls_active_and_drops_unready_files(
     uploaded = await active._upload_file(
         filename="doc.pdf", data=b"x", content_type="application/pdf"
     )
-    assert uploaded == ("https://files.test/doc.pdf", datetime(2099, 1, 1, tzinfo=UTC))
+    assert uploaded == UploadedFile(
+        uri="https://files.test/doc.pdf", expires_at=datetime(2099, 1, 1, tzinfo=UTC)
+    )
 
     # Terminal non-active state: the file is dropped.
     failed = _uploader(FakeGeminiFiles(final_state=FileState.FAILED))
@@ -4387,7 +4390,9 @@ async def test_resolve_file_upload_recovers_pending_on_next_reference(
     second = await uploader._resolve_file_upload(
         cache_key="vid", filename="v.mp4", load_data=_load
     )
-    assert second == ("https://files.test/v.mp4", datetime(2099, 1, 1, tzinfo=UTC))
+    assert second == UploadedFile(
+        uri="https://files.test/v.mp4", expires_at=datetime(2099, 1, 1, tzinfo=UTC)
+    )
     assert "vid" not in uploader._pending_uploads
     assert files.upload_calls == [("v.mp4", "video/mp4")]  # no second upload
     assert load_calls == 1  # adopt path did not re-download the source
@@ -4417,7 +4422,8 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
         cache_key="pic.png",
     )
     assert image_rendered is not None
-    image_part, image_expiry = image_rendered
+    image_part = image_rendered.part
+    image_expiry = image_rendered.expires_at
     assert image_part["type"] == "input_image"
     assert image_part["file_id"] == "file-test"
     assert image_part["detail"] == "auto"
@@ -4429,7 +4435,7 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
     )
     url_image_rendered = await renderer.render_image(source=url, cache_key=url)
     assert url_image_rendered is not None
-    url_image_part, _url_image_expiry = url_image_rendered
+    url_image_part = url_image_rendered.part
     assert url_image_part["type"] == "input_image"
     assert url_image_part["file_id"] == "file-test"
 
@@ -4438,7 +4444,8 @@ async def test_openai_file_uploader_renders_image_and_file_parts(
         cache_key="notes.txt",
     )
     assert file_rendered is not None
-    file_part, file_expiry = file_rendered
+    file_part = file_rendered.part
+    file_expiry = file_rendered.expires_at
     assert file_part["type"] == "input_file"
     assert file_part["file_id"] == "file-test"
     assert file_part["filename"] == "notes.txt"
@@ -4584,7 +4591,8 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
         cache_key="notes.txt",
     )
     assert file_rendered is not None
-    file_part, file_expiry = file_rendered
+    file_part = file_rendered.part
+    file_expiry = file_rendered.expires_at
     assert file_part["type"] == "input_file"
     assert file_part["file_id"] == "file-xai"
     assert file_part["filename"] == "notes.txt"
@@ -4598,7 +4606,7 @@ async def test_grok_file_uploader_uploads_files_and_inlines_images() -> None:
         cache_key="pic.png",
     )
     assert image_rendered is not None
-    image_part, _image_expiry = image_rendered
+    image_part = image_rendered.part
     assert image_part["type"] == "input_image"
     image_url = image_part["image_url"]
     assert image_url is not None
@@ -4684,8 +4692,7 @@ async def test_grok_file_uploader_falls_back_to_a_local_expiry() -> None:
         filename="notes.txt", data=b"hello", content_type="text/plain"
     )
     assert uploaded is not None
-    _file_id, expires_at = uploaded
-    assert expires_at > datetime.now(tz=UTC) + timedelta(days=29)
+    assert uploaded.expires_at > datetime.now(tz=UTC) + timedelta(days=29)
 
 
 async def test_non_gemini_answer_model_inlines_attachments() -> None:
@@ -4700,7 +4707,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
         cache_key="pic.png",
     )
     assert image_rendered is not None
-    image_part, _image_expiry = image_rendered
+    image_part = image_rendered.part
     assert image_part["type"] == "input_image"
     image_url = image_part["image_url"]
     assert image_url is not None
@@ -4713,7 +4720,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
         cache_key="notes.txt",
     )
     assert text_rendered is not None
-    text_part, _text_expiry = text_rendered
+    text_part = text_rendered.part
     assert text_part["type"] == "input_text"
     assert "hello world" in text_part["text"]
     assert "notes.txt" in text_part["text"]
@@ -4726,7 +4733,7 @@ async def test_non_gemini_answer_model_inlines_attachments() -> None:
         cache_key="doc.pdf",
     )
     assert pdf_rendered is not None
-    pdf_part, _pdf_expiry = pdf_rendered
+    pdf_part = pdf_rendered.part
     assert pdf_part["type"] == "input_file"
     assert pdf_part["file_data"].startswith("data:application/pdf;base64,")
     assert "file_id" not in pdf_part
@@ -9881,11 +9888,14 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
 
     async def fake_render_image(
         self: object, source: object, cache_key: object, allow_dead_cache: bool = False
-    ) -> tuple[dict[str, str], datetime]:
+    ) -> RenderedAttachment:
         """Records each rendered source instead of hitting the network."""
         del self, cache_key, allow_dead_cache
         rendered_urls.append(str(source))
-        return {"type": "input_image", "image_url": str(source)}, datetime(2099, 1, 1, tzinfo=UTC)
+        return RenderedAttachment(
+            part={"type": "input_image", "image_url": str(source), "detail": "auto"},
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
 
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.attachment.gemini_file_api.GeminiFileUploader.render_image",

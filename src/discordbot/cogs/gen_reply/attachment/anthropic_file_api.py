@@ -39,8 +39,8 @@ from openai.types.responses.response_input_file_param import ResponseInputFilePa
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 from discordbot.typings.llm import LLMConfig
+from discordbot.typings.media import UploadedFile, RenderedAttachment
 from discordbot.cogs.gen_reply.attachment.base import (
-    RenderedPart,
     FileBytesLoader,
     AttachmentRenderer,
     media_semaphore,
@@ -88,7 +88,7 @@ class AnthropicFileUploader(AttachmentRenderer):
         source: Attachment | StickerItem | str,
         cache_key: int | str,
         allow_dead_cache: bool = False,
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         source_name = resolve_source_filename(source=source, url_fallback="image.jpg")
         uploaded = await self._resolve_file_upload(
             cache_key=cache_key,
@@ -98,13 +98,12 @@ class AnthropicFileUploader(AttachmentRenderer):
         )
         if uploaded is None:
             return None
-        file_id, expires_at = uploaded
-        part = ResponseInputImageParam(type="input_image", file_id=file_id, detail="auto")
-        return part, expires_at
+        part = ResponseInputImageParam(type="input_image", file_id=uploaded.uri, detail="auto")
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def render_file(
         self, attachment: Attachment, cache_key: int | str, allow_dead_cache: bool = False
-    ) -> tuple[RenderedPart, datetime] | None:
+    ) -> RenderedAttachment | None:
         mime_type = attachment_mime(attachment=attachment)
         if not mime_type:
             logfire.warn(
@@ -121,11 +120,10 @@ class AnthropicFileUploader(AttachmentRenderer):
         )
         if uploaded is None:
             return None
-        file_id, expires_at = uploaded
         part = ResponseInputFileParam(
-            type="input_file", file_id=file_id, filename=attachment.filename
+            type="input_file", file_id=uploaded.uri, filename=attachment.filename
         )
-        return part, expires_at
+        return RenderedAttachment(part=part, expires_at=uploaded.expires_at)
 
     async def _resolve_file_upload(
         self,
@@ -133,7 +131,7 @@ class AnthropicFileUploader(AttachmentRenderer):
         filename: str,
         load_data: "FileBytesLoader",
         allow_dead_cache: bool = False,
-    ) -> tuple[str, datetime] | None:
+    ) -> UploadedFile | None:
         """Returns an uploaded Anthropic file id and its synthetic cache expiry."""
         if allow_dead_cache and self._is_known_dead(cache_key=cache_key):
             return None
@@ -152,7 +150,7 @@ class AnthropicFileUploader(AttachmentRenderer):
 
     async def _upload_file(
         self, filename: str, data: bytes, content_type: str
-    ) -> tuple[str, datetime] | None:
+    ) -> UploadedFile | None:
         """Uploads bytes to the Anthropic Files API and returns `(file_id, expires_at)`.
 
         The SDK sets `files-api-2025-04-14` for this upload call automatically; the separate
@@ -187,4 +185,6 @@ class AnthropicFileUploader(AttachmentRenderer):
             file_id=uploaded.id,
             elapsed_seconds=time.monotonic() - started,
         )
-        return uploaded.id, datetime.now(tz=UTC) + ANTHROPIC_FILE_CACHE_TTL
+        return UploadedFile(
+            uri=uploaded.id, expires_at=datetime.now(tz=UTC) + ANTHROPIC_FILE_CACHE_TTL
+        )
