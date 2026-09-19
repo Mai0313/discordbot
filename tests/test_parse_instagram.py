@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from discordbot.typings.context_budgets import MAX_INSTAGRAM_COMMENTS
-from discordbot.cogs.gen_reply.link_sources import instagram as instagram_source
+from discordbot.typings.context_budgets import MAX_INSTAGRAM_COMMENTS, MAX_INSTAGRAM_INGEST_IMAGES
+from discordbot.cogs.gen_reply.link_sources import image_ingest
 from discordbot.services.platforms.instagram import (
     InstagramOutput,
     InstagramDownloader,
@@ -81,9 +81,9 @@ def _accept_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]) -> 
         del client, source, mime_type, timeout_seconds
         return {"type": "input_file", "file_id": filename}
 
-    monkeypatch.setattr(target=instagram_source, name="load_image_bytes", value=load_image_bytes)
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
     monkeypatch.setattr(
-        target=instagram_source, name="upload_as_input_file", value=upload_as_input_file
+        target=image_ingest, name="upload_as_input_file", value=upload_as_input_file
     )
 
 
@@ -320,7 +320,7 @@ async def test_a_failed_image_leaves_the_post_readable(monkeypatch: pytest.Monke
         del source
         raise RuntimeError("410 gone")
 
-    monkeypatch.setattr(target=instagram_source, name="load_image_bytes", value=load_image_bytes)
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
 
     blocks = await build_instagram_context_messages(
         url=_URL,
@@ -377,3 +377,37 @@ async def test_a_video_post_says_it_was_not_watched(monkeypatch: pytest.MonkeyPa
     )
 
     assert "could not be watched" in _body(blocks)
+
+
+async def test_the_block_says_how_many_images_it_actually_carries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A count beside a separator promising attachments reads as a claim about them.
+
+    The cap is below what a gallery post carries, and every upload is best-effort on top, so the
+    number of images the post HAS is routinely not the number the model was handed. Saying only
+    the first is how a model ends up describing pictures it never received.
+    """
+    uploaded: list[str] = []
+    carried = MAX_INSTAGRAM_INGEST_IMAGES + 3
+    _serve(
+        monkeypatch,
+        post=_post(
+            image_urls=[
+                f"https://scontent.cdninstagram.example/{index}.jpg" for index in range(carried)
+            ]
+        ),
+    )
+    _accept_uploads(monkeypatch, uploaded=uploaded)
+
+    blocks = await build_instagram_context_messages(
+        url=_URL,
+        answer_model_is_gemini=True,
+        gemini_client=object(),  # ty: ignore[invalid-argument-type]
+        allow_media_ingest=True,
+    )
+
+    assert len(uploaded) == MAX_INSTAGRAM_INGEST_IMAGES
+    assert f"{carried} image(s), {MAX_INSTAGRAM_INGEST_IMAGES} of them attached below." in _body(
+        blocks
+    )

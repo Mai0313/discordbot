@@ -26,17 +26,15 @@ URLs instead, and `_render_post` says so per post so nothing in the block claims
 attached.
 """
 
+from typing import TYPE_CHECKING
 import asyncio
 
 from google import genai
 import logfire
 from openai.types.responses.response_input_param import EasyInputMessageParam
-from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
-from discordbot.typings.timeouts import LINK_MEDIA_TIMEOUT_SECONDS
 from discordbot.typings.context_budgets import MAX_TWITTER_INGEST_IMAGES
-from discordbot.cogs.gen_reply.files_api import upload_as_input_file
 from discordbot.services.platforms.twitter import (
     TwitterOutput,
     TwitterDownloader,
@@ -47,7 +45,10 @@ from discordbot.cogs.gen_reply.link_sources import (
     defuse_markers,
     link_context_blocks,
 )
-from discordbot.cogs.gen_reply.attachment.loaders import load_image_bytes
+from discordbot.cogs.gen_reply.link_sources.image_ingest import upload_post_images
+
+if TYPE_CHECKING:
+    from openai.types.responses.response_input_file_param import ResponseInputFileParam
 
 # Leads the injected blocks when the post's images really are attached. The wording carries two
 # loads: it tells the model the link is ALREADY fetched below (so it answers about the post rather
@@ -192,78 +193,6 @@ def _render_conversation(*, conversation: TwitterConversation, attached_images: 
     return "\n".join(lines)
 
 
-async def _upload_images(
-    *, post: TwitterOutput, gemini_client: genai.Client
-) -> list[ResponseInputFileParam]:
-    """Fetches and uploads the post's images, keeping whatever succeeded.
-
-    Every item is independent and best-effort, so one refused CDN url never costs the rest.
-    `load_image_bytes` also downscales to the provider's effective resolution, which matters here:
-    these are full-resolution originals, asked for with `?name=orig`.
-    """
-
-    async def image_part(index: int, image_url: str) -> ResponseInputFileParam | None:
-        """Fetches, downscales and uploads one image."""
-        data, mime_type = await load_image_bytes(source=image_url)
-        return await upload_as_input_file(
-            client=gemini_client,
-            source=data,
-            mime_type=mime_type,
-            filename=f"twitter_image_{index}.jpg",
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-        )
-
-    image_urls = post.image_urls[:MAX_TWITTER_INGEST_IMAGES]
-    results = await asyncio.gather(
-        *(image_part(index, image_url) for index, image_url in enumerate(image_urls)),
-        return_exceptions=True,
-    )
-    parts: list[ResponseInputFileParam] = []
-    for result in results:
-        if isinstance(result, BaseException):
-            logfire.warn(
-                "Twitter image ingestion failed for one item",
-                url=post.url,
-                error_type=type(result).__name__,
-                _exc_info=result,
-            )
-            continue
-        if result is not None:
-            parts.append(result)
-    return parts
-
-
-async def _media_parts(
-    *, post: TwitterOutput, gemini_client: genai.Client
-) -> list[ResponseInputFileParam]:
-    """Runs the image step under its own bound, degrading to no parts rather than raising.
-
-    Bounded here rather than left to the caller's grace so a slow fetch still produces the honest
-    text-only block instead of being cancelled with nothing to inject.
-    """
-    try:
-        async with asyncio.timeout(delay=LINK_MEDIA_TIMEOUT_SECONDS):
-            return await _upload_images(post=post, gemini_client=gemini_client)
-    except TimeoutError:
-        logfire.warn(
-            "Twitter image ingestion exceeded its bound; answering from the text",
-            url=post.url,
-            timeout_seconds=LINK_MEDIA_TIMEOUT_SECONDS,
-            _exc_info=True,
-        )
-        return []
-    except Exception as error:
-        # Broad on purpose: this must degrade to the text-only block rather than raise into the
-        # reply pipeline, so the type is recorded as a field instead of by narrowing.
-        logfire.warn(
-            "Twitter image ingestion failed; answering from the text",
-            url=post.url,
-            error_type=type(error).__name__,
-            _exc_info=error,
-        )
-        return []
-
-
 async def build_twitter_context_messages(
     *,
     url: str,
@@ -311,7 +240,13 @@ async def build_twitter_context_messages(
 
         media_parts: list[ResponseInputFileParam] = []
         if answer_model_is_gemini and allow_media_ingest and gemini_client is not None:
-            media_parts = await _media_parts(post=target, gemini_client=gemini_client)
+            media_parts = await upload_post_images(
+                platform="Twitter",
+                post_url=target.url,
+                image_urls=target.image_urls,
+                cap=MAX_TWITTER_INGEST_IMAGES,
+                gemini_client=gemini_client,
+            )
 
     text = _render_conversation(conversation=conversation, attached_images=len(media_parts))
     # The text-only separator is for media that EXISTS and did not arrive, never for a post that
