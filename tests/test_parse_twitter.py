@@ -10,7 +10,7 @@ from discordbot.services.platforms.twitter import (
     TwitterDownloader,
     TwitterConversation,
 )
-from discordbot.cogs.gen_reply.link_sources import twitter as twitter_source
+from discordbot.cogs.gen_reply.link_sources import image_ingest
 from discordbot.cogs.gen_reply.link_sources.twitter import (
     TWITTER_TIMEOUT_NOTICE,
     TWITTER_CONTEXT_TRAILER,
@@ -78,9 +78,9 @@ def _accept_uploads(monkeypatch: pytest.MonkeyPatch, *, uploaded: list[str]) -> 
         del client, source, mime_type, timeout_seconds
         return {"type": "input_file", "file_id": filename}
 
-    monkeypatch.setattr(target=twitter_source, name="load_image_bytes", value=load_image_bytes)
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
     monkeypatch.setattr(
-        target=twitter_source, name="upload_as_input_file", value=upload_as_input_file
+        target=image_ingest, name="upload_as_input_file", value=upload_as_input_file
     )
 
 
@@ -327,7 +327,7 @@ async def test_a_failed_image_leaves_the_post_readable(monkeypatch: pytest.Monke
         del source
         raise RuntimeError("cdn said no")
 
-    monkeypatch.setattr(target=twitter_source, name="load_image_bytes", value=load_image_bytes)
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
 
     blocks = await build_twitter_context_messages(
         url=_URL,
@@ -341,7 +341,7 @@ async def test_a_failed_image_leaves_the_post_readable(monkeypatch: pytest.Monke
 
 
 async def test_one_refused_image_does_not_cost_the_others(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The per-item independence `_upload_images` asks `gather` for, with two items to lose.
+    """The per-item independence the shared ingest asks `gather` for, with two items to lose.
 
     With one image a sequential loop that raises and a per-item gather that does not reach the
     same text-only block, so nothing separates them; the second image is what makes the
@@ -365,9 +365,9 @@ async def test_one_refused_image_does_not_cost_the_others(monkeypatch: pytest.Mo
         del client, source, mime_type, timeout_seconds
         return {"type": "input_file", "file_id": filename}
 
-    monkeypatch.setattr(target=twitter_source, name="load_image_bytes", value=load_image_bytes)
+    monkeypatch.setattr(target=image_ingest, name="load_image_bytes", value=load_image_bytes)
     monkeypatch.setattr(
-        target=twitter_source, name="upload_as_input_file", value=upload_as_input_file
+        target=image_ingest, name="upload_as_input_file", value=upload_as_input_file
     )
 
     blocks = await build_twitter_context_messages(

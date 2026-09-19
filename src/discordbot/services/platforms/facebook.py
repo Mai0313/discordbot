@@ -1,28 +1,24 @@
 """Facebook post URL parsing and page extraction.
 
-Shared by `parse_facebook` (which expands a pasted link into embeds) and `gen_reply` (which
-reads the post into answer context), the same split `services/platforms/threads.py` serves.
+Read by the cog that expands a pasted link and by the reply pipeline that reads the post into
+answer context. `base.py` owns the contract both of them are written against.
 
-Unlike its Threads counterpart this module downloads nothing. Both callers work from the image
-URLs alone: the cog hands them to Discord, which fetches them itself, and the reply builder
-passes them to `load_image_bytes`, which is where every link source already gets image bytes
-(`services/platforms/threads.py` keeps a downloader only for the video files that path writes to disk, and
-there are none here). So there is no scratch directory anywhere in this feature.
+This module downloads nothing: both callers work from the image URLs alone, so there is no
+scratch directory anywhere in this feature.
 
-Two things about this source differ from Threads and shape everything below.
+Two things about this source shape everything below.
 
-The page is only served to something that looks like a browser. A bare `User-Agent` gets an
-HTTP 400 and a crawler-shaped one gets a 348KB shell carrying nothing but Open Graph tags,
-whose description is truncated at ~190 characters. The full ~950KB page, with the post's own
-GraphQL payload in it, needs the complete header set in `_BROWSER_HEADERS`: measured
-2026-09-06, dropping `Sec-Fetch-Mode` alone is enough to lose it. The mobile hosts
-(`m.`, `mbasic.`, `touch.`) redirect to a login page and are never worth trying.
+The page is only served to something that looks like a browser. A bare `User-Agent` gets an HTTP
+400 and a crawler-shaped one gets a 348KB shell carrying nothing but Open Graph tags, whose
+description is truncated at ~190 characters. The full ~950KB page, with the post's own GraphQL
+payload in it, needs the complete header set: measured 2026-09-06, dropping `Sec-Fetch-Mode`
+alone is enough to lose it. The mobile hosts (`m.`, `mbasic.`, `touch.`) redirect to a login page and are never worth
+trying.
 
-And the payload is not a schema this module can mirror the way `services/platforms/threads.py` mirrors
-Threads'. The post sits somewhere inside one of ~58 `<script type="application/json">` blocks
-whose shape is dominated by Facebook's own module loader, repeated two or three times per
-page, so the parser walks for a node carrying the fields a story has rather than validating a
-structure. Only the extracted result is modelled.
+And the payload is not a schema this module can mirror. The post sits somewhere inside one of
+~58 JSON script blocks whose shape is dominated by Facebook's own module loader, repeated two or
+three times per page, so the parser walks for a node carrying the fields a story has rather than
+validating a structure. Only the extracted result is modelled.
 
 Video is deliberately out of scope: a logged-out `Video` node carries `permalink_url` and
 `captions_url` but no `playable_url`, so there is no file to fetch. `FacebookOutput.video_urls`
@@ -33,7 +29,6 @@ import re
 import json
 import base64
 from typing import Any
-from datetime import UTC, datetime
 from functools import cached_property
 from urllib.parse import parse_qs, urlparse, urlunparse
 from collections.abc import Iterator
@@ -49,6 +44,15 @@ from discordbot.services.platforms.base import (
     PlatformOutput,
     PlatformDownloader,
     PlatformConversation,
+)
+from discordbot.services.platforms.page_json import (
+    JSON_SCRIPT_RE,
+    BROWSER_HEADERS,
+    JsonValue,
+    walk,
+    str_of,
+    time_of,
+    deep_get,
 )
 
 # Every host Facebook serves posts on. `fb.watch` and `fb.com` are the short forms its own share
@@ -91,24 +95,6 @@ _POST_ID_PARAMS = ("story_fbid", "multi_permalinks", "fbid")
 # `_POST_ID_PARAMS`: `profile.php?id=<n>` carries the same parameter and is not a post at all.
 _OWNER_ID_PARAMS = ("id",)
 
-# What the page will only hand to a browser. Measured 2026-09-06: this exact set returns the
-# full payload, a bare `User-Agent` returns HTTP 400, and a crawler UA returns an Open Graph
-# shell with the post text cut at ~190 characters.
-_BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-}
-
-_JSON_SCRIPT_RE = re.compile(r'<script type="application/json"[^>]*>(.*?)</script>', re.DOTALL)
 
 # A comment node's id is base64 of `comment:<post_id>_<comment_id>`, which is what makes both
 # "the comment this URL names" and "the post this comment hangs off" exact matches rather than
@@ -294,41 +280,9 @@ class FacebookConversation(PlatformConversation[FacebookOutput]):
         )
 
 
-# What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
-# project's checker refuses outright, and mirroring the union `services/platforms/threads.py` walks with. Every
-# read below goes through one of the narrowing helpers under it, so a page that serves an
-# unexpected shape yields an empty field instead of raising into a caller mid-expansion.
-JsonValue = dict[str, Any] | list[Any] | str | float | None
-
-
-def _walk(*, node: JsonValue) -> Iterator[dict[str, Any]]:
-    """Yields every dict in a parsed JSON tree, outermost first."""
-    if isinstance(node, dict):
-        yield node
-        for value in node.values():
-            yield from _walk(node=value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _walk(node=value)
-
-
-def _deep_get(node: JsonValue, *keys: str) -> JsonValue:
-    """Follows a chain of dict keys, returning None as soon as one is missing."""
-    for key in keys:
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-    return node
-
-
-def _str_of(*, value: JsonValue) -> str:
-    """A string field, or an empty one when the page served a null or another type."""
-    return value if isinstance(value, str) else ""
-
-
 def _text_of(*, value: JsonValue) -> str:
     """Reads a `{"text": ...}` node's string, tolerating the null the page sometimes serves."""
-    return _str_of(value=value.get("text")) if isinstance(value, dict) else ""
+    return str_of(value=value.get("text")) if isinstance(value, dict) else ""
 
 
 def _count_of(*, value: JsonValue) -> int:
@@ -347,11 +301,6 @@ def _count_of(*, value: JsonValue) -> int:
         digits = value.replace(",", "").strip()
         return int(digits) if digits.isdigit() else 0
     return 0
-
-
-def _time_of(*, value: JsonValue) -> datetime | None:
-    """A unix timestamp as an aware datetime, or None when the page omitted it."""
-    return datetime.fromtimestamp(value, tz=UTC) if isinstance(value, int) and value else None
 
 
 def _comment_ids_of(*, node: dict[str, Any]) -> tuple[str, str]:
@@ -396,7 +345,7 @@ class FacebookDownloader(PlatformDownloader):
         """
         try:
             response = requests.get(
-                url=url, headers=_BROWSER_HEADERS, timeout=FACEBOOK_PAGE_TIMEOUT_SECONDS
+                url=url, headers=BROWSER_HEADERS, timeout=FACEBOOK_PAGE_TIMEOUT_SECONDS
             )
             response.raise_for_status()
             return FetchedPage(html=response.text, final_url=response.url)
@@ -410,7 +359,7 @@ class FacebookDownloader(PlatformDownloader):
         Skipping rather than failing is what keeps one truncated block, of the roughly sixty a
         page carries, from costing the post.
         """
-        for match in _JSON_SCRIPT_RE.finditer(string=html):
+        for match in JSON_SCRIPT_RE.finditer(string=html):
             try:
                 yield json.loads(s=match.group(1))
             except ValueError:
@@ -431,12 +380,12 @@ class FacebookDownloader(PlatformDownloader):
         """
         fallback: dict[str, Any] | None = None
         for payload in payloads:
-            for node in _walk(node=payload):
+            for node in walk(node=payload):
                 if "post_id" not in node or "creation_time" not in node:
                     continue
                 if post_id and str(node.get("post_id")) != post_id:
                     continue
-                if _deep_get(
+                if deep_get(
                     node,
                     "comet_sections",
                     "content",
@@ -464,9 +413,9 @@ class FacebookDownloader(PlatformDownloader):
         image_urls: list[str] = []
         video_urls: list[str] = []
         for attachment in story.get("attachments") or []:
-            style = _deep_get(attachment, "styles", "attachment")
-            nodes = _deep_get(style, "all_subattachments", "nodes")
-            single = _deep_get(style, "media")
+            style = deep_get(attachment, "styles", "attachment")
+            nodes = deep_get(style, "all_subattachments", "nodes")
+            single = deep_get(style, "media")
             items: list[JsonValue] = list(nodes) if isinstance(nodes, list) else []
             if single is not None:
                 items.append({"media": single})
@@ -506,7 +455,7 @@ class FacebookDownloader(PlatformDownloader):
         found: dict[str, FacebookOutput] = {}
         parents: dict[str, str] = {}
         for payload in payloads:
-            for node in _walk(node=payload):
+            for node in walk(node=payload):
                 if node.get("__typename") != "Comment":
                     continue
                 owner_id, comment_id = _comment_ids_of(node=node)
@@ -521,11 +470,11 @@ class FacebookDownloader(PlatformDownloader):
                 found[comment_id] = FacebookOutput(
                     text=text,
                     url=post_url,
-                    author_name=_str_of(value=_deep_get(node, "author", "name")),
-                    author_icon_url=_str_of(
-                        value=_deep_get(node, "author", "profile_picture", "uri")
+                    author_name=str_of(value=deep_get(node, "author", "name")),
+                    author_icon_url=str_of(
+                        value=deep_get(node, "author", "profile_picture", "uri")
                     ),
-                    taken_at=_time_of(value=node.get("created_time")),
+                    taken_at=time_of(value=node.get("created_time")),
                     comment_id=comment_id,
                 )
         branches: list[list[FacebookOutput]] = []
@@ -550,7 +499,7 @@ class FacebookDownloader(PlatformDownloader):
         """
         fallback = ""
         for payload in payloads:
-            for node in _walk(node=payload):
+            for node in walk(node=payload):
                 if node.get("__typename") != "Group":
                     continue
                 name = node.get("name")
@@ -603,11 +552,11 @@ class FacebookDownloader(PlatformDownloader):
             )
             return FacebookConversation()
 
-        content_story = _deep_get(story, "comet_sections", "content", "story")
-        actors_value = _deep_get(content_story, "actors") or story.get("actors")
+        content_story = deep_get(story, "comet_sections", "content", "story")
+        actors_value = deep_get(content_story, "actors") or story.get("actors")
         actors = actors_value if isinstance(actors_value, list) else []
         actor = actors[0] if actors and isinstance(actors[0], dict) else {}
-        message = _deep_get(
+        message = deep_get(
             content_story, "comet_sections", "message_container", "story", "message"
         )
         image_urls, video_urls = self._media_of(story=story)
@@ -618,17 +567,17 @@ class FacebookDownloader(PlatformDownloader):
         post = FacebookOutput(
             text=_text_of(value=message),
             url=post_url,
-            author_name=_str_of(value=actor.get("name")),
-            author_icon_url=_str_of(value=_deep_get(actor, "profile_picture", "uri")),
+            author_name=str_of(value=actor.get("name")),
+            author_icon_url=str_of(value=deep_get(actor, "profile_picture", "uri")),
             group_name=self._group_name_of(
                 payloads=payloads, group_id=facebook_url.group_id or landed.group_id
             ),
             image_urls=image_urls,
             video_urls=video_urls,
-            like_count=_count_of(value=_deep_get(story, "feedback", "reaction_count")),
+            like_count=_count_of(value=deep_get(story, "feedback", "reaction_count")),
             comment_count=_comment_total(story=story),
-            share_count=_count_of(value=_deep_get(story, "feedback", "share_count")),
-            taken_at=_time_of(value=story.get("creation_time")),
+            share_count=_count_of(value=deep_get(story, "feedback", "share_count")),
+            taken_at=time_of(value=story.get("creation_time")),
         )
         return FacebookConversation(
             chain=[post],
@@ -646,7 +595,7 @@ def _comment_total(*, story: dict[str, Any]) -> int:
         ("feedback", "comment_rendering_instance", "comments", "total_count"),
         ("comet_sections", "feedback", "story", "feedback_context", "total_comment_count"),
     ):
-        value = _deep_get(story, *path)
+        value = deep_get(story, *path)
         if isinstance(value, int):
             return value
     return 0

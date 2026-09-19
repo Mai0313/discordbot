@@ -14,20 +14,21 @@ over: this repo's answer to an unimplemented member is a raise, and an ABC would
 forgotten override while saying nothing about the signature — which is the half that actually
 drifted. `tests/test_platform_shape.py` is what holds the signature.
 
-**A second method is deliberately NOT declared here, and the reason is the return type.** Three
-of the six write nothing to disk at all — Facebook, Instagram and Twitter hand image URLs to
-Discord, which fetches them itself. The three that do write have nothing a base could hold them to: Threads'
-`parse` yields a `ThreadsConversation` from a context manager, because what it has to clean up
-hangs off that conversation, while Douyin's and yt-dlp's `download` return a `TemporaryDownload`
-and take their own options (a quality preset, an image cap, an already-parsed post, a stop
-signal) alongside the url. A shared declaration would have to be the union of all that or the
-intersection, and the intersection is empty. So the name differs too, on purpose: `parse` hands
-back a parsed conversation, `download` hands back files.
+**A second method is deliberately NOT declared here, and the reason is the return type.** Many
+platforms write nothing to disk at all, handing image URLs to Discord to fetch itself. The ones
+that do write have nothing a base could hold them to: a walk that downloads as it goes yields
+its conversation from a context manager, because what it has to clean up hangs off that
+conversation, while a plain fetch returns a `TemporaryDownload` and takes its own options (a
+quality preset, an image cap, an already-parsed post, a stop signal) alongside the url. A shared
+declaration would have to be the union of all that or the intersection, and the intersection is
+empty. So the name differs too, on purpose: `parse` hands back a parsed conversation, `download`
+hands back files.
 
 A platform whose result is a single piece of media returns a `<Platform>Metadata` instead of a
 `<Platform>Conversation` and takes neither of the two models below. There is no base for that
 half, and inventing one would mean a `chain` of length one and a `reply_branches` nothing can
-ever fill — the same reason `share_count` is not in the nine.
+ever fill — the same reason a field no platform can populate does not belong in the shared
+output at all.
 """
 
 from datetime import datetime
@@ -39,10 +40,9 @@ from pydantic import Field, BaseModel, computed_field
 class PlatformDownloader(BaseModel):
     """Reads one platform, given a URL.
 
-    Subclasses that write a file carry a required `output_folder` and a second method of their own
-    — `parse` on Threads, `download` on Douyin and yt-dlp, which the module docstring has the
-    reason for. The ones that only read a page hold no state at all, so a single instance serves
-    every caller.
+    A subclass that writes a file carries a required `output_folder` and a second method of its
+    own, which the module docstring has the reason for. One that only reads a page holds no state
+    at all, so a single instance serves every caller.
     """
 
     def parse_metadata(self, *, url: str) -> BaseModel:
@@ -68,11 +68,10 @@ class PlatformDownloader(BaseModel):
 class PlatformOutput(BaseModel):
     """One post or comment, in the vocabulary every platform here shares.
 
-    The nine fields are what a caller may read without asking which source it holds. A platform
-    carrying more puts it on its own subclass — Threads its downloaded video paths and quote
-    counters, Facebook its group name, Instagram the author's full name. A field no platform can
-    populate does not belong here at all: `share_count` is published by Threads and Facebook and
-    not by Instagram, so it lives on the two that have it.
+    What a caller may read without asking which source it holds. A platform carrying more puts it
+    on its own subclass. A field only some platforms publish does not belong here at all: it
+    lives on the ones that have it, so a caller reading this model is never handed a zero that
+    means "this platform does not have the concept".
 
     Attributes:
         text: The post or comment body.
@@ -102,11 +101,9 @@ class PlatformOutput(BaseModel):
     def is_readable(self) -> bool:
         """Whether enough came back to be worth showing.
 
-        Text or media, which is what the Facebook and Instagram expansions gate on. A platform
-        whose own payload carries an explicit unavailable flag answers that question separately and
-        further up, on the model mirroring its schema — `Post.is_readable` in `threads.py` is that
-        one, and the two rules are not the same and must not be collapsed. `parse_threads/cog.py`
-        answers it a third way and reads neither, so none of the three can disagree in production.
+        Text or media. A platform whose own payload carries an explicit unavailable flag answers
+        that question separately and further up, on the model mirroring its schema; the two rules
+        are not the same and must not be collapsed.
         """
         return bool(self.text or self.image_urls or self.video_urls)
 

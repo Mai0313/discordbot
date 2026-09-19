@@ -9,8 +9,8 @@ all (the URL anchor, the scratch dir, the link-error vocabulary).
 
 `base.py` owns the contract. The entry point is `parse_metadata(*, url=...)`, which returns
 either a `<Platform>Conversation` (a post with a discussion around it) or a `<Platform>Metadata`
-(a single piece of media). `parse` is the optional second half, and only a platform that writes
-a file to `output_folder` has one.
+(a single piece of media). A platform that writes a file to `output_folder` adds a second
+method of its own, named for what it hands back; `base.py` says why that one is not declared.
 
 Two modules deliberately carry no downloader. `youtube.py` and `bilibili.py` are a URL pattern
 each: YouTube is answered by swapping the answer backend rather than by reading a page, and

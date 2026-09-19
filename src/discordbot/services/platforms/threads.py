@@ -699,9 +699,7 @@ class Post(MediaContainer):
         Deliberately NOT the rule `PlatformOutput.is_readable` answers with, which every source
         shares: that one asks whether there is anything worth showing, while this one also honours
         Threads' own unavailable flag and counts a bare author or shortcode as enough, having a
-        permalink to fall back on. This gates the parse; the shared one is what the Facebook and
-        Instagram expansions read. `parse_threads/cog.py` answers the same question its own way
-        and reads neither, so the rules cannot disagree in production today.
+        permalink to fall back on. This gates the parse.
 
         Returns:
             True when the post is not reported unavailable and has an author, code, text or
@@ -854,12 +852,11 @@ class ThreadsOutput(PlatformOutput):
 class ThreadsConversation(PlatformConversation[ThreadsOutput]):
     """A parsed Threads post: its reply chain plus the comments underneath it.
 
-    The three fields and the four accessors come from `PlatformConversation`, which is what makes
-    a caller written against Threads read Facebook and Instagram without learning a second set of
-    rules. Two of those carry a Threads-specific truth worth knowing here.
+    The fields and accessors come from `PlatformConversation`, which is what makes a caller
+    written against one platform read the others without learning a second set of rules. Two of
+    them carry a Threads-specific truth worth knowing here.
 
-    `chain` is the only one with more than one element anywhere today: Threads is the one source
-    that serves ancestor posts.
+    `chain` really is a chain here, because Threads serves the post's ancestors.
 
     `selected_comment_id` is always empty, and `selected_comment` therefore always None. Threads
     gives every reply a post URL of its own, so a link to one makes it this chain's `target`
