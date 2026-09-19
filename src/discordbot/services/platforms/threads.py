@@ -351,16 +351,16 @@ class ShareInfo(_ThreadsModel):
         """Drops an unparsable quoted post instead of failing the post that quotes it.
 
         Typing this field as a whole `Post` pulls every model in this module into the validation
-        of the node that also holds the TARGET, and `_collect_threads` discards a thread node on
-        any `ValidationError` — so without this, one unmodelled shape anywhere inside a quoted
+        of the fragment that also holds the TARGET, and `_collect_fragments` discards a fragment
+        on any `ValidationError` — so without this, one unmodelled shape anywhere inside a quoted
         payload costs the linked post itself. Measured on the way in: a `quoted_post` carrying
         `image_versions2: {"candidates": null}`, `text_fragments: {"fragments": null}`,
         `carousel_media: [null]` or a non-numeric `like_count` each took the target down with it,
         and it did not even have to be the TARGET's own quoted post — an ancestor's was enough.
 
-        This is the same isolation `_collect_threads` gives a reply branch, one level lower: the
-        quote is the most disposable thing in the payload, and losing only it degrades to exactly
-        the pre-quote-post behaviour.
+        This is the same isolation `_isolate_post` gives a post in a connection, one level lower:
+        the quote is the most disposable thing in the payload, and losing only it degrades to
+        exactly the pre-quote-post behaviour.
         """
         try:
             return handler(value)
@@ -370,6 +370,125 @@ class ShareInfo(_ThreadsModel):
                 _exc_info=True,
             )
             return None
+
+
+class PostEdge(_ThreadsModel):
+    """One edge of a connection of posts.
+
+    Attributes:
+        node: The post this edge carries.
+    """
+
+    node: "Post | None" = Field(default=None, description="The post this edge carries")
+
+    @field_validator("node", mode="wrap")
+    @classmethod
+    def _isolate_post(cls, value: object, handler: ValidatorFunctionWrapHandler) -> object | None:
+        """Drops a post that fails validation instead of failing the connection holding it.
+
+        The page serialises the whole conversation as connections hanging off one payload, so
+        without this one unmodelled reply costs every reply on the page, and one unmodelled
+        ancestor costs the target itself. Same isolation `_isolate_quoted_post` gives a quote,
+        one level up.
+        """
+        try:
+            return handler(value)
+        except ValidationError:
+            logfire.warn(
+                "A Threads post no longer matches the parser schema; dropping just it",
+                _exc_info=True,
+            )
+            return None
+
+
+class PostConnection(_ThreadsModel):
+    """A connection of posts, in the order the page serialised them.
+
+    Attributes:
+        edges: The connection's edges, in page order.
+    """
+
+    edges: list[PostEdge] = Field(
+        default_factory=list, description="The connection's edges, in page order"
+    )
+
+    @property
+    def posts(self) -> list["Post"]:
+        """The connection's posts, oldest first.
+
+        Returns:
+            Every edge's post, with the empty edges dropped.
+        """
+        return [edge.node for edge in self.edges if edge.node]
+
+
+class PostThread(_ThreadsModel):
+    """One thread of posts: the chain above the target, or one branch of replies below it.
+
+    Threads serialises both in the same shape, so one model serves both.
+
+    Attributes:
+        posts: The thread's posts, oldest first.
+    """
+
+    posts: PostConnection | None = Field(
+        default=None, description="The thread's posts, oldest first"
+    )
+
+
+class ThreadEdge(_ThreadsModel):
+    """One edge of a connection of threads.
+
+    Attributes:
+        node: The thread this edge carries.
+    """
+
+    node: PostThread | None = Field(default=None, description="The thread this edge carries")
+
+    @field_validator("node", mode="wrap")
+    @classmethod
+    def _isolate_thread(
+        cls, value: object, handler: ValidatorFunctionWrapHandler
+    ) -> object | None:
+        """Drops a branch that fails validation instead of failing every branch beside it.
+
+        Isolating the posts alone is not enough: an unmodelled shape at the branch level fails
+        the connection, and the connection is the whole of the page's replies, so one bad branch
+        would cost all of them. That is coarser than the per-branch loss this replaced.
+        """
+        try:
+            return handler(value)
+        except ValidationError:
+            logfire.warn(
+                "A Threads reply branch no longer matches the parser schema; dropping just it",
+                _exc_info=True,
+            )
+            return None
+
+
+class ThreadConnection(_ThreadsModel):
+    """A connection of threads, in the order the page ranked them.
+
+    Attributes:
+        edges: The connection's edges, in page order.
+    """
+
+    edges: list[ThreadEdge] = Field(
+        default_factory=list, description="The connection's edges, in page order"
+    )
+
+    @property
+    def threads(self) -> list[list["Post"]]:
+        """Each thread's posts, dropping the threads that carry none.
+
+        Returns:
+            One list per thread, each ordered from the direct reply outward.
+        """
+        return [
+            edge.node.posts.posts
+            for edge in self.edges
+            if edge.node and edge.node.posts and edge.node.posts.posts
+        ]
 
 
 class TextPostAppInfo(_ThreadsModel):
@@ -383,11 +502,11 @@ class TextPostAppInfo(_ThreadsModel):
         text_fragments: Structured text fragments with links or mentions.
         link_preview_attachment: Preview metadata for shared links.
         linked_inline_media: Inline media attached through a link preview.
-        is_reply: Whether this post is a reply to another post.
         is_post_unavailable: Whether the post this info belongs to is deleted or private.
         reply_to_author: User this post is directly replying to, if any.
-        root_post_author: Author of the post at the top of this post's thread.
         share_info: What this post quotes or reposts.
+        containing_thread: The posts above this one in its thread, this one excluded.
+        direct_replies: One thread per branch of replies under this post.
     """
 
     direct_reply_count: int | None = Field(default=None, description="Number of direct replies")
@@ -403,24 +522,26 @@ class TextPostAppInfo(_ThreadsModel):
     linked_inline_media: LinkedInlineMedia | None = Field(
         default=None, description="Inline media attached through a link preview"
     )
-    is_reply: bool | None = Field(
-        default=None, description="True when this post is a reply to another post"
-    )
     # Declared nullable like every other optional scalar here rather than `bool` with a False
     # default: Threads serialises an absent optional as an explicit null, and `_ThreadsModel`
-    # coerces one only on `str` fields, so a plain `bool` would raise and take the whole thread
-    # node down with it (`_collect_threads` drops a node that fails validation).
+    # coerces one only on `str` fields, so a plain `bool` would raise and take the whole fragment
+    # down with it (`_collect_fragments` drops a fragment that fails validation).
     is_post_unavailable: bool | None = Field(
         default=None, description="True when this post is deleted or private"
     )
     reply_to_author: User | None = Field(
         default=None, description="User this post is directly replying to"
     )
-    root_post_author: User | None = Field(
-        default=None, description="Author of the post at the top of this post's thread"
-    )
     share_info: ShareInfo | None = Field(
         default=None, description="What this post quotes or reposts"
+    )
+    # Both arrive on a fragment of their own rather than beside the post's own fields, which is
+    # what `_thread_around` joins back together; see `_parse_page_from_html`.
+    containing_thread: PostThread | None = Field(
+        default=None, description="The posts above this one in its thread, this one excluded"
+    )
+    direct_replies: ThreadConnection | None = Field(
+        default=None, description="One thread per branch of replies under this post"
     )
 
 
@@ -428,6 +549,7 @@ class Post(MediaContainer):
     """Represents a single Threads post parsed from the API JSON.
 
     Attributes:
+        id: Media id, `<post_pk>_<author_pk>`.
         code: Post short code used in URLs.
         caption: Post caption.
         user: Post author.
@@ -436,6 +558,9 @@ class Post(MediaContainer):
         taken_at: Post creation timestamp as a Unix epoch.
     """
 
+    # The one field every fragment of a split payload carries, and so the only thing that says
+    # two of them describe the same post; `_thread_around` is what reads it that way.
+    id: str = Field(default="", description="Media id, `<post_pk>_<author_pk>`")
     code: str = Field(default="", description="Post short code used in URLs")
     caption: Caption | None = Field(default=None, description="Post caption")
     user: User | None = Field(default=None, description="Post author")
@@ -523,15 +648,6 @@ class Post(MediaContainer):
         return (self.text_post_app_info.reshare_count or 0) if self.text_post_app_info else 0
 
     @property
-    def is_reply(self) -> bool:
-        """Whether this post is a reply to another post.
-
-        Returns:
-            True when `text_post_app_info.is_reply` is set; False otherwise.
-        """
-        return bool(self.text_post_app_info and self.text_post_app_info.is_reply)
-
-    @property
     def reply_to_username(self) -> str:
         """The username of the post being directly replied to.
 
@@ -544,18 +660,6 @@ class Post(MediaContainer):
         return ""
 
     @property
-    def root_post_username(self) -> str:
-        """The username of the author of the post at the top of this post's thread.
-
-        Returns:
-            Username from `text_post_app_info.root_post_author`, or an empty string when the
-            field is missing (as it is on a post that is not itself a reply).
-        """
-        if self.text_post_app_info and self.text_post_app_info.root_post_author:
-            return self.text_post_app_info.root_post_author.username
-        return ""
-
-    @property
     def quoted_post(self) -> "Post | None":
         """The post this one quotes, as the whole payload Threads ships for it.
 
@@ -565,15 +669,6 @@ class Post(MediaContainer):
         if self.text_post_app_info and self.text_post_app_info.share_info:
             return self.text_post_app_info.share_info.quoted_post
         return None
-
-    @property
-    def is_quote_post(self) -> bool:
-        """Whether this post embeds another post as a quote.
-
-        Returns:
-            True when `text_post_app_info.share_info.quoted_post` is present.
-        """
-        return self.quoted_post is not None
 
     @property
     def is_unavailable(self) -> bool:
@@ -633,81 +728,12 @@ class Post(MediaContainer):
         return [u for u in dict.fromkeys(urls) if u]
 
 
-class ThreadItem(_ThreadsModel):
-    """Represents one item in a Threads reply chain.
-
-    Attributes:
-        post: Parsed post for this thread item.
-    """
-
-    post: Post | None = Field(default=None, description="Parsed post for this thread item")
-
-
-class ThreadData(_ThreadsModel):
-    """Represents one entry of a Threads post page: a thread, or a section header between them.
-
-    Attributes:
-        thread_items: Ordered thread items from the embedded JSON.
-        header: Section label; only a section-marker entry carries one.
-        thread_type: `thread` for a real thread, `header` for a section marker.
-    """
-
-    thread_items: list[ThreadItem] = Field(
-        default_factory=list, description="Ordered thread items from the embedded JSON"
-    )
-    header: str = Field(
-        default="", description="Section label, e.g. 'More replies to <user>'", examples=[""]
-    )
-    thread_type: str = Field(
-        default="", description="'thread' for a real thread, 'header' for a section marker"
-    )
-
-    @property
-    def is_section_header(self) -> bool:
-        """Whether this entry marks the start of a new section rather than holding a thread.
-
-        Returns:
-            True when the entry carries a section label or a non-thread type.
-        """
-        return bool(self.header) or (self.thread_type not in ("", "thread"))
-
-    @property
-    def posts(self) -> list[Post]:
-        """The parsed posts of this thread, oldest first.
-
-        Returns:
-            Every item's post with the empty items dropped.
-        """
-        return [item.post for item in self.thread_items if item.post]
-
-    def find_post_with_parents(self, post_code: str) -> tuple[Post | None, list[Post]]:
-        """Returns the matching post and the chronologically-ordered ancestors before it.
-
-        Threads stores an entire reply chain (root → direct parent → target) in a single
-        `thread_items` list, oldest first. Everything appearing before the target item is
-        therefore an ancestor of it.
-
-        Args:
-            post_code: The short code of the target post.
-
-        Returns:
-            A tuple containing:
-                - The matching Post instance if found, else None.
-                - A list of ancestor Post instances, ordered oldest to newest.
-        """
-        for index, item in enumerate(self.thread_items):
-            if item.post and item.post.code == post_code:
-                parents = [t.post for t in self.thread_items[:index] if t.post]
-                return item.post, parents
-        return None, []
-
-
 class ThreadsPage(BaseModel):
     """Everything one Threads post page yielded, as raw posts.
 
-    A post page embeds several threads in the same JSON block: one holding the chain that ends
-    at the target, and one per branch of replies below it. This is that block, split into the
-    two parts the callers actually want.
+    A post page serialises the target post, the thread above it and each branch of replies below
+    it as separate fragments of one payload. This is those fragments joined back together, split
+    into the two parts the callers actually want.
 
     Attributes:
         chain: The chain ending at the target, ordered `[root, ..., parent, target]`; empty
@@ -854,6 +880,19 @@ _SJS_PATTERN = re.compile(
     r'<script type="application/json"[^>]*data-sjs>(.*?)</script>', re.DOTALL
 )
 
+# The cheap test for a block worth parsing, and deliberately broader than what the parse reads.
+# It is what decides `carried_post_json`, whose question is "did Threads answer at all", so it
+# has to match every page the platform really served and not only a readable post: a post that no
+# longer exists redirects to the feed (`?error=invalid_post`, measured 2026-09-19), which carries
+# post payloads and no `media` node anywhere. Narrowing this to `"media"` would read that page as
+# "no post JSON" and spend every retry before failing a dead link as a throttle, telling the user
+# it is worth trying again — the one thing the reaction vocabulary must never say. It is a strict
+# superset of the `thread_items` it replaced, and widening it costs nothing at the end that decides
+# the flag: the throttle answers a ~320 KB shell carrying this key zero times (measured 2026-09-19
+# against a fingerprint the platform had started refusing), so both markers read that page the same
+# way. Where they differ, a block carrying a post payload IS an answer.
+_POST_PAYLOAD_MARKER = "text_post_app_info"
+
 # Extra attempts spent on a page that came back carrying no post JSON at all, which is the
 # platform's soft throttle rather than an answer about the post (see `ParsedPage`). Both entry
 # points are one-shot — the user pastes a link or mentions the bot once — so a throttle that a
@@ -893,133 +932,96 @@ class ThreadsDownloader(PlatformDownloader):
             raise link_fetch_error(error=error, url=url) from error
 
     @staticmethod
-    def _find_thread_nodes(
+    def _find_media_nodes(
         obj: dict[str, Any] | list[Any] | str | float | None,
     ) -> list[dict[str, Any]]:
-        """Recursively collects every node carrying a `thread_items` list, in document order.
+        """Recursively collects every `media` node, in document order.
 
-        The enclosing node is what is collected, not the bare list: the page's section markers
-        ("More replies to <user>") are nodes with an empty `thread_items` and a `header`, and
-        that header is the only signal separating the target's own replies from the unrelated
-        posts Threads pads the page with. Document order is the page's own ordering, which is
-        what makes the section boundary meaningful.
+        The page splits one post across several of them: the post's own fields arrive on one,
+        the thread above it on another and the replies below it on a third, each in its own
+        script tag and in no fixed order. Collecting them all and joining them afterwards is
+        what `_thread_around` needs; stopping at the first would find only whichever fragment
+        happened to come first.
         """
         results: list[dict[str, Any]] = []
         if isinstance(obj, dict):
-            if isinstance(obj.get("thread_items"), list):
-                results.append(obj)
-            for key, value in obj.items():
-                # The items themselves are posts, never nested nodes; descending into them
-                # would walk every post payload for nothing.
-                if key != "thread_items":
-                    results.extend(ThreadsDownloader._find_thread_nodes(obj=value))
+            media = obj.get("media")
+            if isinstance(media, dict):
+                results.append(media)
+            for value in obj.values():
+                results.extend(ThreadsDownloader._find_media_nodes(obj=value))
         elif isinstance(obj, list):
             for item in obj:
-                results.extend(ThreadsDownloader._find_thread_nodes(obj=item))
+                results.extend(ThreadsDownloader._find_media_nodes(obj=item))
         return results
 
     @staticmethod
-    def _collect_threads(data: dict[str, Any] | list[Any], post_code: str) -> list[ThreadData]:
-        """Builds a ThreadData for every thread node in one parsed SJS payload, in page order.
+    def _collect_fragments(data: dict[str, Any] | list[Any], post_code: str) -> list[Post]:
+        """Builds a Post for every media node in one parsed SJS payload, in page order.
 
-        Each node is validated on its own so a single malformed branch costs only that branch;
-        validating them together would let one unexpected reply payload discard the target too.
+        Each node is validated on its own so a single malformed fragment costs only that
+        fragment; validating them together would let one unexpected payload discard the target
+        too.
         """
-        threads: list[ThreadData] = []
-        for node in ThreadsDownloader._find_thread_nodes(obj=data):
+        fragments: list[Post] = []
+        for node in ThreadsDownloader._find_media_nodes(obj=data):
             try:
-                threads.append(ThreadData.model_validate(obj=node))
+                fragments.append(Post.model_validate(obj=node))
             except ValidationError:
                 logfire.warn(
-                    "Threads payload no longer matches the parser schema; skipping one thread",
+                    "Threads payload no longer matches the parser schema; skipping one fragment",
                     post_code=post_code,
                     _exc_info=True,
                 )
-        return threads
+        return fragments
 
     @staticmethod
-    def _answers_the_target(*, head: Post, target_author: str, root_author: str) -> bool:
-        """Whether a branch's first post is a comment on the target rather than page filler.
+    def _thread_around(
+        *, fragments: list[Post], media_id: str
+    ) -> tuple[list[Post], list[list[Post]]]:
+        """The ancestors above the target and the reply branches below it.
 
-        The author it answers is the primary test. Threads omits that field on at least one
-        real shape though — a reply that is ALSO a quote post comes back with a null
-        `reply_to_author` (and a misleading item-level `parent_post_unavailable_reason:
-        "default"`, while the parent is alive) — so a second, narrower test catches exactly
-        that shape: the post says it is a reply, it quotes another post, and it names the
-        target's own thread root as its root. Every one of those has to hold, which is what
-        keeps the relaxation from re-opening the filler section the author test guards: a
-        recommended post is not a reply, an ordinary comment carries the author it answers,
-        and a thread from elsewhere on the page names a different root.
+        Both arrive on fragments other than the one carrying the post's own fields, and the media
+        id is the only thing saying they describe the same post: they come in no fixed order and
+        only the fragment holding the post's own fields names its code. An empty id therefore
+        joins nothing, rather than matching every other fragment serialised without one.
 
-        Args:
-            head: The branch's first post.
-            target_author: Username of the target post's author.
-            root_author: Username of the author of the post at the top of the target's chain.
-
-        Returns:
-            True when the branch hangs off the target.
-        """
-        if head.reply_to_username:
-            return head.reply_to_username == target_author
-        return bool(
-            head.is_reply
-            and head.is_quote_post
-            and root_author
-            and head.root_post_username == root_author
-        )
-
-    @staticmethod
-    def _collect_reply_branches(
-        threads: list[ThreadData], chain_index: int, target_author: str, root_author: str
-    ) -> list[list[Post]]:
-        """Returns the reply branches under the target, in the order the page ranked them.
-
-        Threads serialises the whole post page into one JSON block: the chain ending at the
-        target, then one thread per branch of replies, and then — on a post whose replies do not
-        fill the page — a `More replies to <user>` section header followed by replies to a
-        DIFFERENT post, the one at the top of the chain. Two independent tells keep those out:
-
-        - The section header ends the target's own replies, so the scan stops at the first one.
-          It is the only tell that works when the target is its author's own reply to their own
-          post, because the filler then answers the same username the target does.
-        - A branch's first post has to answer the target, which rejects the filler whenever those
-          two authors differ, plus a sibling reply to the target's own parent and (if Threads ever
-          moves them into this block) the recommended posts it keeps in a separate one today.
-          `_answers_the_target` owns that second test, including the one real shape Threads
-          serialises without naming the author it answers.
+        The first fragment to carry something wins, because more than one can claim the same id
+        and at least one of them is routinely empty — a post with no replies still gets a
+        `direct_replies` fragment with no edges in it. Overwriting on each match would let that
+        empty one land last and silently take the whole discussion with it, leaving a post that
+        renders perfectly with none of its context and nothing anywhere saying so.
 
         Args:
-            threads: Every thread parsed out of the SJS block holding the target, in page order.
-            chain_index: Index of the thread holding the target's own chain.
-            target_author: Username of the target post's author.
-            root_author: Username of the author of the post at the top of the target's chain.
+            fragments: Every media fragment the page yielded, in page order.
+            media_id: The target's media id.
 
         Returns:
-            One list per reply branch, each ordered from the direct reply outward.
+            A tuple containing:
+                - The target's ancestors, oldest first, the target itself not among them.
+                - One list per reply branch, each ordered from the direct reply outward.
         """
-        # Without an author there is nothing to match a reply against, and an empty username
-        # would match every post whose `reply_to_author` is missing.
-        if not target_author:
-            return []
+        ancestors: list[Post] = []
         branches: list[list[Post]] = []
-        for index, thread in enumerate(threads):
-            if thread.is_section_header:
-                break
-            if index == chain_index:
+        if not media_id:
+            return ancestors, branches
+        for fragment in fragments:
+            info = fragment.text_post_app_info
+            if fragment.id != media_id or not info:
                 continue
-            posts = thread.posts
-            if posts and ThreadsDownloader._answers_the_target(
-                head=posts[0], target_author=target_author, root_author=root_author
-            ):
-                branches.append(posts)
-        return branches
+            if not ancestors and info.containing_thread and info.containing_thread.posts:
+                ancestors = info.containing_thread.posts.posts
+            if not branches and info.direct_replies:
+                branches = info.direct_replies.threads
+        return ancestors, branches
 
     def _parse_page_from_html(self, html: str, post_code: str) -> ParsedPage:
         """Parses the target post, its ancestors, and its replies from the SJS script tags."""
         carried_post_json = False
+        fragments: list[Post] = []
         for match in _SJS_PATTERN.finditer(string=html):
             text = match.group(1)
-            if "thread_items" not in text:
+            if _POST_PAYLOAD_MARKER not in text:
                 continue
 
             try:
@@ -1041,26 +1043,19 @@ class ThreadsDownloader(PlatformDownloader):
             # could read", so a truncated block that carries the substring and nothing usable is
             # retried like the throttle it resembles rather than reported as an answer.
             carried_post_json = True
-            threads = self._collect_threads(data=data, post_code=post_code)
-            for index, thread in enumerate(threads):
-                post, parents = thread.find_post_with_parents(post_code=post_code)
-                if not post:
-                    continue
-                chain = [*parents, post]
-                return ParsedPage(
-                    page=ThreadsPage(
-                        chain=chain,
-                        reply_branches=self._collect_reply_branches(
-                            threads=threads,
-                            chain_index=index,
-                            target_author=post.author_name,
-                            root_author=chain[0].author_name,
-                        ),
-                    ),
-                    carried_post_json=True,
-                )
+            fragments.extend(self._collect_fragments(data=data, post_code=post_code))
 
-        return ParsedPage(page=ThreadsPage(), carried_post_json=carried_post_json)
+        # Every block is scanned before the target is picked, rather than returning on the first
+        # match, because the fragments carrying the thread and the replies sit after the one
+        # naming the post on some pages and before it on others.
+        target = next((fragment for fragment in fragments if fragment.code == post_code), None)
+        if not target:
+            return ParsedPage(page=ThreadsPage(), carried_post_json=carried_post_json)
+        ancestors, branches = self._thread_around(fragments=fragments, media_id=target.id)
+        return ParsedPage(
+            page=ThreadsPage(chain=[*ancestors, target], reply_branches=branches),
+            carried_post_json=True,
+        )
 
     @staticmethod
     def _determine_extension(media_url: str) -> str:
