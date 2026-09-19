@@ -1,51 +1,31 @@
-"""Cog that expands Douyin post URLs into Discord attachments.
+"""Expands a Douyin post URL into Discord attachments.
 
-Unlike `/download_video`, which serves many platforms where a pasted link often just means
-"look at this page", a Douyin link has no such ambiguity: posting one means "watch this",
-so it is converted without anyone typing a command.
+Unlike `/download_video`, which serves many platforms where a pasted link often just means "look
+at this page", a Douyin link has no such ambiguity: posting one means "watch this", so it is
+converted without anyone typing a command.
 
-Expansion is skipped when the message is addressed to the bot (a DM, or an explicit
-mention): `gen_reply` reads the linked post and answers about it, so expanding as well would
-fetch the same media twice and post an attachment nobody asked for. The two paths are
-mutually exclusive, and `is_addressed_to_bot` is the single predicate deciding which runs.
-One message carrying a link therefore costs one clip download, which matters here more than
-anywhere, since the WAF below bans on volume. Handing the model the play URL instead saves
-nothing on the path the reply takes: the proxy fetches it and inlines it rather than
-forwarding it.
+Douyin's WAF bans a share path for tens of minutes once it is hit hard, and this listener sees
+every message in every channel, so the request-volume bounds in `services/platforms/douyin.py` are
+load-bearing rather than defensive. A blocked request must never be reported as a missing post:
+telling someone their working link is dead is the worst failure this feature can produce.
 
-That predicate is deliberately coarser than `gen_reply`'s own guards, so a few addressed
-messages get neither treatment: one typed inside an active research thread (the reply
-pipeline skips those), and one the router sends to IMAGE / VIDEO (those routes discard the
-link context). Both are rare enough to accept rather than couple the cogs together.
-
-Douyin's WAF bans a share path for tens of minutes once it is hit hard, and this listener
-sees every message in every channel, so the request-volume bounds in `services/platforms/douyin.py`
-are load-bearing rather than defensive. A blocked request must never be reported as a missing
-post: telling someone their working link is dead is the worst failure this feature can produce.
-
-Threads, Facebook, Instagram, Douyin and Twitter are one feature five times over, and what makes
-them one is `utils/expansion_placeholder.py`: the reply slot claimed before the read starts, the
-five reactions and what each of them means, the restart sweep, and the rule that a failed
-expansion says nothing in the channel at all. Read that module before changing anything here
-that a reader would notice, and `tests/test_expansion_contract.py` before adding a sixth
-source. What stays per platform is the card: this one downloads a clip or a gallery, and is the
-only source with a failure taxonomy rich enough to tell a bot wall from a deleted post.
+`utils/expansion_cog.py` owns everything around the card. What is here is the card: a clip or a
+gallery, downloaded and attached.
 """
 
 import asyncio
+import contextlib
 
 import logfire
-from nextcord import Embed, Message, NotFound
+from nextcord import Embed, Message
+from pydantic import Field, BaseModel
 from nextcord.ext import commands
 
-from discordbot.typings.emojis import DOUYIN_EMOJI
-from discordbot.utils.mentions import is_addressed_to_bot
-from discordbot.utils.reactions import update_reaction
 from discordbot.typings.timeouts import DOUYIN_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
+from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
 from discordbot.utils.media_delivery import (
     DISCORD_ATTACHMENT_LIMIT,
-    MediaPlan,
     upload_limit_for,
     build_media_delivery_planner,
 )
@@ -59,40 +39,39 @@ from discordbot.services.platforms.douyin import (
     is_douyin_post_url,
     douyin_fetch_semaphore,
 )
-from discordbot.utils.expansion_placeholder import (
-    EXPANSION_DONE_EMOJI,
-    EXPANSION_FAILED_EMOJI,
-    EXPANSION_WORKING_EMOJI,
-    EXPANSION_UNREADABLE_EMOJI,
-    ExpansionPlaceholder,
-    expansion_failure_emoji,
-    send_expansion_placeholder,
-    report_expansion_read_failure,
-    resume_expansion_placeholders,
-    report_expansion_delivery_failure,
-)
 
-# Douyin's own palette, so the expansion reads as a Douyin card at a glance. Deliberately NOT
-# in `typings/colors.py`: that palette is Discord's own semantic set (success / failure / info),
-# and a third party's brand red belongs to the one card that wears it, not to the shared vocabulary.
+# Douyin's own palette, so the expansion reads as a Douyin card at a glance. Deliberately NOT in
+# `typings/colors.py`: that palette is Discord's own semantic set (success / failure / info), and
+# a third party's brand red belongs to the one card that wears it.
 _EMBED_COLOR = 0xFE2C55
 
-_PLACEHOLDER_TEXT = "-# 正在讀取抖音貼文⋯"
-# Owns this cog's rows in the pending-expansion table. Keyed as in `LINK_SOURCE_EMOJIS`, which
-# `tests/test_link_source_emojis.py` pins, so the five cogs and the reply path name a platform
-# the same way rather than each inventing a spelling.
-_SOURCE = "douyin"
+
+class DouyinPost(BaseModel):
+    """A parsed Douyin post together with the files downloaded for it.
+
+    Attributes:
+        metadata: The caption and author, parsed before the download so a refused download still
+            gets its card.
+        download: The downloaded files, unlinked once the expansion is on screen.
+    """
+
+    metadata: DouyinMetadata = Field(..., description="The post's caption and author.")
+    download: DouyinDownload = Field(..., description="The downloaded clip or gallery.")
 
 
-class DouyinCogs(commands.Cog):
+class DouyinCogs(ExpansionCog[DouyinPost]):
     """Expands Douyin links into Discord attachments.
 
     Attributes:
-        bot: The Discord bot instance that owns this cog.
         media_delivery: Planner deciding which files attach and which are hosted as a URL.
-        downloader_factory: Builds the per-invocation downloader, one per scratch directory;
-            the seam a test replaces to keep an expansion off the network.
+        downloader_factory: Builds the per-invocation downloader, one per scratch directory; the
+            seam a test replaces to keep an expansion off the network.
     """
+
+    SOURCE = "douyin"
+    PLATFORM = "Douyin"
+    URL_PATTERN = DOUYIN_URL_RE
+    PLACEHOLDER_TEXT = "-# 正在讀取抖音貼文⋯"
 
     def __init__(self, bot: commands.Bot):
         """Initializes the DouyinCogs instance.
@@ -100,299 +79,120 @@ class DouyinCogs(commands.Cog):
         Args:
             bot: The Discord bot instance.
         """
-        self.bot = bot
+        super().__init__(bot=bot)
         self.media_delivery = build_media_delivery_planner()
         self.downloader_factory = DouyinDownloader
-        self._resume_started = False
-
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        """Runs again the expansions a restart interrupted (once per process).
-
-        `on_ready` fires on every gateway reconnect, so the flag guards it to one sweep.
-        """
-        if self._resume_started:
-            return
-        self._resume_started = True
-        await resume_expansion_placeholders(bot=self.bot, source=_SOURCE, expand=self._expand)
-
-    async def _mark_failed(self, *, message: Message, current_emoji: str | None) -> None:
-        """Paints the failure cross, naming the platform when nothing else on the message does.
-
-        `current_emoji` is None only when claiming the reply slot failed, before either mark
-        went on. The cross alone cannot say WHICH link died, and on a message carrying two
-        that is the whole of what someone needs, so the platform marker goes on first.
-        """
-        if current_emoji is None:
-            await update_reaction(message=message, bot_user=self.bot.user, emoji=DOUYIN_EMOJI)
-        await update_reaction(
-            message=message,
-            bot_user=self.bot.user,
-            emoji=EXPANSION_FAILED_EMOJI,
-            previous=current_emoji,
-        )
 
     @staticmethod
-    def _build_embed(post: DouyinMetadata, url: str) -> Embed:
-        """Builds the caption card that accompanies the expanded media."""
-        embed = Embed(description=post.title, url=url, color=_EMBED_COLOR)
-        if post.author_name:
-            embed.set_author(name=post.author_name, url=url)
-        return embed
+    def url_is_expandable(*, url: str) -> bool:
+        """Whether the matched URL names a post.
 
-    @commands.Cog.listener()
-    async def on_message(self, message: Message) -> None:
-        """Listens for messages and expands Douyin links.
+        The pattern matches the host, not the path, so a profile or live-room link would
+        otherwise spend a rate-limited request to establish there is nothing to show.
 
         Args:
-            message: The message that was sent.
+            url: The URL the pattern matched.
+
+        Returns:
+            True when the URL names a post.
         """
-        if message.author.bot:
-            return
+        return is_douyin_post_url(url=url)
 
-        match = DOUYIN_URL_RE.search(string=message.content)
-        if not match:
-            return
+    async def read(
+        self, *, message: Message, url: str, stack: contextlib.AsyncExitStack
+    ) -> DouyinPost:
+        """Parses the post and downloads its media.
 
-        # The regex matches the host, not the path, so a profile or live-room link would
-        # otherwise earn a warning reaction and a failure reply nobody asked for.
-        if not is_douyin_post_url(url=match.group(0)):
-            return
+        A private directory per invocation, because the filenames are derived from the post id:
+        two expansions of the same post in one shared temp dir would write the same paths, letting
+        one truncate the other's file and letting either one's cleanup delete a file the other is
+        still uploading. `scratch_directory` rather than `TemporaryDirectory` because the timeout
+        below leaves a worker writing into it, and removing the directory is the only stop signal
+        that reaches a thread `asyncio.to_thread` cannot cancel.
 
-        # A link addressed to the bot is gen_reply's to answer about, not ours to expand; see
-        # the module docstring. Checked after the URL match so the common no-link message costs
-        # one regex, not two.
-        if is_addressed_to_bot(message=message, bot_user=self.bot.user):
-            return
+        Both bounds cover only the Douyin-facing work, never the Discord upload that follows: the
+        per-URL lock collapses simultaneous pastes of one link into a single fetch (the payload
+        cache alone loses that race), and the semaphore keeps a burst of distinct links from
+        arriving at Douyin all at once.
 
-        url = match.group(0)
-        # Nothing is on the message yet, and the outer handler below is reachable before
-        # anything is: claiming the reply slot is itself a step that can fail. Left unset
-        # rather than pre-filled so a failure mark removes a reaction only when one is there.
-        current_emoji: str | None = None
-        try:
-            placeholder = await send_expansion_placeholder(
-                message=message, text=_PLACEHOLDER_TEXT, source=_SOURCE, url=url
-            )
-            if placeholder is None:
-                # A channel that refused the placeholder will refuse the card too, so Douyin
-                # is never contacted.
-                await self._mark_failed(message=message, current_emoji=current_emoji)
-                return
-            # Persistent marker (added directly, not through the status chain, which replaces
-            # its own reaction) saying a Douyin post was read, and the working ring under it.
-            # Both go on AFTER the reply slot is claimed: they share one per-channel rate-limit
-            # bucket that a message send does not, so claiming first is what stops the card
-            # queueing behind them. `gen_reply` adds the same marker on the path it takes
-            # instead of this one, so every read is marked the same way whichever cog did it.
-            await update_reaction(message=message, bot_user=self.bot.user, emoji=DOUYIN_EMOJI)
-            current_emoji = await update_reaction(
-                message=message, bot_user=self.bot.user, emoji=EXPANSION_WORKING_EMOJI
-            )
-            try:
-                await self._expand(
-                    message=message, url=url, current_emoji=current_emoji, placeholder=placeholder
-                )
-            finally:
-                # Every failure below returns rather than raising, so this one line covers
-                # all of them: an expansion that delivered nothing leaves nothing behind.
-                # Once delivered it is a no-op.
-                await placeholder.discard()
-        except Exception as error:
-            # Broad on purpose: this is the listener's last boundary, and the cross reaction
-            # below is the only thing that tells the user the expansion is not coming.
-            logfire.error(
-                "Failed to expand Douyin link",
-                url=url,
-                message_id=message.id,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
-            await self._mark_failed(message=message, current_emoji=current_emoji)
+        Parsed before the download so the caption survives a refused download: an oversize post
+        still gets its card instead of a bare warning reaction. The share payload is cached, so
+        this costs no extra request.
 
-    async def _expand(
-        self, *, message: Message, url: str, current_emoji: str, placeholder: ExpansionPlaceholder
-    ) -> None:
-        """Fetches the post and posts it back, reporting every failure mode distinctly."""
-        # A private directory per invocation, because the filenames are derived from the post id:
-        # two expansions of the same post in one shared temp dir would write the same paths,
-        # letting one truncate the other's file and letting either one's cleanup delete a file
-        # the other is still uploading. `scratch_directory` rather than `TemporaryDirectory`
-        # because the timeout below leaves a worker writing into it: a removal that loses that
-        # race must not reach `on_message` and repaint what `_report_failure` already said.
-        with scratch_directory(prefix="parse-douyin-") as download_dir:
-            downloader = self.downloader_factory(output_folder=download_dir)
-            try:
-                # Both bounds cover only the Douyin-facing work, never the Discord upload that
-                # follows: the per-URL lock collapses simultaneous pastes of one link into a
-                # single fetch (the payload cache alone loses that race), and the semaphore
-                # keeps a burst of distinct links from arriving at Douyin all at once.
-                # A timeout releases both while the worker thread is still running, since
-                # `asyncio.to_thread` cannot be cancelled; the scratch dir this block exits
-                # into is what stops it, so the overshoot is one request, not a stream.
-                async with (
-                    douyin_url_locks.hold(url),
-                    douyin_fetch_semaphore.get(),
-                    asyncio.timeout(delay=DOUYIN_EXPAND_TIMEOUT_SECONDS),
-                ):
-                    # Bounded because the slot is shared with the reply path: a stalling CDN
-                    # costs `download_timeout` x `max_retries` per file, so an unbounded gallery
-                    # could hold one of two slots for half an hour and stall every AI reply
-                    # about a Douyin link behind it.
-                    #
-                    # Parsed before the download so the caption survives a refused download: an
-                    # oversize post still gets its card instead of a bare warning reaction. The
-                    # share payload is cached, so this costs no extra request.
-                    post = await asyncio.to_thread(downloader.parse_metadata, url=url)
-                    result = await asyncio.to_thread(
-                        downloader.download,
-                        url=url,
-                        post=post,
-                        max_images=DISCORD_ATTACHMENT_LIMIT,
-                    )
-            except Exception as error:
-                await self._report_failure(
-                    message=message, url=url, error=error, current_emoji=current_emoji
-                )
-                return
+        Args:
+            message: Unused; nothing here logs.
+            url: The post to read.
+            stack: Holds the scratch directory and the downloaded files until delivery is done.
 
-            with result:
-                await self._deliver(
-                    message=message,
-                    url=url,
-                    post=post,
-                    result=result,
-                    current_emoji=current_emoji,
-                    placeholder=placeholder,
-                )
-
-    async def _report_failure(
-        self, *, message: Message, url: str, error: Exception, current_emoji: str
-    ) -> None:
-        """Reacts with the outcome the failure actually represents, never a generic error.
-
-        The reaction is the whole report — an expansion that produced nothing leaves nothing
-        in the channel — and both halves of what to say about it now come off the error's
-        class: `expansion_failure_emoji` for the mark and `report_expansion_read_failure` for
-        the severity. The logging split this used to own alone is the one the other three
-        adopted, Douyin's filter reason included.
+        Returns:
+            The caption and the downloaded media.
         """
-        report_expansion_read_failure(
-            error=error, platform="Douyin", url=url, message_id=message.id
-        )
-        await update_reaction(
-            message=message,
-            bot_user=self.bot.user,
-            emoji=expansion_failure_emoji(error=error),
-            previous=current_emoji,
-        )
+        del message
+        download_dir = stack.enter_context(scratch_directory(prefix="parse-douyin-"))
+        downloader = self.downloader_factory(output_folder=download_dir)
+        async with (
+            douyin_url_locks.hold(url),
+            douyin_fetch_semaphore.get(),
+            asyncio.timeout(delay=DOUYIN_EXPAND_TIMEOUT_SECONDS),
+        ):
+            metadata = await asyncio.to_thread(downloader.parse_metadata, url=url)
+            download = await asyncio.to_thread(
+                downloader.download, url=url, post=metadata, max_images=DISCORD_ATTACHMENT_LIMIT
+            )
+        stack.enter_context(download)
+        return DouyinPost(metadata=metadata, download=download)
 
-    async def _deliver(  # noqa: PLR0913 -- the post, its files, and both handles to the channel
-        self,
-        *,
-        message: Message,
-        url: str,
-        post: DouyinMetadata,
-        result: DouyinDownload,
-        current_emoji: str,
-        placeholder: ExpansionPlaceholder,
-    ) -> None:
-        """Edits the downloaded media plus its caption card onto the placeholder."""
+    async def build_delivery(
+        self, *, message: Message, url: str, parsed: DouyinPost
+    ) -> ExpansionDelivery | None:
+        """Plans the media and builds the card, refusing a post nothing can carry.
+
+        Args:
+            message: The message carrying the link.
+            url: The post that was read.
+            parsed: The caption and the downloaded media.
+
+        Returns:
+            The card, or None when the media can be neither attached nor hosted.
+        """
         delivery = await plan_douyin_delivery(
             planner=self.media_delivery,
-            result=result,
+            result=parsed.download,
             upload_limit=upload_limit_for(guild=message.guild),
         )
         plan = delivery.plan
-
         if not plan.native and not plan.hosted_urls:
-            # The size is stated here rather than in the channel, which is the only place it
-            # would otherwise exist: the ⚠️ says the post could not be delivered and nothing
-            # else is left behind, as with every other expansion refusal.
+            # The size is stated here rather than in the channel, which is the only place it would
+            # otherwise exist: the mark says the post could not be delivered and nothing else is
+            # left behind, as with every other expansion refusal.
             logfire.warn(
                 "Douyin media could not be attached or hosted; refusing the post",
                 url=url,
                 message_id=message.id,
                 total_mb=delivery.total_mb,
             )
-            await update_reaction(
-                message=message,
-                bot_user=self.bot.user,
-                emoji=EXPANSION_UNREADABLE_EMOJI,
-                previous=current_emoji,
-            )
-            return
+            return None
 
-        # Broad on purpose: the delivery step must never escape into the listener, and its
-        # failures split three ways — the placeholder went away, the bot lacks a permission,
-        # or something unexpected lost the expansion.
-        try:
-            try:
-                await message.edit(suppress=True)
-            # Deleting the link while the clip was downloading is a withdrawal: before the
-            # placeholder existed the late reply was simply refused, and this keeps that, since
-            # a reply outlives the message it answers.
-            except NotFound:
-                logfire.info(
-                    "Douyin expansion target is gone",
-                    url=url,
-                    message_id=message.id,
-                    channel_id=message.channel.id,
-                )
-                return
-            # Broad on purpose: hiding Discord's own preview is cosmetic and must not abort the
-            # expansion. A persistent Forbidden means the guild lacks Manage Messages.
-            except Exception as error:
-                logfire.warn(
-                    "Could not suppress the source message embed",
-                    message_id=message.id,
-                    guild_id=message.guild.id if message.guild else None,
-                    error_type=type(error).__name__,
-                    _exc_info=error,
-                )
-
-            await self._send(url=url, post=post, result=result, plan=plan, placeholder=placeholder)
-        except Exception as error:
-            report_expansion_delivery_failure(
-                error=error,
-                platform="Douyin",
-                url=url,
-                message_id=message.id,
-                channel_id=message.channel.id,
-            )
-            await self._mark_failed(message=message, current_emoji=current_emoji)
-            return
-
-        await update_reaction(
-            message=message,
-            bot_user=self.bot.user,
-            emoji=EXPANSION_DONE_EMOJI,
-            previous=current_emoji,
-        )
-
-    async def _send(
-        self,
-        *,
-        url: str,
-        post: DouyinMetadata,
-        result: DouyinDownload,
-        plan: MediaPlan,
-        placeholder: ExpansionPlaceholder,
-    ) -> None:
-        """Delivers the expansion, stating anything left out rather than dropping it."""
         lines = douyin_delivery_lines(
-            result=result,
+            result=parsed.download,
             plan=plan,
             hosting_available=self.media_delivery.media_hosting.config.available,
             url=url,
             dropped_event="Douyin expansion dropped some media",
         )
-
-        files = [item.to_file() for item in plan.native]
-        embeds = [self._build_embed(post=post, url=url)]
-        await placeholder.deliver(
-            content="\n".join(lines) if lines else None, embeds=embeds, files=files
+        return ExpansionDelivery(
+            content="\n".join(lines) if lines else None,
+            embeds=[self._build_embed(post=parsed.metadata, url=url)],
+            files=[item.to_file() for item in plan.native],
         )
+
+    @staticmethod
+    def _build_embed(*, post: DouyinMetadata, url: str) -> Embed:
+        """Builds the caption card that accompanies the expanded media."""
+        embed = Embed(description=post.title, url=url, color=_EMBED_COLOR)
+        if post.author_name:
+            embed.set_author(name=post.author_name, url=url)
+        return embed
 
 
 def setup(bot: commands.Bot) -> None:
