@@ -1,25 +1,15 @@
 """Instagram post URL parsing and page extraction.
 
-Shared by `parse_instagram` (which expands a pasted link into embeds) and `gen_reply` (which
-reads the post into answer context), the same split `services/platforms/threads.py` and `services/platforms/facebook.py`
-serve. The three modules deliberately agree on both halves of their surface.
+Read by the cog that expands a pasted link and by the reply pipeline that reads the post into
+answer context. `base.py` owns the contract both of them are written against.
 
-`parse_metadata` is the entry point on all three and means the same thing on each: parse the
-post, write nothing to disk. Only Threads additionally has `parse`, because only Threads
-downloads a file that then has to be cleaned up.
+Logged out, the page ships the whole post — full caption, every carousel image at original
+resolution, the counters, AND the complete comment list — inside JSON script blocks, under a
+module whose own name says who it is for (`PolarisLoggedOutDesktopWWWMedia`). The comments are
+the whole list rather than a preload, which is what the injected block is allowed to claim.
 
-`InstagramConversation` mirrors `ThreadsConversation`: a `chain` whose last element is the
-post the link names, and `reply_branches` holding the discussion under it, one branch per
-top-level comment with its replies threaded behind it. Instagram has no ancestor posts, so the
-chain is always exactly one element — the shape is kept anyway so a caller that renders a
-Threads conversation renders this one without learning a second set of rules.
-
-Logged out, Instagram is the most generous of the three. The page ships the whole post — full
-caption, every carousel image at original resolution, the counters, AND the complete comment
-list — inside `<script type="application/json">` blocks, under a module whose own name says
-who it is for (`PolarisLoggedOutDesktopWWWMedia`). Measured 2026-09-07 against a 9-image post
-reporting 11 comments: 9 images and all 11 comments came back. That is where this source beats
-Facebook, whose comments are a preload of a much longer thread.
+The chain is always exactly one element, since Instagram serves no ancestor posts. The shape is
+carried anyway so a caller reads every platform without learning a second set of rules.
 
 Three things shape the parser.
 
@@ -29,11 +19,9 @@ what they omit — no `carousel_media` list, no `like_count`, no `taken_at` — 
 test is the shortcode from the URL, so `_find_media` matches on that and never on position.
 
 A comment URL cannot be fetched. `/p/<code>/c/<comment_id>/` answers HTTP 200 with a page
-carrying no post payload at all (measured: 503KB and no media node, against 805KB and a full
-one for the bare post), so `clean_url` strips the comment segment and the id is carried
+carrying no post payload at all, so `clean_url` strips the comment segment and the id is carried
 separately in `comment_id`. Everything in the query goes the same way, `img_index` included;
-`stkn` is the reason it has to, being a per-share token that names whoever passed the link on,
-exactly like Facebook's `rdid`.
+`stkn` is the reason it has to, being a per-share token that names whoever passed the link on.
 
 Image candidates are ordered widest first and carry no dimensions of their own, so
 `candidates[0]` is the original: the ones after it have a size in their `stp=` segment
@@ -43,7 +31,6 @@ Image candidates are ordered widest first and carry no dimensions of their own, 
 import re
 import json
 from typing import Any
-from datetime import UTC, datetime
 from functools import cached_property
 from urllib.parse import urlparse
 from collections.abc import Iterator
@@ -59,6 +46,15 @@ from discordbot.services.platforms.base import (
     PlatformOutput,
     PlatformDownloader,
     PlatformConversation,
+)
+from discordbot.services.platforms.page_json import (
+    JSON_SCRIPT_RE,
+    BROWSER_HEADERS,
+    JsonValue,
+    walk,
+    str_of,
+    time_of,
+    deep_get,
 )
 
 _CANONICAL_INSTAGRAM_ORIGIN = "https://www.instagram.com"
@@ -85,66 +81,14 @@ _POST_PATH_RE = re.compile(
 # docstring for what that URL answers with.
 _COMMENT_PATH_RE = re.compile(r"/c/(?P<comment>[0-9]+)")
 
-# What the page will only hand to a browser, the same set `services/platforms/facebook.py` needs. A crawler
-# UA does get a page here (unlike Facebook, which answers 400), but it is a 650KB shell whose
-# post payload is missing the carousel and every comment.
-_BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
-}
-
-_JSON_SCRIPT_RE = re.compile(r'<script type="application/json"[^>]*>(.*?)</script>', re.DOTALL)
 
 # Instagram's own media-type enum, as it appears on both a post and a carousel child.
 _MEDIA_TYPE_VIDEO = 2
-
-# What a parsed JSON payload can hold. Spelled out rather than left as a bare `Any`, which the
-# project's checker refuses, and mirroring the union `services/platforms/facebook.py` walks with.
-JsonValue = dict[str, Any] | list[Any] | str | float | None
-
-
-def _walk(*, node: JsonValue) -> Iterator[dict[str, Any]]:
-    """Yields every dict in a parsed JSON tree, outermost first."""
-    if isinstance(node, dict):
-        yield node
-        for value in node.values():
-            yield from _walk(node=value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _walk(node=value)
-
-
-def _deep_get(node: JsonValue, *keys: str) -> JsonValue:
-    """Follows a chain of dict keys, returning None as soon as one is missing."""
-    for key in keys:
-        if not isinstance(node, dict):
-            return None
-        node = node.get(key)
-    return node
-
-
-def _str_of(*, value: JsonValue) -> str:
-    """A string field, or an empty one when the page served a null or another type."""
-    return value if isinstance(value, str) else ""
 
 
 def _int_of(*, value: JsonValue) -> int:
     """An integer field, or zero when the page served something else."""
     return value if isinstance(value, int) else 0
-
-
-def _time_of(*, value: JsonValue) -> datetime | None:
-    """A unix timestamp as an aware datetime, or None when the page omitted it."""
-    return datetime.fromtimestamp(value, tz=UTC) if isinstance(value, int) and value else None
 
 
 def is_instagram_post_url(*, url: str) -> bool:
@@ -292,7 +236,7 @@ class InstagramDownloader(PlatformDownloader):
         """
         try:
             response = requests.get(
-                url=url, headers=_BROWSER_HEADERS, timeout=INSTAGRAM_PAGE_TIMEOUT_SECONDS
+                url=url, headers=BROWSER_HEADERS, timeout=INSTAGRAM_PAGE_TIMEOUT_SECONDS
             )
             response.raise_for_status()
             return FetchedPage(html=response.text, final_url=response.url)
@@ -302,7 +246,7 @@ class InstagramDownloader(PlatformDownloader):
     @staticmethod
     def _json_payloads(*, html: str) -> Iterator[Any]:
         """Yields every embedded JSON block on the page, skipping the ones that do not parse."""
-        for match in _JSON_SCRIPT_RE.finditer(string=html):
+        for match in JSON_SCRIPT_RE.finditer(string=html):
             try:
                 yield json.loads(s=match.group(1))
             except ValueError:
@@ -320,7 +264,7 @@ class InstagramDownloader(PlatformDownloader):
         """
         fallback: dict[str, Any] | None = None
         for payload in payloads:
-            for node in _walk(node=payload):
+            for node in walk(node=payload):
                 if node.get("code") != shortcode:
                     continue
                 if "carousel_media" in node or "image_versions2" in node:
@@ -346,13 +290,13 @@ class InstagramDownloader(PlatformDownloader):
             if item.get("media_type") == _MEDIA_TYPE_VIDEO:
                 versions = item.get("video_versions")
                 first = versions[0] if isinstance(versions, list) and versions else None
-                url = _str_of(value=_deep_get(first, "url"))
+                url = str_of(value=deep_get(first, "url"))
                 if url:
                     video_urls.append(url)
                     continue
-            candidates = _deep_get(item, "image_versions2", "candidates")
+            candidates = deep_get(item, "image_versions2", "candidates")
             first = candidates[0] if isinstance(candidates, list) and candidates else None
-            url = _str_of(value=_deep_get(first, "url"))
+            url = str_of(value=deep_get(first, "url"))
             if url and url not in image_urls:
                 image_urls.append(url)
         return image_urls, video_urls
@@ -373,7 +317,7 @@ class InstagramDownloader(PlatformDownloader):
         found: dict[str, InstagramOutput] = {}
         parents: dict[str, str] = {}
         for payload in payloads:
-            for node in _walk(node=payload):
+            for node in walk(node=payload):
                 if "comment_like_count" not in node or "text" not in node:
                     continue
                 comment_id = str(node.get("pk") or "")
@@ -383,12 +327,12 @@ class InstagramDownloader(PlatformDownloader):
                 if parent.isdigit():
                     parents[comment_id] = parent
                 found[comment_id] = InstagramOutput(
-                    text=_str_of(value=node.get("text")),
+                    text=str_of(value=node.get("text")),
                     url=post_url,
-                    author_name=_str_of(value=_deep_get(node, "user", "username")),
-                    author_icon_url=_str_of(value=_deep_get(node, "user", "profile_pic_url")),
+                    author_name=str_of(value=deep_get(node, "user", "username")),
+                    author_icon_url=str_of(value=deep_get(node, "user", "profile_pic_url")),
                     like_count=_int_of(value=node.get("comment_like_count")),
-                    taken_at=_time_of(value=node.get("created_at")),
+                    taken_at=time_of(value=node.get("created_at")),
                     comment_id=comment_id,
                 )
         branches: list[list[InstagramOutput]] = []
@@ -449,16 +393,16 @@ class InstagramDownloader(PlatformDownloader):
 
         image_urls, video_urls = self._media_urls_of(media=media)
         post = InstagramOutput(
-            text=_str_of(value=_deep_get(media, "caption", "text")),
+            text=str_of(value=deep_get(media, "caption", "text")),
             url=instagram_url.clean_url,
-            author_name=_str_of(value=_deep_get(media, "user", "username")),
-            author_full_name=_str_of(value=_deep_get(media, "user", "full_name")),
-            author_icon_url=_str_of(value=_deep_get(media, "user", "profile_pic_url")),
+            author_name=str_of(value=deep_get(media, "user", "username")),
+            author_full_name=str_of(value=deep_get(media, "user", "full_name")),
+            author_icon_url=str_of(value=deep_get(media, "user", "profile_pic_url")),
             image_urls=image_urls,
             video_urls=video_urls,
             like_count=_int_of(value=media.get("like_count")),
             comment_count=_int_of(value=media.get("comment_count")),
-            taken_at=_time_of(value=media.get("taken_at")),
+            taken_at=time_of(value=media.get("taken_at")),
         )
         return InstagramConversation(
             chain=[post],
