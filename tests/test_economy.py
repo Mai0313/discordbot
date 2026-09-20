@@ -1332,6 +1332,21 @@ async def test_apply_round_settlement_loss_clamps_player_and_casino_to_available
     assert account.total_spent == 25
 
 
+async def test_a_positive_adjustment_is_never_clamped() -> None:
+    """A credit always applies in full, on a new account and on an existing one.
+
+    The admin panel reads `applied_delta != delta` as "the collection hit the balance
+    floor", which is only honest while a credit cannot differ from what was asked. Put a
+    ceiling on balances and that footnote starts appearing on refunds.
+    """
+    first = await adjust_balance(user_id=1, name="alice", delta=100)
+    second = await adjust_balance(user_id=1, name="alice", delta=250)
+
+    assert first.applied_delta == 100
+    assert second.applied_delta == 250
+    assert second.new_balance == 350
+
+
 async def test_apply_round_settlement_books_the_whole_take_when_the_loss_collects() -> None:
     """A system-funded bonus rides inside `player_delta` and must not shrink the house's take.
 

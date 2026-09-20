@@ -67,13 +67,7 @@ class _RankingBoardSpec(BaseModel):
     title: str = Field(..., description="Board title text.")
     subtitle: str = Field(..., description="Subtitle line under the title.")
     amount_header: str = Field(..., description="Amount column header text.")
-    accent: tuple[int, int, int] = Field(
-        ...,
-        description=(
-            "Accent RGB color for the PUBLIC badge, the amount column header, "
-            "and the top-three rank numbers."
-        ),
-    )
+    accent: tuple[int, int, int] = Field(..., description="Accent RGB color for this board.")
     rows: tuple[_RankingRow, ...] = Field(..., description="Ranked rows to render, best first.")
 
 
@@ -128,10 +122,9 @@ def _build_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
 def _drop_expired_boards(now: float) -> None:
     """Evicts board images past the TTL.
 
-    The cache key carries the rows it rendered, so an entry can never go stale in
-    content: a balance change mints a new key and strands the old one instead of
-    poisoning it. Expiry is therefore the size bound rather than a freshness rule,
-    and nothing on the write side has to clear this.
+    The key is the spec that was rendered, so an entry can never go stale in
+    content: expiry is the size bound rather than a freshness rule, and nothing
+    on the write side has to clear this.
     """
     expired = [
         spec
@@ -166,7 +159,7 @@ def _render_ranking_board_image(spec: _RankingBoardSpec) -> bytes:
     if rows:
         for index, row in enumerate(iterable=rows):
             y = table_top + _TABLE_HEADER_HEIGHT + index * _ROW_HEIGHT
-            _draw_rank_row(draw=draw, fonts=fonts, row=row, spec=spec, y=y)
+            _draw_rank_row(draw=draw, fonts=fonts, row=row, accent=spec.accent, y=y)
     else:
         _draw_empty_row(draw=draw, fonts=fonts, y=table_top + _TABLE_HEADER_HEIGHT)
     output = BytesIO()
@@ -234,7 +227,7 @@ def _draw_rank_row(
     draw: ImageDraw.ImageDraw,
     fonts: _BoardFonts,
     row: _RankingRow,
-    spec: _RankingBoardSpec,
+    accent: tuple[int, int, int],
     y: int,
 ) -> None:
     """Draws one ranking row."""
@@ -250,7 +243,7 @@ def _draw_rank_row(
         xy=(_RANK_X, y + 13),
         text=str(position),
         font=fonts.rank,
-        fill=spec.accent if position <= 3 else _MUTED,
+        fill=accent if position <= 3 else _MUTED,
     )
     display_name = fit_text(
         draw=draw, text=row.name or "未知玩家", font=fonts.body, max_width=_NAME_MAX_WIDTH

@@ -1,11 +1,11 @@
 """Slash commands for balances, leaderboards, transfers, loans, VIP, and admin tax."""
 
 from io import BytesIO
-from typing import Literal
 from datetime import UTC, datetime
 
 import nextcord
 from nextcord import File, Locale, Member, Interaction, SlashOption
+from pydantic import Field, BaseModel, ConfigDict
 from nextcord.ext import commands
 
 from discordbot.cogs.economy import embeds
@@ -65,36 +65,34 @@ def _parse_positive_amount(raw_amount: str | None) -> int | None:
     return amount
 
 
-def _parse_collect_amount(raw_amount: str | None) -> tuple[bool, int | None]:
-    """Parses optional collection-amount text; blank or 0 collects all owed.
+class CollectAmount(BaseModel):
+    """A forced collection's parsed `amount` option."""
 
-    Returns ``(is_valid, amount)`` where ``amount`` is ``None`` when collecting
-    everything owed. ``is_valid`` is ``False`` only for malformed text.
-    """
+    model_config = ConfigDict(frozen=True)
+
+    is_valid: bool = Field(
+        ..., description="False only when the text could not be parsed as a number."
+    )
+    amount: int | None = Field(
+        ..., description="Ceiling on what is collected; None collects everything owed."
+    )
+
+
+def _parse_collect_amount(raw_amount: str | None) -> CollectAmount:
+    """Parses optional collection-amount text; blank or 0 collects all owed."""
     if not (raw_amount or "").strip():
-        return True, None
+        return CollectAmount(is_valid=True, amount=None)
     amount = parse_decimal_amount(raw=raw_amount)
     if amount is None:
-        return False, None
-    return True, amount or None
+        return CollectAmount(is_valid=False, amount=None)
+    return CollectAmount(is_valid=True, amount=amount or None)
 
 
 class EconomyCogs(commands.Cog):
-    """Point balance, leaderboard, loan, VIP, and economy-admin commands.
-
-    Attributes:
-        bot: The Discord bot instance that owns this cog.
-        economy_config: Environment-backed economy settings; only
-            `allow_central_bank_self_approval` is read, and only by
-            `/central_bank borrow`.
-    """
+    """Point balance, leaderboard, loan, VIP, and economy-admin commands."""
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialises the EconomyCogs instance.
-
-        Args:
-            bot: The Discord bot instance.
-        """
+        """Initialises the cog with environment-backed economy settings."""
         self.bot = bot
         self.economy_config = EconomyConfig()
 
@@ -155,11 +153,7 @@ class EconomyCogs(commands.Cog):
             )
             return
         await self._run_admin_adjustment(
-            interaction=interaction,
-            member=member,
-            action="refund_tax",
-            title="退稅完成",
-            delta=parsed_amount,
+            interaction=interaction, member=member, title="退稅完成", delta=parsed_amount
         )
 
     @admin.subcommand(
@@ -204,26 +198,17 @@ class EconomyCogs(commands.Cog):
             )
             return
         await self._run_admin_adjustment(
-            interaction=interaction,
-            member=member,
-            action="collect_tax",
-            title="收稅完成",
-            delta=-parsed_amount,
+            interaction=interaction, member=member, title="收稅完成", delta=-parsed_amount
         )
 
     async def _run_admin_adjustment(
-        self,
-        interaction: Interaction[commands.Bot],
-        member: Member,
-        action: Literal["refund_tax", "collect_tax"],
-        title: str,
-        delta: int,
+        self, interaction: Interaction[commands.Bot], member: Member, title: str, delta: int
     ) -> None:
         """Runs a gated admin balance adjustment and publishes successful results."""
         if interaction.user is None:
             return
         actor = interaction.user
-        guild = getattr(interaction, "guild", None)
+        guild = interaction.guild
         actor_avatar_url = await guild_avatar_url(user=actor, guild=guild)
         if not await get_admin(user_id=actor.id):
             await interaction.response.defer(ephemeral=True)
@@ -254,7 +239,7 @@ class EconomyCogs(commands.Cog):
             member_avatar_url=member_avatar_url,
             requested_delta=delta,
             result=result,
-            is_collect_clamped=(action == "collect_tax" and result.applied_delta != delta),
+            is_collect_clamped=result.applied_delta != delta,
         )
         await send_expiring_followup(interaction=interaction, embed=embed)
 
@@ -285,19 +270,12 @@ class EconomyCogs(commands.Cog):
             default=None,
         ),
     ) -> None:
-        """Replies with a member's balance, loans, and VIP status.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            member: Optional member to inspect.
-        """
+        """Replies with a member's balance, loans, and VIP status."""
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         target = member or interaction.user
-        target_avatar_url = await guild_avatar_url(
-            user=target, guild=getattr(interaction, "guild", None)
-        )
+        target_avatar_url = await guild_avatar_url(user=target, guild=interaction.guild)
         portfolio = await get_portfolio(user_id=target.id)
         is_vip = await get_vip(user_id=target.id)
         age_days = (datetime.now(tz=UTC) - target.created_at).days
@@ -323,11 +301,7 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top 10 point holders.
-
-        Args:
-            interaction: The interaction that triggered the command.
-        """
+        """Replies with the top 10 point holders."""
         await interaction.response.defer()
         rows = await top_n(limit=10)
         if not rows:
@@ -361,11 +335,7 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def loss_leaderboard(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies with the top 10 gross casino losses for the current day.
-
-        Args:
-            interaction: The interaction that triggered the command.
-        """
+        """Replies with the top 10 gross casino losses for the current day."""
         await interaction.response.defer()
         rows = await top_losers(limit=10)
         if not rows:
@@ -423,13 +393,7 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Transfers points from the caller to `member`.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            member: The recipient.
-            amount: Raw transfer amount text parsed by the bot.
-        """
+        """Transfers points from the caller to `member`."""
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
@@ -441,7 +405,7 @@ class EconomyCogs(commands.Cog):
             return
 
         sender = interaction.user
-        guild = getattr(interaction, "guild", None)
+        guild = interaction.guild
         sender_avatar_url = await guild_avatar_url(user=sender, guild=guild)
 
         if member.id == sender.id:
@@ -506,7 +470,7 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def casino(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows the casino system's accumulated P&L (was `/house`)."""
+        """Shows the casino system's accumulated P&L."""
         await interaction.response.defer()
         snapshot = await get_casino_ledger()
         embed = embeds.build_casino_embed(snapshot=snapshot)
@@ -619,14 +583,7 @@ class EconomyCogs(commands.Cog):
             max_value=100,
         ),
     ) -> None:
-        """Creates a personal loan request for the target lender.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            member: The requested lender.
-            amount: Raw borrow amount text parsed by the bot.
-            monthly_rate_percent: Monthly simple-interest rate.
-        """
+        """Creates a personal loan request for the target lender."""
         parsed_amount = _parse_positive_amount(raw_amount=amount)
         if parsed_amount is None:
             await send_ephemeral_response(
@@ -637,7 +594,7 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         user = interaction.user
-        guild = getattr(interaction, "guild", None)
+        guild = interaction.guild
         user_avatar_url = await guild_avatar_url(user=user, guild=guild)
         lender_avatar_url = await guild_avatar_url(user=member, guild=guild)
         if member.bot:
@@ -733,13 +690,7 @@ class EconomyCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Pays down active personal loans owed to `member`.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            member: The personal lender.
-            amount: Raw repayment amount text parsed by the bot.
-        """
+        """Pays down active personal loans owed to `member`."""
         if interaction.user is None:
             return
         parsed_amount = _parse_positive_amount(raw_amount=amount)
@@ -749,9 +700,7 @@ class EconomyCogs(commands.Cog):
             )
             return
         user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
+        user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
 
         result = await repay_personal_loans(
             borrower_id=user.id,
@@ -820,14 +769,14 @@ class EconomyCogs(commands.Cog):
         """Forcibly collects a personal loan from a borrower."""
         if interaction.user is None:
             return
-        is_valid, collect_amount = _parse_collect_amount(raw_amount=amount)
-        if not is_valid:
+        collect = _parse_collect_amount(raw_amount=amount)
+        if not collect.is_valid:
             await send_ephemeral_response(
                 interaction=interaction, embed=embeds.build_invalid_amount_embed(title="催收失敗")
             )
             return
         user = interaction.user
-        guild = getattr(interaction, "guild", None)
+        guild = interaction.guild
         borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
         actor_avatar_url = await guild_avatar_url(user=user, guild=guild)
         result = await call_personal_loans(
@@ -835,7 +784,7 @@ class EconomyCogs(commands.Cog):
             borrower_id=member.id,
             borrower_name=member.name,
             borrower_avatar_url=borrower_avatar_url,
-            amount=collect_amount,
+            amount=collect.amount,
         )
         if result is None:
             await interaction.response.defer(ephemeral=True)
@@ -952,9 +901,7 @@ class EconomyCogs(commands.Cog):
         if interaction.user is None:
             return
         user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
+        user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
         monthly_rate_bps = monthly_rate_percent_to_bps(monthly_rate_percent=monthly_rate_percent)
         proposal = await create_central_bank_loan_request(
             borrower_id=user.id,
@@ -1024,9 +971,7 @@ class EconomyCogs(commands.Cog):
             )
             return
         user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
+        user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
         result = await repay_central_bank_loans(
             borrower_id=user.id,
             borrower_name=user.name,
@@ -1088,8 +1033,8 @@ class EconomyCogs(commands.Cog):
         """Central-bank forced collection."""
         if interaction.user is None:
             return
-        is_valid, collect_amount = _parse_collect_amount(raw_amount=amount)
-        if not is_valid:
+        collect = _parse_collect_amount(raw_amount=amount)
+        if not collect.is_valid:
             await send_ephemeral_response(
                 interaction=interaction,
                 embed=embeds.build_invalid_amount_embed(title="央行催收失敗"),
@@ -1104,14 +1049,14 @@ class EconomyCogs(commands.Cog):
                 ),
             )
             return
-        guild = getattr(interaction, "guild", None)
+        guild = interaction.guild
         borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
         actor_avatar_url = await guild_avatar_url(user=interaction.user, guild=guild)
         result = await call_central_bank_loans(
             borrower_id=member.id,
             borrower_name=member.name,
             borrower_avatar_url=borrower_avatar_url,
-            amount=collect_amount,
+            amount=collect.amount,
         )
         if result is None:
             await interaction.response.defer(ephemeral=True)
@@ -1165,18 +1110,12 @@ class EconomyCogs(commands.Cog):
         contexts=INTERACTION_CONTEXTS,
     )
     async def vip_command(self, interaction: Interaction[commands.Bot]) -> None:
-        """Buys the permanent VIP perk for a one-time fixed cost.
-
-        Args:
-            interaction: The interaction that triggered the command.
-        """
+        """Buys the permanent VIP perk for a one-time fixed cost."""
         await interaction.response.defer(ephemeral=True)
         if interaction.user is None:
             return
         user = interaction.user
-        user_avatar_url = await guild_avatar_url(
-            user=user, guild=getattr(interaction, "guild", None)
-        )
+        user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
         already_vip = await get_vip(user_id=user.id)
         if already_vip:
             await send_private_followup(
@@ -1207,9 +1146,5 @@ class EconomyCogs(commands.Cog):
 
 
 def setup(bot: commands.Bot) -> None:
-    """Adds the EconomyCogs to the bot.
-
-    Args:
-        bot: The Discord bot instance.
-    """
+    """Adds the EconomyCogs to the bot."""
     bot.add_cog(EconomyCogs(bot), override=True)
