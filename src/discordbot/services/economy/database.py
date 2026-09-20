@@ -1041,9 +1041,10 @@ async def apply_round_settlement(
 
     Positive player deltas go through the shared income path. Negative player
     deltas clamp at zero; when a loss cannot be fully collected, the casino
-    ledger only records the actual collected debit. The player write and the
-    casino mirror live in the same `data/database/economy.db` file and commit
-    as one atomic transaction.
+    ledger records less by exactly what was left uncollected, and by nothing
+    else — `player_delta` carries system-funded bonuses the house never paid.
+    The player write and the casino mirror live in the same
+    `data/database/economy.db` file and commit as one atomic transaction.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -1069,9 +1070,14 @@ async def apply_round_settlement(
                 now=now,
             )
 
+            # What the casino books is reduced by what could not be collected, and by nothing
+            # else. Capping it at the player's NET movement instead would also deduct a
+            # system-funded bonus, which is already added back into that net and which the house
+            # never paid — on a round whose loss collected in full.
+            uncollected = applied_player_delta - player_delta
             casino_delta_to_apply = casino_delta
-            if player_delta < 0 and casino_delta > 0:
-                casino_delta_to_apply = min(casino_delta, max(-applied_player_delta, 0))
+            if casino_delta > 0 and uncollected > 0:
+                casino_delta_to_apply = max(casino_delta - uncollected, 0)
 
             if casino_delta_to_apply == 0:
                 casino_balance = await _read_casino_ledger_balance_in_session(session=session)
