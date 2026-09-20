@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from discordbot.utils.link_errors import LinkRetryableError
+from discordbot.utils.link_errors import LinkRetryableError, LinkUnavailableError
 from discordbot.services.platforms import threads as threads_module
 from discordbot.services.platforms.threads import (
     THREADS_URL_RE,
@@ -1007,6 +1007,51 @@ def test_the_empty_page_retries_are_bounded(
     throttle reach the channel as "this post cannot be read".
     """
     fetched = _count_fetches(monkeypatch, [_THROTTLED_PAGE])
+
+    with pytest.raises(LinkRetryableError):
+        downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == threads_module.THREADS_EMPTY_PAGE_RETRIES + 1
+
+
+# A shell with no post JSON, exactly like the throttle above, that names the route Threads
+# rendered it with. The real page carries this inside a data-sjs block among thirty others.
+_GEO_BLOCKED_PAGE = (
+    '<html><script type="application/json" data-sjs>'
+    '{"initialRouteInfo":{"route":{"canonicalRouteName":'
+    '"comet.barcelonawebloggedout.BarcelonaGeoBlockRoute"}}}'
+    "</script></html>"
+)
+
+
+def test_a_post_the_platform_refuses_to_serve_is_not_read_as_a_throttle(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refusal is shaped exactly like the throttle, and must not be reported as one.
+
+    It names the post it is refusing, so no retry clears it. Reported as a throttle it reaches
+    the channel as "try this again later" on a link that will never work.
+    """
+    fetched = _count_fetches(monkeypatch, [_GEO_BLOCKED_PAGE])
+
+    with pytest.raises(LinkUnavailableError):
+        downloader.parse_metadata(url=_REPLIES_TARGET_URL)
+
+    assert len(fetched) == 1
+
+
+def test_a_shell_naming_some_other_route_is_still_read_as_a_throttle(
+    downloader: ThreadsDownloader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The route test is narrow on purpose, and nothing else says so.
+
+    Widening it to "any route that is not the post route" would swallow the throttle, whose
+    shell names a route too — and reporting a throttled fetch as a post that cannot be read is
+    the one thing the reaction vocabulary must never say. So an unknown route keeps every
+    retry rather than earning the unreadable mark.
+    """
+    unknown_route = _GEO_BLOCKED_PAGE.replace("BarcelonaGeoBlockRoute", "BarcelonaSomeOtherRoute")
+    fetched = _count_fetches(monkeypatch, [unknown_route])
 
     with pytest.raises(LinkRetryableError):
         downloader.parse_metadata(url=_REPLIES_TARGET_URL)

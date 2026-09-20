@@ -31,6 +31,7 @@ from discordbot.typings.timeouts import (
 )
 from discordbot.utils.link_errors import (
     LinkRetryableError,
+    LinkUnavailableError,
     link_fetch_error,
     is_retryable_fetch_failure,
 )
@@ -787,6 +788,10 @@ class ParsedPage(BaseModel):
     a full payload (the recommendation rail Threads pads the page with) that just does not
     contain the requested code. Only the first is worth fetching again.
 
+    It is not the whole answer, because a page the platform served ABOUT the post and then
+    refused carries no post JSON either. `_served_route` is what tells those apart before this
+    flag is ever read.
+
     Attributes:
         page: The posts this page yielded; empty when it held no such post.
         carried_post_json: Whether any script block on the page held post JSON at all.
@@ -889,6 +894,22 @@ _SJS_PATTERN = re.compile(
 # against a fingerprint the platform had started refusing), so both markers read that page the same
 # way. Where they differ, a block carrying a post payload IS an answer.
 _POST_PAYLOAD_MARKER = "text_post_app_info"
+
+# The route Threads' own server rendered the page with, named exactly once per page and never in
+# a page it did not serve. It is what separates a refusal ABOUT this post from a refusal of the
+# request: the geo-block page carries the post's own media id (`DdeVIevkwd7` -> 3989719261639804795,
+# measured 2026-09-20), so the server resolved what was asked for and then declined it, which a
+# throttled fetch cannot do. Read the route rather than the banner beside it — that one is
+# localized, the trap `services/platforms/twitter.py` already refuses to walk into.
+_SERVED_ROUTE_RE = re.compile(r'"canonicalRouteName":"(?P<route>[^"]+)"')
+
+# Matched POSITIVELY and by name. This page is byte-for-byte the same SHAPE as the throttle — a
+# ~320 KB shell with the payload marker zero times — so reading "any route that is not the post
+# route" as an answer would report a throttled fetch as a post that cannot be read, the one thing
+# the reaction vocabulary must never say. The cost of the narrow test is that Threads' other
+# refusal routes are still read as the throttle; each needs its own page captured before it can
+# be named here.
+_GEO_BLOCK_ROUTE = "comet.barcelonawebloggedout.BarcelonaGeoBlockRoute"
 
 # Extra attempts spent on a page that came back carrying no post JSON at all, which is the
 # platform's soft throttle rather than an answer about the post (see `ParsedPage`). Both entry
@@ -1012,6 +1033,12 @@ class ThreadsDownloader(PlatformDownloader):
                 branches = info.direct_replies.threads
         return ancestors, branches
 
+    @staticmethod
+    def _served_route(html: str) -> str:
+        """The route Threads rendered this page with, or empty when the page names none."""
+        match = _SERVED_ROUTE_RE.search(string=html)
+        return match.group("route") if match else ""
+
     def _parse_page_from_html(self, html: str, post_code: str) -> ParsedPage:
         """Parses the target post, its ancestors, and its replies from the SJS script tags."""
         carried_post_json = False
@@ -1126,6 +1153,13 @@ class ThreadsDownloader(PlatformDownloader):
 
         Returns:
             The parsed page; its `target` is None when the post could not be found.
+
+        Raises:
+            LinkUnavailableError: The platform served a refusal naming this post, which no
+                retry can clear.
+            LinkRetryableError: Every attempt came back with no post JSON at all.
+            LinkReadError: A fetch failed, in the shape `link_fetch_error` classified it as.
+            RuntimeError: A fetch failed in a way HTTP does not classify.
         """
         threads_url = ThreadsURL(raw_url=url)
         fetch_url = threads_url.clean_url
@@ -1146,6 +1180,14 @@ class ThreadsDownloader(PlatformDownloader):
                     )
                     return ThreadsPage()
                 fetch_url = resolved.clean_url
+            if self._served_route(html=fetched.html) == _GEO_BLOCK_ROUTE:
+                # Checked before the parse, so the refusal costs one fetch: it names the post
+                # being asked for, and nothing about it changes on a second attempt.
+                logfire.info(
+                    "Threads will not serve this post from here; reporting it unreadable",
+                    post_code=post_code,
+                )
+                raise LinkUnavailableError(f"Threads refuses {post_code} from this region")
             parsed = self._parse_page_from_html(html=fetched.html, post_code=post_code)
             if parsed.page.chain or parsed.carried_post_json:
                 return parsed.page
