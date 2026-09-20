@@ -1,12 +1,11 @@
 """Pure rules for 射龍門 (In-Between / Acey Deucey).
 
-The pot is no longer round-local: a single jackpot row in
-`data/database/economy.db` is shared across every table of this game, so this
-module limits itself to rotation / pillar / direction state and emits a
-signed `delta` per turn. The view layer applies the delta atomically
-against the player row and the jackpot pool, then passes the updated
-pool back so `current_min_bet` / `current_max_bet` reflect the
-post-settlement value.
+The pot is a single jackpot row shared across every table of this game rather
+than round-local state, so this module limits itself to rotation / pillar /
+direction state and emits a signed `delta` per turn. It mutates no money: the
+caller applies each `delta` to the player and its inverse to the pool, then
+supplies the resulting jackpot back as the snapshot the legal bet range is
+bounded against.
 """
 
 from random import Random
@@ -132,15 +131,7 @@ class DragonGateTurnResult(BaseModel):
 
 
 class DragonGateRound(BaseModel):
-    """Mutable 射龍門 table state with rotating turns over a shared jackpot.
-
-    `player_deltas` is the **in-memory** running total of each player's
-    wins minus losses since they joined the table (ante excluded; ante is
-    already settled into the jackpot when the round starts). The view
-    layer reads this on withdraw / timeout to decide whether to apply the
-    "逆贏不拿" refund (clawing winnings back into the jackpot when a
-    player leaves while ahead).
-    """
+    """Mutable 射龍門 table state with rotating turns over a shared jackpot."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -160,7 +151,10 @@ class DragonGateRound(BaseModel):
     )
     player_deltas: dict[int, int] = Field(
         default_factory=dict,
-        description="In-memory running net delta per player since joining, ante excluded.",
+        description=(
+            "In-memory running net delta per player since joining, ante excluded because it is"
+            " already settled into the jackpot when the round starts."
+        ),
     )
     withdrawn_user_ids: set[int] = Field(
         default_factory=set, description="User IDs of players who have left the table."
@@ -178,8 +172,11 @@ class DragonGateRound(BaseModel):
         """
         if not participants:
             raise ValueError("At least one participant is required")
-        round_state = cls(rng=rng, participants=participants)
-        round_state.player_deltas = {participant.user_id: 0 for participant in participants}
+        round_state = cls(
+            rng=rng,
+            participants=participants,
+            player_deltas={participant.user_id: 0 for participant in participants},
+        )
         round_state._deal_next_turn()
         return round_state
 
@@ -193,7 +190,7 @@ class DragonGateRound(BaseModel):
         """Returns the maximum legal bet given the live jackpot snapshot.
 
         Capped by `MAX_SINGLE_BET` so a large pool cannot fund an unbounded
-        single wager; the view layer further clamps to the player's balance.
+        single wager.
         """
         return min(max(jackpot, 0), MAX_SINGLE_BET)
 
@@ -214,12 +211,6 @@ class DragonGateRound(BaseModel):
 
     def place_bet(self, user_id: int, amount: int, jackpot: int) -> DragonGateTurnResult:
         """Resolves the active player's bet by drawing the third card.
-
-        The jackpot itself lives in the database and is not mutated here;
-        the caller passes the current snapshot so the legal bet range can
-        be enforced. The returned `delta` is the signed change applied
-        to the player's balance (and inverted into the jackpot) by the
-        caller; this method only updates rotation state.
 
         Args:
             user_id: Discord user ID that must match the active player.
@@ -300,11 +291,8 @@ class DragonGateRound(BaseModel):
     def withdraw(self, user_id: int) -> int:
         """Removes a player from the rotation and returns their running delta.
 
-        The caller is responsible for the financial side of "逆贏不拿":
-        when the returned delta is positive, the view layer pushes that
-        many points back into the jackpot. The rotation skips to the
-        next non-withdrawn player; if every seat is withdrawn the round
-        is marked finished.
+        The caller settles "逆贏不拿": when the returned delta is positive,
+        it pushes that many points back into the jackpot.
 
         Args:
             user_id: Discord user ID of the leaver.

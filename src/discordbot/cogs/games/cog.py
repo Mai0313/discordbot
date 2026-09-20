@@ -59,11 +59,7 @@ class GamesCogs(commands.Cog):
     """
 
     def __init__(self, bot: commands.Bot) -> None:
-        """Initialises the GamesCogs instance.
-
-        Args:
-            bot: The Discord bot instance.
-        """
+        """Initialises the GamesCogs instance."""
         self.bot = bot
         self.rng = SystemRandom()
         self._startup_cleanup_done = False
@@ -136,31 +132,20 @@ class GamesCogs(commands.Cog):
         )
 
     async def _participant_from_user(
-        self, user: User | Member, wager: int, mode: WagerMode, guild: Guild | None = None
+        self, user: User | Member, wager: int | None, mode: WagerMode, guild: Guild | None = None
     ) -> ParticipantPreparationResult:
-        """Builds a lobby participant under the requested wager and mode."""
-        balance = await get_balance(user_id=user.id)
-        return ParticipantPreparationResult(
-            participant=build_wager_participant(
-                identity=await self._identity_from_user(user=user, guild=guild),
-                balance=balance,
-                wager=wager,
-                mode=mode,
-            ),
-            balance=balance,
-        )
+        """Builds a lobby participant under the requested wager and mode.
 
-    async def _all_in_participant_from_user(
-        self, user: User | Member, guild: Guild | None = None
-    ) -> ParticipantPreparationResult:
-        """Builds a clamp-mode participant using the user's current full balance."""
+        A None wager seats the user all in: the whole balance becomes the stake,
+        which `clamp` mode then caps like any other.
+        """
         balance = await get_balance(user_id=user.id)
         return ParticipantPreparationResult(
             participant=build_wager_participant(
                 identity=await self._identity_from_user(user=user, guild=guild),
                 balance=balance,
-                wager=balance,
-                mode="clamp",
+                wager=balance if wager is None else wager,
+                mode=mode,
             ),
             balance=balance,
         )
@@ -292,12 +277,7 @@ class GamesCogs(commands.Cog):
             min_length=1,
         ),
     ) -> None:
-        """Opens a Blackjack lobby. The owner starts the table from the lobby.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            bet: Raw wager text. Zero uses the owner's current balance.
-        """
+        """Opens a Blackjack lobby. The owner starts the table from the lobby."""
         if interaction.user is None:
             return
         wager = parse_wager_amount(raw_amount=bet)
@@ -313,14 +293,9 @@ class GamesCogs(commands.Cog):
         await interaction.response.defer()
 
         guild = getattr(interaction, "guild", None)
-        if wager == 0:
-            participant_result = await self._all_in_participant_from_user(
-                user=interaction.user, guild=guild
-            )
-        else:
-            participant_result = await self._participant_from_user(
-                user=interaction.user, wager=wager, mode="clamp", guild=guild
-            )
+        participant_result = await self._participant_from_user(
+            user=interaction.user, wager=None if wager == 0 else wager, mode="clamp", guild=guild
+        )
         owner = participant_result.participant
         if owner is None:
             embed = self._insufficient_balance_embed(balance=participant_result.balance)
@@ -384,11 +359,7 @@ class GamesCogs(commands.Cog):
         },
     )
     async def dragon_gate(self, interaction: Interaction[commands.Bot]) -> None:
-        """Opens a 射龍門 lobby. The owner starts the table from the lobby.
-
-        Args:
-            interaction: The interaction that triggered the command.
-        """
+        """Opens a 射龍門 lobby. The owner starts the table from the lobby."""
         await interaction.response.defer()
         if interaction.user is None:
             return
@@ -478,13 +449,7 @@ class GamesCogs(commands.Cog):
             max_value=50,
         ),
     ) -> None:
-        """Publicly posts a player's recent Blackjack rounds as a text table.
-
-        Args:
-            interaction: The interaction that triggered the command.
-            member: Player to inspect; defaults to the caller.
-            count: Number of most recent rounds to render.
-        """
+        """Publicly posts a player's recent Blackjack rounds as a text table."""
         if interaction.user is None:
             await send_ephemeral_notice(
                 interaction=interaction,

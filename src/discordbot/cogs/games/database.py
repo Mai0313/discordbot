@@ -5,14 +5,9 @@ player included) into `data/database/games.db`. The query side reads the most re
 rounds for a single player so `/games blackjack_history` can show someone's
 recent hands, bets, dealer hands, and results.
 
-The engine is a module-level `AsyncEngine` singleton, mirroring the economy
-store. Each operation opens an `AsyncSession` bound to the current
-`_engine`, so tests can monkeypatch `_engine` per-test and every subsequent
-call sees the swap. Money and bet columns use `StoredInteger` decimal text so
-large wagers do not inherit SQLite's 64-bit integer ceiling. The rich per-hand
-card detail (player hands, dealer hand, insurance) is serialized into one typed
-`BlackjackHistoryPayload` JSON column; the flat `user_id` / `created_at` /
-`outcome` / `delta` columns drive filtering, ordering, and summaries.
+Per-hand card detail rides in one `BlackjackHistoryPayload` JSON column, so anything
+that has to be filtered, ordered or summarised needs a flat column of its own rather
+than a payload field.
 """
 
 from typing import cast
@@ -44,8 +39,6 @@ _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/databas
 
 class Base(DeclarativeBase):
     """Base class for games-history ORM models."""
-
-    pass
 
 
 class BlackjackRoundResult(Base):

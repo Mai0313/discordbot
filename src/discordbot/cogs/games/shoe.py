@@ -9,17 +9,17 @@ acceptable natural reshuffle.
 from random import Random
 from typing import Final
 
-from pydantic import Field, BaseModel, ConfigDict, PrivateAttr
+from pydantic import Field, BaseModel, PrivateAttr
 
 from discordbot.typings.games import Card
 from discordbot.cogs.games.blackjack import build_shoe
 from discordbot.cogs.games.blackjack_ev import compute_true_count
 
 # Reshuffle a round before it starts once fewer than this many cards remain. It must
-# exceed the worst-case cards a single round can deal so the shoe never empties
-# mid-round into the infinite `draw_card` fallback (which would corrupt the count):
-# 6 seats x 2 split hands x 5 cards (過五關 auto-stand) + a deep H17 dealer is < 96.
-# That leaves ~54% penetration of the 208-card 4-deck shoe, deep enough to count.
+# exceed the worst-case cards a single round can deal (every seat splitting into five-card
+# 過五關 hands plus a deep H17 dealer), or the shoe empties mid-round into `draw_card`'s
+# infinite fallback and the count is corrupted. It cannot simply be raised for headroom
+# either: what is left under it is the penetration the count reads.
 RESHUFFLE_THRESHOLD_CARDS: Final[int] = 96
 
 
@@ -29,21 +29,13 @@ class BlackjackShoeStore(BaseModel):
     Shoes are keyed by Discord channel id. The mutating methods are synchronous and
     never await, so they are atomic under the single-threaded event loop; two
     concurrent games in one channel degrade gracefully to a fresh shoe rather than
-    interleaving draws on a shared list, and the per-round generation token stops an
-    earlier-started round from clobbering a newer table's shoe when they settle out of
-    order.
+    interleaving draws on a shared list.
     """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     shoes: dict[int, list[Card]] = Field(
         default_factory=dict,
         description="Persistent remaining shoe cards keyed by Discord channel id.",
     )
-    # Per-channel monotonic generation counters. `take_shoe` stamps each round it hands
-    # out with an increasing generation; `save_shoe` drops a write whose generation is
-    # older than the last persisted one, so when two tables in the same channel settle out
-    # of order the earlier-started round cannot overwrite the newer table's shoe.
     _take_generation: dict[int, int] = PrivateAttr(default_factory=dict)
     _saved_generation: dict[int, int] = PrivateAttr(default_factory=dict)
 
@@ -55,11 +47,10 @@ class BlackjackShoeStore(BaseModel):
         depletion by saving the round's remaining shoe with `save_shoe` once it
         settles (the round may deal from a copy, so the returned list itself is not
         relied on to mutate). The `reshuffled` flag is True only for a genuine
-        penetration cut, not for the first shoe in a channel, so a caller can
-        announce a real reshuffle without announcing the channel's first deal;
-        `BlackjackLobbyView._start_game` discards it today. The `generation` stamps
-        this round; pass it back to `save_shoe` so an older in-flight round cannot
-        overwrite a newer table's shoe.
+        penetration cut, not for the first shoe in a channel, so a caller can announce
+        a real reshuffle without announcing the channel's first deal. The `generation`
+        stamps this round; pass it back to `save_shoe` so an older in-flight round
+        cannot overwrite a newer table's shoe.
         """
         generation = self._take_generation.get(channel_id, 0) + 1
         self._take_generation[channel_id] = generation

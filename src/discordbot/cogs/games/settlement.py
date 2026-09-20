@@ -1,4 +1,4 @@
-"""Settlement helpers for the Blackjack interactive views."""
+"""Settlement helpers for Blackjack rounds."""
 
 from discordbot.typings.games import (
     Card,
@@ -72,18 +72,17 @@ async def settle_wager(
 ) -> WagerSettlement:
     """Applies player net delta and mirrors the result into the casino ledger.
 
-    Deliberately kept with no production caller (#522). Blackjack settles through
-    `settle_blackjack_player`, which is multi-hand; this is the single-hand shape a
-    future one-hand game would want back, and only the tests exercise it today. Do
-    NOT wire it back under Blackjack: it skips the five-card bonus accounting.
+    Deliberately kept with no production caller: the single-hand shape a future
+    one-hand game would want back. Do NOT wire it back under Blackjack, which
+    settles through the multi-hand `settle_blackjack_player` — this one skips the
+    five-card bonus accounting.
 
     Bets are not deducted when a round starts; unfinished in-memory rounds
     vanish on bot restart without touching balances.
 
-    VIP players receive a 1.2x payout on winning rounds; pushes and losses are
-    passed through unchanged. The VIP flag is permanent, so reading it outside
-    the settlement transaction is safe — a freshly-bought VIP that races a
-    settlement only misses the bonus on a single in-flight round.
+    The VIP flag is permanent, so reading it outside the settlement transaction is
+    safe — a freshly-bought VIP that races a settlement only misses the bonus on a
+    single in-flight round.
 
     Args:
         player_id: Discord user ID for the player account.
@@ -171,12 +170,11 @@ async def settle_blackjack_player(
 ) -> BlackjackPlayerSettlement:
     """Settles every sub-hand plus insurance side bet for one participant.
 
-    The aggregate casino-paid delta (sum of per-hand deltas plus insurance) is
-    passed through the existing VIP bonus rule once at the player level.
-    Five-card 21 adds a system-funded bonus to the player-side delta without
-    moving the casino ledger. The VIP bonus credited is the larger of the 0.2x
-    on the dealer-paid win and the 0.2x on the five-card 21 bonus (a max, not a
-    sum).
+    The aggregate casino-paid delta (per-hand deltas plus insurance) takes the
+    VIP bonus once at the player level, never per hand. Five-card 21 adds a
+    system-funded bonus to the player-side delta without moving the casino
+    ledger, and the VIP bonus credited is the larger of the one on the
+    dealer-paid win and the one on the five-card 21 bonus — a max, not a sum.
 
     Args:
         round_state: Round providing the dealer cards and peek state.
