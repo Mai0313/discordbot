@@ -1332,6 +1332,38 @@ async def test_apply_round_settlement_loss_clamps_player_and_casino_to_available
     assert account.total_spent == 25
 
 
+async def test_apply_round_settlement_books_the_whole_take_when_the_loss_collects() -> None:
+    """A system-funded bonus rides inside `player_delta` and must not shrink the house's take.
+
+    The bonus is already added back into the player's net, so capping the ledger at that net
+    deducts money the casino never paid out — on a round where the loss collected in full.
+    """
+    await _add_balance(user_id=1, name="alice", amount=500)
+
+    result = await apply_round_settlement(
+        player_id=1, player_account_name="alice", player_delta=-50, casino_delta=150
+    )
+
+    assert result.player_balance == 450
+    assert result.casino_balance == 150
+
+
+async def test_apply_round_settlement_books_the_bonus_even_when_the_loss_is_short() -> None:
+    """The two rules meet here, and this is the only case where the arithmetic can differ.
+
+    The wallet cannot cover the loss AND a system-funded bonus rides in the player's net, so
+    the ledger must lose the shortfall and keep the bonus.
+    """
+    await _add_balance(user_id=1, name="alice", amount=20)
+
+    result = await apply_round_settlement(
+        player_id=1, player_account_name="alice", player_delta=-50, casino_delta=150
+    )
+
+    assert result.player_balance == 0
+    assert result.casino_balance == 120
+
+
 async def test_apply_round_settlement_updates_daily_casino_counters() -> None:
     """Blackjack-style player settlements persist gross loss, gross win, and net."""
     await _add_balance(user_id=1, name="alice", amount=1_000)
