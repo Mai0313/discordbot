@@ -1,9 +1,9 @@
 """When background memory work runs, and the reply.db bookkeeping around it.
 
 While a scope's update runs, later turns for that scope are held rather than dropped and
-replayed one at a time afterwards. Within ONE conversation source only the newest is kept,
-its history window already covering the earlier ones, and its memory notes merged in so
-nothing a marker wrote is lost.
+replayed one at a time afterwards. Within ONE conversation source only the newest is kept, its
+history window already covering the earlier ones, and its memory notes merged in so nothing a
+marker wrote is lost.
 
 The turn's own body is not here: `enqueue_memory_update` takes it as `run`, and the replay
 carries it on through the done-callback. That is what keeps this module below `pipeline.py`
@@ -11,12 +11,11 @@ rather than beside it — the queue owns when a turn runs and what happens to th
 displaces, and nothing about what a turn does.
 
 `memory_semaphore` is the same question one level up: the queue serializes a scope, and the
-semaphore caps the whole process. Its three callers are a turn, a consolidation and a
-rebuild, so it belongs to none of their modules; it sits here with the package's other
-process-wide primitives, and everything that takes it imports downward to get it.
+semaphore caps the whole process. It belongs to none of the modules that take it, so it sits
+here with the package's other process-wide primitives and everything imports downward to get it.
 
-The detached reply.db writes live here too, because the queue and the clear are the only
-two things that touch them and they have to agree on one staging lock.
+The detached reply.db writes live here for the same reason: several callers stage through them
+and they all have to agree on one staging lock.
 """
 
 import time

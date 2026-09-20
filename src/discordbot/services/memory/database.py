@@ -7,24 +7,19 @@ cleared) rather than the row deleted, so the table doubles as an inspectable
 per-scope processing state; an LLM failure parks the row at `status='failed'`
 with its transcript kept, so the restart sweep retries it without any timeout
 tuning. A user-requested memory clear replaces the row with a transcript-free
-`cleared` tombstone. Its ordering token prevents a staging write captured before
-the clear from recreating the erased transcript after the tombstone commits, and
-a row already newer than the clear makes `clear_job` refuse rather than report an
-empty scope, so the caller never erases the files behind a tombstone that no-opped.
+`cleared` tombstone, whose ordering token prevents a staging write captured before the
+clear from recreating the erased transcript after it commits.
 
-Engine, PRAGMA hooks, and the schema bootstrap follow `cogs/research/database.py`
-exactly, through the shared `SqliteBootstrap`: a module-level `AsyncEngine` singleton
-on the shared `reply.db` (a per-instance `cached_property` engine would leak the pool /
-dialect cache), with this module owning its own `Base` and the `memory_job` table,
-distinct from research's `research` table in the same file. The two keep separate
-engines and separate bootstraps precisely because the metadata differs, so one of them
-cannot create or mark the other's table. No money columns, so no
-`StoredInteger`. Like research it avoids `from __future__ import annotations`:
-SQLAlchemy resolves the `Mapped[datetime]` columns at class-definition time.
+`reply.db` is shared with another table owned elsewhere, so this module keeps its own
+`Base`, its own bootstrap and a module-level `AsyncEngine` singleton (a per-instance
+`cached_property` engine would leak the pool / dialect cache): separate metadata is what
+stops one of them creating or marking the other's table. No `from __future__ import
+annotations` — SQLAlchemy resolves the `Mapped[datetime]` columns at class-definition
+time.
 
 The version / ordering token is a logical INTEGER, not a wall clock. Each process
 reserves one range from `memory_token_clock`, above both the prior watermark and
-every legacy token already in `memory_job`, then assigns turns and clears in
+the largest token already in `memory_job`, then assigns turns and clears in
 capture order inside that range. This keeps newest-wins comparable across
 restarts without letting an NTP clock correction make a clear older than the
 transcript it must erase. The upsert and terminal updates are guarded on this
@@ -67,7 +62,7 @@ _token_state_lock = Lock()
 
 
 class Base(DeclarativeBase):
-    """Base class for the memory ORM models (their own metadata, not research's)."""
+    """Base class for the memory ORM models, with metadata of their own."""
 
     pass
 
@@ -316,11 +311,11 @@ async def clear_job(*, scope: str, flavor: MemoryJobFlavor, token: int) -> bool:
     Raises:
         RuntimeError: When the scope already carries a row newer than this clear, so
             the guarded upsert below would no-op. Reporting that as an ordinary
-            "nothing to scrub" let the caller delete the files anyway and leave the
-            pre-clear transcript in `reply.db` for the restart sweep to resume — the
-            exact failure the tombstone exists to close, reached through the other
-            door. Raising rolls this transaction back before the caller's file pass,
-            so every tier stays in place. A retry is harmless but keeps refusing:
+            "nothing to scrub" would let the caller delete the files while the pre-clear
+            transcript stays in `reply.db` for the restart sweep to resume — the exact
+            failure the tombstone exists to close. Raising rolls this transaction back before
+            the caller's file pass, so every tier stays in place. A retry is harmless but
+            keeps refusing:
             `_resolve_token` reserves ONE block per process, so the clear's token
             only rises above the stray row after a restart picks a base above it.
             That same reservation is why this cannot fire while one process owns the
@@ -388,11 +383,10 @@ async def list_resumable() -> list[MemoryJob]:
 async def get_job(*, scope: str) -> MemoryJob | None:
     """Reads one scope's row, or `None` when it is not tracked.
 
-    Test-only, like `store.clear_memory`: nothing under `src/` reads a single row, since the
-    pipeline only ever writes its own scope's state and the restart sweep takes them in bulk
-    through `list_resumable`. It is what lets a test assert the row's status unwrapped, where
-    `safe_list_resumable` would degrade a read failure to "nothing to resume" and pass without
-    having looked.
+    No production caller: the pipeline writes only its own scope's state and the restart
+    sweep reads in bulk. Kept so a test can assert one row's status unwrapped, where the
+    bulk read degrades a failure to "nothing to resume" and would pass without having
+    looked.
     """
     await _ensure_schema()
     async with open_session() as session:

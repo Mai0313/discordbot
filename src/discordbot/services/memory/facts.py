@@ -2,16 +2,15 @@
 
 A fact file is a ``---`` fenced header of single-line ``key: value`` pairs followed by
 the body. The header is deliberately not YAML: every value is a plain scalar, so a
-hand-rolled reader needs no dependency (``pyyaml`` reaches this project only
-transitively) and cannot be talked into constructing objects. Values are written with
-their whitespace collapsed, so the reader never has to handle continuations.
+hand-rolled reader needs no dependency and cannot be talked into constructing objects.
+Values are written with their whitespace collapsed, so the reader never has to handle
+continuations.
 
-Rendering turns a compartment's files back into the same Traditional Chinese document
-shape the reply prompt has always been given, which is what keeps every downstream
-consumer working unchanged: ``allowlist_ids_from_server_memory`` still finds
-``## 成員稱呼``, and the four prompts that tell the model to read that table still point
-at something real. Section keys are ASCII so the structured LLM schema stays English;
-the headings below are the only place the two vocabularies meet.
+Rendering turns a compartment's files back into a Traditional Chinese document. That
+rendered shape is a CONTRACT rather than presentation: the ``## 成員稱呼`` table is parsed
+back out of it downstream, and the reply prompts are told to read it. Section keys are
+ASCII so the structured LLM schema stays English; the headings below are the only place
+the two vocabularies meet.
 """
 
 import re
@@ -26,9 +25,9 @@ from discordbot.typings.memory import MemoryFact, MemoryOwner, MemorySection, Me
 type MemoryFlavor = Literal["user", "server"]
 
 _FENCE = "---"
-# The `<name> [id: <N>]` line `render_author_identity` / `render_server_identity`
-# produce. It survives the `memory_job` round-trip as one string, so it is split into
-# its two stamped fields here rather than being threaded as a pair through the DB.
+# The rendered `<name> [id: <N>]` identity line. It crosses the review job's round-trip
+# as one string, so it is split into its two stamped fields here rather than being
+# threaded as a pair through the DB.
 _IDENTITY_RE = re.compile(r"^(?P<name>.*?)\s*\[id:\s*(?P<owner_id>\d+)\]\s*$")
 _HEADER_LINE_RE = re.compile(r"^(?P<key>[a-z_]+):[ ]?(?P<value>.*)$")
 # A fact id is minted by code and is the filename stem, so it must never be able to
@@ -82,11 +81,10 @@ def node_type_for(section: MemorySection) -> MemoryNodeType:
 def render_member_alias_text(display_name: str, aliases: tuple[str, ...]) -> str:
     """Renders an alias row's body from the parts a consolidation delta carries.
 
-    The compact shape used to be asked for in the consolidation prompt and arrived about
-    one time in eight (#464): it is the one rigid format among five sections of prose, so
-    the model wrote sentences instead — and a sentence carries whatever else it had to say
-    about the member into a table whose only job is mapping a name to an id. Code renders
-    it from the fields instead, the way `subject_id` is already stamped rather than typed.
+    Code owns this row's body so the table stays a name-to-id mapping and nothing else. Asked
+    for it as a format, the model writes a sentence — it is the one rigid shape among sections
+    of prose — and a sentence carries everything else it had to say about the member in with it.
+    The fields are stamped the way `subject_id` already is, rather than typed.
 
     Every value is collapsed to one line because the rendered table is read back line by
     line. An empty return means there is no alias to record, which is what drops the
@@ -103,9 +101,8 @@ def render_member_alias_text(display_name: str, aliases: tuple[str, ...]) -> str
 def parse_identity(identity: str, fallback_owner_id: int) -> MemoryOwner:
     """Splits a rendered identity line into the owner fields stamped onto a fact.
 
-    A line that does not parse (a job persisted before the format existed, a
-    hand-edited row) keeps the id the scope key already carries and drops the name,
-    which the next online write fills back in.
+    A line that does not parse keeps the id the scope key already carries and drops the
+    name, which the next online write fills back in.
     """
     match = _IDENTITY_RE.match(identity.strip())
     if match is None:
@@ -169,8 +166,9 @@ def parse_fact_file(text: str, compartment: str) -> MemoryFact | None:
     `compartment` is the directory the file was found in and is authoritative: a stored
     `compartment` that disagrees means the tree was hand-edited or a migration stopped
     half way, and there is no safe way to guess which side is right. Returning None keeps the
-    fact out of every reply rather than guessing the permissive answer; `read_facts` only
-    skips it, so a mismatch is logged here, while an unreadable header is dropped silently.
+    fact out of every reply rather than guessing the permissive answer. A mismatch means the
+    tree was edited outside the store, so it is logged; a header that simply will not parse is
+    not.
     """
     header, body = _split_front_matter(text=text)
     if header is None:
@@ -201,8 +199,8 @@ def parse_fact_file(text: str, compartment: str) -> MemoryFact | None:
             keys=tuple(key for key in header.get("keys", "").split(",") if key),
         )
     except (KeyError, ValueError) as error:
-        # Broad over the two shapes a bad header takes (a missing key, an unparsable
-        # scalar or a value outside its Literal); either way the file is not a fact.
+        # A missing key, an unparsable scalar and a value outside its Literal all mean the
+        # same thing: the file is not a fact.
         logfire.warn(
             "Memory fact file is malformed; skipping",
             compartment=compartment,
@@ -256,11 +254,10 @@ def render_memory_document(facts: list[MemoryFact], flavor: MemoryFlavor, max_ch
 def _render_fact_line(fact: MemoryFact, section: MemorySection) -> str:
     """Renders one fact as its document line.
 
-    The profile is a paragraph rather than a bullet (it always has been), a recent-context
-    line carries the code-stamped date the model used to write itself, and an alias row
-    has every id token stripped from its body before the real `subject_id` is appended —
-    so the id can never be hallucinated (or injected by a member) onto the wrong person,
-    and the table stays parseable by the allowlist reader.
+    The profile is a paragraph rather than a bullet, a recent-context line carries a
+    code-stamped date, and an alias row has every id token stripped from its body before the
+    real `subject_id` is appended — so the id can never be hallucinated (or injected by a
+    member) onto the wrong person, and the table stays parseable by the allowlist reader.
     """
     body = " ".join(fact.text.split()) if section == "profile" else fact.text.strip()
     if section == "profile":

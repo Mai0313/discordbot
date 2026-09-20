@@ -6,15 +6,8 @@ compartments that may hold them, and asks the model for a delta batch per compar
 whether to run at all is `_should_consolidate`, with the cooldown and the refusal counters
 beside it.
 
-Three callers, one per way a batch can be raised: a reply turn that just staged evidence
-(`consolidate_after_turn`, the only name `pipeline` takes from here), the boot sweep over
-every over-threshold scope (`needs_consolidation` then `consolidate_if_needed`), and the
-from-scratch rebuild in `regeneration`, which reuses the request vocabulary and the
-deletion-only pass but decides its own compartments and never consults the cooldown.
-
-Nothing here imports `pipeline` or `regeneration`. The fan-out is what both of them are
-built on rather than a step in either, which is why it left `pipeline.py` in #613 — a turn
-meets it at exactly one call, and `regeneration` used to have to import upward to reach it.
+Nothing here imports the layer above it. The fan-out is what its callers are built on rather
+than a step in any of them, so each reaches it at one call of its own.
 """
 
 import time
@@ -70,14 +63,11 @@ from discordbot.services.memory.constants import (
 from discordbot.services.memory.git_history import memory_git
 
 # Per-scope consolidation attempt times for the cooldown; monotonic, so it does
-# not need a loop-change reset. Tests clear it through the conftest fixture.
+# not need a loop-change reset.
 _last_consolidation: dict[str, float] = {}
 
-# Consecutive refused consolidation batches per (scope, compartment). A refusal keeps the
-# raw batch for retry, which is right for a transient LLM failure and wrong for a
-# mass-delete the model reproduces verbatim: that retries every cooldown forever while the
-# scope's memory silently stops updating. Past the threshold the log escalates from warn to
-# error, since CONTRIBUTING puts "an unexpected failure that lost a deliverable" at error.
+# Consecutive refused consolidation batches per (scope, compartment); `_record_rejection`
+# owns what the count is for and when it escalates.
 _consecutive_rejections: dict[tuple[str, str], int] = {}
 _MAX_QUIET_REJECTIONS = 3
 
@@ -117,10 +107,9 @@ async def consolidate_after_turn(
 ) -> None:
     """Consolidates right after a turn staged evidence, when the backlog warrants it.
 
-    The whole of what a reply turn asks of this module. `pipeline._run_memory_update` already
-    holds the scope lock and a semaphore permit, so this is the threshold check and the
-    fan-out under them rather than an entry point that takes either — which is also why the
-    check is folded in here instead of being read on the caller's side.
+    The whole of what a reply turn asks of this module. The caller already holds the scope
+    lock and a semaphore permit, so this takes neither and folds the threshold check in under
+    them rather than leaving it to be read on the caller's side.
 
     `forced` says the batch carries a forget request; `_should_consolidate` owns what that
     skips. The cooldown is stamped at attempt time, not success time, so repeated LLM
@@ -136,9 +125,9 @@ def _should_consolidate(scope: str, forced: bool = False) -> bool:
     """Whether the raw backlog warrants a consolidation right now.
 
     `forced` is a batch carrying a forget request. It skips BOTH gates below rather than just
-    the cooldown: the entry count is checked first and a lone forget is one entry against a
-    threshold of two, so bypassing the cooldown alone would still leave the user waiting for
-    their next message before the bot stopped repeating what they asked it to drop.
+    the cooldown: the entry count is checked first and a lone forget is one entry, so bypassing
+    the cooldown alone would still leave the user waiting for their next message before the bot
+    stopped repeating what they asked it to drop.
     """
     if forced:
         return True
@@ -164,15 +153,13 @@ async def _consolidate_locked(
 
     Ordering is load-bearing. `global` runs first, so every later compartment can be
     handed its facts as read-only reference and neither restates them nor silently
-    contradicts them — the one thing the old whole-file rewrite got for free by seeing
-    everything at once. Each call sees only the evidence routed to the compartment it
-    writes, which is what makes the boundary structural; the tone note, the one tier that
-    is genuinely cross-compartment, is written afterwards by its own call.
+    contradicts them. Each call sees only the evidence routed to the compartment it writes,
+    which is what makes the boundary structural; the tone note, the one tier that is
+    genuinely cross-compartment, is written afterwards by its own call.
 
-    The whole fan-out sits inside the caller's scope lock and semaphore permit and is
-    bounded by one timeout, so the worst-case lock hold stays what it is today instead
-    of multiplying by the number of compartments. Compartments run sequentially for the
-    same reason: proxy load per scope stays exactly as it was.
+    The whole fan-out sits inside the caller's scope lock and semaphore permit under ONE
+    timeout, and compartments run sequentially, so neither the worst-case lock hold nor the
+    per-scope proxy load scales with the compartment count.
 
     The raw batch is retired only when every compartment applied. A retry re-runs the
     ones that already landed, which is safe because a delta is an upsert keyed by an id
@@ -188,11 +175,10 @@ async def _consolidate_locked(
         raw_text=raw_entries, compartments=tuple(list_compartments(scope=scope))
     )
     detail_tail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
-    # The detail window is up to MEMORY_DETAIL_CONTEXT_MAX_CHARS and used to be sliced
-    # rather than parsed; splitting it into observation blocks is a real stall on a
-    # heavy scope, and this runs on the same loop as the reply path. Pure function, no
-    # shared state, so a thread costs nothing — and the await is safe here because every
-    # write still sits immediately after its own `cleared_since` guard downstream.
+    # Splitting that window into observation blocks is a real stall on a heavy scope, and
+    # this runs on the same loop as the reply path. Pure function, no shared state, so a
+    # thread costs nothing — and the await is safe here because every write still sits
+    # immediately after its own `cleared_since` guard downstream.
     detail_buckets = await asyncio.to_thread(
         partition_raw_entries, raw_text=detail_tail, flavor=flavor
     )
@@ -262,10 +248,11 @@ async def _consolidate_locked(
         raw_entries=raw_entries,
         today=today,
     )
-    # Every compartment ran, so age the ones this batch did not touch too: a guild the
-    # user has stopped visiting otherwise keeps its `recent` facts forever and hands them
-    # back on their next visit, which is the aging the whole-file rewrite used to do for
-    # free. Synchronous and after the clear guard, like every other write here.
+    # Age every compartment, not just the ones this batch touched: a guild the user has
+    # stopped visiting otherwise keeps its `recent` facts forever and hands them back on
+    # their next visit. The ones that did consolidate were already swept inside the
+    # fan-out, and that is not redundant — a timeout or a clear returns before this line,
+    # so the per-compartment sweep is the only aging those runs get.
     for compartment in list_compartments(scope=scope):
         sweep_stale_facts(scope=scope, compartment=compartment, today=today_utc())
     report_injection_size(scope=scope, flavor=flavor)
@@ -292,10 +279,8 @@ async def apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus th
     Returns False when the caller must keep the raw batch for a retry, on the same terms as
     the observation fan-out: an unread bucket is not safe to retire.
 
-    Every call here is `deletes_only`. That is the whole reason forgets are partitioned
-    separately rather than folded into the observation buckets: the flag is per call, so a
-    turn that both remembered and forgot something would otherwise hand a possibly-private
-    sentence to a call that is allowed to write.
+    Every call here is `deletes_only`; `partition_forget_requests` owns why a forget is
+    partitioned on its own rather than folded into the observation buckets.
     """
     for compartment, forget_text in sorted(buckets.items()):
         if cleared_since(scope=scope, started_at=started_at):
@@ -320,9 +305,9 @@ async def apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus th
 class CompartmentInput(BaseModel):
     """The per-compartment half of a consolidation request, before the store is read.
 
-    Split out so a caller can build the parts that differ per compartment without
-    `compartment_request` growing a dozen positional arguments. The incremental fan-out
-    fills all four; a from-scratch rebuild has only the raw bucket and the date.
+    Split out so a caller can build what differs per compartment without
+    `compartment_request` growing a parameter per block. A field may be empty: not every
+    caller has every part to offer.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -345,10 +330,10 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
 ) -> DeltaOutcome | None:
     """Runs and applies one compartment's consolidation; None means the LLM path failed.
 
-    This call only ever sees the evidence routed to the compartment it is writing, which
-    is what makes "a guild-locked observation cannot reach `global/`" structural rather
-    than a rule the prompt asks the model to follow. The tone note, which is genuinely
-    cross-compartment, is therefore NOT written here — see `tone.update_tone_note`.
+    The request carries only the evidence routed to the compartment being written, which is
+    what makes "a guild-locked observation cannot reach `global/`" structural rather than a
+    rule the prompt asks the model to follow. The tone note is genuinely cross-compartment and
+    is therefore NOT written here; it has its own call, outside the fan-out.
     """
     existing = read_facts(scope=scope, compartment=compartment)
     rendered = render_existing_facts(facts=existing)
@@ -439,10 +424,9 @@ def compartment_request(
 ) -> ConsolidationRequest:
     """Builds one compartment's consolidation request, filling in what never varies.
 
-    The compartment note and the flavor's legal sections are what both callers have to get
-    right and neither varies with the batch, so they are derived here once; the incremental
-    fan-out and the from-scratch rebuild differ only in which blocks they can offer. Neither
-    writes the tone note — `tone` owns that call — so `emit_tone` is false for both.
+    The compartment note and the flavor's legal sections never vary with the batch, so they
+    are derived here once and a caller supplies only the blocks it has. `emit_tone` is false
+    because the tone note is its own call, never a field on a compartment's request.
     """
     return ConsolidationRequest(
         compartment_note=_compartment_note(compartment=compartment, flavor=flavor),
@@ -463,8 +447,8 @@ def global_first(compartments: set[str]) -> list[str]:
     """Orders one run's compartments with `global` leading and the rest by name.
 
     `global` leads because every later compartment is handed its facts as read-only
-    reference, so it must be up to date before they run. Only the ordering is shared: which
-    compartments go in is the caller's own question, and the two answer it differently.
+    reference, so it must be up to date before they run. Only the ordering is shared; which
+    compartments go in is the caller's own question.
     """
     ordered = [GLOBAL_COMPARTMENT] if GLOBAL_COMPARTMENT in compartments else []
     ordered.extend(sorted(compartments - {GLOBAL_COMPARTMENT}))
@@ -472,18 +456,11 @@ def global_first(compartments: set[str]) -> list[str]:
 
 
 def _compartments_to_run(buckets: dict[str, str]) -> list[str]:
-    """Returns the compartments this run touches, `global` first.
+    """Returns the compartments this batch routed evidence to, `global` first.
 
-    Only compartments the batch actually routed evidence to: a call with an empty bucket
-    has nothing to consolidate.
+    Every key is one: the partition only creates a bucket when something lands in it.
     """
-    return global_first(
-        compartments={
-            compartment
-            for compartment in buckets
-            if compartment != GLOBAL_COMPARTMENT or buckets[compartment]
-        }
-    )
+    return global_first(compartments=set(buckets))
 
 
 def _compartment_note(compartment: str, flavor: MemoryFlavor) -> str:

@@ -208,6 +208,29 @@ def test_services_never_reaches_discord() -> None:
     assert not offenders, f"services reaching nextcord: {sorted(set(offenders))}"
 
 
+def test_nothing_inside_the_memory_package_imports_its_entry_point() -> None:
+    """`services/memory/pipeline.py` orchestrates one turn, and everything under it points down.
+
+    The fan-out, the queue, the rebuild and the tone tier are each entered on their own, so an
+    edge back up would make one of them unusable without dragging a whole turn's orchestration in
+    behind it — and the turn body that the queue runs reaches it as an argument for that reason.
+    Nothing else says so: the layer rules above see one `services` module importing another and
+    have no opinion, which is how the cluster that used to live in this module got there.
+    """
+    memory = _PACKAGE / "services" / "memory"
+    entry = "discordbot.services.memory.pipeline"
+    modules = [module for module in _modules(memory) if module.name != "pipeline.py"]
+
+    assert memory / "consolidation.py" in modules, "scan found no memory modules"
+
+    offenders = [
+        module.name
+        for module in modules
+        if any(name.startswith(entry) for name in _imported_modules(module))
+    ]
+    assert not offenders, f"memory modules importing the turn's own module: {sorted(offenders)}"
+
+
 def test_the_layering_scan_reads_relative_and_type_checking_imports() -> None:
     """The scan is only worth its assertions if it sees the forms a violation can be written in.
 

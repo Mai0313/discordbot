@@ -200,9 +200,9 @@ class RawMemoryDraft(BaseModel):
 class MemoryFactDelta(BaseModel):
     """One change a consolidation asks for against a single compartment.
 
-    Deltas replaced the whole-file rewrite so a bad pass can lose one fact instead of a
-    file, and so a rejected batch can be retried without re-deciding everything. They
-    are keyed by `fact_id`, which code mints and the model only ever echoes back.
+    A bad pass loses one fact instead of a whole file, and a rejected batch is retried
+    without re-deciding everything. Deltas are keyed by `fact_id`, which code mints and the
+    model only ever echoes back.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -266,14 +266,9 @@ class ConsolidatedMemory(BaseModel):
 class ConsolidationRequest(BaseModel):
     """Everything one compartment's consolidation call is given.
 
-    Bundled rather than passed as a dozen arguments because the fan-out builds these
-    per compartment and the differences between them (which raw bucket, whether tone is
-    wanted, which sections are legal) are exactly what the caller has to get right.
-
-    A block that defaults to `""` is one most calls have nothing to put in: the tone note's
-    call carries no facts and no cold evidence, and a from-scratch rebuild deliberately
-    withholds both. `_tagged` marks an absent block explicitly, so an omitted one and one
-    passed as `""` reach the model identically.
+    A block that defaults to `""` is one some calls have nothing to put in. `_tagged` marks
+    an absent block explicitly, so an omitted one and one passed as `""` reach the model
+    identically.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -309,10 +304,7 @@ class ConsolidationRequest(BaseModel):
 class MemoryWriterAI(BaseModel):
     """Runs the memory LLM calls with best-effort fallbacks.
 
-    The phase prompts are instance fields so the same engine can drive a
-    different memory flavor (e.g. the bot's per-server memory) by swapping the
-    prompts while reusing the evaluation, consolidation, validation, and
-    redaction logic unchanged. They default to the per-user prompts.
+    The phase prompts are instance fields, and default to the per-user ones.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -327,8 +319,8 @@ class MemoryWriterAI(BaseModel):
         ...,
         description=(
             "Model reviewing the answer model's memory notes. Required rather than optional: "
-            "with the extraction pass gone it is the only step that authors a raw entry's "
-            "fields, so a caller that omitted it would turn memory writing into a silent no-op."
+            "it is the only step that authors a raw entry's fields, so omitting it would turn "
+            "memory writing into a silent no-op."
         ),
     )
     evaluator_prompt: str = Field(
@@ -347,13 +339,11 @@ class MemoryWriterAI(BaseModel):
     ) -> RawMemoryDraft | None:
         """Turns the answer model's own memory notes into validated observations.
 
-        This replaced the phase-1 extraction pass (#596). `notes` are the `<write-memory>`
-        sentences the answer model wrote inside the reply it had just given, so nothing here
-        guesses at what mattered in a conversation it was not part of. What is left for this
-        call is the half that never worked well from the outside: reviewing each note against
-        the transcript it came from, and authoring the structured fields a raw entry needs.
-        The second half used to belong to the deleted `extract`, which is why the evaluator
-        prompt now carries its field rules.
+        `notes` are the `<write-memory>` sentences the answer model wrote inside the reply it had
+        just given, so nothing here guesses at what mattered in a conversation it was not part of.
+        What is left for this call is the half that never worked well from the outside: reviewing
+        each note against the transcript it came from, and authoring the structured fields a raw
+        entry needs — which is why the evaluator prompt carries the field rules.
 
         `subject` is the leading directive naming the memory's target (`target_user_id: <id>` or
         `target_server_id: <id>`). The server flavor deliberately parses to no target user, which
@@ -439,12 +429,11 @@ class MemoryWriterAI(BaseModel):
         Delegates to the shared `parse_responses_or_none`, which owns the call surface and
         the degrade-to-None handling (refused output, an incomplete/truncated response — the
         last matters here because a half-emitted delta batch is indistinguishable from a
-        complete one, and the rebuild path deletes every fact its batch did not re-emit).
+        complete one, and a caller may delete every fact the batch did not re-emit).
 
         No deadline is passed: every phase runs in the background with nobody waiting on it,
-        so the client's own ceiling is the right bound (`constants.py` has what a stuck call
-        costs while it holds the scope lock). What the fan-out AROUND these calls needs is a
-        different question, answered in `consolidation.py`.
+        so the client's own ceiling is the right bound. What the fan-out AROUND these calls
+        needs is a different question.
         """
         return await parse_responses_or_none(
             client=self.client,
@@ -598,11 +587,9 @@ def render_turn_payload(
 ) -> str:
     """Bundles one turn's transcript and its inline memory notes into a single stored string.
 
-    The notes ride inside the `transcript` column rather than in columns of their own. This
-    repo has no migration mechanism (`_ensure_schema` is one `create_all`, which never alters
-    an existing table) and `clear_job` is the one memory DB call not wrapped in best-effort
-    handling, so a new column would take `/memory clear` down on a deployed bot. What the
-    column holds is still one thing: everything the background turn needs to run.
+    The notes ride inside the `transcript` column rather than in columns of their own: nothing
+    migrates this schema, so a new column would take `/memory clear` down on a deployed bot.
+    What the column holds is still one thing — everything the background turn needs to run.
 
     Appended AFTER the transcript's own truncation, so a long conversation can never push the
     notes out of the payload. Each block reuses the column-0 marker shape the transcript
@@ -621,8 +608,7 @@ def render_turn_payload(
 def parse_turn_payload(payload: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     """Splits a stored payload back into `(transcript, remember notes, forget notes)`.
 
-    The inverse of `render_turn_payload`, and the reason a resumed job needs no extra column:
-    a row persisted before restart carries its notes in the same string.
+    The inverse of `render_turn_payload`.
     """
     collected: dict[str, list[str]] = {"remember": [], "forget": []}
     for match in _NOTES_BLOCK_RE.finditer(payload):
@@ -645,14 +631,12 @@ def render_forget_requests(notes: tuple[str, ...], source: str | None) -> str:
 
     A forget is deliberately NOT a `MemoryObservation`. It is not something to store, so it needs
     no category, durability, sharing or dedupe key, and running it through the gates that decide
-    whether a fact is worth keeping would only find reasons to drop it. Giving it its own
-    `### forget_request` header instead keeps it invisible to every reader that walks observation
-    fields: `tone_evidence_from_raw` skips it because the header is not a tone category, and
-    `observation_key_sources_from_text` finds no `normalized_key` to pair it with.
+    whether a fact is worth keeping would only find reasons to drop it. Its own
+    `### forget_request` header — deliberately not a `MemoryCategory` — is what keeps it
+    invisible to every reader that walks observation fields.
 
-    `source` is stamped for the record rather than for routing. Routing a forget by its source
-    would leave it unable to reach a fact stored anywhere else, so `partition_forget_requests`
-    broadcasts it to every compartment its speaker could read from instead.
+    `source` is stamped for the record rather than for routing: routing a forget by its source
+    would leave it unable to reach a fact stored anywhere else.
     """
     blocks = [
         "\n".join([
@@ -691,8 +675,8 @@ def observation_key_sources_from_text(text: str) -> set[tuple[str, str | None]]:
     """Extracts `(normalized_key, source)` pairs from raw/detail evidence.
 
     The renderer emits `- source:` after `- normalized_key:` inside one block, so a
-    line walk can pair each key with its block's source; entries written before
-    source stamping (or by the server flavor) pair with None.
+    line walk can pair each key with its block's source; a block with no `- source:` line
+    pairs with None.
     """
     pairs: set[tuple[str, str | None]] = set()
     pending_key: str | None = None
@@ -798,11 +782,11 @@ def _sanitize_observation(
     # a token past the truncation point cannot dodge the gate. Code only ever tightens
     # sharing to source_only; it never loosens a source_only call back to global.
     #
-    # The roster half is what the directory boundary made necessary: with no read-time
-    # filter left, `global` is permanent cross-server reach, so "他跟女友吵架" — which
-    # carries no id token at all — can no longer be left entirely to the model's own
-    # judgement. Matching the conversation's other participants literally is the
-    # deterministic half; the phase-1.5 evaluator covers whoever is named but absent.
+    # The roster half exists because `global` is permanent cross-server reach with no
+    # read-time filter behind it, so "他跟女友吵架" — which carries no id token at all —
+    # cannot be left entirely to the model's own judgement. Matching the conversation's other
+    # participants literally is the deterministic half; the phase-1.5 evaluator covers whoever
+    # is named but absent.
     scanned = f"{observation.summary_zh}\n{observation.evidence_quote}"
     sharing = observation.sharing
     if (
@@ -948,7 +932,7 @@ def _truncate_middle(text: str, max_chars: int) -> str:
     region always starts at a trusted `[message N | role]` boundary; without this a
     cut landing inside an indented body could leave user content at column 0 and forge
     a block boundary. When no marker lands inside the tail it is returned as a best
-    effort (mirrors `store.read_detail_tail`).
+    effort.
     """
     if len(text) <= max_chars:
         return text

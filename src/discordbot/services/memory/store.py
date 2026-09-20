@@ -12,7 +12,7 @@ guarded by ``_COMPARTMENT_RE``, with no read-time content filter to get wrong. A
 scope has exactly one compartment (``global/``) because a server memory is per-guild by
 construction and its evidence carries no source to route by.
 
-The remaining tiers are per-scope and unchanged: ``raw.md`` accumulates phase-1 entries
+The remaining tiers are per-scope: ``raw.md`` accumulates phase-1 entries
 until consolidation consumes them, ``detail.md`` is the append-only cold evidence log
 (read as a tail window, trimmed to a hard byte cap), and ``tone.md`` is the short
 always-read note of how the user wants the bot to sound.
@@ -76,10 +76,11 @@ _RAW_ENTRY_HEADER_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", flags=re.MULTILINE)
 
 # Per-scope file-write locks, rebuilt per event loop by the shared registry.
 _scope_locks: LoopLocalRegistry[str, asyncio.Lock] = LoopLocalRegistry()
-# Manual-clear timestamps; monotonic, so it is not loop-keyed and tests reset it.
+# Manual-clear timestamps; monotonic, so it is not loop-keyed.
 _cleared_at: dict[str, float] = {}
 # Per-scope write counter and the rendered-document cache keyed on it. Not loop-bound
-# (plain dicts, no asyncio primitive), but reset by the test fixture like `_cleared_at`.
+# (plain dicts, no asyncio primitive). All three are process-global and describe one store
+# root, so relocating that root has to reset them.
 _write_generation: dict[str, int] = {}
 _render_cache: dict[tuple[str, tuple[str, ...], MemoryFlavor, int], tuple[int, str]] = {}
 
@@ -110,7 +111,7 @@ def flavor_of(scope: str) -> MemoryFlavor:
 
 
 def memory_root() -> Path:
-    """Returns the store root, read through this accessor so tests can relocate it."""
+    """Returns the store root, read through this accessor so it can be relocated."""
     return _MEMORY_DIR
 
 
@@ -163,16 +164,14 @@ def _scope_has_memory(scope: str) -> bool:
     Checks the single-file tiers first: they answer for most scopes without touching the
     compartment tree, which costs one `iterdir` per compartment. `detail.md` counts even
     though it is never injected — it is the evidence a rebuild reconstructs everything
-    from (`regeneration_has_evidence` reads it), and a scope that has gone quiet since
-    its last consolidation holds nothing else, which is the steady state for a server.
+    from, and a scope that has gone quiet since its last consolidation holds nothing else,
+    which is the steady state for a server.
 
     The compartment tier is parsed rather than listed, so a file no reader can parse does
-    not answer for a scope on its own. Listing it kept such a scope on `iter_scopes`
-    permanently, handing it to the restart consolidation sweep and to
-    `scripts/regen_memories.py` on every run with nothing either could do about it. The
-    parse costs nothing in practice: a scope that has ever consolidated has a `detail.md`
-    and answers above, so what reaches the walk is a leftover directory with no fact in
-    it (every one of them, in the live store).
+    not answer for a scope on its own: listing would keep such a scope on `iter_scopes`
+    forever, handed to every sweep with nothing any of them could do about it. The parse
+    costs nothing in practice: a scope that has ever consolidated has a `detail.md` and
+    answers above, so what reaches the walk is a leftover directory with no fact in it.
     """
     scope_dir = _scope_dir(scope=scope)
     if any((scope_dir / name).is_file() for name in ("raw.md", "tone.md", "detail.md")):
@@ -188,9 +187,7 @@ def iter_scopes() -> list[str]:
 
     Walks `data/memories/`: a top-level directory holding memory is a user scope
     (`<user_id>`), and the child directories of `bot_memories/` holding memory are the
-    `bot_memories/<server_id>` server scopes. Used by the restart consolidation sweep
-    to find scopes whose raw backlog still needs digesting even when no review job
-    is pending for them.
+    `bot_memories/<server_id>` server scopes.
 
     `bot_memories` is the only directory descended into, and dot directories are
     skipped outright (the store is itself a git work tree), so nested memory anywhere
@@ -286,10 +283,9 @@ def read_facts(scope: str, compartment: str) -> list[MemoryFact]:
             text = _read_text(path=path)
         except (OSError, UnicodeDecodeError) as error:
             # A file that cannot even be decoded is skipped like one that cannot be
-            # parsed, rather than raised: `_scope_has_memory` reads through here, so one
-            # hand edit saved in the wrong encoding would otherwise take down the whole
-            # restart sweep and stop `scripts/regen_memories.py` starting at all — the
-            # tool an operator reaches for to repair exactly that store.
+            # parsed, rather than raised: every scope walk reads through here, so one hand
+            # edit saved in the wrong encoding would otherwise take them all down — the
+            # repair path an operator reaches for included.
             logfire.warn(
                 "Memory fact file could not be read; skipping",
                 compartment=compartment,
@@ -318,8 +314,8 @@ def read_memory_document(
     silently starve a guild's own memory.
 
     Cached on the scope's write generation: a repeat read of an unchanged scope returns
-    without touching the filesystem, which is what keeps eight per-reply lookups
-    affordable now that one fact is one file.
+    without touching the filesystem, which is what keeps the reply path's repeated lookups
+    affordable when one fact is one file and the IO is synchronous.
     """
     key = (scope, tuple(compartments), flavor, max_chars)
     cached = _render_cache.get(key)
@@ -367,11 +363,10 @@ def _is_store_file(path: Path) -> bool:
     r"""Whether one entry of a compartment directory is a file the store itself wrote.
 
     Matched by NAME — `<fact id>.md`, or the `.md.tmp` a crash between `write_fact`'s tmp
-    write and its `os.replace` can strand — the way the media reaper matches its own
-    files. Every name the store mints is a `mint_fact_id` digest, so a `notes.md` an
-    operator dropped in beside the facts fails the test and a prune cannot take it.
-    `fullmatch`, not `match`, for the reason the reaper uses it too: `$` also matches
-    before a trailing newline, so `<fact id>\\n.md` would otherwise pass for one of ours.
+    write and its `os.replace` can strand. Every name the store mints is a `mint_fact_id`
+    digest, so a `notes.md` an operator dropped in beside the facts fails the test and a
+    prune cannot take it. `fullmatch`, not `match`: `$` also matches before a trailing
+    newline, so `<fact id>\\n.md` would otherwise pass for one of ours.
     """
     stem, _, suffix = path.name.partition(".")
     return path.is_file() and suffix in {"md", "md.tmp"} and FACT_ID_RE.fullmatch(stem) is not None
@@ -388,8 +383,7 @@ def unaccounted_files(scope: str, compartment: str) -> list[str]:
     Nothing here removes them, because a rebuild REPLACES a compartment and may only
     take what the store itself put there; naming them is what makes the difference
     visible instead of assumed. `delete_memory_files` is the opposite contract and takes
-    every `.md` in the tree, this one included — a clear is a wipe its owner asked for,
-    so sparing a file that might carry their memory would be the wrong answer there.
+    every `.md` in the tree, this one included.
     """
     try:
         # Materialized inside the guard: `iterdir` is a generator, so a missing
@@ -401,12 +395,7 @@ def unaccounted_files(scope: str, compartment: str) -> list[str]:
 
 
 class PrunedCompartment(BaseModel):
-    """What one prune pass left standing, and what it destroyed unread.
-
-    Attributes:
-        unaccounted: Names in the directory the store never wrote, left where they are.
-        unreadable: Fact files removed that no reader could have parsed.
-    """
+    """What one prune pass left standing, and what it destroyed unread."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -430,9 +419,8 @@ def prune_compartment(scope: str, compartment: str, keep: set[str]) -> PrunedCom
     a path that already drops perfectly good facts by not re-emitting them.
 
     The `.md.tmp` leftovers go with them: they are the store's own, and nothing in THIS
-    process can be mid-write, since every writer holds the same scope lock. Out of
-    process is the offline rebuild's standing caveat rather than a new one — it is why
-    `scripts/regen_memories.py` opens by telling the operator to stop the bot. An emptied
+    process can be mid-write, since every writer holds the same scope lock. An out-of-process
+    writer is not covered, which is why the offline rebuild requires a stopped bot. An emptied
     directory is then removed, so a compartment a rebuild emptied stops being one
     `list_compartments` reports, and stops costing a consolidation call on every later
     rebuild.
@@ -581,9 +569,8 @@ def _trim_detail(path: Path) -> None:
     The dropped entries are deleted permanently instead of cascading into yet
     another unbounded file: nothing can read past the consolidation window, so
     they carry no functional value. The headroom between the cap and the trim
-    target amortizes this O(file) rewrite to roughly once per megabyte of
-    appended evidence; the write goes through tmp + os.replace so a crash
-    cannot leave a half-trimmed file.
+    target is what amortizes this O(file) rewrite; the write goes through
+    tmp + os.replace so a crash cannot leave a half-trimmed file.
     """
     entries = _split_raw_entries(text=_read_text(path=path))
     # Track the rendered size incrementally; recomputing the joined size per
@@ -605,7 +592,7 @@ def read_detail_tail(scope: str, max_chars: int) -> str:
     """Returns the newest detail-file window, aligned to a raw-entry header.
 
     Only a bounded byte window is read from the end of the file so the call stays
-    O(window) however far the detail file has grown toward its multi-megabyte cap.
+    O(window) however far the detail file has grown.
     The window is aligned to the first raw-entry header inside the tail so a partial
     entry never leads the result; when no header lands inside the window (e.g. one
     giant entry) the raw tail is returned as a best effort.
@@ -644,7 +631,7 @@ def detail_file_bytes(scope: str) -> int:
     """Returns the cold-tier detail file size in bytes, missing file counting as zero.
 
     Uses ``stat`` rather than reading the whole file so an evidence-presence
-    check stays O(1) even when the detail file is near its multi-megabyte cap.
+    check stays O(1) on a large detail file.
     """
     path = _detail_path(scope=scope)
     return path.stat().st_size if path.is_file() else 0
@@ -673,10 +660,9 @@ def clear_tone(scope: str) -> None:
 def clear_memory(scope: str) -> bool:
     """Deletes the scope's memory files and flags older in-flight updates to abort.
 
-    A test-only convenience over `mark_cleared` + `delete_memory_files`; nothing under
-    `src/` calls it. The pipeline clear drives those two itself because it owns a wider
-    boundary around its awaited reply.db tombstone, so do not route a production clear
-    back through here.
+    A test-only convenience over `mark_cleared` + `delete_memory_files`. The pipeline clear
+    drives those two itself because it owns a wider boundary around its awaited reply.db
+    tombstone, so do not route a production clear back through here.
 
     Returns:
         True when at least one memory file existed and was removed.
