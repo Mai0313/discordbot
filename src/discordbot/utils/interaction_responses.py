@@ -73,8 +73,13 @@ async def send_ephemeral_response(interaction: Interaction[commands.Bot], embed:
 
 
 async def edit_response_embed(interaction: Interaction[commands.Bot], embed: Embed) -> None:
-    """Edits the interaction's public message embed and clears its controls."""
-    await interaction.response.edit_message(
+    """Edits the interaction's public message embed and clears its controls.
+
+    Edits the original rather than responding with one, because every caller has already
+    deferred: the write that decides this embed can outlive the three-second response window,
+    so the acknowledgement cannot wait for it.
+    """
+    await interaction.edit_original_message(
         embed=embed,
         view=None,
         **embed_spacer_payload(embeds=[embed], is_edit=True, target=interaction),

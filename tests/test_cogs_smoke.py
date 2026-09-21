@@ -1472,17 +1472,14 @@ _LEDGER_READS = frozenset({
     "top_losers",
     "top_n",
 })
-# `views.py` is excluded, and the skip is the whole file. Five of its functions write. The four
-# button callbacks — approve, reject and cancel — do it before acknowledging (#682), and the fix
-# is not the one applied to the slash commands: they are component interactions answering by
-# editing the message their button sits on. The fifth is `on_timeout`, which has no interaction
-# to acknowledge at all and is outside what this sweep can say anything about. Named here so it
-# cannot read as though the sweep had cleared any of them.
-_ACK_SWEEP_SKIPS = frozenset({"views.py"})
+# The one writer in these modules with no interaction to acknowledge: a view's expiry fires on
+# its own timer. Exempt by name rather than by skipping the file it sits in, so the buttons
+# beside it stay swept.
+_ACK_SWEEP_EXEMPT = frozenset({("views.py", "on_timeout")})
 
 
-def _first_unavoidable_ack(node: ast.AST) -> int | None:
-    """The line of the first acknowledgement a write inside this function cannot go around.
+def _first_unavoidable_ack(node: ast.AST) -> ast.Call | None:
+    """The first acknowledgement a write inside this function cannot go around.
 
     Recurses into `try` and `with` bodies, which always run, and deliberately not into `if`,
     `for` or `while`: a permission guard that acks and returns sits inside an `if`, and an ack
@@ -1509,12 +1506,32 @@ def _first_unavoidable_ack(node: ast.AST) -> int | None:
                 or name.endswith("response.send_message")
                 or name.endswith("send_ephemeral_response")
             ):
-                return inner.lineno
+                return inner
     return None
 
 
-def _writes_before(node: ast.AsyncFunctionDef, acked_at: int | None) -> list[str]:
+def _edits_the_original_without_deferring(node: ast.AsyncFunctionDef, ack: ast.Call | None) -> str:
+    """Why an ack that is not a `defer` breaks a handler answering by editing its own message.
+
+    `edit_original_message` targets whatever the interaction answered with, so a handler that
+    replied with `send_message` first edits THAT — the settlement embed lands in an ephemeral
+    notice and the panel keeps its live buttons over a decided loan. It is silent, where the
+    `response.edit_message` this replaced would have raised `InteractionResponded`.
+    """
+    edits = any(
+        isinstance(inner, ast.Call)
+        and isinstance(inner.func, ast.Name)
+        and inner.func.id == "edit_response_embed"
+        for inner in ast.walk(node)
+    )
+    if not edits or (ack is not None and ast.unparse(ack.func).endswith("response.defer")):
+        return ""
+    return f"{node.name} edits the original response without having deferred it"
+
+
+def _writes_before(node: ast.AsyncFunctionDef, ack: ast.Call | None) -> list[str]:
     """Ledger writes in this function that run before it has acknowledged anything."""
+    acked_at = ack.lineno if ack is not None else None
     found: list[str] = []
     for inner in ast.walk(node):
         if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Name):
@@ -1578,20 +1595,31 @@ def test_every_money_command_acknowledges_before_it_mutates() -> None:
 
     Structural because the race needs a contended write lock to observe, and because this is
     the kind of ordering someone reintroduces by moving an `if`.
+
+    Covers the buttons as well as the commands: approving a loan is where the lender is
+    actually debited, and its fix is a different one (a component defers into an edit of the
+    panel, not into a followup), so it is exactly the pair someone changes one half of.
     """
     economy_dir = Path(__file__).resolve().parents[1] / "src/discordbot/cogs/economy"
     scanned: list[str] = []
+    exempted: set[tuple[str, str]] = set()
     offenders: list[str] = []
     for path in sorted(economy_dir.glob("*.py")):
-        if path.name in _ACK_SWEEP_SKIPS:
-            continue
         scanned.append(path.name)
         for node in ast.walk(ast.parse(source=path.read_text(encoding="utf-8"))):
-            if isinstance(node, ast.AsyncFunctionDef):
-                offenders.extend(_writes_before(node=node, acked_at=_first_unavoidable_ack(node)))
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            if (path.name, node.name) in _ACK_SWEEP_EXEMPT:
+                exempted.add((path.name, node.name))
+                continue
+            ack = _first_unavoidable_ack(node)
+            offenders.extend(_writes_before(node=node, ack=ack))
+            offenders.extend(filter(None, [_edits_the_original_without_deferring(node, ack)]))
 
-    assert "cog.py" in scanned, "the sweep found no modules, so it would pass on an empty walk"
-    assert not offenders, f"money commands that mutate before acknowledging: {sorted(offenders)}"
+    assert {"cog.py", "views.py"} <= set(scanned), "the sweep missed a module it must cover"
+    # An exemption is the other way a writer leaves this guard while the guard stays green.
+    assert exempted == _ACK_SWEEP_EXEMPT, f"exemption never matched anything: {_ACK_SWEEP_EXEMPT}"
+    assert not offenders, f"money handlers whose acknowledgement is wrong: {sorted(offenders)}"
 
 
 def test_the_ack_sweep_accounts_for_every_ledger_name_the_cogs_import() -> None:
@@ -1810,7 +1838,7 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
 
     denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await approve_button.callback(as_interaction(fake=denied))
-    assert denied.response.sent[0]["ephemeral"] is True
+    assert denied.followup.sent[0]["ephemeral"] is True
     assert captured_accept_kwargs == {}
 
     allowed = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
@@ -1818,7 +1846,7 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
     assert captured_accept_kwargs["proposal_id"] == 42
     assert captured_accept_kwargs["actor_id"] == 1
     assert captured_accept_kwargs["allow_central_bank_self_approval"] is True
-    assert allowed.response.edited[0]["view"] is None
+    assert allowed.edits[0]["view"] is None
 
     cancel_view = CentralBankLoanDecisionView(
         bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))),
@@ -1832,13 +1860,13 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
     )
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await cancel_button.callback(as_interaction(fake=denied_cancel))
-    assert denied_cancel.response.sent[0]["ephemeral"] is True
+    assert denied_cancel.followup.sent[0]["ephemeral"] is True
     assert captured_cancel_kwargs == {}
 
     allowed_cancel = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
     await cancel_button.callback(as_interaction(fake=allowed_cancel))
     assert captured_cancel_kwargs == {"proposal_id": 43, "actor_id": 1}
-    assert allowed_cancel.response.edited[0]["view"] is None
+    assert allowed_cancel.edits[0]["view"] is None
 
 
 async def test_credit_decision_buttons_gate_lender_and_creator(
@@ -1874,14 +1902,14 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
 
     denied_approve = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
     await approve_button.callback(as_interaction(fake=denied_approve))
-    assert denied_approve.response.sent[0]["ephemeral"] is True
+    assert denied_approve.followup.sent[0]["ephemeral"] is True
     assert captured_accept_kwargs == {}
 
     allowed_approve = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await approve_button.callback(as_interaction(fake=allowed_approve))
     assert captured_accept_kwargs["proposal_id"] == 42
     assert captured_accept_kwargs["actor_id"] == 2
-    assert allowed_approve.response.edited[0]["view"] is None
+    assert allowed_approve.edits[0]["view"] is None
 
     reject_view = CreditLoanDecisionView(proposal_id=43, lender_id=2, creator_id=1)
     reject_button = next(
@@ -1891,13 +1919,13 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     )
     denied_reject = FakeInteraction(user=FakeUser(user_id=3, name="charlie"))
     await reject_button.callback(as_interaction(fake=denied_reject))
-    assert denied_reject.response.sent[0]["ephemeral"] is True
+    assert denied_reject.followup.sent[0]["ephemeral"] is True
     assert captured_reject_kwargs == {}
 
     allowed_reject = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await reject_button.callback(as_interaction(fake=allowed_reject))
     assert captured_reject_kwargs == {"proposal_id": 43, "actor_id": 2}
-    assert allowed_reject.response.edited[0]["view"] is None
+    assert allowed_reject.edits[0]["view"] is None
 
     cancel_view = CreditLoanDecisionView(proposal_id=44, lender_id=2, creator_id=1)
     cancel_button = next(
@@ -1907,13 +1935,72 @@ async def test_credit_decision_buttons_gate_lender_and_creator(
     )
     denied_cancel = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
     await cancel_button.callback(as_interaction(fake=denied_cancel))
-    assert denied_cancel.response.sent[0]["ephemeral"] is True
+    assert denied_cancel.followup.sent[0]["ephemeral"] is True
     assert captured_cancel_kwargs == {}
 
     allowed_cancel = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
     await cancel_button.callback(as_interaction(fake=allowed_cancel))
     assert captured_cancel_kwargs == {"proposal_id": 44, "actor_id": 1}
-    assert allowed_cancel.response.edited[0]["view"] is None
+    assert allowed_cancel.edits[0]["view"] is None
+
+
+async def test_a_loan_button_is_acknowledged_before_it_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Approving is where a lender is actually debited, so the ack cannot wait for the result.
+
+    The sweep above reads the order off the source. This one observes it, so a defer that is
+    present but unreachable — moved behind a guard, or into one branch — still fails here.
+
+    All five writers, because the panel is the surface someone edits one button of.
+    """
+    clicked: list[tuple[str, FakeInteraction]] = []
+    acked_at_write: dict[str, bool] = {}
+
+    async def accept_and_note(**_kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
+        """Records whether the click was acknowledged before the ledger was reached."""
+        custom_id, interaction = clicked[-1]
+        acked_at_write[custom_id] = interaction.response.deferred
+        return await fake_accept_loan_proposal()
+
+    async def resolve_and_note(**_kwargs: Any) -> LoanProposalView:  # noqa: ANN401 -- command facade double
+        """Same, for the three writes that close a proposal without moving money."""
+        custom_id, interaction = clicked[-1]
+        acked_at_write[custom_id] = interaction.response.deferred
+        return await fake_cancel_loan_proposal(proposal_id=1, actor_id=1)
+
+    monkeypatch.setattr(views, "get_central_banker", fake_get_central_banker)
+    monkeypatch.setattr(views, "accept_loan_proposal", accept_and_note)
+    monkeypatch.setattr(views, "reject_loan_proposal", resolve_and_note)
+    monkeypatch.setattr(views, "cancel_loan_proposal", resolve_and_note)
+
+    central = CentralBankLoanDecisionView(
+        bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999))),
+        proposal_id=42,
+        creator_id=1,
+        allow_self_approval=True,
+    )
+    credit = CreditLoanDecisionView(proposal_id=43, lender_id=1, creator_id=1)
+    buttons = [
+        (central, "central_bank:approve"),
+        (central, "central_bank:reject"),
+        (credit, "credit:approve"),
+        (credit, "credit:reject"),
+        (credit, "credit:cancel"),
+    ]
+
+    for view, custom_id in buttons:
+        button = next(c for c in view.children if getattr(c, "custom_id", "") == custom_id)
+        interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+        clicked.append((custom_id, interaction))
+        await button.callback(as_interaction(fake=interaction))
+        assert interaction.edits, f"{custom_id} never edited the panel it was clicked on"
+
+    # Keyed by button rather than collected in order: which of them acked first says nothing,
+    # while a missing key is a button that reached no write at all and so proved nothing.
+    assert acked_at_write == {custom_id: True for _, custom_id in buttons}, (
+        f"a loan button wrote before acknowledging: {acked_at_write}"
+    )
 
 
 async def test_loan_decision_timeout_rejects_and_schedules_cleanup(
