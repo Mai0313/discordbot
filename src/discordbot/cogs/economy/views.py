@@ -27,7 +27,7 @@ from discordbot.services.economy.database import (
     reject_loan_proposal,
     reject_expired_loan_proposal,
 )
-from discordbot.utils.interaction_responses import edit_response_embed, send_ephemeral_response
+from discordbot.utils.interaction_responses import edit_response_embed, send_private_followup
 
 
 class LoanDecisionViewBase(View):
@@ -35,6 +35,13 @@ class LoanDecisionViewBase(View):
 
     A subclass declares the wording and color of its own panels below; expiry and the
     creator-only cancel then behave the same for both.
+
+    Every button that writes defers first, then answers by editing the panel or with a private
+    followup. The token dies three seconds after the click while a SQLite writer waits out lock
+    contention for longer, so deciding the response from the result lets an approval — the
+    moment a lender is debited, or the central bank mints — commit and then fail to say so,
+    leaving the buttons up over balances that have already moved. A component defers without a
+    thinking message, so the panel is untouched until the edit lands.
     """
 
     PANEL_COLOR: ClassVar[int]
@@ -80,9 +87,10 @@ class LoanDecisionViewBase(View):
         """Cancels the request for its creator, and answers anyone else privately."""
         if interaction.user is None:
             return
+        await interaction.response.defer()
         if interaction.user.id != self.creator_id:
             embed = build_error_embed(title="權限不足", description=self.CANCEL_DENIED_NOTICE)
-            await send_ephemeral_response(interaction=interaction, embed=embed)
+            await send_private_followup(interaction=interaction, embed=embed)
             return
 
         proposal = await cancel_loan_proposal(
@@ -92,7 +100,7 @@ class LoanDecisionViewBase(View):
             embed = build_error_embed(
                 title="取消失敗", description="### 申請不存在、已處理，或你不是發起者"
             )
-            await send_ephemeral_response(interaction=interaction, embed=embed)
+            await send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = build_simple_embed(
@@ -134,7 +142,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         embed = build_error_embed(
             title="權限不足", description="### 只有央行成員可以處理央行借款申請"
         )
-        await send_ephemeral_response(interaction=interaction, embed=embed)
+        await send_private_followup(interaction=interaction, embed=embed)
 
     async def _is_central_banker(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user can decide central-bank proposals."""
@@ -161,6 +169,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         """Approves the central-bank request when clicked by a central banker."""
         if interaction.user is None:
             return
+        await interaction.response.defer()
         if not await self._is_central_banker(interaction=interaction):
             await self._send_permission_denied(interaction=interaction)
             return
@@ -180,7 +189,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
                 title="批准失敗",
                 description="### 申請不存在、已處理、自我批准未開放，或央行額度不足",
             )
-            await send_ephemeral_response(interaction=interaction, embed=embed)
+            await send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = build_central_bank_approved_embed(
@@ -201,6 +210,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         """Rejects the central-bank request when clicked by a central banker."""
         if interaction.user is None:
             return
+        await interaction.response.defer()
         if not await self._is_central_banker(interaction=interaction):
             await self._send_permission_denied(interaction=interaction)
             return
@@ -212,7 +222,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
             embed = build_error_embed(
                 title="拒絕失敗", description="### 申請不存在、已處理，或你沒有權限拒絕"
             )
-            await send_ephemeral_response(interaction=interaction, embed=embed)
+            await send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = build_simple_embed(
@@ -262,7 +272,7 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
     ) -> None:
         """Replies privately when a user clicks a button they cannot use."""
         embed = build_error_embed(title="權限不足", description=description)
-        await send_ephemeral_response(interaction=interaction, embed=embed)
+        await send_private_followup(interaction=interaction, embed=embed)
 
     async def _require_lender(self, interaction: Interaction[commands.Bot]) -> bool:
         """Returns whether the clicking user is the requested lender.
@@ -286,7 +296,10 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
         """Approves the personal credit request when clicked by the lender."""
-        if interaction.user is None or not await self._require_lender(interaction=interaction):
+        if interaction.user is None:
+            return
+        await interaction.response.defer()
+        if not await self._require_lender(interaction=interaction):
             return
 
         lender_avatar_url = await guild_avatar_url(user=interaction.user, guild=interaction.guild)
@@ -301,7 +314,7 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
                 title="批准失敗",
                 description="### 申請不存在、已處理、不是指定貸方，或貸方餘額不足",
             )
-            await send_ephemeral_response(interaction=interaction, embed=embed)
+            await send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = build_credit_approved_embed(
@@ -320,7 +333,10 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
         """Rejects the personal credit request when clicked by the lender."""
-        if interaction.user is None or not await self._require_lender(interaction=interaction):
+        if interaction.user is None:
+            return
+        await interaction.response.defer()
+        if not await self._require_lender(interaction=interaction):
             return
 
         proposal = await reject_loan_proposal(
@@ -330,7 +346,7 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
             embed = build_error_embed(
                 title="拒絕失敗", description="### 申請不存在、已處理，或你不是指定貸方"
             )
-            await send_ephemeral_response(interaction=interaction, embed=embed)
+            await send_private_followup(interaction=interaction, embed=embed)
             return
 
         embed = build_simple_embed(
