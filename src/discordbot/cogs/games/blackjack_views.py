@@ -108,7 +108,7 @@ def _format_dealer_block(round_state: BlackjackRound, hide_hole: bool) -> str:
 
 
 def _format_dealer_decision_path(steps: list[BlackjackDealerStep]) -> str:
-    """Formats compact dealer actions for the final embed."""
+    """Formats the dealer's decision steps into one compact line."""
     if not steps:
         return ""
     source_labels: dict[BlackjackDealerStepSource, str] = {"auto": "規則", "guard": "防呆"}
@@ -264,11 +264,7 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
 ) -> Embed:
     """Builds the dealer seat embed shown alongside player seats.
 
-    Only the peek-reveal frame passes `hide_hole=False` before settlement, which is
-    what makes the hole visible there; `dealer_steps` populates the rule-driven
-    action log once dealer play starts. When `is_settled=True`, `results` drives the
-    color from the casino-vs-table outcome; otherwise the color tracks the
-    round phase.
+    `dealer_steps` populates the rule-driven action log once dealer play starts.
     """
     description_parts: list[str] = [
         _format_dealer_block(round_state=round_state, hide_hole=hide_hole)
@@ -277,7 +273,6 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
     if decision_path:
         description_parts.append(metadata_line(text=f"動作: {decision_path}"))
     if not is_settled and not hide_hole:
-        # Hole card face-up on a round that has not settled: the peek-reveal frame.
         description_parts.append(metadata_line(text="莊家正在依規則出牌"))
     elif not is_settled:
         description_parts.append(metadata_line(text="莊家暗牌待揭示"))
@@ -290,9 +285,8 @@ def build_dealer_seat_embed(  # noqa: PLR0913 -- dealer seat needs round + ident
         description="\n".join(part for part in description_parts if part),
         color=color,
     )
-    # `system_avatar_url` is intentionally not surfaced as a thumbnail: the bot
-    # is now a player at the table, so reusing its avatar for the dealer seat
-    # would conflict with the bot's own player seat.
+    # `system_avatar_url` is deliberately not set as a thumbnail: the bot plays at
+    # this table, so its avatar on the dealer seat would collide with its player seat.
     embed.set_author(name=system_name)
     embed.set_footer(text="莊家規則: <=16 必補, soft 17 補, hard 17+ 停")
     return embed
@@ -344,9 +338,8 @@ def build_player_seat_embed(  # noqa: PLR0913, C901 -- seat needs round, player,
     )
     description_parts: list[str] = []
     hand_count = len(player.hands)
-    # In-progress vs settled hand rendering: settled uses settlement.hands so
-    # the result label + outcome surface lines up with the actually-applied
-    # delta. In-progress reads hands directly off `player.hands`.
+    # A settled seat renders `settlement.hands` rather than `player.hands` so the
+    # result label lines up with the delta that was actually applied.
     if settlement is not None:
         for hand_index, hand_settlement in enumerate(settlement.hands):
             if hand_count > 1:
@@ -409,11 +402,7 @@ def build_in_progress_embeds(
     dealer_steps: list[BlackjackDealerStep] | None = None,
     force_show_hole: bool = False,
 ) -> list[Embed]:
-    """Builds dealer + per-player seat embeds for the in-progress table.
-
-    Pass `force_show_hole=True` for peek-reveal animations to expose the
-    dealer hole card before settlement.
-    """
+    """Builds dealer + per-player seat embeds for the in-progress table."""
     embeds: list[Embed] = [
         build_dealer_seat_embed(
             round_state=round_state,
@@ -642,14 +631,7 @@ class BlackjackView(View):
         if interaction.user is None:
             return False
         if self.round_state.phase == "insurance":
-            player = next(
-                (
-                    candidate
-                    for candidate in self.round_state.players
-                    if candidate.participant.user_id == interaction.user.id
-                ),
-                None,
-            )
+            player = self._find_player_by_user_id(user_id=interaction.user.id)
             if player is None:
                 await self._send_notice(interaction=interaction, content="你不在這個牌桌")
                 return False
@@ -761,13 +743,18 @@ class BlackjackView(View):
         """Surrenders the active hand for a half-bet refund."""
         await self._run_player_action(interaction=interaction, apply=self.round_state.surrender)
 
-    @nextcord.ui.button(
-        label="保險 ½", emoji="🛡️", style=ButtonStyle.success, custom_id="bj:insure_yes", row=1
-    )
-    async def insure_yes(
-        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    async def _run_insurance_action(
+        self,
+        *,
+        interaction: Interaction[commands.Bot],
+        decide: Callable[..., Coroutine[Any, Any, bool]],
     ) -> None:
-        """Takes insurance for the calling player."""
+        """Runs one insurance decision under the round lock, then refreshes the table.
+
+        `decide` applies the pressed button's choice and returns False when the round
+        refused it, having already reported that; the defer, the lock, the stale-round
+        guards and the re-render around it are the same for both insurance buttons.
+        """
         await interaction.response.defer()
         if interaction.message is None:
             return
@@ -776,32 +763,10 @@ class BlackjackView(View):
                 return
             if interaction.user is None:
                 return
-            player = next(
-                (
-                    candidate
-                    for candidate in self.round_state.players
-                    if candidate.participant.user_id == interaction.user.id
-                ),
-                None,
+            decided = await decide(
+                interaction=interaction, message=interaction.message, user_id=interaction.user.id
             )
-            if player is None:
-                return
-            try:
-                self.round_state.take_insurance(
-                    user_id=interaction.user.id, amount=player.participant.bet // 2
-                )
-            except ValueError as error:
-                content = (
-                    "餘額不足，不能買保險"
-                    if "balance" in str(error).lower()
-                    else "現在不能買保險，請看最新牌桌"
-                )
-                await send_ephemeral_notice(
-                    interaction=interaction,
-                    content=content,
-                    log_message="Failed to send Blackjack insurance rejection notice",
-                )
-                await self._edit_in_progress_locked(message=interaction.message)
+            if not decided:
                 return
             self._state_revision += 1
             if self.round_state.finished:
@@ -811,6 +776,52 @@ class BlackjackView(View):
             await self._edit_in_progress_locked(message=interaction.message)
             await self._maybe_play_bot_turn_locked(message=interaction.message)
 
+    async def _take_insurance_locked(
+        self, *, interaction: Interaction[commands.Bot], message: Message, user_id: int
+    ) -> bool:
+        """Buys half-bet insurance for one seat; False when the round refused it."""
+        player = self._find_player_by_user_id(user_id=user_id)
+        if player is None:
+            return False
+        try:
+            self.round_state.take_insurance(user_id=user_id, amount=player.participant.bet // 2)
+        except ValueError as error:
+            content = (
+                "餘額不足，不能買保險"
+                if "balance" in str(error).lower()
+                else "現在不能買保險，請看最新牌桌"
+            )
+            await send_ephemeral_notice(
+                interaction=interaction,
+                content=content,
+                log_message="Failed to send Blackjack insurance rejection notice",
+            )
+            await self._edit_in_progress_locked(message=message)
+            return False
+        return True
+
+    async def _decline_insurance_locked(
+        self, *, interaction: Interaction[commands.Bot], message: Message, user_id: int
+    ) -> bool:
+        """Declines insurance for one seat; False when the round refused it."""
+        try:
+            self.round_state.decline_insurance(user_id=user_id)
+        except ValueError:
+            await self._edit_in_progress_locked(message=message)
+            return False
+        return True
+
+    @nextcord.ui.button(
+        label="保險 ½", emoji="🛡️", style=ButtonStyle.success, custom_id="bj:insure_yes", row=1
+    )
+    async def insure_yes(
+        self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
+    ) -> None:
+        """Takes insurance for the calling player."""
+        await self._run_insurance_action(
+            interaction=interaction, decide=self._take_insurance_locked
+        )
+
     @nextcord.ui.button(
         label="不保險", emoji="❌", style=ButtonStyle.secondary, custom_id="bj:insure_no", row=1
     )
@@ -818,26 +829,9 @@ class BlackjackView(View):
         self, _button: Button[BlackjackView], interaction: Interaction[commands.Bot]
     ) -> None:
         """Declines insurance for the calling player."""
-        await interaction.response.defer()
-        if interaction.message is None:
-            return
-        async with self._round_lock:
-            if self._settled:
-                return
-            if interaction.user is None:
-                return
-            try:
-                self.round_state.decline_insurance(user_id=interaction.user.id)
-            except ValueError:
-                await self._edit_in_progress_locked(message=interaction.message)
-                return
-            self._state_revision += 1
-            if self.round_state.finished:
-                await self._finalize_locked(message=interaction.message)
-                return
-            await self._maybe_animate_insurance_close_locked(message=interaction.message)
-            await self._edit_in_progress_locked(message=interaction.message)
-            await self._maybe_play_bot_turn_locked(message=interaction.message)
+        await self._run_insurance_action(
+            interaction=interaction, decide=self._decline_insurance_locked
+        )
 
     async def finalize(self, message: Message) -> None:
         """Settles every player exactly once."""
@@ -1135,11 +1129,7 @@ class BlackjackView(View):
         await self._edit_in_progress_locked(message=message)
 
     async def _finalize_locked(self, message: Message) -> None:
-        """Applies settlements and publishes the final table embeds once.
-
-        The visible controls are disabled and stopped before settlement work,
-        then the final table is published.
-        """
+        """Applies settlements and publishes the final table embeds once."""
         if self._settled:
             return
         self._settled = True
@@ -1243,9 +1233,8 @@ class BlackjackView(View):
     async def _animate_peek_locked(self, message: Message) -> None:
         """Renders the dealer hole-card peek as a 2-stage reveal.
 
-        Stage 1 keeps the hole card hidden while the dealer "peeks", stage 2
-        flips it face-up. Buttons stay disabled throughout so the caller can
-        safely chain finalize / further edits after the animation returns.
+        Buttons stay disabled throughout so the caller can safely chain finalize /
+        further edits after the animation returns.
         """
         self._disable_buttons()
         body_hidden = build_in_progress_embeds(
@@ -1386,7 +1375,8 @@ class BlackjackView(View):
     async def wait_for_background_tasks(self) -> None:
         """Waits for the round's off-critical-path tasks (round-history persistence).
 
-        Only tests await this; the round itself never blocks on them.
+        The round never blocks on them, so this drain exists only for a caller that
+        needs those writes to have landed.
         """
         while self._background_tasks:
             await asyncio.gather(*tuple(self._background_tasks))

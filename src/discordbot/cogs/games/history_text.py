@@ -5,8 +5,7 @@ inside an embed description instead of a PNG, so the command stays cheap (no
 Pillow render, no file attachment) and the result is publicly shareable.
 Discord markdown has no real tables, so columns are aligned with space padding
 inside a ``` fenced block. A code block cannot carry color, so each round's
-outcome is conveyed by a short ASCII tag plus the signed P&L. Player and dealer
-hands are separated into their own columns rather than per-row labels.
+outcome is conveyed by a short ASCII tag plus the signed P&L.
 """
 
 from typing import Final
@@ -38,11 +37,7 @@ _RESULT_TAGS: Final[dict[SettleOutcome, str]] = {
 
 
 class _HistorySummary(BaseModel):
-    """Aggregate win/loss/push counts and net delta over every fetched round.
-
-    Computed before the description budget trims the table, so it can legitimately
-    count more rounds than the embed lists.
-    """
+    """Aggregate win/loss/push counts and net delta over every fetched round."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -86,8 +81,6 @@ def _truncate(text: str, width: int) -> str:
     """Clamps `text` to `width` characters with a trailing ellipsis."""
     if len(text) <= width:
         return text
-    if width <= 1:
-        return text[:width]
     return f"{text[: width - 1]}…"
 
 

@@ -4,8 +4,7 @@ The bot plays off exact multi-step no-replacement probability rather than a
 heuristic strategy table, so this pure module turns the table state into
 decision-grade numbers: the dealer's H17 final-total distribution and the
 expected value of every legal action, measured in multiples of the base hand
-bet. `bot_player.py` falls back to its up-card-only table only when a call
-here fails.
+bet.
 
 The engine runs two passes. The exact pass knows the dealer hole card and
 drives `recommended_action` only; its own EVs never leave this module, so the
@@ -17,9 +16,8 @@ dealer Blackjack". Every NUMBER on the returned `ActionEvAnalysis` comes from
 that marginal pass, so none of them can reveal or reconstruct the real hole;
 `recommended_action` is the single exception, an action rather than a value,
 which is why `compute_action_evs` looks its reported EV back up in the marginal
-table instead of carrying the exact one across. Nothing renders those numbers
-today — the bot reads only `basic_strategy_action` — so the split is upkeep for
-the turn they do reach the table, and it has to be kept until then.
+table instead of carrying the exact one across. Keep the two-pass split even
+while nothing renders those numbers — it is what makes them safe to render.
 
 Everything here is deterministic and order-independent: the shoe is collapsed
 to a 10-bucket value-count multiset (`2..9`, ten-value, ace), so results depend
@@ -67,9 +65,13 @@ class _EvContext(BaseModel):
     two-card dealer total drives the H17 distribution. When True (marginal pass)
     only the up-card is known and the hole is integrated out over the unseen
     deck, conditioning on no dealer Blackjack whenever the dealer peeked.
+
+    `frozen` blocks rebinding only: the memo dicts below are mutated in place
+    throughout a pass. Validation copies a dict, so a context cannot be handed a
+    warm memo — it would hold the copy and silently start cold.
     """
 
-    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+    model_config = ConfigDict(frozen=True)
 
     marginalize: bool = Field(
         ..., description="Selects the marginal (hole integrated out) vs exact dealer model."
@@ -316,22 +318,10 @@ def _player_optimal_ev(
     cached = ctx.player_memo.get(key)
     if cached is not None:
         return cached
-    shoe_total = sum(shoe)
-    if shoe_total == 0:
+    if sum(shoe) == 0:
         ctx.player_memo[key] = stand_ev
         return stand_ev
-    hit_ev = 0.0
-    for bucket, count in enumerate(shoe):
-        if count <= 0:
-            continue
-        next_total, next_soft = _add_value(total=total, soft=soft, bucket=bucket)
-        hit_ev += (count / shoe_total) * _player_optimal_ev(
-            total=next_total,
-            soft=next_soft,
-            num_cards=num_cards + 1,
-            shoe=_decrement(shoe=shoe, bucket=bucket),
-            ctx=ctx,
-        )
+    hit_ev = _hit_action_ev(total=total, soft=soft, num_cards=num_cards, shoe=shoe, ctx=ctx)
     best = max(stand_ev, hit_ev)
     ctx.player_memo[key] = best
     return best
@@ -436,12 +426,10 @@ def _dist_to_outcome(*, dist: _DealerDist) -> DealerOutcome:
 
 
 def dealer_outcome_distribution(
-    *, dealer_total: int, dealer_soft: bool, shoe: tuple[int, ...], memo: _DealerMemo | None = None
+    *, dealer_total: int, dealer_soft: bool, shoe: tuple[int, ...]
 ) -> DealerOutcome:
     """Public entry: exact dealer final-total distribution from a known dealer hand."""
-    distribution = _dealer_distribution(
-        total=dealer_total, soft=dealer_soft, shoe=shoe, memo={} if memo is None else memo
-    )
+    distribution = _dealer_distribution(total=dealer_total, soft=dealer_soft, shoe=shoe, memo={})
     return _dist_to_outcome(dist=distribution)
 
 
@@ -546,15 +534,14 @@ def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring 
     EV is expressed in multiples of the base hand bet. Two passes run over H17
     rules and this table's five-card payouts:
 
-    - The exact pass knows the hole card and selects `recommended_action`; its
-      EVs are dropped, so the bot's private edge never leaves this function.
-    - The marginal pass integrates a hypothetical hole out over the remaining
-      shoe (the real hole is never added back) and supplies the
-      `dealer_outcome` distribution and every `action_evs` value. Those numbers
-      depend only on the up-card and the shoe, so they cannot reveal the hole.
+    - Exact pass: knows the hole card and selects `recommended_action`; its EVs
+      are dropped, so the bot's private edge never leaves this function.
+    - Marginal pass: integrates a hypothetical hole out over the remaining shoe
+      (the real hole is never added back) and supplies `dealer_outcome` and
+      every `action_evs` value, so no reported number can reveal the hole.
 
-    `recommended_expected_value` is reported as the recommended action's marginal
-    EV to stay consistent with the other reported numbers.
+    `recommended_expected_value` is looked back up in the marginal table, so no
+    exact, hole-aware EV ever reaches a reported field.
 
     Args:
         hand_cards: The bot's active sub-hand cards.
@@ -573,7 +560,6 @@ def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring 
     shoe_counts = build_shoe_value_counts(shoe=shoe)
     up_card = dealer_cards[1] if len(dealer_cards) >= 2 else dealer_cards[0]
 
-    # Exact pass: the known two-card dealer total drives the recommendation only.
     exact_ctx = _make_context(marginalize=False, dealer_cards=dealer_cards, up_card=up_card)
     exact_evs = _evaluate_actions(
         ctx=exact_ctx,
@@ -588,9 +574,6 @@ def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring 
     )
     recommended = _select_recommended(ordered=exact_ordered)
 
-    # Marginal pass: a hypothetical hole is integrated out over the remaining
-    # shoe. The real hole is never added back, so every exposed number depends
-    # only on the up-card and the shoe and cannot reveal the actual hole.
     marginal_ctx = _make_context(marginalize=True, dealer_cards=dealer_cards, up_card=up_card)
     marginal_evs = _evaluate_actions(
         ctx=marginal_ctx,
@@ -604,15 +587,10 @@ def compute_action_evs(  # noqa: PLR0913 -- one EV-engine entry point mirroring 
         sorted(marginal_evs, key=lambda candidate: candidate.expected_value, reverse=True)
     )
     dealer_dist = _dealer_dist_for(ctx=marginal_ctx, shoe=shoe_counts)
-    # Surface the recommended action's marginal EV. The default stays a marginal
-    # value so an exact (hole-aware) EV can never reach the exposed field.
     marginal_by_action = {item.action: item.expected_value for item in marginal_ordered}
-    shown_recommended_ev = marginal_by_action.get(
-        recommended.action, marginal_ordered[0].expected_value if marginal_ordered else 0.0
-    )
     return ActionEvAnalysis(
         dealer_outcome=_dist_to_outcome(dist=dealer_dist),
         action_evs=marginal_ordered,
         recommended_action=recommended.action,
-        recommended_expected_value=shown_recommended_ev,
+        recommended_expected_value=marginal_by_action[recommended.action],
     )

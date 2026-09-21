@@ -30,9 +30,8 @@ if TYPE_CHECKING:
 class PrepareParticipant(Protocol):
     """Callable used by lobby join buttons to validate a participant.
 
-    Game-specific wager / mode / insufficient-balance copy are bound by the
-    caller (typically via `functools.partial`) so the callable signature
-    stays uniform across lobbies.
+    Game-specific wager / mode / insufficient-balance copy are pre-bound by
+    the caller, so the callable signature stays uniform across lobbies.
     """
 
     async def __call__(self, interaction: Interaction[commands.Bot]) -> GameParticipant | None:
@@ -42,8 +41,8 @@ class PrepareParticipant(Protocol):
 class RefreshParticipants(Protocol):
     """Callable used by lobby start to re-check balances.
 
-    The wager mode is bound by the caller via `functools.partial`; each
-    participant's own wager rides on the participant passed in.
+    The wager mode is pre-bound by the caller; each participant's own wager
+    rides on the participant passed in.
     """
 
     async def __call__(self, participants: list[GameParticipant]) -> RefreshParticipantsResult:
@@ -51,15 +50,7 @@ class RefreshParticipants(Protocol):
 
 
 class BaseGameLobbyView(View):
-    """Join / leave / start scaffold shared by multiplayer game lobbies.
-
-    Subclasses must override:
-      - `_build_lobby_embed(status: str) -> Embed` — used by refresh + timeout
-      - `_start_game(message: Message | None) -> bool` — invoked after Start
-
-    Optional class attribute:
-      - `max_players: ClassVar[int | None]` — None means unlimited
-    """
+    """Join / leave / start scaffold shared by multiplayer game lobbies."""
 
     max_players: ClassVar[int | None] = None
 
@@ -226,7 +217,7 @@ class BaseGameLobbyView(View):
         """Disables all button components on the lobby view."""
         disable_view_components(children=self.children, component_types=(Button,))
 
-    def _build_lobby_embed(self, status: str = "等待玩家加入") -> Embed:
+    def _build_lobby_embed(self, status: str) -> Embed:
         """Builds the lobby embed for a concrete game type."""
         raise NotImplementedError
 
@@ -236,13 +227,7 @@ class BaseGameLobbyView(View):
 
 
 class BaseJackpotLobbyView(BaseGameLobbyView):
-    """Base lobby for games sharing a global jackpot pool.
-
-    On Start, each participant is charged `ante` into the jackpot via
-    one `apply_jackpot_settlement_batch` call before the table begins.
-    Subclasses must declare `game_id` / `ante` and override
-    `_start_game_after_antes`.
-    """
+    """Base lobby for games sharing a global jackpot pool."""
 
     game_id: ClassVar[str]
     ante: ClassVar[int]

@@ -382,7 +382,6 @@ class DragonGateLobbyView(BaseJackpotLobbyView):
             final_balances=final_balances,
         )
         view.message = message
-        view.sync_controls()
         embeds = view.in_progress_embeds()
         await edit_message_with_retry(
             message=message,
@@ -413,14 +412,6 @@ class DragonGateView(View):
         self._jackpot_generation = jackpot_generation
         self._final_balances: dict[int, int] = dict(final_balances)
         self._refunded_to_pool: dict[int, int] = {}
-        self._buttons: dict[str, Button[DragonGateView]] = {
-            "dg:higher": cast('Button["DragonGateView"]', self.choose_higher),
-            "dg:lower": cast('Button["DragonGateView"]', self.choose_lower),
-            "dg:leave": cast('Button["DragonGateView"]', self.leave_table),
-        }
-        self._selects: dict[str, StringSelect[DragonGateView]] = {
-            "dg:bet": cast('StringSelect["DragonGateView"]', self.bet_select)
-        }
         self.sync_controls()
 
     async def interaction_check(self, interaction: Interaction[commands.Bot]) -> bool:
@@ -438,10 +429,8 @@ class DragonGateView(View):
         data = (
             cast("dict[str, Any]", interaction.data) if isinstance(interaction.data, dict) else {}
         )
-        custom_id_value = data.get("custom_id", "")
-        custom_id = custom_id_value if isinstance(custom_id_value, str) else ""
         user_id = interaction.user.id
-        if custom_id == "dg:leave":
+        if data.get("custom_id") == "dg:leave":
             if self.round_state.is_active(user_id=user_id):
                 return True
             notice = "你不在這桌"
@@ -559,8 +548,8 @@ class DragonGateView(View):
             and maximum >= minimum
         )
 
-        higher_button = self._buttons["dg:higher"]
-        lower_button = self._buttons["dg:lower"]
+        higher_button = cast('Button["DragonGateView"]', self.choose_higher)
+        lower_button = cast('Button["DragonGateView"]', self.choose_lower)
         higher_button.disabled = False
         lower_button.disabled = False
 
@@ -573,7 +562,7 @@ class DragonGateView(View):
         set_view_item_visible(view=self, item=higher_button, visible=needs_pair_choice)
         set_view_item_visible(view=self, item=lower_button, visible=needs_pair_choice)
 
-        bet_select = self._selects["dg:bet"]
+        bet_select = cast('StringSelect["DragonGateView"]', self.bet_select)
         bet_select.disabled = False
         if needs_pair_choice:
             bet_select.placeholder = "⚠️ 請先選擇猜大或猜小"
@@ -598,7 +587,7 @@ class DragonGateView(View):
         ]
         set_view_item_visible(view=self, item=bet_select, visible=can_bet)
 
-        leave_button = self._buttons["dg:leave"]
+        leave_button = cast('Button["DragonGateView"]', self.leave_table)
         leave_button.disabled = False
         has_active_participant = bool(self.round_state.active_participants())
         set_view_item_visible(
@@ -795,7 +784,11 @@ class DragonGateView(View):
             self._refunded_to_pool[user_id] = refunded_to_pool
 
     async def _refund_remaining_winners_locked(self) -> None:
-        """Returns positive in-flight deltas to the jackpot before table cleanup."""
+        """Returns seated players' positive in-flight deltas to the jackpot.
+
+        Only an abandoned table claws winnings back; a table that ends because the
+        pool was cleared deliberately lets the winner keep what emptied it.
+        """
         for participant in self.round_state.active_participants():
             delta = self.round_state.player_delta(user_id=participant.user_id)
             if delta <= 0:

@@ -6,7 +6,7 @@ fractional-Kelly betting off the channel shoe's Hi-Lo true count, the hole-aware
 EV engine for the action, and a count-based +EV rule for insurance.
 """
 
-from typing import Final
+from typing import Final, Literal
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
@@ -16,9 +16,9 @@ from discordbot.cogs.games.blackjack import is_soft_total, card_blackjack_value
 from discordbot.cogs.games.blackjack_ev import compute_action_evs
 
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
-# play, measured by offline simulation (neutral-count edge ~ +0.13, sigma^2 ~ 1.34).
-# The edge is large because the EV engine plays the dealer hole card and this
-# table's five-card rules are player-favorable; re-measure if those rules change.
+# play. The edge is large because the EV engine plays the dealer hole card and this
+# table's five-card rules are player-favorable; re-measure offline if those rules
+# change.
 BOT_TABLE_EDGE: Final[float] = 0.13
 BOT_TABLE_VARIANCE: Final[float] = 1.34
 # Half-Kelly keeps drawdown variance down; the hard fraction cap protects the
@@ -26,9 +26,8 @@ BOT_TABLE_VARIANCE: Final[float] = 1.34
 BOT_KELLY_FRACTION: Final[float] = 0.5
 BOT_MAX_BET_FRACTION: Final[float] = 0.10
 # Edge added per +1 Hi-Lo true count when the shoe persists across rounds, used for
-# count-based bet spreading. Measured at ~+0.0175 per true count by offline
-# simulation with a persistent shoe, well above the standard Hi-Lo ~0.005 because
-# this table's five-card rules amplify a ten-rich shoe. Re-measure if the rules
+# count-based bet spreading. Well above the standard Hi-Lo ~0.005 because this
+# table's five-card rules amplify a ten-rich shoe; re-measure offline if those rules
 # change.
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
 _RANK_ORDER: Final[tuple[str, ...]] = (
@@ -162,9 +161,8 @@ class BotPlayerInsuranceContext(BaseModel):
         ...,
         description="Expected value in currency of taking insurance at the current shoe density.",
     )
-    insurance_recommendation: str = Field(
-        ...,
-        description="Deterministic recommendation, 'take' or 'decline', from the shoe density.",
+    insurance_recommendation: Literal["take", "decline"] = Field(
+        ..., description="Deterministic recommendation from the shoe density."
     )
 
 
@@ -279,11 +277,11 @@ def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap
     it is `count_adjusted_edge(...)` so the bot spreads its bet by true count.
 
     `max_fraction` of the bankroll is a hard ceiling, not merely a cap on the Kelly
-    fraction: the owner-chosen table stake floors the bet only up to that ceiling,
-    so a large table stake can no longer drag the bot past its risk limit. The bot
-    still sits at any table, but it never wagers more than `max_fraction` of its
-    balance in one round. A non-positive edge falls back to that capped table floor
-    instead of refusing to play.
+    fraction: the owner-chosen table stake floors the bet only up to that ceiling, so
+    a large table stake cannot drag the bot past its risk limit. The bot still sits at
+    any table, but it never wagers more than `max_fraction` of its balance in one
+    round. A non-positive edge falls back to that capped table floor instead of
+    refusing to play.
 
     Args:
         balance: The bot's spendable balance.
@@ -299,10 +297,6 @@ def kelly_bet(  # noqa: PLR0913 -- exposes the Kelly tuning knobs (fraction, cap
     """
     if balance <= 0:
         return 1
-    # The bankroll fraction is a hard ceiling: the bot never risks more than
-    # `max_fraction` of its balance in one round, even when the owner-chosen table
-    # stake is larger. The stake only floors the bet up to this ceiling so the bot
-    # still sits; it can no longer be dragged past its Kelly risk limit.
     ceiling = max(1, min(round(max_fraction * balance), balance))
     floor = max(1, min(table_minimum, ceiling))
     if edge <= 0 or variance <= 0:
@@ -317,8 +311,7 @@ def count_adjusted_edge(*, true_count: float) -> float:
 
     A persistent shoe lets the bot read a true count before betting; a positive
     count means the remaining shoe is rich in ten-value cards and aces, which lifts
-    the edge. The slope is measured against this table's five-card rules, so the
-    bot meaningfully spreads its wager toward favorable counts.
+    the edge.
     """
     return BOT_TABLE_EDGE + BOT_EDGE_PER_TRUE_COUNT * true_count
 
@@ -406,8 +399,8 @@ def build_bot_action_context(  # noqa: PLR0913 -- context builder mirrors the fu
 ) -> BotPlayerActionContext:
     """Builds the bot's computed decision context without exposing the future shoe order.
 
-    `action_analysis.basic_strategy_action` is the action the bot plays: the EV
-    engine's hole-aware recommendation, or the basic-strategy table when the
+    `basic_strategy_action` is the action the bot plays whatever its name says: the
+    EV engine's hole-aware recommendation, or the basic-strategy table only when the
     engine is unavailable.
     """
     ev_analysis = _safe_compute_action_evs(
@@ -445,10 +438,8 @@ def build_bot_insurance_context(
     """Builds insurance context from the remaining-shoe ten density only.
 
     The dealer hole card is never passed in, so it cannot reach the decision.
-    Insurance pays only on a ten-value hole, so the remaining shoe's
-    ten-value fraction is the fair probability a counter would use. Insurance is
-    +EV only when that fraction clears 1/3; the probability matches the exposed
-    shoe counts exactly, leaving nothing to cross-solve.
+    Insurance pays only on a ten-value hole, so the remaining shoe's ten-value
+    fraction is the fair probability a counter would use.
     """
     ten_count = sum(1 for card in shoe if card.rank in _TEN_VALUE_RANKS)
     total = len(shoe)
@@ -471,9 +462,8 @@ def build_bot_insurance_context(
 def fallback_insurance(*, insurance_context: BotPlayerInsuranceContext | None = None) -> bool:
     """Count-based insurance decision: take only when the unseen deck makes it +EV.
 
-    This is the bot's authoritative insurance choice, not just a failure
-    fallback: insurance is +EV only when the remaining-shoe ten density clears
-    one third, so the deterministic count drives the decision.
+    Despite the name this is the bot's authoritative insurance choice rather than a
+    failure fallback; `build_bot_insurance_context` has already priced the decision.
     """
     if insurance_context is None:
         return False

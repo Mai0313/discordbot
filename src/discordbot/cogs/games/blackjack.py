@@ -1,7 +1,7 @@
 """Pure Blackjack rules and shoe helpers.
 
-Kept side-effect free so the unit tests can drive deterministic deals via a
-fixed `rng`. The cog wires this up with `random.SystemRandom()` for production.
+Kept side-effect free so every deal comes from an injected `rng`: a fixed one
+for deterministic tests, `random.SystemRandom()` in production.
 """
 
 from random import Random
@@ -12,6 +12,8 @@ from pydantic import Field, BaseModel, ConfigDict
 from discordbot.typings.games import Card, SettleOutcome, GameParticipant
 from discordbot.typings.economy import MAX_SINGLE_BET
 
+# A round never rests in `dealer`: `_play_dealer` draws inside one synchronous call, so the
+# phase goes straight from `player_actions` to `settled` and a guard on `dealer` never fires.
 RoundPhase = Literal["insurance", "player_actions", "dealer", "settled"]
 
 
@@ -26,11 +28,9 @@ _CARD_SUITS = ("♠", "♥", "♦", "♣")
 def draw_card(rng: Random) -> Card:
     """Draws one card from a notional infinite shoe (independent rank + suit).
 
-    Production rounds deal from a shuffled multi-deck shoe (`build_shoe`,
-    carried across rounds per channel by `BlackjackShoeStore`), so rank/suit
-    frequency is finite even though duplicate rank/suit labels can appear from
-    different decks. This helper stays as `_draw_one_card`'s empty-shoe
-    fallback, and as the seam tests monkeypatch for deterministic draws.
+    Production rounds deal from the finite shoe `build_shoe` returns instead,
+    so this helper stays only as `_draw_one_card`'s empty-shoe fallback and as
+    the seam tests monkeypatch for deterministic draws.
 
     Args:
         rng: Random source used to choose rank and suit.
@@ -45,8 +45,8 @@ def build_shoe(rng: Random, deck_count: int = SHOE_DECK_COUNT) -> list[Card]:
     """Returns a shuffled multi-deck shoe (default 4 decks = 208 cards).
 
     Cards are popped from index 0 (FIFO); the head of the list is the next
-    card. The shoe is sized to comfortably cover the worst-case 6-player table
-    with splits and double-downs without ever needing to reshuffle mid-round.
+    card. The deck count is sized so a full table taking splits and
+    double-downs never runs the shoe out mid-round.
     """
     shoe: list[Card] = [
         Card(rank=rank, suit=suit)
@@ -208,17 +208,6 @@ class BlackjackHandState(BaseModel):
     Split turns a single hand into two sibling hand states sharing one
     participant; otherwise a participant has exactly one entry in
     `BlackjackPlayerHand.hands`.
-
-    Attributes:
-        cards: Cards currently held in this hand.
-        bet: Active wager for this hand (doubled after Double Down).
-        base_bet: Original wager kept for Surrender refund math.
-        finished: True once this hand no longer needs Hit / Stand actions.
-        doubled: True after a Double Down on this hand.
-        surrendered: True after a Surrender on this hand.
-        is_split_hand: True when this hand came out of a Split.
-        is_split_aces: True when both split halves came from an Ace pair.
-        actions_taken: Hit / Double / Surrender counter used by action guards.
     """
 
     cards: list[Card] = Field(
@@ -260,14 +249,6 @@ class BlackjackPlayerHand(BaseModel):
     Holds the original `GameParticipant` plus one or more
     `BlackjackHandState` rows. Split adds a second entry; everything else
     keeps a single hand entry.
-
-    Attributes:
-        participant: Discord player and wager metadata.
-        hands: All active sub-hands in display order.
-        insurance_bet: Insurance side bet amount, `0` when none was taken.
-        insurance_resolved: True once the player has made an insurance choice
-            (yes or no). It flips while the round is still in the insurance
-            phase; the phase closes only once every player is resolved.
     """
 
     participant: GameParticipant = Field(..., description="Discord player and wager metadata.")
@@ -278,7 +259,11 @@ class BlackjackPlayerHand(BaseModel):
         default=0, description="Insurance side bet amount, 0 when none was taken."
     )
     insurance_resolved: bool = Field(
-        default=False, description="True once the player has made an insurance choice."
+        default=False,
+        description=(
+            "True once the player has taken or declined insurance; the phase closes"
+            " only once every player is resolved."
+        ),
     )
 
     @property
@@ -421,7 +406,7 @@ def _settle_regular_hand(
         outcome: SettleOutcome = "push"
         delta = 0
     elif player_bj:
-        outcome, delta = "blackjack", int(bet * _BLACKJACK_PAYOUT_NUM // _BLACKJACK_PAYOUT_DEN)
+        outcome, delta = "blackjack", bet * _BLACKJACK_PAYOUT_NUM // _BLACKJACK_PAYOUT_DEN
     elif dealer_bj:
         outcome, delta = "lose", -bet
     elif hand.is_bust():
@@ -481,24 +466,6 @@ class BlackjackRound(BaseModel):
     order, advancing through each owned sub-hand before moving on to the
     next player; natural Blackjacks, surrendered, doubled, and busted hands
     are skipped automatically.
-
-    Attributes:
-        rng: Random source used for card draws.
-        players: Per-player containers (each holds one or more sub-hands).
-        dealer: Dealer cards shared by the table.
-        shoe: Remaining cards in the FIFO multi-deck shoe.
-        current_player_index: Index of the player whose turn is active.
-        current_hand_index: Index of the active sub-hand within that player.
-        dealer_played: True once the dealer has drawn for all standing
-            players.
-        finished: True once no more player actions remain.
-        auto_play_dealer: True when the pure rules should draw dealer cards
-            synchronously after player actions finish.
-        phase: Lifecycle phase of the round (insurance / player_actions /
-            dealer / settled).
-        insurance_offered: True only when the dealer up-card is an Ace.
-        peeked_blackjack: True once the dealer's hole-card peek revealed a
-            natural Blackjack.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -572,10 +539,9 @@ class BlackjackRound(BaseModel):
         """Pops the next card from the round's shoe, falling back when empty.
 
         Cards come from the FIFO shoe, so draws are capped by the finite
-        multi-deck shoe instead of independent replacement. The 4-deck shoe
-        holds 208 cards which is more than enough for a 6-seat table; tests
-        that want deterministic draws clear `self.shoe` to force the
-        `draw_card` fallback they monkeypatch.
+        multi-deck shoe instead of independent replacement. Tests that want
+        deterministic draws clear `self.shoe` to force the `draw_card`
+        fallback they monkeypatch.
         """
         if self.shoe:
             return self.shoe.pop(0)
@@ -602,22 +568,8 @@ class BlackjackRound(BaseModel):
             self.insurance_offered = True
             return
 
-        if up is not None and up.rank in ("J", "Q", "K", "10") and is_blackjack(cards=self.dealer):
-            self.peeked_blackjack = True
-            for player in self.players:
-                for hand in player.hands:
-                    hand.finished = True
-            self.phase = "settled"
-            self.finished = True
-            self.dealer_played = True
-            return
-
-        self.phase = "player_actions"
-        for player in self.players:
-            for hand in player.hands:
-                if hand.is_blackjack():
-                    hand.finished = True
-        self._advance_or_finish()
+        ten_value_up = up is not None and up.rank in ("J", "Q", "K", "10")
+        self._resolve_peek(dealer_has_blackjack=ten_value_up and is_blackjack(cards=self.dealer))
 
     def take_insurance(self, user_id: int, amount: int) -> None:
         """Records an insurance side bet for the player.
@@ -670,8 +622,8 @@ class BlackjackRound(BaseModel):
     def decline_insurance_for_all_unresolved(self) -> None:
         """Marks every undecided player as declining insurance.
 
-        Used by view timeouts and forced-finish paths so the round can leave
-        the insurance phase even when one of the players never clicked.
+        Lets the round leave the insurance phase even when a player never
+        decides.
         """
         if self.phase != "insurance":
             return
@@ -830,8 +782,8 @@ class BlackjackRound(BaseModel):
     def stand_all_remaining(self) -> None:
         """Declines undecided insurance, stands every unresolved hand, finishes.
 
-        The forced-finish entry point for view timeouts and settlement, so it
-        must leave the round settled from any phase.
+        The forced-finish entry point, so it must leave the round settled from
+        any phase.
         """
         if self.phase == "insurance":
             self.decline_insurance_for_all_unresolved()
@@ -885,15 +837,26 @@ class BlackjackRound(BaseModel):
         """Closes the insurance phase, peeks the hole card, and advances.
 
         Runs only once every player has either taken or declined insurance.
-        A natural Blackjack peek short-circuits the round to `settled`; a
-        non-peek pushes the round into `player_actions` and auto-finishes
-        any player who was already dealt a natural Blackjack.
         """
         if self.phase != "insurance":
             return
         if not all(player.insurance_resolved for player in self.players):
             return
-        if is_blackjack(cards=self.dealer):
+        self._resolve_peek(dealer_has_blackjack=is_blackjack(cards=self.dealer))
+
+    def _resolve_peek(self, dealer_has_blackjack: bool) -> None:
+        """Applies the dealer's hole-card peek result and moves the round on.
+
+        A peeked natural Blackjack finishes every hand and short-circuits the
+        round to `settled` with no player actions; otherwise the round enters
+        `player_actions` with any player already dealt a natural Blackjack
+        auto-finished.
+
+        Args:
+            dealer_has_blackjack: Whether the peek revealed a natural
+                Blackjack.
+        """
+        if dealer_has_blackjack:
             self.peeked_blackjack = True
             for player in self.players:
                 for hand in player.hands:
@@ -926,7 +889,6 @@ class BlackjackRound(BaseModel):
         if self.finished:
             return
         if self._needs_dealer_play() and self.auto_play_dealer:
-            self.phase = "dealer"
             self._play_dealer()
         self.finished = True
         self.phase = "settled"
