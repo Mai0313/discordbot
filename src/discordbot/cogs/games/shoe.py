@@ -16,10 +16,11 @@ from discordbot.cogs.games.blackjack import build_shoe
 from discordbot.cogs.games.blackjack_ev import compute_true_count
 
 # Reshuffle a round before it starts once fewer than this many cards remain. It must
-# exceed the worst-case cards a single round can deal (every seat splitting into five-card
-# 過五關 hands plus a deep H17 dealer), or the shoe empties mid-round into `draw_card`'s
-# infinite fallback and the count is corrupted. It cannot simply be raised for headroom
-# either: what is left under it is the penetration the count reads.
+# exceed the worst-case cards a single round can deal — 6 seats x 2 split hands x 5 cards
+# (過五關 auto-stands there) plus a deep H17 dealer, which comes in under 96 — or the shoe
+# empties mid-round into `draw_card`'s infinite fallback and the count is corrupted. It
+# cannot simply be raised for headroom either: what is left under it is the penetration
+# the count reads, and 96 of the 4-deck shoe's 208 cards leaves ~54%, deep enough to count.
 RESHUFFLE_THRESHOLD_CARDS: Final[int] = 96
 
 
