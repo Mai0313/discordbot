@@ -35,6 +35,7 @@ from google.genai.interactions import (
     AllowlistParam,
     EnvironmentParam,
     AllowlistEntryParam,
+    AntigravityAgentConfigParam,
 )
 
 if TYPE_CHECKING:
@@ -52,6 +53,16 @@ RESEARCH_TOOLS = [
     URLContext(type="url_context"),
     GoogleSearch(search_types=["web_search"], type="google_search"),
 ]
+
+# The agent family's own config block, carried with nothing but its discriminator: the two knobs
+# it exists to hold are `model` (which model does the agent's reasoning, default `gemini-3.8-flash`)
+# and `max_total_tokens` (a best-effort budget that ends the run `incomplete`), and this deployment
+# wants the defaults for both. It is the `...Param` TypedDict rather than the `AntigravityAgentConfig`
+# model because that union is what `interactions.create` declares. Do not read the config back off the
+# interaction to check it took: a create carrying this one answers 200 and still reports
+# `agent_config=None` on a later get (measured 2026-09-21), as does one carrying a config for a
+# different agent family entirely.
+RESEARCH_AGENT_CONFIG = AntigravityAgentConfigParam(type="antigravity")
 
 # The poll-fallback interval + the re-attach backoff; research is minutes-long so coarse is plenty.
 RESEARCH_POLL_INTERVAL_SECONDS = 15.0
@@ -406,6 +417,7 @@ async def stream_antigravity(  # noqa: PLR0913 -- the streaming create inputs pl
             input=brief,
             system_instruction=system_instruction,
             environment=environment,
+            agent_config=RESEARCH_AGENT_CONFIG,
             tools=RESEARCH_TOOLS,
             background=True,
             store=True,
