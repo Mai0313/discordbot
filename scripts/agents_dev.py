@@ -9,10 +9,13 @@ import orjson
 from rich.console import Console
 from agents.result import RunResult
 from google.genai.interactions import (
+    URLContext,
+    GoogleSearch,
     AllowlistParam,
     EnvironmentParam,
     AllowlistEntryParam,
     InteractionSSEEvent,
+    AntigravityAgentConfigParam,
 )
 from agents.models.openai_responses import OpenAIResponsesModel
 
@@ -70,8 +73,14 @@ def gen_reply_gemini(user_prompt: str) -> None:
             type="remote", network=AllowlistParam(allowlist=[AllowlistEntryParam(domain="*")])
         ),
         stream=True,
-        tools=[{"type": "google_search"}, {"type": "url_context"}],
-        agent_config={"type": "dynamic"},
+        tools=[
+            URLContext(type="url_context"),
+            GoogleSearch(search_types=["web_search"], type="google_search"),
+        ],
+        # The config block belongs to the agent being called, so `antigravity` rather than the
+        # `dynamic` this used to send; nothing rejects a mismatched one, which is why it went
+        # unnoticed. `model` and `max_total_tokens` are the knobs to reach for from here.
+        agent_config=AntigravityAgentConfigParam(type="antigravity"),
     )
     # The SDK's `AgentOption` literal list lags the live API, so an agent it has not been
     # regenerated for falls to the overload returning `Interaction | Stream`, exactly as the
