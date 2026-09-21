@@ -123,6 +123,92 @@ def test_to_interactions_input_maps_media_parts_by_kind() -> None:
     assert parts[5] == {"type": "image", "uri": "https://x/pic.jpg"}
 
 
+def test_to_interactions_input_sends_inlined_bytes_as_data_not_as_a_uri() -> None:
+    """With the Files API off every attachment arrives inlined, and both halves used to break.
+
+    `file_api_enabled=false` selects `InlineRenderer` for every provider, Gemini included, and
+    it renders a base64 `data:` URI wherever the Files API path renders an https one. The two
+    settings are independent — `use_interactions` never consults `file_api_enabled` — so a
+    YouTube link plus an attachment reaches here inlined.
+
+    The image went out in `uri`, which the SDK documents as a URI for the server to fetch, and
+    the PDF was read from neither of the two fields it can arrive in, so it was dropped without
+    a record anywhere (#661).
+    """
+    png = "data:image/png;base64,iVBORw0KGgo="
+    pdf = "data:application/pdf;base64,JVBERi0xLjQK"
+    answer_input = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_image", "image_url": png},
+                {"type": "input_file", "filename": "paper.pdf", "file_data": pdf},
+            ],
+        }
+    ]
+
+    steps = step_dicts(
+        steps=to_interactions_input(
+            answer_input=cast("ResponseInputParam", answer_input),
+            youtube_url="https://youtu.be/abcdefghijk",
+        )
+    )
+
+    parts = steps[-1]["content"]
+    assert parts[0] == {"type": "image", "data": "iVBORw0KGgo=", "mime_type": "image/png"}
+    assert parts[1] == {"type": "document", "data": "JVBERi0xLjQK", "mime_type": "application/pdf"}
+    # The YouTube video itself is still a real URI and must not be inlined.
+    assert parts[-1] == {"type": "video", "uri": "https://youtu.be/abcdefghijk"}
+
+
+def _inlined_image_parts(reference: str) -> list[dict[str, object]]:
+    """The content of the one user step for a turn carrying a single inlined image."""
+    answer_input = [{"role": "user", "content": [{"type": "input_image", "image_url": reference}]}]
+    steps = step_dicts(
+        steps=to_interactions_input(
+            answer_input=cast("ResponseInputParam", answer_input),
+            youtube_url="https://youtu.be/abcdefghijk",
+        )
+    )
+    return steps[-1]["content"]
+
+
+def test_to_interactions_input_strips_a_mime_parameter_rather_than_losing_the_image() -> None:
+    """The image path hands over whatever MIME Discord reported, parameters and all.
+
+    `attachment_mime` strips them for the file path and `shrink_image_bytes` returns the raw
+    `content_type` unchanged for a GIF, an animated image, a within-bounds JPEG, or any PIL
+    failure. There are real bytes here, so the parameter is dropped and the image is carried.
+    """
+    parts = _inlined_image_parts(reference="data:image/gif;charset=binary;base64,R0lGOD==")
+
+    assert parts[0] == {"type": "image", "data": "R0lGOD==", "mime_type": "image/gif"}
+
+
+@pytest.mark.parametrize(
+    ("reference", "why"),
+    [
+        ("data:application/pdf;base64,", "an empty attachment, so no payload at all"),
+        ("data:image/png,notbase64", "a data URI that is not base64"),
+        ("data:;base64,R0lGOD==", "no MIME to declare"),
+    ],
+)
+def test_to_interactions_input_never_demotes_an_unusable_data_uri_to_a_uri(
+    reference: str, why: str
+) -> None:
+    """An inlined reference with nothing to send is dropped, never put in `uri`.
+
+    Recognising one exact shape and falling through on everything else puts the odd one back in
+    the field the server fetches from, which is #661 again through a narrower door — and worse
+    than before, since the empty case used to be dropped.
+    """
+    parts = _inlined_image_parts(reference=reference)
+
+    assert all(part.get("uri") != reference for part in parts), f"{why} was sent as a uri"
+    # Only the YouTube video is left, so the part was dropped rather than mangled.
+    assert parts == [{"type": "video", "uri": "https://youtu.be/abcdefghijk"}]
+
+
 def test_to_interactions_input_skips_empty_and_handles_no_user_step() -> None:
     """An answer input with no messages still yields one user step carrying just the video."""
     steps = step_dicts(
