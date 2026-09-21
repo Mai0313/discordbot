@@ -197,14 +197,6 @@ class DouyinMetadata(BaseModel):
     it as a conversation would mean a `chain` of exactly one and a `reply_branches` nothing can
     ever fill. A field no platform populates is worse than an absent one — the reason
     `share_count` is not in the shared nine either.
-
-    Attributes:
-        aweme_id: Douyin's numeric post id.
-        title: Post caption, used as the display title.
-        author_name: Author's display nickname.
-        is_photo: True for a photo post, False for a video.
-        video_id: Douyin's internal video id, empty for a photo post.
-        image_urls: Watermark-free image URLs, empty for a video.
     """
 
     aweme_id: str = Field(..., description="Douyin's numeric post id.")
@@ -220,14 +212,7 @@ class DouyinMetadata(BaseModel):
 
 
 class DouyinDownload(TemporaryDownload):
-    """Files downloaded for one Douyin post.
-
-    Attributes:
-        title: Post caption, used as the display title.
-        is_photo: True when the files are images rather than a single video.
-        filenames: Local paths of the downloaded files.
-        total_images: Image count in the source post, before any cap was applied.
-    """
+    """Files downloaded for one Douyin post."""
 
     title: str = Field(default="", description="Post caption, used as the display title.")
     is_photo: bool = Field(
@@ -281,21 +266,16 @@ class _DouyinPayload(BaseModel):
 
 
 class _DouyinPlayAddr(_DouyinPayload):
-    """A video's play handle.
+    """A video's play handle."""
 
-    Attributes:
-        uri: Douyin's internal video id, which `_play_url` turns into a clean play URL.
-    """
-
-    uri: str = Field(default="", description="Douyin's internal video id.")
+    uri: str = Field(
+        default="",
+        description="Douyin's internal video id, which `_play_url` turns into a clean play URL.",
+    )
 
 
 class _DouyinVideo(_DouyinPayload):
-    """A post's video object, which a photo post also carries for its slideshow render.
-
-    Attributes:
-        play_addr: The play handle naming the clip.
-    """
+    """A post's video object, which a photo post also carries for its slideshow render."""
 
     play_addr: _DouyinPlayAddr = Field(
         default_factory=_DouyinPlayAddr, description="The play handle naming the clip."
@@ -303,21 +283,13 @@ class _DouyinVideo(_DouyinPayload):
 
 
 class _DouyinAuthor(_DouyinPayload):
-    """The posting account.
-
-    Attributes:
-        nickname: Author's display nickname.
-    """
+    """The posting account."""
 
     nickname: str = Field(default="", description="Author's display nickname.")
 
 
 class _DouyinImage(_DouyinPayload):
-    """One image of a photo post.
-
-    Attributes:
-        url_list: Watermark-free URLs for this image, JPEG last.
-    """
+    """One image of a photo post."""
 
     url_list: list[str] = Field(
         default_factory=list, description="Watermark-free URLs for this image, JPEG last."
@@ -325,15 +297,7 @@ class _DouyinImage(_DouyinPayload):
 
 
 class _DouyinItem(_DouyinPayload):
-    """One post, as `item_list[0]` of the share payload.
-
-    Attributes:
-        desc: Post caption.
-        aweme_type: Douyin's post kind; see `_PHOTO_AWEME_TYPES`.
-        author: The posting account.
-        video: The post's video object.
-        images: The post's images, empty for a video.
-    """
+    """One post, as `item_list[0]` of the share payload."""
 
     desc: str = Field(default="", description="Post caption.")
     aweme_type: int | None = Field(
@@ -355,11 +319,6 @@ class _DouyinFilterEntry(_DouyinPayload):
 
     The three fields are alternative spellings of the same reason and are read in order;
     which one is populated varies by why the post was filtered.
-
-    Attributes:
-        detail_msg: The fullest wording of the refusal.
-        notice: The short wording of the refusal.
-        filter_reason: The machine-ish reason code.
     """
 
     detail_msg: str = Field(default="", description="The fullest wording of the refusal.")
@@ -372,10 +331,6 @@ class _DouyinVideoInfo(_DouyinPayload):
 
     Both lists are empty on a post Douyin serves normally but has nothing to say about,
     which is why `_first_item` reads them in order rather than branching on either alone.
-
-    Attributes:
-        item_list: The requested post, as a one-entry list.
-        filter_list: Why the post was withheld, when `item_list` is empty.
     """
 
     item_list: list[_DouyinItem] = Field(
@@ -493,13 +448,6 @@ class DouyinDownloader(PlatformDownloader):
        links are resolved by reading `Location` only (never following the redirect into
        `share/video/`, which would spend quota on a path this class never reads) and why
        payloads are cached.
-
-    Attributes:
-        output_folder: Directory where downloaded files are written.
-        timeout: Timeout in seconds for a metadata request.
-        download_timeout: Per-read timeout in seconds for a media download.
-        max_retries: Attempts made per media download before giving up.
-        max_redirects: Maximum redirect hops followed when resolving a short link.
     """
 
     output_folder: str = Field(..., description="Directory where downloaded files are written.")

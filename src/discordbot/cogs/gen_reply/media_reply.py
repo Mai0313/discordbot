@@ -62,21 +62,12 @@ WINDOW_EXPIRED_NOTICE = (
 
 
 class MediaReplyRoutes(BaseModel):
-    """Runs the IMAGE and VIDEO routes for one message.
-
-    Attributes:
-        config: Runtime LLM config, read for the two prompt-refine kill-switches.
-        media_delivery: Decides whether the generated media attaches or is hosted as a URL.
-        toolkit: The generators, clients and model catalog this route renders through.
-        message: The message that asked for the media.
-        surface: Where the delivered media goes.
-        answer: The streamer used for the best-effort persona reply once media is delivered.
-    """
+    """Runs the IMAGE and VIDEO routes for one message."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     config: SkipValidation[LLMConfig] = Field(
-        ..., description="Runtime LLM config, read for the prompt-refine kill-switches."
+        ..., description="Runtime LLM config, read for the two prompt-refine kill-switches."
     )
     media_delivery: MediaDeliveryPlanner = Field(
         ..., description="Decides whether generated media attaches or is hosted as a URL."
@@ -89,7 +80,10 @@ class MediaReplyRoutes(BaseModel):
     )
     surface: TurnSurface = Field(..., description="Where the delivered media goes.")
     answer: AnswerTurn = Field(
-        ..., description="Streams the best-effort persona reply about the delivered media."
+        ...,
+        description=(
+            "Streams the best-effort persona reply about the media once it has been delivered."
+        ),
     )
 
     async def _deliver(self, *, data: bytes, filename: str) -> Message | None:

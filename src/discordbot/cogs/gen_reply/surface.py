@@ -69,23 +69,24 @@ def _payload(
 
 
 class TurnSurface(BaseModel):
-    """One turn's Discord surface: how it answers, what it can read, and where it is.
-
-    Attributes:
-        message: The turn's source message, real on the gateway path and synthesized on `/ask`.
-        interaction: The `/ask` invocation, or None when the turn came off the gateway.
-        guild_id: The guild this conversation is happening in, even where `message.guild` is None.
-        is_direct_message: Whether this is a 1:1 DM between the author and the bot.
-    """
+    """One turn's Discord surface: how it answers, what it can read, and where it is."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    message: SkipValidation[Message] = Field(..., description="The turn's source message.")
+    message: SkipValidation[Message] = Field(
+        ...,
+        description=(
+            "The turn's source message, real on the gateway path and synthesized on `/ask`."
+        ),
+    )
     interaction: SkipValidation[Interaction[commands.Bot] | None] = Field(
         default=None, description="The `/ask` invocation, or None for a gateway message."
     )
     guild_id: int | None = Field(
-        default=None, description="The guild this conversation is happening in."
+        default=None,
+        description=(
+            "The guild this conversation is happening in, even where `message.guild` is None."
+        ),
     )
     is_direct_message: bool = Field(
         default=False, description="Whether this is a 1:1 DM between the author and the bot."

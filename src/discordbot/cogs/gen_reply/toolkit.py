@@ -36,15 +36,7 @@ from discordbot.cogs.gen_reply.attachment.select import build_attachment_handler
 
 
 class ReplyToolkit(BaseModel):
-    """The clients, generators and caches every reply is composed with.
-
-    Attributes:
-        bot: The Discord bot instance, passed through to the input builder.
-        openai_client: The shared LiteLLM-proxy client.
-        gemini_api_key: The Google AI Studio key for the direct-to-Google paths, or empty
-            when the deployment configured none. Empty leaves those paths unavailable, and
-            the Gemini-only features gate themselves off as they already do.
-    """
+    """The clients, generators and caches every reply is composed with."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -55,7 +47,12 @@ class ReplyToolkit(BaseModel):
         ..., description="Shared LiteLLM-proxy client."
     )
     gemini_api_key: str = Field(
-        ..., description="Google AI Studio key for direct-to-Google paths; empty when unset."
+        ...,
+        description=(
+            "Google AI Studio key for the direct-to-Google paths, or empty when the deployment "
+            "configured none. Empty leaves those paths unavailable, and the Gemini-only features "
+            "gate themselves off as they already do."
+        ),
     )
 
     @cached_property

@@ -37,12 +37,7 @@ class DownloadStoppedError(Exception):
 
 
 class DownloadResult(TemporaryDownload):
-    """Represents a downloaded video file.
-
-    Attributes:
-        title: Video title reported by yt-dlp.
-        filename: Local path of the downloaded file.
-    """
+    """Represents a downloaded video file."""
 
     title: str = Field(..., description="Video title reported by yt-dlp.")
     filename: Path = Field(..., description="Local path of the downloaded file.")
@@ -53,19 +48,7 @@ class DownloadResult(TemporaryDownload):
 
 
 class VideoMetadata(BaseModel):
-    """Metadata for a video, read by yt-dlp without downloading any media.
-
-    Attributes:
-        video_id: Site-native video id (e.g. a Bilibili BV id).
-        title: Video title reported by yt-dlp.
-        uploader: Uploader / channel display name.
-        description: Full video description; callers trim it to their own budget.
-        duration_seconds: Duration in seconds; 0.0 when the site does not report one.
-        webpage_url: Canonical page URL after redirects, so a short link resolves.
-        is_live: Whether the URL points at a live stream rather than a finished video.
-        from_playlist: Whether the fields describe the first entry of a playlist-shaped
-            page (a space, a collection, a season) rather than the page itself.
-    """
+    """Metadata for a video, read by yt-dlp without downloading any media."""
 
     video_id: str = Field(default="", description="Site-native video id (e.g. a Bilibili BV id).")
     title: str = Field(default="", description="Video title reported by yt-dlp.")
@@ -79,21 +62,20 @@ class VideoMetadata(BaseModel):
     webpage_url: str = Field(
         default="", description="Canonical page URL after redirects, so a short link resolves."
     )
-    is_live: bool = Field(default=False, description="Whether the URL points at a live stream.")
+    is_live: bool = Field(
+        default=False,
+        description="Whether the URL points at a live stream rather than a finished video.",
+    )
     from_playlist: bool = Field(
         default=False,
-        description="Whether the fields describe a playlist-shaped page's first entry.",
+        description="Whether the fields describe the first entry of a playlist-shaped page (a space, a collection, a season) rather than the page itself.",
     )
 
 
 class VideoDownloader(PlatformDownloader):
-    """Downloads videos with yt-dlp and local project defaults.
+    """Downloads videos with yt-dlp and local project defaults."""
 
-    Attributes:
-        output_folder: Directory where downloaded files are written.
-    """
-
-    output_folder: str = Field(..., description="Download folder")
+    output_folder: str = Field(..., description="Directory where downloaded files are written.")
 
     # Static map of quality presets to yt-dlp format strings; prefers separate
     # video+audio with safe fallbacks to muxed or video-only streams.

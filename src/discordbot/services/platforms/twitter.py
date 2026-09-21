@@ -140,11 +140,7 @@ def _time_of(*, value: str) -> datetime | None:
 
 
 class TwitterURL(BaseModel):
-    """Parses and normalises a Twitter post URL.
-
-    Attributes:
-        raw_url: Original URL provided by the caller.
-    """
+    """Parses and normalises a Twitter post URL."""
 
     raw_url: str = Field(..., description="Original Twitter URL provided by the caller")
 
@@ -187,17 +183,11 @@ class TwitterOutput(PlatformOutput):
     And there is deliberately no `retweet_count`. The endpoint publishes one for an embedded parent
     or quoted post and never for the post actually asked for, and a field a platform cannot fill is
     worse than an absent one — the same rule that keeps `share_count` off Instagram.
-
-    Attributes:
-        video_poster_urls: Still frames for any video, in media order; what the card shows, since
-            nothing here downloads the clip.
-        quoted: The post this one quotes, when it quotes a readable one.
-        is_truncated: Whether the body is a fragment Twitter cut and will not serve in full. Only
-            the post asked for can report it; see the module docstring.
     """
 
     video_poster_urls: list[str] = Field(
-        default_factory=list, description="Still frames for any video, in media order"
+        default_factory=list,
+        description="Still frames for any video, in media order; what the card shows, since nothing here downloads the clip",
     )
     # One level only, and never populated on a quoted post itself: 46 sampled quotes carried no
     # nested quote. `_build_output` bounds it anyway rather than trusting the sample.
@@ -207,7 +197,7 @@ class TwitterOutput(PlatformOutput):
     )
     is_truncated: bool = Field(
         default=False,
-        description="Whether Twitter cut the body and will not serve the rest",
+        description="Whether Twitter cut the body and will not serve the rest; only the post asked for can report it, see the module docstring",
         examples=[False],
     )
 
@@ -487,9 +477,6 @@ class TwitterDownloader(PlatformDownloader):
     Holds no state and writes nothing to disk, so one instance serves every caller — the Facebook
     and Instagram shape. There is deliberately no `parse`: nothing here downloads media. The card
     hands Discord the image and poster URLs to fetch itself, and the clip rides as a link.
-
-    Attributes:
-        timeout: Per-request bound in seconds.
     """
 
     timeout: float = Field(

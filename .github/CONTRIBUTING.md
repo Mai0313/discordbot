@@ -119,7 +119,7 @@ Four things therefore never appear in a comment or docstring:
 
 **None of this deletes the only copy of a reason.** Where the shortest true form of a reason is a piece of history, a measured figure or a name from another file, keep it and compress it. A warning, a "do not", and a "re-measure before changing this" are reasons rather than narration: the comment saying a column cannot be dropped on a deployed database is the only thing stopping someone dropping it.
 
-**A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first.
+**A docstring is the contract**: what it does, what it needs, what it returns, what can go wrong. A `BaseModel` whose fields all carry `Field(description=...)` does not also get an `Attributes:` block — but fold anything the block says that the descriptions do not into the descriptions first. `tests/test_field_descriptions.py` enforces that, because the rule had already decayed once: 77 fields' two copies had drifted apart before anything scanned for them.
 
 `CLAUDE.md` is an index. When a fact is written in the code, `CLAUDE.md` carries the pointer to it rather than a second copy.
 

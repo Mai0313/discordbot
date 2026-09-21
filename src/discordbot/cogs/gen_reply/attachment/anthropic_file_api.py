@@ -58,11 +58,7 @@ ANTHROPIC_FILE_CACHE_TTL = timedelta(hours=12)
 
 
 class AnthropicFileUploader(AttachmentRenderer):
-    """Uploads attachments to the Anthropic Files API and references them by file id.
-
-    Attributes:
-        config: Runtime LLM config supplying the Anthropic Files API key for the upload client.
-    """
+    """Uploads attachments to the Anthropic Files API and references them by file id."""
 
     config: LLMConfig = Field(
         default_factory=LLMConfig,

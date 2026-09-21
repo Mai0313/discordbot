@@ -24,13 +24,7 @@ from discordbot.cogs.gen_reply.speculation import await_gated
 
 
 class RouteClassifier(BaseModel):
-    """Runs the route and effort triage calls for one message.
-
-    Attributes:
-        client: The shared LiteLLM-proxy client both calls dispatch on.
-        toolkit: The reply toolkit, which owns the triage model tier.
-        message: The message being classified.
-    """
+    """Runs the route and effort triage calls for one message."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -38,7 +32,7 @@ class RouteClassifier(BaseModel):
         ..., description="Shared LiteLLM-proxy client both triage calls dispatch on."
     )
     toolkit: ReplyToolkit = Field(
-        ..., description="The reply toolkit's clients and model catalog."
+        ..., description="The reply toolkit's model catalog, which owns the triage model tier."
     )
     message: SkipValidation[Message] = Field(..., description="The message being classified.")
 
