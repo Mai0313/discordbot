@@ -179,8 +179,9 @@ def tone_evidence_from_raw(raw_text: str) -> str:
     The kind is what tells a preference the user stated apart from one inferred off their
     own behaviour, and the note is a merge of many batches, so without it every bullet reads
     alike and the note converges on whichever reading has the most bullets. That is not
-    hypothetical: one stated preference has lost to a run of inferred ones here and the note
-    came out reversed.
+    hypothetical: in the live store one stated preference lost to five inferred from the
+    user's own trash-talk across a guild, and the note came out telling the bot to trash-talk
+    them back.
     """
     lines: list[str] = []
     for _, block in _iter_observations(text=raw_text):

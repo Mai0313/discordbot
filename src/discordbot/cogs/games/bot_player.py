@@ -16,9 +16,9 @@ from discordbot.cogs.games.blackjack import is_soft_total, card_blackjack_value
 from discordbot.cogs.games.blackjack_ev import compute_action_evs
 
 # Per-round edge (at a neutral count) and variance of the bot's hole-aware optimal
-# play. The edge is large because the EV engine plays the dealer hole card and this
-# table's five-card rules are player-favorable; re-measure offline if those rules
-# change.
+# play, both measured by offline simulation. The edge is large because the EV engine
+# plays the dealer hole card and this table's five-card rules are player-favorable;
+# re-measure offline if those rules change.
 BOT_TABLE_EDGE: Final[float] = 0.13
 BOT_TABLE_VARIANCE: Final[float] = 1.34
 # Half-Kelly keeps drawdown variance down; the hard fraction cap protects the
@@ -26,9 +26,9 @@ BOT_TABLE_VARIANCE: Final[float] = 1.34
 BOT_KELLY_FRACTION: Final[float] = 0.5
 BOT_MAX_BET_FRACTION: Final[float] = 0.10
 # Edge added per +1 Hi-Lo true count when the shoe persists across rounds, used for
-# count-based bet spreading. Well above the standard Hi-Lo ~0.005 because this
-# table's five-card rules amplify a ten-rich shoe; re-measure offline if those rules
-# change.
+# count-based bet spreading. Measured by offline simulation against a persistent shoe,
+# and well above the standard Hi-Lo ~0.005 because this table's five-card rules amplify
+# a ten-rich shoe; re-measure offline if those rules change.
 BOT_EDGE_PER_TRUE_COUNT: Final[float] = 0.0175
 _RANK_ORDER: Final[tuple[str, ...]] = (
     "A",
