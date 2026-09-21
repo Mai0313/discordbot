@@ -11,7 +11,7 @@ every fake family across the test modules funnels through the same adapter.
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
-from nextcord import Message, NotFound, Forbidden, Interaction
+from nextcord import Message, NotFound, Forbidden, Interaction, HTTPException
 from nextcord.ext import commands
 
 from discordbot.utils.media_delivery import MediaHostingConfig
@@ -121,6 +121,16 @@ def make_forbidden(message: str = "denied") -> Forbidden:
     """
     response = cast("ClientResponse", SimpleNamespace(status=403, reason="Forbidden"))
     return Forbidden(response=response, message=message)
+
+
+def make_server_error(message: str = "upstream") -> HTTPException:
+    """Builds the plain ``HTTPException`` nextcord raises when Discord itself is failing.
+
+    Same shape again. Exists so a test can tell a refusal the bot can never argue with apart
+    from a transport failure that is worth a traceback.
+    """
+    response = cast("ClientResponse", SimpleNamespace(status=503, reason="Service Unavailable"))
+    return HTTPException(response=response, message=message)
 
 
 def make_media_hosting_config(
