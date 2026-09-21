@@ -29,6 +29,8 @@ from discordbot.cogs.games.blackjack import (
     BlackjackRound,
     BlackjackHandState,
     BlackjackPlayerHand,
+    InsuranceBetTooSmallError,
+    InsuranceBeyondBalanceError,
     can_split,
     can_double,
     hand_value,
@@ -175,6 +177,22 @@ def _insurance_phase_status(player: BlackjackPlayerHand) -> str:
     if player.insurance_resolved:
         return "已拒絕保險"
     return "保險待決定"
+
+
+def _insurance_refusal_notice(error: ValueError) -> str:
+    """Returns what to tell a seat whose insurance the round would not take.
+
+    Read off the exception's class, never its message: the message is English, the class is what
+    the rules layer decided, and only one of these three is worth acting on. Sending the seat to
+    refresh a table that will never offer it insurance is the worst of the three to get wrong.
+    """
+    if isinstance(error, InsuranceBetTooSmallError):
+        return "你的下注太小，一半不到 1 點，這局沒有保險可買"
+    if isinstance(error, InsuranceBeyondBalanceError):
+        return "餘額不足，不能買保險"
+    # `InsuranceClosedError` plus anything the rules raise that is not about this seat's money: the
+    # table has moved and the newest one is the answer either way.
+    return "現在不能買保險，請看最新牌桌"
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
@@ -793,11 +811,7 @@ class BlackjackView(View):
         try:
             self.round_state.take_insurance(user_id=user_id, amount=player.participant.bet // 2)
         except ValueError as error:
-            content = (
-                "餘額不足，不能買保險"
-                if "balance" in str(error).lower()
-                else "現在不能買保險，請看最新牌桌"
-            )
+            content = _insurance_refusal_notice(error=error)
             await send_ephemeral_notice(
                 interaction=interaction,
                 content=content,

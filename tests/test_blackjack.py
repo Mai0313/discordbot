@@ -13,6 +13,9 @@ from discordbot.cogs.games.blackjack import (
     Card,
     BlackjackRound,
     BlackjackHandState,
+    InsuranceClosedError,
+    InsuranceBetTooSmallError,
+    InsuranceBeyondBalanceError,
     is_bust,
     is_pair,
     can_split,
@@ -917,11 +920,44 @@ def test_take_insurance_rejects_zero_chip_half_bet() -> None:
     player = round_state.players[0]
 
     assert can_insure(player=player, balance_remaining=9) is False
-    with pytest.raises(expected_exception=ValueError, match="positive"):
+    with pytest.raises(expected_exception=InsuranceBetTooSmallError):
         round_state.take_insurance(user_id=1, amount=0)
 
     assert player.insurance_bet == 0
     assert player.insurance_resolved is False
+
+
+def test_each_insurance_refusal_has_its_own_class() -> None:
+    """The three refusals a seat can hit are told apart by class, not by their wording.
+
+    Every one of them used to be a bare `ValueError`, so the view picked its notice by looking
+    for "balance" in the English message and told a 1-point seat its table was stale — when
+    what had happened was that half its bet rounds to zero and no refresh would ever change it.
+    """
+    round_state = BlackjackRound.from_participants(
+        rng=Random(x=0),
+        participants=[
+            _participant(user_id=1, display_name="Alice", bet=1, balance_at_start=10),
+            _participant(user_id=2, display_name="Bob", bet=100, balance_at_start=120),
+        ],
+    )
+    round_state.insurance_offered = True
+
+    round_state.phase = "player_actions"
+    with pytest.raises(expected_exception=InsuranceClosedError):
+        round_state.take_insurance(user_id=2, amount=50)
+
+    round_state.phase = "insurance"
+    with pytest.raises(expected_exception=InsuranceBetTooSmallError):
+        round_state.take_insurance(user_id=1, amount=0)
+
+    # 120 at the table less the 100 already wagered leaves 20, under the 50 insurance costs.
+    with pytest.raises(expected_exception=InsuranceBeyondBalanceError):
+        round_state.take_insurance(user_id=2, amount=50)
+
+    round_state.players[1].insurance_resolved = True
+    with pytest.raises(expected_exception=InsuranceClosedError):
+        round_state.take_insurance(user_id=2, amount=50)
 
 
 def test_deal_initial_offers_insurance_when_dealer_shows_ace() -> None:
