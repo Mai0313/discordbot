@@ -15,10 +15,11 @@ google-genai Interactions types here is the documented carve-out for video inges
 """
 
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 from collections.abc import AsyncIterator
 
 from google import genai
+import logfire
 from google.genai.errors import APIError
 from openai.types.responses import ResponseStreamEvent
 from google.genai.interactions import (
@@ -30,13 +31,10 @@ from google.genai.interactions import (
     AllowlistParam,
     EnvironmentParam,
     TextContentParam,
-    AudioContentParam,
-    ImageContentParam,
     VideoContentParam,
     UserInputStepParam,
     AllowlistEntryParam,
     InteractionSSEEvent,
-    DocumentContentParam,
     ModelOutputStepParam,
     GenerationConfigParam,
 )
@@ -50,12 +48,19 @@ if TYPE_CHECKING:
     from openai.types.responses.response_input_image_param import ResponseInputImageParam
 
 
+_INLINE_PREFIX: Final = "data:"
+_BASE64_MARKER: Final = ";base64"
+
+
 def _kind_from_filename(filename: str) -> Literal["image", "video", "audio", "document"]:
     """Infers the Interactions content kind from a file's extension.
 
-    Gemini-path attachments arrive as `input_file` parts carrying a Files API URI (no MIME),
-    so the content-param type is picked from the original filename; an unknown extension falls
-    back to document (best effort, never raises).
+    An `input_file` part carries a Files API URI and no MIME, so the content-param type comes
+    from the original filename; an unknown extension falls back to document (best effort, never
+    raises). An inlined part does carry its own MIME, and the two agree for everything that
+    reaches here because `InlineRenderer` inlines only PDFs as files — but they are two sources
+    for one answer, so a new inline file type has to be checked against this list rather than
+    assumed to land on the same kind.
     """
     suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if suffix in {"mp4", "mov", "webm", "avi", "mpeg", "mpg", "flv", "wmv", "3gp", "3gpp", "mkv"}:
@@ -67,14 +72,47 @@ def _kind_from_filename(filename: str) -> Literal["image", "video", "audio", "do
     return "document"
 
 
-def _translate_part(  # noqa: PLR0911 -- one return per OpenAI input content type mapped
-    *, part: ResponseInputContentParam
+def _media_content(
+    *, kind: Literal["image", "video", "audio", "document"], reference: str
 ) -> ContentParam | None:
+    """Builds one media content param from a Files API URI or from inlined bytes.
+
+    Every Interactions content param takes both shapes — `uri` for something the server
+    fetches, `data` beside `mime_type` for bytes sent with the request — and which one a
+    reference is depends on who rendered it. The Files API path hands over an https URI, while
+    `InlineRenderer`, which `file_api_enabled=false` selects for every provider including
+    Gemini, hands over a base64 `data:` one. Putting the second in `uri` tells the server to go
+    and fetch a URI that is the file (#661).
+
+    A `data:` reference therefore never reaches `uri`, whatever it looks like. Recognising the
+    shape and falling through on anything else would reintroduce exactly that bug through a
+    narrower door, and two narrow doors are open: the image path hands over whatever MIME
+    Discord reported, parameters and all, where `attachment_mime` would have stripped them, and
+    an empty attachment inlines to a header with no payload at all. Neither is worth sending, so
+    an unusable one is dropped and said out loud instead.
+    """
+    if not reference.startswith(_INLINE_PREFIX):
+        return cast("ContentParam", {"type": kind, "uri": reference})
+    header, _, payload = reference[len(_INLINE_PREFIX) :].partition(",")
+    mime_type = header.removesuffix(_BASE64_MARKER).split(";")[0].strip()
+    if not header.endswith(_BASE64_MARKER) or not mime_type or not payload:
+        logfire.warn(
+            "dropping an inlined attachment the Interactions turn cannot carry",
+            kind=kind,
+            header=header[:100],
+            payload_length=len(payload),
+        )
+        return None
+    # Each `mime_type` is typed as a Literal of what that kind accepts, and this one came off a
+    # Discord attachment, so it is the server that gets to reject it rather than `ty`.
+    return cast("ContentParam", {"type": kind, "data": payload, "mime_type": mime_type})
+
+
+def _translate_part(*, part: ResponseInputContentParam) -> ContentParam | None:
     """Translates one OpenAI input content part into an Interactions content param.
 
-    Media is referenced by its existing URI (Files API `file_id` or a raw `file_url`); the
-    Gemini answer model already holds those URIs, so nothing is re-uploaded. Returns None for
-    an empty or unmappable part so the caller drops it instead of breaking the request.
+    Returns None for an empty or unmappable part so the caller drops it instead of breaking
+    the request.
     """
     part_type = part["type"]
     if part_type == "input_text":
@@ -82,21 +120,20 @@ def _translate_part(  # noqa: PLR0911 -- one return per OpenAI input content typ
         return TextContentParam(type="text", text=text) if text else None
     if part_type == "input_image":
         image_part = cast("ResponseInputImageParam", part)
-        uri = image_part.get("image_url") or image_part.get("file_id")
-        return ImageContentParam(type="image", uri=uri) if uri else None
+        reference = image_part.get("image_url") or image_part.get("file_id")
+        return _media_content(kind="image", reference=reference) if reference else None
     if part_type == "input_file":
         file_part = cast("ResponseInputFileParam", part)
-        uri = file_part.get("file_url") or file_part.get("file_id")
-        if not uri:
+        # `file_data` is the inlined half: a PDF rendered without the Files API arrives only
+        # there, and reading the other two alone dropped it with no record anywhere (#661).
+        reference = (
+            file_part.get("file_url") or file_part.get("file_id") or file_part.get("file_data")
+        )
+        if not reference:
             return None
-        kind = _kind_from_filename(filename=file_part.get("filename") or "")
-        if kind == "video":
-            return VideoContentParam(type="video", uri=uri)
-        if kind == "audio":
-            return AudioContentParam(type="audio", uri=uri)
-        if kind == "image":
-            return ImageContentParam(type="image", uri=uri)
-        return DocumentContentParam(type="document", uri=uri)
+        return _media_content(
+            kind=_kind_from_filename(filename=file_part.get("filename") or ""), reference=reference
+        )
     return None
 
 
