@@ -71,6 +71,14 @@ if TYPE_CHECKING:
 
 DRAGON_GATE_ACTION_TIMEOUT_SECONDS: Final[int] = 180
 DRAGON_GATE_VISIBLE_PLAYER_LINES: Final[int] = 20
+# Turns kept in the history block. It gains a line per resolved turn and they all render into one
+# `embed.description`, so uncapped a long round passes what Discord will render and the table
+# silently stops updating while the round carries on. The limit that binds first is NOT the 4096
+# a description gets: `_finalize_locked` sends this embed beside the final one and Discord counts
+# 6000 across a message's embeds. `tests/test_dragon_gate.py` renders both against both, at a
+# worst case built rather than estimated — every seat withdrawn, every name at Discord's
+# 32-character maximum, the widest gate and the widest amounts.
+DRAGON_GATE_VISIBLE_HISTORY_LINES: Final[int] = 30
 
 
 def _participant_lines(participants: list[GameParticipant]) -> str:
@@ -120,9 +128,16 @@ def _result_line(result: DragonGateTurnResult) -> str:
 
 
 def _history_code_lines(history: list[DragonGateTurnResult]) -> list[str]:
-    """Builds monospace history lines for completed turns."""
+    """Builds monospace history lines for the most recent completed turns.
+
+    The newest are the ones kept: the block sits under a live table, so what it is for is the
+    turns a player just watched. Older ones are counted rather than dropped in silence.
+    """
     lines: list[str] = []
-    for result in history:
+    hidden_count = len(history) - DRAGON_GATE_VISIBLE_HISTORY_LINES
+    if hidden_count > 0:
+        lines.append(f"(前 {hidden_count} 手省略)")
+    for result in history[-DRAGON_GATE_VISIBLE_HISTORY_LINES:]:
         outcome_label = _outcome_label(outcome=result.outcome)
         pillars = " ".join(str(card) for card in result.pillars)
         lines.append(
