@@ -611,7 +611,6 @@ class ReplyContextBuilder(BaseModel):
         selection_input_tokens = 0
         selection_output_tokens = 0
         memory_block: EasyInputMessageParam | None = None
-        remaining_slots = 0
         selection_task: asyncio.Task[RecallSelection] | None = None
         memories, optional_allowed, deterministic_candidate_count = (
             self._resolve_recall_candidates(
@@ -623,34 +622,37 @@ class ReplyContextBuilder(BaseModel):
             memory_block = render_memory_context_block(memories=memories)
             memory_credits = memory_lookup_credits(memories=memories)
 
-            remaining_slots = max(0, MEMORY_CONTEXT_TARGET_USERS - len(memories))
-            logfire.debug(
-                "gen_reply memory candidates built",
-                deterministic_candidates=deterministic_candidate_count,
-                deterministic_memories=len(memories),
-                optional_candidates=len(optional_allowed),
-                optional_slots=remaining_slots,
-                message_id=self.message.id,
+        # The optional lookup does not depend on the deterministic one having found anything: a
+        # conversation where nobody present has a stored fact is exactly the one the code path
+        # has nothing of its own to contribute to.
+        remaining_slots = max(0, MEMORY_CONTEXT_TARGET_USERS - len(memories))
+        logfire.debug(
+            "gen_reply memory candidates built",
+            deterministic_candidates=deterministic_candidate_count,
+            deterministic_memories=len(memories),
+            optional_candidates=len(optional_allowed),
+            optional_slots=remaining_slots,
+            message_id=self.message.id,
+        )
+        if optional_allowed and remaining_slots:
+            # Render the text-only history only for a real optional lookup. This request
+            # carries markers instead of file ids, so it never re-reads uploaded payloads.
+            history_text_only = await self.render_history(
+                hist_messages=raw_history, text_only=True
             )
-            if optional_allowed and remaining_slots:
-                # Render the text-only history only for a real optional lookup. This request
-                # carries markers instead of file ids, so it never re-reads uploaded payloads.
-                history_text_only = await self.render_history(
-                    hist_messages=raw_history, text_only=True
+            selection_message_list: list[EasyInputMessageParam] = [
+                *history_text_only,
+                *text_reference,
+                *text_current,
+            ]
+            selection_task = asyncio.create_task(
+                coro=self.select_recalled_memories(
+                    message_list=selection_message_list,
+                    allowed=optional_allowed,
+                    recall_context=recall_context,
+                    server_memory_block=server_memory_block,
                 )
-                selection_message_list: list[EasyInputMessageParam] = [
-                    *history_text_only,
-                    *text_reference,
-                    *text_current,
-                ]
-                selection_task = asyncio.create_task(
-                    coro=self.select_recalled_memories(
-                        message_list=selection_message_list,
-                        allowed=optional_allowed,
-                        recall_context=recall_context,
-                        server_memory_block=server_memory_block,
-                    )
-                )
+            )
 
         try:
             # The answer needs the uploaded renders; await the full history render and the shared

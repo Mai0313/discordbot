@@ -118,7 +118,8 @@ class RecallCandidate(BaseModel):
     names, so it stays the short Discord label and never carries the table's community prose.
 
     A table-only member has no Discord label here, so their `credit_label` stays None and the
-    footer counts them (`和另 N 人`) instead of naming them. There is deliberately no name pulled
+    footer counts them instead of naming them — and a reply that read nobody else prints the
+    bare count on its own. There is deliberately no name pulled
     from anywhere else: the guild member cache is empty for them, since the bot runs without the
     members intent and nextcord never caches a plain message author, and the identity the memory
     store stamps is the display name of whichever guild's consolidation last wrote that fact,
