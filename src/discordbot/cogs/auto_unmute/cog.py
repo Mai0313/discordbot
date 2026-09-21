@@ -5,7 +5,17 @@ from functools import cached_property
 
 from openai import AsyncOpenAI
 import logfire
-from nextcord import User, Guild, Member, Message, Forbidden, HTTPException, AuditLogAction
+from nextcord import (
+    User,
+    Guild,
+    Member,
+    Object,
+    Message,
+    Forbidden,
+    HTTPException,
+    AuditLogAction,
+    AllowedMentions,
+)
 from nextcord.abc import Messageable
 from nextcord.ext import commands
 
@@ -13,7 +23,20 @@ from discordbot.utils.llm import create_text_or_none
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.typings.timeouts import AUTO_UNMUTE_AI_TIMEOUT_SECONDS
+from discordbot.utils.llm_transcript import sanitize_identity, render_author_identity
 from discordbot.cogs.auto_unmute.prompts import UNMUTE_PROMPT
+
+
+def _moderator_only_mentions(moderator: Member | User | None) -> AllowedMentions:
+    """Restricts the model's reply to pinging the one moderator it was told about.
+
+    The reply is model-written from a block carrying user-chosen names, and the prompt asks it
+    to emit a raw mention, so anything else it produces — `@everyone`, a role, a second user —
+    must not resolve.
+    """
+    if moderator is None:
+        return AllowedMentions(everyone=False, roles=False, users=False)
+    return AllowedMentions(everyone=False, roles=False, users=[Object(id=moderator.id)])
 
 
 class AutoUnmuteCogs(commands.Cog):
@@ -118,21 +141,29 @@ class AutoUnmuteCogs(commands.Cog):
         )
         if not ai_reply:
             return
-        channel = self._resolve_channel(guild=member.guild)
-        if channel is None:
-            logfire.info("no sendable channel for auto-unmute reply", guild_id=member.guild.id)
+        mentions = _moderator_only_mentions(moderator=moderator)
+        # The system channel is a fallback for a send that fails, not only for a channel that
+        # could not be resolved: the tracked one may be a locked thread, or one the bot may
+        # read but not post in, and losing the whole reply to that leaves it unused.
+        targets = self._reply_targets(guild=member.guild)
+        for channel in targets:
+            try:
+                await channel.send(content=ai_reply, allowed_mentions=mentions)
+            except HTTPException as exc:
+                # A timed-out bot's send is denied, which arrives as Forbidden (an HTTPException).
+                logfire.warn(
+                    "failed to send auto-unmute reply",
+                    guild_id=member.guild.id,
+                    channel_id=getattr(channel, "id", None),
+                    error_type=type(exc).__name__,
+                    _exc_info=exc,
+                )
+                continue
             return
-        try:
-            await channel.send(content=ai_reply)
-        except HTTPException as exc:
-            # A timed-out bot's send is denied, which arrives as Forbidden (an HTTPException).
-            logfire.warn(
-                "failed to send auto-unmute reply",
-                guild_id=member.guild.id,
-                channel_id=getattr(channel, "id", None),
-                error_type=type(exc).__name__,
-                _exc_info=exc,
-            )
+        if targets:
+            logfire.warn("auto-unmute reply refused by every channel", guild_id=member.guild.id)
+        else:
+            logfire.info("no sendable channel for auto-unmute reply", guild_id=member.guild.id)
 
     async def _lookup_audit(self, guild: Guild) -> tuple[Member | User | None, str | None]:
         """Walks recent member_update audit entries to find the timeout that hit us.
@@ -162,16 +193,21 @@ class AutoUnmuteCogs(commands.Cog):
             )
         return None, None
 
-    def _resolve_channel(self, guild: Guild) -> Messageable | None:
-        """Picks a target channel: last active channel, then system channel."""
+    def _reply_targets(self, guild: Guild) -> list[Messageable]:
+        """Where to try posting the reply, best first: last active channel, then system."""
+        targets: list[Messageable] = []
         channel_id = self._last_active_channel.get(guild.id)
         if channel_id is not None:
-            channel = guild.get_channel(channel_id)
-            if isinstance(channel, Messageable):
-                return channel
-        if isinstance(guild.system_channel, Messageable):
-            return guild.system_channel
-        return None
+            # `get_channel` alone does not search threads, and the tracked id is whatever
+            # channel a human last spoke in — a thread or forum post included.
+            channel = guild.get_channel_or_thread(channel_id)
+            # A thread stays in the cache after it archives, so without this the id of one
+            # that went quiet days ago is tried first and resurfaces a dead conversation.
+            if isinstance(channel, Messageable) and not getattr(channel, "archived", False):
+                targets.append(channel)
+        if isinstance(guild.system_channel, Messageable) and guild.system_channel not in targets:
+            targets.append(guild.system_channel)
+        return targets
 
     async def _generate_reply(
         self, guild_name: str, moderator: Member | User | None, reason: str | None, until: datetime
@@ -179,15 +215,23 @@ class AutoUnmuteCogs(commands.Cog):
         """Builds a single user-role prompt and asks the model for one Discord reply."""
         remaining = until - datetime.now(tz=UTC)
         minutes = max(int(remaining.total_seconds()) // 60, 0)
-        readable_reason = reason if reason else "(no reason given)"
+        # The reason is the worst of the three: the prompt tells the model to work it into the
+        # reply, so it is an instruction surface, not just a value. Collapsed and stripped of
+        # `[id:` lookalikes like the other two.
+        readable_reason = (
+            sanitize_identity(value=" ".join(reason.split())) if reason else "(no reason given)"
+        )
         if moderator is None:
             moderator_line = "Moderator: unknown (audit log unavailable)"
         else:
-            moderator_line = (
-                f"Moderator: {moderator.display_name} ({moderator.name}) [id: {moderator.id}]"
+            # Both names are user-chosen, and this line is the shape an id token is trusted
+            # in. Rendered rather than interpolated so a nickname cannot forge a second one.
+            identity = render_author_identity(
+                display_name=moderator.display_name, username=moderator.name, user_id=moderator.id
             )
+            moderator_line = f"Moderator: {identity}"
         user_text = (
-            f"Guild: {guild_name}\n"
+            f"Guild: {sanitize_identity(value=' '.join(guild_name.split()))}\n"
             f"{moderator_line}\n"
             f"Timeout duration: {minutes} minute(s)\n"
             f"Reason: {readable_reason}"
