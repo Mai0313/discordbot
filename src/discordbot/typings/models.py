@@ -124,7 +124,7 @@ class RuntimeModelCatalog(BaseModel):
             Model settings used with the native Gemini (Lyria) Interactions API (a bare model
             name, no provider prefix, since the call goes direct to Google not via the proxy).
         """
-        return ModelSettings(name="lyria-3-clip-preview")
+        return ModelSettings(name="lyria-3.5")
 
     @property
     def tts_model(self) -> ModelSettings:
