@@ -424,6 +424,45 @@ def test_the_dealer_loop_outlasts_the_longest_hand_the_rules_can_force() -> None
     )
 
 
+async def test_a_seat_that_can_never_insure_is_not_sent_to_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 1-point seat's half-bet rounds to zero, and no newer table will change that.
+
+    The insurance buttons belong to the table rather than to a seat — every undecided player
+    sees the same pair — so the seat that cannot use them only finds out by pressing, and what
+    it is told then is the whole of the feature for it.
+    """
+    round_state = _round_with_two_cards(
+        player_cards=[Card(rank="10", suit="♠"), Card(rank="7", suit="♥")],
+        dealer_cards=[Card(rank="A", suit="♣"), Card(rank="9", suit="♦")],
+        bet=1,
+    )
+    round_state.phase = "insurance"
+    round_state.insurance_offered = True
+    view = _make_view(round_state=round_state)
+
+    notices: list[str] = []
+
+    async def _fake_notice(
+        *, interaction: Interaction[Any], content: str, log_message: str
+    ) -> None:
+        notices.append(content)
+
+    monkeypatch.setattr(
+        "discordbot.cogs.games.blackjack_views.send_ephemeral_notice", _fake_notice
+    )
+    monkeypatch.setattr(BlackjackView, "_edit_in_progress_locked", AsyncMock(return_value=None))
+
+    decided = await view._take_insurance_locked(
+        interaction=MagicMock(), message=MagicMock(), user_id=1
+    )
+
+    assert decided is False
+    assert round_state.players[0].insurance_bet == 0
+    assert notices == ["你的下注太小，一半不到 1 點，這局沒有保險可買"]
+
+
 async def test_play_dealer_hits_below_17_then_stands_on_hard_17(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

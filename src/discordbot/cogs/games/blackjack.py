@@ -17,6 +17,33 @@ from discordbot.typings.economy import MAX_SINGLE_BET
 RoundPhase = Literal["insurance", "player_actions", "dealer", "settled"]
 
 
+class InsuranceRefusedError(ValueError):
+    """The round would not take this insurance side bet.
+
+    A tree rather than one class because the seat that pressed the button has to be told which
+    of these it hit, and a caller that only logs must not have to care. Splitting them here is
+    what stops the view guessing from the message text, which is English and is the one thing
+    about an error that is free to be reworded. A `ValueError` subclass, so an `except
+    ValueError` around a rules call keeps catching it.
+    """
+
+
+class InsuranceClosedError(InsuranceRefusedError):
+    """Insurance is no longer on offer here: the phase moved on, or this seat already decided."""
+
+
+class InsuranceBeyondBalanceError(InsuranceRefusedError):
+    """What the seat has left will not cover the half-bet side wager."""
+
+
+class InsuranceBetTooSmallError(InsuranceRefusedError):
+    """Half the seat's bet rounds to zero, so there is no side wager to place.
+
+    Permanent for the round: no refresh and no other seat's move changes it, which is why it
+    cannot share a notice with the two above.
+    """
+
+
 SHOE_DECK_COUNT = 4
 # Natural Blackjack pays 3:2.
 _BLACKJACK_PAYOUT_NUM: Final[int] = 3
@@ -579,24 +606,27 @@ class BlackjackRound(BaseModel):
             amount: Side-bet amount; must equal `participant.bet // 2`.
 
         Raises:
-            ValueError: The round is not in the insurance phase, the user is
-                not seated at this table, insurance was already decided, half
-                the original bet rounds to zero, the amount is not half the
-                original bet, or the remaining balance cannot cover it.
+            InsuranceClosedError: The round is not in the insurance phase, or this
+                seat already decided.
+            InsuranceBetTooSmallError: Half the original bet rounds to zero.
+            InsuranceBeyondBalanceError: The remaining balance cannot cover it.
+            InsuranceRefusedError: The amount is not half the original bet, which no
+                caller here can produce.
+            ValueError: The user is not seated at this table.
         """
         if self.phase != "insurance":
-            raise ValueError("Insurance is not currently offered")
+            raise InsuranceClosedError("Insurance is not currently offered")
         player = self._find_player(user_id=user_id)
         if player.insurance_resolved:
-            raise ValueError("Insurance already decided")
+            raise InsuranceClosedError("Insurance already decided")
         expected = player.participant.bet // 2
-        if expected <= 0 or amount <= 0:
-            raise ValueError("Insurance side bet must be positive")
+        if expected <= 0:
+            raise InsuranceBetTooSmallError("Half of the original bet rounds to zero")
         if amount != expected:
-            raise ValueError("Insurance amount must equal half of the original bet")
+            raise InsuranceRefusedError("Insurance amount must equal half of the original bet")
         balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
         if not can_insure(player=player, balance_remaining=balance_remaining):
-            raise ValueError("Not enough balance for insurance")
+            raise InsuranceBeyondBalanceError("Not enough balance for insurance")
         player.insurance_bet = amount
         player.insurance_resolved = True
         self._maybe_close_insurance_phase()
