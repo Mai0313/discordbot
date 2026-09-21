@@ -288,6 +288,48 @@ class MessageInputBuilder(BaseModel):
                 )
         return sources
 
+    def _split_on_modality(
+        self, sources: list[AttachmentSource], model_name: str
+    ) -> tuple[list[AttachmentSource], list[tuple[AttachmentSource, str]]]:
+        """Splits sources into those the named model accepts and those it does not.
+
+        Takes the name rather than reading it, because `slow_model` rebuilds its settings on
+        every read and a tier that dispatches on the hour would hand the gate one model and the
+        log beside it another — recording a drop against a model that did not make it.
+
+        Returns:
+            The accepted sources, and each rejected one beside the modality it needed.
+        """
+        modalities = get_supported_modalities(model_name=model_name)
+        accepted: list[AttachmentSource] = []
+        rejected: list[tuple[AttachmentSource, str]] = []
+        for source in sources:
+            required = self.required_modality(content_type=source.content_type)
+            if required in modalities:
+                accepted.append(source)
+            else:
+                rejected.append((source, required))
+        return accepted, rejected
+
+    def count_supported_sources(self, message: Message) -> int:
+        """How many of a message's attachments the answer model would actually be handed.
+
+        What the history media budget spends, rather than the raw source count: an archive or
+        an office document is dropped on every model, so counting it would take budget from an
+        older message whose images WOULD have been sent, and the turn could end up carrying no
+        media at all while the budget recorded itself full (#660).
+
+        Silent where `_supported_sources` logs, because the render reaches the same message and
+        the same sources a moment later and logs them there.
+        """
+        sources = self.collect_attachment_sources(message=message)
+        if not sources:
+            return 0
+        accepted, _ = self._split_on_modality(
+            sources=sources, model_name=self.runtime_models.slow_model.name
+        )
+        return len(accepted)
+
     def _supported_sources(
         self, sources: list[AttachmentSource], message_id: int
     ) -> list[AttachmentSource]:
@@ -300,22 +342,17 @@ class MessageInputBuilder(BaseModel):
         if not sources:
             return []
         model_name = self.runtime_models.slow_model.name
-        modalities = get_supported_modalities(model_name=model_name)
-        supported: list[AttachmentSource] = []
-        for source in sources:
-            required = self.required_modality(content_type=source.content_type)
-            if required not in modalities:
-                logfire.info(
-                    "gen_reply skipping unsupported attachment",
-                    modality=required,
-                    model=model_name,
-                    cache_key=loggable_cache_key(cache_key=source.cache_key),
-                    content_type=source.content_type,
-                    message_id=message_id,
-                )
-                continue
-            supported.append(source)
-        return supported
+        accepted, rejected = self._split_on_modality(sources=sources, model_name=model_name)
+        for source, required in rejected:
+            logfire.info(
+                "gen_reply skipping unsupported attachment",
+                modality=required,
+                model=model_name,
+                cache_key=loggable_cache_key(cache_key=source.cache_key),
+                content_type=source.content_type,
+                message_id=message_id,
+            )
+        return accepted
 
     async def get_image_sources_with_mime(self, message: Message) -> list[LoadedMedia]:
         """Returns downscaled (bytes, MIME) pairs of a message's image sources.

@@ -4924,6 +4924,60 @@ def test_history_media_budget_exempts_the_newest_post_that_carries_attachments()
     assert over == {}
 
 
+def _document_post(index: int, count: int) -> FakeMessage:
+    """A history message carrying `count` office documents, which no model accepts."""
+    message = FakeMessage(content=f"docs {index}", author=FakeAuthor(user_id=1))
+    message.id = 7500 + index
+    message.attachments = [
+        FakeAttachment(
+            filename=f"{index}-{n}.docx",
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            attachment_id=index * 100 + n,
+        )
+        for n in range(count)
+    ]
+    return message
+
+
+def test_history_media_budget_is_not_spent_by_files_that_will_be_dropped() -> None:
+    """An attachment the modality gate drops must not cost an older post its images.
+
+    The newest post is exempt from the cap and is what sets the running total, so a post of
+    `MAX_HISTORY_MEDIA_PARTS` office documents used to record the budget full while nothing was
+    uploaded — and every older message was then refused, leaving the turn with no media at all
+    and nothing in the logs saying the budget had been spent on nothing (#660).
+    """
+    posts = [_image_post(index=0, count=4), _document_post(index=1, count=MAX_HISTORY_MEDIA_PARTS)]
+
+    over = history_media_over_budget(
+        builder=_toolkit(cog=_cog()).input_builder,
+        hist_messages=[as_message(fake=m) for m in posts],
+    )
+
+    assert over == {}
+
+
+def test_history_media_budget_counts_only_the_supported_half_of_a_mixed_post() -> None:
+    """A post carrying both kinds spends what it will upload, not what it holds.
+
+    The all-or-nothing cases either side of this one both pass a gate that counts the whole
+    message whenever any part of it survives, so this is what says the count is per source.
+    """
+    mixed = _image_post(index=0, count=MAX_HISTORY_MEDIA_PARTS - 1)
+    mixed.attachments = [*mixed.attachments, *_document_post(index=9, count=6).attachments]
+    older = _image_post(index=1, count=1)
+
+    over = history_media_over_budget(
+        builder=_toolkit(cog=_cog()).input_builder,
+        hist_messages=[as_message(fake=older), as_message(fake=mixed)],
+    )
+
+    # The newest post spends 9 of the 10 parts rather than all 15, so the older one still fits.
+    assert over == {}
+
+
 async def test_render_history_survives_a_message_the_collector_chokes_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
