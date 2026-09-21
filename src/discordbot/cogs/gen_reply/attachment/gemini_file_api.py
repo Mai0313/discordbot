@@ -44,14 +44,11 @@ class PendingUpload(BaseModel):
     keeps cooking server-side past the bound) is re-polled on the next reference to
     that source instead of re-uploaded from scratch. The answer never references a
     pending uri; it is adopted only once a later `files.get` reports ACTIVE.
-
-    Attributes:
-        name: The Gemini file resource name (`files/<id>`) used to re-poll its state.
-        uri: The full file uri the answer references once the file becomes ACTIVE.
-        expires_at: Provider-reported expiry; a pending entry past it is discarded.
     """
 
-    name: str = Field(..., description="The Gemini file resource name used to re-poll its state.")
+    name: str = Field(
+        ..., description="The Gemini file resource name (`files/<id>`) used to re-poll its state."
+    )
     uri: str = Field(
         ..., description="The full file uri the answer references once the file is ACTIVE."
     )
@@ -68,14 +65,16 @@ class GeminiFileUploader(AttachmentRenderer):
     `input.py` above, both hand back a uri that is worthless to any other key. Sharing one
     uploader across keys would therefore hand a key-1 uri to a key-2 request, which fails the
     whole answer rather than dropping the attachment.
-
-    Attributes:
-        api_key: The Gemini key this uploader uploads with. Required rather than defaulted,
-            so a caller that forgot to say which key fails at construction instead of
-            silently uploading to the first one while the answer dispatches on another.
     """
 
-    api_key: str = Field(..., description="The Gemini key this uploader uploads with.")
+    api_key: str = Field(
+        ...,
+        description=(
+            "The Gemini key this uploader uploads with. Required rather than defaulted, so a "
+            "caller that forgot to say which key fails at construction instead of silently "
+            "uploading to the first one while the answer dispatches on another."
+        ),
+    )
     # Uploads that timed out while still PROCESSING, keyed by attachment source cache_key
     # (attachment/sticker id or embed url). The next reference to that source re-polls the
     # same file (usually ACTIVE by then) instead of re-uploading. Kept until the file's

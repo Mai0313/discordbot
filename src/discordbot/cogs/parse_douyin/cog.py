@@ -47,16 +47,19 @@ _EMBED_COLOR = 0xFE2C55
 
 
 class DouyinPost(BaseModel):
-    """A parsed Douyin post together with the files downloaded for it.
+    """A parsed Douyin post together with the files downloaded for it."""
 
-    Attributes:
-        metadata: The caption and author, parsed before the download so a refused download still
-            gets its card.
-        download: The downloaded files, unlinked once the expansion is on screen.
-    """
-
-    metadata: DouyinMetadata = Field(..., description="The post's caption and author.")
-    download: DouyinDownload = Field(..., description="The downloaded clip or gallery.")
+    metadata: DouyinMetadata = Field(
+        ...,
+        description=(
+            "The post's caption and author, parsed before the download so a refused download "
+            "still gets its card."
+        ),
+    )
+    download: DouyinDownload = Field(
+        ...,
+        description="The downloaded clip or gallery, unlinked once the expansion is on screen.",
+    )
 
 
 class DouyinCogs(ExpansionCog[DouyinPost]):

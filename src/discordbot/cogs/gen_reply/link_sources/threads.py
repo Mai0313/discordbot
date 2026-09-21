@@ -227,21 +227,20 @@ class BranchSelection(BaseModel):
     shipped, which also includes the comments with nothing in them to render; those are worth
     counting when stating what the page held, but announcing them as omitted would claim the
     model is missing something that was never there.
-
-    Attributes:
-        comments: The comments kept, oldest first, so an entry's index is its nesting depth
-            under the linked post.
-        dropped: Readable comments further down the same branch that did not fit the budget.
-        carried: Nested comments the page shipped in this branch, renderable or not.
     """
 
     comments: list[ThreadsOutput] = Field(
         ...,
-        description="Comments kept for rendering; an entry's index is its nesting depth",
+        description=(
+            "Comments kept for rendering, oldest first, so an entry's index is its nesting "
+            "depth under the linked post"
+        ),
         examples=[[]],
     )
     dropped: int = Field(
-        ..., description="Readable comments in this branch the budget left out", examples=[0]
+        ...,
+        description="Readable comments further down this branch that did not fit the budget",
+        examples=[0],
     )
     carried: int = Field(
         ...,
@@ -421,13 +420,6 @@ class PostMedia(BaseModel):
     one block: the attached parts are opaque and adjacent, so the only thing telling the model
     that the photo belongs to the post being argued with, rather than to the one-line comment
     above it, is this name repeated in the order notice and in the missing-URL lines.
-
-    Attributes:
-        owner: How the block names the post this media belongs to.
-        parts: The uploaded media parts, in page order, ready to ride in the user block.
-        missing_image_urls: The post's image URLs that are NOT attached, whether the budget
-            never attempted them or the fetch or upload failed.
-        missing_video_urls: The post's video URLs that are NOT attached, same two reasons.
     """
 
     owner: str = Field(
@@ -436,13 +428,20 @@ class PostMedia(BaseModel):
         examples=["the linked post"],
     )
     parts: list[ResponseInputFileParam] = Field(
-        default_factory=list, description="Uploaded media parts, in page order", examples=[[]]
+        default_factory=list,
+        description="Uploaded media parts, in page order, ready to ride in the user block",
+        examples=[[]],
     )
     missing_image_urls: list[str] = Field(
-        default_factory=list, description="Image URLs of the post that are NOT attached"
+        default_factory=list,
+        description=(
+            "Image URLs of the post that are NOT attached, whether the budget never attempted "
+            "them or the fetch or upload failed"
+        ),
     )
     missing_video_urls: list[str] = Field(
-        default_factory=list, description="Video URLs of the post that are NOT attached"
+        default_factory=list,
+        description="Video URLs of the post that are NOT attached, for the same two reasons",
     )
 
     @property
@@ -461,13 +460,11 @@ class IngestedMedia(BaseModel):
     A list rather than one flat pair of halves because a quote post contributes two posts' media
     to the same block and the model has to be told which is which; `groups` order IS attachment
     order, so the notice generated from it describes the parts it actually accompanies.
-
-    Attributes:
-        groups: One entry per post whose media was considered, in attachment order.
     """
 
     groups: list[PostMedia] = Field(
-        default_factory=list, description="One entry per post whose media was considered"
+        default_factory=list,
+        description="One entry per post whose media was considered, in attachment order",
     )
 
     @property

@@ -45,28 +45,19 @@ type MemoryWriteReport = Callable[[MemoryWriteSummary], Awaitable[None]]
 
 
 class MemoryTurn(BaseModel):
-    """One turn's memory review request, whether it runs now or is held for replay.
-
-    Attributes:
-        scope: The memory scope this turn writes into.
-        subject: The phase-1 directive naming the memory target.
-        transcript: The rendered phase-1 input captured for the turn
-            (already folds in the reply), so a replay needs no re-render.
-        writer: The memory writing service to run the update with.
-        identity: Single-line target identity `parse_identity` splits into the
-            `owner_id` / `owner_name` stamped on every fact this scope writes.
-        captured_at: `time.monotonic()` when the turn was captured, so a clear
-            that lands before it runs can abort it via `cleared_since`.
-        token: Process-local logical token persisted with the turn's DB
-            row, reused on replay so the terminal write guards on the same id.
-        report: Callback reporting what the turn recorded.
-    """
+    """One turn's memory review request, whether it runs now or is held for replay."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     scope: str = Field(..., description="The memory scope this turn writes into.")
     subject: str = Field(..., description="The phase-1 directive naming the memory target.")
-    transcript: str = Field(..., description="The rendered phase-1 input captured for the turn.")
+    transcript: str = Field(
+        ...,
+        description=(
+            "The rendered phase-1 input captured for the turn (already folds in the reply), "
+            "so a replay needs no re-render."
+        ),
+    )
     writer: SkipValidation[MemoryWriterAI] = Field(
         ..., description="The memory writing service to run the update with."
     )
@@ -78,7 +69,11 @@ class MemoryTurn(BaseModel):
         ),
     )
     token: int = Field(
-        ..., description="Logical version token reused on replay for the DB row guard."
+        ...,
+        description=(
+            "Process-local logical version token persisted with the turn's DB row, reused on "
+            "replay so the terminal write guards on the same id."
+        ),
     )
     captured_at: float = Field(
         default_factory=time.monotonic,

@@ -127,9 +127,6 @@ class FacebookURL(BaseModel):
     Only some of the accepted shapes name their post: a `share/p/<code>` link resolves to one
     through its redirect, which is why `post_id` being empty is not the same as the URL being
     unreadable (see `is_share_link`).
-
-    Attributes:
-        raw_url: Original Facebook URL provided by the caller.
     """
 
     raw_url: str = Field(..., description="Original Facebook URL provided by the caller")
@@ -208,10 +205,6 @@ class FetchedPage(BaseModel):
 
     Where it landed is part of the result because a share link names its post only there, and
     because a redirect to a login page is how Facebook says the post is not public.
-
-    Attributes:
-        html: The fetched page's HTML body.
-        final_url: The URL the request ended on after redirects.
     """
 
     html: str = Field(..., description="The fetched page's HTML body")
@@ -237,16 +230,16 @@ class FacebookOutput(PlatformOutput):
     permalink even on a comment, since Facebook's own comment permalink is a query on it rather
     than a page of its own; and `comment_count` is what the post REPORTS, which exceeds what the
     page preloads.
-
-    Attributes:
-        group_name: The group the POST was made in, empty for a page post and on every comment.
-        share_count: Shares the post reports; zero on a comment.
-        comment_id: The comment's own numeric id; empty on the post itself.
     """
 
-    group_name: str = Field(default="", description="The group the post was made in, if any")
+    group_name: str = Field(
+        default="",
+        description="The group the POST was made in, empty for a page post and on every comment",
+    )
     share_count: int = Field(default=0, description="Shares the post reports; 0 on a comment")
-    comment_id: str = Field(default="", description="The comment's own id; empty on the post")
+    comment_id: str = Field(
+        default="", description="The comment's own numeric id; empty on the post itself"
+    )
 
 
 class FacebookConversation(PlatformConversation[FacebookOutput]):

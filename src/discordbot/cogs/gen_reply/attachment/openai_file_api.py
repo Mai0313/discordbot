@@ -38,12 +38,7 @@ OPENAI_FILE_EXPIRY_SECONDS = 2_592_000
 
 
 class OpenAIFileUploader(AttachmentRenderer):
-    """Uploads attachments to OpenAI Files API and references them by file id.
-
-    Attributes:
-        config: Runtime LLM config supplying the OpenAI-compatible client settings.
-        model_name: Selected answer model name used by LiteLLM to route file uploads.
-    """
+    """Uploads attachments to OpenAI Files API and references them by file id."""
 
     model_name: str = Field(description="Selected answer model name for LiteLLM file routing.")
     config: LLMConfig = Field(

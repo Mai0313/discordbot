@@ -37,13 +37,6 @@ class AttachmentSource(BaseModel):
     Files-API upload, the per-message render cache key, and the IMAGE route's
     raw-bytes path. Carries only metadata (no bytes, no network) so it is safe to
     build on the route critical path.
-
-    Attributes:
-        handle: The attachment, sticker, or image URL the loaders consume.
-        kind: Whether the source renders as an image or a generic file.
-        is_sticker: Whether the source is a Discord sticker.
-        content_type: Resolved MIME type, empty only for unguessable sources.
-        cache_key: Stable identity (attachment/sticker id or chosen embed URL).
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -72,13 +65,7 @@ class AttachmentSource(BaseModel):
 
 
 class MessageInputBuilder(BaseModel):
-    """Converts Discord messages into Responses API input parts.
-
-    Attributes:
-        bot: The Discord bot instance, used to detect the bot's own messages.
-        runtime_models: Catalog whose slow model gates attachment modalities.
-        attachment_handler: Strategy that renders each attachment source to a content part.
-    """
+    """Converts Discord messages into Responses API input parts."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

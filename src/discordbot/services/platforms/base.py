@@ -72,18 +72,6 @@ class PlatformOutput(BaseModel):
     on its own subclass. A field only some platforms publish does not belong here at all: it
     lives on the ones that have it, so a caller reading this model is never handed a zero that
     means "this platform does not have the concept".
-
-    Attributes:
-        text: The post or comment body.
-        url: Where it can be read.
-        author_name: The author's handle.
-        author_icon_url: The author's profile picture.
-        image_urls: Still images it carries.
-        video_urls: Videos it carries.
-        like_count: Likes, by whatever name the platform gives them.
-        comment_count: Direct replies, named for the concept the sources share rather than for
-            any one platform's word for it.
-        taken_at: When it was published.
     """
 
     text: str = Field(default="", description="The post or comment body")
@@ -92,8 +80,13 @@ class PlatformOutput(BaseModel):
     author_icon_url: str = Field(default="", description="The author's profile picture")
     image_urls: list[str] = Field(default_factory=list, description="Still images it carries")
     video_urls: list[str] = Field(default_factory=list, description="Videos it carries")
-    like_count: int = Field(default=0, description="Likes, by whatever name the platform gives")
-    comment_count: int = Field(default=0, description="Number of direct replies")
+    like_count: int = Field(
+        default=0, description="Likes, by whatever name the platform gives them"
+    )
+    comment_count: int = Field(
+        default=0,
+        description="Direct replies, named for the concept the sources share rather than for any one platform's word for it",
+    )
     taken_at: datetime | None = Field(default=None, description="When it was published")
 
     @computed_field
@@ -119,23 +112,19 @@ class PlatformConversation[OutputT: PlatformOutput](BaseModel):
     A field a platform cannot fill is still carried rather than dropped, so the accessors mean
     the same thing everywhere — `chain` is a list even where a platform serves no ancestors, and
     `selected_comment_id` is empty on a platform whose replies have URLs of their own.
-
-    Attributes:
-        chain: The chain ending at the linked post, ordered `[root, ..., parent, target]`.
-        reply_branches: One list per reply branch under the target, each ordered from the direct
-            reply outward, so an item's index in its branch is its nesting depth.
-        selected_comment_id: The comment the URL singled out, for a platform whose links can.
     """
 
     chain: list[OutputT] = Field(
-        default_factory=list, description="The chain ending at the linked post, root first"
+        default_factory=list,
+        description="The chain ending at the linked post, ordered `[root, ..., parent, target]`",
     )
     reply_branches: list[list[OutputT]] = Field(
         default_factory=list,
-        description="One list per reply branch under the target, direct reply first",
+        description="One list per reply branch under the target, each ordered from the direct reply outward, so an item's index in its branch is its nesting depth",
     )
     selected_comment_id: str = Field(
-        default="", description="The comment the URL singled out, empty when it named none"
+        default="",
+        description="The comment the URL singled out on a platform whose links can name one, empty when it named none",
     )
 
     @computed_field

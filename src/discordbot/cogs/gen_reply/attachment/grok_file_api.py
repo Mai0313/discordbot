@@ -69,12 +69,7 @@ GROK_FILE_EXPIRY_SECONDS = 2_592_000
 
 
 class GrokFileUploader(AttachmentRenderer):
-    """Uploads file attachments to the xAI Files API and references them by file id.
-
-    Attributes:
-        config: Runtime LLM config supplying the xAI Files API key for the upload client.
-        image_renderer: Renderer images fall back to, since xAI takes no image file id.
-    """
+    """Uploads file attachments to the xAI Files API and references them by file id."""
 
     config: LLMConfig = Field(
         default_factory=LLMConfig,
@@ -82,7 +77,10 @@ class GrokFileUploader(AttachmentRenderer):
     )
     image_renderer: InlineRenderer = Field(
         default_factory=InlineRenderer,
-        description="Renderer used for images, which xAI accepts only inline or by public URL.",
+        description=(
+            "Renderer images fall back to, since xAI takes no image file id and accepts them "
+            "only inline or by public URL."
+        ),
     )
 
     @cached_property

@@ -244,29 +244,30 @@ class ReplyContextBuilder(BaseModel):
     Everything here reads and nothing writes, which is what lets the pipeline start the build
     speculatively alongside the route call and throw it away when the route turns out not to
     need it.
-
-    Attributes:
-        client: The shared LiteLLM-proxy client, for the optional memory-selection request.
-        bot: The Discord bot instance, whose user id is excluded from every memory allowlist.
-        toolkit: The reply toolkit, which owns the input builder and the model tiers.
-        message: The message being answered.
-        surface: Where this turn is happening, for the history read and the memory compartments.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     client: SkipValidation[AsyncOpenAI] = Field(
-        ..., description="Shared LiteLLM-proxy client used for the memory-selection request."
+        ...,
+        description="Shared LiteLLM-proxy client used for the optional memory-selection request.",
     )
     bot: SkipValidation[commands.Bot] = Field(
-        ..., description="The Discord bot instance, excluded from every memory allowlist."
+        ...,
+        description=(
+            "The Discord bot instance, whose user id is excluded from every memory allowlist."
+        ),
     )
     toolkit: ReplyToolkit = Field(
         ..., description="The reply toolkit's clients, model catalog and input builder."
     )
     message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
-        ..., description="Where this turn is happening: its history source and its guild."
+        ...,
+        description=(
+            "Where this turn is happening: its history source, and the guild its memory "
+            "compartments are scoped to."
+        ),
     )
 
     async def fetch_history(self, *, limit: int) -> list[Message]:

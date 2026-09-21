@@ -117,9 +117,6 @@ class InstagramURL(BaseModel):
 
     Unlike a Threads or Facebook share link, every accepted spelling names its post directly, so
     there is no redirect to resolve and `shortcode` is empty only when the URL is not a post.
-
-    Attributes:
-        raw_url: Original Instagram URL provided by the caller.
     """
 
     raw_url: str = Field(..., description="Original Instagram URL provided by the caller")
@@ -158,12 +155,7 @@ class InstagramURL(BaseModel):
 
 
 class FetchedPage(BaseModel):
-    """One page fetch: its HTML and the URL the request ended on.
-
-    Attributes:
-        html: The fetched page's HTML body.
-        final_url: The URL the request ended on after redirects.
-    """
+    """One page fetch: its HTML and the URL the request ended on."""
 
     html: str = Field(..., description="The fetched page's HTML body")
     final_url: str = Field(..., description="The URL the request ended on after redirects")
@@ -186,14 +178,14 @@ class InstagramOutput(PlatformOutput):
     Two inherited fields mean something narrower here. `url` is the POST's permalink even on a
     comment, since a comment permalink is not fetchable (see the module docstring) and would only
     publish a dead link; `comment_count` is zero on a comment.
-
-    Attributes:
-        author_full_name: The author's display name, which comments do not carry.
-        comment_id: The comment's own numeric id; empty on the post itself.
     """
 
-    author_full_name: str = Field(default="", description="The author's display name")
-    comment_id: str = Field(default="", description="The comment's own id; empty on the post")
+    author_full_name: str = Field(
+        default="", description="The author's display name, which comments do not carry"
+    )
+    comment_id: str = Field(
+        default="", description="The comment's own numeric id; empty on the post itself"
+    )
 
 
 class InstagramConversation(PlatformConversation[InstagramOutput]):

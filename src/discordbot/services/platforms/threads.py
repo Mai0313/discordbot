@@ -106,9 +106,6 @@ class ThreadsURL(BaseModel):
     Handles both shapes `THREADS_URL_RE` accepts, but only the canonical one names its post:
     `post_code` is empty for a `share/<code>` link, which is the signal to resolve it by fetching
     (see `ThreadsDownloader.extract_post_data`).
-
-    Attributes:
-        raw_url: Original Threads URL provided by the caller.
     """
 
     raw_url: str = Field(..., description="Original Threads URL provided by the caller")
@@ -154,53 +151,32 @@ class ThreadsURL(BaseModel):
 
 
 class User(_ThreadsModel):
-    """Represents a Threads user.
-
-    Attributes:
-        username: User handle.
-        profile_pic_url: Profile picture URL.
-    """
+    """Represents a Threads user."""
 
     username: str = Field(default="", description="Username handle")
     profile_pic_url: str = Field(default="", description="Profile picture URL")
 
 
 class Caption(_ThreadsModel):
-    """Represents caption text attached to a Threads post.
-
-    Attributes:
-        text: Caption text content.
-    """
+    """Represents caption text attached to a Threads post."""
 
     text: str = Field(default="", description="Caption text content")
 
 
 class VideoVersion(_ThreadsModel):
-    """Represents an available video rendition.
-
-    Attributes:
-        url: Video file URL.
-    """
+    """Represents an available video rendition."""
 
     url: str = Field(default="", description="Video file URL")
 
 
 class ImageCandidate(_ThreadsModel):
-    """Represents an available image rendition.
-
-    Attributes:
-        url: Image URL.
-    """
+    """Represents an available image rendition."""
 
     url: str = Field(default="", description="Image URL")
 
 
 class ImageVersions2(_ThreadsModel):
-    """Holds available image renditions for a media object.
-
-    Attributes:
-        candidates: Available image resolutions.
-    """
+    """Holds available image renditions for a media object."""
 
     candidates: list[ImageCandidate] = Field(
         default_factory=list, description="Available image resolutions"
@@ -208,12 +184,7 @@ class ImageVersions2(_ThreadsModel):
 
 
 class CarouselMedia(_ThreadsModel):
-    """Represents one media item in a Threads carousel.
-
-    Attributes:
-        video_versions: Available video renditions.
-        image_versions2: Available image renditions.
-    """
+    """Represents one media item in a Threads carousel."""
 
     video_versions: list[VideoVersion] | None = Field(
         default=None, description="Available video versions"
@@ -224,13 +195,7 @@ class CarouselMedia(_ThreadsModel):
 
 
 class MediaContainer(_ThreadsModel):
-    """Contains media fields shared by posts and linked inline media.
-
-    Attributes:
-        carousel_media: Carousel media items.
-        video_versions: Available video renditions.
-        image_versions2: Available image renditions.
-    """
+    """Contains media fields shared by posts and linked inline media."""
 
     carousel_media: list[CarouselMedia] | None = Field(
         default=None, description="Carousel media items"
@@ -265,21 +230,13 @@ class MediaContainer(_ThreadsModel):
 
 
 class Fragment(_ThreadsModel):
-    """Represents one text fragment from Threads structured text.
-
-    Attributes:
-        plaintext: Plain text content of the fragment.
-    """
+    """Represents one text fragment from Threads structured text."""
 
     plaintext: str = Field(default="", description="Plain text content of the fragment")
 
 
 class TextFragments(_ThreadsModel):
-    """Holds ordered structured text fragments.
-
-    Attributes:
-        fragments: Ordered list of text fragments.
-    """
+    """Holds ordered structured text fragments."""
 
     fragments: list[Fragment] = Field(
         default_factory=list, description="Ordered list of text fragments"
@@ -287,13 +244,7 @@ class TextFragments(_ThreadsModel):
 
 
 class LinkPreviewAttachment(_ThreadsModel):
-    """Represents metadata for a link preview attachment.
-
-    Attributes:
-        title: Title shown in the link preview.
-        image_url: Image shown in the link preview.
-        url: Original link preview URL.
-    """
+    """Represents metadata for a link preview attachment."""
 
     title: str = Field(default="", description="Title shown in the link preview")
     image_url: str = Field(default="", description="Image shown in the link preview")
@@ -301,12 +252,7 @@ class LinkPreviewAttachment(_ThreadsModel):
 
 
 class LinkedInlineMedia(MediaContainer):
-    """Represents media attached through a link preview.
-
-    Attributes:
-        code: Linked media short code.
-        caption: Linked media caption.
-    """
+    """Represents media attached through a link preview."""
 
     code: str = Field(default="", description="Linked media short code")
     caption: Caption | None = Field(default=None, description="Linked media caption")
@@ -335,9 +281,6 @@ class ShareInfo(_ThreadsModel):
     of its own — was never non-null across the 351 posts that carry the key, so its shape is
     simply unknown. `quoted_attachment_post_unavailable` is modelled by neither: see
     `Post.is_unavailable` for why the flag is not the tell it looks like.
-
-    Attributes:
-        quoted_post: The post this one quotes, absent when it quotes nothing.
     """
 
     quoted_post: "Post | None" = Field(
@@ -374,11 +317,7 @@ class ShareInfo(_ThreadsModel):
 
 
 class PostEdge(_ThreadsModel):
-    """One edge of a connection of posts.
-
-    Attributes:
-        node: The post this edge carries.
-    """
+    """One edge of a connection of posts."""
 
     node: "Post | None" = Field(default=None, description="The post this edge carries")
 
@@ -403,11 +342,7 @@ class PostEdge(_ThreadsModel):
 
 
 class PostConnection(_ThreadsModel):
-    """A connection of posts, in the order the page serialised them.
-
-    Attributes:
-        edges: The connection's edges, in page order.
-    """
+    """A connection of posts, in the order the page serialised them."""
 
     edges: list[PostEdge] = Field(
         default_factory=list, description="The connection's edges, in page order"
@@ -427,9 +362,6 @@ class PostThread(_ThreadsModel):
     """One thread of posts: the chain above the target, or one branch of replies below it.
 
     Threads serialises both in the same shape, so one model serves both.
-
-    Attributes:
-        posts: The thread's posts, oldest first.
     """
 
     posts: PostConnection | None = Field(
@@ -438,11 +370,7 @@ class PostThread(_ThreadsModel):
 
 
 class ThreadEdge(_ThreadsModel):
-    """One edge of a connection of threads.
-
-    Attributes:
-        node: The thread this edge carries.
-    """
+    """One edge of a connection of threads."""
 
     node: PostThread | None = Field(default=None, description="The thread this edge carries")
 
@@ -468,11 +396,7 @@ class ThreadEdge(_ThreadsModel):
 
 
 class ThreadConnection(_ThreadsModel):
-    """A connection of threads, in the order the page ranked them.
-
-    Attributes:
-        edges: The connection's edges, in page order.
-    """
+    """A connection of threads, in the order the page ranked them."""
 
     edges: list[ThreadEdge] = Field(
         default_factory=list, description="The connection's edges, in page order"
@@ -493,22 +417,7 @@ class ThreadConnection(_ThreadsModel):
 
 
 class TextPostAppInfo(_ThreadsModel):
-    """Represents Threads-specific post metadata and engagement fields.
-
-    Attributes:
-        direct_reply_count: Number of direct replies.
-        repost_count: Number of reposts.
-        quote_count: Number of quote posts.
-        reshare_count: Total reshare count.
-        text_fragments: Structured text fragments with links or mentions.
-        link_preview_attachment: Preview metadata for shared links.
-        linked_inline_media: Inline media attached through a link preview.
-        is_post_unavailable: Whether the post this info belongs to is deleted or private.
-        reply_to_author: User this post is directly replying to, if any.
-        share_info: What this post quotes or reposts.
-        containing_thread: The posts above this one in its thread, this one excluded.
-        direct_replies: One thread per branch of replies under this post.
-    """
+    """Represents Threads-specific post metadata and engagement fields."""
 
     direct_reply_count: int | None = Field(default=None, description="Number of direct replies")
     repost_count: int | None = Field(default=None, description="Number of reposts")
@@ -528,10 +437,10 @@ class TextPostAppInfo(_ThreadsModel):
     # coerces one only on `str` fields, so a plain `bool` would raise and take the whole fragment
     # down with it (`_collect_fragments` drops a fragment that fails validation).
     is_post_unavailable: bool | None = Field(
-        default=None, description="True when this post is deleted or private"
+        default=None, description="True when the post this info belongs to is deleted or private"
     )
     reply_to_author: User | None = Field(
-        default=None, description="User this post is directly replying to"
+        default=None, description="User this post is directly replying to, if any"
     )
     share_info: ShareInfo | None = Field(
         default=None, description="What this post quotes or reposts"
@@ -547,17 +456,7 @@ class TextPostAppInfo(_ThreadsModel):
 
 
 class Post(MediaContainer):
-    """Represents a single Threads post parsed from the API JSON.
-
-    Attributes:
-        id: Media id, `<post_pk>_<author_pk>`.
-        code: Post short code used in URLs.
-        caption: Post caption.
-        user: Post author.
-        text_post_app_info: Threads-specific post info and engagement metrics.
-        like_count: Number of likes.
-        taken_at: Post creation timestamp as a Unix epoch.
-    """
+    """Represents a single Threads post parsed from the API JSON."""
 
     # The one field every fragment of a split payload carries, and so the only thing that says
     # two of them describe the same post; `_thread_around` is what reads it that way.
@@ -733,20 +632,15 @@ class ThreadsPage(BaseModel):
     A post page serialises the target post, the thread above it and each branch of replies below
     it as separate fragments of one payload. This is those fragments joined back together, split
     into the two parts the callers actually want.
-
-    Attributes:
-        chain: The chain ending at the target, ordered `[root, ..., parent, target]`; empty
-            when the page carried no such post.
-        reply_branches: One list per reply branch under the target, each ordered from the
-            direct reply outward, so an item's index in its branch is its nesting depth.
     """
 
     chain: list[Post] = Field(
-        default_factory=list, description="The chain ending at the target, root first"
+        default_factory=list,
+        description="The chain ending at the target, ordered `[root, ..., parent, target]`; empty when the page carried no such post",
     )
     reply_branches: list[list[Post]] = Field(
         default_factory=list,
-        description="One list per reply branch under the target, direct reply first",
+        description="One list per reply branch under the target, each ordered from the direct reply outward, so an item's index in its branch is its nesting depth",
     )
 
     @property
@@ -767,10 +661,6 @@ class FetchedPage(BaseModel):
     the fetch already followed is the only thing that names it. Reading it off the response costs
     nothing, while resolving it separately would spend another round trip on the reply pipeline's
     critical path.
-
-    Attributes:
-        html: The fetched page's HTML body.
-        final_url: The URL the request ended on, after every redirect it followed.
     """
 
     html: str = Field(..., description="The fetched page's HTML body")
@@ -791,10 +681,6 @@ class ParsedPage(BaseModel):
     It is not the whole answer, because a page the platform served ABOUT the post and then
     refused carries no post JSON either. `_served_route` is what tells those apart before this
     flag is ever read.
-
-    Attributes:
-        page: The posts this page yielded; empty when it held no such post.
-        carried_post_json: Whether any script block on the page held post JSON at all.
     """
 
     page: ThreadsPage = Field(
@@ -813,15 +699,6 @@ class ThreadsOutput(PlatformOutput):
     The nine shared fields and `is_readable` come from `PlatformOutput`; what is declared here is
     Threads' own reality — the files this path writes to disk, the three reshare counters Threads
     publishes separately, who a reply answers, and the post it quotes.
-
-    Attributes:
-        video_paths: Local paths of downloaded videos.
-        reply_to_username: Username this post replies to, if any.
-        repost_count: Number of reposts.
-        quote_count: Number of quote posts.
-        share_count: Total reshare count, the same concept Facebook counts as shares.
-        quoted: The post this one quotes, when it quotes a readable one.
-        quoted_unavailable: Whether this post quotes a post Threads reports as gone.
     """
 
     video_paths: list[Path] = Field(
@@ -832,7 +709,9 @@ class ThreadsOutput(PlatformOutput):
     )
     repost_count: int = Field(default=0, description="Number of reposts")
     quote_count: int = Field(default=0, description="Number of quote posts")
-    share_count: int = Field(default=0, description="Total reshare count")
+    share_count: int = Field(
+        default=0, description="Total reshare count, the same concept Facebook counts as shares"
+    )
     # Its own media stays URL-only in this walk: `video_paths` is always empty here because
     # `_build_output` never downloads for a quoted post, which is also what keeps `parse` and
     # `parse_metadata` producing equal trees. The expansion links a quoted clip instead of
@@ -925,11 +804,7 @@ THREADS_EMPTY_PAGE_RETRY_DELAY_SECONDS = 0.8
 
 
 class ThreadsDownloader(PlatformDownloader):
-    """A downloader for extracting text and media from Threads posts.
-
-    Attributes:
-        output_folder: Directory where downloaded media files are written.
-    """
+    """A downloader for extracting text and media from Threads posts."""
 
     output_folder: str = Field(
         ..., description="Directory where downloaded media files are written"

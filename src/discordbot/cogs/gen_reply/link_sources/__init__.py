@@ -63,18 +63,20 @@ class PostSeparators(BaseModel):
 
     Three strings rather than one, because which of the first two opens the block is decided by
     what actually arrived rather than by what the post has.
-
-    Attributes:
-        attached: Opens the block when the post's media really is below it.
-        text_only: Opens it instead when media EXISTS and did not arrive, so the model says what
-            it has rather than inventing a scene. Never used for a post that simply carries none,
-            which would have it apologise for nothing.
-        trailer: Closes the quoted block, and is always its last part.
     """
 
-    attached: str = Field(..., description="Opens the block when the media is below it.")
-    text_only: str = Field(..., description="Opens it when media exists and did not arrive.")
-    trailer: str = Field(..., description="Closes the quoted block, always last.")
+    attached: str = Field(
+        ..., description="Opens the block when the post's media really is below it."
+    )
+    text_only: str = Field(
+        ...,
+        description=(
+            "Opens it instead when media EXISTS and did not arrive, so the model says what it "
+            "has rather than inventing a scene. Never used for a post that simply carries none, "
+            "which would have it apologise for nothing."
+        ),
+    )
+    trailer: str = Field(..., description="Closes the quoted block, and is always its last part.")
 
 
 def post_context_blocks(

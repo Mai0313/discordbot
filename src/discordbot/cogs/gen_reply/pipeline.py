@@ -68,20 +68,7 @@ async def discard_link_tasks(
 
 
 class ReplyPipeline(BaseModel):
-    """Routes one message and dispatches the handler the route named.
-
-    Attributes:
-        client: The shared LiteLLM-proxy client every phase dispatches on.
-        bot: The Discord bot instance, for its own user and the cross-cog hops.
-        config: Runtime LLM config, read for the per-feature kill-switches.
-        media_delivery: The process-wide attach-vs-host-vs-drop planner.
-        usage_recorder: Writes the one usage record this turn produces.
-        toolkit: The clients, generators and caches every phase of this turn is built on.
-        message: The message being answered.
-        surface: Where this turn happens: its replies, its history and its guild.
-        user_prompt: The mention-stripped request text the media routes render from.
-        reactions: The ordered status-reaction chain on the source message.
-    """
+    """Routes one message and dispatches the handler the route named."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 

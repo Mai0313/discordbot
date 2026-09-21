@@ -151,17 +151,7 @@ def memory_report_for(
 
 
 class AnswerTurn(BaseModel):
-    """Streams one reply's prose, on the QA path or onto delivered media.
-
-    Attributes:
-        client: The shared LiteLLM-proxy client every answer request dispatches on.
-        bot: The Discord bot instance, for its own user (reactions) and the research hop.
-        config: Runtime LLM config, read for the inline-marker kill-switches.
-        media_delivery: The attach-vs-host-vs-drop planner handed to the streamer.
-        toolkit: The reply toolkit's clients, generators and model catalog.
-        message: The message being answered.
-        surface: Where this turn's replies go, and which guild it is really happening in.
-    """
+    """Streams one reply's prose, on the QA path or onto delivered media."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -169,7 +159,8 @@ class AnswerTurn(BaseModel):
         ..., description="Shared LiteLLM-proxy client every answer request dispatches on."
     )
     bot: SkipValidation[commands.Bot] = Field(
-        ..., description="The Discord bot instance, for its own user and the research hop."
+        ...,
+        description="The Discord bot instance, for its own user (reactions) and the research hop.",
     )
     config: SkipValidation[LLMConfig] = Field(
         ..., description="Runtime LLM config, read for the inline-marker kill-switches."
@@ -182,7 +173,7 @@ class AnswerTurn(BaseModel):
     )
     message: SkipValidation[Message] = Field(..., description="The message being answered.")
     surface: TurnSurface = Field(
-        ..., description="Where this turn's replies go, and which guild it is happening in."
+        ..., description="Where this turn's replies go, and which guild it is really happening in."
     )
 
     async def stream_media_persona_reply(  # noqa: PLR0913 -- shared by IMAGE/VIDEO; the prompt / focus part / noun / span differ per route

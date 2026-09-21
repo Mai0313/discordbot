@@ -10,11 +10,7 @@ dotenv.load_dotenv()
 
 
 class DiscordConfig(BaseSettings):
-    """Configuration settings for the Discord bot, reading from environment variables.
-
-    Attributes:
-        discord_bot_token: The authentication token for the Discord bot.
-    """
+    """Configuration settings for the Discord bot, reading from environment variables."""
 
     discord_bot_token: str = Field(
         ...,

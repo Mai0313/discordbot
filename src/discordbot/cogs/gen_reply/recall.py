@@ -126,10 +126,6 @@ class RecallCandidate(BaseModel):
     which would put another server's nickname in this channel's footer. A bare id is no better —
     it reads as something the bot just recorded about them, and names someone the channel cannot
     resolve anyway.
-
-    Attributes:
-        prompt_label: Label the model reads, community aliases included.
-        credit_label: Short footer credit, or None when only the alias table names this user.
     """
 
     prompt_label: str = Field(
@@ -145,14 +141,7 @@ class RecallCandidate(BaseModel):
 
 
 class UserMemory(BaseModel):
-    """One user's long-term memory returned by the `get_user_memory` tool.
-
-    Attributes:
-        prompt_label: Label the model reads for this user, community aliases included.
-        credit_label: Short footer credit, or None when nothing here can name this user.
-        user_id: String form of the Discord user id.
-        memory: Consolidated long-term memory markdown, identity-stripped.
-    """
+    """One user's long-term memory returned by the `get_user_memory` tool."""
 
     prompt_label: str = Field(
         ..., description="Label the model reads for this user, community aliases included."
@@ -167,19 +156,18 @@ class UserMemory(BaseModel):
 
 
 class RecallSelection(BaseModel):
-    """Optional third-party memories chosen by the selector plus its token usage.
-
-    Attributes:
-        memories: Additional user memories the model chose, allowlist-enforced and deduped.
-        input_tokens: Input tokens the selection request consumed, for reply accounting.
-        output_tokens: Output tokens the selection request consumed, for reply accounting.
-    """
+    """Optional third-party memories chosen by the selector plus its token usage."""
 
     memories: list[UserMemory] = Field(
-        ..., description="Allowlist-enforced additional memories the model chose."
+        ...,
+        description="Additional user memories the model chose, allowlist-enforced and deduped.",
     )
-    input_tokens: int = Field(..., description="Input tokens the selection request consumed.")
-    output_tokens: int = Field(..., description="Output tokens the selection request consumed.")
+    input_tokens: int = Field(
+        ..., description="Input tokens the selection request consumed, for reply accounting."
+    )
+    output_tokens: int = Field(
+        ..., description="Output tokens the selection request consumed, for reply accounting."
+    )
 
 
 def _user_label(user: Member | User) -> str:
