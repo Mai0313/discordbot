@@ -3,40 +3,28 @@
 The engine is a module-level `AsyncEngine` singleton. Putting
 `create_async_engine()` on a per-instance `cached_property` would leak the
 connection pool, dialect cache, and inspector cache for every Discord
-interaction (the same lesson `cogs/log_msg/cog.py` captures for the sync engine
-it still uses for pandas `to_sql`).
+interaction.
 
 Every balance-mutating write path is atomic at the SQLite transaction level.
 Most paths are a single UPSERT (`INSERT ... ON CONFLICT DO UPDATE`) or a
 conditional `UPDATE ... WHERE ... RETURNING`; multi-row finance paths still roll
-back as one unit when a conditional write loses a race. The previous
-implementation read the row in Python, mutated `account.balance`, and
-committed; two coroutines racing on the same user would lose updates, and two
-coroutines racing on a brand-new user would both `INSERT` and one would raise
-`IntegrityError`.
+back as one unit when a conditional write loses a race. Reading a row into
+Python and writing the mutated value back would lose an update whenever two
+coroutines race on the same user, and would raise `IntegrityError` when two of
+them insert the same brand-new user.
 
-PRAGMA setup at connect-time enables WAL (so reads don't block on writes),
-sets a tolerant `busy_timeout`, and picks `synchronous=NORMAL` (the right
-durability trade-off in WAL: every commit fsyncs the WAL frame, and the
-main file is fsynced on checkpoint).
-
-We use `aiosqlite` so every DB call stays on the event loop: no
-`asyncio.to_thread` shim, no separate `_*_sync` helpers. Each operation
+We use `aiosqlite` so every DB call stays on the event loop. Each operation
 opens an `AsyncSession` bound to the current `_engine`, so tests can
 monkeypatch `_engine` per-test and every subsequent call sees the swap.
 
-VIP, admin status, and leaderboard visibility are boolean columns on
-`user_account`. VIP bumps the player's winning payout from games. The flag is
-permanent once set. Admin and central-banker
-status gate maintenance-only economy commands and are set out-of-band by a
-direct DB write; `set_admin` / `set_central_banker` exist for that path, but
-nothing at runtime calls them. Daily casino counters live on `casino_account` so
-`/loss_leaderboard` can read current-day gross losses without scanning an audit
-log.
+VIP bumps the player's winning payout from games and is permanent once set.
+Admin and central-banker status gate maintenance-only economy commands and are
+set out-of-band by a direct DB write; `set_admin` / `set_central_banker` exist
+for that path rather than for a runtime caller. Daily casino counters live on
+`casino_account` so a current-day loss ranking needs no audit-log scan.
 
-Long-term lending lives in `loan_proposal` and `loan_contract`. Personal
-loan requests debit the lender on acceptance, and central-bank loans mint
-borrower balance on approval.
+Personal loan requests debit the lender on acceptance, and central-bank loans
+mint borrower balance on approval.
 
 Shared jackpot pools and the casino ledger live in the same `economy.db` file
 as the per-user rows, so runtime casino and jackpot settlement applies the
@@ -47,7 +35,7 @@ from time import monotonic
 from typing import Any, Final, Literal
 import asyncio
 from datetime import datetime, timedelta
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import logfire
 from sqlalchemy import (
@@ -109,9 +97,8 @@ from discordbot.utils.stored_integer import StoredInteger, int_add_text, int_com
 from discordbot.utils.stored_integer import stored_int_to_int as _stored_int_to_int
 from discordbot.utils.stored_integer import stored_int_to_text as _stored_int_to_text
 
-# SELECT-then-conditional-UPDATE loops keep a small retry budget. With WAL +
-# busy_timeout, contention is rare and resolves on the first or second retry;
-# the bound prevents a degenerate hot-row livelock.
+# SELECT-then-conditional-UPDATE loops keep a small retry budget. The bound is
+# there to stop a degenerate hot-row livelock, not to ride out contention.
 _VIP_PURCHASE_MAX_RETRIES: Final[int] = 8
 _CLAMPED_DELTA_MAX_RETRIES: Final[int] = 8
 _JACKPOT_CLAIM_MAX_RETRIES: Final[int] = 8
@@ -138,7 +125,6 @@ class UserAccount(Base):
     `casino_account`.
 
     Attributes:
-        user_id: Discord user ID; primary key.
         name: Last-seen Discord username (refreshed on every write).
         avatar_url: Last-seen Discord avatar URL (refreshed on writes that carry it).
         updated_at: Taiwan-local timestamp of the last write.
@@ -173,9 +159,9 @@ class UserWallet(Base):
 
     __tablename__ = "user_wallet"
     __table_args__ = (
-        # StoredInteger persists decimal text, so /leaderboard uses an integer-aware
-        # ORDER BY expression. This index still helps point lookups and future
-        # schema migration paths, but it cannot satisfy that computed sort by itself.
+        # No query filters on the balance alone — the two that mention it pin the primary
+        # key as well — and the ranking sort is a computed integer-aware expression this
+        # cannot satisfy either. It stays because the schema is never altered in place.
         Index("ix_user_wallet_balance", "balance"),
     )
 
@@ -193,7 +179,6 @@ class CasinoAccount(Base):
     """Daily per-user casino counters for loss leaderboard queries.
 
     Attributes:
-        user_id: Discord user ID; primary key.
         name: Last-seen Discord username for quick inspection.
         day_started_at: Asia/Taipei midnight for the stored counters.
         daily_loss: Current-day gross loss from player-side casino settlements, stored as a decimal string.
@@ -204,7 +189,7 @@ class CasinoAccount(Base):
 
     __tablename__ = "casino_account"
     __table_args__ = (
-        # /loss_leaderboard filters to one Taipei day, which this index serves.
+        # The daily loss ranking filters to one Taipei day, which this index serves.
         # Its ordering half does not: the counters are decimal text, so the
         # query sorts by length(daily_loss) first and SQLite falls back to a
         # temp B-tree for the ORDER BY.
@@ -254,9 +239,9 @@ class LoanProposal(Base):
     monthly_rate_bps: Mapped[int] = mapped_column(
         Integer, default=DEFAULT_LOAN_MONTHLY_RATE_BPS, nullable=False
     )
-    # Always zero today: nothing escrows a proposal any more. The column is kept
-    # because `_ensure_schema` is one `create_all`, which never alters an existing
-    # table, so dropping it would break a deployed database.
+    # Always zero: nothing escrows a proposal. The column stays because
+    # `_ensure_schema` is one `create_all`, which never alters an existing table,
+    # so dropping it would break a deployed database.
     escrow_amount: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_database_now)
     updated_at: Mapped[datetime] = mapped_column(
@@ -312,7 +297,6 @@ class JackpotPool(Base):
     contributions.
 
     Attributes:
-        game_id: Stable game identifier (e.g. `"dragon_gate"`); primary key.
         pool_balance: Current spendable jackpot for the game.
         total_contributed: Lifetime gross amount that flowed into the pool
             (positive deltas from player losses + ante).
@@ -342,14 +326,12 @@ class CasinoLedger(Base):
     """Cumulative profit and loss for the casino system (cross-server).
 
     The casino is the dealer in Blackjack. Player wins flow out of this row,
-    player losses flow in. There is no bot-account coupling: the bot is now a
-    regular player at the table, and its `user_wallet` no longer doubles as
-    the house ledger. `balance` may go negative when payouts exceed take-in;
-    `total_earned` and `total_spent` accumulate gross flows so `/casino` can
-    show direction of volume, not just net.
+    player losses flow in. The bot sits at the table as an ordinary player, so
+    its `user_wallet` is not the house ledger; this row is. `balance` may go
+    negative when payouts exceed take-in; `total_earned` and `total_spent`
+    accumulate gross flows so a reader can see direction of volume, not just net.
 
     Attributes:
-        ledger_id: Stable identifier (e.g. `"casino"`); primary key.
         balance: Signed cumulative P&L.
         total_earned: Lifetime gross inflows (from player losses).
         total_spent: Lifetime gross outflows (to player wins).
@@ -371,19 +353,9 @@ CASINO_LEDGER_ID: Final[str] = "casino"
 
 
 # On-the-house seed amount for each registered jackpot pool. The seed is
-# bookkeeping only — no wallet and no casino ledger row is debited to fund it,
-# so /casino P&L stays unaffected by the donation. Seeded pools are also
-# topped back up to this amount whenever they are drained.
-_JACKPOT_SEEDS: Final[tuple[tuple[str, int], ...]] = (("dragon_gate", 1_000),)
-
-
-def _jackpot_seed_amount(game_id: str) -> int:
-    """Returns the configured seed amount for a jackpot game."""
-    for seed_game_id, seed_amount in _JACKPOT_SEEDS:
-        if seed_game_id == game_id:
-            return seed_amount
-    return 0
-
+# bookkeeping only — nothing is debited to fund it, so casino P&L never moves
+# for it. A seeded pool is topped back up to this amount whenever it drains.
+_JACKPOT_SEEDS: Final[Mapping[str, int]] = {"dragon_gate": 1_000}
 
 _loan_accept_lock = LoopLocalLock()
 type _TopNCacheKey = tuple[int, int | None, bool]
@@ -450,7 +422,7 @@ async def _seed_singleton_rows(conn: AsyncConnection) -> None:
     Args:
         conn: The open connection `create_all` just ran on.
     """
-    for seed_game_id, seed_amount in _JACKPOT_SEEDS:
+    for seed_game_id, seed_amount in _JACKPOT_SEEDS.items():
         await conn.execute(
             statement=insert(JackpotPool)
             .values(
@@ -477,8 +449,7 @@ async def _seed_singleton_rows(conn: AsyncConnection) -> None:
     )
 
 
-# Foreign keys are enabled defensively for any future FK constraint; economy is the only
-# one of the six databases that asks for them.
+# Foreign keys are enabled defensively for any future FK constraint.
 _database = SqliteBootstrap(
     metadata=Base.metadata, enable_foreign_keys=True, after_create=_seed_singleton_rows
 )
@@ -561,11 +532,11 @@ def _build_signed_delta_upsert(
 ) -> ReturningInsert[tuple[int]]:
     """UPSERT applying a signed `delta` with NO clamp on wallet balance.
 
-    Reached only by `adjust_balance(allow_negative=True)`, i.e. the offline
-    `scripts/modify_balance.py --allow-negative` path; the casino's own
-    negative P&L is a `casino_ledger` row, not a wallet. `total_earned` /
-    `total_spent` still accumulate gross flows, so
-    `balance == total_earned - total_spent` holds through a negative balance.
+    Only an explicitly unclamped adjustment may use this; a player-side loss
+    clamps at zero, and the casino's own negative P&L is a `casino_ledger` row
+    rather than a wallet. `total_earned` / `total_spent` still accumulate gross
+    flows, so `balance == total_earned - total_spent` holds through a negative
+    balance.
 
     Returns:
         A SQLAlchemy `Insert` with `on_conflict_do_update` and `returning(balance)`.
@@ -647,10 +618,10 @@ async def _credit_with_repayment_in_session(  # noqa: PLR0913 -- session helper 
 ) -> CreditResult:
     """Credits income inside the caller's transaction.
 
-    Long-term loans are explicit repayment actions now, so passive income does
-    not auto-repay debt. The public function name is preserved because message
-    and chat reward callers are intentionally routed through one income facade.
-    Caller must guarantee `amount > 0`.
+    Despite the name, nothing here repays a loan: income does not settle debt,
+    which takes an explicit repayment or collection. The name stays because
+    routing income through a single facade is deliberate. Caller must guarantee
+    `amount > 0`.
     """
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
@@ -777,9 +748,8 @@ async def _apply_signed_delta_in_session(  # noqa: PLR0913 -- session helper nee
 ) -> int:
     """Applies a signed delta without clamping.
 
-    Reached only by `adjust_balance(allow_negative=True)`. Player-side losses
-    use the clamped path, and the casino mirror has its own row writer
-    (`_apply_casino_ledger_delta_in_session`).
+    Player-side losses use the clamped path, and the casino mirror has its own
+    row writer (`_apply_casino_ledger_delta_in_session`).
     """
     await _upsert_user_metadata_in_session(
         session=session, user_id=user_id, name=name, avatar_url=avatar_url, now=now
@@ -946,9 +916,8 @@ async def credit_with_repayment(
 ) -> CreditResult:
     """Credits `amount` to the user through the shared income path.
 
-    Long-term loans must be repaid with explicit repayment or collection
-    commands. Message, chat, and casino payout income therefore lands fully in
-    balance and only increases `total_earned`.
+    A long-term loan is settled only by an explicit repayment or collection, so
+    income lands fully in balance and only increases `total_earned`.
 
     Args:
         user_id: Discord user ID receiving the credit.
@@ -1119,11 +1088,9 @@ async def apply_blackjack_settlement(
 async def get_jackpot_pool(game_id: str) -> int:
     """Returns the current `pool_balance` for a game's shared jackpot.
 
-    Reading the seeded row is the canonical way to surface the current
-    pool to a view (lobby start, every active-table refresh). Seeded pools
-    are replenished before returning if an older process left them drained.
-    Returns `0` when the row hasn't been seeded yet so a freshly-introduced
-    game can short-circuit cleanly.
+    Seeded pools are replenished before returning if an older process left them
+    drained. Returns `0` when the row hasn't been seeded yet so a
+    freshly-introduced game can short-circuit cleanly.
 
     Args:
         game_id: Game identifier (e.g. `"dragon_gate"`).
@@ -1150,7 +1117,7 @@ async def _replenish_jackpot_if_depleted_in_session(
     session: AsyncSession, game_id: str, balance: int, generation: int, now: datetime
 ) -> JackpotSnapshot:
     """Tops a seeded jackpot back up when the stored balance is drained."""
-    seed_amount = _jackpot_seed_amount(game_id=game_id)
+    seed_amount = _JACKPOT_SEEDS.get(game_id, 0)
     if seed_amount <= 0 or balance > 0:
         return JackpotSnapshot(balance=balance, generation=generation)
     replenishment = seed_amount - min(balance, 0)
@@ -1220,7 +1187,7 @@ async def _apply_jackpot_delta_in_session(
     )
     result = await session.execute(statement=stmt)
     pool_balance, generation = result.one()
-    jackpot_depleted = pool_balance <= 0 and _jackpot_seed_amount(game_id=game_id) > 0
+    jackpot_depleted = pool_balance <= 0 and _JACKPOT_SEEDS.get(game_id, 0) > 0
     snapshot = await _replenish_jackpot_if_depleted_in_session(
         session=session, game_id=game_id, balance=pool_balance, generation=generation, now=now
     )
@@ -1291,7 +1258,7 @@ async def _claim_jackpot_payout_in_session(
             continue
 
         pool_balance, generation = row
-        jackpot_depleted = pool_balance <= 0 and _jackpot_seed_amount(game_id=game_id) > 0
+        jackpot_depleted = pool_balance <= 0 and _JACKPOT_SEEDS.get(game_id, 0) > 0
         final_snapshot = await _replenish_jackpot_if_depleted_in_session(
             session=session, game_id=game_id, balance=pool_balance, generation=generation, now=now
         )
@@ -1309,8 +1276,6 @@ async def apply_jackpot_settlement(  # noqa: PLR0913 -- public jackpot facade mi
     expected_jackpot_generation: int | None = None,
 ) -> JackpotSettlementResult:
     """Atomic player-and-jackpot settlement for a single wager event.
-
-    This is a convenience wrapper around `apply_jackpot_settlement_batch`.
 
     Args:
         player_id: Discord user ID for the player.
@@ -1867,11 +1832,11 @@ async def transfer(  # noqa: PLR0913 -- transfer needs sender and receiver ident
 async def top_n(limit: int | None = 10, include_hidden: bool = False) -> list[LeaderboardEntry]:
     """Returns accounts ordered by balance descending.
 
-    Hidden accounts are the only thing dropped (`include_hidden`): the bot is an
-    ordinary player here and the casino's own P&L is a `casino_ledger` row, not a
-    wallet. Stored integer values are sorted in SQL with explicit decimal-text
-    aware order terms so the query can still apply `LIMIT` before rows reach
-    Python.
+    Hidden accounts are the only rows dropped (`include_hidden`): the bot ranks
+    as an ordinary player, and the casino's own P&L is a `casino_ledger` row
+    rather than a wallet. Stored integer values are sorted in SQL with explicit
+    decimal-text aware order terms so the query can still apply `LIMIT` before
+    rows reach Python.
 
     Args:
         limit: Maximum number of accounts to return, or `None` to return all

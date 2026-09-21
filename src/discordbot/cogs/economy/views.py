@@ -1,5 +1,6 @@
 """Button views for deciding public loan requests."""
 
+from typing import ClassVar
 import contextlib
 
 import nextcord
@@ -30,9 +31,21 @@ from discordbot.utils.interaction_responses import edit_response_embed, send_eph
 
 
 class LoanDecisionViewBase(View):
-    """Shared cleanup behavior for public loan-decision views."""
+    """Shared terminal behavior for public loan-decision views.
+
+    A subclass declares the wording and color of its own panels below; expiry and the
+    creator-only cancel then behave the same for both.
+    """
+
+    PANEL_COLOR: ClassVar[int]
+    TIMEOUT_TITLE: ClassVar[str]
+    CANCEL_TITLE: ClassVar[str]
+    CANCEL_CLOSED_HEADING: ClassVar[str]
+    CANCEL_DENIED_NOTICE: ClassVar[str]
 
     message: Message | None
+    proposal_id: int
+    creator_id: int
 
     def _schedule_cleanup(self, interaction: Interaction[commands.Bot] | None = None) -> None:
         """Schedules the public request message for cleanup after a terminal state."""
@@ -44,9 +57,62 @@ class LoanDecisionViewBase(View):
             user_name = interaction.user.name
         schedule_public_message_delete(message=message, user_name=user_name)
 
+    async def on_timeout(self) -> None:
+        """Rejects a stale request and cleans up its message."""
+        proposal = await reject_expired_loan_proposal(proposal_id=self.proposal_id)
+        if proposal is None or self.message is None:
+            return
+        self.stop()
+        embed = build_simple_embed(
+            title=self.TIMEOUT_TITLE,
+            description="### 申請已逾時，自動拒絕",
+            color=self.PANEL_COLOR,
+        )
+        with contextlib.suppress(Exception):
+            await self.message.edit(
+                embed=embed,
+                view=None,
+                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
+            )
+        self._schedule_cleanup()
+
+    async def _handle_cancel(self, interaction: Interaction[commands.Bot]) -> None:
+        """Cancels the request for its creator, and answers anyone else privately."""
+        if interaction.user is None:
+            return
+        if interaction.user.id != self.creator_id:
+            embed = build_error_embed(title="權限不足", description=self.CANCEL_DENIED_NOTICE)
+            await send_ephemeral_response(interaction=interaction, embed=embed)
+            return
+
+        proposal = await cancel_loan_proposal(
+            proposal_id=self.proposal_id, actor_id=interaction.user.id
+        )
+        if proposal is None:
+            embed = build_error_embed(
+                title="取消失敗", description="### 申請不存在、已處理，或你不是發起者"
+            )
+            await send_ephemeral_response(interaction=interaction, embed=embed)
+            return
+
+        embed = build_simple_embed(
+            title=self.CANCEL_TITLE,
+            description=f"{self.CANCEL_CLOSED_HEADING}\n發起者 {interaction.user.mention}",
+            color=self.PANEL_COLOR,
+        )
+        self.stop()
+        await edit_response_embed(interaction=interaction, embed=embed)
+        self._schedule_cleanup(interaction=interaction)
+
 
 class CentralBankLoanDecisionView(LoanDecisionViewBase):
     """Button controls for deciding a public central-bank loan request."""
+
+    PANEL_COLOR = CENTRAL_BANK_COLOR
+    TIMEOUT_TITLE = "🏛️ 央行申請已逾時"
+    CANCEL_TITLE = "🏛️ 央行申請已取消"
+    CANCEL_CLOSED_HEADING = "### 央行借款申請已關閉"
+    CANCEL_DENIED_NOTICE = "### 只有申請發起者可以取消央行借款申請"
 
     def __init__(
         self,
@@ -62,25 +128,6 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         self.creator_id = creator_id
         self.allow_self_approval = allow_self_approval
         self.message: Message | None = None
-
-    async def on_timeout(self) -> None:
-        """Rejects a stale central-bank request and cleans up its message."""
-        proposal = await reject_expired_loan_proposal(proposal_id=self.proposal_id)
-        if proposal is None or self.message is None:
-            return
-        self.stop()
-        embed = build_simple_embed(
-            title="🏛️ 央行申請已逾時",
-            description="### 申請已逾時，自動拒絕",
-            color=CENTRAL_BANK_COLOR,
-        )
-        with contextlib.suppress(Exception):
-            await self.message.edit(
-                embed=embed,
-                view=None,
-                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
-            )
-        self._schedule_cleanup()
 
     async def _send_permission_denied(self, interaction: Interaction[commands.Bot]) -> None:
         """Replies privately when a non-banker clicks a decision button."""
@@ -118,9 +165,7 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
             await self._send_permission_denied(interaction=interaction)
             return
 
-        banker_avatar_url = await guild_avatar_url(
-            user=interaction.user, guild=getattr(interaction, "guild", None)
-        )
+        banker_avatar_url = await guild_avatar_url(user=interaction.user, guild=interaction.guild)
         result = await accept_loan_proposal(
             proposal_id=self.proposal_id,
             actor_id=interaction.user.id,
@@ -192,37 +237,17 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         interaction: Interaction[commands.Bot],
     ) -> None:
         """Cancels the central-bank request when clicked by its creator."""
-        if interaction.user is None:
-            return
-        if interaction.user.id != self.creator_id:
-            embed = build_error_embed(
-                title="權限不足", description="### 只有申請發起者可以取消央行借款申請"
-            )
-            await send_ephemeral_response(interaction=interaction, embed=embed)
-            return
-
-        proposal = await cancel_loan_proposal(
-            proposal_id=self.proposal_id, actor_id=interaction.user.id
-        )
-        if proposal is None:
-            embed = build_error_embed(
-                title="取消失敗", description="### 申請不存在、已處理，或你不是發起者"
-            )
-            await send_ephemeral_response(interaction=interaction, embed=embed)
-            return
-
-        embed = build_simple_embed(
-            title="🏛️ 央行申請已取消",
-            description=f"### 央行借款申請已關閉\n發起者 {interaction.user.mention}",
-            color=CENTRAL_BANK_COLOR,
-        )
-        self.stop()
-        await edit_response_embed(interaction=interaction, embed=embed)
-        self._schedule_cleanup(interaction=interaction)
+        await self._handle_cancel(interaction=interaction)
 
 
 class CreditLoanDecisionView(LoanDecisionViewBase):
     """Button controls for deciding a public personal credit request."""
+
+    PANEL_COLOR = REPAY_COLOR
+    TIMEOUT_TITLE = "信貸申請已逾時"
+    CANCEL_TITLE = "信貸申請已取消"
+    CANCEL_CLOSED_HEADING = "### 信貸申請已關閉"
+    CANCEL_DENIED_NOTICE = "### 只有申請發起者可以取消這筆信貸申請"
 
     def __init__(self, proposal_id: int, lender_id: int, creator_id: int) -> None:
         """Initializes a decision view for one personal credit proposal."""
@@ -231,23 +256,6 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         self.lender_id = lender_id
         self.creator_id = creator_id
         self.message: Message | None = None
-
-    async def on_timeout(self) -> None:
-        """Rejects a stale personal credit request and cleans up its message."""
-        proposal = await reject_expired_loan_proposal(proposal_id=self.proposal_id)
-        if proposal is None or self.message is None:
-            return
-        self.stop()
-        embed = build_simple_embed(
-            title="信貸申請已逾時", description="### 申請已逾時，自動拒絕", color=REPAY_COLOR
-        )
-        with contextlib.suppress(Exception):
-            await self.message.edit(
-                embed=embed,
-                view=None,
-                **embed_spacer_payload(embeds=[embed], is_edit=True, target=self.message),
-            )
-        self._schedule_cleanup()
 
     async def _send_permission_denied(
         self, interaction: Interaction[commands.Bot], description: str
@@ -281,9 +289,7 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         if interaction.user is None or not await self._require_lender(interaction=interaction):
             return
 
-        lender_avatar_url = await guild_avatar_url(
-            user=interaction.user, guild=getattr(interaction, "guild", None)
-        )
+        lender_avatar_url = await guild_avatar_url(user=interaction.user, guild=interaction.guild)
         result = await accept_loan_proposal(
             proposal_id=self.proposal_id,
             actor_id=interaction.user.id,
@@ -343,29 +349,4 @@ class CreditLoanDecisionView(LoanDecisionViewBase):
         self, _button: Button["CreditLoanDecisionView"], interaction: Interaction[commands.Bot]
     ) -> None:
         """Cancels the personal credit request when clicked by its creator."""
-        if interaction.user is None:
-            return
-        if interaction.user.id != self.creator_id:
-            await self._send_permission_denied(
-                interaction=interaction, description="### 只有申請發起者可以取消這筆信貸申請"
-            )
-            return
-
-        proposal = await cancel_loan_proposal(
-            proposal_id=self.proposal_id, actor_id=interaction.user.id
-        )
-        if proposal is None:
-            embed = build_error_embed(
-                title="取消失敗", description="### 申請不存在、已處理，或你不是發起者"
-            )
-            await send_ephemeral_response(interaction=interaction, embed=embed)
-            return
-
-        embed = build_simple_embed(
-            title="信貸申請已取消",
-            description=f"### 信貸申請已關閉\n發起者 {interaction.user.mention}",
-            color=REPAY_COLOR,
-        )
-        self.stop()
-        await edit_response_embed(interaction=interaction, embed=embed)
-        self._schedule_cleanup(interaction=interaction)
+        await self._handle_cancel(interaction=interaction)

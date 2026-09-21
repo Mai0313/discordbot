@@ -115,7 +115,7 @@ def _vip_status_text(is_vip: bool) -> str:
     return f"👑 VIP\n{_vip_perk_lines()}"
 
 
-def rate_text(monthly_rate_bps: int) -> str:
+def _rate_text(monthly_rate_bps: int) -> str:
     """Formats a monthly loan rate."""
     return f"每月 {monthly_rate_bps_to_percent(monthly_rate_bps=monthly_rate_bps):g}%"
 
@@ -124,28 +124,21 @@ def _loan_terms_text(amount: int, monthly_rate_bps: int) -> str:
     """Formats the loan terms shown before acceptance."""
     return (
         f"本金 {amount_code(amount=amount, compact=True)}\n"
-        f"利率 `{rate_text(monthly_rate_bps=monthly_rate_bps)}`\n"
+        f"利率 `{_rate_text(monthly_rate_bps=monthly_rate_bps)}`\n"
         "利息採單利，依經過天數按比例計算\n"
         "還款會先抵利息，再抵本金；貸方可催收"
     )
 
 
-def payment_summary_text(  # noqa: PLR0913 -- summary needs all visible repayment fields
-    paid_amount: int,
-    interest_paid: int,
-    principal_paid: int,
-    remaining_principal: int,
-    remaining_interest: int,
-    borrower_balance: int,
-) -> str:
+def _payment_summary_text(result: LoanPaymentResult) -> str:
     """Formats one repayment or collection result."""
     return (
-        f"本次扣款 {amount_code(amount=paid_amount, compact=True)}\n"
-        f"償還利息 {amount_code(amount=interest_paid, compact=True)}\n"
-        f"償還本金 {amount_code(amount=principal_paid, compact=True)}\n"
-        f"剩餘本金 {amount_code(amount=remaining_principal, compact=True)}\n"
-        f"剩餘利息 {amount_code(amount=remaining_interest, compact=True)}\n"
-        f"借方餘額 {amount_code(amount=borrower_balance, compact=True)}"
+        f"本次扣款 {amount_code(amount=result.paid_amount, compact=True)}\n"
+        f"償還利息 {amount_code(amount=result.interest_paid, compact=True)}\n"
+        f"償還本金 {amount_code(amount=result.principal_paid, compact=True)}\n"
+        f"剩餘本金 {amount_code(amount=result.remaining_principal, compact=True)}\n"
+        f"剩餘利息 {amount_code(amount=result.remaining_interest, compact=True)}\n"
+        f"借方餘額 {amount_code(amount=result.borrower_balance, compact=True)}"
     )
 
 
@@ -464,14 +457,7 @@ def build_credit_repay_embed(
     _set_optional_thumbnail(embed=embed, avatar_url=actor_avatar_url)
     embed.add_field(
         name=f"還給 {lender_display_name}",
-        value=payment_summary_text(
-            paid_amount=result.paid_amount,
-            interest_paid=result.interest_paid,
-            principal_paid=result.principal_paid,
-            remaining_principal=result.remaining_principal,
-            remaining_interest=result.remaining_interest,
-            borrower_balance=result.borrower_balance,
-        ),
+        value=_payment_summary_text(result=result),
         inline=False,
     )
     return embed
@@ -490,35 +476,23 @@ def build_credit_call_embed(
         color=REPAY_COLOR,
     )
     embed.set_author(name=actor_name, icon_url=actor_avatar_url)
-    embed.add_field(
-        name="回收明細",
-        value=payment_summary_text(
-            paid_amount=result.paid_amount,
-            interest_paid=result.interest_paid,
-            principal_paid=result.principal_paid,
-            remaining_principal=result.remaining_principal,
-            remaining_interest=result.remaining_interest,
-            borrower_balance=result.borrower_balance,
-        ),
-        inline=False,
-    )
+    embed.add_field(name="回收明細", value=_payment_summary_text(result=result), inline=False)
     return embed
 
 
 def build_credit_status_embed(*, contracts: list[LoanContractView], viewer_id: int) -> Embed:
     """Builds the caller's active personal credit contracts embed.
 
-    Every contract is listed until the description budget runs out, and whatever did not
-    fit is then reported as a count rather than dropped: a debt the borrower cannot see is
-    one they will not repay while the interest keeps accruing. Contracts arrive oldest
-    first, so the ones held back are the newest.
+    Overflow past the description budget is counted rather than dropped: a debt the
+    borrower cannot see is one they will not repay while the interest keeps accruing.
+    Contracts arrive oldest first, so the ones held back are the newest.
     """
     lines = [
         (
             f"{'欠 ' + contract.lender_name if contract.borrower_id == viewer_id else contract.borrower_name + ' 欠你'} "
             f"本金 {amount_code(amount=contract.principal_remaining, compact=True)} · "
             f"利息 {amount_code(amount=contract.interest_due, compact=True)} · "
-            f"{rate_text(monthly_rate_bps=contract.monthly_rate_bps)}"
+            f"{_rate_text(monthly_rate_bps=contract.monthly_rate_bps)}"
         )
         for contract in contracts
     ]
@@ -537,17 +511,7 @@ def build_central_bank_repay_embed(
     """Builds the central-bank repayment result embed."""
     embed = Embed(
         title="🏛️ 央行還款完成",
-        description=(
-            f"### {user_mention}\n"
-            + payment_summary_text(
-                paid_amount=result.paid_amount,
-                interest_paid=result.interest_paid,
-                principal_paid=result.principal_paid,
-                remaining_principal=result.remaining_principal,
-                remaining_interest=result.remaining_interest,
-                borrower_balance=result.borrower_balance,
-            )
-        ),
+        description=f"### {user_mention}\n" + _payment_summary_text(result=result),
         color=CENTRAL_BANK_COLOR,
     )
     embed.set_author(name=actor_name, icon_url=actor_avatar_url)
@@ -566,17 +530,7 @@ def build_central_bank_call_embed(
     """Builds the central-bank forced-collection result embed."""
     embed = Embed(
         title="🏛️ 央行催收完成",
-        description=(
-            f"### 從 {borrower_mention} 回收\n"
-            + payment_summary_text(
-                paid_amount=result.paid_amount,
-                interest_paid=result.interest_paid,
-                principal_paid=result.principal_paid,
-                remaining_principal=result.remaining_principal,
-                remaining_interest=result.remaining_interest,
-                borrower_balance=result.borrower_balance,
-            )
-        ),
+        description=f"### 從 {borrower_mention} 回收\n" + _payment_summary_text(result=result),
         color=CENTRAL_BANK_COLOR,
     )
     embed.set_author(name=actor_name, icon_url=actor_avatar_url)
@@ -653,7 +607,7 @@ def build_vip_success_embed(
 def build_credit_approved_embed(
     *, result: LoanProposalAcceptResult, approver_mention: str, lender_avatar_url: str
 ) -> Embed:
-    """Builds the personal credit approval embed used by the decision view."""
+    """Builds the personal credit approval embed."""
     embed = Embed(
         title="✅ 信貸已批准",
         description=(
@@ -664,7 +618,7 @@ def build_credit_approved_embed(
     embed.add_field(name="批准者", value=approver_mention, inline=True)
     embed.add_field(
         name="利率",
-        value=f"`{rate_text(monthly_rate_bps=result.contract.monthly_rate_bps)}`",
+        value=f"`{_rate_text(monthly_rate_bps=result.contract.monthly_rate_bps)}`",
         inline=True,
     )
     embed.add_field(
@@ -679,7 +633,7 @@ def build_credit_approved_embed(
 def build_central_bank_approved_embed(
     *, result: LoanProposalAcceptResult, approver_mention: str
 ) -> Embed:
-    """Builds the central-bank approval embed used by the decision view."""
+    """Builds the central-bank approval embed."""
     embed = Embed(
         title="🏛️ 央行借款已批准",
         description=(
