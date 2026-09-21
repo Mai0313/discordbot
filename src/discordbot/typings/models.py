@@ -124,7 +124,7 @@ class RuntimeModelCatalog(BaseModel):
             Model settings used with the native Gemini (Lyria) Interactions API (a bare model
             name, no provider prefix, since the call goes direct to Google not via the proxy).
         """
-        return ModelSettings(name="lyria-3-clip-preview")
+        return ModelSettings(name="lyria-3.5")
 
     @property
     def tts_model(self) -> ModelSettings:
@@ -148,7 +148,7 @@ class RuntimeModelCatalog(BaseModel):
             (direct, not the proxy). `effort` / `tools` are unused on the agent path: the
             agent runs its own internal tool loop.
         """
-        return ModelSettings(name="antigravity-preview-05-2026")
+        return ModelSettings(name="antigravity-preview-09-2026")
 
     @property
     def triage_model(self) -> ModelSettings:

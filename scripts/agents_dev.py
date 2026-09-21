@@ -1,17 +1,27 @@
 """Local OpenAI Agents smoke test for the Discord reply prompt."""
 
+from typing import TYPE_CHECKING, cast
+
 from agents import Agent, Runner, set_tracing_disabled
 from google import genai
 from openai import AsyncOpenAI
 import orjson
 from rich.console import Console
 from agents.result import RunResult
-from google.genai.interactions import AllowlistParam, EnvironmentParam, AllowlistEntryParam
+from google.genai.interactions import (
+    AllowlistParam,
+    EnvironmentParam,
+    AllowlistEntryParam,
+    InteractionSSEEvent,
+)
 from agents.models.openai_responses import OpenAIResponsesModel
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.gen_reply.prompts import REPLY_PROMPT
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 console = Console()
 config = LLMConfig()
@@ -53,7 +63,7 @@ def gen_reply_gemini(user_prompt: str) -> None:
     """
     client = genai.Client()
     responses = client.interactions.create(
-        agent="antigravity-preview-05-2026",
+        agent="antigravity-preview-09-2026",
         system_instruction=REPLY_PROMPT,
         input=user_prompt,
         environment=EnvironmentParam(
@@ -63,13 +73,18 @@ def gen_reply_gemini(user_prompt: str) -> None:
         tools=[{"type": "google_search"}, {"type": "url_context"}],
         agent_config={"type": "dynamic"},
     )
+    # The SDK's `AgentOption` literal list lags the live API, so an agent it has not been
+    # regenerated for falls to the overload returning `Interaction | Stream`, exactly as the
+    # production path's `str` argument does; cast as `research/agent.py` does.
     responses_list = []
-    for response in responses:
+    for response in cast("Iterator[InteractionSSEEvent]", responses):
         if response.event_type == "step.delta":
-            if response.delta.type == "thought_summary":
-                console.print(f"[dim]{response.delta.content.text}[/dim]", end="")
+            delta = response.delta
+            if delta.type == "thought_summary":
+                text = getattr(delta.content, "text", "") if delta.content is not None else ""
+                console.print(f"[dim]{text}[/dim]", end="")
             else:
-                console.print(response.delta.text, end="")
+                console.print(getattr(delta, "text", ""), end="")
         responses_list.append(response.model_dump())
     with open("./data/agent_response.json", "wb") as f:
         f.write(orjson.dumps(responses_list, option=orjson.OPT_INDENT_2))
