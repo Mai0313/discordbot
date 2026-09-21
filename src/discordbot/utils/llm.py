@@ -1,8 +1,8 @@
 """Shared best-effort Responses API call surfaces for one-shot LLM calls.
 
 Each helper owns the proxy call surface, the optional per-call deadline, and the failure
-handling so a caller only maps a None result to its own fallback. Client construction lives at
-the call sites as inline `AsyncOpenAI(...)` / `genai.Client(...)` cached_properties, not here.
+handling so a caller only maps a None result to its own fallback. Client construction stays at
+its call site: this is the call surface, not a client factory.
 
 `timeout_seconds` is optional because most callers should not set one: it is for a caller with
 a deadline of its OWN, not a guard against a hung provider. The client already bounds itself
@@ -59,9 +59,7 @@ async def parse_responses_or_none[StructuredT: BaseModel](  # noqa: PLR0913 -- s
     leaves `output_parsed` None), an incomplete (truncated) response, or any other error
     all degrade to None.
 
-    `timeout_seconds` is for a caller with a deadline of its OWN -- something downstream that
-    must not wait. Leave it None for background work nobody is waiting on, where the client's
-    own ceiling is the right bound. `typings/timeouts.py` has the whole argument.
+    `timeout_seconds` is the optional caller-side deadline the module docstring describes.
     """
     try:
         async with asyncio.timeout(delay=timeout_seconds):
@@ -152,8 +150,7 @@ async def create_text_or_none(  # noqa: PLR0913 -- shared best-effort call surfa
             _exc_info=exc,
         )
         return None
-    # Broad on purpose: this shared surface owns failure handling so every caller only maps
-    # None to its own fallback line; proxy, transport and SDK errors share no base class.
+    # Broad on purpose: proxy, transport and SDK errors share no base class.
     except Exception as exc:
         logfire.warn(
             "Text LLM request failed; using fallback",

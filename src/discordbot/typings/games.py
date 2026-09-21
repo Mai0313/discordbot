@@ -22,12 +22,7 @@ BotAction = Literal["hit", "stand", "double", "split", "surrender"]
 
 
 class Card(BaseModel):
-    """A single playing card.
-
-    Attributes:
-        rank: One of A, 2-10, J, Q, K.
-        suit: One of the four unicode suit glyphs.
-    """
+    """A single playing card."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -37,40 +32,6 @@ class Card(BaseModel):
     def __str__(self) -> str:
         """Human-readable label like `A♠`."""
         return f"{self.rank}{self.suit}"
-
-
-class GameParticipant(BaseModel):
-    """A Discord user registered for a casino game session.
-
-    Attributes:
-        user_id: Discord user ID for the account row and interaction checks.
-        account_name: Stable Discord username stored in the economy account row.
-        display_name: Guild-aware display name shown in game embeds.
-        avatar_url: Last-seen Discord avatar URL for the economy account row.
-        bet: Effective wager for this player.
-        balance_at_start: Balance observed when the game session starts.
-        is_allin: True when the effective wager consumes the full observed balance.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    user_id: int = Field(
-        ..., description="Discord user ID for the account row and interaction checks."
-    )
-    account_name: str = Field(
-        ..., description="Stable Discord username stored in the economy account row."
-    )
-    display_name: str = Field(..., description="Guild-aware display name shown in game embeds.")
-    avatar_url: str = Field(
-        default="", description="Last-seen Discord avatar URL for the economy account row."
-    )
-    bet: int = Field(..., description="Effective wager for this player.")
-    balance_at_start: int = Field(
-        ..., description="Balance observed when the game session starts."
-    )
-    is_allin: bool = Field(
-        ..., description="True when the effective wager consumes the full observed balance."
-    )
 
 
 class GameParticipantIdentity(BaseModel):
@@ -90,13 +51,23 @@ class GameParticipantIdentity(BaseModel):
     )
 
 
+class GameParticipant(GameParticipantIdentity):
+    """A Discord user registered for a casino game session."""
+
+    bet: int = Field(..., description="Effective wager for this player.")
+    balance_at_start: int = Field(
+        ..., description="Balance observed when the game session starts."
+    )
+    is_allin: bool = Field(
+        ..., description="True when the effective wager consumes the full observed balance."
+    )
+
+
 class SystemIdentity(BaseModel):
     """The house label a game view shows, beside the bot's own id and avatar.
 
-    A label, not a speaker: #303 removed the casino narrator, so nothing built from
-    this writes a message. `system_name` is the only part that reaches a render today
-    (the Blackjack dealer seat's embed author). `system_avatar_url` is deliberately resolved
-    and never drawn; `blackjack_views.py` records why beside the dealer seat.
+    A label, not a speaker: nothing built from this writes a message, and
+    `system_avatar_url` is deliberately resolved and never drawn.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -132,18 +103,7 @@ class RefreshParticipantsResult(BaseModel):
 
 
 class WagerSettlement(BaseModel):
-    """Database-backed settlement result for a finished wager.
-
-    Attributes:
-        delta: Net point change for the round.
-        payout: Positive player credit from the round, excluding losses and pushes.
-        new_balance: Player balance after applying the signed round delta.
-        casino_balance: Casino ledger balance after applying the casino-side settlement.
-        base_delta: Net point change before any VIP payout bonus. `None` for
-            legacy/manual test settlements that do not carry bonus details.
-        vip_bonus: Extra points added by the VIP payout bonus.
-        is_vip: Whether the VIP perk was active for this settlement.
-    """
+    """Database-backed settlement result for a finished wager."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -160,8 +120,8 @@ class WagerSettlement(BaseModel):
     base_delta: int | None = Field(
         default=None,
         description=(
-            "Net point change before any VIP payout bonus; None for legacy/manual test "
-            "settlements that do not carry bonus details."
+            "Net point change before any VIP payout bonus; None only when a settlement is "
+            "constructed without bonus details."
         ),
     )
     vip_bonus: int = Field(default=0, description="Extra points added by the VIP payout bonus.")
@@ -176,19 +136,6 @@ class BlackjackHandSettlement(BaseModel):
     Split turns a single participant into two settlement rows; otherwise
     each player has exactly one `BlackjackHandSettlement` aggregated into
     their `BlackjackPlayerSettlement`.
-
-    Attributes:
-        cards: Cards held by this sub-hand at settlement time.
-        bet: Effective wager for this hand (doubled bets land here as 2x).
-        outcome: Player-facing outcome label for this sub-hand.
-        delta: Dealer-paid signed point change for this single hand before
-            VIP and five-card bonuses.
-        five_card_bonus: System-funded bonus for a five-card 21.
-        five_card_twenty_one: True when this hand made five or more cards
-            totaling 21.
-        doubled: True if this hand was doubled.
-        surrendered: True if this hand was surrendered.
-        is_split_hand: True if this hand came out of a Split.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -219,14 +166,7 @@ class BlackjackHandSettlement(BaseModel):
 
 
 class BlackjackInsuranceSettlement(BaseModel):
-    """Insurance side-bet result for one player.
-
-    Attributes:
-        bet: Insurance bet amount (half the original wager).
-        won: True only when the dealer's hole-card peek was a Blackjack.
-        delta: Signed point change for this side bet (`+bet*2` on win,
-            `-bet` on loss).
-    """
+    """Insurance side-bet result for one player."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -243,17 +183,7 @@ class BlackjackPlayerSettlement(WagerSettlement):
     """Aggregated Blackjack settlement for one participant.
 
     Combines every sub-hand result plus any insurance side bet into a
-    single point delta and the one `apply_round_settlement` write that
-    backs it.
-
-    Attributes:
-        outcome: Aggregate player-facing outcome. Single-hand results without
-            insurance preserve the hand outcome; insurance and multi-hand
-            results collapse to win / lose / push by net base delta.
-        hands: Per-hand settlements in display order.
-        insurance: Insurance side-bet result, or `None` when the player
-            never took insurance.
-        five_card_bonus: Aggregate system-funded five-card 21 bonus.
+    single point delta and the one database write that backs it.
     """
 
     outcome: SettleOutcome = Field(
@@ -277,12 +207,7 @@ class BlackjackPlayerSettlement(WagerSettlement):
 
 
 class BlackjackPlayerResult(BaseModel):
-    """Settlement result for one player at a Blackjack table.
-
-    Attributes:
-        participant: Player identity and wager metadata.
-        settlement: Database-backed result for that player's hand.
-    """
+    """Settlement result for one player at a Blackjack table."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -293,20 +218,7 @@ class BlackjackPlayerResult(BaseModel):
 
 
 class BlackjackHistoryHand(BaseModel):
-    """One sub-hand snapshot persisted in a Blackjack round-history record.
-
-    Attributes:
-        cards: Cards held by this sub-hand at settlement time.
-        total: Final hand value for this sub-hand (bust totals exceed 21).
-        bet: Effective wager for this hand (doubled bets land here as 2x).
-        outcome: Player-facing outcome label for this sub-hand.
-        delta: Dealer-paid signed point change for this single hand.
-        five_card_bonus: System-funded bonus for a five-card 21.
-        five_card_twenty_one: True when this hand made five or more cards totaling 21.
-        doubled: True if this hand was doubled.
-        surrendered: True if this hand was surrendered.
-        is_split_hand: True if this hand came out of a Split.
-    """
+    """One sub-hand snapshot persisted in a Blackjack round-history record."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -333,13 +245,7 @@ class BlackjackHistoryHand(BaseModel):
 
 
 class BlackjackHistoryInsurance(BaseModel):
-    """Insurance side-bet snapshot persisted in a Blackjack round-history record.
-
-    Attributes:
-        bet: Insurance bet amount (half the original wager).
-        won: True only when the dealer's hole-card peek was a Blackjack.
-        delta: Signed point change for this side bet.
-    """
+    """Insurance side-bet snapshot persisted in a Blackjack round-history record."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -351,23 +257,13 @@ class BlackjackHistoryInsurance(BaseModel):
 
 
 class BlackjackHistoryPayload(BaseModel):
-    """Full per-player round snapshot serialized into a history row's JSON column.
-
-    Attributes:
-        hands: Per-hand snapshots in display order (one entry, or two after a Split).
-        dealer_cards: Dealer's final hand at settlement time.
-        dealer_total: Dealer's final hand value.
-        insurance: Insurance side-bet snapshot, or None when never taken.
-        vip_bonus: Extra points added by the VIP payout bonus.
-        five_card_bonus: Aggregate system-funded five-card 21 bonus.
-        balance_at_start: Player balance observed when the round started.
-        new_balance: Player balance after applying the round delta.
-    """
+    """Full per-player round snapshot serialized into a history row's JSON column."""
 
     model_config = ConfigDict(frozen=True)
 
     hands: list[BlackjackHistoryHand] = Field(
-        default_factory=list, description="Per-hand snapshots in display order."
+        default_factory=list,
+        description="Per-hand snapshots in display order (one entry, or two after a Split).",
     )
     dealer_cards: list[Card] = Field(
         default_factory=list, description="Dealer's final hand at settlement time."
@@ -389,23 +285,7 @@ class BlackjackHistoryPayload(BaseModel):
 
 
 class BlackjackHistoryRecord(BaseModel):
-    """One persisted Blackjack round result for a player, read back for display.
-
-    Attributes:
-        round_id: Shared identifier for every player row of the same round.
-        channel_id: Discord channel the round was played in.
-        guild_id: Discord guild the round was played in, or 0 for DMs.
-        message_id: Discord message id of the settled table.
-        user_id: Discord user id of the player.
-        user_name: Stored Discord username of the player.
-        is_bot: True when this row belongs to the bot player.
-        is_vip: True when the VIP perk was active for this settlement.
-        bet: Base wager for the player this round.
-        outcome: Aggregate player-facing outcome for the round.
-        delta: Net signed point change for the round.
-        payload: Full per-player round snapshot used by the history renderer.
-        created_at: Asia/Taipei timestamp the round settled at.
-    """
+    """One persisted Blackjack round result for a player, read back for display."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -487,9 +367,7 @@ class ActionEvAnalysis(BaseModel):
     `dealer_outcome`, `action_evs` and `recommended_expected_value` depend on the
     up-card and the remaining shoe alone, so no caller can back out the dealer's real
     hole from them. `recommended_action` is the single exception, selected from the
-    engine's private hole-aware pass — an action, never a value, which is why the
-    engine looks its reported EV back up in the marginal table rather than carrying
-    the exact one across.
+    engine's private hole-aware pass — an action, never a value.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -535,21 +413,9 @@ class BlackjackDealerStep(BaseModel):
 class DragonGatePlayerResult(BaseModel):
     """Final outcome for one player after a 射龍門 table closes.
 
-    Each bet settles into the player row and the shared jackpot pool the
-    moment it's placed, so the table close-out has no per-player wager
-    settlement to apply; this model just captures the running totals and
-    whether "逆贏不拿" was triggered for the leaver.
-
-    Attributes:
-        participant: Player identity and ante metadata.
-        delta: Running win/loss for the table (ante excluded; ante was
-            already pushed into the jackpot when the round started).
-        final_balance: Player balance after the last settlement event
-            touching this account.
-        withdrawn: True when the player left voluntarily before timeout
-            or pool exhaustion.
-        refunded_to_pool: Amount refunded into the jackpot under
-            "逆贏不拿" when the player left while ahead.
+    Each bet settles the moment it's placed, so the table close-out has no
+    per-player wager settlement to apply; this model just captures the running
+    totals and whether "逆贏不拿" was triggered for the leaver.
     """
 
     model_config = ConfigDict(frozen=True)

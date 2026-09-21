@@ -7,8 +7,7 @@ not is the same kind of number spent on a different kind of decision -- animatio
 cache TTLs, retry cadences, `@tasks.loop` intervals, and the idle expiry of a Discord view.
 Those stay beside the code they pace, where reading them in context is worth more than
 reading them next to each other, and pulling them here would make both halves harder to
-read. The line cuts through `cogs/games/blackjack_views.py` and `services/platforms/threads.py`, which
-each hold one of both kinds two lines apart.
+read.
 
 A retry count sits here when it multiplies a bound rather than being one: a 30s socket
 timeout does not mean a download gives up in 30s, and reading the timeout without the count
@@ -17,12 +16,11 @@ gives the wrong answer.
 Three omissions are decisions, not oversights.
 
 `MEDIA_HOSTING_RETENTION_HOURS` stays in the environment: its expiry is not a failure, so it
-falls outside the rule above, and it is the only time value a deployment was ever given to
-tune.
+falls outside the rule above.
 
-Deep research (`cogs/research/agent.py`) is deliberately unbounded. The agent settles
-server-side on its own budget and the SDK bounds each individual request, so a ceiling here
-could only abandon a run that is still working.
+Deep research is deliberately unbounded. The agent settles server-side on its own budget and
+the SDK bounds each individual request, so a ceiling here could only abandon a run that is
+still working.
 
 And a bound that wraps a single LLM call purely as a liveness backstop belongs nowhere
 rather than here, because the backend already owns that deadline. Measured in this project's
@@ -62,11 +60,11 @@ EFFORT_GRACE_SECONDS: Final[float] = 5.0
 
 # How many times the streaming answer turn is opened before the reply gives up on a transient
 # upstream failure. A count rather than a cadence, which is why it sits here while the backoff
-# between the attempts stays beside the retry in `gen_reply/streaming.py`: it multiplies the
-# `openai` client's own ceiling that this module's docstring measures and deliberately does not
-# restate, so the worst case for one reply is this many times that, and reading either half
-# alone gives the wrong answer. Deliberately small: every attempt after the first is spent with
-# the user watching a thinking preview that has already stalled once.
+# between the attempts stays beside the retry it paces: it multiplies the `openai` client's own
+# ceiling that this module's docstring measures, so the worst case for one reply is this many
+# times that, and reading either half alone gives the wrong answer. Deliberately small: every
+# attempt after the first is spent with the user watching a thinking preview that has already
+# stalled once.
 ANSWER_STREAM_MAX_ATTEMPTS: Final[int] = 3
 
 # An intent-selected linked-post context build gets this grace once the QA path resolves it.
@@ -83,10 +81,10 @@ LINK_CONTEXT_GRACE_SECONDS: Final[float] = 180.0
 LINK_MEDIA_DEGRADE_MARGIN_SECONDS: Final[float] = 10.0
 
 # Bound on the whole fetch + upload step for the media of a linked post, shared by every link
-# context builder. Derived rather than restated: the two numbers used to live in separate files
-# describing each other in prose, and this ordering is the whole reason the bound exists. Set
-# well above a normal clip's cost -- watching the linked video is the point, and the text block
-# is already on hand, so waiting is cheaper than answering blind.
+# context builder. Derived rather than restated, because expiring before the grace does is the
+# whole reason the bound exists. Set well above a normal clip's cost -- watching the linked
+# video is the point, and the text block is already on hand, so waiting is cheaper than
+# answering blind.
 LINK_MEDIA_TIMEOUT_SECONDS: Final[float] = (
     LINK_CONTEXT_GRACE_SECONDS - LINK_MEDIA_DEGRADE_MARGIN_SECONDS
 )
@@ -124,10 +122,9 @@ GENERATED_VIDEO_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 60.0
 # --------------------------------------------------------------------------------------
 # Generated media
 #
-# The VIDEO route's real worst case is a sum these two used to hide in separate files:
-# VIDEO_RENDER bounds the omni call ALONE, and the source upload and the URI download each
-# take FILES_READY on top of it, so an edit can legitimately run to
-# VIDEO_RENDER + 2 * FILES_READY before anything is wrong.
+# The VIDEO route's real worst case is a sum of these two: VIDEO_RENDER bounds the omni call
+# ALONE, and the source upload and the URI download each take FILES_READY on top of it, so an
+# edit can legitimately run to VIDEO_RENDER + 2 * FILES_READY before anything is wrong.
 # --------------------------------------------------------------------------------------
 
 # Bound for waiting on a Files API entry to become usable: the source video uploaded for an omni
@@ -202,10 +199,9 @@ DOUYIN_EXPAND_TIMEOUT_SECONDS: Final[float] = 120.0
 
 # The same bound for the Threads expansion, and deliberately NOT the same number: that cog
 # holds no shared fetch slot, so this caps the listener rather than a queue behind it, and one
-# expansion walks a whole conversation (`MAX_THREADS_POSTS` page fetches at
-# `THREADS_PAGE_TIMEOUT_SECONDS` each, plus the empty-page retry deadline, plus the target's
-# video) where a Douyin expansion reads one post. Set to what the reply pipeline already allows
-# the very same walk (`LINK_CONTEXT_GRACE_SECONDS`) rather than to a second guess.
+# expansion walks a whole conversation and downloads the target's video where a Douyin expansion
+# reads one post. Set to what the reply pipeline already allows the very same walk
+# (`LINK_CONTEXT_GRACE_SECONDS`) rather than to a second guess.
 THREADS_EXPAND_TIMEOUT_SECONDS: Final[float] = 180.0
 
 # The same bound for the Facebook expansion, and a third of the Threads one because the work is
@@ -285,8 +281,9 @@ PRICE_TABLE_FETCH_TIMEOUT_SECONDS: Final[int] = 5
 DOUYIN_METADATA_TIMEOUT_SECONDS: Final[int] = 15
 
 # Separate from the metadata bound because this one bounds the gap between chunks of a video that
-# can run to tens of megabytes; the metadata timeout is far too tight for that and was observed
-# aborting an otherwise healthy transfer.
+# can run to tens of megabytes. The metadata timeout is not merely judged too tight for that — it
+# was observed aborting an otherwise healthy transfer, which is why collapsing the two back into
+# one is a step that has already been taken and paid for.
 DOUYIN_DOWNLOAD_TIMEOUT_SECONDS: Final[int] = 60
 
 # Attempts made per Douyin media download before giving up. Multiplies the bound above.
@@ -315,14 +312,12 @@ GAME_FINAL_EDIT_TIMEOUT_SECONDS: Final[float] = 8.0
 # invoked and EVERY message such a turn writes goes through it, the deferred "thinking" state
 # included, so a render that finishes late costs the whole turn: the clip 404s, and so does the
 # notice that would have explained it, leaving a thinking state that never resolves. This module
-# owns the margin rather than the window because the window is Discord's --
-# `TurnSurface.delivery_budget_seconds` reads it off nextcord's own `Interaction.expires_at` rather
-# than restating it here, so the one number to change is what we hold in reserve. Sized for the
-# largest attachment Discord accepts plus the error embed behind it, and deliberately NOT for the
-# best-effort persona reply after that: its own Files upload can spend this whole margin, which is
-# why a clip delivered on the last of the budget is handed over without the bot saying a word
-# about it. That is the existing convention (a media persona reply fails silently) rather than a
-# new cost.
+# owns the margin rather than the window, which is Discord's own and is read off nextcord's
+# `Interaction.expires_at` rather than restated here, so the one number to change is what we hold
+# in reserve. Sized for the largest attachment Discord accepts plus the error embed behind it, and
+# deliberately NOT for the best-effort persona reply after that: its own Files upload can spend
+# this whole margin, which is why a clip delivered on the last of the budget is handed over
+# without the bot saying a word about it, the convention a media persona failure already follows.
 INTERACTION_DELIVERY_MARGIN_SECONDS: Final[float] = 60.0
 
 # --------------------------------------------------------------------------------------

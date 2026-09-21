@@ -70,7 +70,11 @@ _engine: AsyncEngine = create_async_engine(url="sqlite+aiosqlite:///data/databas
 
 
 class Base(DeclarativeBase):
-    """Base class for the pending-expansion model (its own metadata, not research's)."""
+    """Base class for the pending-expansion model, with metadata of its own.
+
+    `reply.db` carries tables owned elsewhere, and separate metadata is what stops one
+    module's `create_all` creating or marking another's table.
+    """
 
 
 class PendingExpansionRow(Base):
@@ -217,13 +221,7 @@ async def _load_pending(*, source: str) -> list[PendingExpansion]:
 
 
 class ExpansionPlaceholder(BaseModel):
-    """A posted placeholder and whether the expansion has landed on it yet.
-
-    Attributes:
-        message: The placeholder itself, the message every later edit lands on.
-        delivered: Whether `deliver` succeeded, which is what stops `discard` from removing
-            an expansion the reader can already see.
-    """
+    """A posted placeholder and whether the expansion has landed on it yet."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -231,7 +229,11 @@ class ExpansionPlaceholder(BaseModel):
         ..., description="The placeholder reply the finished expansion is edited into."
     )
     delivered: bool = Field(
-        default=False, description="Whether the expansion landed, making `discard` a no-op."
+        default=False,
+        description=(
+            "Whether the expansion landed, which is what stops `discard` from removing an "
+            "expansion the reader can already see."
+        ),
     )
 
     async def deliver(
@@ -243,8 +245,7 @@ class ExpansionPlaceholder(BaseModel):
         expansion brings files (its media, or the embed spacer), which sends the edit as
         multipart, and `http.py::get_message_payload` drops a None content out of that body
         altogether instead of clearing it. It clears on the JSON path, which is exactly what
-        makes the difference easy to miss, and `streaming.py::land_failure` carries the same
-        note for the same reason.
+        makes the difference easy to miss.
 
         The spacer rides as an edit so its `attachments` key drops whatever the placeholder
         held, which is also what lets `files` be the whole of the new attachment list.
@@ -371,11 +372,11 @@ def report_expansion_read_failure(
 
     The ladder is keyed on how tolerable the failure is, not on how deep it happened, so the
     levels line up with the marks `expansion_failure_emoji` picks rather than with any one
-    platform's habits: a post the platform says is gone is a routine user-driven outcome and its
-    own example of `info`, a read the platform explains any other way is degraded but handled,
-    and an error from outside that tree broke a user-visible deliverable — a `TimeoutError`
-    excepted, which rides `warn` for the same reason it rides the retryable mark: it says the
-    read was too slow, never that the bot is wrong.
+    platform's habits: a post the platform says is gone is a routine user-driven outcome, a read
+    the platform explains any other way is degraded but handled, and an error from outside that
+    tree broke a user-visible deliverable — a `TimeoutError` excepted, which rides `warn` for the
+    same reason it rides the retryable mark: it says the read was too slow, never that the bot is
+    wrong.
 
     The `info` branch deliberately carries no exception and does carry `reason`: a traceback for
     a deleted post is noise, while the platform's own words for WHY it refused exist in no other
@@ -412,9 +413,9 @@ def report_expansion_delivery_failure(
 ) -> None:
     """Logs a failed delivery at the severity it deserves, the same way for every platform.
 
-    Only the placeholder's own disappearance is routine. The 50035 an unsendable reply used to
-    raise is not: on an edit that code is a rejected body, which is a defect rather than a
-    message that went away.
+    Only the placeholder's own disappearance is routine. On an edit 50035 is a rejected body
+    rather than a message that went away, so it is a defect here and the send path's
+    `_UNSENDABLE_REPLY` branch must not be copied down.
 
     Args:
         error: What the delivery raised.
@@ -498,11 +499,9 @@ async def _resume_one(
             current_emoji=EXPANSION_WORKING_EMOJI,
             placeholder=placeholder,
         )
-    # `_expand` reports its own failures and returns, so this is the unexpected one, which on
-    # the listener path the outer handler paints the cross for. This sweep is that handler's
-    # counterpart: without the mark the source keeps the working ring with no outcome ever
-    # painted, which is the never-resolving state the sweep exists to clear, moved off the
-    # placeholder and onto the reaction. Re-raised so the caller still logs it.
+    # `_expand` reports its own failures and returns, so this is the unexpected one: without
+    # the mark the source keeps the working ring with no outcome ever painted, which is the
+    # never-resolving state this sweep exists to clear. Re-raised so the caller still logs it.
     except Exception:
         await update_reaction(
             message=source_message,

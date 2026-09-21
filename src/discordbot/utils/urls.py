@@ -10,14 +10,13 @@ import re
 from urllib.parse import urlparse
 from collections.abc import Sequence
 
-# Where a URL is allowed to start. `\b` is the natural spelling of "not glued to the end of
-# another token", but Python's `\w` counts every Unicode letter, so it also refuses the `h`
-# after a Chinese character: `看這篇https://example.com` read as no URL at all, which is how a
-# lot of people type (#492). Refusing only an ASCII word character keeps `xhttps://...` out and
-# lets the Chinese in, widening the pattern by one class of characters rather than by a class of
-# strings. Every scanner takes its head from here, the generic one below and every site pattern
-# alike, so they cannot drift on where a URL begins and `xhttps://v.douyin.com/abc` cannot be
-# refused by one and matched by another.
+# Where a URL is allowed to start. `\b` is the natural spelling of "not glued to the end of another
+# token", but Python's `\w` counts every Unicode letter, so it also refuses the `h` after a Chinese
+# character: `看這篇https://example.com` read as no URL at all, which is how a lot of people type.
+# Refusing only an ASCII word character keeps `xhttps://...` out and lets the Chinese in, widening
+# the pattern by one class of characters rather than by a class of strings. Every scanner takes its
+# head from here, the generic one below and every site pattern alike, so they cannot drift on where
+# a URL begins and `xhttps://v.douyin.com/abc` cannot be refused by one and matched by another.
 URL_START_ANCHOR = r"(?<![A-Za-z0-9_])"
 
 # Generic fallback. `[^\s<>]` stops at whitespace and at the angle brackets Discord and
@@ -78,9 +77,9 @@ def extract_first_url(*, text: str, patterns: Sequence[re.Pattern[str]] = ()) ->
     its own links end (Douyin's survives being butted against Chinese text, which the generic
     whitespace rule cannot), so it wins where it matches.
 
-    Falling back to the raw text rather than an empty string keeps every existing caller
-    working: a bare URL, or something this cannot parse, is passed through untouched and fails
-    downstream exactly as it did before.
+    Falling back to the raw text rather than an empty string is deliberate: a bare URL, or
+    something this cannot parse, is passed through untouched and fails downstream rather than
+    here.
 
     Args:
         text: The text a user supplied, which may be a bare URL or a blob containing one.

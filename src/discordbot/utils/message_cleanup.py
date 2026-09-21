@@ -19,9 +19,10 @@ PUBLIC_MESSAGE_TTL_SECONDS = 180
 _PENDING_PUBLIC_MESSAGE_DB_PATH = Path("data/database/games.db")
 _pending_engine: Engine | None = None
 _pending_engine_path: Path | None = None
-# Every caller reaches the engine from an `asyncio.to_thread` worker, so two of them can find
-# the path changed at once; without this the loser disposes the engine the winner just handed
-# out. Only the rebuild runs under it, never a query.
+# Every caller reaches the engine from an `asyncio.to_thread` worker. Two that find the path
+# changed at once are the case this exists for: without it the loser disposes the engine the
+# winner just handed out, which is a use-after-dispose rather than a leak — so the `dispose()`
+# has to stay inside the lock. Only the rebuild runs under it, never a query.
 _PENDING_ENGINE_LOCK = threading.Lock()
 _CREATE_PENDING_PUBLIC_MESSAGES_SQL: Final[str] = """
 CREATE TABLE IF NOT EXISTS pending_game_message (
@@ -139,17 +140,8 @@ def _list_pending_public_messages_sync() -> list[PendingPublicMessage]:
     """Lists all messages still waiting for cleanup."""
     with _pending_db_engine().begin() as conn:
         _ensure_pending_table(conn=conn)
-        rows = conn.execute(statement=text(text=_LIST_PENDING_PUBLIC_MESSAGES_SQL)).fetchall()
-        return [
-            PendingPublicMessage(
-                channel_id=int(row[0]),
-                message_id=int(row[1]),
-                guild_name=str(row[2]) if row[2] is not None else None,
-                channel_name=str(row[3]) if row[3] is not None else None,
-                user_name=str(row[4]) if row[4] is not None else None,
-            )
-            for row in rows
-        ]
+        rows = conn.execute(statement=text(text=_LIST_PENDING_PUBLIC_MESSAGES_SQL)).mappings()
+        return [PendingPublicMessage.model_validate(obj=dict(row)) for row in rows]
 
 
 async def track_public_message(
@@ -178,7 +170,7 @@ async def track_public_message(
             message_id=record.message_id,
             channel_id=record.channel_id,
             error_type=type(exc).__name__,
-            _exc_info=True,
+            _exc_info=exc,
         )
     return record
 
@@ -194,7 +186,7 @@ async def forget_public_message(message_id: int) -> None:
             "Failed to forget pending public response",
             message_id=message_id,
             error_type=type(exc).__name__,
-            _exc_info=True,
+            _exc_info=exc,
         )
 
 
@@ -202,13 +194,11 @@ async def list_pending_public_messages() -> list[PendingPublicMessage]:
     """Returns public messages left over from a previous process."""
     try:
         return await asyncio.to_thread(_list_pending_public_messages_sync)
-    # The one error of the trio: unlike a single lost bookkeeping row, an empty list disables
-    # the whole restart sweep for this process, so every stale message stays on screen.
+    # Unlike a single lost bookkeeping row, an empty list disables the whole restart sweep for
+    # this process, so every stale message stays on screen.
     except Exception as exc:
         logfire.error(
-            "Failed to list pending public responses",
-            error_type=type(exc).__name__,
-            _exc_info=True,
+            "Failed to list pending public responses", error_type=type(exc).__name__, _exc_info=exc
         )
         return []
 

@@ -14,8 +14,8 @@ and drops only audio and video instead of the whole message's attachments.
 
 A degrade is not permanent either: the process remembers whether upstream is what served
 the table it holds, and `refresh_model_info` re-checks upstream while the answer is no.
-`cli.py` runs it off the event loop every `MODEL_INFO_REFRESH_MINUTES`, so recovery costs
-a lookup nothing and needs no restart.
+It is driven off the event loop every `MODEL_INFO_REFRESH_MINUTES`, so recovery costs a
+lookup nothing and needs no restart.
 """
 
 import json
@@ -34,9 +34,8 @@ MODEL_INFO_URL = (
     "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 )
 MODEL_INFO_CACHE_PATH = Path("./data/model_prices_and_context_window.json")
-# How often `cli.py` re-checks upstream while the held table did not come from it. Half an
-# hour is far inside the weeks a process can outlive an outage by, and it keeps the fetch
-# warning a total outage emits per attempt readable.
+# Half an hour is far inside the weeks a process can outlive an outage by, and it keeps the
+# fetch warning a total outage emits per attempt readable.
 MODEL_INFO_REFRESH_MINUTES = 30.0
 
 
@@ -96,8 +95,8 @@ def _decode_table(payload: str, source: str) -> dict[str, ModelPriceEntry] | Non
         try:
             prices[name] = ModelPriceEntry(**entry)
         except (TypeError, ValidationError):
-            # Per entry, not per table: upstream is a 3000-row community file, and one
-            # retyped row must not cost the other 2999 their rates and modalities.
+            # Per entry, not per table: upstream is a community-maintained file, and one
+            # retyped row must not cost the rest their rates and modalities.
             dropped.append(name)
     if dropped:
         logfire.warn(
@@ -146,9 +145,8 @@ def _write_mirror(payload: str) -> None:
     """Mirrors a usable price table so a later start without upstream still has rates.
 
     The temp name is unique because a load runs outside the lock that swaps the held table
-    in: two threads that miss together (`cli.py`'s `price_table_task` in `asyncio.to_thread`
-    and a reply finalizing its footer on the loop) both run this, and a shared temp path
-    lets one truncate the other's bytes into the mirror the next outage depends on.
+    in: two threads that miss together both run this, and a shared temp path lets one
+    truncate the other's bytes into the mirror the next outage depends on.
     """
     tmp_path = MODEL_INFO_CACHE_PATH.with_name(
         f"{MODEL_INFO_CACHE_PATH.name}.{secrets.token_urlsafe(8)}.tmp"
@@ -243,7 +241,7 @@ def load_model_info() -> dict[str, ModelPriceEntry]:
 def refresh_model_info() -> None:
     """Loads the price table, or re-checks upstream while what is held did not come from it.
 
-    `cli.py`'s `price_table_task` runs this off the event loop, so no RETRY is ever paid on
+    A caller outside this module runs this off the event loop, so no RETRY is ever paid on
     a lookup's path. The first load still falls to whichever caller reaches it first, which
     is why `_write_mirror` needs a unique temp name. Once upstream has served this process
     there is nothing left to recover and every later call returns on the second branch.
@@ -291,9 +289,9 @@ def get_supported_modalities(model_name: str) -> set[str]:
     """Returns the input modalities accepted by `model_name`.
 
     Reads `supported_modalities` from the cached LiteLLM price table. The
-    field is unevenly populated upstream (Claude entries omit it entirely),
-    so missing entries default to `{"text", "image"}`, the safe baseline
-    that virtually every modern multimodal LLM accepts.
+    field is unevenly populated upstream, so missing entries default to
+    `{"text", "image"}`, the safe baseline that virtually every modern
+    multimodal LLM accepts.
 
     Args:
         model_name: Model identifier to look up in the cached price table.

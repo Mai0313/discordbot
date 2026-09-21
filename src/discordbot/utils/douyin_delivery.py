@@ -2,11 +2,11 @@
 
 Kept out of the platform reader because this is the Discord side of the job — it reaches
 `nextcord.File` through `utils/media_delivery.py`, and `services/platforms/` is Discord-free.
-Sitting here is also why `/download_video` and the auto-expansion can share it: a cog may not
-import a peer cog, so the one thing both need lives one layer down.
+Sitting here is also what lets more than one cog share it: a cog may not import a peer cog, so
+anything several of them need lives one layer down.
 
 What it reads off a finished download is spelled as a Protocol rather than imported, for the
-same layering reason in the other direction: `DouyinDownload` lives under `services/` now, and
+same layering reason in the other direction: `DouyinDownload` lives under `services/`, and
 `utils/` may not import that. Structural typing costs nothing here — `result` is a parameter,
 never a pydantic field, so nothing validates against it.
 """
@@ -27,12 +27,7 @@ from discordbot.utils.media_delivery import (
 
 
 class DownloadedPost(Protocol):
-    """The three members a delivery plan reads off whatever the platform downloaded.
-
-    `total_bytes` has to be read before the plan runs and before a successful host moves the
-    files out of the temp dir, which is why `DouyinDelivery` carries the number rather than the
-    download; `DouyinDownload.total_bytes` caches its own answer for the same reason.
-    """
+    """What a delivery plan reads off whatever the platform downloaded."""
 
     @property
     def filenames(self) -> list[Path]:
@@ -73,10 +68,8 @@ async def plan_douyin_delivery(
 ) -> DouyinDelivery:
     """Decides how one downloaded Douyin post reaches Discord.
 
-    Shared by `/download_video` and the auto-expansion, which differ only in where the upload
-    limit comes from. A gallery rides several attachments on one send and Discord measures the
-    whole multipart body, so it holds back the envelope margin; a lone video is a single-file
-    send and keeps the margin at 0.
+    Several files ride one send and Discord measures the whole multipart body, so a gallery
+    holds back the envelope margin; a single-file send keeps it at 0.
     """
     items = [MediaItem(source=path, filename=path.name) for path in result.filenames]
     total_mb = result.total_bytes / 1024 / 1024
@@ -103,10 +96,9 @@ def douyin_delivery_lines(
     not the same problem: the attachment cap is a Discord limit nothing can change, while a
     dropped item means delivery itself failed.
 
-    `dropped_event` is the caller's own log message rather than a shared one. That is the whole
-    point of it: `/download_video` and the auto-expansion are told apart in `data/logs` by the
-    event name alone, so merging them would cost the one field that says which path dropped the
-    media.
+    `dropped_event` is the caller's own log message rather than a shared one. The event name is
+    the only field in `data/logs` that says which path dropped the media, so a shared one would
+    cost that.
 
     Hosted URLs come last and unwrapped: they must stay clickable and, under ~100 MiB, render
     Discord's inline player.

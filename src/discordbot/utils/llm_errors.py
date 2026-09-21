@@ -16,11 +16,11 @@ from google.genai.errors import APIError as GenAIAPIError
 # where the provider's actual JSON body is embedded as a Python bytes literal.
 _BYTES_LITERAL_RE = re.compile(pattern=r"b'((?:[^'\\]|\\.)*)'", flags=re.DOTALL)
 
-# The same chain, read as the run of prefixes it is. Three sites build it, one segment each:
-# every LiteLLM exception class prepends `litellm.<ClassName>: ` (`exceptions.py`), the
-# provider mapping prepends `<Provider>Exception - ` and on some branches a second label with
-# it (`exception_mapping_utils.py`, `Timeout Error: ` and `...Exception BadRequestError - `),
-# and a failure that arrives once the stream is open prepends the provider's canonical status
+# The same chain, read as the run of prefixes it is: every LiteLLM exception class prepends
+# `litellm.<ClassName>: ` (`exceptions.py`), the provider mapping prepends
+# `<Provider>Exception - ` and on some branches a second label with it
+# (`exception_mapping_utils.py`, `Timeout Error: ` and `...Exception BadRequestError - `), and a
+# failure that arrives once the stream is open prepends the provider's canonical status
 # (`_check_streaming_error`, `UNAVAILABLE - `). None of those names is written down here: a
 # segment is recognised by its shape alone -- a code-shaped word ending in `Error`, `Exception`
 # or `Timeout`, or an ALL-CAPS status -- so the wording upstream can move without this going
@@ -127,7 +127,7 @@ def llm_status_code(exc: BaseException) -> int | None:
     `ProxyException.to_dict()` and `openai`'s streaming layer turns that into a bare
     `APIError` whose only trace of the status is `code` inside the decoded body it attaches.
     That one is a decimal STRING, since `ProxyException` stringifies it to match the OpenAI
-    error schema (verified against the running proxy, not read off its docs).
+    error schema.
 
     Args:
         exc: The exception a failed LLM call raised.

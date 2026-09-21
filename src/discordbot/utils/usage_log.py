@@ -1,16 +1,16 @@
 """Append-only usage records, kept out of the runtime log on purpose.
 
-`data/logs/<start time>.log` is debug-level, grows by roughly 2MB a day and gets cleaned
-out by hand, so a usage history living inside it dies with it; it is also gated on
-`LOG_LEVEL`, so raising the level on a deployment would silently stop recording. These
-records therefore get their own directory, their own kill-switch, and a shape an agent
-can read a month of in one pass.
+`data/logs/<start time>.log` is debug-level and gets cleaned out by hand, so a usage
+history living inside it dies with it; it is also gated on `LOG_LEVEL`, so raising the
+level on a deployment would silently stop recording. These records therefore get their
+own directory, their own kill-switch, and a shape an agent can read a month of in one
+pass.
 
 What a record answers is "someone used this", nothing more: there is no success/failure
 field, because how well a use went is what the runtime log is for, and the slash record
-is written at the one point that sees an invocation before its outcome exists (see
-`cogs/usage/cog.py`). No message content and no command arguments are stored, since no
-question this file exists to answer needs them and nothing prunes these files.
+is written at the one point that sees an invocation before its outcome exists. No message
+content and no command arguments are stored, since no question this file exists to answer
+needs them and nothing prunes these files.
 
 Who is stored twice over: `user_id` is the identifier every read groups by, and
 `user_name` is the Discord username as it read at write time, kept only so an operator
@@ -44,16 +44,11 @@ _WRITE_LOCK = threading.Lock()
 
 
 class UsageLogConfig(BaseSettings):
-    """Usage-recording settings, read from environment variables.
-
-    Attributes:
-        enabled: Kill-switch; when false nothing is recorded and no file is created.
-        directory: Directory the monthly record files are written into.
-    """
+    """Usage-recording settings, read from environment variables."""
 
     enabled: bool = Field(
         default=True,
-        description="Whether feature usage is recorded at all.",
+        description="Whether feature usage is recorded at all; when false no file is created.",
         examples=[True],
         validation_alias=AliasChoices("USAGE_LOG_ENABLED"),
     )
@@ -66,19 +61,11 @@ class UsageLogConfig(BaseSettings):
 
 
 class UsageRecord(BaseModel):
-    """One recorded use of one feature.
+    """One recorded use of one feature."""
 
-    Attributes:
-        at: When it was used, stamped in Asia/Taipei so grouping by day is a string slice.
-        kind: Whether this was a slash command or an AI reply.
-        name: The command path (`memory server show`) or the reply's route (`QA`).
-        user_id: Discord user ID that used it.
-        user_name: That user's Discord username when the record was written.
-        guild_id: Discord guild ID, or None in a DM.
-        channel_id: Discord channel ID, or None when the interaction carries none.
-    """
-
-    at: datetime = Field(..., description="When the feature was used, in Asia/Taipei.")
+    at: datetime = Field(
+        ..., description="When it was used, in Asia/Taipei so grouping by day is a string slice."
+    )
     kind: UsageKind = Field(..., description="Whether this was a slash command or an AI reply.")
     name: str = Field(
         ...,
@@ -88,7 +75,7 @@ class UsageRecord(BaseModel):
     user_id: int = Field(..., description="Discord user ID that used the feature.")
     # Defaulted rather than required, for the records written before this field existed:
     # a month file is append-only and never rewritten, so a reader has to expect both
-    # shapes forever. Every new record carries it, since `record` takes it as an argument.
+    # shapes forever.
     user_name: str = Field(
         default="",
         description="The user's Discord username as it read at write time; a label, not a key.",
@@ -117,9 +104,6 @@ class UsageRecorder(BaseModel):
 
     One JSON object per line so a partial write can never cost the records before it, and
     so reading a month is `for line in file: json.loads(line)`.
-
-    Attributes:
-        config: The usage-recording configuration backing this recorder.
     """
 
     config: UsageLogConfig = Field(

@@ -1,4 +1,4 @@
-"""Shared send/edit helpers for the economy and games interaction responses.
+"""Shared send/edit helpers for interaction responses.
 
 Each helper pairs one response shape (public followup, loan-request followup, private
 followup, ephemeral response, edit) with the `embed_spacer_payload` call that keeps embed
@@ -55,7 +55,7 @@ async def send_loan_request_followup(
 
 
 async def send_private_followup(interaction: Interaction[commands.Bot], embed: Embed) -> None:
-    """Sends a personal economy embed visible only to the caller."""
+    """Sends a personal embed visible only to the caller."""
     await interaction.followup.send(
         embed=embed,
         ephemeral=True,
@@ -64,7 +64,7 @@ async def send_private_followup(interaction: Interaction[commands.Bot], embed: E
 
 
 async def send_ephemeral_response(interaction: Interaction[commands.Bot], embed: Embed) -> None:
-    """Sends an ephemeral economy embed as the initial interaction response."""
+    """Sends an ephemeral embed as the initial interaction response."""
     await interaction.response.send_message(
         embed=embed,
         ephemeral=True,

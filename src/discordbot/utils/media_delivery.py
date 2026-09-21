@@ -11,8 +11,9 @@ This module also owns the two low-level concerns the decision needs: the destina
 upload ceiling (`upload_limit_for`) and the external static host that turns oversized media
 into a public URL (`MediaHostingService`, env-backed via `MediaHostingConfig`). The host is
 best-effort: a publish returns None rather than raising when hosting is disabled, unconfigured,
-handed a non-allowlisted suffix, or fails to write, so a `MEDIA_HOSTING_ENABLED=false` (or
-unconfigured) deployment degrades to its prior, host-free behavior at every call site.
+handed a non-allowlisted suffix, or fails to write. Every call site must stay byte-for-byte
+host-free under `MEDIA_HOSTING_ENABLED=false` or an unconfigured host; that is a requirement on
+new call sites, not just a description of the ones here.
 """
 
 from io import BytesIO
@@ -39,9 +40,8 @@ if TYPE_CHECKING:
 
 dotenv.load_dotenv()
 
-# Discord raised the non-Nitro base upload limit back to 20 MiB on 2026-08-13, two years after
-# cutting it to 10 MiB; a guild-less context (DM) has no boost-tier table to consult, so it falls
-# back to this base.
+# Discord's non-Nitro base upload limit, 20 MiB as of 2026-08-13; a guild-less context (DM) has no
+# boost-tier table to consult, so it falls back to this base.
 DEFAULT_NON_NITRO_UPLOAD_LIMIT = 20 * 1024 * 1024
 
 # Discord caps one message at 10 attachments; the combined media edit is clamped to this.
@@ -103,8 +103,8 @@ _STALE_TEMP_SECONDS = 300.0
 # A freshly-hosted file (and every in-flight concurrent publish) is protected from size-cap eviction
 # for this long, so one publisher never reaps another's just-returned-and-posted URL.
 _EVICTION_GRACE_SECONDS = 300.0
-# How often the media_cleanup cog runs the age+size+temp sweep (a backstop; each publish enforces the
-# size cap eagerly). A module constant, not env: an operational cadence, and @tasks.loop wants it static.
+# Interval between periodic age+size+temp sweeps of the serve dir. A module constant rather than
+# env: it is an operational cadence, and `@tasks.loop` takes it at decoration time.
 MEDIA_CLEANUP_INTERVAL_HOURS = 6.0
 
 # The cleanup reaper only ever deletes files the service itself wrote: a 32-hex stem plus an
@@ -120,10 +120,10 @@ _HOSTED_NAME_RE = re.compile(
 # verifies this full shape so it only ever reaps temps the service itself wrote, never a foreign one.
 _TEMP_NAME_RE = re.compile(re.escape(_TEMP_PREFIX) + r"[A-Za-z0-9_-]+")
 
-# All directory scan+mutate critical sections take this module-level lock so the ~5 service
-# instances (one per media cog) that share one serve dir never race each other; the multi-GB byte
-# writes go to unique temp names OUTSIDE the lock and stay fully concurrent. It is a threading.Lock
-# (not asyncio.Lock) because publish/cleanup run in `asyncio.to_thread` worker threads.
+# All directory scan+mutate critical sections take this module-level lock so service instances
+# sharing one serve dir never race each other; the multi-GB byte writes go to unique temp names
+# OUTSIDE the lock and stay fully concurrent. It is a threading.Lock (not asyncio.Lock) because
+# publish/cleanup run in `asyncio.to_thread` worker threads.
 _SERVE_DIR_LOCK = threading.Lock()
 
 
@@ -174,21 +174,14 @@ def _hash_file(path: Path) -> str:
 
 
 class MediaHostingConfig(BaseSettings):
-    """Configuration for the external media host, read from environment variables.
-
-    Attributes:
-        enabled: Kill-switch; when false the fallback is inert and oversized media degrades
-            exactly as before.
-        base_url: Public base URL the host serves from (e.g. https://media.mai0313.com).
-        serve_dir: In-container directory (bind-mounted from the host) files are written into;
-            nginx serves the same files from the host path.
-        max_bytes: Soft cap on total hosted bytes; the oldest files are evicted past it (<=0 disables).
-        retention_hours: Hosted files older than this are reaped even under the cap (<=0 disables).
-    """
+    """Configuration for the external media host, read from environment variables."""
 
     enabled: bool = Field(
         default=True,
-        description="Whether oversized media may be hosted externally and linked.",
+        description=(
+            "Kill-switch for hosting oversized media externally and linking it; when false the "
+            "URL fallback is inert and every oversize item takes the call site's host-free path."
+        ),
         validation_alias=AliasChoices("MEDIA_HOSTING_ENABLED"),
     )
     base_url: str = Field(
@@ -199,7 +192,10 @@ class MediaHostingConfig(BaseSettings):
     )
     serve_dir: str = Field(
         default="",
-        description="In-container directory (bind-mounted from the host) hosted files are written into.",
+        description=(
+            "In-container directory (bind-mounted from the host) hosted files are written into; "
+            "nginx serves those same files from the host path."
+        ),
         examples=["/mnt/share/media"],
         validation_alias=AliasChoices("MEDIA_HOSTING_SERVE_DIR"),
     )
@@ -238,11 +234,7 @@ class _HostedFile(BaseModel):
 
 
 class MediaHostingService(BaseModel):
-    """Writes oversized media into the served directory and returns its public URL.
-
-    Attributes:
-        config: The media-hosting configuration backing this service.
-    """
+    """Writes oversized media into the served directory and returns its public URL."""
 
     config: MediaHostingConfig = Field(
         ..., description="The media-hosting configuration backing this service."
@@ -560,15 +552,9 @@ class MediaHostingService(BaseModel):
 class MediaItem(BaseModel):
     """One built media payload awaiting the attach-vs-host-vs-drop decision.
 
-    The source is either in-memory bytes (a synthesized voice/music clip, a generated or
-    inline image/video, a research report) or an on-disk file (a yt-dlp download, a Threads
-    video) that is hosted by move rather than re-read into memory. `isinstance(source, bytes)`
-    selects the right primitive throughout, so there is no "neither/both" state to validate.
-
-    Attributes:
-        source: The media bytes, or the path to the on-disk file.
-        filename: Attachment filename carrying the allowlisted suffix; drives both the Discord
-            attachment name and the hosted-suffix allowlist check.
+    The source is either in-memory bytes or an on-disk file, which is hosted by move rather than
+    re-read into memory. `isinstance(source, bytes)` selects the right primitive throughout, so
+    there is no "neither/both" state to validate.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -576,7 +562,13 @@ class MediaItem(BaseModel):
     source: bytes | Path = Field(
         ..., description="The media bytes, or the path to the on-disk file."
     )
-    filename: str = Field(..., description="Attachment filename carrying the allowlisted suffix.")
+    filename: str = Field(
+        ...,
+        description=(
+            "Attachment filename carrying the allowlisted suffix; it drives both the Discord "
+            "attachment name and the hosted-suffix allowlist check."
+        ),
+    )
 
     @property
     def size(self) -> int:
@@ -603,44 +595,42 @@ class MediaItem(BaseModel):
 
 
 class MediaPlan(BaseModel):
-    """The attach-vs-host-vs-drop outcome for one set of media items.
-
-    Attributes:
-        native: Items small enough to ride as native attachments, count-clamped to
-            DISCORD_ATTACHMENT_LIMIT, kept in input order (callers lead with voice/music).
-        hosted_urls: Public URLs for items hosted externally because they were individually
-            oversize or peeled to fit the combined multipart body.
-        dropped_items: Items lost to a hosting failure (off / unavailable / non-allowlisted /
-            write-fail) or the attachment-count clamp; the caller applies its own policy
-            (drop + hint, raise, a failure message, or a refusal) so this stays faithful to
-            each site's pre-hosting behavior when hosting is off.
-    """
+    """The attach-vs-host-vs-drop outcome for one set of media items."""
 
     native: list[MediaItem] = Field(
-        default_factory=list, description="Items to attach natively, count-clamped, in order."
+        default_factory=list,
+        description="Items to attach natively, count-clamped, in the caller's input order.",
     )
     hosted_urls: list[str] = Field(
-        default_factory=list, description="Public URLs for hosted (oversize / peeled) items."
+        default_factory=list,
+        description=(
+            "Public URLs for items hosted externally, either individually oversize or peeled to "
+            "fit the combined multipart body."
+        ),
     )
     dropped_items: list[MediaItem] = Field(
-        default_factory=list, description="Items lost to a hosting failure or the count clamp."
+        default_factory=list,
+        description=(
+            "Items lost to a hosting failure or the count clamp; what happens to them is the "
+            "caller's own policy, which with hosting off must be that site's host-free behavior."
+        ),
     )
 
 
 class MediaDeliveryPlanner(BaseModel):
     """Decides which media attach natively, which host to a URL, and which drop.
 
-    Generalizes one decision (originally the QA streamer's media partition) to bytes-backed
-    and path-backed items and to the single-item case, so every call site shares it and
-    differs only in how it sends the result. The host writes run off the event loop.
-
-    Attributes:
-        media_hosting: External host for oversize media; its `available` gate makes the URL
-            fallback inert (every oversize item drops) when hosting is unconfigured / off.
+    One decision covering bytes-backed items, path-backed items and the single-item case, so
+    every call site shares it and differs only in how it sends the result. The host writes run
+    off the event loop.
     """
 
     media_hosting: MediaHostingService = Field(
-        ..., description="External host for oversize media."
+        ...,
+        description=(
+            "External host for oversize media; its `available` gate makes the URL fallback inert, "
+            "dropping every oversize item, when hosting is off or unconfigured."
+        ),
     )
 
     async def _host(self, *, item: MediaItem) -> str | None:
@@ -714,10 +704,8 @@ class MediaDeliveryPlanner(BaseModel):
 def build_media_delivery_planner() -> MediaDeliveryPlanner:
     """Builds the default MediaDeliveryPlanner wired to the env-configured external media host.
 
-    The shared wiring used by every cog that delivers media, the QA streamer included: it is
-    handed this planner by `gen_reply/cog.py`, and its own field default is a disabled planner
-    so that a streamer built without one drops oversize media instead of hosting it. `MediaHostingConfig` self-disables when the host is unconfigured, so this stays
-    the byte-for-byte host-free path until hosting is set up.
+    `MediaHostingConfig` self-disables when the host is unconfigured, so a planner built here
+    stays on the host-free path until hosting is set up.
     """
     return MediaDeliveryPlanner(media_hosting=MediaHostingService(config=MediaHostingConfig()))
 

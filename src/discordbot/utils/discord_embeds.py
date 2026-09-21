@@ -127,7 +127,7 @@ def embed_spacer_payload(
     The spacer never changes, so an edit retains an already-uploaded spacer by id
     instead of re-uploading it. Re-uploading the same spacer on every edit trips
     Discord's per-message edit attachment upload limit (error code 400009) for
-    rapidly edited messages such as the Blackjack table.
+    rapidly edited messages.
     """
     spacer_url = embed_spacer_url(filename=filename)
     files: list[File] = list(extra_files or [])
