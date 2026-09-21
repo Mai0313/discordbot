@@ -8,56 +8,13 @@ dotenv.load_dotenv()
 
 
 class LLMConfig(BaseSettings):
-    """Configuration settings for LLM integration, reading from environment variables.
-
-    Attributes:
-        base_url: The base URL for the OpenAI API or compatible endpoint.
-        api_key: The API key for authentication.
-        gemini_api_key: The Google AI Studio key used for every direct-to-Google path,
-            attachment upload to the Gemini Files API among them, so uploads can be polled
-            to ACTIVE. One key serves the whole deployment: a file is readable only by the
-            project that uploaded it, so the key that uploads has to be the key that answers.
-        anthropic_api_key: The Anthropic key used to upload attachments to the
-            Anthropic Files API directly (the side-channel for Claude answer models).
-        xai_api_key: The xAI key used to upload attachments to the xAI Files API
-            directly (the side-channel for Grok answer models, which the proxy cannot route).
-        inline_voice_enabled: Kill-switch for spoken replies; when false
-            the answer model's voice marker is still stripped but no audio clip is
-            synthesized.
-        inline_image_enabled: Kill-switch for inline generated images on QA replies; when
-            false the answer model's `<generate-image>` marker is still stripped but no image is rendered.
-        inline_music_enabled: Kill-switch for inline generated music on QA replies; when false
-            the answer model's `<generate-music>` marker is still stripped but no clip is generated.
-        inline_video_enabled: Kill-switch for inline generated video on QA replies; when false
-            the answer model's `<generate-video>` marker is still stripped but no clip is generated.
-        youtube_video_enabled: Kill-switch for answering about a linked YouTube video via the
-            Gemini Interactions API; when false the QA turn falls back to the Responses path
-            (which cannot watch the video).
-        douyin_video_enabled: Kill-switch for downloading a linked Douyin post's media and
-            uploading it so the answer model can watch it; when false the caption still rides
-            as context but the model is told plainly that it has not seen the clip.
-        bilibili_video_enabled: Kill-switch for downloading a linked Bilibili video and
-            uploading it so the answer model can watch it; when false the title and
-            description still ride as context but the model is told plainly that it has not
-            watched the clip.
-        deep_research_enabled: Kill-switch for the deep-research feature; when false the QA
-            answer model's `<deep-research>` marker is still stripped but no research runs, and
-            a restart leaves whatever was in flight alone instead of re-attaching to it.
-        image_refine_prompt_enabled: Kill-switch for the IMAGE-route prompt director; when false
-            the raw user request goes straight to the image model with no refinement step.
-        video_refine_prompt_enabled: Kill-switch for the VIDEO-route prompt director; when false
-            the raw user request goes straight to the video model with no refinement step.
-        file_api_enabled: Kill-switch for handing the answer model a provider Files API
-            reference; when false attachments inline as base64 instead and link media is not
-            uploaded at all. Provider-agnostic on purpose: the Gemini path is the only one
-            wired today, but the switch answers the same question for every uploader.
-    """
+    """Configuration settings for LLM integration, reading from environment variables."""
 
     # All credentials default to empty so tests never have to supply env vars; a real
     # deployment provides them via .env, and an empty value fails at the API call.
     base_url: str = Field(
         default="",
-        description="The base url from openai for calling models.",
+        description="The base url for the OpenAI API or a compatible endpoint.",
         examples=["https://api.openai.com/v1"],
         validation_alias=AliasChoices("OPENAI_BASE_URL"),
     )
@@ -69,75 +26,124 @@ class LLMConfig(BaseSettings):
     )
     gemini_api_key: str = Field(
         default="",
-        description="The Google AI Studio key for direct Gemini Files API uploads.",
+        description=(
+            "The Google AI Studio key for every direct-to-Google path, Gemini Files API "
+            "uploads among them. One key serves the whole deployment: a file is readable "
+            "only by the project that uploaded it, so the key that uploads has to be the "
+            "key that answers."
+        ),
         examples=["AIza..."],
         validation_alias=AliasChoices("GEMINI_API_KEY"),
     )
     anthropic_api_key: str = Field(
         default="",
-        description="The Anthropic API key for direct Anthropic Files API uploads.",
+        description=(
+            "The Anthropic API key for direct Anthropic Files API uploads, the side-channel "
+            "for Claude answer models."
+        ),
         examples=["sk-ant-..."],
         validation_alias=AliasChoices("ANTHROPIC_API_KEY"),
     )
     xai_api_key: str = Field(
         default="",
-        description="The xAI API key for direct xAI Files API uploads.",
+        description=(
+            "The xAI API key for direct xAI Files API uploads, the side-channel for Grok "
+            "answer models, whose uploads the proxy cannot route."
+        ),
         examples=["xai-..."],
         validation_alias=AliasChoices("XAI_API_KEY"),
     )
     inline_voice_enabled: bool = Field(
         default=True,
-        description="Whether the bot may synthesize a spoken clip for a reply.",
+        description=(
+            "Whether the bot may synthesize a spoken clip for a reply; when false the answer "
+            "model's voice marker is still stripped but no audio clip is synthesized."
+        ),
         validation_alias=AliasChoices("INLINE_VOICE_ENABLED"),
     )
     inline_image_enabled: bool = Field(
         default=True,
-        description="Whether the bot may render an inline generated image for QA replies.",
+        description=(
+            "Whether the bot may render an inline generated image for QA replies; when false "
+            "the `<generate-image>` marker is still stripped but no image is rendered."
+        ),
         validation_alias=AliasChoices("INLINE_IMAGE_ENABLED"),
     )
     inline_music_enabled: bool = Field(
         default=True,
-        description="Whether the bot may generate an inline music clip for QA replies.",
+        description=(
+            "Whether the bot may generate an inline music clip for QA replies; when false the "
+            "`<generate-music>` marker is still stripped but no clip is generated."
+        ),
         validation_alias=AliasChoices("INLINE_MUSIC_ENABLED"),
     )
     inline_video_enabled: bool = Field(
         default=True,
-        description="Whether the bot may generate an inline video clip for QA replies.",
+        description=(
+            "Whether the bot may generate an inline video clip for QA replies; when false the "
+            "`<generate-video>` marker is still stripped but no clip is generated."
+        ),
         validation_alias=AliasChoices("INLINE_VIDEO_ENABLED"),
     )
     youtube_video_enabled: bool = Field(
         default=True,
-        description="Whether the bot may watch a linked YouTube video via the Interactions API.",
+        description=(
+            "Whether the bot may watch a linked YouTube video via the Interactions API; when "
+            "false the QA turn falls back to the Responses path, which cannot watch the video."
+        ),
         validation_alias=AliasChoices("YOUTUBE_VIDEO_ENABLED"),
     )
     douyin_video_enabled: bool = Field(
         default=True,
-        description="Whether the bot may upload a linked Douyin post's media for the model to read.",
+        description=(
+            "Whether the bot may upload a linked Douyin post's media for the model to read; "
+            "when false the caption still rides as context but the model is told plainly that "
+            "it has not seen the clip."
+        ),
         validation_alias=AliasChoices("DOUYIN_VIDEO_ENABLED"),
     )
     bilibili_video_enabled: bool = Field(
         default=True,
-        description="Whether the bot may upload a linked Bilibili video for the model to watch.",
+        description=(
+            "Whether the bot may upload a linked Bilibili video for the model to watch; when "
+            "false the title and description still ride as context but the model is told "
+            "plainly that it has not watched the clip."
+        ),
         validation_alias=AliasChoices("BILIBILI_VIDEO_ENABLED"),
     )
     deep_research_enabled: bool = Field(
         default=True,
-        description="Whether the bot may launch a deep-research thread from a QA marker / slash.",
+        description=(
+            "Whether the bot may launch a deep-research thread from a QA marker / slash; when "
+            "false the `<deep-research>` marker is still stripped but no research runs, and a "
+            "restart leaves whatever was in flight alone instead of re-attaching to it."
+        ),
         validation_alias=AliasChoices("DEEP_RESEARCH_ENABLED"),
     )
     image_refine_prompt_enabled: bool = Field(
         default=True,
-        description="Whether the prompt director refines the IMAGE-route request before generation.",
+        description=(
+            "Whether the prompt director refines the IMAGE-route request before generation; "
+            "when false the raw user request goes straight to the image model."
+        ),
         validation_alias=AliasChoices("IMAGE_REFINE_PROMPT_ENABLED"),
     )
     video_refine_prompt_enabled: bool = Field(
         default=True,
-        description="Whether the prompt director refines the VIDEO-route request before generation.",
+        description=(
+            "Whether the prompt director refines the VIDEO-route request before generation; "
+            "when false the raw user request goes straight to the video model."
+        ),
         validation_alias=AliasChoices("VIDEO_REFINE_PROMPT_ENABLED"),
     )
     file_api_enabled: bool = Field(
         default=True,
-        description="Whether media may reach the answer model as a provider Files API reference.",
+        description=(
+            "Whether media may reach the answer model as a provider Files API reference; when "
+            "false attachments inline as base64 instead and link media is not uploaded at all. "
+            "Provider-agnostic on purpose: the switch answers the same question for every "
+            "uploader."
+        ),
         validation_alias=AliasChoices("FILE_API_ENABLED"),
     )
 

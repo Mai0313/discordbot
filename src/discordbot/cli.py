@@ -104,9 +104,10 @@ class DiscordBot(commands.Bot):
         a group DM, a user install in a server the bot is not in — down nextcord's lazy-load
         path into a global `delete_unknown` pass that deletes every command Discord holds, with
         nothing in `data/logs` saying so. Measured 2026-09-09: one reconnect, then one DM
-        command, then all 17 gone for twelve hours. It runs before the `user` guard because a
-        registry left empty is not a logging concern, and it reaches no API. The re-sync the
-        base method also does stays dropped on purpose; `on_ready` owns that, once per process.
+        command, then twelve hours with nothing registered. It runs before the `user` guard
+        because a registry left empty is not a logging concern, and it reaches no API. The
+        re-sync the base method also does stays dropped on purpose; `on_ready` owns that, once
+        per process.
         """
         self.add_all_application_commands()
         bot_user = self.user
@@ -154,8 +155,7 @@ class DiscordBot(commands.Bot):
         `Client._run_event` funnels every unhandled exception from every event handler and
         every cog listener here, and the default implementation prints it to `sys.stderr`,
         which `_TeeStream` does not tee into `./data/logs` — the same gap
-        `on_application_command_error` exists to close, one door wider. Measured across every
-        log file this project has kept: not one such traceback was ever captured.
+        `on_application_command_error` exists to close, one door wider.
 
         Called from inside `_run_event`'s `except` block, so the live exception is still on
         `sys.exc_info()`; a None there is a no-op for logfire rather than a second failure.
@@ -215,8 +215,8 @@ class DiscordBot(commands.Bot):
         # Scopes and permissions are deliberately left off: they live in the Developer Portal's
         # Default Install Settings, and the authorize page reads them from there. A link that
         # hardcodes `scope=bot` can only offer the server install, so the "add to my apps" choice
-        # disappears from it — which is how this one, once pasted into the Portal as a custom
-        # install URL, silently switched user installs off for everybody.
+        # disappears from it — and set as the Portal's Custom Install URL it replaces those
+        # settings entirely, silently turning user installs off for everybody.
         invite_url = f"https://discord.com/oauth2/authorize?client_id={app_info.id}"
         logfire.info("Bot Started", bot_name=bot_user.name, bot_id=bot_user.id)
         logfire.info("Invite Link", invite_url=invite_url)
@@ -305,18 +305,16 @@ class DiscordBot(commands.Bot):
     ) -> None:
         """Records a slash command that raised, which nothing else in this process does.
 
-        This bot has no prefix commands at all, so the pair of `on_command_*` handlers that
-        used to sit here could never fire: `command_prefix` is never passed to
-        `commands.Bot`, nextcord then defaults it to `()`, and `get_context`'s
-        `content.startswith(())` is False for every message, so `invoke` never reaches a
-        command to dispatch either event from.
+        `command_prefix` is never passed to `commands.Bot`, nextcord defaults it to `()`, and
+        `get_context`'s `content.startswith(())` is False for every message, so `invoke` never
+        reaches a prefix command and no `on_command_*` handler can fire. Do not add one without
+        also passing a prefix.
 
-        What DOES fire is this one, and until now nothing overrode it: nextcord's default
-        prints the traceback to `sys.stderr`, while `_TeeStream` tees only `sys.stdout` into
-        `./data/logs`, so a failing slash command left no line in the file this project is
-        debugged from. Logging only, deliberately — a cog that wants to tell the user
-        something answers its own interaction, and an unanswered one already shows Discord's
-        own failure notice.
+        nextcord's own default here prints the traceback to `sys.stderr`, while `_TeeStream`
+        tees only `sys.stdout` into `./data/logs`, so without this override a failing slash
+        command leaves no line in the file this project is debugged from. Logging only,
+        deliberately — a cog that wants to tell the user something answers its own interaction,
+        and an unanswered one already shows Discord's own failure notice.
         """
         # nextcord wraps a command-body failure in ApplicationInvokeError, so report the
         # unwrapped type to name the real defect.

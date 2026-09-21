@@ -1,13 +1,13 @@
 """Media handed between the fetch, the upload and the render.
 
-Each of these was a bare tuple, and each was unpacked far from where it was built. A pair whose
-slots only a docstring distinguishes reads the same whichever way round it is, so swapping them
-costs nothing at the call site and everything at the provider.
+Each is a model rather than a tuple because a pair whose slots only a docstring distinguishes
+reads the same whichever way round it is, so swapping them costs nothing at the call site and
+everything at the provider.
 """
 
 from datetime import datetime
 
-from pydantic import Field, BaseModel, ConfigDict
+from pydantic import Field, BaseModel
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 from openai.types.responses.response_input_image_param import ResponseInputImageParam
@@ -55,8 +55,6 @@ type RenderedPart = ResponseInputTextParam | ResponseInputImageParam | ResponseI
 
 class RenderedAttachment(BaseModel):
     """One attachment as the answer model will see it, and how long that render may be reused."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     part: RenderedPart = Field(..., description="The content part spliced into the request.")
     expires_at: datetime = Field(

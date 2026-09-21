@@ -1,12 +1,12 @@
 """Records every slash-command invocation so unused commands can be found later.
 
 The listener is on `on_interaction`, not `on_application_command_completion`. The gateway
-dispatches `interaction` for every INTERACTION_CREATE (`nextcord/state.py`) before
-`process_application_commands` runs a single check or callback, so this one point sees an
-invocation a permission check rejects, one whose command no longer resolves, and one whose
-body raises — none of which reach the completion event. Someone pressing the button is the
-demand signal this file exists to capture, so it must not be lost because the command is
-broken; "failed or succeeded" is the runtime log's job.
+dispatches `interaction` for every INTERACTION_CREATE before `process_application_commands`
+runs a single check or callback, so this one point sees an invocation a permission check
+rejects, one whose command no longer resolves, and one whose body raises — none of which
+reach the completion event. Someone pressing the button is the demand signal this file
+exists to capture, so it must not be lost because the command is broken; "failed or
+succeeded" is the runtime log's job.
 
 It has to be a cog listener: overriding `on_interaction` on `DiscordBot` would replace
 `Client.on_interaction` and stop slash commands executing altogether.

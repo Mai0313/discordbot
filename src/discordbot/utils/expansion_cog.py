@@ -2,13 +2,11 @@
 
 Expanding a pasted link is one feature: claim a reply slot under the link, mark the message,
 read the post, edit the card onto the slot, mark the outcome. None of that differs per platform,
-and every difference that ever appeared between copies of it was a defect rather than a choice.
-So it lives here once, and a cog supplies the platform: where its URLs are, how to read one, and
-what the card looks like.
+and a difference that turns up there is a defect rather than a choice. So it lives here once, and
+a cog supplies the platform: where its URLs are, how to read one, and what the card looks like.
 
-`utils/expansion_placeholder.py` owns the parts a resumed expansion also needs — the reply slot,
-its persistence, the reaction vocabulary and the failure classification. This module is the cog
-side of the same contract.
+`utils/expansion_placeholder.py` owns the other half of this contract, the parts a resumed
+expansion needs as much as a fresh one does. This module is the cog side.
 
 A failure leaves nothing in the channel. The reaction is the whole report, which is what lets
 every step below simply return.
@@ -44,17 +42,14 @@ from discordbot.utils.expansion_placeholder import (
 
 
 class ExpansionDelivery(BaseModel):
-    """What a readable post becomes on screen.
-
-    Attributes:
-        content: Text under the card, or None for a card that is embeds and attachments alone.
-        embeds: The finished card.
-        files: Media attaching natively beside it.
-    """
+    """What a readable post becomes on screen."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    content: str | None = Field(default=None, description="Text under the card, or None.")
+    content: str | None = Field(
+        default=None,
+        description="Text under the card, or None when the card is embeds and attachments alone.",
+    )
     embeds: list[SkipValidation[Embed]] = Field(..., description="The finished card.")
     files: list[SkipValidation[File]] = Field(
         default_factory=list, description="Media attaching natively beside the card."
@@ -64,8 +59,8 @@ class ExpansionDelivery(BaseModel):
 class ExpansionCog[ParsedT](commands.Cog):
     """Base for a cog that expands one platform's links.
 
-    A subclass declares the four class attributes below, overrides `read` and `build_delivery`,
-    and overrides `url_is_expandable` when its pattern matches more than posts.
+    A subclass declares the class attributes below, overrides `read` and `build_delivery`, and
+    overrides `url_is_expandable` when its pattern matches more than posts.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -313,9 +308,8 @@ class ExpansionCog[ParsedT](commands.Cog):
         placeholder: ExpansionPlaceholder,
     ) -> None:
         """Edits the card onto the placeholder and marks the source message done."""
-        # Broad on purpose: the delivery step must never escape into the listener, and its
-        # failures split three ways — the placeholder went away, the bot lacks a permission, or
-        # something unexpected lost the expansion.
+        # Broad on purpose: the delivery step must never escape into the listener, and the
+        # severity its failure earns is `report_expansion_delivery_failure`'s to pick.
         try:
             try:
                 await message.edit(suppress=True)

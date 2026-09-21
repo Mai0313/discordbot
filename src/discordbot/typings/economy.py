@@ -1,3 +1,5 @@
+"""Shared economy result types, enums, tuning constants, and rate converters."""
+
 from enum import StrEnum
 from typing import Final
 from datetime import datetime
@@ -11,21 +13,18 @@ DEFAULT_LOAN_MONTHLY_RATE_BPS: Final[int] = 300
 MIN_LOAN_MONTHLY_RATE_BPS: Final[int] = 0
 MAX_LOAN_MONTHLY_RATE_BPS: Final[int] = 10_000
 # Minimum interest a borrower owes on a contract regardless of repayment timing.
-# Prepaid at acceptance so borrow-then-immediately-repay still costs MIN_INTEREST_DAYS worth.
 MIN_INTEREST_DAYS: Final[int] = 30
 
-# Anti-inflation guardrails. Faucets are deflated and a few structural caps keep
-# balances from compounding back to pre-reset astronomical levels.
-# Absolute ceiling on any single casino wager (Blackjack table bet, Dragon Gate
-# bet). Invisible to ordinary players; it turns runaway exponential growth from
-# all-in doubling into bounded linear growth once a balance gets large.
+# Anti-inflation levers; re-measure before changing them.
+# Absolute ceiling on any single casino wager. Invisible to ordinary players; it
+# bounds all-in doubling to linear growth once a balance gets large.
 MAX_SINGLE_BET: Final[int] = 1_000_000
 # Per-user cooldown between message rewards, so the flat per-message grant cannot
-# be farmed by spamming. Tracked process-locally; resets on restart by design.
+# be farmed by spamming.
 MESSAGE_REWARD_COOLDOWN_SECONDS: Final[float] = 60.0
-# Permanent money sink: a burn on every /give transfer, in basis points.
+# Permanent money sink: the burn on every transfer, in basis points.
 TRANSFER_TAX_BPS: Final[int] = 500
-# Blackjack VIP perk: 1.2x payout on winning rounds, applied as floor(delta * 6 / 5).
+# VIP perk: 1.2x payout on a winning round.
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
 
@@ -92,14 +91,7 @@ class LoanContractStatus(StrEnum):
 
 
 class AccountSnapshot(BaseModel):
-    """Read-only account totals for maintenance and house-ledger views.
-
-    Attributes:
-        name: Last-seen Discord account name.
-        balance: Current point balance.
-        total_earned: Lifetime gross earned amount.
-        total_spent: Lifetime gross spent amount.
-    """
+    """Read-only account totals for maintenance and house-ledger views."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -136,12 +128,7 @@ class LossLeaderboardEntry(BaseModel):
 
 
 class CreditResult(BaseModel):
-    """Outcome of an income event.
-
-    Attributes:
-        new_balance: User balance after the credit.
-        credited_amount: Amount that landed in balance.
-    """
+    """Outcome of an income event."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -150,12 +137,7 @@ class CreditResult(BaseModel):
 
 
 class BalanceAdjustmentResult(BaseModel):
-    """Outcome of a manual balance adjustment.
-
-    Attributes:
-        new_balance: User balance after the adjustment.
-        applied_delta: Signed balance delta that was actually applied.
-    """
+    """Outcome of a manual balance adjustment."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -164,20 +146,7 @@ class BalanceAdjustmentResult(BaseModel):
 
 
 class JackpotSettlementRequest(BaseModel):
-    """One player-side settlement against a shared jackpot pool.
-
-    Attributes:
-        player_id: Discord user ID for the player account.
-        player_account_name: Last-seen account name stored on the player row.
-        player_delta: Signed change for the player; the pool receives the inverse.
-        player_avatar_url: Last-seen Discord avatar URL for the player.
-        require_full_debit: Whether a negative delta must be applied in full,
-            rejecting the whole batch instead of clamping at the player's
-            current balance. Used by pre-game antes.
-        expected_jackpot_generation: Optional jackpot generation observed by
-            the game view. Positive payouts only claim from this generation,
-            so a stale action cannot spend a freshly reseeded pool.
-    """
+    """One player-side settlement against a shared jackpot pool."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -197,25 +166,12 @@ class JackpotSettlementRequest(BaseModel):
     )
     expected_jackpot_generation: int | None = Field(
         default=None,
-        description="Optional jackpot generation observed by the game view; positive payouts only claim from this generation.",
+        description="Optional jackpot generation observed by the game view; positive payouts only claim from this generation, so a stale action cannot spend a freshly reseeded pool.",
     )
 
 
 class JackpotSettlementBatchResult(BaseModel):
-    """Outcome of one or more settlements against a shared jackpot pool.
-
-    Attributes:
-        player_balances: Latest post-settlement balance for each touched player.
-        applied_player_deltas: Signed player deltas that were actually applied.
-            Losses may be smaller than requested when the balance clamps at zero.
-        jackpot_balance: Pool balance after the final settlement and any reseed.
-        jackpot_generation: Pool generation after the final settlement and any
-            reseed.
-        jackpot_depleted: True when a seeded pool was drained and automatically
-            replenished during this batch.
-        rejected_player_ids: Player IDs whose required full debit could not be
-            applied; no mutation is committed when this is non-empty.
-    """
+    """Outcome of one or more settlements against a shared jackpot pool."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -294,8 +250,8 @@ class CasinoLedgerSnapshot(BaseModel):
 class CasinoDailyStats(BaseModel):
     """Per-user current-day casino loss/win/net totals.
 
-    Returned by `get_casino_daily_stats`; all zero when no row exists or the
-    stored counters belong to a previous Taipei day.
+    All zero when no row exists or the stored counters belong to a previous
+    Taipei day.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -317,14 +273,7 @@ class RoundSettlementResult(BaseModel):
 
 
 class TransferResult(BaseModel):
-    """A successful point transfer.
-
-    Attributes:
-        sender_balance: Sender balance after the debit.
-        receiver_balance: Receiver balance after the credit.
-        received_amount: Net amount credited to the receiver after the tax burn.
-        tax_amount: Amount burned by the transfer tax (removed from circulation).
-    """
+    """A successful point transfer."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -339,12 +288,7 @@ class TransferResult(BaseModel):
 
 
 class VipPurchaseResult(BaseModel):
-    """Outcome of a successful VIP purchase.
-
-    Attributes:
-        new_balance: User balance after the `VIP_PURCHASE_COST` debit.
-        cost: Points deducted for the purchase.
-    """
+    """Outcome of a successful VIP purchase."""
 
     model_config = ConfigDict(frozen=True)
 

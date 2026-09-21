@@ -105,8 +105,6 @@ class VideoCogs(commands.Cog):
         # copy runs straight into Chinese with no space, where the generic rule would swallow it.
         url = extract_first_url(text=url, patterns=(DOUYIN_URL_RE,))
 
-        # Read the destination's real upload ceiling (boost tier raises it to 50/100 MiB);
-        # a DM has no guild to query, so fall back to Discord's current non-Nitro base of 20 MiB.
         upload_limit = upload_limit_for(guild=interaction.guild)
 
         # Douyin is routed away from yt-dlp entirely: its extractor needs cookies, never yields a
@@ -121,11 +119,7 @@ class VideoCogs(commands.Cog):
             # A scratch dir per invocation rather than the bare temp dir, because the bound
             # below can abandon a download: yt-dlp keeps writing until its stop signal lands,
             # and only a directory that goes away takes those bytes with it. On the ordinary
-            # path `with result` already unlinks the file and this removes an empty dir. The
-            # stop signal itself is `download_with_stop_signal`'s, whose bounded join is what
-            # normally keeps this removal off a live writer; in the one case it logs, where the
-            # worker ignored that window, the removal reports itself rather than reaching the
-            # handler below and relabelling a download already on screen.
+            # path `with result` already unlinks the file and this removes an empty dir.
             with scratch_directory(prefix="download-video-") as download_dir:
                 downloader = VideoDownloader(output_folder=download_dir)
                 # Bounded because yt-dlp's own `socket_timeout` is per socket and every retry
@@ -139,8 +133,8 @@ class VideoCogs(commands.Cog):
                     interaction=interaction, url=url, result=result, upload_limit=upload_limit
                 )
         except Exception as error:
-            # Broad on purpose: the bot registers no application-command error handler, so
-            # anything escaping here would strand the user on "正在下載影片..." forever.
+            # Broad on purpose: nothing answers the interaction on an error, so anything
+            # escaping here would strand the user on "正在下載影片..." forever.
             logfire.warn(
                 "Video download failed",
                 url=url,
@@ -256,8 +250,8 @@ class VideoCogs(commands.Cog):
                 )
         except Exception as error:
             # Deliberately catches everything, not just DouyinError: this runs outside the
-            # command's own try block and the bot registers no application-command error handler,
-            # so anything escaping here would strand the user on "正在下載影片..." forever.
+            # command's own try block and nothing answers the interaction on an error, so
+            # anything escaping here would strand the user on "正在下載影片..." forever.
             logfire.warn(
                 "Douyin download failed",
                 url=url,
@@ -301,8 +295,8 @@ class VideoCogs(commands.Cog):
                     interaction=interaction, delivery=delivery, result=result, url=url
                 )
         except Exception as error:
-            # Broad on purpose, for the same reason as the download step above: nothing may
-            # escape into the command with no error handler behind it.
+            # Broad on purpose, for the same reason as the download step above: an escape
+            # leaves the interaction unanswered and the user on the placeholder.
             logfire.warn(
                 "Douyin delivery failed", url=url, error_type=type(error).__name__, _exc_info=error
             )

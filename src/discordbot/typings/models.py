@@ -10,12 +10,7 @@ from openai.types.shared_params.reasoning import Reasoning
 
 
 class ModelSettings(BaseModel):
-    """Model name and reasoning effort that should be used together.
-
-    Attributes:
-        name: LiteLLM model string dispatched on the Responses API.
-        effort: Reasoning effort passed to the Responses API for this model.
-    """
+    """Model name and reasoning effort that should be used together."""
 
     name: str = Field(
         ...,
@@ -85,10 +80,7 @@ class ModelSettings(BaseModel):
 
 
 class RuntimeModelCatalog(BaseModel):
-    """Runtime model settings used by Discord bot LLM paths.
-
-    Keep caller lists in sync when moving runtime model usage.
-    """
+    """Runtime model settings used by Discord bot LLM paths."""
 
     @computed_field
     @property
@@ -107,10 +99,6 @@ class RuntimeModelCatalog(BaseModel):
     def image_model(self) -> ModelSettings:
         """The model settings for image generation and editing.
 
-        Callers: `ImageGenerator` (its `render` for the IMAGE route
-        `MediaReplyRoutes.handle_image`, its best-effort `generate` for the QA-route inline
-        `<generate-image>` marker).
-
         Returns:
             Model settings used with `images.generate` and `images.edit`.
         """
@@ -119,10 +107,6 @@ class RuntimeModelCatalog(BaseModel):
     @property
     def video_model(self) -> ModelSettings:
         """The model settings for video generation.
-
-        Callers: `VideoGenerator` (its raising `render` for the VIDEO route
-        `MediaReplyRoutes.handle_video`, its best-effort `generate` for the QA-route inline
-        `<generate-video>` marker, which delegates to that same `render`).
 
         Returns:
             Model settings used with the native Gemini Interactions API (`interactions.create`,
@@ -136,8 +120,6 @@ class RuntimeModelCatalog(BaseModel):
     def music_model(self) -> ModelSettings:
         """The model settings for music generation.
 
-        Callers: `MusicGenerator.generate` (via the QA-route inline `<generate-music>` marker).
-
         Returns:
             Model settings used with the native Gemini (Lyria) Interactions API (a bare model
             name, no provider prefix, since the call goes direct to Google not via the proxy).
@@ -147,8 +129,6 @@ class RuntimeModelCatalog(BaseModel):
     @property
     def tts_model(self) -> ModelSettings:
         """The model settings for spoken-reply text-to-speech.
-
-        Callers: `VoiceGenerator` (via `ReplyToolkit.voice_generator`).
 
         Returns:
             Model settings whose name is dispatched on the `audio.speech` endpoint. Only
@@ -161,7 +141,7 @@ class RuntimeModelCatalog(BaseModel):
     def antigravity_model(self) -> ModelSettings:
         """The deep-research agent: a one-shot Antigravity managed agent.
 
-        Callers: `ResearchCogs` (the only research tier there is).
+        The only research tier there is.
 
         Returns:
             The Antigravity managed-agent string dispatched on the Gemini Interactions API
@@ -174,12 +154,8 @@ class RuntimeModelCatalog(BaseModel):
     def triage_model(self) -> ModelSettings:
         """The model settings for filling a shape the caller has already fixed.
 
-        Callers: `RouteClassifier.classify`, `RouteClassifier.grade_effort`,
-        `ReplyContextBuilder.select_recalled_memories`, the research thread title.
-
-        Every one lands in a slot with no room in it: two enums, a list of ids, and a few
-        words in the request's own language. Nothing here decides what to write, which is
-        both the seam against `fast_model` and why `minimal` is enough.
+        Every call here lands in a slot with no room in it and decides nothing about what to
+        write, which is both the seam against `fast_model` and why `minimal` is enough.
 
         Returns:
             Flash-lite at `minimal`, which is this snapshot's own default effort. Confirm any
@@ -192,13 +168,9 @@ class RuntimeModelCatalog(BaseModel):
     def fast_model(self) -> ModelSettings:
         """The model settings for prose the model composes itself, short of the answer.
 
-        Callers: `PromptGenerator.refine` (the IMAGE/VIDEO prompt director),
-        `AnswerTurn.stream_media_persona_reply` (the persona reply that rides generated media),
-        and `AutoUnmuteCogs._generate_reply`.
-
-        Each decides what to say rather than how briefly to say it, which is the thinking
-        `triage_model` does without. None of them is the deliverable, which is what keeps
-        them below `slow_model`.
+        A call here decides what to say rather than how briefly to say it, which is the
+        thinking `triage_model` does without. Nothing it produces is the deliverable, which is
+        what keeps this tier below `slow_model`.
 
         Returns:
             Flash at `medium`, two snapshots back from `gemini-3.8-flash`, popular enough now
@@ -210,12 +182,9 @@ class RuntimeModelCatalog(BaseModel):
     def slow_model(self) -> ModelSettings:
         """The model settings for full text replies and strategic reasoning.
 
-        Dispatched by `AnswerTurn.stream_answer`, which overrides `effort` with the
-        route-decided level. Three more read only
-        the model NAME and dispatch nothing: `_supported_sources` gates attachment
-        modalities on it, `ReplyToolkit.input_builder` picks the attachment handler
-        off it through `build_attachment_handler`, and `ReplyPipeline._start_link_builds`
-        derives each link-context builder's `answer_model_is_gemini` from it.
+        The NAME is read as well as dispatched — the attachment modality gate, the choice of
+        attachment renderer and every link source's media ingest all branch on it — so
+        repointing this tier changes what reaches the model, not just how well it reasons.
 
         Returns:
             `gemini-3.1-pro-preview` at `high`, on every hour. The peak-hour split below is
@@ -235,14 +204,16 @@ class RuntimeModelCatalog(BaseModel):
         # level for the model itself to refuse and then answers from the fallback deployment, so
         # the caller sees an HTTP 200 whose `model` field names a different model. A status code
         # proves nothing here; only the response's own `model` does.
-        # Peak-hour branch parked again 2026-09-03, one day after #633 restored it:
-        # `gemini-3.8-flash` runs into high-demand refusals often enough inside the window that
-        # it costs more replies than Pro's queueing did. Unlike the 2026-08 parking, the two
-        # halves name different snapshots, so uncommenting restores a real split and with it
-        # everything the flash branch carried: `gemini-3.8-flash` accepts low / medium / high
-        # and NOT `minimal` (Google's thinking table, read 2026-09-02; openrouter does not list
-        # the snapshot yet), and LiteLLM's price table has no entry for it, so a peak-hour reply
-        # prices at `$0.00000000` in the footer while `_supported_sources` reads the
+        #
+        # `gemini-3.8-flash` accepts low / medium / high and NOT `minimal` (Google's thinking
+        # table, read 2026-09-02). openrouter does not list that snapshot, so this is the only
+        # way to complete the lookup the rule above asks for.
+        #
+        # The peak-hour branch below is parked rather than deleted: `gemini-3.8-flash` runs into
+        # high-demand refusals often enough inside the window that it costs more replies than
+        # Pro's queueing did. Uncommenting brings the flash branch's own costs back with it:
+        # LiteLLM's price table has no entry for that snapshot, so a peak-hour reply prices at
+        # `$0.00000000` in the footer while the attachment modality gate falls back to its
         # `{"text", "image"}` baseline. That gate feeds BOTH renders, so an audio or video
         # attachment does not merely go unuploaded inside the window: its `[attachment: video]`
         # marker never reaches the route or the effort grade either, and the answer model is not
@@ -256,35 +227,20 @@ class RuntimeModelCatalog(BaseModel):
     def memory_writer_model(self) -> ModelSettings:
         """The model settings for everything deciding what reaches long-term memory.
 
-        Callers: the note evaluator (`MemoryWriterAI.evaluate`, its `evaluate_model` field)
-        and phase-2 consolidation (`MemoryWriterAI.consolidate`, its `consolidate_model`
-        field), which also backs `regeneration.regenerate_scope_memory`, plus `scripts/regen_memories.py`,
-        which defaults to this tier to drive that rebuild offline.
-
-        There is no separate extractor tier any more. #596 moved the decision of what is worth
-        remembering into the answer model's own reply, so the transcript-scanning first pass
-        that tier existed for has no caller left.
-
         Returns:
-            Model settings for the background memory write calls. One tier for both because
-            both are gates on the same side: the evaluator is the last LLM check before an
-            observation is staged, authoring its fields, tightening `sharing` and `durability`
-            (downgrade-only), deduping by `normalized_key` and stripping personal-attack
-            wording, and the consolidator turns that staging into the fact files plus the tone
-            note. A weaker model on either loses memory or leaks it, rather than just failing
-            to record it.
+            Model settings for the background memory write calls. The note evaluator and the
+            consolidator share one tier because both are gates on the same side: the evaluator
+            is the last LLM check before an observation is staged, authoring its fields,
+            tightening `sharing` and `durability` (downgrade-only), deduping by
+            `normalized_key` and stripping personal-attack wording, and the consolidator turns
+            that staging into the fact files plus the tone note. A weaker model on either loses
+            memory or leaks it, rather than just failing to record it.
         """
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
 
 class RouteClassification(BaseModel):
-    """Structured reply-mode classification returned by the route model.
-
-    Attributes:
-        decision: The reply mode selected for the incoming Discord message.
-        watch_video: Whether the QA answer should ingest a linked YouTube video.
-        link_context_sources: Linked-post sources whose content the QA answer should ingest.
-    """
+    """Structured reply-mode classification returned by the route model."""
 
     decision: Literal["IMAGE", "VIDEO", "QA"] = Field(
         ..., description="Reply mode selected for the incoming Discord message."
@@ -316,15 +272,12 @@ class EffortGrade(BaseModel):
     overridden with it on the QA path.
 
     Deliberately binary, with `high` as the grade an ordinary message gets and `low` as the
-    exception that has to be earned (#490): the grader reads text-only parts, so it never sees
-    an attachment's content, a linked post, or the history behind a short message, and every
-    one of those blind spots hides work rather than inventing it. Both values still have to exist
-    on whatever `slow_model` names, and no effort is universal — not even `high`, which 134 of the
-    138 reasoning models openrouter lists happen to carry — so repointing that tier or widening
-    this grade is checked against the snapshot first (see `ModelSettings.effort`).
-
-    Attributes:
-        effort: Reasoning effort the answer model should spend on this message.
+    exception that has to be earned: the grader reads text-only parts, so it never sees an
+    attachment's content, a linked post, or the history behind a short message, and every one
+    of those blind spots hides work rather than inventing it. Both values still have to exist
+    on whatever `slow_model` names, and no effort is universal — not even `high` — so
+    repointing that tier or widening this grade is checked against the snapshot first (see
+    `ModelSettings.effort`).
     """
 
     effort: Literal["low", "high"] = Field(

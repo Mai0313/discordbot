@@ -14,22 +14,18 @@ from discordbot.utils.sqlite_config import configure_sqlite_connection
 
 NULL_BYTE_RE = re.compile(pattern=r"\x00")
 
-# Single shared engine — putting create_engine() on a per-message
-# cached_property leaked the connection pool, dialect cache and inspector
-# cache for every Discord message.
+# Single shared engine, never a per-message `cached_property`: that leaks the
+# connection pool, dialect cache and inspector cache once per Discord message.
 _sql_engine: Engine = create_engine(url="sqlite:///data/database/messages.db")
 
 
 @event.listens_for(_sql_engine, "connect")
 def _configure_sqlite(dbapi_connection: Any, _connection_record: Any) -> None:  # noqa: ANN401 -- SQLAlchemy event signature is dynamically typed
-    """Sets WAL mode + a tolerant busy_timeout on every new connection.
+    """Applies the project's standard PRAGMA setup to every new connection.
 
-    Default rollback-journal mode serializes reads against writes; with this
-    DB already in the gigabyte range, any concurrent reader (e.g. analytics)
-    would wedge the live logging path. WAL flips that around so reads never
-    block on writes. `synchronous=NORMAL` is the right durability trade-off
-    in WAL: every commit fsyncs the WAL frame; the main file is fsynced on
-    checkpoint, not on every write.
+    WAL earns its keep here in particular: this DB is in the gigabyte range,
+    so a concurrent reader (e.g. analytics) blocking against writes would
+    wedge the live logging path.
     """
     configure_sqlite_connection(dbapi_connection=dbapi_connection, register_stored_integer=False)
 
@@ -59,7 +55,7 @@ _CREATE_MESSAGES_INDEX_SQL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS ix_messages_author_id_created_at "
     "ON messages(author_id, created_at)",
     # Partial unique index gives the UPSERT below a conflict target while
-    # leaving legacy NULL-id rows (logged before this change) untouched.
+    # leaving legacy NULL-id rows untouched.
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_messages_discord_message_id "
     "ON messages(discord_message_id) WHERE discord_message_id IS NOT NULL",
 )
@@ -132,27 +128,21 @@ def _write_row_sync(row: dict[str, str]) -> None:
 
 
 class MessageLogger(BaseModel):
-    """Persists a Discord message and its metadata to SQLite.
-
-    Attributes:
-        message: The Discord message being logged.
-    """
+    """Persists a Discord message and its metadata to SQLite."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
     message: Message = Field(..., description="The Discord message being logged.")
 
     @staticmethod
-    def sanitize_text(s: str | None) -> str:
+    def sanitize_text(s: str) -> str:
         """Sanitizes text by removing null bytes.
 
         Args:
             s: The string to sanitize.
 
         Returns:
-            The sanitized string, or an empty string if input was None.
+            The sanitized string.
         """
-        if s is None:
-            return ""
         return NULL_BYTE_RE.sub("", s)
 
     @computed_field
@@ -200,10 +190,9 @@ class MessageLogger(BaseModel):
 
         SQLite I/O is synchronous; running it from the coroutine directly
         would block the entire event loop while the WAL frame is fsynced.
-        Offloading via `asyncio.to_thread` lets Discord events, LLM streams
-        and game settlements keep ticking while the row lands on disk.
-        SQLite serializes the threads via its file-level write lock plus
-        the connection's `busy_timeout`.
+        Offloading via `asyncio.to_thread` lets the loop keep ticking while
+        the row lands on disk. SQLite serializes the threads via its
+        file-level write lock plus the connection's `busy_timeout`.
         """
         attachment_paths = [attachment.url for attachment in self.message.attachments]
         sticker_paths = [sticker.url for sticker in self.message.stickers]
@@ -244,7 +233,7 @@ class MessageLogger(BaseModel):
 
 
 class LogMessageCog(commands.Cog):
-    """Logs Discord messages and completed command messages.
+    """Logs Discord messages and their later edits.
 
     Attributes:
         bot: The Discord bot instance that owns this cog.
@@ -284,13 +273,11 @@ class LogMessageCog(commands.Cog):
     async def on_message_edit(self, _before: Message, after: Message) -> None:
         """Re-logs message edits so streaming bot replies converge to their final state.
 
-        `on_message` only fires on the initial `reply()` call, which for the
-        streaming text path in `cogs/gen_reply/streaming.py` usually carries the
-        transient reasoning preview rather than the answer (a stream that finishes
-        before the first preview tick creates the reply complete instead, and never
-        reaches here). Every subsequent `reply.edit(...)` fires
-        here; the UPSERT on `discord_message_id` collapses them into a single row
-        whose content matches what is actually on Discord.
+        `on_message` only fires on the initial send, so a reply that streams
+        its content in by editing itself would otherwise be logged as whatever
+        it happened to hold first. Every subsequent edit fires here, and the
+        UPSERT on `discord_message_id` collapses them into a single row whose
+        content matches what is actually on Discord.
 
         Args:
             _before: The pre-edit message snapshot (unused; only `after.id`
@@ -300,17 +287,6 @@ class LogMessageCog(commands.Cog):
         if not self._should_log(message=after):
             return
         asyncio.create_task(MessageLogger(message=after).log())  # noqa: RUF006
-
-    @commands.Cog.listener()
-    async def on_command_completion(self, context: commands.Context[commands.Bot]) -> None:
-        """Listens for command completions and logs the message that triggered it.
-
-        Args:
-            context: The context of the command.
-        """
-        if not self._should_log(message=context.message):
-            return
-        asyncio.create_task(MessageLogger(message=context.message).log())  # noqa: RUF006
 
 
 def setup(bot: commands.Bot) -> None:

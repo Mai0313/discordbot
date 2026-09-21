@@ -1,4 +1,4 @@
-"""Views and embed builders for /memory show, /memory server show and /memory clear."""
+"""Views and embed builders for showing and clearing memory."""
 
 from typing import cast
 import contextlib
@@ -85,7 +85,7 @@ def memory_footer_text(pending_count: int) -> str:
 def build_memory_embed(
     page_text: str, page_index: int, page_count: int, footer_text: str, title: str
 ) -> Embed:
-    """Builds one memory embed page with the shared footer, for either show command."""
+    """Builds one memory embed page with the shared footer."""
     embed = Embed(title=title, description=page_text, color=MEMORY_EMBED_COLOR)
     footer = footer_text
     if page_count > 1:

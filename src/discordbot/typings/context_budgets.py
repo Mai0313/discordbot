@@ -10,11 +10,9 @@ Three neighbouring kinds of number are deliberately NOT here, because each answe
 question and filing them together would imply they must agree.
 
 **A write-side clamp trims a file, not a request.** `TONE_FILE_MAX_BYTES` is the one that looks
-most like it belongs here and does not: its comment talks about the always-injected tone note,
-but it fires inside `write_tone`, so what it bounds is what reaches disk. The reader is
-unbounded. `RAW_FILE_MAX_BYTES`, `DETAIL_FILE_MAX_BYTES` and `DETAIL_FILE_TRIM_TARGET_BYTES` are
-the same shape, and they stay in `services/memory/constants.py` beside the write paths that
-apply them.
+most like it belongs here and does not: the tone note it bounds is injected on every reply, but
+the clamp fires on the write, so what it limits is what reaches disk and the reader stays
+unbounded. Every clamp of that shape stays beside the write path that applies it.
 
 **A rewrite target tells the model what to produce.** `COMPACTION_TARGET_CHARS` is an
 instruction in a prompt, and `COMPACTION_TRIGGER_CHARS` is the switch that turns that
@@ -30,10 +28,10 @@ UI rendering caps (`REASONING_PREVIEW_MAX_CHARS`, `MEMORY_PAGE_MAX_CHARS`), conc
 cache sizes.
 
 The one bound that reads like an input budget and is not here is
-`MAX_BILIBILI_INGEST_DURATION_SECONDS`, which stays in `cogs/gen_reply/link_sources/bilibili.py`
-beside the fetch it gates. Its whole justification is that a longer clip cannot finish its
-download and upload inside `LINK_MEDIA_TIMEOUT_SECONDS`, so it is a precomputed deadline rather
-than a judgement about how much video is worth reading.
+`MAX_BILIBILI_INGEST_DURATION_SECONDS`, which stays beside the fetch it gates. Its whole
+justification is that a longer clip cannot finish its download and upload inside
+`LINK_MEDIA_TIMEOUT_SECONDS`, so it is a precomputed deadline rather than a judgement about how
+much video is worth reading.
 """
 
 from typing import Final
@@ -66,21 +64,17 @@ HISTORY_PER_MESSAGE_OVERHEAD: Final[int] = 40
 # How many history attachments ride as real uploaded files. The char budget cannot see this cost
 # at all: an attachment-only message spends `HISTORY_PER_MESSAGE_OVERHEAD` there while re-sending
 # every one of its files to the model on every single reply, and the Files-API cache in `input.py`
-# only saves the re-upload, never the tokens. A media part costs ~1.1k input tokens, measured as
-# the median over consecutive replies in one channel, where the history text barely moves between
-# the two; the naive slope across all replies reads 2.3k and is measuring the channels that post
-# many files rather than the part. Past this many the older attachments degrade to the
-# `[attachment: ...]` markers the route already reads, which keeps the model aware a file was
-# posted without paying to re-read it.
+# only saves the re-upload, never the tokens. A media part costs ~1.1k input tokens at the margin.
+# Past this many the older attachments degrade to the `[attachment: ...]` markers the route already
+# reads, which keeps the model aware a file was posted without paying to re-read it.
 #
-# Ten was a judgement call when it landed and 249 post-deploy replies say to keep it, because what
-# a reply WOULD send uncapped is bimodal rather than graded: just over half want five parts or
-# fewer and never reach the cap, while the p90 is 92 and the worst 128. There is no bulge just
-# above ten to buy, so raising the cap to 20 un-caps 21 more of them and leaves 82 still capped,
-# and every further step buys less for more. Latency says the same: the answer awaits this render,
-# which runs a median 6s when the cap binds against 0s when it does not, and the uploads under it
-# share `MEDIA_CONCURRENCY` slots with every other reply in flight, so the cost of a raise is not
-# confined to the reply that asked for it.
+# What a reply WOULD send uncapped is bimodal rather than graded: just over half want five parts
+# or fewer and never reach the cap, while the p90 is 92 and the worst 128. There is no bulge just
+# above ten to buy, so raising the cap frees a few more replies while leaving most of the capped
+# ones capped, and every further step buys less for more. Latency says the same: the answer awaits
+# this render, which runs a median 6s when the cap binds against 0s when it does not, and the
+# uploads under it share `MEDIA_CONCURRENCY` slots with every other reply in flight, so the cost
+# of a raise is not confined to the reply that asked for it.
 MAX_HISTORY_MEDIA_PARTS: Final[int] = 10
 
 # --------------------------------------------------------------------------------------
@@ -99,10 +93,8 @@ MEMORY_CONTEXT_TARGET_USERS: Final[int] = 8
 # silently bloating every request. Rendering stops at the cap; nothing is deleted, so the cap can
 # never fight the next consolidation over content it would immediately write back.
 #
-# The figures this carried before (~800 B median, 25 KB max) were measuring the fact FILES on disk,
-# where the `---` header is routinely longer than the body it describes. Only the body is ever
-# rendered, so those numbers overstated what this cap sees by roughly four times. Re-measure the
-# rendered form, not the directory.
+# Re-measure the rendered form, not the fact files on disk: a file's `---` header is routinely
+# longer than the body it describes, and only the body is ever rendered.
 MEMORY_INJECTION_MAX_CHARS: Final[int] = 30_000
 
 # Not a budget of its own: nothing binds on it and no request is ever shortened by it. It is the
@@ -126,11 +118,9 @@ MEMORY_TRANSCRIPT_MAX_CHARS: Final[int] = 100_000
 MEMORY_NOTE_MAX_CHARS: Final[int] = 400
 
 # How many notes of one kind survive a merge, when several turns were skipped while one memory
-# update was in flight and their notes were folded into one payload. Distinct from the per-reply
-# cap in `cogs/gen_reply/markers.py`, which bounds what ONE answer may emit and cannot be imported
-# here anyway (`services/` never reads from `cogs/`): this one bounds the request that carries the
-# accumulated result, which is why it lives with the other request budgets. Two replies' worth,
-# because a merge that deep already means the pipeline is behind.
+# update was in flight and their notes were folded into one payload. It bounds the request that
+# carries the accumulated result, not what one answer may emit. Two replies' worth, because a
+# merge that deep already means the pipeline is behind.
 MEMORY_MERGED_NOTES_MAX: Final[int] = 10
 
 # Cap for the bot's own reply inside that transcript. The reply is secondary evidence and is
@@ -143,8 +133,7 @@ MEMORY_REPLY_MAX_CHARS: Final[int] = 8_000
 # no on-demand retrieval, so the stored facts must be distilled from the full evidence base in the
 # background. The bound only keeps a pathological log inside the consolidation input window
 # (~500k zh-TW chars stays well under the 1M-token window with the stored facts and raw batch on
-# top). `DETAIL_FILE_MAX_BYTES` is sized against this and must stay above it, which
-# `tests/test_context_budgets.py` pins.
+# top). `DETAIL_FILE_MAX_BYTES` is sized against this and must stay above it.
 MEMORY_DETAIL_CONTEXT_MAX_CHARS: Final[int] = 500_000
 
 # --------------------------------------------------------------------------------------
@@ -152,9 +141,8 @@ MEMORY_DETAIL_CONTEXT_MAX_CHARS: Final[int] = 500_000
 # --------------------------------------------------------------------------------------
 
 # Cap on media parts injected for a whole Threads block, shared by the linked post and the post it
-# quotes (`_media_plan` splits it, target first). Mirrors the parse_threads cog's 10-embed ceiling
-# so a huge carousel cannot bloat the answer input -- and, now that each part costs a fetch plus an
-# upload, cannot blow the media budget either.
+# quotes rather than counted per post. It bounds what one answer pays for a huge carousel: each
+# part costs a fetch and an upload as well as the tokens it spends.
 MAX_THREADS_MEDIA_PARTS: Final[int] = 10
 
 # Cap on posts rendered from a Threads reply chain, mirroring the cog's deep-chain trim: a linked
@@ -166,9 +154,9 @@ MAX_THREADS_POSTS: Final[int] = 6
 # Cap on the comments rendered below the target, counted across every branch. Kept on its own axis
 # rather than sharing `MAX_THREADS_POSTS`: the chain is the context leading UP to the linked post,
 # the comments are the discussion under it, and one should never squeeze the other out. It is a
-# backstop rather than a policy, and since #657 it is one that never fires: the page ships at most
-# ten reply branches with a cursor for the rest that nothing follows, measured 2026-09-19 at 9-14
-# comments against 48-121 reported. `_select_replies` decides what a trim actually drops.
+# backstop rather than a policy, and as the page stands it is one that never fires: it ships at
+# most ten reply branches with a cursor for the rest that nothing follows, measured 2026-09-19 at
+# 9-14 comments against 48-121 reported.
 MAX_THREADS_REPLIES: Final[int] = 30
 
 # Cap on images ingested from a Douyin photo post. Each costs a download plus an upload, and a
@@ -178,9 +166,8 @@ MAX_DOUYIN_INGEST_IMAGES: Final[int] = 8
 
 # Cap on images ingested from a Facebook post, sized to match the Douyin one for the same
 # reason: each costs a fetch plus an upload on the reply's critical path. Deliberately larger
-# than what `parse_facebook` renders into the channel (four), because the two bound different
-# things — that one stops the expansion scrolling the channel, this one bounds what the answer
-# pays for.
+# than what `parse_facebook` renders into the channel, because the two bound different things —
+# that one stops the expansion scrolling the channel, this one bounds what the answer pays for.
 MAX_FACEBOOK_INGEST_IMAGES: Final[int] = 8
 
 # Cap on the comments injected below a Facebook post. Logged out the page preloads only a

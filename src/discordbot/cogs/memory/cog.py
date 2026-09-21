@@ -202,10 +202,9 @@ class MemoryCogs(commands.Cog):
         a user with only a tone note still sees it instead of the empty placeholder.
 
         The caller's own memory is shown compartment by compartment, each under a
-        heading naming who can see it. Provenance used to be a per-bullet tag the model
-        wrote and the reply path had to strip; now it is which directory a fact lives
-        in, so showing it costs nothing and tells the owner exactly where each thing
-        they told the bot can come back up.
+        heading naming who can see it: the directory a fact lives in IS the privacy
+        boundary, so showing it costs nothing and tells the owner exactly where each
+        thing they told the bot can come back up.
         """
         pending_count = count_raw_entries(scope=scope)
         sections: list[str] = []
@@ -231,10 +230,8 @@ class MemoryCogs(commands.Cog):
     def _memory_sections(self, scope: str) -> list[str]:
         """Renders one scope's compartments as labelled display sections.
 
-        A server scope has exactly one compartment and no boundary to explain, so it is
-        rendered bare; a user scope gets one heading per compartment. The cap is lifted
-        far above the injection ceiling here on purpose: this view is for the owner, so
-        it should show everything stored rather than what a reply would fit.
+        A server scope has no compartment boundary to explain, so it is rendered bare;
+        a user scope gets one heading per compartment.
         """
         flavor = flavor_of(scope=scope)
         compartments = list_compartments(scope=scope)
@@ -305,10 +302,9 @@ class MemoryCogs(commands.Cog):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        # The rebuild is one LLM call per non-empty compartment plus one for the tone
-        # note, and runs far past Discord's
-        # ack window, so it is dispatched to the background task queue and the
-        # command replies immediately; the user checks back with `/memory show`.
+        # The rebuild runs far past Discord's ack window, so it is dispatched to the
+        # background task queue and the command replies immediately; the user checks
+        # back with `/memory show`.
         scheduled = schedule_memory_regeneration(
             scope=scope,
             writer=self.memory_writer,

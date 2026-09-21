@@ -1,20 +1,18 @@
 """What a failed read of a linked post means, shared by every platform that reads one.
 
-The five expansion cogs answer with a reaction and nothing else, so the reaction has to carry
-the difference between "the platform refused us, the link is fine" and "there is no post here".
-Douyin could already tell those apart because it has its own error tree; Threads, Facebook and
-Instagram wrapped every fetch failure in a bare `RuntimeError`, so a 429 reached the reader as
-the cross that means the bot broke. This module is the vocabulary the other three were missing,
-and `services/platforms/douyin.py` re-parents its own tree onto it rather than keeping a second one.
+An expansion cog answers with a reaction and nothing else, so the reaction has to carry the
+difference between "the platform refused us, the link is fine" and "there is no post here". A
+platform with an error tree of its own parents it onto these rather than keeping a second one,
+so nothing downstream needs a per-platform mapping.
 
-Every class here is a `RuntimeError`, which is what keeps it a drop-in: the callers that already
-catch `RuntimeError` around a parse — `/clean_threads_url` among them — keep catching these.
+Every class here is a `RuntimeError`, which is what keeps it a drop-in: callers that already
+catch `RuntimeError` around a parse keep catching these.
 
 `link_fetch_error` classifies only what HTTP says unambiguously and hands everything else back
-as today's bare `RuntimeError`. A 403 is the case that argument is really about: logged out, it
-could be a post we may not read or a wall that lifts in ten minutes, and guessing either way
-writes a reaction that lies half the time. Reclassifying one needs evidence about that platform,
-not a rule invented here.
+as a bare `RuntimeError`. A 403 is the case that argument is really about: logged out, it could
+be a post we may not read or a wall that lifts in ten minutes, and guessing either way writes a
+reaction that lies half the time. Reclassifying one needs evidence about that platform, not a
+rule invented here.
 """
 
 import requests
@@ -41,9 +39,9 @@ class LinkUnavailableError(LinkReadError):
 def is_retryable_fetch_failure(*, error: requests.RequestException) -> bool:
     """Reports whether a failed request is worth making again, exactly as HTTP frames it.
 
-    Split out from `link_fetch_error` because Douyin raises its own error classes rather than
-    these, and a transport failure has to mean the same thing on all five platforms or the
-    reaction stops meaning anything.
+    Public rather than folded into `link_fetch_error` for the callers that raise a class or a
+    message of their own: a transport failure has to mean the same thing on every platform, or
+    the reaction stops meaning anything.
 
     Args:
         error: What `requests` raised.
@@ -69,9 +67,9 @@ def link_fetch_error(*, error: requests.RequestException, url: str) -> RuntimeEr
         url: The page being fetched, for the message.
 
     Returns:
-        The exception to raise, carrying the same message every caller wrote before this
-        existed: a `LinkRetryableError` or `LinkUnavailableError` where the status or the
-        transport failure is unambiguous, and a plain `RuntimeError` everywhere else.
+        The exception to raise: a `LinkRetryableError` or `LinkUnavailableError` where the
+        status or the transport failure is unambiguous, and a plain `RuntimeError` everywhere
+        else.
     """
     message = f"Failed to fetch HTML from {url}: {error}"
     if is_retryable_fetch_failure(error=error):

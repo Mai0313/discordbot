@@ -1,8 +1,4 @@
-"""Image helpers previously sourced from autogen.agentchat.contrib.img_utils.
-
-Inlined to drop the autogen/ag2 runtime dependency. Trimmed to the input forms
-the bot actually uses: `http(s)://` URLs and `data:image/...;base64,...` URIs.
-"""
+"""Image loading, downscaling, and data-URI helpers."""
 
 from io import BytesIO
 import re
@@ -88,8 +84,7 @@ def shrink_image_bytes(payload: bytes, content_type: str) -> LoadedMedia:
         image.convert("RGB").save(fp=buffered, format="JPEG", quality=95)
         return LoadedMedia(data=buffered.getvalue(), mime_type="image/jpeg")
     except Exception:
-        # An undecodable or exotic payload is sent as-is; the API rejects it the
-        # same way it would have before the shrink existed.
+        # An undecodable or exotic payload is sent as-is, for the API to reject.
         return unchanged
 
 

@@ -12,17 +12,11 @@ import asyncio
 from contextlib import asynccontextmanager
 from collections.abc import Callable, AsyncIterator
 
-from pydantic import Field, BaseModel, ConfigDict, PrivateAttr, SkipValidation
+from pydantic import Field, BaseModel, PrivateAttr
 
 
 class LoopLocalLock(BaseModel):
-    """An asyncio.Lock rebuilt whenever the running event loop changes.
-
-    Call `get()` to obtain the lock bound to the current loop; it rebuilds the lock on a
-    loop change and otherwise returns the same instance.
-    """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+    """An asyncio.Lock rebuilt whenever the running event loop changes."""
 
     _lock: asyncio.Lock | None = PrivateAttr(default=None)
     _loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
@@ -44,9 +38,7 @@ class LoopLocalSemaphore(BaseModel):
     use still takes effect.
     """
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    capacity_provider: SkipValidation[Callable[[], int]] = Field(
+    capacity_provider: Callable[[], int] = Field(
         ...,
         description="Returns the concurrency cap, read fresh each time the semaphore is rebuilt.",
     )
@@ -65,11 +57,9 @@ class LoopLocalSemaphore(BaseModel):
 class LoopLocalRegistry[K, V](BaseModel):
     """A process-local dict rebuilt (cleared) whenever the running event loop changes.
 
-    Backs per-scope lock tables and per-scope task slots. Every access rebinds to the
-    current loop first, dropping entries left over from a stale loop.
+    Every access rebinds to the current loop first, dropping entries left over from a
+    stale loop.
     """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     _items: dict[K, V] = PrivateAttr(default_factory=dict)
     _loop: asyncio.AbstractEventLoop | None = PrivateAttr(default=None)
@@ -102,11 +92,9 @@ class LoopLocalRegistry[K, V](BaseModel):
 class KeyedLockManager[K](BaseModel):
     """Refcounted per-key asyncio locks, rebuilt when the running event loop changes.
 
-    Serializes work per key (user / symbol) while keeping the maps bounded: a key's lock
-    and refcount are dropped once the last holder releases, so an idle key leaves no residue.
+    Serializes work per key while keeping the maps bounded: a key's lock and refcount are
+    dropped once the last holder releases, so an idle key leaves no residue.
     """
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     _locks: dict[K, asyncio.Lock] = PrivateAttr(default_factory=dict)
     _refcounts: dict[K, int] = PrivateAttr(default_factory=dict)
