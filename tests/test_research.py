@@ -262,9 +262,11 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
     assert kwargs["stream"] is True
     assert kwargs["background"] is True
     assert kwargs["tools"] is agent.RESEARCH_TOOLS
-    # The only agent runs with no `agent_config`: that plumbing carried the removed Deep Research
-    # tiers' `collaborative_planning`, and nothing may put it back on the one surviving call.
-    assert "agent_config" not in kwargs
+    # The config block names the agent's own family and carries no knob of its own; a `deep-research`
+    # one here would be the removed tiers' `collaborative_planning` coming back, and nothing upstream
+    # rejects a mismatched family, so the discriminator is pinned here instead.
+    assert kwargs["agent_config"] is agent.RESEARCH_AGENT_CONFIG
+    assert kwargs["agent_config"]["type"] == "antigravity"
     assert streamer.reasoning == "searching"
     assert result.ok is True
     assert result.report_text.startswith("# Report")
