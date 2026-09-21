@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import time
 from types import TracebackType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, Self, TypedDict, cast, get_args
@@ -1437,6 +1438,183 @@ def test_auto_unmute_skips_a_thread_that_has_already_archived(
     cog._last_active_channel[5] = 77
 
     assert cog._reply_targets(guild=guild)[0] is system
+
+
+# Everything `cogs/economy/` imports from the ledger. Split rather than listed: a new import
+# fails the sweep below until someone decides which half it belongs in, which is the only thing
+# that keeps this from silently missing the next money-moving call.
+_LEDGER_MUTATIONS = frozenset({
+    "adjust_balance",
+    "buy_vip",
+    "call_central_bank_loans",
+    "call_personal_loans",
+    "create_central_bank_loan_request",
+    "create_personal_loan_request",
+    "repay_central_bank_loans",
+    "repay_personal_loans",
+    "transfer",
+    # Both accrue and persist interest before returning, so they take the same write lock.
+    "get_portfolio",
+    "list_loan_contracts",
+    "accept_loan_proposal",
+    "cancel_loan_proposal",
+    "reject_expired_loan_proposal",
+    "reject_loan_proposal",
+})
+_LEDGER_READS = frozenset({
+    "get_account",
+    "get_admin",
+    "get_balance",
+    "get_casino_ledger",
+    "get_central_bank_status",
+    "get_central_banker",
+    "get_vip",
+    "top_losers",
+    "top_n",
+})
+# `views.py` is excluded, and the skip is the whole file. Five of its functions write. The four
+# button callbacks — approve, reject and cancel — do it before acknowledging (#682), and the fix
+# is not the one applied to the slash commands: they are component interactions answering by
+# editing the message their button sits on. The fifth is `on_timeout`, which has no interaction
+# to acknowledge at all and is outside what this sweep can say anything about. Named here so it
+# cannot read as though the sweep had cleared any of them.
+_ACK_SWEEP_SKIPS = frozenset({"views.py"})
+
+
+def _first_unavoidable_ack(node: ast.AST) -> int | None:
+    """The line of the first acknowledgement a write inside this function cannot go around.
+
+    Recurses into `try` and `with` bodies, which always run, and deliberately not into `if`,
+    `for` or `while`: a permission guard that acks and returns sits inside an `if`, and an ack
+    found there would vouch for a write further down that never passes through it.
+    """
+    for statement in getattr(node, "body", []):
+        if isinstance(statement, ast.Try | ast.With | ast.AsyncWith):
+            found = _first_unavoidable_ack(statement)
+            if found is not None:
+                return found
+            continue
+        # `AsyncFunctionDef` is not a subclass of `FunctionDef`, and in an async cog a nested
+        # def is far more likely to be the async one — an ack inside a closure may never run.
+        if isinstance(
+            statement, ast.If | ast.For | ast.While | ast.FunctionDef | ast.AsyncFunctionDef
+        ):
+            continue
+        for inner in ast.walk(statement):
+            if not isinstance(inner, ast.Call):
+                continue
+            name = ast.unparse(inner.func)
+            if (
+                name.endswith("response.defer")
+                or name.endswith("response.send_message")
+                or name.endswith("send_ephemeral_response")
+            ):
+                return inner.lineno
+    return None
+
+
+def _writes_before(node: ast.AsyncFunctionDef, acked_at: int | None) -> list[str]:
+    """Ledger writes in this function that run before it has acknowledged anything."""
+    found: list[str] = []
+    for inner in ast.walk(node):
+        if not isinstance(inner, ast.Call) or not isinstance(inner.func, ast.Name):
+            continue
+        if inner.func.id in _LEDGER_MUTATIONS and (acked_at is None or inner.lineno < acked_at):
+            found.append(f"{node.name} writes at line {inner.lineno} before any ack")
+    return found
+
+
+async def test_a_failed_money_command_stays_private(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Acking before the write must not turn a private failure into a public one.
+
+    Having no matching loan is an ordinary mistake, not an edge case. The placeholder's flag
+    and the followup's are independent and both matter: the first decides whether the channel
+    sees that the attempt happened, the second whether it sees what came of it.
+
+    All four, because the ack is written out once per command and only a sweep catches the one
+    someone changes on its own.
+    """
+
+    async def nothing_to_settle(**_kwargs: object) -> None:
+        """Stands in for a write that matched no loan."""
+        return
+
+    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
+    # A repayment of zero is refused before the command ever acks, so these have to carry a
+    # real amount; a collection of zero means "everything owed" and is the ordinary call.
+    collect: dict[str, object] = {"member": FakeUser(user_id=2), "amount": "0"}
+    commands_under_test = (
+        ("credit_repay", "repay_personal_loans", {"member": FakeUser(user_id=2), "amount": "5"}),
+        ("credit_call", "call_personal_loans", collect),
+        ("central_bank_repay", "repay_central_bank_loans", {"amount": "5"}),
+        ("central_bank_call", "call_central_bank_loans", collect),
+    )
+
+    for command, ledger_call, kwargs in commands_under_test:
+        monkeypatch.setattr(economy, ledger_call, nothing_to_settle)
+        cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace()))
+        interaction = FakeInteraction(user=FakeUser(user_id=1, display_name="Alice"))
+
+        await getattr(EconomyCogs, command).callback(
+            cog, as_interaction(fake=interaction), **kwargs
+        )
+
+        # This flag says an ack happened, not when — the ordering is the structural test's job.
+        assert interaction.response.deferred is True, f"{command} never acknowledged at all"
+        assert interaction.response.deferred_ephemeral is True, (
+            f"{command} announced the attempt to the channel"
+        )
+        assert interaction.followup.sent[-1]["ephemeral"] is True, (
+            f"{command} announced the failure to the channel"
+        )
+
+
+def test_every_money_command_acknowledges_before_it_mutates() -> None:
+    """Discord kills the token three seconds after dispatch; a SQLite writer may wait longer.
+
+    A command that writes first and acks on the result can therefore commit someone's money
+    and then fail to say so, reaching them as Discord's "the application did not respond" with
+    no statement of what happened.
+
+    Structural because the race needs a contended write lock to observe, and because this is
+    the kind of ordering someone reintroduces by moving an `if`.
+    """
+    economy_dir = Path(__file__).resolve().parents[1] / "src/discordbot/cogs/economy"
+    scanned: list[str] = []
+    offenders: list[str] = []
+    for path in sorted(economy_dir.glob("*.py")):
+        if path.name in _ACK_SWEEP_SKIPS:
+            continue
+        scanned.append(path.name)
+        for node in ast.walk(ast.parse(source=path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.AsyncFunctionDef):
+                offenders.extend(_writes_before(node=node, acked_at=_first_unavoidable_ack(node)))
+
+    assert "cog.py" in scanned, "the sweep found no modules, so it would pass on an empty walk"
+    assert not offenders, f"money commands that mutate before acknowledging: {sorted(offenders)}"
+
+
+def test_the_ack_sweep_accounts_for_every_ledger_name_the_cogs_import() -> None:
+    """A new import has to be classified before it can be missed.
+
+    The sweep can only see writes it was told are writes, and a hand-kept list of those goes
+    stale the first time someone imports one more.
+    """
+    economy_dir = Path(__file__).resolve().parents[1] / "src/discordbot/cogs/economy"
+    imported: set[str] = set()
+    for path in sorted(economy_dir.glob("*.py")):
+        for node in ast.walk(ast.parse(source=path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").endswith(
+                "economy.database"
+            ):
+                imported.update(alias.name for alias in node.names)
+
+    unclassified = imported - _LEDGER_MUTATIONS - _LEDGER_READS
+    assert imported, "no ledger imports found, so this guard is watching nothing"
+    assert not unclassified, (
+        f"classify these as a ledger write or a read before the ack sweep can cover them: "
+        f"{sorted(unclassified)}"
+    )
 
 
 async def _audit_entries(bot_user: FakeUser) -> AsyncIterator[FakeAuditEntry]:

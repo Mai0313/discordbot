@@ -702,6 +702,12 @@ class EconomyCogs(commands.Cog):
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
 
+        # Deferred before the write, not after it: the token dies three seconds after dispatch
+        # while a SQLite writer waits out lock contention for longer, so acking on the result
+        # lets a committed settlement reach its owner as "the application did not respond".
+        # Ephemeral because the failure below is private and this ack is what the caller sees
+        # while it runs; the success is a public followup either way.
+        await interaction.response.defer(ephemeral=True)
         result = await repay_personal_loans(
             borrower_id=user.id,
             borrower_name=user.name,
@@ -710,7 +716,6 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
         )
         if result is None:
-            await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,
                 embed=embeds.build_error_embed(
@@ -723,7 +728,6 @@ class EconomyCogs(commands.Cog):
             )
             return
 
-        await interaction.response.defer()
         embed = embeds.build_credit_repay_embed(
             actor_name=user.display_name,
             actor_avatar_url=user_avatar_url,
@@ -779,6 +783,9 @@ class EconomyCogs(commands.Cog):
         guild = interaction.guild
         borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
         actor_avatar_url = await guild_avatar_url(user=user, guild=guild)
+        # Acked before the write, and ephemerally — see `credit_repay` for why both halves
+        # matter.
+        await interaction.response.defer(ephemeral=True)
         result = await call_personal_loans(
             lender_id=user.id,
             borrower_id=member.id,
@@ -787,7 +794,6 @@ class EconomyCogs(commands.Cog):
             amount=collect.amount,
         )
         if result is None:
-            await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,
                 embed=embeds.build_error_embed(
@@ -798,7 +804,6 @@ class EconomyCogs(commands.Cog):
                 ),
             )
             return
-        await interaction.response.defer()
         embed = embeds.build_credit_call_embed(
             actor_name=user.display_name,
             actor_avatar_url=actor_avatar_url,
@@ -972,6 +977,9 @@ class EconomyCogs(commands.Cog):
             return
         user = interaction.user
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
+        # Acked before the write, and ephemerally — see `credit_repay` for why both halves
+        # matter.
+        await interaction.response.defer(ephemeral=True)
         result = await repay_central_bank_loans(
             borrower_id=user.id,
             borrower_name=user.name,
@@ -979,7 +987,6 @@ class EconomyCogs(commands.Cog):
             amount=parsed_amount,
         )
         if result is None:
-            await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,
                 embed=embeds.build_error_embed(
@@ -987,7 +994,6 @@ class EconomyCogs(commands.Cog):
                 ),
             )
             return
-        await interaction.response.defer()
         embed = embeds.build_central_bank_repay_embed(
             actor_name=user.display_name,
             actor_avatar_url=user_avatar_url,
@@ -1052,6 +1058,9 @@ class EconomyCogs(commands.Cog):
         guild = interaction.guild
         borrower_avatar_url = await guild_avatar_url(user=member, guild=guild)
         actor_avatar_url = await guild_avatar_url(user=interaction.user, guild=guild)
+        # Acked before the write, and ephemerally — see `credit_repay` for why both halves
+        # matter.
+        await interaction.response.defer(ephemeral=True)
         result = await call_central_bank_loans(
             borrower_id=member.id,
             borrower_name=member.name,
@@ -1059,7 +1068,6 @@ class EconomyCogs(commands.Cog):
             amount=collect.amount,
         )
         if result is None:
-            await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,
                 embed=embeds.build_error_embed(
@@ -1067,7 +1075,6 @@ class EconomyCogs(commands.Cog):
                 ),
             )
             return
-        await interaction.response.defer()
         embed = embeds.build_central_bank_call_embed(
             actor_name=interaction.user.display_name,
             actor_avatar_url=actor_avatar_url,
