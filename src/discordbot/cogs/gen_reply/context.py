@@ -159,11 +159,10 @@ def history_media_over_budget(
     slip into the leftover budget would put an older attachment on screen while a newer one
     showed only a marker, which reads as the pipeline losing files at random.
 
-    Counting is off `collect_attachment_sources` rather than the modality-gated list, so it
-    stays free of the per-message log the gate emits. That over-counts whenever the gate drops
-    something — an archive or an office document always, audio and video when the price table is
-    empty — and the budget a dropped source spends is then taken from an older message whose
-    images WOULD have been sent (#660).
+    Counting is off `count_supported_sources`, so a source the modality gate is going to drop
+    spends nothing. Counting the raw list instead took that budget from an older message whose
+    images WOULD have been sent, and since the newest message is exempt, ten office documents
+    on it could record the budget full while the turn carried no media at all (#660).
 
     The newest message carrying attachments is exempt, so a single post of many images is
     never reduced to nothing but markers while the budget sits unspent. That makes the cap a
@@ -176,7 +175,7 @@ def history_media_over_budget(
     spent = 0
     for candidate in reversed(hist_messages):
         try:
-            count = len(builder.collect_attachment_sources(message=candidate))
+            count = builder.count_supported_sources(message=candidate)
         except Exception:  # noqa: S112
             # Broad for the same reason `process_single_message` is, and load-bearing here for a
             # different one: this runs inside `ReplyContextBuilder.build`'s gather, which has no
