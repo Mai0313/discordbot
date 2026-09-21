@@ -82,7 +82,14 @@ if TYPE_CHECKING:
 
 MAX_BLACKJACK_PLAYERS: Final[int] = 6
 BLACKJACK_ACTION_TIMEOUT_SECONDS: Final[int] = 180
-MAX_DEALER_DECISION_STEPS: Final[int] = 8
+# Enough iterations for the longest hand H17 can force. `_play_dealer_locked` spends one per
+# drawn card plus one to record the stand or the bust, and the longest hand still required to
+# draw is twelve cards — eleven aces and a five, hard 16 because an eleven-point ace would bust
+# it. Two of those twelve are dealt rather than drawn, so it is ten draws to reach that hand,
+# an eleventh for the draw it is owed, and a twelfth to record what that came to.
+# `tests/test_blackjack_view_buttons.py` searches for the hand rather than trusting the
+# arithmetic, so a rules change re-derives this instead of quietly outgrowing it.
+MAX_DEALER_DECISION_STEPS: Final[int] = 12
 MAX_BOT_TURN_STEPS: Final[int] = 16
 PEEK_REVEAL_DELAY_SECONDS: Final[float] = 1.6
 BOT_TURN_EDIT_DELAY_SECONDS: Final[float] = 0.4
