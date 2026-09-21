@@ -29,12 +29,15 @@ from discordbot.cogs.games.dragon_gate import (
     ANTE,
     GAME_ID,
     DragonGateRound,
+    DragonGateTurnResult,
     DragonGateParticipantUnknownError,
     card_value,
     has_open_gate,
 )
 from discordbot.cogs.games.interactions import edit_message_with_retry
 from discordbot.cogs.games.dragon_gate_views import (
+    DRAGON_GATE_VISIBLE_PLAYER_LINES,
+    DRAGON_GATE_VISIBLE_HISTORY_LINES,
     DragonGateView,
     DragonGateBetModal,
     DragonGateLobbyView,
@@ -261,6 +264,22 @@ class JackpotState:
             jackpot_balance=self.jackpot,
             jackpot_generation=self.generation,
         )
+
+
+def _rendered_length(embed: Embed) -> int:
+    """What Discord counts one embed as, for the 6000-per-message budget it shares.
+
+    Every text part, not just the description: the final embed carries none of the others today,
+    so counting only what it happens to use would stop measuring the moment someone adds a
+    footer to it — which is the change this is here to catch.
+    """
+    return (
+        len(embed.description or "")
+        + len(embed.title or "")
+        + len(getattr(embed.footer, "text", None) or "")
+        + len(getattr(embed.author, "name", None) or "")
+        + sum(len(field.name or "") + len(field.value or "") for field in embed.fields)
+    )
 
 
 def _participant(user_id: int, display_name: str, balance: int = 1_000_000) -> GameParticipant:
@@ -1303,3 +1322,84 @@ def test_dragon_gate_history_embed_uses_account_name_for_code_block() -> None:
     assert isinstance(embed.description, str)
     assert "alice" in embed.description
     assert "Alice With A Very Long Server Nickname" not in embed.description
+
+
+def test_dragon_gate_history_embed_stays_inside_discord_at_its_worst() -> None:
+    """A long round must not grow the history past what Discord will render.
+
+    The block gained a line per resolved turn and nothing dropped one, so a long round passed the
+    limit and the table stopped updating while the round carried on — silently, since what fails
+    is the edit rather than anything a player does.
+
+    Both limits, because the one that binds first is not the obvious one: a description gets
+    4096, but `_finalize_locked` sends this embed beside the final one and Discord counts 6000
+    across a message's embeds, which the history is by far the larger half of.
+
+    Every input is at its widest rather than at whatever a convenient deal produced — the gate
+    that renders longest, names at Discord's 32-character maximum, every seat withdrawn so each
+    scoreboard row carries its suffix, and amounts at the widest the compact formatter emits.
+    A worst case assembled from whatever was to hand reads 360 characters narrower than this
+    one, which is four line counts' worth of headroom that is not there.
+    """
+    longest_name = "w" * 32
+    participants = [
+        GameParticipant(
+            user_id=index,
+            account_name=longest_name,
+            display_name=longest_name,
+            bet=ANTE,
+            balance_at_start=10**15,
+            is_allin=False,
+        )
+        for index in range(1, DRAGON_GATE_VISIBLE_PLAYER_LINES + 1)
+    ]
+    round_state = DragonGateRound.from_participants(
+        rng=RiggedRandom(choices=("3", "♠", "9", "♥", "7", "♣")), participants=participants
+    )
+    round_state.withdrawn_user_ids = {participant.user_id for participant in participants}
+    for participant in participants:
+        round_state.player_deltas[participant.user_id] = -(10**15)
+    widest_turn = DragonGateTurnResult(
+        turn_number=99_999,
+        participant=participants[0],
+        pillars=[Card(rank="10", suit="♠"), Card(rank="10", suit="♥")],
+        third_card=Card(rank="10", suit="♦"),
+        bet=10**15,
+        outcome="pair_pillar_hit",
+        delta=-(10**15),
+    )
+    history = [widest_turn] * (DRAGON_GATE_VISIBLE_HISTORY_LINES * 3)
+    results = [
+        DragonGatePlayerResult(
+            participant=participant,
+            delta=-(10**15),
+            final_balance=10**15,
+            withdrawn=True,
+            refunded_to_pool=10**15,
+        )
+        for participant in participants
+    ]
+
+    embed = build_dragon_gate_history_embed(history=history, round_state=round_state)
+    final_embed = build_dragon_gate_final_embed(
+        round_state=round_state, results=results, jackpot=10**15, reason="round over"
+    )
+
+    assert embed is not None
+    assert isinstance(embed.description, str)
+    assert len(embed.description) <= 4096, (
+        f"the history embed renders {len(embed.description)} characters at its worst, past "
+        f"Discord's 4096 per description; lower DRAGON_GATE_VISIBLE_HISTORY_LINES"
+    )
+    settled_message = _rendered_length(embed=final_embed) + _rendered_length(embed=embed)
+    assert settled_message <= 6000, (
+        f"the settled table renders {settled_message} characters across its two embeds, past "
+        f"Discord's 6000 per message; lower DRAGON_GATE_VISIBLE_HISTORY_LINES"
+    )
+    # Dropped turns are counted rather than vanishing, and the newest are the ones kept.
+    hidden = len(history) - DRAGON_GATE_VISIBLE_HISTORY_LINES
+    assert f"(前 {hidden} 手省略)" in embed.description
+    assert (
+        embed.description.count(f"第 {widest_turn.turn_number} 手")
+        == DRAGON_GATE_VISIBLE_HISTORY_LINES
+    )
