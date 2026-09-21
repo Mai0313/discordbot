@@ -8,6 +8,7 @@ import nextcord
 from nextcord import Message
 from nextcord.abc import Messageable
 
+from discordbot.utils import message_cleanup as cleanup_module
 from discordbot.utils import interaction_responses as interactions
 from discordbot.utils.message_cleanup import (
     PUBLIC_MESSAGE_TTL_SECONDS,
@@ -19,7 +20,14 @@ from discordbot.utils.message_cleanup import (
     schedule_public_message_delete,
 )
 
-from tests.helpers.casting import as_bot, as_message, as_interaction, make_not_found
+from tests.helpers.casting import (
+    as_bot,
+    as_message,
+    as_interaction,
+    make_forbidden,
+    make_not_found,
+    make_server_error,
+)
 
 
 class _DeletableMessageStub:
@@ -291,6 +299,87 @@ async def test_delete_tracked_public_messages_keeps_unresolved_channel_records()
     assert await list_pending_public_messages() == [
         PendingPublicMessage(channel_id=20, message_id=10)
     ]
+
+
+class _ForbiddenChannelBotStub:
+    """A bot whose identity is shut out of the channel holding the record."""
+
+    def __init__(self) -> None:
+        """Initializes the cleanup call record."""
+        self.fetch_calls: list[int] = []
+
+    def get_channel(self, channel_id: int, /) -> None:
+        """Nothing cached, so the sweep reaches for `fetch_channel`."""
+        return
+
+    async def fetch_channel(self, channel_id: int, /) -> object:
+        """Refuses the way Discord refuses a channel the bot may not view."""
+        self.fetch_calls.append(channel_id)
+        raise make_forbidden(message="Missing Access")
+
+
+def _recorded_warns(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, object]]]:
+    """Captures what the sweep reports, the way the rest of the suite reads logfire."""
+    warns: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        target=cleanup_module.logfire,
+        name="warn",
+        value=lambda message, **fields: warns.append((message, fields)),
+    )
+    return warns
+
+
+async def test_a_channel_the_bot_cannot_read_is_reported_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A permission the bot never had is expected, so it says so and attaches nothing.
+
+    The channel's overwrites belong to whoever administers that server, and an interaction
+    reaches a channel the bot's own identity cannot, so this is a standing condition rather
+    than something to diagnose. Sixteen lines of identical stack per record per boot is what
+    the carve-out in `.github/CONTRIBUTING.md#logging` exists to stop.
+    """
+    message = _DeletableMessageStub(message_id=10, channel_id=20)
+    await track_public_message(message=as_message(fake=message))
+    bot = _ForbiddenChannelBotStub()
+    warns = _recorded_warns(monkeypatch=monkeypatch)
+
+    await delete_tracked_public_messages(bot=as_bot(fake=bot))
+
+    assert bot.fetch_calls == [20]
+    assert len(warns) == 1, f"expected one report, got {warns}"
+    text, fields = warns[0]
+    assert "cannot read" in text
+    assert fields == {"channel_id": 20, "message_id": 10}, (
+        "a permission the bot cannot earn needs the ids and no traceback"
+    )
+
+
+async def test_a_transient_http_failure_keeps_its_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The carve-out is for `Forbidden` alone; a 5xx is still something to look at.
+
+    Both used to share one `except HTTPException`, so dropping the traceback there would have
+    taken it from every transport failure too.
+    """
+
+    class _ServerErrorBotStub(_ForbiddenChannelBotStub):
+        async def fetch_channel(self, channel_id: int, /) -> object:
+            """Fails the way Discord fails when it is Discord that is broken."""
+            self.fetch_calls.append(channel_id)
+            raise make_server_error()
+
+    message = _DeletableMessageStub(message_id=11, channel_id=21)
+    await track_public_message(message=as_message(fake=message))
+    warns = _recorded_warns(monkeypatch=monkeypatch)
+
+    await delete_tracked_public_messages(bot=as_bot(fake=_ServerErrorBotStub()))
+
+    assert len(warns) == 1
+    text, fields = warns[0]
+    assert "Failed to fetch" in text
+    assert fields.get("_exc_info") is True, "a transport failure still needs its traceback"
 
 
 async def test_send_expiring_followup_waits_for_message_and_schedules_cleanup(

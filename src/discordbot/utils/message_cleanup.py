@@ -6,7 +6,7 @@ from pathlib import Path
 import threading
 
 import logfire
-from nextcord import Message, NotFound, HTTPException
+from nextcord import Message, NotFound, Forbidden, HTTPException
 from pydantic import Field, BaseModel
 from sqlalchemy import Engine, text, event, create_engine
 from nextcord.abc import Messageable
@@ -256,6 +256,19 @@ async def delete_tracked_public_messages(bot: commands.Bot) -> None:
                 channel_id=record.channel_id,
                 message_id=record.message_id,
                 _exc_info=True,
+            )
+            continue
+        except Forbidden:
+            # Expected rather than diagnosable, and the one `warn` here that attaches nothing:
+            # the channel's overwrites are the server's to set, so the bot's own identity can
+            # be shut out of a channel an interaction still reaches. The type and the two ids
+            # are the whole story, while the traceback is sixteen identical lines per record
+            # per boot. Split from the branch below so a 5xx or a rate limit — which IS worth
+            # a traceback — does not lose one by sharing this handler.
+            logfire.warn(
+                "Stale public response sits in a channel the bot cannot read",
+                channel_id=record.channel_id,
+                message_id=record.message_id,
             )
             continue
         except HTTPException:
