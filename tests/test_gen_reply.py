@@ -73,6 +73,7 @@ from discordbot.cogs.gen_reply.recall import (
     NO_STORED_MEMORY,
     RecallContext,
     RecallCandidate,
+    RecallSelection,
     parse_user_id_list,
     build_recall_context,
     recall_user_memories,
@@ -9219,6 +9220,10 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             ["社群暱稱"],
         ),
         ([], None, [], [["42"]], None, (5, 6), [], ["📖"]),
+        # Nobody present is nameable and the selector found a table-only member: the footer
+        # has no name to print, so it reports the bare count. Only reachable since the
+        # optional lookup stopped being gated on a deterministic memory existing.
+        ([42], (42, "Boss", "李董"), [], [["42"]], None, (1, 1), ["\n-# 📖 讀了 1 人的記憶"], []),
     ],
     ids=[
         "skipped-selector-not-counted",
@@ -9227,6 +9232,7 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
         "absent-member-counted-never-named",
         "participant-alias-row-stays-out-of-the-credit",
         "no-memory-no-credit",
+        "only-an-absent-member-leaves-the-count-alone",
     ],
 )
 async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametrized columns
@@ -9946,6 +9952,50 @@ async def _prepare_context_with_hanging_selection(
     return await _context_builder(cog=cog, message=msg).build(
         history_limit=2, parts_task=parts_task, text_parts=text_parts, route_done=route_done
     )
+
+
+async def test_the_optional_selector_runs_with_no_deterministic_memory(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The oblique-reference lookup must not be gated on the deterministic one finding something.
+
+    A conversation where nobody present has a stored fact is exactly the one the code-resolved
+    path has nothing to contribute to, so gating the selector on it switched the feature off in
+    the case it exists for. Nothing downstream needs a non-empty starting list: the selected
+    memories rebuild the block from scratch.
+    """
+    del memory_isolated_dir
+    cog = _cog()
+    _seed_fact(
+        scope=server_scope(server_id=1),
+        text="Boss(社群暱稱:李董)",
+        section="member_alias",
+        durability="permanent",
+        subject_id=42,
+    )
+    message = FakeMessage(content="李董在嗎", author=FakeAuthor(user_id=1))
+
+    reached: list[object] = []
+
+    async def record_selection(self: object, **kwargs: object) -> RecallSelection:
+        """Records that the optional lookup was reached at all."""
+        del self, kwargs
+        reached.append(True)
+        return RecallSelection(memories=[], input_tokens=0, output_tokens=0)
+
+    monkeypatch.setattr(ReplyContextBuilder, "select_recalled_memories", record_selection)
+    msg = as_message(fake=message)
+    parts_task = asyncio.create_task(coro=_context_builder(cog=cog, message=msg).render_parts())
+    text_parts = await _context_builder(cog=cog, message=msg).render_parts(text_only=True)
+    route_done = asyncio.Event()
+    route_done.set()
+
+    context = await _context_builder(cog=cog, message=msg).build(
+        history_limit=2, parts_task=parts_task, text_parts=text_parts, route_done=route_done
+    )
+
+    assert reached, "the alias table named an absent member, so the selector had to run"
+    assert context.memory_block is None
 
 
 async def test_memory_selection_timeout_retains_author_memory(
