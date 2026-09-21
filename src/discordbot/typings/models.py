@@ -148,7 +148,7 @@ class RuntimeModelCatalog(BaseModel):
             (direct, not the proxy). `effort` / `tools` are unused on the agent path: the
             agent runs its own internal tool loop.
         """
-        return ModelSettings(name="antigravity-preview-05-2026")
+        return ModelSettings(name="antigravity-preview-09-2026")
 
     @property
     def triage_model(self) -> ModelSettings:

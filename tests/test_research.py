@@ -249,7 +249,7 @@ async def test_stream_antigravity_persists_id_streams_and_returns_terminal_resul
 
     result = await agent.stream_antigravity(
         client=as_client(fake=client),
-        agent="antigravity-preview-05-2026",
+        agent="antigravity-preview-09-2026",
         brief="b",
         system_instruction="sys",
         streamer=streamer,
@@ -573,7 +573,7 @@ async def test_session_round_trip(research_isolated_db: None) -> None:
         channel_id=7,
         guild_id=5,
         source_message_id=3,
-        agent="antigravity-preview-05-2026",
+        agent="antigravity-preview-09-2026",
         interaction_id=None,
         brief="研究 X",
         phase="researching",
@@ -594,7 +594,7 @@ async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
         channel_id=1,
         guild_id=1,
         source_message_id=1,
-        agent="antigravity-preview-05-2026",
+        agent="antigravity-preview-09-2026",
         interaction_id=None,
         brief="b",
         phase="researching",
@@ -602,13 +602,13 @@ async def test_set_interaction_and_phase(research_isolated_db: None) -> None:
     await rdb.set_interaction(
         thread_id=2,
         interaction_id="int_abc",
-        agent="antigravity-preview-05-2026",
+        agent="antigravity-preview-09-2026",
         phase="researching",
     )
     session = await _only_resumable(thread_id=2)
     assert session is not None
     assert session.interaction_id == "int_abc"
-    assert session.agent == "antigravity-preview-05-2026"
+    assert session.agent == "antigravity-preview-09-2026"
     assert session.phase == "researching"
     await rdb.set_phase(thread_id=2, phase="done")
     assert await _only_resumable(thread_id=2) is None
@@ -622,7 +622,7 @@ async def test_active_thread_for_owner_excludes_terminal(research_isolated_db: N
         channel_id=1,
         guild_id=1,
         source_message_id=1,
-        agent="antigravity-preview-05-2026",
+        agent="antigravity-preview-09-2026",
         interaction_id=None,
         brief="b",
         phase="researching",
@@ -647,7 +647,7 @@ async def test_list_resumable_only_returns_researching(research_isolated_db: Non
             channel_id=1,
             guild_id=1,
             source_message_id=1,
-            agent="antigravity-preview-05-2026",
+            agent="antigravity-preview-09-2026",
             interaction_id="int_x",
             brief="b",
             phase=phase,
@@ -727,7 +727,7 @@ def _completed_result(
 async def test_delivery_keeps_footer_message_under_the_limit() -> None:
     status = _FakeStatusMessage()
     thread = _FakeThread()
-    footer = "-# antigravity-preview-05-2026 · ⬆ 0 ⬇ 0 · $0.00000000"
+    footer = "-# antigravity-preview-09-2026 · ⬆ 0 ⬇ 0 · $0.00000000"
     mentions = AllowedMentions(everyone=False, roles=False, users=[])
     # A report chunk that sits just under the 2000-char message cap; appending the footer inline
     # would overflow, so it must ride its own trailing message.
@@ -853,7 +853,7 @@ async def _seed_researching(*, thread_id: int, owner_id: int) -> None:
         channel_id=1,
         guild_id=1,
         source_message_id=1,
-        agent="antigravity-preview-05-2026",
+        agent="antigravity-preview-09-2026",
         interaction_id=f"int_{thread_id}",
         brief="b",
         phase="researching",

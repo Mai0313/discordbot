@@ -2,7 +2,7 @@
 
 A user asks for deep research (the QA answer model emits a `<deep-research>` marker, handed
 here by `gen_reply`, or they run `/deep_research`). The bot opens a thread, runs the
-`antigravity-preview-05-2026` agent, and posts the cited report there, pinging the user. That
+`antigravity-preview-09-2026` agent, and posts the cited report there, pinging the user. That
 one report is the whole feature: there is no tier to upgrade into and no button under it.
 
 Everything talks DIRECT to Google (`gemini_api_key`, no proxy), like every Interactions API path

@@ -1,6 +1,6 @@
 """Direct Gemini Interactions call layer for the deep-research cog.
 
-The one research agent (`antigravity-preview-05-2026`) runs through an injected `genai.Client`
+The one research agent (`antigravity-preview-09-2026`) runs through an injected `genai.Client`
 that talks DIRECT to Google (`gemini_api_key`, no proxy): a managed agent rides the native
 Interactions API, which this project always calls direct rather than through the LiteLLM proxy's
 interactions transform. The create uses `background=True` + `store=True` + `stream=True`, so the
