@@ -1460,6 +1460,8 @@ _LEDGER_MUTATIONS = frozenset({
     "cancel_loan_proposal",
     "reject_expired_loan_proposal",
     "reject_loan_proposal",
+    # An upsert of its own row, so it takes the write lock like any other.
+    "record_guild_participant",
 })
 _LEDGER_READS = frozenset({
     "get_account",
@@ -1467,7 +1469,7 @@ _LEDGER_READS = frozenset({
     "get_balance",
     "get_casino_ledger",
     "get_central_bank_status",
-    "get_central_banker",
+    "get_credit_ceiling",
     "get_vip",
     "top_losers",
     "top_n",
@@ -1556,7 +1558,6 @@ async def test_a_failed_money_command_stays_private(monkeypatch: pytest.MonkeyPa
         """Stands in for a write that matched no loan."""
         return
 
-    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
     # A repayment of zero is refused before the command ever acks, so these have to carry a
     # real amount; a collection of zero means "everything owed" and is the ordinary call.
     collect: dict[str, object] = {"member": FakeUser(user_id=2), "amount": "0"}
@@ -1567,10 +1568,16 @@ async def test_a_failed_money_command_stays_private(monkeypatch: pytest.MonkeyPa
         ("central_bank_call", "call_central_bank_loans", collect),
     )
 
+    monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     for command, ledger_call, kwargs in commands_under_test:
         monkeypatch.setattr(economy, ledger_call, nothing_to_settle)
         cog = EconomyCogs(bot=as_bot(fake=SimpleNamespace()))
-        interaction = FakeInteraction(user=FakeUser(user_id=1, display_name="Alice"))
+        # Administrator, or `central_bank_call` returns from its permission branch and this
+        # stops covering the failure path it was written for — while still passing, because
+        # that branch defers and follows up ephemerally just like the one under test.
+        interaction = FakeInteraction(
+            user=FakeUser(user_id=1, display_name="Alice"), administrator=True
+        )
 
         await getattr(EconomyCogs, command).callback(
             cog, as_interaction(fake=interaction), **kwargs
@@ -1696,15 +1703,16 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     monkeypatch.setattr(
         economy, "create_central_bank_loan_request", fake_create_central_bank_request
     )
-    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
     monkeypatch.setattr(economy, "list_loan_contracts", fake_list_loan_contracts)
     monkeypatch.setattr(economy, "get_central_bank_status", fake_get_central_bank_status)
     monkeypatch.setattr(economy, "repay_central_bank_loans", fake_loan_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", fake_call_central_bank_loans)
+    monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
+    monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     monkeypatch.setattr(economy, "buy_vip", fake_buy_vip)
     bot = SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer"))
     cog = EconomyCogs(bot=as_bot(fake=bot))
-    interaction = FakeInteraction(user=FakeUser(user_id=1))
+    interaction = FakeInteraction(user=FakeUser(user_id=1), administrator=True)
     await EconomyCogs.balance.callback(cog, interaction, member=None)
     await EconomyCogs.leaderboard.callback(cog, interaction)
     await EconomyCogs.loss_leaderboard.callback(cog, interaction)
@@ -1800,16 +1808,16 @@ async def test_economy_commands_use_database_facade(  # noqa: PLR0915 -- command
     assert "轉帳完成" in bot_receiver_title
 
 
-async def test_central_bank_decision_buttons_require_banker_and_allow_self_approval(
+async def test_central_bank_decision_buttons_require_admin_and_allow_self_approval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Central bank request buttons are banker-gated and pass the self-approval flag."""
+    """Central bank buttons are gated on the server admin permission Discord sent.
+
+    Read off `Interaction.permissions` rather than looked up, which is also what refuses a
+    DM: outside a guild Discord resolves no permissions at all.
+    """
     captured_accept_kwargs: dict[str, Any] = {}
     captured_cancel_kwargs: dict[str, int] = {}
-
-    async def fake_get_central_banker_for_button(user_id: int) -> bool:
-        """Only user 1 is a central banker."""
-        return user_id == 1
 
     async def fake_accept_for_button(**kwargs: Any) -> LoanProposalAcceptResult:  # noqa: ANN401 -- command facade double
         """Records approval arguments and returns a fake accepted proposal."""
@@ -1821,7 +1829,6 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
         captured_cancel_kwargs.update({"proposal_id": proposal_id, "actor_id": actor_id})
         return await fake_cancel_loan_proposal(proposal_id=proposal_id, actor_id=actor_id)
 
-    monkeypatch.setattr(views, "get_central_banker", fake_get_central_banker_for_button)
     monkeypatch.setattr(views, "accept_loan_proposal", fake_accept_for_button)
     monkeypatch.setattr(views, "cancel_loan_proposal", fake_cancel_for_button)
     view = CentralBankLoanDecisionView(
@@ -1836,15 +1843,26 @@ async def test_central_bank_decision_buttons_require_banker_and_allow_self_appro
         if getattr(child, "custom_id", "") == "central_bank:approve"
     )
 
-    denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"))
+    denied = FakeInteraction(user=FakeUser(user_id=2, name="bob"), administrator=False)
     await approve_button.callback(as_interaction(fake=denied))
     assert denied.followup.sent[0]["ephemeral"] is True
     assert captured_accept_kwargs == {}
 
-    allowed = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+    in_a_dm = FakeInteraction(
+        user=FakeUser(user_id=1, name="alice"), in_guild=False, administrator=False
+    )
+    await approve_button.callback(as_interaction(fake=in_a_dm))
+    assert in_a_dm.followup.sent[0]["ephemeral"] is True
+    assert captured_accept_kwargs == {}
+
+    allowed = FakeInteraction(
+        user=FakeUser(user_id=1, name="alice"), guild_id=321, administrator=True
+    )
     await approve_button.callback(as_interaction(fake=allowed))
     assert captured_accept_kwargs["proposal_id"] == 42
     assert captured_accept_kwargs["actor_id"] == 1
+    assert captured_accept_kwargs["guild_id"] == 321
+    assert captured_accept_kwargs["approver_is_guild_admin"] is True
     assert captured_accept_kwargs["allow_central_bank_self_approval"] is True
     assert allowed.edits[0]["view"] is None
 
@@ -1969,7 +1987,6 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
         acked_at_write[custom_id] = interaction.response.deferred
         return await fake_cancel_loan_proposal(proposal_id=1, actor_id=1)
 
-    monkeypatch.setattr(views, "get_central_banker", fake_get_central_banker)
     monkeypatch.setattr(views, "accept_loan_proposal", accept_and_note)
     monkeypatch.setattr(views, "reject_loan_proposal", resolve_and_note)
     monkeypatch.setattr(views, "cancel_loan_proposal", resolve_and_note)
@@ -1991,7 +2008,7 @@ async def test_a_loan_button_is_acknowledged_before_it_writes(
 
     for view, custom_id in buttons:
         button = next(c for c in view.children if getattr(c, "custom_id", "") == custom_id)
-        interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+        interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), administrator=True)
         clicked.append((custom_id, interaction))
         await button.callback(as_interaction(fake=interaction))
         assert interaction.edits, f"{custom_id} never edited the panel it was clicked on"
@@ -2345,14 +2362,15 @@ async def test_economy_money_commands_accept_large_string_amounts(
     monkeypatch.setattr(economy, "repay_central_bank_loans", record_repay_central)
     monkeypatch.setattr(economy, "call_personal_loans", record_call_personal)
     monkeypatch.setattr(economy, "call_central_bank_loans", record_call_central)
-    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
+    monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
+    monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     monkeypatch.setattr(
         interactions, "schedule_public_message_delete", ignore_scheduled_public_message
     )
     cog = EconomyCogs(
         bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     )
-    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+    interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), administrator=True)
     big_text = "9,007,199,254,740,993"
     member = FakeUser(user_id=2, name="bob")
 
@@ -2419,7 +2437,8 @@ async def test_economy_money_commands_reject_invalid_amount_text(
     monkeypatch.setattr(economy, "repay_central_bank_loans", guard_payment)
     monkeypatch.setattr(economy, "call_personal_loans", guard_payment)
     monkeypatch.setattr(economy, "call_central_bank_loans", guard_payment)
-    monkeypatch.setattr(economy, "get_central_banker", fake_get_central_banker)
+    monkeypatch.setattr(economy, "get_credit_ceiling", fake_get_credit_ceiling)
+    monkeypatch.setattr(economy, "record_guild_participant", fake_record_guild_participant)
     cog = EconomyCogs(
         bot=as_bot(fake=SimpleNamespace(user=FakeUser(user_id=999, display_name="Dealer")))
     )
@@ -2463,7 +2482,7 @@ async def test_economy_money_commands_reject_invalid_amount_text(
         ),
     ]
     for expected_title, invoke in rejections:
-        interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"))
+        interaction = FakeInteraction(user=FakeUser(user_id=1, name="alice"), administrator=True)
         await invoke(interaction)
         assert_rejected(interaction, expected_title)
 
@@ -2653,13 +2672,8 @@ async def fake_create_central_bank_request(**_kwargs: Any) -> LoanProposalView: 
     return _fake_loan_proposal(kind=LoanProposalKind.CENTRAL_BANK_REQUEST)
 
 
-async def fake_get_central_banker(user_id: int) -> bool:
-    """Returns central banker status."""
-    return True
-
-
 async def fake_reject_loan_proposal(
-    proposal_id: int, actor_id: int, is_central_banker: bool = False
+    proposal_id: int, actor_id: int, approver_is_guild_admin: bool = False
 ) -> LoanProposalView:
     """Returns a rejected fake proposal."""
     proposal = _fake_loan_proposal(kind=LoanProposalKind.CENTRAL_BANK_REQUEST)
@@ -2739,12 +2753,27 @@ async def fake_call_central_bank_loans(**_kwargs: Any) -> LoanPaymentResult:  # 
     return await fake_loan_payment()
 
 
+async def fake_get_credit_ceiling(user_id: int) -> int:
+    """Returns a ceiling high enough that only the amount parser can refuse a request."""
+    del user_id
+    return 10**40
+
+
+async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
+    """Swallows the participation upsert the commands make after acknowledging."""
+    del guild_id, user_id
+
+
 async def fake_get_central_bank_status(
-    exclude_user_ids: tuple[int, ...] = (),
+    guild_id: int, exclude_user_ids: tuple[int, ...] = ()
 ) -> CentralBankStatus:
     """Returns fake central-bank capacity."""
     return CentralBankStatus(
-        total_positive_user_balance=1_000, outstanding_principal=100, available_credit=900
+        participant_count=3,
+        total_positive_user_balance=1_000,
+        outstanding_principal=100,
+        available_credit=900,
+        ledger_balance=42,
     )
 
 

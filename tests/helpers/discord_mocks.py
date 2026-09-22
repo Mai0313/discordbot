@@ -243,6 +243,7 @@ class FakeInteraction:
         guild_name: str = "test guild",
         channel_id: int = 200,
         locale: str = "zh-TW",
+        administrator: bool = False,
     ) -> None:
         """Initializes user, origin, guild upload limit, response, followup, and edit records."""
         self.user = user or FakeUser()
@@ -255,6 +256,11 @@ class FakeInteraction:
             if in_guild
             else None
         )
+        # Both of these come off the interaction payload rather than the cache, which is why
+        # production reads them instead of `guild`: a user-installed command in a server the
+        # bot was never added to resolves no guild at all but still carries these two.
+        self.guild_id: int | None = guild_id if in_guild else None
+        self.permissions = SimpleNamespace(administrator=administrator)
         self.channel_id = channel_id
         self.locale = locale
         self.response = FakeResponse()
