@@ -18,13 +18,17 @@ opens an `AsyncSession` bound to the current `_engine`, so tests can
 monkeypatch `_engine` per-test and every subsequent call sees the swap.
 
 VIP bumps the player's winning payout from games and is permanent once set.
-Admin and central-banker status gate maintenance-only economy commands and are
-set out-of-band by a direct DB write; `set_admin` / `set_central_banker` exist
-for that path rather than for a runtime caller. Daily casino counters live on
-`casino_account` so a current-day loss ranking needs no audit-log scan.
+Admin status gates maintenance-only economy commands and is set out-of-band by a
+direct DB write; `set_admin` exists for that path rather than for a runtime
+caller. Daily casino counters live on `casino_account` so a current-day loss
+ranking needs no audit-log scan.
 
 Personal loan requests debit the lender on acceptance, and central-bank loans
-mint borrower balance on approval.
+mint borrower balance on approval. What bounds that minting is the per-borrower
+ceiling in `typings/economy.py`, not the approver: approval belongs to a Discord
+server administrator, and anyone can become one by creating a server. The
+per-guild lending pool is a second, looser throttle on top, and `guild_participant`
+is what says whose balance backs which guild.
 
 Shared jackpot pools and the casino ledger live in the same `economy.db` file
 as the per-user rows, so runtime casino and jackpot settlement applies the
@@ -64,6 +68,7 @@ from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
     MAX_LOAN_MONTHLY_RATE_BPS,
     MIN_LOAN_MONTHLY_RATE_BPS,
+    CENTRAL_BANK_BASE_CAPACITY,
     DEFAULT_LOAN_MONTHLY_RATE_BPS,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     CreditResult,
@@ -90,6 +95,7 @@ from discordbot.typings.economy import (
     JackpotSettlementRequest,
     LoanProposalAcceptResult,
     JackpotSettlementBatchResult,
+    central_bank_credit_ceiling,
 )
 from discordbot.utils.asyncio_locks import LoopLocalLock
 from discordbot.utils.sqlite_config import SqliteBootstrap
@@ -130,9 +136,10 @@ class UserAccount(Base):
         updated_at: Taiwan-local timestamp of the last write.
         is_vip: Permanent VIP flag toggled by a successful `/vip` purchase.
         is_admin: Whether the user can run Discord-side economy admin commands.
-        is_central_banker: Whether the user can decide central-bank loan
-            proposals and force collection with `/central_bank call`; separate
-            from `is_admin` and set out-of-band.
+        is_central_banker: Dead. Central-bank approval is a Discord server
+            administrator's now, read off the interaction. The column stays
+            because `_ensure_schema` is one `create_all`, which never alters an
+            existing table, so dropping it would break a deployed database.
         hide_from_leaderboard: Whether the account is omitted from public balance
             and daily casino loss leaderboards.
     """
@@ -175,6 +182,36 @@ class UserWallet(Base):
     )
 
 
+class GuildParticipant(Base):
+    """One user recorded as taking part in one guild's economy.
+
+    Identity and balance are cross-server by design, so nothing on `user_wallet`
+    says which guild a balance should back. This table is the only thing that
+    does, and the central bank reads it to decide whose money backs a guild's
+    lending. It cannot be derived instead: the gateway runs without the members
+    intent, so the bot cannot enumerate a guild's membership at all.
+
+    A row records the CALLER of an economy command or the author of a rewarded
+    message. It must never record the target of a `member:` option, which would
+    let anyone import a stranger's balance into a pool they administer.
+
+    Nothing ever removes a row. Leaving is invisible here — the gateway runs
+    without the members intent — so a sweep would have to guess, and guessing
+    wrong takes collateral away from a guild whose member simply went quiet. The
+    cost of keeping them is bounded by what the row backs: a departed member's
+    balance still counts toward that guild's collateral, which the whole bank's
+    outstanding principal is subtracted from either way.
+    """
+
+    __tablename__ = "guild_participant"
+
+    guild_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
+    )
+
+
 class CasinoAccount(Base):
     """Daily per-user casino counters for loss leaderboard queries.
 
@@ -211,7 +248,7 @@ class LoanProposal(Base):
     """Pending long-term lending proposal.
 
     Personal loan requests wait for the target lender to accept. Central-bank
-    requests wait for a central banker approval and do not escrow a user
+    requests wait for a server administrator's approval and do not escrow a user
     balance.
     """
 
@@ -349,7 +386,37 @@ class CasinoLedger(Base):
     )
 
 
+class CentralBankLedger(Base):
+    """Lifetime interest the central bank has collected.
+
+    Central-bank principal is minted on approval and burned on repayment, so it
+    nets to nothing. The interest on top used to be burned with it, which left
+    the bank's own earnings invisible; they are recorded here instead.
+
+    The row is deliberately NOT a term in lending capacity. It only ever grows,
+    and a term added to every guild alike would converge every guild on the same
+    number — the base capacity in `typings/economy.py` is a flat constant for
+    exactly that reason. Recording the interest changes no balance either way:
+    it has already left the borrower's wallet whether it is burned or booked.
+
+    Attributes:
+        balance: Interest collected and still recorded here.
+        total_earned: Lifetime gross interest, so a reader sees volume, not just net.
+        updated_at: Taiwan-local timestamp of the last write.
+    """
+
+    __tablename__ = "central_bank_ledger"
+
+    ledger_id: Mapped[str] = mapped_column(String(length=32), primary_key=True)
+    balance: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    total_earned: Mapped[int] = mapped_column(StoredInteger(), default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_database_now, onupdate=_database_now
+    )
+
+
 CASINO_LEDGER_ID: Final[str] = "casino"
+CENTRAL_BANK_LEDGER_ID: Final[str] = "central_bank"
 
 
 # On-the-house seed amount for each registered jackpot pool. The seed is
@@ -412,12 +479,13 @@ def _current_loan_accept_lock() -> asyncio.Lock:
 
 
 async def _seed_singleton_rows(conn: AsyncConnection) -> None:
-    """Seeds the jackpot pools and the casino ledger, inside `create_all`'s transaction.
+    """Seeds the jackpot pools and the two ledgers, inside `create_all`'s transaction.
 
-    Both are singleton rows the rest of this module assumes exist, so they are written in
-    the same transaction that creates the tables rather than in one of their own. Every
-    insert ignores a conflict, which is what makes a repeat bootstrap on the same file a
-    no-op instead of a reset.
+    All of them are singleton rows the rest of this module assumes exist, so they are
+    written in the same transaction that creates the tables rather than in one of their
+    own. Every insert ignores a conflict, which is what makes a repeat bootstrap on the
+    same file a no-op instead of a reset — including on a database that predates one of
+    these tables, where `create_all` adds the table and this seeds it on the same boot.
 
     Args:
         conn: The open connection `create_all` just ran on.
@@ -443,6 +511,16 @@ async def _seed_singleton_rows(conn: AsyncConnection) -> None:
             balance="0",
             total_earned="0",
             total_spent="0",
+            updated_at=_database_now(),
+        )
+        .on_conflict_do_nothing(index_elements=["ledger_id"])
+    )
+    await conn.execute(
+        statement=insert(CentralBankLedger)
+        .values(
+            ledger_id=CENTRAL_BANK_LEDGER_ID,
+            balance="0",
+            total_earned="0",
             updated_at=_database_now(),
         )
         .on_conflict_do_nothing(index_elements=["ledger_id"])
@@ -810,6 +888,44 @@ async def _read_casino_ledger_balance_in_session(session: AsyncSession) -> int:
         statement=select(CasinoLedger.balance).where(CasinoLedger.ledger_id == CASINO_LEDGER_ID)
     )
     return result.scalar_one_or_none() or 0
+
+
+async def _central_bank_ledger_balance_in_session(session: AsyncSession) -> int:
+    """Reads the lifetime central-bank interest balance, returning 0 when missing."""
+    result = await session.execute(
+        statement=select(CentralBankLedger.balance).where(
+            CentralBankLedger.ledger_id == CENTRAL_BANK_LEDGER_ID
+        )
+    )
+    return result.scalar_one_or_none() or 0
+
+
+async def _credit_central_bank_ledger_in_session(
+    session: AsyncSession, amount: int, now: datetime
+) -> None:
+    """Books interest the central bank just collected, in the payment's transaction.
+
+    Args:
+        session: Active SQLAlchemy session bound to `_engine`.
+        amount: Interest collected; non-positive amounts are ignored.
+        now: `_database_now()` value pinned for this transaction.
+    """
+    if amount <= 0:
+        return
+    await session.execute(
+        statement=insert(CentralBankLedger)
+        .values(
+            ledger_id=CENTRAL_BANK_LEDGER_ID, balance=amount, total_earned=amount, updated_at=now
+        )
+        .on_conflict_do_update(
+            index_elements=["ledger_id"],
+            set_={
+                "balance": CentralBankLedger.balance + amount,
+                "total_earned": CentralBankLedger.total_earned + amount,
+                "updated_at": now,
+            },
+        )
+    )
 
 
 async def _rollback_sessions(*sessions: AsyncSession) -> None:
@@ -1598,11 +1714,7 @@ async def get_admin(user_id: int) -> bool:
 
 
 async def _set_account_flag(
-    user_id: int,
-    name: str,
-    flag: Literal["is_admin", "is_central_banker"],
-    value: bool,
-    avatar_url: str,
+    user_id: int, name: str, flag: Literal["is_admin"], value: bool, avatar_url: str
 ) -> bool:
     """Grants or revokes one `user_account` permission flag.
 
@@ -1668,37 +1780,6 @@ async def set_admin(user_id: int, name: str, is_admin: bool, avatar_url: str = "
     """
     return await _set_account_flag(
         user_id=user_id, name=name, flag="is_admin", value=is_admin, avatar_url=avatar_url
-    )
-
-
-async def get_central_banker(user_id: int) -> bool:
-    """Returns whether the user can operate central-bank lending commands."""
-    await _ensure_schema()
-    async with open_session() as session:
-        result = await session.execute(
-            statement=select(UserAccount.is_central_banker).where(UserAccount.user_id == user_id)
-        )
-        return bool(result.scalar_one_or_none())
-
-
-async def set_central_banker(
-    user_id: int, name: str, is_central_banker: bool, avatar_url: str = ""
-) -> bool:
-    """Sets the central banker flag for a Discord user.
-
-    Mirrors `set_admin`: granting creates the identity row when missing, while
-    revoking touches an existing row only.
-
-    Returns:
-        `True` when a row was created or updated; `False` when revoking a
-        missing user.
-    """
-    return await _set_account_flag(
-        user_id=user_id,
-        name=name,
-        flag="is_central_banker",
-        value=is_central_banker,
-        avatar_url=avatar_url,
     )
 
 
@@ -2031,43 +2112,148 @@ async def _accrue_contract_interest_in_session(
     await session.flush()
 
 
-async def _central_bank_status_in_session(
-    session: AsyncSession, exclude_user_ids: tuple[int, ...] = ()
-) -> CentralBankStatus:
-    """Computes central-bank lending capacity from positive user balances."""
-    balance_stmt = select(UserWallet.balance)
-    if exclude_user_ids:
-        balance_stmt = balance_stmt.where(UserWallet.user_id.notin_(other=exclude_user_ids))
-    total_result = await session.execute(statement=balance_stmt)
-    total_positive_user_balance = sum(
-        balance for balance in total_result.scalars().all() if balance > 0
+async def _is_guild_participant_in_session(
+    session: AsyncSession, guild_id: int, user_id: int
+) -> bool:
+    """Reports whether one user is recorded as taking part in one guild's economy."""
+    result = await session.execute(
+        statement=select(GuildParticipant.user_id)
+        .where(GuildParticipant.guild_id == guild_id, GuildParticipant.user_id == user_id)
+        .limit(1)
     )
+    return result.scalar_one_or_none() is not None
 
-    debt_result = await session.execute(
+
+async def _outstanding_central_bank_principal_in_session(session: AsyncSession) -> int:
+    """Returns every unpaid unit of central-bank principal, across all guilds."""
+    result = await session.execute(
         statement=select(LoanContract.principal_remaining).where(
             LoanContract.lender_type == LoanLenderType.CENTRAL_BANK,
             LoanContract.status == LoanContractStatus.ACTIVE,
         )
     )
-    outstanding_principal = sum(debt_result.scalars().all())
+    return sum(result.scalars().all())
+
+
+async def _central_bank_status_in_session(
+    session: AsyncSession, guild_id: int, exclude_user_ids: tuple[int, ...] = ()
+) -> CentralBankStatus:
+    """Computes one guild's central-bank lending capacity.
+
+    What is per guild is the COLLATERAL: a guild lends against the balances of the
+    people who take part in it. What is not, and cannot be, is the debt. Wallets
+    cross servers and debt does not follow them, so a loan minted in one guild and
+    handed to somebody who takes part in another arrives there as collateral with
+    nothing owed against it. Charging only the local participants' debt therefore
+    stops bounding anything the moment three accounts hold accounts in three
+    guilds: measured on this code, 1,000 became 686,826,650,532 in forty rounds of
+    borrow-then-`/give` and was still accelerating. Subtracting the whole bank's
+    outstanding principal is what closes that, at the cost of making the credit
+    budget shared — a guild's own wealth decides how much of the bank it may draw
+    on, not how much the bank has.
+    """
+    ledger_balance = await _central_bank_ledger_balance_in_session(session=session)
+    participants = select(GuildParticipant.user_id).where(GuildParticipant.guild_id == guild_id)
+    if exclude_user_ids:
+        participants = participants.where(GuildParticipant.user_id.notin_(other=exclude_user_ids))
+    count_result = await session.execute(
+        statement=select(func.count()).select_from(participants.subquery())
+    )
+    participant_count = count_result.scalar_one()
+
+    # Joined rather than fetching the ids and binding them into an `IN (...)`: a guild's
+    # participants only ever accumulate, and one bind parameter per id stops working at
+    # SQLite's 32,766-variable ceiling. Summed in Python rather than by the database,
+    # because money columns are decimal text and SQLite's own SUM reads them as floats.
+    total_result = await session.execute(
+        statement=select(UserWallet.balance).where(
+            UserWallet.user_id.in_(participants.scalar_subquery())
+        )
+    )
+    total_positive_user_balance = sum(
+        balance for balance in total_result.scalars().all() if balance > 0
+    )
+
+    outstanding_principal = await _outstanding_central_bank_principal_in_session(session=session)
     # Central-bank loans mint into user balances, so subtract outstanding
     # principal once to estimate the pre-loan pool and once for already-used
     # capacity.
     base_lending_pool = max(total_positive_user_balance - outstanding_principal, 0)
     return CentralBankStatus(
+        participant_count=participant_count,
         total_positive_user_balance=total_positive_user_balance,
         outstanding_principal=outstanding_principal,
-        available_credit=max(base_lending_pool - outstanding_principal, 0),
+        # The base capacity is INSIDE the outstanding subtraction, so lending depletes it
+        # and a fully leveraged guild reaches zero. Adding it outside instead pins the pool
+        # at a floor it can never fall through, which takes the pool out of the bounding
+        # job altogether: the per-borrower ceiling cannot cover for it, because a ceiling
+        # clamped at zero stops charging the debt of a borrower who has given their balance
+        # away, and a pair alternating `/give` then mints without limit. Measured.
+        # Subtracted once rather than twice because, unlike the participants' balances, the
+        # base capacity was never minted into anybody's wallet.
+        available_credit=max(
+            base_lending_pool + CENTRAL_BANK_BASE_CAPACITY - outstanding_principal, 0
+        ),
+        ledger_balance=ledger_balance,
     )
 
 
-async def get_central_bank_status(exclude_user_ids: tuple[int, ...] = ()) -> CentralBankStatus:
-    """Returns current central-bank lending capacity."""
+async def _user_total_debt_in_session(session: AsyncSession, user_id: int) -> int:
+    """Returns everything one borrower owes across every active contract."""
+    result = await session.execute(
+        statement=select(LoanContract.principal_remaining, LoanContract.interest_due).where(
+            LoanContract.borrower_id == user_id, LoanContract.status == LoanContractStatus.ACTIVE
+        )
+    )
+    return sum(principal + interest for principal, interest in result.all())
+
+
+async def _credit_ceiling_in_session(session: AsyncSession, user_id: int) -> int:
+    """Returns how much more central-bank credit one borrower may still draw."""
+    balance_result = await session.execute(
+        statement=select(UserWallet.balance).where(UserWallet.user_id == user_id)
+    )
+    balance = balance_result.scalar_one_or_none() or 0
+    total_debt = await _user_total_debt_in_session(session=session, user_id=user_id)
+    return central_bank_credit_ceiling(balance=balance, total_debt=total_debt)
+
+
+async def get_central_bank_status(
+    guild_id: int, exclude_user_ids: tuple[int, ...] = ()
+) -> CentralBankStatus:
+    """Returns one guild's current central-bank lending capacity."""
     await _ensure_schema()
     async with open_session() as session:
         return await _central_bank_status_in_session(
-            session=session, exclude_user_ids=exclude_user_ids
+            session=session, guild_id=guild_id, exclude_user_ids=exclude_user_ids
         )
+
+
+async def get_credit_ceiling(user_id: int) -> int:
+    """Returns how much more central-bank credit `user_id` may still draw."""
+    await _ensure_schema()
+    async with open_session() as session:
+        return await _credit_ceiling_in_session(session=session, user_id=user_id)
+
+
+async def record_guild_participant(guild_id: int, user_id: int) -> None:
+    """Records that `user_id` takes part in `guild_id`'s economy.
+
+    Only ever the caller of a command or the author of a rewarded message. Passing
+    somebody else's id here hands their whole balance to a guild's lending pool
+    without their knowledge.
+    """
+    await _ensure_schema()
+    now = _database_now()
+    async with open_session() as session:
+        await session.execute(
+            statement=insert(GuildParticipant)
+            .values(guild_id=guild_id, user_id=user_id, updated_at=now)
+            .on_conflict_do_update(
+                index_elements=["guild_id", "user_id"], set_={"updated_at": now}
+            )
+        )
+        await session.commit()
 
 
 async def create_personal_loan_request(  # noqa: PLR0913 -- proposal needs both identities
@@ -2208,7 +2394,7 @@ async def cancel_loan_proposal(proposal_id: int, actor_id: int) -> LoanProposalV
 
 
 async def reject_loan_proposal(
-    proposal_id: int, actor_id: int, is_central_banker: bool = False
+    proposal_id: int, actor_id: int, approver_is_guild_admin: bool = False
 ) -> LoanProposalView | None:
     """Rejects a pending proposal when `actor_id` is allowed to decide it."""
     await _ensure_schema()
@@ -2232,7 +2418,7 @@ async def reject_loan_proposal(
         if proposal.kind == LoanProposalKind.PERSONAL_REQUEST:
             allowed = proposal.lender_id == actor_id
         elif proposal.kind == LoanProposalKind.CENTRAL_BANK_REQUEST:
-            allowed = is_central_banker
+            allowed = approver_is_guild_admin
         if not allowed:
             return None
         status_result = await session.execute(
@@ -2256,7 +2442,8 @@ async def accept_loan_proposal(  # noqa: PLR0913 -- approval needs proposal, act
     actor_id: int,
     actor_name: str,
     actor_avatar_url: str = "",
-    is_central_banker: bool = False,
+    approver_is_guild_admin: bool = False,
+    guild_id: int | None = None,
     central_bank_exclude_user_ids: tuple[int, ...] = (),
     allow_central_bank_self_approval: bool = False,
 ) -> LoanProposalAcceptResult | None:
@@ -2268,7 +2455,8 @@ async def accept_loan_proposal(  # noqa: PLR0913 -- approval needs proposal, act
             actor_id=actor_id,
             actor_name=actor_name,
             actor_avatar_url=actor_avatar_url,
-            is_central_banker=is_central_banker,
+            approver_is_guild_admin=approver_is_guild_admin,
+            guild_id=guild_id,
             central_bank_exclude_user_ids=central_bank_exclude_user_ids,
             allow_central_bank_self_approval=allow_central_bank_self_approval,
         )
@@ -2279,7 +2467,8 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
     actor_id: int,
     actor_name: str,
     actor_avatar_url: str = "",
-    is_central_banker: bool = False,
+    approver_is_guild_admin: bool = False,
+    guild_id: int | None = None,
     central_bank_exclude_user_ids: tuple[int, ...] = (),
     allow_central_bank_self_approval: bool = False,
 ) -> LoanProposalAcceptResult | None:
@@ -2334,14 +2523,20 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
             proposal.lender_name = actor_name or proposal.lender_name
             proposal.lender_avatar_url = actor_avatar_url or proposal.lender_avatar_url
         elif proposal.kind == LoanProposalKind.CENTRAL_BANK_REQUEST:
-            if not is_central_banker:
+            if not approver_is_guild_admin or guild_id is None:
                 return None
             if proposal.borrower_id == actor_id and not allow_central_bank_self_approval:
                 return None
+            # Both bounds are recomputed here rather than passed in, so the
+            # BEGIN IMMEDIATE transaction this runs in is what serialises them and
+            # two approvals racing cannot each see the capacity the other spends.
             central_status = await _central_bank_status_in_session(
-                session=session, exclude_user_ids=central_bank_exclude_user_ids
+                session=session, guild_id=guild_id, exclude_user_ids=central_bank_exclude_user_ids
             )
-            if central_status.available_credit < proposal.amount:
+            borrower_ceiling = await _credit_ceiling_in_session(
+                session=session, user_id=proposal.borrower_id
+            )
+            if min(central_status.available_credit, borrower_ceiling) < proposal.amount:
                 return None
         else:
             return None
@@ -2406,9 +2601,9 @@ async def _accept_loan_proposal_locked(  # noqa: C901, PLR0911, PLR0913 -- propo
         session.add(contract)
         await session.commit()
         invalidate_economy_leaderboard_cache()
-        if proposal.kind == LoanProposalKind.CENTRAL_BANK_REQUEST:
+        if proposal.kind == LoanProposalKind.CENTRAL_BANK_REQUEST and guild_id is not None:
             central_status = await get_central_bank_status(
-                exclude_user_ids=central_bank_exclude_user_ids
+                guild_id=guild_id, exclude_user_ids=central_bank_exclude_user_ids
             )
         return LoanProposalAcceptResult(
             contract=_loan_contract_view(contract=contract),
@@ -2440,6 +2635,44 @@ async def _loan_contracts_for_payment_in_session(
         stmt = stmt.where(LoanContract.lender_id == lender_id)
     result = await session.execute(statement=stmt)
     return list(result.scalars().all())
+
+
+async def _pay_lender_side_in_session(
+    session: AsyncSession, contract: LoanContract, paid: int, interest_paid: int, now: datetime
+) -> int | None:
+    """Passes one contract's payment on to whoever lent it.
+
+    A personal lender is credited the whole payment. The central bank is credited only
+    the interest: its principal was minted on approval and nets out by being burned here,
+    while the interest is the bank's own earnings.
+
+    Returns:
+        A personal lender's balance after the credit, or None when there is no user on the
+        other side. The caller keeps the last real balance rather than overwriting it, since
+        one payment can cross several contracts.
+    """
+    if contract.lender_type == LoanLenderType.CENTRAL_BANK:
+        await _credit_central_bank_ledger_in_session(
+            session=session, amount=interest_paid, now=now
+        )
+        return None
+    if contract.lender_id is None:
+        return None
+    await _upsert_user_metadata_in_session(
+        session=session,
+        user_id=contract.lender_id,
+        name=contract.lender_name,
+        avatar_url=contract.lender_avatar_url,
+        now=now,
+    )
+    credit_result = await session.execute(
+        statement=_build_credit_upsert(
+            user_id=contract.lender_id, name=contract.lender_name, amount=paid, now=now
+        )
+    )
+    # The borrower debit in the caller already cleared the leaderboard cache for this
+    # transaction, so the lender credit needs no extra invalidation.
+    return credit_result.scalar_one()
 
 
 async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs actor identity and contract set
@@ -2495,22 +2728,11 @@ async def _apply_loan_payment_in_session(  # noqa: PLR0913 -- payment needs acto
             contract.closed_at = now
             closed_contract_ids.append(contract.id)
 
-        if contract.lender_type == LoanLenderType.USER and contract.lender_id is not None:
-            await _upsert_user_metadata_in_session(
-                session=session,
-                user_id=contract.lender_id,
-                name=contract.lender_name,
-                avatar_url=contract.lender_avatar_url,
-                now=now,
-            )
-            credit_result = await session.execute(
-                statement=_build_credit_upsert(
-                    user_id=contract.lender_id, name=contract.lender_name, amount=paid, now=now
-                )
-            )
-            lender_balance = credit_result.scalar_one()
-            # The borrower debit above already cleared the leaderboard cache for
-            # this transaction, so the lender credit needs no extra invalidation.
+        credited_lender_balance = await _pay_lender_side_in_session(
+            session=session, contract=contract, paid=paid, interest_paid=interest_paid, now=now
+        )
+        if credited_lender_balance is not None:
+            lender_balance = credited_lender_balance
 
         total_paid += paid
         total_interest_paid += interest_paid
@@ -2637,12 +2859,26 @@ async def repay_central_bank_loans(
 
 
 async def call_central_bank_loans(
-    borrower_id: int, borrower_name: str, amount: int | None = None, borrower_avatar_url: str = ""
+    guild_id: int,
+    borrower_id: int,
+    borrower_name: str,
+    amount: int | None = None,
+    borrower_avatar_url: str = "",
 ) -> LoanPaymentResult | None:
-    """Forcibly collects active central-bank loans from a borrower."""
+    """Forcibly collects active central-bank loans from a borrower.
+
+    Refuses a borrower who does not take part in `guild_id`'s economy. Approval
+    now rests on being an administrator of some guild, which anyone can arrange
+    by creating one, so without this an administrator anywhere could sweep the
+    balance of any borrower in the whole economy.
+    """
     await _ensure_schema()
     now = _database_now()
     async with open_session() as session:
+        if not await _is_guild_participant_in_session(
+            session=session, guild_id=guild_id, user_id=borrower_id
+        ):
+            return None
         contracts = await _loan_contracts_for_payment_in_session(
             session=session, borrower_id=borrower_id, lender_type=LoanLenderType.CENTRAL_BANK
         )
