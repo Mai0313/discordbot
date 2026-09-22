@@ -38,12 +38,13 @@ from discordbot.services.economy.database import (
     get_portfolio,
     adjust_balance,
     get_casino_ledger,
-    get_central_banker,
+    get_credit_ceiling,
     call_personal_loans,
     list_loan_contracts,
     repay_personal_loans,
     call_central_bank_loans,
     get_central_bank_status,
+    record_guild_participant,
     repay_central_bank_loans,
     create_personal_loan_request,
     create_central_bank_loan_request,
@@ -902,12 +903,33 @@ class EconomyCogs(commands.Cog):
                 embed=embeds.build_invalid_amount_embed(title="央行借款失敗"),
             )
             return
+        # Refused before the proposal exists rather than at the button: outside a guild
+        # nobody holds `administrator`, so an approve and a reject would both be
+        # impossible and the request would sit until it timed out with no explanation.
+        if interaction.guild_id is None:
+            await send_ephemeral_response(
+                interaction=interaction,
+                embed=embeds.build_error_embed(
+                    title="央行借款失敗", description="### 央行借款只能在伺服器裡提出"
+                ),
+            )
+            return
         await interaction.response.defer()
         if interaction.user is None:
             return
         user = interaction.user
+        await record_guild_participant(guild_id=interaction.guild_id, user_id=user.id)
         user_avatar_url = await guild_avatar_url(user=user, guild=interaction.guild)
         monthly_rate_bps = monthly_rate_percent_to_bps(monthly_rate_percent=monthly_rate_percent)
+        ceiling = await get_credit_ceiling(user_id=user.id)
+        if ceiling < parsed_amount:
+            await send_expiring_followup(
+                interaction=interaction,
+                embed=embeds.build_central_bank_ceiling_embed(
+                    borrower_mention=user.mention, requested=parsed_amount, ceiling=ceiling
+                ),
+            )
+            return
         proposal = await create_central_bank_loan_request(
             borrower_id=user.id,
             borrower_name=user.name,
@@ -980,6 +1002,8 @@ class EconomyCogs(commands.Cog):
         # Acked before the write, and ephemerally — see `credit_repay` for why both halves
         # matter.
         await interaction.response.defer(ephemeral=True)
+        if interaction.guild_id is not None:
+            await record_guild_participant(guild_id=interaction.guild_id, user_id=user.id)
         result = await repay_central_bank_loans(
             borrower_id=user.id,
             borrower_name=user.name,
@@ -1004,11 +1028,11 @@ class EconomyCogs(commands.Cog):
 
     @central_bank.subcommand(
         name="call",
-        description="Central banker forced collection from a borrower.",
+        description="server admin only: forced collection from a borrower in this server.",
         name_localizations={Locale.zh_TW: "催收", Locale.ja: "回収"},
         description_localizations={
-            Locale.zh_TW: "央行成員從借方可用餘額強制回收",
-            Locale.ja: "central banker が borrower から強制回収します。",
+            Locale.zh_TW: "server admin 限定：向本伺服器的借方強制回收",
+            Locale.ja: "server admin 専用：このサーバーの borrower から強制回収します。",
         },
     )
     async def central_bank_call(
@@ -1046,12 +1070,12 @@ class EconomyCogs(commands.Cog):
                 embed=embeds.build_invalid_amount_embed(title="央行催收失敗"),
             )
             return
-        if not await get_central_banker(user_id=interaction.user.id):
+        if interaction.guild_id is None or not interaction.permissions.administrator:
             await interaction.response.defer(ephemeral=True)
             await send_private_followup(
                 interaction=interaction,
                 embed=embeds.build_error_embed(
-                    title="權限不足", description="### 只有央行成員可以執行央行催收"
+                    title="權限不足", description="### 只有這個伺服器的管理員可以執行央行催收"
                 ),
             )
             return
@@ -1061,7 +1085,9 @@ class EconomyCogs(commands.Cog):
         # Acked before the write, and ephemerally — see `credit_repay` for why both halves
         # matter.
         await interaction.response.defer(ephemeral=True)
+        await record_guild_participant(guild_id=interaction.guild_id, user_id=interaction.user.id)
         result = await call_central_bank_loans(
+            guild_id=interaction.guild_id,
             borrower_id=member.id,
             borrower_name=member.name,
             borrower_avatar_url=borrower_avatar_url,
@@ -1071,7 +1097,8 @@ class EconomyCogs(commands.Cog):
             await send_private_followup(
                 interaction=interaction,
                 embed=embeds.build_error_embed(
-                    title="央行催收失敗", description="### 目標沒有有效央行借款，或目前無可扣餘額"
+                    title="央行催收失敗",
+                    description="### 目標不是本伺服器的參與者、沒有有效央行借款，或目前無可扣餘額",
                 ),
             )
             return
@@ -1094,10 +1121,24 @@ class EconomyCogs(commands.Cog):
         },
     )
     async def central_bank_status(self, interaction: Interaction[commands.Bot]) -> None:
-        """Shows central bank lending capacity."""
+        """Shows this server's central bank lending capacity."""
+        if interaction.guild_id is None:
+            await send_ephemeral_response(
+                interaction=interaction,
+                embed=embeds.build_error_embed(
+                    title="央行狀態", description="### 央行額度是每個伺服器各自計算的"
+                ),
+            )
+            return
         await interaction.response.defer()
+        if interaction.user is not None:
+            await record_guild_participant(
+                guild_id=interaction.guild_id, user_id=interaction.user.id
+            )
         exclude_user_ids = (self.bot.user.id,) if self.bot.user else ()
-        status = await get_central_bank_status(exclude_user_ids=exclude_user_ids)
+        status = await get_central_bank_status(
+            guild_id=interaction.guild_id, exclude_user_ids=exclude_user_ids
+        )
         embed = embeds.build_central_bank_status_embed(status=status)
         await send_expiring_followup(interaction=interaction, embed=embed)
 

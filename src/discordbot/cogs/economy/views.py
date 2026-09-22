@@ -21,7 +21,6 @@ from discordbot.cogs.economy.embeds import (
 from discordbot.utils.discord_embeds import embed_spacer_payload
 from discordbot.utils.message_cleanup import schedule_public_message_delete
 from discordbot.services.economy.database import (
-    get_central_banker,
     accept_loan_proposal,
     cancel_loan_proposal,
     reject_loan_proposal,
@@ -138,17 +137,22 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         self.message: Message | None = None
 
     async def _send_permission_denied(self, interaction: Interaction[commands.Bot]) -> None:
-        """Replies privately when a non-banker clicks a decision button."""
+        """Replies privately when a non-administrator clicks a decision button."""
         embed = build_error_embed(
-            title="權限不足", description="### 只有央行成員可以處理央行借款申請"
+            title="權限不足", description="### 只有這個伺服器的管理員可以處理央行借款申請"
         )
         await send_private_followup(interaction=interaction, embed=embed)
 
-    async def _is_central_banker(self, interaction: Interaction[commands.Bot]) -> bool:
-        """Returns whether the clicking user can decide central-bank proposals."""
-        if interaction.user is None:
-            return False
-        return await get_central_banker(user_id=interaction.user.id)
+    def _is_guild_admin(self, interaction: Interaction[commands.Bot]) -> bool:
+        """Returns whether the clicking user may decide central-bank proposals here.
+
+        `Interaction.permissions` is what Discord itself resolved for this member in
+        this channel and rides in the payload, so it needs neither the members intent
+        nor a cached guild — which matters because a user-installed invocation in a
+        server the bot was never added to has no cached guild at all. Outside a guild
+        it is empty, which is what refuses a DM.
+        """
+        return interaction.permissions.administrator
 
     def _central_bank_exclude_user_ids(self) -> tuple[int, ...]:
         """Returns bot-owned account IDs excluded from central-bank capacity."""
@@ -166,11 +170,11 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         _button: Button["CentralBankLoanDecisionView"],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Approves the central-bank request when clicked by a central banker."""
+        """Approves the central-bank request when clicked by a server administrator."""
         if interaction.user is None:
             return
         await interaction.response.defer()
-        if not await self._is_central_banker(interaction=interaction):
+        if not self._is_guild_admin(interaction=interaction):
             await self._send_permission_denied(interaction=interaction)
             return
 
@@ -180,14 +184,15 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
             actor_id=interaction.user.id,
             actor_name=interaction.user.name,
             actor_avatar_url=banker_avatar_url,
-            is_central_banker=True,
+            approver_is_guild_admin=True,
+            guild_id=interaction.guild_id,
             central_bank_exclude_user_ids=self._central_bank_exclude_user_ids(),
             allow_central_bank_self_approval=self.allow_self_approval,
         )
         if result is None:
             embed = build_error_embed(
                 title="批准失敗",
-                description="### 申請不存在、已處理、自我批准未開放，或央行額度不足",
+                description="### 申請不存在、已處理、自我批准未開放，或額度不足（本伺服器或申請人自己的上限）",
             )
             await send_private_followup(interaction=interaction, embed=embed)
             return
@@ -207,16 +212,18 @@ class CentralBankLoanDecisionView(LoanDecisionViewBase):
         _button: Button["CentralBankLoanDecisionView"],
         interaction: Interaction[commands.Bot],
     ) -> None:
-        """Rejects the central-bank request when clicked by a central banker."""
+        """Rejects the central-bank request when clicked by a server administrator."""
         if interaction.user is None:
             return
         await interaction.response.defer()
-        if not await self._is_central_banker(interaction=interaction):
+        if not self._is_guild_admin(interaction=interaction):
             await self._send_permission_denied(interaction=interaction)
             return
 
         proposal = await reject_loan_proposal(
-            proposal_id=self.proposal_id, actor_id=interaction.user.id, is_central_banker=True
+            proposal_id=self.proposal_id,
+            actor_id=interaction.user.id,
+            approver_is_guild_admin=True,
         )
         if proposal is None:
             embed = build_error_embed(

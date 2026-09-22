@@ -6,6 +6,7 @@ from pydantic import Field, BaseModel, ConfigDict
 from discordbot.typings.colors import DISCORD_RED, DISCORD_GREEN, DISCORD_YELLOW, TRANSFER_COLOR
 from discordbot.typings.economy import (
     VIP_PURCHASE_COST,
+    CENTRAL_BANK_BASE_CAPACITY,
     LOAN_PROPOSAL_TIMEOUT_SECONDS,
     PortfolioView,
     TransferResult,
@@ -151,7 +152,10 @@ def _credit_request_footer() -> str:
 
 def _central_bank_request_footer() -> str:
     """Formats the central-bank request button hint."""
-    return f"央行成員可用下方按鈕批准或拒絕，發起者可取消，{LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕"
+    return (
+        f"伺服器管理員可用下方按鈕批准或拒絕，發起者可取消，"
+        f"{LOAN_PROPOSAL_TIMEOUT_SECONDS} 秒後自動拒絕"
+    )
 
 
 def build_error_embed(
@@ -539,21 +543,54 @@ def build_central_bank_call_embed(
 
 
 def build_central_bank_status_embed(*, status: CentralBankStatus) -> Embed:
-    """Builds the central bank lending-capacity embed."""
+    """Builds one server's central bank lending-capacity embed."""
     embed = Embed(
         title="🏛️ 中央銀行狀態",
         description=f"## 可放貸 {bold_currency(amount=status.available_credit, compact=True)}",
         color=CENTRAL_BANK_COLOR,
     )
     embed.add_field(
-        name="資金池",
+        name="本伺服器擔保",
         value=(
-            f"全體正餘額 "
+            f"參與者 {status.participant_count} 人\n"
+            f"參與者正餘額 "
             f"{amount_code(amount=status.total_positive_user_balance, compact=True)}\n"
-            f"未還本金 {amount_code(amount=status.outstanding_principal, compact=True)}"
+            f"基本額度 {amount_code(amount=CENTRAL_BANK_BASE_CAPACITY, compact=True)}"
         ),
         inline=False,
     )
+    # Its own field, headed for the whole bank: the debt is deliberately not per server,
+    # and rendering it inside the section above had a server admin reading a bank-wide
+    # figure as their own.
+    embed.add_field(
+        name="全行未還本金",
+        value=amount_code(amount=status.outstanding_principal, compact=True),
+        inline=False,
+    )
+    embed.add_field(
+        name="央行累計利息",
+        value=amount_code(amount=status.ledger_balance, compact=True),
+        inline=False,
+    )
+    embed.set_footer(text="實際可借還會受你個人的信用上限限制")
+    return embed
+
+
+def build_central_bank_ceiling_embed(
+    *, borrower_mention: str, requested: int, ceiling: int
+) -> Embed:
+    """Builds the refusal shown when a request exceeds the borrower's own ceiling."""
+    embed = Embed(
+        title="🏛️ 超過個人信用上限",
+        description=(
+            f"### {borrower_mention} 目前最多可借 {bold_currency(amount=ceiling, compact=True)}"
+        ),
+        color=ERROR_COLOR,
+    )
+    embed.add_field(
+        name="申請金額", value=amount_code(amount=requested, compact=True), inline=False
+    )
+    embed.set_footer(text="上限跟著你的餘額扣掉所有欠款走，還款或多賺一點就會提高")
     return embed
 
 
