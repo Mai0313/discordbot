@@ -1,7 +1,6 @@
 """Tests for public response cleanup helpers."""
 
 import asyncio
-from pathlib import Path
 
 import pytest
 import nextcord
@@ -211,15 +210,6 @@ class _UserStub:
     def __init__(self, name: str) -> None:
         """Stores the Discord account name."""
         self.name = name
-
-
-@pytest.fixture(autouse=True)
-def isolated_cleanup_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keeps cleanup DB writes out of the real data directory."""
-    monkeypatch.setattr(
-        "discordbot.utils.message_cleanup._PENDING_PUBLIC_MESSAGE_DB_PATH",
-        tmp_path / "game_cleanup.db",
-    )
 
 
 async def test_delete_public_message_after_waits_then_deletes() -> None:

@@ -20,6 +20,7 @@ from nextcord.errors import HTTPException, ApplicationInvokeError
 from logfire._internal.constants import LEVEL_NUMBERS
 
 from discordbot import cli
+from discordbot.utils import message_cleanup as cleanup_module
 from discordbot.utils import interaction_responses as interactions
 from discordbot.cogs.games import cog as games
 from discordbot.cogs.video import cog as video
@@ -2885,6 +2886,17 @@ def test_parse_wager_amount_accepts_formatted_text() -> None:
     assert parse_wager_amount(raw_amount=None) is None
     assert parse_wager_amount(raw_amount="not a number") is None
     assert parse_wager_amount(raw_amount="-1") is None
+
+
+def test_every_test_gets_its_own_cleanup_store(tmp_path: Path) -> None:
+    """A test that asks for no isolation still cannot reach the deployed `games.db`.
+
+    The lobby tests below record their public messages for deletion without patching the
+    store, so this requests nothing but `tmp_path` and fails if the autouse swap is dropped.
+    It lives here rather than beside the store's own tests so that a module-local swap there
+    cannot satisfy it.
+    """
+    assert tmp_path / "game_cleanup.db" == cleanup_module._PENDING_PUBLIC_MESSAGE_DB_PATH
 
 
 async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
