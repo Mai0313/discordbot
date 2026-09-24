@@ -18,8 +18,6 @@ from discordbot.services.economy.database import (
     create_personal_loan_request,
 )
 
-pytestmark = pytest.mark.usefixtures("economy_isolated_db")
-
 
 async def _add_balance(user_id: int, name: str, amount: int) -> int:
     """Seeds a positive balance through the public adjustment path."""

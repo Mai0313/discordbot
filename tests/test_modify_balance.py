@@ -10,8 +10,6 @@ from discordbot.services.economy.database import (
     adjust_balance,
 )
 
-pytestmark = pytest.mark.usefixtures("economy_isolated_db")
-
 
 async def _add_balance(user_id: int, name: str, amount: int) -> int:
     """Seeds a balance through the manual adjustment API."""

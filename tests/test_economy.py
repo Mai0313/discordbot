@@ -71,8 +71,6 @@ from tests.helpers.economy_invariants import (
     assert_casino_ledger_consistent,
 )
 
-pytestmark = pytest.mark.usefixtures("economy_isolated_db")
-
 
 def test_blackjack_player_settlement_hands_default_is_isolated() -> None:
     """Default Blackjack hand settlement lists are isolated per model instance."""

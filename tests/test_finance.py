@@ -37,8 +37,6 @@ from discordbot.services.economy.database import (
 from tests.helpers.casting import as_bot, as_interaction
 from tests.helpers.discord_mocks import FakeUser, FakeInteraction
 
-pytestmark = pytest.mark.usefixtures("economy_isolated_db")
-
 # The guild every central-bank test lends in. Capacity is per guild now, so a borrower who
 # takes part in none of them has no pool to draw on and no administrator who may approve.
 GUILD = 555
