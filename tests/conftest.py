@@ -138,6 +138,21 @@ def expansion_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) ->
 
 
 @pytest.fixture(autouse=True)
+def cleanup_store_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Points the pending public-message cleanup table at a throwaway `games.db`.
+
+    Autouse for the reason `expansion_store_isolated` is: every expiring public message is
+    recorded for deletion, the write is swallowed best-effort, so a test missing the swap
+    would pass green while inserting rows into the live `games.db` — where the next real
+    start would try to delete a message named by a test's fake ids.
+    """
+    monkeypatch.setattr(
+        "discordbot.utils.message_cleanup._PENDING_PUBLIC_MESSAGE_DB_PATH",
+        tmp_path / "game_cleanup.db",
+    )
+
+
+@pytest.fixture(autouse=True)
 def file_api_enabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pins the Files API kill-switch on for every test.
 
