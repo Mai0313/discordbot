@@ -50,11 +50,15 @@ class FakeGuild:
     """Minimal guild that can return cached or fetched members."""
 
     def __init__(
-        self, cached_member: FakeMember | None, fetched_member: FakeMember | None
+        self,
+        cached_member: FakeMember | None,
+        fetched_member: FakeMember | None,
+        guild_id: int = 100,
     ) -> None:
         """Initializes member lookup fixtures."""
         self.cached_member = cached_member
         self.fetched_member = fetched_member
+        self.id = guild_id
         self.fetch_count = 0
 
     def get_member(self, user_id: int) -> FakeMember | None:
@@ -131,7 +135,14 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
         """Ignores command processing during the reward test."""
         del message
 
+    recorded_participation: list[tuple[int, int]] = []
+
+    async def fake_record_guild_participant(guild_id: int, user_id: int) -> None:
+        """Records the participation upsert instead of writing to the live economy DB."""
+        recorded_participation.append((guild_id, user_id))
+
     monkeypatch.setattr(cli, "credit_with_repayment", fake_credit_with_repayment)
+    monkeypatch.setattr(cli, "record_guild_participant", fake_record_guild_participant)
     author = FakeUser(user_id=7, avatar_url="https://cdn.test/global.png")
     author.bot = False
     message = SimpleNamespace(
@@ -160,3 +171,6 @@ async def test_message_reward_stores_guild_avatar(monkeypatch: "pytest.MonkeyPat
     await cli.DiscordBot.on_message(as_discord_bot(fake=bot), message=as_message(fake=message))
 
     assert captured_avatar_url == "https://cdn.test/server.png"
+    # The faucet is the only bulk source of central-bank participation, and it rides the
+    # reward rather than every message.
+    assert recorded_participation == [(100, 7)]

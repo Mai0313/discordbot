@@ -33,14 +33,26 @@ _CONTEXT_DECLARATIONS = {
 _ACCOUNT_FLAG_GATES: dict[str, tuple[str, tuple[str, ...]] | None] = {
     "is_vip": None,
     "is_admin": ("economy admins only", ("/admin refund_tax", "/admin collect_tax")),
-    "is_central_banker": ("central bankers only", ("/central_bank call",)),
+    # Dead since central-bank approval moved to Discord's own administrator permission. The
+    # column cannot be dropped from a deployed database, so the key stays and maps to nothing;
+    # what the command now owes its reader is pinned in `_PERMISSION_GATED_COMMANDS`.
+    "is_central_banker": None,
     "hide_from_leaderboard": None,
 }
+# Commands gated on a Discord permission read inside the callback rather than on an account
+# flag. They owe their line the same thing a flag-gated command does, and they cannot be
+# discovered the way a flag can: nothing declares `default_member_permissions`, so there is no
+# column and no decorator to scan, only the `Interaction.permissions` read in the body.
+_PERMISSION_GATED_COMMANDS: dict[str, str] = {"/central_bank call": "server administrators only"}
 # The three ways a slash command description can name an admin across the locales declared
 # here, and the term that says which admin is meant. `economy admin` is what the refusal embed
 # shows, so a member reads one name for the flag wherever they meet it.
 _ADMIN_WORDS = ("admin", "管理員", "管理者")
-_ECONOMY_ADMIN_TERM = "economy admin"
+# Both gates the bot has, each spelled the way its own refusal spells it. Written in English
+# inside every locale's string, so one literal covers all three and a reader meets the same
+# term in the picker and in the refusal. `server admin` is Discord's own permission; `economy
+# admin` is the account flag that has nothing to do with it.
+_ADMIN_QUALIFIERS = ("economy admin", "server admin")
 # The gates `_ACCOUNT_FLAG_GATES` says it cannot see, because they sit on a decision button
 # rather than on the command. Each of these posts a view whose approve button refuses everyone
 # but the named decider and whose `on_timeout` rejects the request, so a line describing only
@@ -49,7 +61,7 @@ _ECONOMY_ADMIN_TERM = "economy admin"
 # leave the document quoting a number nothing enforces.
 _BUTTON_GATED_REQUESTS: dict[str, str] = {
     "/credit borrow": "lender",
-    "/central_bank borrow": "central banker",
+    "/central_bank borrow": "server administrator",
 }
 # What `/admin collect_tax`'s line owes for `allow_negative=False`, which is the whole
 # difference between what the command is called and what it does to a member holding less
@@ -331,7 +343,7 @@ def _picker_descriptions() -> dict[str, list[str]]:
 def _names_an_unqualified_admin(text: str) -> bool:
     """Reports whether a description names an admin without saying which one it means."""
     lowered = text.lower()
-    if _ECONOMY_ADMIN_TERM in lowered:
+    if any(term in lowered for term in _ADMIN_QUALIFIERS):
         return False
     return any(word in lowered for word in _ADMIN_WORDS)
 
@@ -513,22 +525,26 @@ def test_capabilities_doc_states_every_gate_on_the_gated_command_line() -> None:
     moment it quotes a single line back, which is how a wrong gate outlives a reader who
     checked the line and not the heading above it.
 
-    The pin covers `UserAccount`, which is where both of today's gates live; a flag added to
+    The pin covers `UserAccount` plus the permission-gated commands beside it; a flag added to
     another model, and a gate on a button rather than a command, are outside it.
     """
     assert _account_flag_columns() == set(_ACCOUNT_FLAG_GATES), (
         "UserAccount's flag columns changed: if a new one gates a command, say so on that "
         "command's own line in capabilities.md, then pin the new set here"
     )
+    gated: list[tuple[str, str]] = [
+        (command, wording)
+        for gate in _ACCOUNT_FLAG_GATES.values()
+        if gate is not None
+        for command in gate[1]
+        for wording in (gate[0],)
+    ]
+    gated.extend(_PERMISSION_GATED_COMMANDS.items())
     unstated: list[str] = []
-    for gate in _ACCOUNT_FLAG_GATES.values():
-        if gate is None:
-            continue
-        wording, commands = gate
-        for command in commands:
-            line = _command_line(body=CAPABILITIES_DOC, command=command)
-            if line is None or wording not in line.lower():
-                unstated.append(f"{command} ({wording})")
+    for command, wording in gated:
+        line = _command_line(body=CAPABILITIES_DOC, command=command)
+        if line is None or wording not in line.lower():
+            unstated.append(f"{command} ({wording})")
     assert not unstated, f"these command lines state no gate: {sorted(unstated)}"
 
 
@@ -682,7 +698,7 @@ def test_admin_description_check_reads_every_locale_it_has_to() -> None:
     assert _names_an_unqualified_admin(text="管理員限定：無條件扣除某位成員或 bot 的點數")
     assert _names_an_unqualified_admin(text="管理者専用：メンバーから点数を徴収します。")
     assert not _names_an_unqualified_admin(text="economy admin 限定：無條件扣除某位成員的點數")
-    assert not _names_an_unqualified_admin(text="Central banker forced collection.")
+    assert not _names_an_unqualified_admin(text="server admin 限定：向本伺服器的借方強制回收")
 
 
 def test_the_tests_workflow_reruns_on_an_edit_to_the_capability_document() -> None:

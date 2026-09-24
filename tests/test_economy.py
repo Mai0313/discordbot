@@ -266,6 +266,9 @@ async def _economy_schema_details() -> tuple[
             "loan_proposal": "PRAGMA table_info(loan_proposal)",
             "loan_contract": "PRAGMA table_info(loan_contract)",
             "casino_account": "PRAGMA table_info(casino_account)",
+            "guild_participant": "PRAGMA table_info(guild_participant)",
+            "casino_ledger": "PRAGMA table_info(casino_ledger)",
+            "central_bank_ledger": "PRAGMA table_info(central_bank_ledger)",
         }
         table_columns: dict[str, set[str]] = {}
         table_column_types: dict[str, dict[str, str]] = {}
@@ -316,6 +319,8 @@ def _assert_money_columns_are_text(
             "total_principal_paid",
         ),
         "casino_account": ("daily_loss", "daily_win", "daily_net"),
+        "casino_ledger": ("balance", "total_earned", "total_spent"),
+        "central_bank_ledger": ("balance", "total_earned"),
     }
     for table_name, column_names in economy_money_columns.items():
         for column_name in column_names:
@@ -480,13 +485,16 @@ async def test_ensure_schema_bootstraps_current_databases(
     assert economy_tables == {
         "user_account",
         "user_wallet",
+        "guild_participant",
         "loan_proposal",
         "loan_contract",
         "casino_account",
         "jackpot_pool",
         "casino_ledger",
+        "central_bank_ledger",
     }
     assert "bot_status" not in economy_tables
+    assert table_columns["guild_participant"] == {"guild_id", "user_id", "updated_at"}
     assert {"user_id", "name", "is_central_banker"} <= table_columns["user_account"]
     assert {"user_id", "name", "balance", "total_earned", "total_spent"} <= table_columns[
         "user_wallet"

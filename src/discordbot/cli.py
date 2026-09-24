@@ -21,7 +21,7 @@ from discordbot.utils.avatars import guild_avatar_url
 from discordbot.typings.config import DiscordConfig
 from discordbot.typings.economy import BASE_MESSAGE_REWARD_AMOUNT, MESSAGE_REWARD_COOLDOWN_SECONDS
 from discordbot.utils.model_pricing import MODEL_INFO_REFRESH_MINUTES, refresh_model_info
-from discordbot.services.economy.database import credit_with_repayment
+from discordbot.services.economy.database import credit_with_repayment, record_guild_participant
 
 
 class DiscordBot(commands.Bot):
@@ -298,6 +298,29 @@ class DiscordBot(commands.Bot):
                     error_type=type(exc).__name__,
                     _exc_info=exc,
                 )
+            if guild is not None:
+                # Guarded apart from the reward above, because that handler's rollback
+                # releases the cooldown slot and its log line says the reward failed.
+                # Sharing it would pay the reward twice on the next message whenever the
+                # credit landed and only this write lost a race for the write lock.
+                #
+                # The only bulk source of central-bank participation. It rides the reward's
+                # own cooldown rather than firing per message, so somebody rewarded in one
+                # server registers in the next one they speak in a minute later rather than
+                # on that first message.
+                try:
+                    await record_guild_participant(guild_id=guild.id, user_id=message.author.id)
+                except Exception as exc:
+                    # Broad for the same reason as the reward: missing one guild's
+                    # participation row costs that guild a little lending capacity until
+                    # the member speaks again, and must never stop process_commands.
+                    logfire.warn(
+                        "Failed to record economy participation",
+                        user_id=message.author.id,
+                        guild_id=guild.id,
+                        error_type=type(exc).__name__,
+                        _exc_info=exc,
+                    )
         await self.process_commands(message)
 
     async def on_application_command_error(

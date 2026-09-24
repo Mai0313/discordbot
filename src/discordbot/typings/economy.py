@@ -28,6 +28,15 @@ TRANSFER_TAX_BPS: Final[int] = 500
 _VIP_WIN_MULTIPLIER_NUM: Final[int] = 6
 _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
 
+# Central-bank levers; re-measure before changing them.
+# How many times their own free equity a borrower may owe the central bank.
+CENTRAL_BANK_CREDIT_MULTIPLIER: Final[int] = 2
+# The central bank's starting capital. The interest it keeps is added on top, and
+# the two together are what a server whose own members hold almost nothing can
+# still borrow against. A constant rather than a seeded ledger row, so the row only
+# ever holds earnings and a database created before this existed needs no fix-up.
+CENTRAL_BANK_BASE_CAPACITY: Final[int] = 5_000_000
+
 
 def monthly_rate_percent_to_bps(monthly_rate_percent: float) -> int:
     """Converts a user-facing monthly percent into basis points."""
@@ -58,6 +67,31 @@ def apply_vip_blackjack_bonus(delta: int, is_vip: bool) -> int:
     if not is_vip or delta <= 0:
         return delta
     return delta * _VIP_WIN_MULTIPLIER_NUM // _VIP_WIN_MULTIPLIER_DEN
+
+
+def central_bank_credit_ceiling(balance: int, total_debt: int) -> int:
+    """Returns how much more central-bank credit one borrower may still draw.
+
+    Mirrors the lending pool's own double subtraction. A central-bank loan mints
+    into the borrower's balance, so the first term takes that mint back out and
+    the second charges the debt as capacity already used. Borrowing `x` therefore
+    lowers the result by exactly `x`, which is what keeps total minting tied to
+    equity somebody actually earned.
+
+    `total_debt` counts every lender, not just the central bank. A personal loan
+    carries no transfer tax and may be written at 0%, so a ceiling blind to it is
+    reset by lending a minted balance on to a second account, and the pair can
+    then take turns borrowing against each other without limit.
+
+    Args:
+        balance: Current wallet balance.
+        total_debt: Outstanding principal plus accrued interest the borrower owes
+            across every active contract, whoever lent it.
+
+    Returns:
+        The remaining ceiling, never negative.
+    """
+    return max((balance - total_debt) * CENTRAL_BANK_CREDIT_MULTIPLIER - total_debt, 0)
 
 
 class LoanLenderType(StrEnum):
@@ -388,17 +422,29 @@ class LoanPaymentResult(BaseModel):
 
 
 class CentralBankStatus(BaseModel):
-    """Aggregated central bank lending capacity."""
+    """One guild's central bank lending capacity."""
 
     model_config = ConfigDict(frozen=True)
 
+    participant_count: int = Field(
+        ..., description="How many users are recorded as taking part in this guild's economy."
+    )
     total_positive_user_balance: int = Field(
-        ..., description="Sum of all positive user balances backing central bank credit."
+        ...,
+        description="Sum of this guild's participants' positive balances backing its central bank credit.",
     )
     outstanding_principal: int = Field(
-        ..., description="Total central bank loan principal currently outstanding."
+        ...,
+        description="Central bank loan principal outstanding across the whole bank, which every guild's capacity is charged for.",
     )
-    available_credit: int = Field(..., description="Remaining central bank lending capacity.")
+    available_credit: int = Field(
+        ...,
+        description="Remaining lending capacity for this guild, including the flat base capacity every guild carries.",
+    )
+    ledger_balance: int = Field(
+        ...,
+        description="Interest the central bank has kept; lent out again on top of its starting capital.",
+    )
 
 
 class PortfolioView(BaseModel):
@@ -416,6 +462,8 @@ class PortfolioView(BaseModel):
 
 __all__ = [
     "BASE_MESSAGE_REWARD_AMOUNT",
+    "CENTRAL_BANK_BASE_CAPACITY",
+    "CENTRAL_BANK_CREDIT_MULTIPLIER",
     "DEFAULT_LOAN_MONTHLY_RATE_BPS",
     "LOAN_PROPOSAL_TIMEOUT_SECONDS",
     "MAX_LOAN_MONTHLY_RATE_BPS",
@@ -450,6 +498,7 @@ __all__ = [
     "TransferResult",
     "VipPurchaseResult",
     "apply_vip_blackjack_bonus",
+    "central_bank_credit_ceiling",
     "monthly_rate_bps_to_percent",
     "monthly_rate_percent_to_bps",
 ]

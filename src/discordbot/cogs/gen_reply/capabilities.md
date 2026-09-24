@@ -86,18 +86,35 @@ Loans between members:
 
 Central bank:
 
-- `/central_bank borrow` — request a loan from the central bank; a central banker approves or rejects it with a button, and it is rejected automatically after 180 seconds
+- `/central_bank borrow` — request a loan from the central bank; a server administrator approves or rejects it with a button, and it is rejected automatically after 180 seconds
 - `/central_bank repay` — repay your central-bank loan
-- `/central_bank call` — central bankers only: forced collection
-- `/central_bank status` — how much the central bank can still lend
+- `/central_bank call` — server administrators only: forced collection, and only from someone who takes part in this server
+- `/central_bank status` — how much the central bank can still lend in this server
+
+The central bank has one lending budget shared by every server, first come first served. How
+much of it a server can draw depends on how much the people who take part there hold — whoever
+has been rewarded for talking there or has used a central bank command there — so a quiet server
+can borrow less than a busy one, and once the budget is lent out nobody can borrow until some of
+it is repaid. Balances are not per server either: one wallet follows you everywhere.
+
+How much any one person may owe is capped separately, at twice what they own free and clear
+minus what they already owe, counting every loan and not just central-bank ones. Borrowing
+lowers that cap by the same amount, so repaying or earning more is what raises it again. A
+request over the cap is refused before anyone is asked to approve it.
+
+Central-bank loans are created out of nothing when approved and destroyed when repaid. The
+interest on top is kept by the bank and lent out again, so the bank's budget grows as loans are
+repaid with interest; `/central_bank status` shows it.
 
 Balance maintenance:
 
 - `/admin refund_tax` — economy admins only: add to someone's balance
 - `/admin collect_tax` — economy admins only: take from someone's balance, never below zero
 
-Economy admin and central banker are flags on an account, set by whoever runs me. Neither is a
-Discord role: being a server admin grants neither, and no command hands one out.
+Economy admin is a flag on an account, set by whoever runs me: it is not a Discord role, being a
+server admin does not grant it, and no command hands it out. Central bank approval is the other
+way round — it is Discord's own administrator permission in the server the request was made in,
+so it is never available in a DM.
 
 ## Telling the developer something
 
