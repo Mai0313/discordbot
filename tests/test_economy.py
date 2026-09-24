@@ -19,6 +19,7 @@ from discordbot.typings.games import (
 )
 from discordbot.utils.timezone import TAIWAN_TIMEZONE
 from discordbot.typings.economy import TRANSFER_TAX_BPS
+from discordbot.services.economy import database as economy_database
 from discordbot.cogs.games.blackjack import Card, BlackjackRound, BlackjackHandState
 from discordbot.cogs.games.settlement import settle_wager, settle_blackjack_player
 from discordbot.services.economy.database import (
@@ -464,6 +465,16 @@ async def test_write_timestamps_use_taiwan_local_time() -> None:
     assert before <= updated_at <= after
 
 
+def test_every_test_gets_its_own_ledger(tmp_path: Path) -> None:
+    """A test that asks for no isolation still cannot reach the deployed `economy.db`.
+
+    It requests nothing but `tmp_path`, so dropping the autouse from `economy_isolated_db`
+    fails here, before any ledger call, instead of letting the next unpatched one write the
+    live file. The engine is read off the module because the fixture swaps it per test.
+    """
+    assert economy_database._engine.url.database == str(tmp_path / "economy.db")
+
+
 async def test_ensure_schema_bootstraps_current_databases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -518,6 +529,28 @@ async def test_ensure_schema_bootstraps_current_databases(
     assert await _stored_wallet_name(user_id=42) == "alice"
     account = await get_account(user_id=42)
     assert account == AccountSnapshot(name="alice", balance=5, total_earned=5, total_spent=0)
+    await engine.dispose()
+
+
+async def test_a_connection_pooled_before_the_hooks_still_gets_the_integer_functions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An engine handed over with a connection already in its pool still settles money.
+
+    That connection never saw `connect`, so only the `checkout` listener can register the
+    `StoredInteger` functions on it; without it the settlement below, which folds into the
+    daily casino counters through one, raises `no such function: discordbot_int_add_text`.
+    """
+    engine = create_async_engine(url=f"sqlite+aiosqlite:///{tmp_path / 'pooled-economy.db'}")
+    async with engine.connect() as conn:
+        await conn.execute(statement=text(text="SELECT 1"))
+    monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
+
+    await apply_round_settlement(
+        player_id=1, player_account_name="alice", player_delta=5, casino_delta=-5
+    )
+
+    assert await get_balance(user_id=1) == 5
     await engine.dispose()
 
 
