@@ -203,16 +203,14 @@ async def test_fake_interaction_defaults_and_followup() -> None:
 # --- economy_invariants ------------------------------------------------------
 
 
-async def test_assert_wallet_consistent_passes_on_clean_credit(economy_isolated_db: None) -> None:
+async def test_assert_wallet_consistent_passes_on_clean_credit() -> None:
     """A simple credit keeps the wallet identity and matches the expected balance."""
-    del economy_isolated_db
     await adjust_balance(user_id=1, name="alice", delta=250)
     account = await assert_wallet_consistent(user_id=1, expected_balance=250)
     assert account.total_earned == 250
 
 
-async def test_assert_casino_and_daily_stats_zero_baseline(economy_isolated_db: None) -> None:
+async def test_assert_casino_and_daily_stats_zero_baseline() -> None:
     """A fresh ledger and an inactive user satisfy the accounting identities."""
-    del economy_isolated_db
     await assert_casino_ledger_consistent(expected_balance=0)
     await assert_daily_casino_stats(user_id=1, loss=0, win=0, net=0)

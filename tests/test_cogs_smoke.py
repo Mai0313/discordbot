@@ -2887,9 +2887,7 @@ def test_parse_wager_amount_accepts_formatted_text() -> None:
     assert parse_wager_amount(raw_amount="-1") is None
 
 
-async def test_games_commands_run_with_patched_settlement(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
-) -> None:
+async def test_games_commands_run_with_patched_settlement(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies game commands create lobby views with patched dependencies."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
@@ -2925,9 +2923,7 @@ async def test_games_commands_run_with_patched_settlement(
     assert dragon_gate_interaction.followup.sent[-1]["embed"].image.url == embed_spacer_url()
 
 
-async def test_blackjack_lobby_start_is_owner_only(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
-) -> None:
+async def test_blackjack_lobby_start_is_owner_only(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verifies only the Blackjack lobby owner can press Start."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
     monkeypatch.setenv(name="OPENAI_API_KEY", value="test-key")
@@ -2953,7 +2949,7 @@ async def test_blackjack_lobby_start_is_owner_only(
 
 
 async def test_blackjack_owner_overbet_sets_table_bet_to_balance(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Verifies owner over-betting clamps the shared Blackjack lobby bet."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
@@ -3030,7 +3026,7 @@ async def test_refresh_participants_preserves_existing_blackjack_wagers(
 
 
 async def test_blackjack_string_bet_accepts_large_formatted_amount(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A large formatted bet is parsed without error but caps at MAX_SINGLE_BET."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")
@@ -3075,7 +3071,7 @@ async def test_blackjack_string_bet_rejects_invalid_text() -> None:
 
 
 async def test_blackjack_owner_zero_bet_caps_all_in_at_max_single_bet(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bet zero means all in, but a huge balance still caps at MAX_SINGLE_BET."""
     monkeypatch.setenv(name="OPENAI_BASE_URL", value="https://example.test/v1")

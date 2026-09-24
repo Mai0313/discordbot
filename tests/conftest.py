@@ -1,7 +1,8 @@
 """Shared pytest fixtures.
 
 Each `*_isolated_db` fixture points the owning module's module-level engine at a fresh
-`tmp_path` SQLite file for one test and disposes it afterwards. `memory_isolated_dir` covers
+`tmp_path` SQLite file for one test; the economy one is autouse, the others are requested by
+the tests that need them and dispose their engine afterwards. `memory_isolated_dir` covers
 more than a directory: the store dir, the `memory_job` engine, the process-local caches,
 counters and task registries the store and pipeline hold, and the git committer. The autouse
 fixtures are the other half of that isolation, keeping a real deployment's `.env` and `data/`
@@ -19,21 +20,23 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from discordbot.cogs.research.database import Base as ResearchBase
 from discordbot.cogs.gen_reply.ask_store import Base as AskTurnBase
-from discordbot.services.economy.database import Base
 
 
-@pytest.fixture
-async def economy_isolated_db(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[None]:
-    """Per-test SQLite file with the full economy schema."""
-    economy_db_path = tmp_path / "economy.db"
-    engine = create_async_engine(url=f"sqlite+aiosqlite:///{economy_db_path}")
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+@pytest.fixture(autouse=True)
+def economy_isolated_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Points the economy ledger at a throwaway `economy.db`.
+
+    Autouse because the module engine is the deployed ledger, and a test that forgets the
+    swap moves real balances rather than leaving a stray row: with no transaction table
+    behind `total_earned - total_spent == balance`, such a write cannot be reconstructed.
+    Patching every ledger function a command reaches is no substitute, since nothing checks
+    that a test patched them all. NullPool closes each connection on return, so this stays a
+    sync fixture; the schema and its seed rows bootstrap lazily on the first ledger call.
+    """
+    engine = create_async_engine(
+        url=f"sqlite+aiosqlite:///{tmp_path / 'economy.db'}", poolclass=NullPool
+    )
     monkeypatch.setattr("discordbot.services.economy.database._engine", engine)
-    yield
-    await engine.dispose()
 
 
 @pytest.fixture

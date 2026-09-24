@@ -1178,11 +1178,8 @@ async def _ready_reply_context() -> ReplyContext:
     return ReplyContext()
 
 
-async def test_handle_streaming_allows_missing_output_token_details(
-    economy_isolated_db: None,
-) -> None:
+async def test_handle_streaming_allows_missing_output_token_details() -> None:
     """Regression: LiteLLM may return usage with output_tokens_details=null."""
-    del economy_isolated_db
     message = FakeMessage()
 
     result = await ResponseStreamer(message=message).stream(responses=_stream_events())
@@ -1216,9 +1213,8 @@ def _annotated_completed_event(annotation_types: list[str]) -> SimpleNamespace:
     )
 
 
-async def test_streaming_counts_only_url_citation_annotations(economy_isolated_db: None) -> None:
+async def test_streaming_counts_only_url_citation_annotations() -> None:
     """Grounding is counted off the completed output, past the reasoning and refusal shapes."""
-    del economy_isolated_db
     streamer = ResponseStreamer(message=FakeMessage())
 
     await streamer.stream(
@@ -1235,15 +1231,12 @@ async def test_streaming_counts_only_url_citation_annotations(economy_isolated_d
     assert streamer._url_citations == 2
 
 
-async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no_output(
-    economy_isolated_db: None,
-) -> None:
+async def test_streaming_leaves_grounding_unreported_when_the_backend_carries_no_output() -> None:
     """The Interactions path reports grounding in another shape, so it must not log a zero.
 
     A zero here would read as an ungrounded answer, which is exactly the reading CLAUDE.md
     records three separate investigations getting wrong.
     """
-    del economy_isolated_db
     streamer = ResponseStreamer(message=FakeMessage(), backend="interactions")
 
     await streamer.stream(
@@ -1279,10 +1272,10 @@ def price_table_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
-    economy_isolated_db: None, price_table_unavailable: None
+    price_table_unavailable: None,
 ) -> None:
     """The footer loses its estimate; the reply that is already on screen is not lost with it."""
-    del economy_isolated_db, price_table_unavailable
+    del price_table_unavailable
     message = FakeMessage()
 
     result = await ResponseStreamer(message=message).stream(responses=_stream_events())
@@ -1291,11 +1284,8 @@ async def test_streaming_delivers_the_reply_when_the_price_table_is_unavailable(
     assert message.replies[0].content == result
 
 
-async def test_handle_streaming_continues_long_reply_as_reply_chain(
-    economy_isolated_db: None,
-) -> None:
+async def test_handle_streaming_continues_long_reply_as_reply_chain() -> None:
     """Verifies replies over Discord's content limit continue as a reply chain."""
-    del economy_isolated_db
     cog = _cog()
     message = FakeMessage(content="<@999> explain how long Discord replies are handled")
     body = "x" * 4500
@@ -1352,10 +1342,9 @@ def _unknown_message_notfound() -> nextcord.NotFound:
 
 @pytest.mark.parametrize("error", [_deleted_source_error(), _unknown_message_notfound()])
 async def test_streaming_falls_back_to_channel_send_when_source_deleted(
-    economy_isolated_db: None, error: nextcord.HTTPException
+    error: nextcord.HTTPException,
 ) -> None:
     """A deleted source makes the final reply land unparented via channel.send, not crash."""
-    del economy_isolated_db
     message = FakeMessage()
     message.reply_error = error
 
@@ -1365,11 +1354,8 @@ async def test_streaming_falls_back_to_channel_send_when_source_deleted(
     assert message.channel.sent[0].content == result
 
 
-async def test_streaming_followup_chain_intact_after_channel_send_fallback(
-    economy_isolated_db: None,
-) -> None:
+async def test_streaming_followup_chain_intact_after_channel_send_fallback() -> None:
     """Overflow follow-ups still chain off the unparented parent when the source is gone."""
-    del economy_isolated_db
     message = FakeMessage(content="<@999> explain")
     message.reply_error = _deleted_source_error()
     body = "x" * 4500
@@ -1387,9 +1373,8 @@ async def test_streaming_followup_chain_intact_after_channel_send_fallback(
     assert parent.replies[0].content == body[DISCORD_MESSAGE_LIMIT : DISCORD_MESSAGE_LIMIT * 2]
 
 
-async def test_streaming_reraises_non_deletion_http_errors(economy_isolated_db: None) -> None:
+async def test_streaming_reraises_non_deletion_http_errors() -> None:
     """A non-deletion HTTP error (e.g. Forbidden) propagates instead of silently channel.send."""
-    del economy_isolated_db
     message = FakeMessage()
     message.reply_error = nextcord.HTTPException(
         cast("ClientResponse", SimpleNamespace(status=403, reason="Forbidden")),
@@ -1401,11 +1386,8 @@ async def test_streaming_reraises_non_deletion_http_errors(economy_isolated_db: 
     assert message.channel.sent == []
 
 
-async def test_streaming_tolerates_reply_deleted_before_final_edit(
-    economy_isolated_db: None,
-) -> None:
+async def test_streaming_tolerates_reply_deleted_before_final_edit() -> None:
     """A reply deleted while streaming ends the turn quietly instead of raising to the cog."""
-    del economy_isolated_db
     message = FakeMessage()
     reply = FakeReply()
     reply.edit_error = _unknown_message_notfound()
@@ -1421,9 +1403,8 @@ async def test_streaming_tolerates_reply_deleted_before_final_edit(
     assert message.channel.sent == []
 
 
-async def test_streaming_reraises_non_deletion_edit_errors(economy_isolated_db: None) -> None:
+async def test_streaming_reraises_non_deletion_edit_errors() -> None:
     """A non-deletion edit failure (e.g. Forbidden) still propagates as a real error."""
-    del economy_isolated_db
     message = FakeMessage()
     reply = FakeReply()
     reply.edit_error = nextcord.HTTPException(
@@ -1435,9 +1416,8 @@ async def test_streaming_reraises_non_deletion_edit_errors(economy_isolated_db: 
         await ResponseStreamer(message=message, reply=reply).stream(responses=_stream_events())
 
 
-async def test_deleted_reply_skips_media_attach_without_hint(economy_isolated_db: None) -> None:
+async def test_deleted_reply_skips_media_attach_without_hint() -> None:
     """Media requested on a since-deleted reply is dropped silently, with no ⚠️ on the source."""
-    del economy_isolated_db
     message = FakeMessage()
     reply = FakeReply()
     reply.edit_error = _unknown_message_notfound()
@@ -1687,9 +1667,8 @@ def _assert_no_voice_tags(text: str) -> None:
     assert "</generate-voice>" not in text
 
 
-async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_db: None) -> None:
+async def test_voice_marker_triggers_synthesis_and_strips_tag() -> None:
     """A <generate-voice> segment is spoken (only that part), its tags stripped, the clip attached."""
-    del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
 
@@ -1709,9 +1688,8 @@ async def test_voice_marker_triggers_synthesis_and_strips_tag(economy_isolated_d
     assert message.added_reactions == ["<:voice:1517558121092878376>"]
 
 
-async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> None:
+async def test_voice_marker_absent_no_synthesis() -> None:
     """A normal reply (no <generate-voice>) never calls the synthesizer and attaches no file."""
-    del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
 
@@ -1725,9 +1703,8 @@ async def test_voice_marker_absent_no_synthesis(economy_isolated_db: None) -> No
     assert message.added_reactions == []
 
 
-async def test_voice_disabled_still_strips_marker(economy_isolated_db: None) -> None:
+async def test_voice_disabled_still_strips_marker() -> None:
     """With no synthesizer (voice off) the tags are still stripped and no file attaches."""
-    del economy_isolated_db
     message = FakeMessage()
 
     result = await ResponseStreamer(message=message).stream(
@@ -1739,9 +1716,8 @@ async def test_voice_disabled_still_strips_marker(economy_isolated_db: None) -> 
     assert message.replies[0].file is None
 
 
-async def test_voice_synthesis_failure_leaves_text_reply(economy_isolated_db: None) -> None:
+async def test_voice_synthesis_failure_leaves_text_reply() -> None:
     """A synthesis error leaves a clean text reply, no file, and hints with a warning emoji."""
-    del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.ERROR)
 
@@ -1755,9 +1731,8 @@ async def test_voice_synthesis_failure_leaves_text_reply(economy_isolated_db: No
     assert message.added_reactions == ["<:voice:1517558121092878376>", "⚠️"]
 
 
-async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: None) -> None:
+async def test_voice_synthesis_timeout_hints_with_clock() -> None:
     """A synthesis timeout leaves a text reply and hints with the clock emoji, staying silent."""
-    del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator(audio=None, outcome=VoiceOutcome.TIMEOUT)
 
@@ -1770,11 +1745,8 @@ async def test_voice_synthesis_timeout_hints_with_clock(economy_isolated_db: Non
     assert message.added_reactions == ["<:voice:1517558121092878376>", "⏱️"]
 
 
-async def test_voice_too_big_falls_back_to_hosted_url(
-    economy_isolated_db: None, tmp_path: Path
-) -> None:
+async def test_voice_too_big_falls_back_to_hosted_url(tmp_path: Path) -> None:
     """A voice clip past the upload limit is hosted and its URL appended, not silently dropped."""
-    del economy_isolated_db
     message = FakeMessage()
     # 4-byte ceiling so the fake WAV (larger) exceeds it, like a long WAV in a 20 MiB DM.
     message.guild = FakeGuild(filesize_limit=4)
@@ -1809,9 +1781,8 @@ async def test_voice_too_big_falls_back_to_hosted_url(
     assert message.replies[0].allowed_mentions_seen[-1] is not None
 
 
-async def test_voice_too_big_without_hosting_drops_with_hint(economy_isolated_db: None) -> None:
+async def test_voice_too_big_without_hosting_drops_with_hint() -> None:
     """With no media host, an oversized voice clip degrades to today's drop + ⚠️ hint."""
-    del economy_isolated_db
     message = FakeMessage()
     message.guild = FakeGuild(filesize_limit=4)
     synthesizer = _FakeVoiceGenerator()
@@ -1834,11 +1805,8 @@ def _hosting_service(*, serve_dir: Path) -> MediaHostingService:
     )
 
 
-async def test_finalize_media_edit_posts_followup_when_content_would_overflow(
-    economy_isolated_db: None,
-) -> None:
+async def test_finalize_media_edit_posts_followup_when_content_would_overflow() -> None:
     """A hosted URL on an already-near-2000-char reply rides a follow-up, not the main edit."""
-    del economy_isolated_db
     streamer = ResponseStreamer(message=FakeMessage())
     reply = FakeReply()
     streamer.reply = as_message(fake=reply)
@@ -1855,11 +1823,8 @@ async def test_finalize_media_edit_posts_followup_when_content_would_overflow(
     assert reply.allowed_mentions_seen[-1] is not None
 
 
-async def test_finalize_media_edit_hints_when_the_hosted_followup_fails(
-    economy_isolated_db: None,
-) -> None:
+async def test_finalize_media_edit_hints_when_the_hosted_followup_fails() -> None:
     """A follow-up that never lands is the whole clip, so it earns the ⚠️ hint, not silence."""
-    del economy_isolated_db
     message = FakeMessage()
     streamer = ResponseStreamer(message=message)
     reply = FakeReply()
@@ -2108,9 +2073,8 @@ def _voice_marker_mention_events() -> list[SimpleNamespace]:
     ]
 
 
-async def test_voice_text_strips_discord_markup(economy_isolated_db: None) -> None:
+async def test_voice_text_strips_discord_markup() -> None:
     """The spoken clip narrates the resolved name while the visible reply keeps the mention."""
-    del economy_isolated_db
     message = FakeMessage()
     message.guild = FakeGuild(members={239270225441193986: SimpleNamespace(display_name="小明")})
     synthesizer = _FakeVoiceGenerator()
@@ -2178,9 +2142,8 @@ def _image_marker_events() -> list[SimpleNamespace]:
     ]
 
 
-async def test_image_marker_generates_and_attaches(economy_isolated_db: None) -> None:
+async def test_image_marker_generates_and_attaches() -> None:
     """An <generate-image> block is pulled from the reply, rendered, and the PNG attached to the reply."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
@@ -2204,11 +2167,8 @@ async def test_image_marker_generates_and_attaches(economy_isolated_db: None) ->
     assert generator.image_bytes_lists == [None]
 
 
-async def test_image_marker_edits_uploaded_image_with_source_bytes(
-    economy_isolated_db: None,
-) -> None:
+async def test_image_marker_edits_uploaded_image_with_source_bytes() -> None:
     """An uploaded image rides into the inline <generate-image> render as edit source, without refinement."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
@@ -2234,9 +2194,8 @@ async def test_image_marker_edits_uploaded_image_with_source_bytes(
     ]
 
 
-async def test_image_disabled_still_strips_marker(economy_isolated_db: None) -> None:
+async def test_image_disabled_still_strips_marker() -> None:
     """With no generator (inline image off) the block is still pulled and no file attaches."""
-    del economy_isolated_db
     message = FakeMessage()
 
     result = await ResponseStreamer(message=message).stream(
@@ -2248,9 +2207,8 @@ async def test_image_disabled_still_strips_marker(economy_isolated_db: None) -> 
     assert message.replies[0].file is None
 
 
-async def test_image_generation_failure_hints(economy_isolated_db: None) -> None:
+async def test_image_generation_failure_hints() -> None:
     """A failed render leaves a clean text reply with no file and a warning hint."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator(image=None)
 
@@ -2263,9 +2221,8 @@ async def test_image_generation_failure_hints(economy_isolated_db: None) -> None
     assert message.added_reactions == ["<:image:1517559727880667226>", "⚠️"]
 
 
-async def test_voice_and_image_attach_in_one_edit(economy_isolated_db: None) -> None:
+async def test_voice_and_image_attach_in_one_edit() -> None:
     """A reply with both markers rides a single edit carrying the WAV and the PNG together."""
-    del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
     generator = _FakeImageGenerator()
@@ -2290,9 +2247,8 @@ async def test_voice_and_image_attach_in_one_edit(economy_isolated_db: None) -> 
     assert {item.filename for item in files} == {"reply.wav", "generated.png"}
 
 
-async def test_multiple_image_markers_attach_distinct_files(economy_isolated_db: None) -> None:
+async def test_multiple_image_markers_attach_distinct_files() -> None:
     """Several <generate-image> blocks each render and attach under distinct filenames in one edit."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator()
 
@@ -2316,9 +2272,8 @@ async def test_multiple_image_markers_attach_distinct_files(economy_isolated_db:
     assert [item.filename for item in files] == ["generated_1.png", "generated_2.png"]
 
 
-async def test_image_markers_capped_at_limit(economy_isolated_db: None) -> None:
+async def test_image_markers_capped_at_limit() -> None:
     """More <generate-image> blocks than the per-reply cap render only up to MAX_INLINE_IMAGES."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeImageGenerator()
     blocks = "".join(
@@ -2369,9 +2324,8 @@ def _music_marker_events() -> list[SimpleNamespace]:
     ]
 
 
-async def test_music_marker_generates_and_attaches(economy_isolated_db: None) -> None:
+async def test_music_marker_generates_and_attaches() -> None:
     """A <generate-music> block is pulled from the reply, generated, and the clip attached to the reply."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeMusicGenerator()
 
@@ -2391,9 +2345,8 @@ async def test_music_marker_generates_and_attaches(economy_isolated_db: None) ->
     assert message.added_reactions == ["🎵"]
 
 
-async def test_music_disabled_still_strips_marker(economy_isolated_db: None) -> None:
+async def test_music_disabled_still_strips_marker() -> None:
     """With no generator (music off) the block is still pulled and no file attaches."""
-    del economy_isolated_db
     message = FakeMessage()
 
     result = await ResponseStreamer(message=message).stream(
@@ -2405,9 +2358,8 @@ async def test_music_disabled_still_strips_marker(economy_isolated_db: None) -> 
     assert message.replies[0].file is None
 
 
-async def test_music_generation_failure_hints(economy_isolated_db: None) -> None:
+async def test_music_generation_failure_hints() -> None:
     """A failed render leaves a clean text reply with no file and a warning hint."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeMusicGenerator(audio=None)
 
@@ -2428,9 +2380,8 @@ async def test_music_filename_follows_returned_mime() -> None:
     assert music_filename(mime_type=None) == "music.mp3"
 
 
-async def test_voice_music_image_attach_in_one_edit(economy_isolated_db: None) -> None:
+async def test_voice_music_image_attach_in_one_edit() -> None:
     """A reply with all three markers rides one edit carrying the WAV, the clip, and the PNG."""
-    del economy_isolated_db
     message = FakeMessage()
     synthesizer = _FakeVoiceGenerator()
     music_generator = _FakeMusicGenerator()
@@ -2510,9 +2461,8 @@ def _video_marker_events() -> list[SimpleNamespace]:
     ]
 
 
-async def test_video_marker_generates_and_attaches(economy_isolated_db: None) -> None:
+async def test_video_marker_generates_and_attaches() -> None:
     """A <generate-video> block is pulled from the reply, generated, and the clip attached to the reply."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
@@ -2534,9 +2484,8 @@ async def test_video_marker_generates_and_attaches(economy_isolated_db: None) ->
     assert generator.reference_sources == [None]
 
 
-async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db: None) -> None:
+async def test_video_marker_uses_uploaded_image_as_reference() -> None:
     """An uploaded image rides into the inline <generate-video> render as a subject reference."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeVideoGenerator()
 
@@ -2561,9 +2510,8 @@ async def test_video_marker_uses_uploaded_image_as_reference(economy_isolated_db
     assert generator.calls == ["a wave crashing on rocks at sunset"]
 
 
-async def test_video_disabled_still_strips_marker(economy_isolated_db: None) -> None:
+async def test_video_disabled_still_strips_marker() -> None:
     """With no generator (video off) the block is still pulled and no file attaches."""
-    del economy_isolated_db
     message = FakeMessage()
 
     result = await ResponseStreamer(message=message).stream(
@@ -2577,9 +2525,8 @@ async def test_video_disabled_still_strips_marker(economy_isolated_db: None) -> 
     assert message.added_reactions == []
 
 
-async def test_video_generation_failure_hints(economy_isolated_db: None) -> None:
+async def test_video_generation_failure_hints() -> None:
     """A failed render leaves a clean text reply with no file and a warning hint."""
-    del economy_isolated_db
     message = FakeMessage()
     generator = _FakeVideoGenerator(video=None)
 
@@ -2592,9 +2539,8 @@ async def test_video_generation_failure_hints(economy_isolated_db: None) -> None
     assert message.added_reactions == [_VIDEO_EMOJI, "⚠️"]
 
 
-async def test_voice_music_video_image_attach_in_one_edit(economy_isolated_db: None) -> None:
+async def test_voice_music_video_image_attach_in_one_edit() -> None:
     """A reply with all four markers rides one edit carrying the WAV, music, video, and PNG."""
-    del economy_isolated_db
     message = FakeMessage()
     voice_generator = _FakeVoiceGenerator()
     music_generator = _FakeMusicGenerator()
@@ -2721,9 +2667,8 @@ async def test_voice_generator_reports_timeout() -> None:
     assert clip.outcome is VoiceOutcome.TIMEOUT
 
 
-async def test_voice_oversized_clip_not_attached(economy_isolated_db: None) -> None:
+async def test_voice_oversized_clip_not_attached() -> None:
     """A clip past the guild's upload limit is dropped, leaving a text-only reply."""
-    del economy_isolated_db
     message = FakeMessage()
     message.guild = FakeGuild(filesize_limit=8)
     synthesizer = _FakeVoiceGenerator(audio=b"x" * 16)
@@ -2917,11 +2862,8 @@ def _interactions_turn_events() -> list[SimpleNamespace]:
     ]
 
 
-async def test_youtube_qa_uses_interactions_backend(
-    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_youtube_qa_uses_interactions_backend(monkeypatch: pytest.MonkeyPatch) -> None:
     """A watched YouTube URL streams the answer through Interactions, not Responses."""
-    del economy_isolated_db
     cog = _cog()
     cog.config = _config_stub(
         inline_voice_enabled=False,
@@ -2955,10 +2897,9 @@ async def test_youtube_qa_uses_interactions_backend(
 
 
 async def test_youtube_interactions_passes_effort_as_thinking_level(
-    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The graded effort is sent straight through as the Interactions thinking_level."""
-    del economy_isolated_db
     cog = _cog()
     cog.config = _config_stub(
         inline_voice_enabled=False,
@@ -3011,10 +2952,9 @@ def test_count_media_parts_counts_only_the_shapes_media_reaches_the_model_in() -
 
 @pytest.mark.parametrize("scenario", ["kill_switch_off", "non_gemini_model", "no_url", "no_key"])
 async def test_youtube_qa_falls_back_to_responses(
-    economy_isolated_db: None, monkeypatch: pytest.MonkeyPatch, scenario: str
+    monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
     """Without a watchable Gemini video turn, the answer stays on the Responses path."""
-    del economy_isolated_db
     cog = _cog()
     cog.config = _config_stub(
         inline_voice_enabled=False,
@@ -3772,7 +3712,7 @@ def _no_retry_backoff(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previewing(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A 503 mid-answer re-opens the stream onto the same message without doubling the text.
 
@@ -3781,7 +3721,6 @@ async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previ
     SETTING an event that `_preview_editor` reads before its first tick, so without clearing it
     the retry streams blind and the stale preview sits frozen until the final write.
     """
-    del economy_isolated_db
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     streamer = ResponseStreamer(message=message, preview_interval_seconds=0.01)
@@ -3815,11 +3754,8 @@ async def test_a_retried_answer_stream_replaces_the_dead_attempt_and_keeps_previ
     assert message.replies[0].edits
 
 
-async def test_a_non_retryable_answer_failure_never_re_opens_the_stream(
-    economy_isolated_db: None,
-) -> None:
+async def test_a_non_retryable_answer_failure_never_re_opens_the_stream() -> None:
     """A refusal is the provider answering, so it surfaces on the first attempt."""
-    del economy_isolated_db
     message = FakeMessage()
     streamer = ResponseStreamer(message=message)
     opened = 0
@@ -3843,10 +3779,9 @@ async def test_a_non_retryable_answer_failure_never_re_opens_the_stream(
 
 
 async def test_an_exhausted_answer_retry_raises_the_provider_error_itself(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`reraise` keeps the outer error path showing the provider failure, not a retry wrapper."""
-    del economy_isolated_db
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     streamer = ResponseStreamer(message=message)
@@ -3866,15 +3801,12 @@ async def test_an_exhausted_answer_retry_raises_the_provider_error_itself(
     assert streamer.attempts == ANSWER_STREAM_MAX_ATTEMPTS
 
 
-async def test_a_retry_tells_the_user_it_is_retrying(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
-) -> None:
+async def test_a_retry_tells_the_user_it_is_retrying(monkeypatch: pytest.MonkeyPatch) -> None:
     """A silent retry is indistinguishable from a model that is just thinking slowly.
 
     The reaction is the half that always lands; the notice only takes over a reply that is
     already on screen, where what it replaces is the dead attempt's half-sentence.
     """
-    del economy_isolated_db
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     streamer = ResponseStreamer(message=message, reply=cast("Message", FakeReply()))
@@ -3898,15 +3830,12 @@ async def test_a_retry_tells_the_user_it_is_retrying(
     assert (reply.content or "").startswith("done")
 
 
-async def test_a_spent_retry_takes_its_own_notice_back(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
-) -> None:
+async def test_a_spent_retry_takes_its_own_notice_back(monkeypatch: pytest.MonkeyPatch) -> None:
     """`Retrying...` promises another attempt; with none left it must not outlive the turn.
 
     Otherwise the turn ends with one message saying work is in flight beside the error embed
     saying it is not.
     """
-    del economy_isolated_db
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     reply = FakeReply()
@@ -3928,10 +3857,9 @@ async def test_a_spent_retry_takes_its_own_notice_back(
 
 
 async def test_a_spent_retry_keeps_text_the_last_attempt_managed_to_stream(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Only a message that is still nothing but the notice goes; real text is the better residue."""
-    del economy_isolated_db
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     reply = FakeReply()
@@ -3957,10 +3885,9 @@ async def test_a_spent_retry_keeps_text_the_last_attempt_managed_to_stream(
 
 
 async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Creating a reply just to say "Retrying" would orphan it on the turns that then fail."""
-    del economy_isolated_db
     _no_retry_backoff(monkeypatch=monkeypatch)
     message = FakeMessage()
     streamer = ResponseStreamer(message=message)
@@ -3978,7 +3905,7 @@ async def test_a_retry_with_nothing_on_screen_yet_leaves_no_notice_message(
 
 
 async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None, memory_isolated_dir: None
+    monkeypatch: pytest.MonkeyPatch, memory_isolated_dir: None
 ) -> None:
     """Pins the wiring, not the helper: the QA answer path must go through the retry.
 
@@ -3986,7 +3913,7 @@ async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
     quietly put back on a bare `streamer.stream(...)`, except for the second `create` this
     asserts on.
     """
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="hi")
@@ -4004,7 +3931,7 @@ async def test_the_answer_turn_itself_is_retried_and_still_delivers_the_reply(
 
 
 async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_into(
-    monkeypatch: pytest.MonkeyPatch, economy_isolated_db: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A turn that painted something before it died ends as ONE message, not two.
 
@@ -4013,7 +3940,6 @@ async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_int
     stubbed down to the one answer stream, and everything between the publish and the edit is
     the production code.
     """
-    del economy_isolated_db
     _no_retry_backoff(monkeypatch=monkeypatch)
     cog = _cog()
     message = FakeMessage(content="<@999> explain", author=FakeAuthor(user_id=1))
@@ -4052,7 +3978,7 @@ async def test_a_failed_answer_lands_its_error_on_the_reply_it_was_streaming_int
     assert reply.embed.title == "Something went wrong"
 
 
-async def test_a_failure_over_a_thinking_preview_clears_it(economy_isolated_db: None) -> None:
+async def test_a_failure_over_a_thinking_preview_clears_it() -> None:
     """The preview is a live glance at a model that has now stopped thinking, so it goes.
 
     Frozen above the error it reads as work still in flight, and unlike a partial answer there
@@ -4060,7 +3986,6 @@ async def test_a_failure_over_a_thinking_preview_clears_it(economy_isolated_db: 
     error embed rides a spacer file, and nextcord drops a `content=None` out of a multipart
     edit instead of clearing it, which would leave the preview exactly where it was.
     """
-    del economy_isolated_db
     message = FakeMessage()
     reply = FakeReply()
     reply.content = "-# <:message:1517560873000898860> Thinking..."
@@ -4073,11 +3998,8 @@ async def test_a_failure_over_a_thinking_preview_clears_it(economy_isolated_db: 
     assert reply.embed is not None
 
 
-async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_message(
-    economy_isolated_db: None,
-) -> None:
+async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_message() -> None:
     """Discord turning the edit down must not cost the user the error entirely."""
-    del economy_isolated_db
     message = FakeMessage()
     reply = FakeReply()
     reply.edit_error = _unknown_message_notfound()
@@ -4086,16 +4008,13 @@ async def test_a_reply_that_refuses_the_edit_sends_the_caller_back_to_a_fresh_me
     assert await streamer.land_failure(embed=Embed(title="Something went wrong")) is False
 
 
-async def test_a_delivered_answer_stops_being_the_failure_paths_target(
-    economy_isolated_db: None,
-) -> None:
+async def test_a_delivered_answer_stops_being_the_failure_paths_target() -> None:
     """A failure after the answer landed is a separate event, not the reason one is truncated.
 
     The take-back happens as the footer is written rather than when the stream helper returns,
     because everything past that point -- the inline media attach, a hosted-URL follow-up -- can
     still raise, and an error landing on the finished reply would take its attachments with it.
     """
-    del economy_isolated_db
     message = FakeMessage()
     streamer = ResponseStreamer(message=cast("Message", message))
 
@@ -8055,10 +7974,7 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
 
 @pytest.mark.parametrize(argnames="describe_capabilities", argvalues=[True, False])
 async def test_handle_message_reply_leads_with_the_capability_reference(
-    economy_isolated_db: None,
-    memory_isolated_dir: object,
-    monkeypatch: pytest.MonkeyPatch,
-    describe_capabilities: bool,
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, describe_capabilities: bool
 ) -> None:
     """The feature reference leads the answer input, and only when the route asked for it.
 
@@ -8066,7 +7982,7 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
     where it costs the least against a prefix cache. A caller that leaves the flag off must
     get none of it.
     """
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
@@ -8093,7 +8009,7 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
 
 
 async def test_handle_message_reply_orders_reference_after_memory_before_current(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The answer input puts memory first, then the reference message, then the current message.
 
@@ -8101,7 +8017,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
     reply pair stays adjacent and reads as the primary context, and the strengthened headers
     spell out the reply relationship.
     """
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     monkeypatch.setattr(
@@ -8145,7 +8061,7 @@ async def test_handle_message_reply_orders_reference_after_memory_before_current
 
 
 async def test_the_history_separator_names_the_block_without_inviting_an_answer_from_it(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The history separator is a label; where the subject may come from is a developer rule.
 
@@ -8156,7 +8072,7 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
     persona reply and the phase-1 extraction transcript, none of which is answering a question,
     which is the second reason the rule cannot live on the block itself.
     """
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
@@ -8221,10 +8137,10 @@ def test_only_the_replied_to_message_claims_the_current_message_is_about_it() ->
 
 
 async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The answer injects server memory, user memory, then the tone note before the current message."""
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
@@ -8282,10 +8198,10 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
 
 
 async def test_reply_context_always_injects_the_author_tone_block(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The author's tone note rides every reply, with no selection phase of its own."""
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     write_tone(scope=user_scope(user_id=1), content="語氣輕鬆")
     monkeypatch.setattr(
@@ -9006,7 +8922,6 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
     ],
 )
 async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- parametrized columns
-    economy_isolated_db: None,
     memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     seeded: dict[int, str],
@@ -9024,7 +8939,7 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     Injection is asserted by id and the optional allowlist structurally, never by a
     sentinel substring over a serialized request.
     """
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     for uid, body in seeded.items():
         _seed_fact(scope=user_scope(user_id=uid), text=body)
@@ -9094,10 +9009,10 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
 
 
 async def test_deterministic_memories_are_author_reply_mentions_ordered_and_deduped(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Deterministic participants stay author-first and never include the bot twice."""
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     for user_id in (1, 2, 3, 999):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
@@ -9126,10 +9041,10 @@ async def test_deterministic_memories_are_author_reply_mentions_ordered_and_dedu
 
 
 async def test_history_only_users_are_not_memory_candidates(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A history author is neither deterministic nor an optional nickname candidate."""
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=2), text="歷史使用者記憶")
@@ -9157,10 +9072,10 @@ async def test_history_only_users_are_not_memory_candidates(
 
 
 async def test_private_thread_skips_optional_memory_selection(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A private thread never exposes an absent nickname-table member to selection."""
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
     _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
@@ -9187,10 +9102,10 @@ async def test_private_thread_skips_optional_memory_selection(
 
 
 async def test_optional_selection_uses_only_remaining_memory_budget(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Deterministic users fill seven slots, leaving one optional alias slot."""
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     for user_id in (*range(1, 8), 42, 43):
         _seed_fact(scope=user_scope(user_id=user_id), text=f"記憶{user_id}")
@@ -9290,7 +9205,6 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
     ],
 )
 async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametrized columns
-    economy_isolated_db: None,
     memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     seeded_ids: list[int],
@@ -9312,7 +9226,7 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     their Discord label. The line opens on 讀了 because the write notes share this corner of the
     reply and a reader has to be able to tell them apart at a glance.
     """
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     for uid in seeded_ids:
         _seed_fact(scope=user_scope(user_id=uid), text=f"記憶{uid}")
@@ -9364,10 +9278,10 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
 
 
 async def test_handle_message_reply_retains_author_memory_when_optional_selection_fails(
-    economy_isolated_db: None, memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed optional selector loses only the absent member's memory."""
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="甲")
     _seed_fact(scope=user_scope(user_id=42), text="不該注入的第三人")
@@ -9424,7 +9338,6 @@ def test_usage_footer_re_strips_memory_credit_second_line() -> None:
     ids=["guild-public", "guild-private", "dm"],
 )
 async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- parametrized columns
-    economy_isolated_db: None,
     memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     has_guild: bool,
@@ -9439,7 +9352,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
     public guild channel. This server memory has no nickname table, so the optional selector
     must always be skipped.
     """
-    del economy_isolated_db, memory_isolated_dir
+    del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=server_scope(server_id=1), text="社群風格", section="profile")
     scheduled: list[dict[str, object]] = []
@@ -9620,11 +9533,8 @@ def test_streamer_reasoning_preview_escapes_mentions() -> None:
     assert "<@123456789012345678>" not in preview
 
 
-async def test_streamer_strips_leading_newlines_from_first_reasoning_delta(
-    economy_isolated_db: None,
-) -> None:
+async def test_streamer_strips_leading_newlines_from_first_reasoning_delta() -> None:
     """Gemini's leading reasoning newlines are dropped like content newlines."""
-    del economy_isolated_db
     events = [
         SimpleNamespace(type="response.reasoning_summary_text.delta", delta="\n\n"),
         SimpleNamespace(type="response.reasoning_summary_text.delta", delta="\nthought"),
@@ -9638,9 +9548,8 @@ async def test_streamer_strips_leading_newlines_from_first_reasoning_delta(
     assert streamer.reasoning_content == "thought"
 
 
-async def test_streamer_edits_are_time_throttled(economy_isolated_db: None) -> None:
+async def test_streamer_edits_are_time_throttled() -> None:
     """The snapshot editor writes far fewer Discord edits than stream deltas."""
-    del economy_isolated_db
     message = FakeMessage()
 
     async def _events() -> AsyncIterator[SimpleNamespace]:
@@ -9662,9 +9571,8 @@ async def test_streamer_edits_are_time_throttled(economy_isolated_db: None) -> N
     assert reply.content.startswith("chunk0 ")
 
 
-async def test_streamer_footer_shows_route_effort(economy_isolated_db: None) -> None:
+async def test_streamer_footer_shows_route_effort() -> None:
     """The usage footer labels the model with the route-decided effort."""
-    del economy_isolated_db
     message = FakeMessage()
 
     result = await ResponseStreamer(message=message, model_effort="low").stream(
@@ -9843,9 +9751,8 @@ async def test_on_message_cancels_effort_task_on_image_route(
     assert cancelled == [True]
 
 
-async def test_handle_message_reply_uses_route_effort(economy_isolated_db: None) -> None:
+async def test_handle_message_reply_uses_route_effort() -> None:
     """The answer request's reasoning effort follows the route decision."""
-    del economy_isolated_db
     cog = _cog()
     message = FakeMessage(content="<@999> why", author=FakeAuthor(user_id=1))
 
