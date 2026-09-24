@@ -31,11 +31,10 @@ _VIP_WIN_MULTIPLIER_DEN: Final[int] = 5
 # Central-bank levers; re-measure before changing them.
 # How many times their own free equity a borrower may owe the central bank.
 CENTRAL_BANK_CREDIT_MULTIPLIER: Final[int] = 2
-# The floor under every guild's lending capacity, so a server whose own members
-# hold almost nothing still has a usable central bank. Deliberately a constant
-# rather than the bank's accumulated surplus: the surplus only ever grows, and a
-# term added to every guild alike converges them all on the same number, which is
-# the one thing a per-guild split cannot survive.
+# The central bank's starting capital. The interest it keeps is added on top, and
+# the two together are what a server whose own members hold almost nothing can
+# still borrow against. A constant rather than a seeded ledger row, so the row only
+# ever holds earnings and a database created before this existed needs no fix-up.
 CENTRAL_BANK_BASE_CAPACITY: Final[int] = 5_000_000
 
 
@@ -444,7 +443,7 @@ class CentralBankStatus(BaseModel):
     )
     ledger_balance: int = Field(
         ...,
-        description="Interest the central bank has collected over its lifetime; recorded only, never lent.",
+        description="Interest the central bank has kept; lent out again on top of its starting capital.",
     )
 
 

@@ -387,20 +387,17 @@ class CasinoLedger(Base):
 
 
 class CentralBankLedger(Base):
-    """Lifetime interest the central bank has collected.
+    """Interest the central bank has kept, which it lends out again.
 
     Central-bank principal is minted on approval and burned on repayment, so it
-    nets to nothing. The interest on top used to be burned with it, which left
-    the bank's own earnings invisible; they are recorded here instead.
-
-    The row is deliberately NOT a term in lending capacity. It only ever grows,
-    and a term added to every guild alike would converge every guild on the same
-    number — the base capacity in `typings/economy.py` is a flat constant for
-    exactly that reason. Recording the interest changes no balance either way:
-    it has already left the borrower's wallet whether it is burned or booked.
+    nets to nothing. The interest on top used to be burned with it; it is kept
+    here instead and added to the starting capital in `typings/economy.py`, the
+    two together being the bank's own money to lend. The row holds earnings only,
+    never the starting capital, so a database created before it existed starts
+    at zero and needs nothing seeded into it.
 
     Attributes:
-        balance: Interest collected and still recorded here.
+        balance: Interest kept and available to lend again.
         total_earned: Lifetime gross interest, so a reader sees volume, not just net.
         updated_at: Taiwan-local timestamp of the last write.
     """
@@ -2183,16 +2180,22 @@ async def _central_bank_status_in_session(
         participant_count=participant_count,
         total_positive_user_balance=total_positive_user_balance,
         outstanding_principal=outstanding_principal,
-        # The base capacity is INSIDE the outstanding subtraction, so lending depletes it
-        # and a fully leveraged guild reaches zero. Adding it outside instead pins the pool
-        # at a floor it can never fall through, which takes the pool out of the bounding
-        # job altogether: the per-borrower ceiling cannot cover for it, because a ceiling
-        # clamped at zero stops charging the debt of a borrower who has given their balance
-        # away, and a pair alternating `/give` then mints without limit. Measured.
-        # Subtracted once rather than twice because, unlike the participants' balances, the
-        # base capacity was never minted into anybody's wallet.
+        # The bank's own capital — its starting capital plus the interest it has kept — is
+        # INSIDE the outstanding subtraction, so lending depletes it and a fully leveraged
+        # guild reaches zero. Adding it outside instead pins the pool at a floor it can
+        # never fall through, which takes the pool out of the bounding job altogether: the
+        # per-borrower ceiling cannot cover for it, because a ceiling clamped at zero stops
+        # charging the debt of a borrower who has given their balance away, and a pair
+        # alternating `/give` then mints without limit. Measured. Subtracted once rather
+        # than twice because, unlike the participants' balances, that capital was never
+        # minted into anybody's wallet. Lending the kept interest back out cannot be farmed
+        # either: every unit of it was paid out of a borrower's own balance first.
         available_credit=max(
-            base_lending_pool + CENTRAL_BANK_BASE_CAPACITY - outstanding_principal, 0
+            base_lending_pool
+            + CENTRAL_BANK_BASE_CAPACITY
+            + ledger_balance
+            - outstanding_principal,
+            0,
         ),
         ledger_balance=ledger_balance,
     )

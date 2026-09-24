@@ -514,8 +514,8 @@ async def test_an_untaxed_personal_loan_cannot_refill_the_ceiling() -> None:
     assert await get_credit_ceiling(user_id=1) == 0
 
 
-async def test_central_bank_interest_is_booked_rather_than_burned() -> None:
-    """Repaid interest becomes the bank's recorded surplus; principal still disappears."""
+async def test_central_bank_keeps_its_interest_and_lends_it_again() -> None:
+    """Repaid interest is kept and adds to what the bank can lend; principal still disappears."""
     await _join(user_id=1, name="alice", amount=1_000)
     proposal = await create_central_bank_loan_request(
         borrower_id=1, borrower_name="alice", amount=500, monthly_rate_bps=300
@@ -532,6 +532,10 @@ async def test_central_bank_interest_is_booked_rather_than_burned() -> None:
     assert result is not None
     assert result.interest_paid == 15
     assert (await get_central_bank_status(guild_id=GUILD)).ledger_balance == 15
+    # A guild nobody takes part in lends on the bank's own capital alone, which now
+    # includes the interest it just kept.
+    nobody_here = await get_central_bank_status(guild_id=999)
+    assert nobody_here.available_credit == CENTRAL_BANK_BASE_CAPACITY + 15
 
 
 async def test_forced_collection_refuses_a_borrower_from_another_guild() -> None:

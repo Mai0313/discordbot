@@ -91,18 +91,20 @@ Central bank:
 - `/central_bank call` — server administrators only: forced collection, and only from someone who takes part in this server
 - `/central_bank status` — how much the central bank can still lend in this server
 
-The central bank is per server. Each server lends against the balances of the people who take
-part in its own economy — whoever has been rewarded for talking there or has used a central bank
-command there — plus a flat base amount every server gets. Balances themselves are not per
-server: one wallet follows you everywhere.
+The central bank has one lending budget shared by every server, first come first served. How
+much of it a server can draw depends on how much the people who take part there hold — whoever
+has been rewarded for talking there or has used a central bank command there — so a quiet server
+can borrow less than a busy one, and once the budget is lent out nobody can borrow until some of
+it is repaid. Balances are not per server either: one wallet follows you everywhere.
 
 How much any one person may owe is capped separately, at twice what they own free and clear
 minus what they already owe, counting every loan and not just central-bank ones. Borrowing
 lowers that cap by the same amount, so repaying or earning more is what raises it again. A
 request over the cap is refused before anyone is asked to approve it.
 
-Central-bank loans are created out of nothing when approved and destroyed when repaid; the
-interest on top is kept as the bank's own earnings and is shown by `/central_bank status`.
+Central-bank loans are created out of nothing when approved and destroyed when repaid. The
+interest on top is kept by the bank and lent out again, so the bank's budget grows as loans are
+repaid with interest; `/central_bank status` shows it.
 
 Balance maintenance:
 

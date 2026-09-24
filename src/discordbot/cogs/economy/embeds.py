@@ -554,8 +554,7 @@ def build_central_bank_status_embed(*, status: CentralBankStatus) -> Embed:
         value=(
             f"參與者 {status.participant_count} 人\n"
             f"參與者正餘額 "
-            f"{amount_code(amount=status.total_positive_user_balance, compact=True)}\n"
-            f"基本額度 {amount_code(amount=CENTRAL_BANK_BASE_CAPACITY, compact=True)}"
+            f"{amount_code(amount=status.total_positive_user_balance, compact=True)}"
         ),
         inline=False,
     )
@@ -568,8 +567,11 @@ def build_central_bank_status_embed(*, status: CentralBankStatus) -> Embed:
         inline=False,
     )
     embed.add_field(
-        name="央行累計利息",
-        value=amount_code(amount=status.ledger_balance, compact=True),
+        name="央行本錢",
+        value=(
+            f"起始資本 {amount_code(amount=CENTRAL_BANK_BASE_CAPACITY, compact=True)}\n"
+            f"累計利息 {amount_code(amount=status.ledger_balance, compact=True)}"
+        ),
         inline=False,
     )
     embed.set_footer(text="實際可借還會受你個人的信用上限限制")
