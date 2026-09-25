@@ -246,9 +246,7 @@ class ResearchCogs(commands.Cog):
         # mention embedded in it cannot turn a research request into a mass ping.
         anchor = await interaction.channel.send(
             content=f"{interaction.user.mention} 要研究:{topic[:200]}",
-            allowed_mentions=AllowedMentions(
-                everyone=False, roles=False, users=[interaction.user]
-            ),
+            allowed_mentions=_owner_allowed_mentions(owner_id=interaction.user.id),
         )
         outcome, existing = await self._start_for(
             owner_id=interaction.user.id,
@@ -693,10 +691,11 @@ def _failure_text(*, status: str) -> str:
 
 
 def _owner_allowed_mentions(*, owner_id: int) -> AllowedMentions:
-    """Restricts a research-thread message to pinging only its owner.
+    """Restricts a research message to pinging only its owner.
 
-    The report text is agent-generated, so any `@everyone` / role / other-user mention it
-    contains must not resolve; only the deliberate owner ping is allowed through.
+    The anchor carries the user's topic and the report text is agent-generated, so any
+    `@everyone` / role / other-user mention either contains must not resolve; only the
+    deliberate owner ping is allowed through.
     """
     return AllowedMentions(everyone=False, roles=False, users=[Object(id=owner_id)])
 
