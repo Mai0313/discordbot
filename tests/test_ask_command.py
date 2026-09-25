@@ -30,6 +30,8 @@ from discordbot.cogs.gen_reply.ask_message import (
     rebuild_conversation,
 )
 
+from tests.helpers.casting import as_bot
+
 # A real Discord snowflake, so `Message.created_at` resolves to a real moment rather than 1970.
 ASK_SNOWFLAKE = 1517561877973045349
 BOT_USER_ID = 999
@@ -427,7 +429,7 @@ async def test_a_gateway_turn_records_nothing(ask_isolated_db: None) -> None:
 async def test_ask_defers_before_anything_slower_than_three_seconds() -> None:
     """The token dies after three seconds, and every phase of a turn is slower than that."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
-    cog.bot = SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat"))
+    cog.bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
     toolkit = SimpleNamespace(input_builder=SimpleNamespace(get_user_prompt=_echo_prompt))
     ran: list[tuple[TurnSurface, str]] = []
 
@@ -435,8 +437,8 @@ async def test_ask_defers_before_anything_slower_than_three_seconds() -> None:
         """Records the turn the command would have run."""
         ran.append((surface, user_prompt))
 
-    cog.toolkit = toolkit
-    cog._run_turn = _run_turn
+    cog.__dict__["toolkit"] = toolkit
+    cog.__dict__["_run_turn"] = _run_turn
     interaction = _interaction()
 
     await cog.ask(interaction, question="在幹嘛", attachment=None)
@@ -452,7 +454,7 @@ async def test_ask_defers_before_anything_slower_than_three_seconds() -> None:
 async def test_ask_answers_a_blank_question_without_running_a_turn() -> None:
     """A whitespace-only option would otherwise route on nothing at all."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
-    cog.bot = SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat"))
+    cog.bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=BOT_USER_ID, name="pocat")))
     toolkit = SimpleNamespace(input_builder=SimpleNamespace(get_user_prompt=_echo_prompt))
 
     async def _never(*, surface: TurnSurface, user_prompt: str) -> None:
@@ -460,8 +462,8 @@ async def test_ask_answers_a_blank_question_without_running_a_turn() -> None:
         del surface, user_prompt
         raise AssertionError("a blank question must not run a turn")
 
-    cog.toolkit = toolkit
-    cog._run_turn = _never
+    cog.__dict__["toolkit"] = toolkit
+    cog.__dict__["_run_turn"] = _never
     interaction = _interaction()
 
     await cog.ask(interaction, question="   ", attachment=None)

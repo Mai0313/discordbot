@@ -384,6 +384,9 @@ ignore = [
     "PERF402",
     # constants ("magic") values in comparisons
     "PLR2004",
+    # Too many positional arguments: at these limits it never fires without PLR0913, and its
+    # only remedy, a bare `*`, is what CONTRIBUTING.md rules out
+    "PLR0917",
 ]
 
 [tool.ruff.lint.pycodestyle]
