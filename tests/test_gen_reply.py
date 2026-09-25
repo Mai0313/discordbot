@@ -10047,13 +10047,40 @@ async def test_deterministic_memory_lookup_skips_locked_author_memory(
     assert context.memory_credits.total == 0
 
 
+def _text_channel_granting(**permissions: bool) -> MagicMock:
+    """A guild text channel whose overwrites resolve to exactly these permissions for the bot."""
+    channel = MagicMock(spec=nextcord.TextChannel)
+    channel.permissions_for.return_value = nextcord.Permissions(**permissions)
+    return channel
+
+
 def test_can_launch_research_requires_guild_text_channel() -> None:
-    text = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.TextChannel))
+    guild = SimpleNamespace(me=object())
+    granted = _text_channel_granting(
+        view_channel=True,
+        send_messages=True,
+        create_public_threads=True,
+        send_messages_in_threads=True,
+        attach_files=True,
+    )
+    text = SimpleNamespace(guild=guild, channel=granted)
     assert can_launch_research(message=as_message(fake=text)) is True
-    thread = SimpleNamespace(guild=object(), channel=MagicMock(spec=nextcord.Thread))
+    # The bot's own member, whose token every research write uses, never the author's.
+    granted.permissions_for.assert_called_once_with(guild.me)
+    thread = SimpleNamespace(guild=guild, channel=MagicMock(spec=nextcord.Thread))
     assert can_launch_research(message=as_message(fake=thread)) is False
-    dm = SimpleNamespace(guild=None, channel=MagicMock(spec=nextcord.TextChannel))
+    dm = SimpleNamespace(guild=None, channel=granted)
     assert can_launch_research(message=as_message(fake=dm)) is False
+
+
+def test_can_launch_research_requires_the_bot_to_write_in_the_thread() -> None:
+    """A thread the bot may open but not post in would bill a run nobody ever sees."""
+    channel = _text_channel_granting(
+        view_channel=True, send_messages=True, create_public_threads=True, attach_files=True
+    )
+    message = SimpleNamespace(guild=SimpleNamespace(me=object()), channel=channel)
+
+    assert can_launch_research(message=as_message(fake=message)) is False
 
 
 async def test_resume_memory_reenqueues_jobs_and_sweeps_other_scopes(

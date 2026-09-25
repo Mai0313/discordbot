@@ -43,6 +43,7 @@ from discordbot.typings.models import RuntimeModelCatalog
 from discordbot.utils.timezone import database_now
 from discordbot.utils.reactions import update_reaction
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
+from discordbot.typings.research import RESEARCH_THREAD_PERMISSIONS
 from discordbot.typings.timeouts import THREAD_TITLE_TIMEOUT_SECONDS
 from discordbot.utils.llm_errors import extract_friendly_error
 from discordbot.cogs.research.agent import (
@@ -241,6 +242,14 @@ class ResearchCogs(commands.Cog):
             await interaction.response.send_message(
                 content="深度研究只能在伺服器的一般文字頻道開喔(私訊或討論串裡開不了 thread)",
                 ephemeral=True,
+            )
+            return
+        # Read for the bot's own member, whose token every later write uses, so a channel it cannot
+        # run in is refused before a title call and an anchor ping are spent on it.
+        permissions = interaction.channel.permissions_for(interaction.channel.guild.me)
+        if not permissions >= RESEARCH_THREAD_PERMISSIONS:
+            await interaction.response.send_message(
+                content="我在這個頻道的權限不夠,開不了研究串", ephemeral=True
             )
             return
         await interaction.response.defer(ephemeral=True)
@@ -497,6 +506,9 @@ class ResearchCogs(commands.Cog):
             try:
                 await status.edit(content=content, allowed_mentions=AllowedMentions.none())
                 return
+            except Forbidden:
+                # The thread's overwrites changed under the run; the id is the whole finding.
+                logfire.warn("research thread refused the status edit", thread_id=thread.id)
             except Exception as exc:
                 # Broad: any Discord failure is recoverable by the fallback send below.
                 logfire.warn(
@@ -507,6 +519,8 @@ class ResearchCogs(commands.Cog):
                 )
         try:
             await thread.send(content=content, allowed_mentions=AllowedMentions.none())
+        except Forbidden:
+            logfire.warn("research thread refused the terminal status", thread_id=thread.id)
         except Exception as exc:
             # Broad: callers record the terminal phase right after us and cannot handle a raise.
             logfire.warn(
@@ -545,6 +559,8 @@ class ResearchCogs(commands.Cog):
                 embed=embed,
                 allowed_mentions=_owner_allowed_mentions(owner_id=owner_id),
             )
+        except Forbidden:
+            logfire.warn("research thread refused the failure notice", thread_id=thread.id)
         except Exception as send_exc:
             # Broad: every caller runs its cleanup (phase write, slot release) right after us, so
             # this last user-facing step must never raise.
@@ -687,6 +703,9 @@ class ResearchCogs(commands.Cog):
         mentions = allowed_mentions if allowed_mentions is not None else AllowedMentions.none()
         try:
             return await thread.send(content=content, allowed_mentions=mentions)
+        except Forbidden:
+            logfire.warn("research thread refused a message", thread_id=thread.id)
+            return None
         except Exception as exc:
             # Broad: every caller treats a missing message as a degraded outcome, never a failure.
             logfire.warn(

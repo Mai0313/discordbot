@@ -12,7 +12,7 @@ last chunk, having spent the opening status message on the first.
 from typing import TYPE_CHECKING
 
 import logfire
-from nextcord import File, Message, AllowedMentions
+from nextcord import File, Message, Forbidden, AllowedMentions
 
 from discordbot.utils.media_delivery import MediaItem, MediaDeliveryPlanner, upload_limit_for
 from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT
@@ -173,6 +173,13 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
             else:
                 await status.edit(content=content, allowed_mentions=allowed_mentions)
             return
+        except Forbidden:
+            # The thread's overwrites changed under the run; the ids are the whole finding.
+            logfire.warn(
+                "research thread refused the report edit",
+                thread_id=thread.id,
+                chunk_index=chunk_index,
+            )
         except Exception as exc:
             # Broad: any Discord failure here is recoverable by the fallback send below.
             logfire.warn(
@@ -182,16 +189,23 @@ async def _place(  # noqa: PLR0913 -- target message plus its optional files / m
                 error_type=type(exc).__name__,
                 _exc_info=exc,
             )
-            # The failed edit already read each `fp` into its multipart body and `Message.edit`
-            # neither closes nor rewinds it, so the fallback below would post empty attachments.
-            # Rewinding is what nextcord's own retry loop does with a File it re-sends.
-            for file in files:
-                file.reset(seek=True)
+        # The failed edit already read each `fp` into its multipart body and `Message.edit`
+        # neither closes nor rewinds it, so the fallback below would post empty attachments.
+        # Rewinding is what nextcord's own retry loop does with a File it re-sends.
+        for file in files:
+            file.reset(seek=True)
     try:
         if files:
             await thread.send(content=content, files=files, allowed_mentions=allowed_mentions)
         else:
             await thread.send(content=content, allowed_mentions=allowed_mentions)
+    except Forbidden:
+        logfire.warn(
+            "research thread refused a report message",
+            thread_id=thread.id,
+            chunk_index=chunk_index,
+            is_last=is_last,
+        )
     except Exception as exc:
         # Broad on purpose: last resort of a best-effort delivery, so it must not abort the
         # caller's phase bookkeeping. Only the last chunk carries the file, ping and footer, so
