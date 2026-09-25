@@ -56,7 +56,7 @@ def _post(**overrides: object) -> FacebookConversation:
     fields.update(overrides)
     return FacebookConversation(
         chain=[FacebookOutput(**fields)],  # ty: ignore[invalid-argument-type]
-        reply_branches=[[comment] for comment in comments],  # ty: ignore[invalid-argument-type]
+        reply_branches=[[comment] for comment in comments],
         selected_comment_id=selected,  # ty: ignore[invalid-argument-type]
     )
 

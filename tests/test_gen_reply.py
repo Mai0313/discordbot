@@ -860,15 +860,13 @@ def _fake_grok_uploader(files: FakeXAIFiles | None = None) -> GrokFileUploader:
 def _cog(bot_user_id: int = 999) -> ReplyGeneratorCogs:
     """Builds a ReplyGeneratorCogs instance with a fake client."""
     cog = ReplyGeneratorCogs.__new__(ReplyGeneratorCogs)
-    cog.bot = SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot"))
+    cog.bot = as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=bot_user_id, name="bot")))
     cog.config = LLMConfig()
     cog.__dict__["openai_client"] = FakeClient()
     # `__new__` skips `__init__`, so the pipeline's usage record needs its recorder wired
     # here; the autouse `usage_log_isolated_dir` fixture keeps it off the live file.
     cog.usage_recorder = UsageRecorder()
-    toolkit = ReplyToolkit(
-        bot=cast("commands.Bot", cog.bot), openai_client=cog.openai_client, gemini_api_key=""
-    )
+    toolkit = ReplyToolkit(bot=cog.bot, openai_client=cog.openai_client, gemini_api_key="")
     toolkit.__dict__["gemini_client"] = FakeGeminiVideoClient()
     handler = toolkit.input_builder.attachment_handler
     if isinstance(handler, GeminiFileUploader):

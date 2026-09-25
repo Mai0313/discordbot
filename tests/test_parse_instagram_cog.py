@@ -49,7 +49,7 @@ def _post(**overrides: object) -> InstagramConversation:
     fields.update(overrides)
     return InstagramConversation(
         chain=[InstagramOutput(**fields)],  # ty: ignore[invalid-argument-type]
-        reply_branches=[[comment] for comment in comments],  # ty: ignore[invalid-argument-type]
+        reply_branches=[[comment] for comment in comments],
         selected_comment_id=selected,  # ty: ignore[invalid-argument-type]
     )
 
