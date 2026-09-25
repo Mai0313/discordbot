@@ -146,7 +146,7 @@ def _should_consolidate(scope: str, forced: bool = False) -> bool:
     return time.monotonic() - last_attempt >= MEMORY_CONSOLIDATION_COOLDOWN_SECONDS
 
 
-async def _consolidate_locked(
+async def _consolidate_locked(  # noqa: C901 -- every awaited step needs its own clear check before the next write
     scope: str, started_at: float, writer: MemoryWriterAI, identity: str
 ) -> None:
     """Fans one raw batch out over the scope's compartments, applying each one's deltas.
@@ -248,6 +248,8 @@ async def _consolidate_locked(
         raw_entries=raw_entries,
         today=today,
     )
+    if cleared_since(scope=scope, started_at=started_at):
+        return
     # Age every compartment, not just the ones this batch touched: a guild the user has
     # stopped visiting otherwise keeps its `recent` facts forever and hands them back on
     # their next visit. The ones that did consolidate were already swept inside the
