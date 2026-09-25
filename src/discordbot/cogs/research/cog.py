@@ -72,7 +72,7 @@ DINO_EMOJI = "<:dino:1517560319281594570>"
 
 # How a launch attempt ended. Both entry points branch on it, so it is a closed set rather than
 # a word each of them spells for itself.
-type StartOutcome = Literal["started", "exists", "unsupported", "error"]
+type StartOutcome = Literal["started", "exists", "unsupported", "forbidden", "error"]
 
 
 def _fallback_thread_name(*, brief: str) -> str:
@@ -195,6 +195,9 @@ class ResearchCogs(commands.Cog):
                 await message.reply(
                     content="深度研究只能在伺服器的一般文字頻道開(私訊或討論串裡開不了新的 thread)"
                 )
+        elif outcome == "forbidden":
+            with contextlib.suppress(Exception):
+                await message.reply(content="我在這個頻道的權限不夠,開不了研究串")
         elif outcome == "error":
             with contextlib.suppress(Exception):
                 await message.reply(content="開研究串失敗了,等等再試一次")
@@ -244,10 +247,21 @@ class ResearchCogs(commands.Cog):
         # Anchor the thread on a bot message so the same message-based create_thread path is reused.
         # The topic is user-supplied: restrict mentions to the requester so an `@everyone` / role
         # mention embedded in it cannot turn a research request into a mass ping.
-        anchor = await interaction.channel.send(
-            content=f"{interaction.user.mention} 要研究:{topic[:200]}",
-            allowed_mentions=_owner_allowed_mentions(owner_id=interaction.user.id),
-        )
+        try:
+            anchor = await interaction.channel.send(
+                content=f"{interaction.user.mention} 要研究:{topic[:200]}",
+                allowed_mentions=_owner_allowed_mentions(owner_id=interaction.user.id),
+            )
+        except Forbidden:
+            # The command reached a channel the bot's own identity may not post in; the server's
+            # overwrites decide that, so the type and the ids are the whole finding.
+            logfire.warn(
+                "deep research cannot post its anchor in this channel",
+                channel_id=interaction.channel.id,
+                owner_id=interaction.user.id,
+            )
+            await interaction.edit_original_message(content="我在這個頻道的權限不夠,開不了研究串")
+            return
         outcome, existing = await self._start_for(
             owner_id=interaction.user.id,
             owner_mention=interaction.user.mention,
@@ -260,6 +274,10 @@ class ResearchCogs(commands.Cog):
             with contextlib.suppress(Exception):
                 await anchor.delete()
             await interaction.edit_original_message(content=f"你已經有一個在進行了:<#{existing}>")
+        elif outcome == "forbidden":
+            with contextlib.suppress(Exception):
+                await anchor.delete()
+            await interaction.edit_original_message(content="我在這個頻道的權限不夠,開不了研究串")
         else:
             with contextlib.suppress(Exception):
                 await anchor.delete()
@@ -283,9 +301,19 @@ class ResearchCogs(commands.Cog):
             name = await self._generate_thread_name(brief=brief)
             try:
                 thread = await anchor.create_thread(name=name, auto_archive_duration=1440)
+            except Forbidden:
+                # Expected rather than diagnosable: the server's overwrites deny the bot threads
+                # here, so the ids say everything a traceback would.
+                logfire.warn(
+                    "deep research cannot open a thread in this channel",
+                    message_id=anchor.id,
+                    owner_id=owner_id,
+                    channel_id=anchor.channel.id,
+                )
+                return "forbidden", None
             except Exception as exc:
-                # Broad: create_thread can fail on permissions, an LLM-authored name Discord
-                # rejects, or an outage; all of them end the launch the same way.
+                # Broad: create_thread can fail on an LLM-authored name Discord rejects or an
+                # outage; all of them end the launch the same way.
                 logfire.error(
                     "failed to create research thread",
                     message_id=anchor.id,

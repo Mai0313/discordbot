@@ -5,14 +5,16 @@ import base64
 from typing import TYPE_CHECKING, cast
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nextcord import AllowedMentions
+from nextcord import TextChannel, AllowedMentions
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.research import cog as research_cog
 from discordbot.cogs.research import agent
 from discordbot.cogs.research import database as rdb
+from discordbot.utils.asyncio_locks import KeyedLockManager
 from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.markers import extract_inline_markers, scrub_markers_for_preview
 from discordbot.cogs.research.delivery import (
@@ -25,9 +27,13 @@ from discordbot.cogs.research.streaming import DISCORD_MESSAGE_LIMIT, ResearchPr
 from tests.helpers.casting import (
     as_client,
     as_message,
+    as_interaction,
+    make_forbidden,
+    make_server_error,
     make_media_hosting_config,
     as_interaction_event_stream,
 )
+from tests.helpers.discord_mocks import FakeUser, FakeInteraction, FakeDiscordMessage
 
 if TYPE_CHECKING:
     from nextcord import Thread
@@ -920,3 +926,148 @@ async def test_resume_sweep_still_resumes_when_the_switch_is_on(
     assert cog._active_threads == {40}
     # The sweep leaves the phase alone: the resumed run decides its own terminal phase.
     assert [session.thread_id for session in await rdb.list_resumable()] == [40]
+
+
+# ----- permission refusals ------------------------------------------------------------------
+
+
+class _ResearchInteraction(FakeInteraction):
+    """A `/deep_research` invocation from a guild text channel whose posts the test decides."""
+
+    def __init__(self, *, channel: MagicMock) -> None:
+        """Initializes the shared fake plus the channel the command was run in."""
+        super().__init__()
+        self.channel = channel
+
+
+class _Anchor(FakeDiscordMessage):
+    """A message the research thread would hang off, refusing the thread with `error`."""
+
+    def __init__(self, *, error: Exception, channel: MagicMock) -> None:
+        """Initializes the identity `_start_for` reads on top of the shared message fake."""
+        super().__init__()
+        self.id = 10
+        self.guild = SimpleNamespace(id=1)
+        self.channel = channel
+        self.author = FakeUser(user_id=300)
+        self.error = error
+
+    async def create_thread(self, **_kwargs: object) -> None:
+        """Fails the way Discord fails the thread."""
+        raise self.error
+
+
+def _text_channel() -> MagicMock:
+    """A channel that passes the `TextChannel` gate the cog checks before anything else."""
+    channel = MagicMock(spec=TextChannel)
+    channel.id = 20
+    return channel
+
+
+def _launching_cog(*, monkeypatch: pytest.MonkeyPatch) -> research_cog.ResearchCogs:
+    """A cog that gets as far as `create_thread` without a title model behind it."""
+    cog = _research_cog(enabled=True)
+    cog._owner_locks = KeyedLockManager()
+
+    async def _title(*, brief: str) -> str:
+        del brief
+        return "research"
+
+    monkeypatch.setattr(target=cog, name="_generate_thread_name", value=_title)
+    return cog
+
+
+def _recorded(
+    *, monkeypatch: pytest.MonkeyPatch, level: str
+) -> list[tuple[str, dict[str, object]]]:
+    """Captures what the cog reports at one level, the way the rest of the suite reads logfire."""
+    records: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        target=research_cog.logfire,
+        name=level,
+        value=lambda message, **fields: records.append((message, fields)),
+    )
+    return records
+
+
+async def test_deep_research_answers_when_the_bot_cannot_post_in_the_channel(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A slash command reaches a channel the bot may not post in, so the answer rides the token."""
+    channel = _text_channel()
+    channel.send = AsyncMock(side_effect=make_forbidden(message="Missing Access"))
+    interaction = _ResearchInteraction(channel=channel)
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+
+    await _launching_cog(monkeypatch=monkeypatch).deep_research(
+        as_interaction(fake=interaction), topic="topic"
+    )
+
+    assert interaction.response.deferred is True
+    assert [edit.get("content") for edit in interaction.edits] == [
+        "我在這個頻道的權限不夠,開不了研究串"
+    ]
+    assert warns == [
+        ("deep research cannot post its anchor in this channel", {"channel_id": 20, "owner_id": 1})
+    ], "a permission the bot cannot earn needs the ids and no traceback"
+
+
+async def test_deep_research_withdraws_its_anchor_when_the_thread_is_refused(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The anchor posted but the thread did not, so the requester is told why, not to retry."""
+    channel = _text_channel()
+    anchor = _Anchor(error=make_forbidden(message="Missing Permissions"), channel=channel)
+    channel.send = AsyncMock(return_value=anchor)
+    interaction = _ResearchInteraction(channel=channel)
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+
+    await _launching_cog(monkeypatch=monkeypatch).deep_research(
+        as_interaction(fake=interaction), topic="topic"
+    )
+
+    assert anchor.deleted is True
+    assert [edit.get("content") for edit in interaction.edits] == [
+        "我在這個頻道的權限不夠,開不了研究串"
+    ]
+    assert [fields for _, fields in warns] == [{"message_id": 10, "owner_id": 1, "channel_id": 20}]
+
+
+async def test_a_marker_launch_says_so_when_the_thread_is_refused(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The `<deep-research>` entry shares `_start_for`, so it answers the refusal the same way."""
+    anchor = _Anchor(error=make_forbidden(message="Missing Permissions"), channel=_text_channel())
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+
+    await _launching_cog(monkeypatch=monkeypatch).launch(
+        message=as_message(fake=anchor), brief="b"
+    )
+
+    assert [reply.get("content") for reply in anchor.replies] == [
+        "我在這個頻道的權限不夠,開不了研究串"
+    ]
+    assert warns == [
+        (
+            "deep research cannot open a thread in this channel",
+            {"message_id": 10, "owner_id": 300, "channel_id": 20},
+        )
+    ]
+
+
+async def test_a_thread_failure_that_is_not_a_refusal_keeps_its_traceback(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The carve-out is for `Forbidden` alone; a 5xx is still something to look at."""
+    anchor = _Anchor(error=make_server_error(), channel=_text_channel())
+    errors = _recorded(monkeypatch=monkeypatch, level="error")
+
+    await _launching_cog(monkeypatch=monkeypatch).launch(
+        message=as_message(fake=anchor), brief="b"
+    )
+
+    assert [reply.get("content") for reply in anchor.replies] == ["開研究串失敗了,等等再試一次"]
+    assert len(errors) == 1
+    assert errors[0][1].get("_exc_info") is not None, (
+        "a transport failure still needs its traceback"
+    )
