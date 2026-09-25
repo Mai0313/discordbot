@@ -2,10 +2,10 @@
 
 A remote http(s) URL in a media part looks like it works and mostly does, which is why this
 is a lint rather than a comment: the LiteLLM proxy rewrites any http-bearing `file_id` /
-`file_url` into base64 `inline_data`, charging the media against the request body and
-swallowing a failed fetch (`except Exception: pass`), while the native Interactions answer
-path has no proxy at all and only resolves Files API uris and YouTube links. Uploading via
-`gen_reply/files_api.py` is the one shape both accept.
+`file_url` other than a Gemini Files API uri into base64 `inline_data`, charging the media
+against the request body and swallowing a failed fetch (`except Exception: pass`), while the
+native Interactions answer path has no proxy at all and only resolves Files API uris and
+YouTube links. Uploading via `gen_reply/files_api.py` is the one shape both accept.
 
 Data URIs are exempt: the bytes are already in hand, so nothing is fetched.
 """
