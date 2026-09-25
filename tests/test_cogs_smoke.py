@@ -3206,8 +3206,8 @@ def test_setup_functions_register_cogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
     Swept off the same directory scan `_load_cogs_sync` performs rather than a hand-written
     list, which is what left half the cogs uncovered before: `setup` is the one function in
-    a cog module the loader calls by name, and an `async def setup` here returns a coroutine
-    nothing awaits, breaking the first command sync with nothing raised.
+    a cog module the loader calls by name, and an `async def setup` never reaches `add_cog`
+    here, while at boot it aborts `DiscordBot()` with `ExtensionFailed`.
     """
     added: list[tuple[commands.Cog, bool | None]] = []
 

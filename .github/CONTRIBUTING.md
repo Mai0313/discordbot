@@ -86,7 +86,7 @@ def setup(bot: commands.Bot) -> None:
     bot.add_cog(MyCog(bot), override=True)
 ```
 
-`async def setup` is not safe here because nextcord schedules it without awaiting it, which can leave cogs unregistered before the first slash-command sync.
+`async def setup` is not safe here: cogs load inside `DiscordBot()` before any event loop runs, so nextcord's attempt to schedule it raises and boot aborts with `ExtensionFailed`.
 
 - Slash commands need `name_localizations` and `description_localizations` for `en-US`, `zh-TW`, and `ja` where applicable.
 - A cog directory holds one cog's code. Do not import anything from a peer cog's directory: use the bot instance, `typings/`, `utils/`, or promote the shared part into `services/`. `tests/test_package_layering.py` enforces this.
