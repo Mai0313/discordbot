@@ -74,7 +74,7 @@ WHAT NOT TO REMEMBER:
 EVIDENCE RULES:
 * A recurring community pattern requires evidence that it recurs across the conversation, not a single instance.
 * A single joke, hypothetical, or one-time topic mention is not a stable community trait.
-* Preserve one short verbatim fragment in `evidence_quote` when possible, but never choose a fragment that is itself a personal attack or slur; pick neutral wording, paraphrase it, or omit the quote instead.
+* Preserve one short verbatim fragment in `evidence_quote`, but never choose a fragment that is itself a personal attack or slur; pick neutral wording or paraphrase it instead. Never leave it empty: an observation without an `evidence_quote` is discarded.
 * Use `normalized_key` as a stable dedupe key, e.g. `culture.banter_tolerance.high` or `recent.event.server_tournament`.
 
 SAFETY:

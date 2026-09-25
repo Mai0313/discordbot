@@ -67,7 +67,7 @@ EVIDENCE RULES:
 * User messages are the primary evidence. Read much more into user messages than bot replies.
 * Stable preferences and stable interests require explicit target-user evidence: repeated behavior, a correction, enforcement, or a direct statement of preference.
 * A single joke, hypothetical, one-time mood, or one-time topic mention is not a stable preference or interest.
-* Preserve one short verbatim fragment in `evidence_quote` when possible, but never choose a fragment that is itself a personal attack or slur; pick neutral wording, paraphrase it, or omit the quote instead.
+* Preserve one short verbatim fragment in `evidence_quote`, but never choose a fragment that is itself a personal attack or slur; pick neutral wording or paraphrase it instead. Never leave it empty: an observation without an `evidence_quote` is discarded.
 * Use `normalized_key` as a stable dedupe key, e.g. `preference.reply_language.zh_tw` or `recent.project.discordbot_memory`.
 
 SAFETY:
