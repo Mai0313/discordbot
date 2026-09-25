@@ -885,8 +885,7 @@ def _is_target_user_message(message: EasyInputMessageParam, target_user_id: int)
 def _omission_message(omitted_count: int) -> EasyInputMessageParam:
     """Builds a neutral marker for omitted non-target history."""
     return EasyInputMessageParam(
-        role="system",
-        content=f"[{omitted_count} non-target history message(s) omitted from memory extraction]",
+        role="system", content=f"[{omitted_count} non-target history message(s) omitted]"
     )
 
 

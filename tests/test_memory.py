@@ -974,7 +974,7 @@ def test_target_centered_memory_messages_omits_distant_non_target_history() -> N
     assert "目前問題" in rendered
     assert "無關開場" not in rendered
     assert "遠端無關" not in rendered
-    assert "omitted from memory extraction" in rendered
+    assert "non-target history message(s) omitted" in rendered
 
 
 def test_target_centered_memory_messages_uses_first_author_prefix() -> None:
