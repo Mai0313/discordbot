@@ -9,6 +9,7 @@ from pathlib import Path
 from datetime import UTC, datetime
 import contextlib
 from collections import Counter
+from collections.abc import Callable, Awaitable
 
 import pytest
 from nextcord import Embed, Locale
@@ -2120,6 +2121,54 @@ async def test_a_source_only_batch_still_updates_the_tone_note(
             assert "喜歡有禮貌的回覆" not in text
 
 
+def _stage_tone_observation() -> None:
+    """Stages one observation that carries tone evidence, so the tone call actually runs."""
+    _stage_raw_observation(
+        summary="喜歡有禮貌的回覆",
+        key="preference.tone",
+        sharing="global",
+        source="guild 222",
+        category="stable_preference",
+        evidence_kind="explicit_preference",
+    )
+
+
+def _clearing_tone_parse(fact_text: str) -> Callable[..., Awaitable[SimpleNamespace]]:
+    """Builds a parse double that stamps a clear while the tone call is in flight."""
+
+    async def parse(**kwargs: object) -> SimpleNamespace:
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        first = cast("dict[str, object]", inputs[0])
+        if "<tone_evidence>" in str(first["content"]):
+            mark_cleared(scope=USER_SCOPE)
+            return _parsed(output=_no_change(tone="## 語氣偏好\n* 偏好禮貌"))
+        return _parsed(output=_consolidated(summary=fact_text, text=fact_text))
+
+    return parse
+
+
+async def test_a_clear_during_the_tone_call_keeps_the_batch_out_of_detail(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tone call is the last await before the batch retires into `detail.md`.
+
+    A clear never takes `scope_lock`, so one landing while that call is in flight must still
+    stop the tail: re-creating `detail.md` from the batch would bring back the evidence the
+    user just erased, and the next consolidation would read it again (#714).
+    """
+    monkeypatch.setattr("discordbot.services.memory.consolidation.RAW_CONSOLIDATION_THRESHOLD", 1)
+    _stage_tone_observation()
+    writer, fake_client = _writer()
+    monkeypatch.setattr(fake_client.responses, "parse", _clearing_tone_parse(fact_text="全域事實"))
+
+    await consolidation.consolidate_if_needed(scope=USER_SCOPE, writer=writer, identity=IDENTITY)
+
+    assert not (memory_isolated_dir / str(USER_ID) / "detail.md").exists()
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    assert read_tone(scope=USER_SCOPE) == ""
+
+
 async def test_pipeline_aborts_write_after_clear(
     memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2545,6 +2594,26 @@ async def test_regenerate_scope_memory_aborts_write_after_clear(
 
     assert report.result == "failed"
     assert _memory_text() == ""
+
+
+async def test_regenerate_scope_memory_stops_when_a_clear_lands_during_the_tone_call(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The rebuild's tone call is its last await before the raw batch retires into
+    `detail.md`, so a clear landing there must stop that tail too (#714).
+    """
+    append_detail(scope=USER_SCOPE, text=DETAIL_EVIDENCE)
+    _stage_tone_observation()
+    writer, fake_client = _writer()
+    monkeypatch.setattr(fake_client.responses, "parse", _clearing_tone_parse(fact_text="重建事實"))
+
+    report = await regeneration.regenerate_scope_memory(
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
+    )
+
+    assert report.result == "failed"
+    assert count_raw_entries(scope=USER_SCOPE) == 1
+    assert "喜歡有禮貌的回覆" not in read_detail_tail(scope=USER_SCOPE, max_chars=10_000)
 
 
 class RegenResponseStub(ResponseStub):

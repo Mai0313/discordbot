@@ -146,7 +146,7 @@ def _finish_memory_regeneration(scope: str, task: asyncio.Task[RegenerationRepor
         )
 
 
-async def regenerate_scope_memory(
+async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way a rebuild stops short, a clear included
     scope: str, writer: MemoryWriterAI, identity: str
 ) -> RegenerationReport:
     """Rebuilds every compartment from cold-tier evidence alone.
@@ -256,6 +256,8 @@ async def regenerate_scope_memory(
             logfire.warn(
                 "Memory regeneration timed out", scope=scope, compartments=len(compartments)
             )
+            return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
+        if cleared_since(scope=scope, started_at=started_at):
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
         report_injection_size(scope=scope, flavor=flavor)
         if raw_entries:
