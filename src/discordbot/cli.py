@@ -46,10 +46,9 @@ class DiscordBot(commands.Bot):
         Path("./data/memories").mkdir(parents=True, exist_ok=True)
         # Cogs are loaded synchronously so application_commands is populated
         # before the gateway connects. Each cog's setup() must also be sync:
-        # load_extension fires async setups via asyncio.create_task() without
-        # awaiting, so an async setup would still be pending when on_ready
-        # triggers sync_all_application_commands(), making the first sync see
-        # zero commands and register nothing with Discord.
+        # nextcord hands an async setup to asyncio.create_task(), which raises
+        # here because no event loop is running yet, so load_extensions aborts
+        # boot with ExtensionFailed.
         self._load_cogs_sync()
         self._initial_setup_done = False
         # Process-local per-user cooldown for the flat message reward, so it
@@ -333,8 +332,8 @@ class DiscordBot(commands.Bot):
         reaches a prefix command and no `on_command_*` handler can fire. Do not add one without
         also passing a prefix.
 
-        nextcord's own default here prints the traceback to `sys.stderr`, while `_TeeStream`
-        tees only `sys.stdout` into `./data/logs`, so without this override a failing slash
+        nextcord's own default here prints the traceback to `sys.stderr`, while `./data/logs`
+        receives only logfire's console output (`_TeeStream`), so without this override a failing slash
         command leaves no line in the file this project is debugged from. Logging only,
         deliberately — a cog that wants to tell the user something answers its own interaction,
         and an unanswered one already shows Discord's own failure notice.

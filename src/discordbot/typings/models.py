@@ -200,10 +200,12 @@ class RuntimeModelCatalog(BaseModel):
         # set covers every value `EffortGrade` can emit — including across a provider change,
         # where the effort vocabulary itself differs and a value can stop existing.
         #
-        # Through the proxy that rejection does not surface as an error. LiteLLM forwards the
-        # level for the model itself to refuse and then answers from the fallback deployment, so
-        # the caller sees an HTTP 200 whose `model` field names a different model. A status code
-        # proves nothing here; only the response's own `model` does.
+        # Through the proxy that rejection depends on the call shape. On a non-streaming call
+        # LiteLLM forwards the level for the model itself to refuse and then answers from the
+        # fallback deployment, so the caller sees an HTTP 200 whose `model` field names a
+        # different model; a status code proves nothing there, only the response's own `model`
+        # does. This tier's own proxy path is the streaming answer turn, which LiteLLM gives no
+        # fallback, so there the refusal is an error.
         #
         # `gemini-3.8-flash` accepts low / medium / high and NOT `minimal` (Google's thinking
         # table, read 2026-09-02). openrouter does not list that snapshot, so this is the only
