@@ -11,15 +11,20 @@ import logfire
 from nextcord import Message, TextChannel
 from nextcord.ext import commands
 
+from discordbot.typings.research import RESEARCH_THREAD_PERMISSIONS
+
 
 def can_launch_research(*, message: Message) -> bool:
     """Whether a research thread can be opened from this message.
 
-    Only a guild text channel can host a nested thread; in a DM or inside an existing thread the
-    `<deep-research>` marker is suppressed so the answer model never promises a run that cannot
-    actually start (the launch would otherwise return the no-thread path and contradict itself).
+    Only a guild text channel can host a nested thread, and only when its overwrites let the bot
+    open one and write into it; anywhere else the `<deep-research>` marker is suppressed so the
+    answer model never promises a run that cannot actually start (the launch would otherwise be
+    refused right under the reply that promised it).
     """
-    return message.guild is not None and isinstance(message.channel, TextChannel)
+    if message.guild is None or not isinstance(message.channel, TextChannel):
+        return False
+    return message.channel.permissions_for(message.guild.me) >= RESEARCH_THREAD_PERMISSIONS
 
 
 def in_active_research_thread(*, bot: commands.Bot, channel_id: int) -> bool:

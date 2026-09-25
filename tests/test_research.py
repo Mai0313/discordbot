@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from nextcord import TextChannel, AllowedMentions
+from nextcord import File, Permissions, TextChannel, AllowedMentions
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.cogs.research import cog as research_cog
@@ -957,10 +957,12 @@ class _Anchor(FakeDiscordMessage):
         raise self.error
 
 
-def _text_channel() -> MagicMock:
-    """A channel that passes the `TextChannel` gate the cog checks before anything else."""
+def _text_channel(*, permissions: Permissions | None = None) -> MagicMock:
+    """A guild text channel resolving `permissions` (default: all) for the bot's own member."""
     channel = MagicMock(spec=TextChannel)
     channel.id = 20
+    channel.guild = SimpleNamespace(me=object())
+    channel.permissions_for.return_value = permissions or Permissions.all()
     return channel
 
 
@@ -1071,3 +1073,126 @@ async def test_a_thread_failure_that_is_not_a_refusal_keeps_its_traceback(
     assert errors[0][1].get("_exc_info") is not None, (
         "a transport failure still needs its traceback"
     )
+
+
+async def test_deep_research_refuses_up_front_where_it_cannot_open_a_thread(
+    research_isolated_db: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The channel already says so, so nothing is posted, pinged or titled before the refusal."""
+    channel = _text_channel(
+        permissions=Permissions(
+            view_channel=True, send_messages=True, send_messages_in_threads=True, attach_files=True
+        )
+    )
+    channel.send = AsyncMock()
+    interaction = _ResearchInteraction(channel=channel)
+
+    await _launching_cog(monkeypatch=monkeypatch).deep_research(
+        as_interaction(fake=interaction), topic="topic"
+    )
+
+    assert interaction.response.deferred is False
+    assert interaction.response.sent == [
+        {"content": "我在這個頻道的權限不夠,開不了研究串", "ephemeral": True}
+    ]
+    channel.send.assert_not_called()
+    channel.permissions_for.assert_called_once_with(channel.guild.me)
+
+
+class _RefusingThread(_FakeThread):
+    """A research thread whose overwrites changed under the run, so every send is refused."""
+
+    async def send(self, **kwargs: object) -> None:
+        """Refuses the way Discord refuses a thread the bot may no longer write in."""
+        del kwargs
+        raise make_forbidden(message="Missing Permissions")
+
+
+async def test_a_refused_thread_write_is_reported_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A permission that changed mid-run is expected, so it is a warn carrying only the id."""
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+
+    sent = await _research_cog(enabled=True)._safe_send(
+        thread=cast("Thread", _RefusingThread()), content="-# Researching..."
+    )
+
+    assert sent is None
+    assert warns == [("research thread refused a message", {"thread_id": 1})]
+
+
+async def test_a_refused_report_is_a_warn_even_on_its_last_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The last chunk logs `error` for a real failure, but a refusal is the server's setting."""
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    errors = _recorded(monkeypatch=monkeypatch, level="error")
+
+    await deliver_report(
+        thread=cast("Thread", _RefusingThread()),
+        status=None,
+        owner_mention="<@1>",
+        result=_completed_result(report_text="report"),
+        footer="-# footer",
+        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
+        media_delivery=_disabled_delivery(),
+    )
+
+    assert errors == []
+    assert warns == [
+        (
+            "research thread refused a report message",
+            {"thread_id": 1, "chunk_index": 0, "is_last": True},
+        )
+    ]
+
+
+class _RefusingStatus:
+    """An opening status message whose edit Discord refuses after reading the upload body."""
+
+    async def edit(self, *, files: list[File] | None = None, **kwargs: object) -> None:
+        """Consumes every file the way a real multipart edit does, then refuses."""
+        del kwargs
+        for file in files or []:
+            file.fp.read()
+        raise make_forbidden(message="Missing Permissions")
+
+
+class _ReadingThread:
+    """A thread that records what each attached file actually carried when it was sent."""
+
+    id = 1
+
+    def __init__(self) -> None:
+        """Initializes the guild upload limit and the bodies read off each send's files."""
+        self.guild = SimpleNamespace(filesize_limit=10 * 1024 * 1024)
+        self.bodies: list[bytes] = []
+
+    async def send(self, *, files: list[File] | None = None, **kwargs: object) -> None:
+        """Reads every attached file, as the upload would."""
+        del kwargs
+        self.bodies.extend(file.fp.read() for file in files or [])
+
+
+async def test_a_refused_status_edit_still_hands_the_fallback_a_full_report_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refused edit already read the file, so the fallback send must get it rewound."""
+    warns = _recorded(monkeypatch=monkeypatch, level="warn")
+    thread = _ReadingThread()
+
+    await deliver_report(
+        thread=cast("Thread", thread),
+        status=as_message(fake=_RefusingStatus()),
+        owner_mention="<@1>",
+        result=_completed_result(report_text="the whole report"),
+        footer="-# footer",
+        allowed_mentions=AllowedMentions(everyone=False, roles=False, users=[]),
+        media_delivery=_disabled_delivery(),
+    )
+
+    assert thread.bodies == [b"the whole report"]
+    assert warns == [
+        ("research thread refused the report edit", {"thread_id": 1, "chunk_index": 0})
+    ]
