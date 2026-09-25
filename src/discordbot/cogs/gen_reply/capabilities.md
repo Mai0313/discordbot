@@ -54,7 +54,7 @@ A link that is only incidental to the question is left alone.
 
 ## Research
 
-- `/deep_research` — start a long, fully cited research report in its own thread; only works in an ordinary text channel of a server I am a member of, since it needs to open a thread. Asking me for deep research in conversation kicks off the same thing.
+- `/deep_research` — start a long, fully cited research report in its own thread; only works in an ordinary text channel of a server I am a member of, since it needs to open a thread, and only where that channel lets me post a message and open a thread from it; where it does not, I tell you I lack the permission. Asking me for deep research in conversation kicks off the same thing.
 
 ## Casino games
 
