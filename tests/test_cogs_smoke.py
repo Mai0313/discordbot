@@ -227,13 +227,11 @@ class ThreadsDownloaderStub:
         results: list[ThreadsOutput] | BaseException,
         exit_error: Exception | None = None,
         enter_delay_seconds: float = 0.0,
-        refused_images: frozenset[str] = frozenset(),
     ) -> None:
-        """Stores parsed results, the failures, and how long each parse blocks on entry."""
+        """Stores parsed results, both failures, and how long each parse blocks on entry."""
         self.results = results
         self.exit_error = exit_error
         self.enter_delay_seconds = enter_delay_seconds
-        self.refused_images = refused_images
         self.parsed: list[ParseResultStub] = []
         self.output_folders: list[str] = []
 
@@ -247,14 +245,6 @@ class ThreadsDownloaderStub:
         )
         self.parsed.append(result)
         return result
-
-    def download_media(self, url: str, filename: str) -> Path:
-        """Writes a stand-in image into the latest scratch dir, or refuses a configured URL."""
-        if url in self.refused_images:
-            raise LinkRetryableError(f"the CDN refused {url}")
-        path = Path(self.output_folders[-1]) / filename
-        path.write_bytes(data=f"bytes of {url}".encode())
-        return path
 
 
 def _wire_threads(*, cog: ThreadsCogs, downloader: ThreadsDownloaderStub) -> ThreadsDownloaderStub:
@@ -667,175 +657,6 @@ async def test_threads_cog_takes_the_scratch_dir_of_a_walk_it_gave_up_on(
     assert wrote is not None
     assert not await asyncio.to_thread(wrote.exists)
     assert not await asyncio.to_thread(scratch.exists)
-
-
-def _threads_link_message(*, filesize_limit: int = 25 * 1024 * 1024) -> FakeDiscordMessage:
-    """A user's message carrying one Threads link, in a guild with the given upload limit."""
-    message = FakeDiscordMessage()
-    message.__dict__["author"] = FakeUser(bot=False)
-    message.__dict__["content"] = "https://www.threads.net/@alice/post/abc"
-    message.__dict__["guild"] = SimpleNamespace(filesize_limit=filesize_limit)
-    return message
-
-
-async def test_threads_cog_uploads_the_images_its_card_shows() -> None:
-    """Every image on the card rides as an upload, the linked post's own first.
-
-    Discord probes a linked embed image once, as the message is sent, and keeps a failed probe as
-    a 0x0 image for good: the card went out text-only while the same CDN URL loaded a moment
-    later (measured 2026-09-26). An upload leaves no probe to miss.
-    """
-    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    parent = _thread_output(
-        text="parent", author_name="parent", image_urls=["https://cdn.test/parent.jpg"]
-    )
-    target = _thread_output(
-        image_urls=["https://cdn.test/a.jpg?stp=dst-jpg", "https://cdn.test/b.webp"]
-    )
-    downloader = _wire_threads(cog=cog, downloader=ThreadsDownloaderStub(results=[parent, target]))
-    message = _threads_link_message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
-    delivered = expansion_payload(message=message)
-    assert [embed.image.url for embed in delivered["embeds"]] == [
-        "attachment://threads_image_2.jpg",
-        "attachment://threads_image_0.jpg",
-        "attachment://threads_image_1.webp",
-    ]
-    assert [file.filename for file in delivered["files"]] == [
-        "threads_image_0.jpg",
-        "threads_image_1.webp",
-        "threads_image_2.jpg",
-    ]
-    # Read into memory before the build returned, so their scratch dir is already gone.
-    assert not await asyncio.to_thread(Path(downloader.output_folders[-1]).exists)
-
-
-async def test_threads_cog_links_an_image_it_could_not_download() -> None:
-    """An image the CDN refuses stays linked; it costs neither the card nor the other images."""
-    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    target = _thread_output(image_urls=["https://cdn.test/a.jpg", "https://cdn.test/b.jpg"])
-    _wire_threads(
-        cog=cog,
-        downloader=ThreadsDownloaderStub(
-            results=[target], refused_images=frozenset({"https://cdn.test/a.jpg"})
-        ),
-    )
-    message = _threads_link_message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
-    delivered = expansion_payload(message=message)
-    assert [embed.image.url for embed in delivered["embeds"]] == [
-        "https://cdn.test/a.jpg",
-        "attachment://threads_image_1.jpg",
-    ]
-    assert [file.filename for file in delivered["files"]] == ["threads_image_1.jpg"]
-
-
-async def test_threads_cog_keeps_images_linked_where_it_cannot_attach_files() -> None:
-    """A channel that denies Attach Files still gets the card, its images linked as before.
-
-    Uploading there would 403 the whole edit, so nothing is downloaded for an upload that
-    cannot happen, and the images ride as the CDN URLs every card used before.
-    """
-    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    downloader = _wire_threads(
-        cog=cog,
-        downloader=ThreadsDownloaderStub(
-            results=[_thread_output(image_urls=["https://cdn.test/a.jpg"])]
-        ),
-    )
-    message = _threads_link_message()
-    message.__dict__["guild"] = SimpleNamespace(
-        filesize_limit=25 * 1024 * 1024, me=SimpleNamespace(id=999)
-    )
-    message.__dict__["channel"] = SimpleNamespace(
-        id=2, permissions_for=lambda member: SimpleNamespace(attach_files=False)
-    )
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
-    delivered = expansion_payload(message=message)
-    assert [embed.image.url for embed in delivered["embeds"]] == ["https://cdn.test/a.jpg"]
-    assert "files" not in delivered
-    assert len(downloader.output_folders) == 1  # the walk's scratch dir, and no image one
-
-
-async def test_threads_cog_images_only_take_what_the_video_left(tmp_path: Path) -> None:
-    """An image never costs the card its video, nor pushes it past the real upload ceiling.
-
-    Planned together, the combined peel would drop the video (the largest item) to make room for
-    two tiny images and refuse the whole post. Planned after it, the images get only what is left
-    under the 20 MiB non-Nitro base, which a 24 MiB clip has already spent in a guild nextcord
-    reports at 25 MiB, so they stay on their CDN URLs.
-    """
-    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(config=make_media_hosting_config(enabled=False))
-    )
-    video_file = tmp_path / "threads_abc_0.mp4"
-    with video_file.open(mode="wb") as handle:
-        handle.truncate(24 * 1024 * 1024 - 16)
-    _wire_threads(
-        cog=cog,
-        downloader=ThreadsDownloaderStub(
-            results=[
-                _thread_output(
-                    video_paths=[video_file],
-                    image_urls=["https://cdn.test/a.jpg", "https://cdn.test/b.jpg"],
-                )
-            ]
-        ),
-    )
-    message = _threads_link_message()
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
-    delivered = expansion_payload(message=message)
-    assert [file.filename for file in delivered["files"]] == ["threads_abc_0.mp4"]
-    assert [embed.image.url for embed in delivered["embeds"]] == [
-        "https://cdn.test/a.jpg",
-        "https://cdn.test/b.jpg",
-    ]
-
-
-async def test_threads_cog_points_an_image_too_big_to_attach_at_its_hosted_copy(
-    tmp_path: Path,
-) -> None:
-    """A hosted image belongs in its embed; only a hosted clip is linked under the card."""
-    cog = ThreadsCogs(bot=as_bot(fake=SimpleNamespace(user=SimpleNamespace(id=999))))
-    serve_dir = tmp_path / "serve"
-    serve_dir.mkdir()
-    cog.media_delivery = MediaDeliveryPlanner(
-        media_hosting=MediaHostingService(
-            config=make_media_hosting_config(
-                enabled=True, base_url="https://media.test", serve_dir=str(serve_dir)
-            )
-        )
-    )
-    _wire_threads(
-        cog=cog,
-        downloader=ThreadsDownloaderStub(
-            results=[_thread_output(image_urls=["https://cdn.test/a.jpg"])]
-        ),
-    )
-    message = _threads_link_message(filesize_limit=10)
-
-    await cog.on_message(message=as_message(fake=message))
-
-    assert message.reactions[-1] == "<:greencheck:1517565102424068226>"
-    delivered = expansion_payload(message=message)
-    image_url = cast("str", delivered["embeds"][0].image.url)
-    assert image_url.startswith("https://media.test/")
-    assert image_url.endswith(".jpg")
-    assert delivered["content"] == ""
-    assert "files" not in delivered
 
 
 async def test_download_video_gives_up_on_a_stalling_host(monkeypatch: pytest.MonkeyPatch) -> None:

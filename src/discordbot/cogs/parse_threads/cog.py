@@ -1,8 +1,8 @@
 """Expands a Threads post URL into Discord embeds and media files.
 
 `utils/expansion_cog.py` owns everything around the card. What is here is the card, which on this
-platform is a whole conversation squeezed into Discord's ten embed slots, plus the images it shows
-and the target's video, downloaded and attached rather than linked.
+platform is a whole conversation squeezed into Discord's ten embed slots, plus the target's video
+downloaded and attached.
 
 `/clean_threads_url` is the cog's one slash command and takes none of that path: it resolves a
 share link to the post's own URL, reads no post and downloads nothing.
@@ -10,9 +10,7 @@ share link to the post's own URL, reads no post and downloads nothing.
 
 from typing import TYPE_CHECKING
 import asyncio
-from pathlib import Path
 import contextlib
-from urllib.parse import urlparse
 
 import logfire
 import nextcord
@@ -20,17 +18,12 @@ from nextcord import Color, Embed, Locale, Message, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.commands import INSTALL_CONTEXTS, INTERACTION_CONTEXTS
-from discordbot.typings.timeouts import (
-    THREADS_EXPAND_TIMEOUT_SECONDS,
-    THREADS_IMAGE_FETCH_TIMEOUT_SECONDS,
-)
+from discordbot.typings.timeouts import THREADS_EXPAND_TIMEOUT_SECONDS
 from discordbot.utils.scratch_dir import scratch_directory
 from discordbot.utils.expansion_cog import ExpansionCog, ExpansionDelivery
-from discordbot.utils.discord_embeds import utf16_length, target_allows_file_uploads
+from discordbot.utils.discord_embeds import utf16_length
 from discordbot.utils.media_delivery import (
     MEDIA_ENVELOPE_MARGIN,
-    DISCORD_ATTACHMENT_LIMIT,
-    DEFAULT_NON_NITRO_UPLOAD_LIMIT,
     MediaItem,
     upload_limit_for,
     build_media_delivery_planner,
@@ -65,8 +58,6 @@ _EMBED_TOTAL_LENGTH_LIMIT = 6000
 # every slot is spent. Sixty-four UTF-16 units is well past the longest pair of notes (emoji count
 # double).
 _REMAINDER_RESERVE = 64
-
-_IMAGE_SUFFIXES = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif"})
 
 
 def _embed_text_length(embed: Embed) -> int:
@@ -109,12 +100,6 @@ def _allocate_embed_slots(
     return slots
 
 
-def _image_filename(*, index: int, image_url: str) -> str:
-    """Names an uploaded image after the extension its CDN path carries, `.jpg` when it has none."""
-    suffix = Path(urlparse(image_url).path).suffix.lower()
-    return f"threads_image_{index}{suffix if suffix in _IMAGE_SUFFIXES else '.jpg'}"
-
-
 def _remainder_notes(*, omitted_posts: int, omitted_images: int) -> list[str]:
     """States what the ten embed slots could not carry.
 
@@ -136,8 +121,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
     Attributes:
         downloader_factory: Builds the per-invocation downloader, one per scratch directory; the
             seam a test replaces to keep an expansion off the network.
-        media_delivery: Planner deciding whether each downloaded video or image is attached,
-            hosted or dropped.
+        media_delivery: Planner deciding whether a downloaded video is attached, hosted or dropped.
     """
 
     SOURCE = "threads"
@@ -158,7 +142,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
     async def read(
         self, *, message: Message, url: str, stack: contextlib.AsyncExitStack
     ) -> ThreadsConversation:
-        """Walks the conversation under a wall-clock bound, downloading the target's video.
+        """Walks the conversation under a wall-clock bound, downloading the target's media.
 
         A private directory per invocation, so two people expanding the same post cannot write
         each other's paths, and so the bound has something to abandon into: the `requests` calls
@@ -218,7 +202,7 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
     async def build_delivery(
         self, *, message: Message, url: str, parsed: ThreadsConversation
     ) -> ExpansionDelivery | None:
-        """Builds the card and plans its media, refusing what cannot be shown.
+        """Builds the card and plans the target's media, refusing what cannot be shown.
 
         All three refusals are exactly that rather than failures: the post could be read, it just
         cannot be rendered as embeds or delivered as files.
@@ -269,9 +253,10 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             for path in target.video_paths
             if path.exists()
         ]
-        upload_limit = upload_limit_for(guild=message.guild)
         plan = await self.media_delivery.plan(
-            items=items, upload_limit=upload_limit, envelope_margin=MEDIA_ENVELOPE_MARGIN
+            items=items,
+            upload_limit=upload_limit_for(guild=message.guild),
+            envelope_margin=MEDIA_ENVELOPE_MARGIN,
         )
         if plan.dropped_items:
             # An oversize video that could not be hosted (hosting off or failed) refuses the whole
@@ -286,131 +271,11 @@ class ThreadsCogs(ExpansionCog[ThreadsConversation]):
             )
             return None
 
-        # The images are planned on their own, after the video, so they only ever take what the
-        # video left: planned together, the combined peel would host or drop the video (the
-        # largest item) to make room for them. Their ceiling is the non-Nitro base in every
-        # guild, not the reported limit: nextcord over-reports tier 0/1, and an optional image is
-        # not worth risking a card that fitted, so a boosted guild's extra room goes to the video
-        # alone. An image this plan drops, or one a channel that refuses attachments never
-        # downloads, keeps the CDN URL its embed already shows.
-        images = (
-            await self._download_images(
-                results=results, embeds=embeds, url=url, message_id=message.id
-            )
-            if target_allows_file_uploads(target=message)
-            else {}
-        )
-        image_plan = await self.media_delivery.plan(
-            items=list(images.values()),
-            upload_limit=min(upload_limit, DEFAULT_NON_NITRO_UPLOAD_LIMIT)
-            - sum(item.size for item in plan.native),
-            envelope_margin=MEDIA_ENVELOPE_MARGIN,
-            attachment_limit=DISCORD_ATTACHMENT_LIMIT - len(plan.native),
-        )
-        attached = {id(item) for item in image_plan.native}
-        hosted = {
-            id(item): hosted_url
-            for item, hosted_url in zip(
-                image_plan.hosted_items, image_plan.hosted_urls, strict=True
-            )
-        }
-        uploaded = {
-            image_url: (
-                f"attachment://{item.filename}" if id(item) in attached else hosted[id(item)]
-            )
-            for image_url, item in images.items()
-            if id(item) in attached or id(item) in hosted
-        }
-        for embed in embeds:
-            if (image_url := embed.image.url) and image_url in uploaded:
-                embed.set_image(url=uploaded[image_url])
-
         return ExpansionDelivery(
             content="\n".join(plan.hosted_urls) if plan.hosted_urls else None,
             embeds=embeds,
-            files=[item.to_file() for item in (*plan.native, *image_plan.native)],
+            files=[item.to_file() for item in plan.native],
         )
-
-    async def _download_images(
-        self, *, results: list[ThreadsOutput], embeds: list[Embed], url: str, message_id: int
-    ) -> dict[str, MediaItem]:
-        """Downloads every image the card shows, so it is uploaded rather than linked.
-
-        Discord fetches a linked embed image once, as the message is sent, and keeps what that
-        fetch got: one that fails is stored 0x0 and the card stays text-only for good, although
-        the same URL loads moments later (measured 2026-09-26 on two Threads cards). Uploading the
-        bytes takes that fetch out of the path. The order is the embed slots' own — the target,
-        the post it quotes, then up the chain — so when the attachment budget runs out, what
-        stays linked is a far ancestor's image rather than the linked post's.
-
-        Args:
-            results: The chain the embeds were built from, `[root, ..., target]`.
-            embeds: The built card, whose images decide what is downloaded.
-            url: The post being expanded, for the log.
-            message_id: The message carrying the link, for the log.
-
-        Returns:
-            The downloaded images keyed by the CDN URL their embed shows; one that could not be
-            downloaded is absent, and its embed keeps that URL.
-        """
-        shown = {embed.image.url for embed in embeds if embed.image.url}
-        target = results[-1]
-        by_relevance = [target, *([target.quoted] if target.quoted else []), *results[-2::-1]]
-        image_urls = list(
-            dict.fromkeys(
-                image_url
-                for post in by_relevance
-                for image_url in post.image_urls
-                if image_url in shown
-            )
-        )
-        if not image_urls:
-            return {}
-        with scratch_directory(prefix="parse-threads-images-") as image_dir:
-            downloader = self.downloader_factory(output_folder=image_dir)
-            downloaded = await asyncio.gather(
-                *(
-                    self._download_image(
-                        downloader=downloader,
-                        image_url=image_url,
-                        filename=_image_filename(index=index, image_url=image_url),
-                        url=url,
-                        message_id=message_id,
-                    )
-                    for index, image_url in enumerate(image_urls)
-                )
-            )
-        return {
-            image_url: item
-            for image_url, item in zip(image_urls, downloaded, strict=True)
-            if item is not None
-        }
-
-    @staticmethod
-    async def _download_image(
-        *, downloader: ThreadsDownloader, image_url: str, filename: str, url: str, message_id: int
-    ) -> MediaItem | None:
-        """Downloads one image into memory, or None when it cannot be had in time."""
-
-        def fetch() -> bytes:
-            """Streams the image to the scratch dir and reads it back, off the event loop."""
-            return downloader.download_media(url=image_url, filename=filename).read_bytes()
-
-        try:
-            async with asyncio.timeout(delay=THREADS_IMAGE_FETCH_TIMEOUT_SECONDS):
-                data = await asyncio.to_thread(fetch)
-        # Broad on purpose: one image is the most this may cost, never the card.
-        except Exception as error:
-            logfire.warn(
-                "Could not download a Threads image to upload; linking it instead",
-                url=url,
-                message_id=message_id,
-                filename=filename,
-                error_type=type(error).__name__,
-                _exc_info=error,
-            )
-            return None
-        return MediaItem(source=data, filename=filename)
 
     @staticmethod
     def _gradient_color(index: int, total: int) -> Color:

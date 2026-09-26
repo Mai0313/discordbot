@@ -54,7 +54,7 @@ def _offences_in(module: Path) -> list[str]:
 def test_a_scratch_directory_is_only_ever_opened_through_the_shared_helper() -> None:
     """A scratch directory whose teardown is not the helper's speaks for work it never did.
 
-    Eight paths here abandon a worker `asyncio.to_thread` cannot cancel, so their removal walks
+    Seven paths here abandon a worker `asyncio.to_thread` cannot cancel, so their removal walks
     a tree something is still writing into and can raise `ENOTEMPTY`. The helper reports that
     instead of raising it; the plain class raises it at a caller who has already answered.
     """

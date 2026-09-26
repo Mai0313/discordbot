@@ -1207,7 +1207,7 @@ class ThreadsDownloader(PlatformDownloader):
 
         The single walk both public entry points share; `download` is the only thing that ever
         differed between them, and it applies to the target alone. Ancestors and replies stay
-        metadata-only in both modes: whatever of their media a caller wants, it fetches itself.
+        metadata-only in both modes: their media is never part of what the callers deliver.
 
         Args:
             url: The Threads post URL.

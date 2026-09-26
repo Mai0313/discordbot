@@ -608,9 +608,6 @@ class MediaPlan(BaseModel):
             "fit the combined multipart body."
         ),
     )
-    hosted_items: list[MediaItem] = Field(
-        default_factory=list, description="The items behind `hosted_urls`, in the same order."
-    )
     dropped_items: list[MediaItem] = Field(
         default_factory=list,
         description=(
@@ -668,7 +665,6 @@ class MediaDeliveryPlanner(BaseModel):
         """
         sizes = {id(item): item.size for item in items}  # stat each path exactly once
         hosted_urls: list[str] = []
-        hosted_items: list[MediaItem] = []
         dropped: list[MediaItem] = []
 
         # (a) Per-item: host every individually-oversize item concurrently (independent writes),
@@ -680,7 +676,6 @@ class MediaDeliveryPlanner(BaseModel):
             for item, url in zip(oversize, urls, strict=True):
                 if url is not None:
                     hosted_urls.append(url)
-                    hosted_items.append(item)
                 else:
                     dropped.append(item)
 
@@ -701,15 +696,9 @@ class MediaDeliveryPlanner(BaseModel):
             url = await self._host(item=largest)
             if url is not None:
                 hosted_urls.append(url)
-                hosted_items.append(largest)
             else:
                 dropped.append(largest)
-        return MediaPlan(
-            native=fitting,
-            hosted_urls=hosted_urls,
-            hosted_items=hosted_items,
-            dropped_items=dropped,
-        )
+        return MediaPlan(native=fitting, hosted_urls=hosted_urls, dropped_items=dropped)
 
 
 def build_media_delivery_planner() -> MediaDeliveryPlanner:
