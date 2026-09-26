@@ -70,7 +70,7 @@ def _embed_has_real_image(*, embed: Embed, spacer_url: str) -> bool:
     return bool(image_url and image_url != spacer_url)
 
 
-def _target_allows_file_uploads(*, target: object | None) -> bool:
+def target_allows_file_uploads(*, target: object | None) -> bool:
     """Returns False only when the current channel clearly denies file uploads."""
     if target is None:
         return True
@@ -136,7 +136,7 @@ def embed_spacer_payload(
         existing_spacer = (
             _existing_spacer_attachment(target=target, filename=filename) if is_edit else None
         )
-        can_upload_spacer = _target_allows_file_uploads(target=target)
+        can_upload_spacer = target_allows_file_uploads(target=target)
         if existing_spacer is not None:
             apply_embed_spacer_image(embeds=embeds, filename=filename)
             retained.append(existing_spacer)
