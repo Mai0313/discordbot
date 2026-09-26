@@ -204,6 +204,12 @@ DOUYIN_EXPAND_TIMEOUT_SECONDS: Final[float] = 120.0
 # (`LINK_CONTEXT_GRACE_SECONDS`) rather than to a second guess.
 THREADS_EXPAND_TIMEOUT_SECONDS: Final[float] = 180.0
 
+# Bound on downloading one image the Threads card shows, so it can be uploaded rather than linked.
+# Its expiry costs only that image, which then rides as its CDN URL the way every image did
+# before. Headroom rather than a budget: the images come from the CDN edge nearest the bot
+# (a 257 KB one took ~30 ms, measured 2026-09-26), and they download side by side.
+THREADS_IMAGE_FETCH_TIMEOUT_SECONDS: Final[float] = 20.0
+
 # The same bound for the Facebook expansion, and a third of the Threads one because the work is
 # a third of it: ONE page fetch, then parsing, with no conversation walk and no download at all
 # (the images stay URLs Discord fetches itself). What it really guards is the parse, since the

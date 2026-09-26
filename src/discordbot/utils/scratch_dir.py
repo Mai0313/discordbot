@@ -1,7 +1,8 @@
 """A private scratch directory whose teardown can never speak for the work that used it.
 
-Seven call sites open one: `/download_video`'s two branches, the `parse_douyin` and
-`parse_threads` expansions, and the three `gen_reply/link_sources/` builders. Each can give up on
+Eight call sites open one: `/download_video`'s two branches, the `parse_douyin` and
+`parse_threads` expansions (the latter twice, for its walk and for the images its card uploads),
+and the three `gen_reply/link_sources/` builders. Each can give up on
 a worker `asyncio.to_thread` cannot cancel, so it keeps fetching past the give-up, and a directory
 of its own is what keeps the overshoot from writing over a concurrent request's files or piling up
 in the system temp dir. What the directory is FOR past that differs per site, so do not read one
