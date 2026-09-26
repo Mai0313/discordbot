@@ -63,7 +63,7 @@ from discordbot.utils.llm_errors import (
 from discordbot.cogs.gen_reply.cog import ReplyGeneratorCogs
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE
-from discordbot.utils.media_delivery import MediaHostingService, MediaDeliveryPlanner
+from discordbot.utils.media_delivery import MediaItem, MediaHostingService, MediaDeliveryPlanner
 from discordbot.cogs.gen_reply.answer import (
     AnswerTurn,
     count_media_parts,
@@ -1836,6 +1836,38 @@ async def test_finalize_media_edit_hints_when_the_hosted_followup_fails() -> Non
 
     assert reply.replies == []
     assert "⚠️" in message.added_reactions
+
+
+async def test_a_refused_media_attach_is_never_logged_as_attached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The step's closing line says the media landed, so a refused edit must not reach it.
+
+    Discord refused the edit (403, 400001) for inline music in a guild that limits uploads, and
+    each refusal was followed in `data/logs` by "Generated media attached" (#720).
+    """
+    message = FakeMessage()
+    reply = FakeReply()
+    reply.edit_error = RuntimeError("file uploads are limited here")
+    streamer = ResponseStreamer(message=cast("Message", message), reply=cast("Message", reply))
+    logged: list[str] = []
+
+    async def voice_clip() -> MediaItem:
+        """Stands in for a synthesized clip ready to attach."""
+        return MediaItem(source=b"RIFF", filename="reply.wav")
+
+    def record(message_text: str, **kwargs: object) -> None:
+        """Records each info line's message."""
+        del kwargs
+        logged.append(message_text)
+
+    monkeypatch.setattr(streamer, "_build_voice_candidate", voice_clip)
+    monkeypatch.setattr(streaming_module.logfire, "info", record)
+
+    await streamer._attach_generated_media()
+
+    assert "⚠️" in message.added_reactions
+    assert "Generated media attached" not in logged
 
 
 def test_extract_inline_markers_voice_keeps_content() -> None:
