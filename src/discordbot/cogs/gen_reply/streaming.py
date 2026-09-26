@@ -1251,7 +1251,10 @@ class ResponseStreamer(BaseModel):
             envelope_margin=MEDIA_ENVELOPE_MARGIN,
         )
         files = [item.to_file() for item in plan.native]
-        await self._finalize_media_edit(reply=reply, files=files, hosted_urls=plan.hosted_urls)
+        if not await self._finalize_media_edit(
+            reply=reply, files=files, hosted_urls=plan.hosted_urls
+        ):
+            return
         if plan.dropped_items:
             await self._hint_media_unavailable(emoji="⚠️")
         logfire.info(
@@ -1263,15 +1266,19 @@ class ResponseStreamer(BaseModel):
 
     async def _finalize_media_edit(
         self, *, reply: Message, files: list[File], hosted_urls: list[str]
-    ) -> None:
+    ) -> bool:
         """Runs the single media edit: native files plus any hosted-URL line on the reply.
 
         Hosted URLs are appended to the reply content when they fit Discord's 2000-char limit,
         else posted as a follow-up reply so a long answer never overflows. There is nothing to do
         when neither files nor URLs were produced.
+
+        Returns:
+            False when the edit or the follow-up failed, which this has already logged and
+            hinted; True otherwise.
         """
         if not files and not hosted_urls:
-            return
+            return True
         content: str | None = None
         follow_up: str | None = None
         if hosted_urls:
@@ -1308,7 +1315,7 @@ class ResponseStreamer(BaseModel):
                 _exc_info=exc,
             )
             await self._hint_media_unavailable(emoji="⚠️")
-            return
+            return False
         if follow_up is not None:
             try:
                 await self._turn_surface().follow_up(
@@ -1322,10 +1329,13 @@ class ResponseStreamer(BaseModel):
                     "Hosted media link follow-up failed; the media URL was never posted",
                     message_id=self.message.id,
                     hosted_url_count=len(hosted_urls),
+                    file_count=len(files),
                     error_type=type(exc).__name__,
                     _exc_info=exc,
                 )
                 await self._hint_media_unavailable(emoji="⚠️")
+                return False
+        return True
 
     async def stream(self, *, responses: AsyncIterator[ResponseStreamEvent]) -> str:
         """Streams the reply onto the message and writes the usage footer; returns the full text."""
