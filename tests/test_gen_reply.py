@@ -25,6 +25,7 @@ from nextcord import File, Embed, Message
 import requests
 from xai_sdk.proto import files_pb2
 from google.genai.types import FileState
+from nextcord.iterators import history_iterator
 from google.genai.errors import ClientError
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_file_param import ResponseInputFileParam
@@ -386,9 +387,7 @@ class FakeMessage:
         # When set, reply() raises this instead of recording (simulates a deleted source).
         self.reply_error: Exception | None = None
 
-    async def _history(
-        self, limit: int, before: FakeMessage, oldest_first: bool
-    ) -> AsyncIterator[FakeMessage]:
+    async def _history(self, limit: int, before: FakeMessage) -> AsyncIterator[FakeMessage]:
         """Yields no history by default."""
         if False:
             yield self
@@ -4726,12 +4725,10 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
     assert attachment_processed["role"] == "user"
     assert isinstance(attachment_processed["content"], list)
 
-    async def fake_history(
-        limit: int, before: FakeMessage, oldest_first: bool
-    ) -> AsyncIterator[FakeMessage]:
-        """Yields two messages for history assembly."""
-        yield user_msg
+    async def fake_history(limit: int, before: FakeMessage) -> AsyncIterator[FakeMessage]:
+        """Yields two messages newest first, as Discord does."""
         yield bot_msg
+        yield user_msg
 
     current = FakeMessage(content="current", author=FakeAuthor(user_id=3))
     current.channel = FakeChannel(history=fake_history)
@@ -4770,6 +4767,54 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
         )
         == 2
     )
+
+
+async def test_channel_history_ends_at_the_message_just_before_past_one_page() -> None:
+    """History longer than one 100-message page still reads oldest first, up to this message.
+
+    Runs nextcord's own pagination, whose `oldest_first=True` reverses each page on its own and
+    so put the newest page first, leaving a reply read against messages hundreds back.
+    """
+    channel_ids = list(range(1, 251))
+
+    class FakeHttp:
+        async def logs_from(
+            self, channel_id: int, limit: int, before: int | None, after: None, around: None
+        ) -> list[dict[str, str]]:
+            """Discord's messages endpoint: the `limit` newest before `before`, newest first."""
+            del channel_id, after, around
+            older = [i for i in channel_ids if before is None or i < before]
+            return [{"id": str(i)} for i in reversed(older[-limit:])]
+
+    class FakeState:
+        http = FakeHttp()
+
+        def create_message(self, *, channel: object, data: dict[str, str]) -> int:
+            """Stands a message in by its id."""
+            del channel
+            return int(data["id"])
+
+    class FakeMessageable:
+        id = 555
+        _state = FakeState()
+
+        async def _get_channel(self) -> FakeMessageable:
+            """Resolves to itself, as a text channel does."""
+            return self
+
+    current = FakeMessage(content="current", author=FakeAuthor(user_id=1))
+    current.id = 251
+    current.channel = FakeChannel(
+        history=lambda **kwargs: history_iterator(
+            messageable=cast("Any", FakeMessageable()), **kwargs
+        )
+    )
+
+    history = await TurnSurface.for_message(message=as_message(fake=current)).fetch_history(
+        limit=250
+    )
+
+    assert history == channel_ids
 
 
 async def test_gen_reply_preserves_bot_mention_in_text_context() -> None:
@@ -8111,9 +8156,7 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
 
     older = FakeMessage(content="舊話題", author=FakeAuthor(user_id=2))
 
-    async def fake_history(
-        limit: int, before: FakeMessage, oldest_first: bool
-    ) -> AsyncIterator[FakeMessage]:
+    async def fake_history(limit: int, before: FakeMessage) -> AsyncIterator[FakeMessage]:
         """Yields one older message so the history block is rendered at all."""
         yield older
 
@@ -9084,11 +9127,9 @@ async def test_history_only_users_are_not_memory_candidates(
 
     history_message = FakeMessage(content="之前說過", author=FakeAuthor(user_id=2))
 
-    async def fake_history(
-        limit: int, before: FakeMessage, oldest_first: bool
-    ) -> AsyncIterator[FakeMessage]:
+    async def fake_history(limit: int, before: FakeMessage) -> AsyncIterator[FakeMessage]:
         """Yields one unrelated history participant."""
-        del limit, before, oldest_first
+        del limit, before
         yield history_message
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))

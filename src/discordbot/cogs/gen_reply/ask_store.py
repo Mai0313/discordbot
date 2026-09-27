@@ -31,7 +31,7 @@ from discordbot.utils.sqlite_config import SqliteBootstrap
 # How many of one conversation's turns survive a write. A write-side clamp on the file, like
 # `RAW_FILE_MAX_BYTES`, rather than a bound on what a request carries — which is why it is not in
 # `typings/context_budgets.py`, and why it is deliberately larger than anything a read can ask
-# for: the pipeline reads `HISTORY_MESSAGE_LIMIT` (500) messages, i.e. half that many turns, so
+# for: the pipeline reads `HISTORY_MESSAGE_LIMIT` (100) messages, i.e. half that many turns, so
 # the message limit and then `HISTORY_CHAR_BUDGET` always bind first and this number never
 # decides what the model sees. Its only job is to stop the table growing without limit for
 # someone who talks to the bot every day for a year.

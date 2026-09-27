@@ -46,15 +46,14 @@ from typing import Final
 # Discord conversation here is overwhelmingly one-line messages -- measured across 10M logged
 # messages, the median is 6 characters and the busiest channel's last 200 come to 1.5k -- so a
 # message count alone lets a chatty channel hand the model almost nothing while a channel of long
-# posts blows the input up. In practice this has never been the binding axis: the char budget
-# alone held history to 107-119 messages at 8000, so this is a backstop.
-HISTORY_MESSAGE_LIMIT: Final[int] = 500
+# posts blows the input up. History only needs the conversation in progress, since what outlives
+# it is memory's job, and this is the axis ordinary chat reaches first: the char budget alone
+# held history to 107-119 messages at 8000.
+HISTORY_MESSAGE_LIMIT: Final[int] = 100
 
-# Doubled from 8000 once the media cap landed. Text was never the expensive half -- the whole
-# budget is worth ~4k input tokens against 1.3k to 1.9k for a single attachment -- so what made
-# widening it unsafe was that more messages meant proportionally more files, which the cap below
-# decouples.
-HISTORY_CHAR_BUDGET: Final[int] = 16000
+# Paired with the message limit, this binds only once messages average over 40 characters, so
+# what it bounds is a channel of long posts.
+HISTORY_CHAR_BUDGET: Final[int] = 8000
 
 # What a history message costs beyond its own text: the rendered form carries an author header,
 # and an attachment-only message has empty `content` but still renders a marker standing in for
