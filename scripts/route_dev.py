@@ -1,4 +1,4 @@
-"""Local structured-output smoke test for AI route and effort decisions."""
+"""Local structured-output smoke test for the triage call's route and effort decisions."""
 
 import time
 
@@ -7,13 +7,13 @@ from pydantic import BaseModel
 from rich.console import Console
 
 from discordbot.typings.llm import LLMConfig
-from discordbot.typings.models import EffortGrade, ModelSettings, RouteClassification
-from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT, EFFORT_PROMPT
+from discordbot.typings.models import ModelSettings, RouteClassification
+from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT
 
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py: both calls below are triage_model's.
+# Mirror the @property value in typings/models.py: the call below is triage_model's.
 TRIAGE_MODEL = ModelSettings(name="gemini-3.5-flash-lite", effort="minimal")
 
 
@@ -36,7 +36,7 @@ def _smoke_parse(
 
 
 def use_oai_responses_parse(user_prompt: str) -> None:
-    """Smoke-tests the parallel route classification and effort grading calls.
+    """Smoke-tests the triage call, which classifies the route and grades the effort together.
 
     Args:
         user_prompt (str): User prompt to classify and grade.
@@ -48,13 +48,6 @@ def use_oai_responses_parse(user_prompt: str) -> None:
         label="route",
         instructions=ROUTE_PROMPT,
         text_format=RouteClassification,
-    )
-    _smoke_parse(
-        client=client,
-        user_prompt=user_prompt,
-        label="effort",
-        instructions=EFFORT_PROMPT,
-        text_format=EffortGrade,
     )
 
 

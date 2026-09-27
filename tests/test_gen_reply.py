@@ -22,6 +22,7 @@ from openai import APIError, APITimeoutError, BadRequestError, APIConnectionErro
 import pytest
 import nextcord
 from nextcord import File, Embed, Message
+from pydantic import ValidationError
 import requests
 from xai_sdk.proto import files_pb2
 from google.genai.types import FileState
@@ -44,10 +45,10 @@ from discordbot.typings.memory import (
     MemoryDurability,
 )
 from discordbot.typings.models import (
-    EffortGrade,
     ModelSettings,
     RouteClassification,
     RuntimeModelCatalog,
+    RecallRouteClassification,
 )
 from discordbot.services.memory import database as memory_db
 from discordbot.utils.reactions import ReactionStatusChain
@@ -74,13 +75,13 @@ from discordbot.cogs.gen_reply.recall import (
     NO_STORED_MEMORY,
     RecallContext,
     RecallCandidate,
-    RecallSelection,
-    parse_user_id_list,
     build_recall_context,
     recall_user_memories,
     memory_lookup_credits,
     build_recall_allowlist,
     compartments_for_reading,
+    render_server_memory_block,
+    render_callable_users_block,
     widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
 )
@@ -96,6 +97,7 @@ from discordbot.services.memory.store import (
     guild_compartment,
 )
 from discordbot.cogs.gen_reply.context import (
+    RecallPlan,
     ReplyContext,
     ReplyContextBuilder,
     reference_header,
@@ -111,8 +113,9 @@ from discordbot.cogs.gen_reply.markers import (
 from discordbot.cogs.gen_reply.prompts import (
     IMAGE_PROMPT,
     REPLY_PROMPT,
+    ROUTE_PROMPT,
     VIDEO_PROMPT,
-    RECALL_SELECT_PROMPT,
+    ROUTE_RECALL_SECTION,
 )
 from discordbot.cogs.gen_reply.routing import RouteClassifier
 from discordbot.cogs.gen_reply.surface import TurnSurface
@@ -178,7 +181,6 @@ from tests.helpers.llm_input import (
     request_input,
     iter_text_blocks,
     extract_tone_block,
-    tool_names_for_call,
     has_douyin_context_block,
     has_memory_context_block,
     extract_callable_user_ids,
@@ -468,7 +470,7 @@ class FakeSnapshot:
 
 
 class FakeResponses:
-    """Fake Responses API resource for routing, memory selection, and streamed reply calls."""
+    """Fake Responses API resource for the triage, prompt-director and streamed reply calls."""
 
     def __init__(self) -> None:
         """Initializes recorded calls and default outputs."""
@@ -479,20 +481,16 @@ class FakeResponses:
         self.create_tools: list[list[object] | None] = []
         self.create_reasonings: list[dict[str, str]] = []
         self.parse_models: list[str] = []
-        self.parse_inputs: list[object] = []
-        # parse() serves both the route classifier and the effort grader; each picks its
-        # own parsed output by the requested text_format.
+        self.parse_instructions: list[str] = []
+        self.parse_inputs: list[ResponseInputParam] = []
+        self.parse_text_formats: list[type[RouteClassification]] = []
+        # What the triage model "answered", re-validated into whichever schema each parse()
+        # asks for, so staged picks survive only a call that actually offered candidates.
         self.output_parsed: RouteClassification | None = RouteClassification(decision="QA")
-        self.effort_parsed: EffortGrade | None = EffortGrade(effort="high")
         # Each entry is the event list for one streaming create(), popped in order. An entry
         # may instead be an Exception, which makes that stream raise instead of yielding, as a
         # provider error frame does -- the only way to drive the answer turn's retry end to end.
         self.stream_queue: list[list[SimpleNamespace] | Exception] = []
-        # Each entry is the `.output` item list for one non-streaming (memory selection)
-        # create(); popped in order.
-        self.select_queue: list[list[SimpleNamespace]] = []
-        # `.usage` returned by each non-streaming (memory selection) create().
-        self.select_usage: SimpleNamespace | None = None
         # `.output_text` returned by each non-streaming create(); the prompt director reads it.
         # None (the default) leaves it empty so `refine` falls back to the raw prompt.
         self.refine_output_text: str | None = None
@@ -523,38 +521,43 @@ class FakeResponses:
             if isinstance(events, Exception):
                 return _stream_events_then_raise(events=[], error=events)
             return _stream_events_from(events=events)
-        output = self.select_queue.pop(0) if self.select_queue else []
+        output: list[SimpleNamespace] = []
         if self.refine_output_text is not None:
             # The prompt director reads text via `output_text_or_empty`, which aggregates the
             # structured `.output` message parts (mirroring how the real Response derives
             # `.output_text`), so carry the refine text as an output_text content part.
             output = [
-                *output,
                 SimpleNamespace(
                     type="message",
                     content=[SimpleNamespace(type="output_text", text=self.refine_output_text)],
-                ),
+                )
             ]
-        return SimpleNamespace(
-            output=output, usage=self.select_usage, output_text=self.refine_output_text
-        )
+        return SimpleNamespace(output=output, output_text=self.refine_output_text)
 
     async def parse(  # noqa: PLR0913 -- mirrors Responses API parse signature
         self,
         model: str,
         instructions: str,
-        input: list[dict[str, str | list[dict[str, str]]]],  # noqa: A002 -- SDK parameter
-        text_format: type[RouteClassification | EffortGrade],
+        input: ResponseInputParam,  # noqa: A002 -- SDK parameter
+        text_format: type[RouteClassification],
         reasoning: dict[str, str],
         service_tier: str,
         extra_headers: dict[str, str],
     ) -> SimpleNamespace:
-        """Records the model and returns the parsed output for the requested schema."""
+        """Records the call and returns the staged output parsed into the requested schema.
+
+        Parsed the way the SDK does, into whatever `text_format` asked for: a staged
+        `RecallRouteClassification` loses its picks when the call asked for the plain schema.
+        """
         self.parse_models.append(model)
+        self.parse_instructions.append(instructions)
         self.parse_inputs.append(input)
-        if text_format is EffortGrade:
-            return SimpleNamespace(output_parsed=self.effort_parsed)
-        return SimpleNamespace(output_parsed=self.output_parsed)
+        self.parse_text_formats.append(text_format)
+        if self.output_parsed is None:
+            return SimpleNamespace(output_parsed=None)
+        return SimpleNamespace(
+            output_parsed=text_format.model_validate(obj=self.output_parsed.model_dump())
+        )
 
 
 class FakeImages:
@@ -886,7 +889,6 @@ def _context_builder(
 ) -> ReplyContextBuilder:
     """The context builder `ReplyPipeline` would build for this message."""
     return ReplyContextBuilder(
-        client=cog.openai_client,
         bot=cog.bot,
         toolkit=toolkit or _toolkit(cog=cog),
         message=message,
@@ -1023,19 +1025,22 @@ async def _route(cog: ReplyGeneratorCogs, message: FakeMessage) -> RouteClassifi
         cog=cog, message=msg
     ).render_parts(text_only=True)
     return await _classifier(cog=cog, message=msg).classify(
-        reference_messages=reference_messages, current_message=current_message
+        reference_messages=reference_messages,
+        current_message=current_message,
+        recall_candidates={},
+        server_memory_block=None,
     )
 
 
-async def _grade(cog: ReplyGeneratorCogs, message: FakeMessage) -> EffortGrade:
-    """Grades a message's answer effort after building the shared text-only parts."""
-    msg = as_message(fake=message)
-    reference_messages, current_message = await _context_builder(
-        cog=cog, message=msg
-    ).render_parts(text_only=True)
-    return await _classifier(cog=cog, message=msg).grade_effort(
-        reference_messages=reference_messages, current_message=current_message
-    )
+def _resolved_picks(ids: list[str] | None = None) -> asyncio.Future[list[str]]:
+    """Recall picks already resolved, as the pipeline hands them over once the route returns.
+
+    Every direct `build` call takes one of these: `build` awaits the picks, and an unresolved
+    future would hang the suite rather than fail it.
+    """
+    picks: asyncio.Future[list[str]] = asyncio.get_running_loop().create_future()
+    picks.set_result(ids or [])
+    return picks
 
 
 async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply's signature
@@ -1045,18 +1050,20 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
     history_limit: int = 2,
     effort: Literal["low", "high"] = "high",
     describe_capabilities: bool = False,
+    picks: list[str] | None = None,
 ) -> None:
-    """Drives prepare-context plus answer the way on_message does for the QA route."""
+    """Drives prepare-context plus answer the way on_message does for the QA route.
+
+    Skips the route call, so `picks` stands in for what it would have named.
+    """
     msg = as_message(fake=message)
-    parts_task = asyncio.create_task(coro=_context_builder(cog=cog, message=msg).render_parts())
-    text_parts = await _context_builder(cog=cog, message=msg).render_parts(text_only=True)
-    route_done = asyncio.Event()
-    route_done.set()
-    context = await _context_builder(cog=cog, message=msg).build(
+    builder = _context_builder(cog=cog, message=msg)
+    parts_task = asyncio.create_task(coro=builder.render_parts())
+    context = await builder.build(
         history_limit=history_limit,
         parts_task=parts_task,
-        text_parts=text_parts,
-        route_done=route_done,
+        recall=builder.plan_recall(),
+        recall_picks=_resolved_picks(ids=picks),
     )
     await _answer(cog=cog, message=msg).stream_answer(
         system_prompt=system_prompt,
@@ -1064,6 +1071,48 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors _handle_message_reply
         effort=effort,
         describe_capabilities=describe_capabilities,
     )
+
+
+async def _run_pipeline(
+    *, cog: ReplyGeneratorCogs, message: FakeMessage, surface: TurnSurface | None = None
+) -> None:
+    """Runs one whole turn through `ReplyPipeline`, route call included, and lets it raise.
+
+    Built directly rather than through `on_message`, whose failure notice would swallow a
+    broken turn; reactions are off because no assertion here reads them.
+    """
+    msg = as_message(fake=message)
+    await ReplyPipeline(
+        client=cog.openai_client,
+        bot=cog.bot,
+        config=cog.config,
+        media_delivery=cog.media_delivery,
+        usage_recorder=cog.usage_recorder,
+        toolkit=_toolkit(cog=cog),
+        message=msg,
+        surface=surface or TurnSurface.for_message(message=msg),
+        user_prompt=message.content,
+        reactions=ReactionStatusChain(message=msg, bot_user=cog.bot.user, enabled=False),
+    ).run()
+
+
+def _assert_route_offered(*, cog: ReplyGeneratorCogs, candidates: set[int]) -> None:
+    """Asserts the turn made one route call, shaped for exactly these recall candidates.
+
+    No candidates means the plain shape: the plain schema and prompt, with neither the candidate
+    block nor the server memory it is read against.
+    """
+    responses = _recorded(cog).responses
+    (route_input,) = responses.parse_inputs
+    if candidates:
+        assert responses.parse_text_formats == [RecallRouteClassification]
+        assert responses.parse_instructions == [ROUTE_PROMPT + ROUTE_RECALL_SECTION]
+        assert extract_callable_user_ids(request=route_input) == candidates
+    else:
+        assert responses.parse_text_formats == [RouteClassification]
+        assert responses.parse_instructions == [ROUTE_PROMPT]
+        assert extract_callable_user_ids(request=route_input) == set()
+        assert extract_server_memory_block(request=route_input) is None
 
 
 def _assert_runtime_time_context(instructions: str, system_prompt: str) -> None:
@@ -1156,13 +1205,6 @@ def _completed_event(input_tokens: int, output_tokens: int) -> SimpleNamespace:
             output=[],
         ),
     )
-
-
-def _function_call_item(
-    call_id: str, arguments: str, name: str = "get_user_memory"
-) -> SimpleNamespace:
-    """Builds a fake non-streaming `.output` function-call item for the selection phase."""
-    return SimpleNamespace(type="function_call", name=name, call_id=call_id, arguments=arguments)
 
 
 def _default_turn_events() -> list[SimpleNamespace]:
@@ -4736,7 +4778,7 @@ async def test_gen_reply_processes_history_reference_and_current_messages(
         limit=30
     )
     rendered = await _context_builder(cog=cog, message=as_message(fake=current)).render_history(
-        hist_messages=raw_history, text_only=False
+        hist_messages=raw_history
     )
     assert len(rendered) == 3
     assert rendered[0]["role"] == "system"
@@ -4996,7 +5038,7 @@ async def test_render_history_survives_a_message_the_collector_chokes_on(
 
     rendered = await _context_builder(
         cog=cog, message=as_message(fake=FakeMessage())
-    ).render_history(hist_messages=[as_message(fake=m) for m in posts], text_only=False)
+    ).render_history(hist_messages=[as_message(fake=m) for m in posts])
 
     # Header plus both messages: the broken one degrades to empty text, the other is untouched.
     assert len(rendered) == 3
@@ -5015,7 +5057,7 @@ async def test_render_history_degrades_over_budget_attachments_to_markers(
 
     rendered = await _context_builder(
         cog=cog, message=as_message(fake=FakeMessage())
-    ).render_history(hist_messages=[as_message(fake=m) for m in posts], text_only=False)
+    ).render_history(hist_messages=[as_message(fake=m) for m in posts])
 
     # rendered[0] is the history header; the rest follow the posts in order.
     oldest, newest = rendered[1]["content"], rendered[3]["content"]
@@ -5866,6 +5908,7 @@ async def test_a_generators_own_timeout_is_not_blamed_on_the_ask_window() -> Non
     ],
 )
 async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
+    memory_isolated_dir: object,
     monkeypatch: pytest.MonkeyPatch,
     route: Literal["IMAGE", "VIDEO", "QA"],
     expected_call: str,
@@ -5879,32 +5922,23 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
     # Distinctive non-fallback grade so the effort reaching the answer model is checked to
-    # be the graded value, not the "high" default that timeout/error would also produce.
-    _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
+    # be the graded value, not the "high" default a failed parse would also produce.
+    _recorded(cog).responses.output_parsed = RouteClassification(decision=route, effort="low")
     calls: list[str] = []
     prompts: list[str] = []
     prep_requests: list[int] = []
     prepared_context = ReplyContext()
-
-    async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
-    ) -> RouteClassification:
-        """Returns the parametrized route."""
-        del reference_messages, current_message
-        # Yield like a real route I/O call so the speculative prep task gets scheduled.
-        await asyncio.sleep(0)
-        return RouteClassification(decision=route)
 
     async def fake_prepare(
         self: object,
         *,
         history_limit: int,
         parts_task: object,
-        text_parts: object,
-        route_done: object,
+        recall: object,
+        recall_picks: object,
     ) -> ReplyContext:
         """Records context requests while staying off the memory and history paths."""
-        del self, parts_task, text_parts, route_done
+        del self, parts_task, recall, recall_picks
         prep_requests.append(history_limit)
         return prepared_context
 
@@ -5966,7 +6000,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         effort_flags.append(effort)
         contexts.append(context)
 
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
     monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
     monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
     monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
@@ -5976,6 +6009,8 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     message = FakeMessage(content="<@!999> hello", author=FakeAuthor(user_id=1))
     await cog.on_message(message=as_message(fake=message))
     assert expected_call in calls
+    # Route, effort and recall are one triage call on every route, IMAGE and VIDEO included.
+    assert len(_recorded(cog).responses.parse_models) == 1
     assert calls[-1] == "reaction:<:greencheck:1517565102424068226>"
     # QA consumes the speculative context as-is; IMAGE/VIDEO discard it after their media is
     # on screen. Every route now issues exactly one prep request, so what is asserted is which
@@ -5997,7 +6032,7 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         assert effort_flags == []
     else:
         assert contexts == [prepared_context]
-        # The parallel grade flows end-to-end into the QA answer model.
+        # The route's grade flows end-to-end into the QA answer model.
         assert effort_flags == ["low"]
 
 
@@ -6025,17 +6060,16 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 
     monkeypatch.setattr(ReplyContextBuilder, "fetch_history", fake_history)
     parts_task = asyncio.create_task(coro=slow_parts())
+    builder = _context_builder(
+        cog=cog,
+        message=as_message(fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))),
+    )
     prep_task = asyncio.create_task(
-        coro=_context_builder(
-            cog=cog,
-            message=as_message(
-                fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-            ),
-        ).build(
+        coro=builder.build(
             history_limit=100,
             parts_task=parts_task,
-            text_parts=([], []),
-            route_done=asyncio.Event(),
+            recall=builder.plan_recall(),
+            recall_picks=_resolved_picks(),
         )
     )
     # Let prep run its empty history and park on `await asyncio.shield(parts_task)`.
@@ -6051,7 +6085,7 @@ async def test_prepare_reply_context_shields_shared_parts_task(
 
 
 async def test_gen_reply_on_message_early_returns_and_errors(
-    monkeypatch: pytest.MonkeyPatch,
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verifies bot messages, unmentioned guild messages, empty prompts, and errors."""
     cog = _cog()
@@ -6069,10 +6103,15 @@ async def test_gen_reply_on_message_early_returns_and_errors(
     assert dm_empty.replies[0].content == "?"
 
     async def boom(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> str:
         """Raises to exercise error handling."""
-        del reference_messages, current_message
+        del reference_messages, current_message, recall_candidates, server_memory_block
         raise RuntimeError("boom")
 
     async def fake_prepare(
@@ -6080,11 +6119,11 @@ async def test_gen_reply_on_message_early_returns_and_errors(
         *,
         history_limit: int,
         parts_task: object,
-        text_parts: object,
-        route_done: object,
+        recall: object,
+        recall_picks: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del self, history_limit, parts_task, text_parts, route_done
+        del self, history_limit, parts_task, recall, recall_picks
         return ReplyContext()
 
     monkeypatch.setattr(RouteClassifier, "classify", boom)
@@ -6102,16 +6141,21 @@ async def test_gen_reply_on_message_early_returns_and_errors(
 
 
 async def test_a_reply_records_the_route_it_took(
-    monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
 ) -> None:
     """One reply turn is one usage record, named after the route that served it."""
     cog = _cog()
 
     async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> RouteClassification:
         """Routes every message to QA."""
-        del self, reference_messages, current_message
+        del self, reference_messages, current_message, recall_candidates, server_memory_block
         return RouteClassification(decision="QA")
 
     async def fake_prepare(
@@ -6119,11 +6163,11 @@ async def test_a_reply_records_the_route_it_took(
         *,
         history_limit: int,
         parts_task: object,
-        text_parts: object,
-        route_done: object,
+        recall: object,
+        recall_picks: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del self, history_limit, parts_task, text_parts, route_done
+        del self, history_limit, parts_task, recall, recall_picks
         return ReplyContext()
 
     async def fake_message_handler(self: object, **kwargs: object) -> None:
@@ -6153,16 +6197,21 @@ async def test_a_reply_records_the_route_it_took(
 
 
 async def test_a_failed_reply_records_that_it_never_routed(
-    monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, usage_log_isolated_dir: Path
 ) -> None:
     """Someone still talked to the bot, so a failure before the router is still recorded."""
     cog = _cog()
 
     async def boom(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> RouteClassification:
         """Fails the way a router outage would."""
-        del self, reference_messages, current_message
+        del self, reference_messages, current_message, recall_candidates, server_memory_block
         raise RuntimeError("boom")
 
     async def fake_prepare(
@@ -6170,11 +6219,11 @@ async def test_a_failed_reply_records_that_it_never_routed(
         *,
         history_limit: int,
         parts_task: object,
-        text_parts: object,
-        route_done: object,
+        recall: object,
+        recall_picks: object,
     ) -> ReplyContext:
         """Keeps the speculative prep off the real memory and history paths."""
-        del self, history_limit, parts_task, text_parts, route_done
+        del self, history_limit, parts_task, recall, recall_picks
         return ReplyContext()
 
     monkeypatch.setattr(RouteClassifier, "classify", boom)
@@ -6185,6 +6234,53 @@ async def test_a_failed_reply_records_that_it_never_routed(
 
     (record,) = _usage_records(directory=usage_log_isolated_dir)
     assert (record["kind"], record["name"]) == ("reply", UNROUTED_REPLY)
+
+
+async def test_a_failed_route_cancels_the_build_waiting_on_its_picks(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The picks are never resolved when the route raises, so the turn must cancel the build."""
+    cog = _cog()
+    build_cancelled = asyncio.Event()
+
+    async def boom(
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
+    ) -> RouteClassification:
+        """Fails the way a router outage would, after yielding as a real request does."""
+        del self, reference_messages, current_message, recall_candidates, server_memory_block
+        await asyncio.sleep(0)
+        raise RuntimeError("boom")
+
+    async def waiting_prepare(
+        self: object,
+        *,
+        history_limit: int,
+        parts_task: object,
+        recall: object,
+        recall_picks: asyncio.Future[list[str]],
+    ) -> ReplyContext:
+        """Waits on the picks the way the real build does, and notes being cancelled."""
+        del self, history_limit, parts_task, recall
+        try:
+            await recall_picks
+        except asyncio.CancelledError:
+            build_cancelled.set()
+            raise
+        return ReplyContext()
+
+    monkeypatch.setattr(RouteClassifier, "classify", boom)
+    monkeypatch.setattr(ReplyContextBuilder, "build", waiting_prepare)
+
+    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=7))
+    # Bounded so a turn that leaves the build waiting fails here instead of hanging the suite.
+    await asyncio.wait_for(fut=cog.on_message(message=as_message(fake=message)), timeout=5)
+
+    assert build_cancelled.is_set()
 
 
 def _usage_records(directory: Path) -> list[dict[str, Any]]:
@@ -6312,7 +6408,7 @@ async def test_reaction_status_chain_orders_and_replaces(monkeypatch: pytest.Mon
 
 
 async def test_on_message_consumes_speculative_context_on_image_route(
-    monkeypatch: pytest.MonkeyPatch,
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The IMAGE route hands its speculative context to the image handler, not discards it."""
     cog = _cog()
@@ -6320,10 +6416,15 @@ async def test_on_message_consumes_speculative_context_on_image_route(
     received: list[ReplyContext] = []
 
     async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> RouteClassification:
         """Routes every message to IMAGE."""
-        del reference_messages, current_message
+        del reference_messages, current_message, recall_candidates, server_memory_block
         # Yield like a real route I/O call so the speculative prep task starts.
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE")
@@ -6333,11 +6434,11 @@ async def test_on_message_consumes_speculative_context_on_image_route(
         *,
         history_limit: int,
         parts_task: object,
-        text_parts: object,
-        route_done: object,
+        recall: object,
+        recall_picks: object,
     ) -> ReplyContext:
         """Returns the prepared context the image handler should consume."""
-        del self, history_limit, parts_task, text_parts, route_done
+        del self, history_limit, parts_task, recall, recall_picks
         return prepared
 
     async def fake_image_handler(
@@ -6724,10 +6825,15 @@ async def test_on_message_does_not_start_douyin_context_on_image_route(
         return []
 
     async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> RouteClassification:
         """Selects Douyin while routing the request to the image handler."""
-        del reference_messages, current_message
+        del reference_messages, current_message, recall_candidates, server_memory_block
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE", link_context_sources=["douyin"])
 
@@ -6811,18 +6917,18 @@ async def test_on_message_link_context_grace_starts_when_route_finishes(
         *,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
-        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
-        route_done: asyncio.Event,
+        recall: RecallPlan,
+        recall_picks: asyncio.Future[list[str]],
     ) -> ReplyContext:
         """Keeps preparation running until after the builder has missed its deadline."""
-        await route_done.wait()
+        await recall_picks
         await asyncio.sleep(0.18)
         return await prepare(
             self,
             history_limit=history_limit,
             parts_task=parts_task,
-            text_parts=text_parts,
-            route_done=route_done,
+            recall=recall,
+            recall_picks=recall_picks,
         )
 
     async def delayed_builder(
@@ -6875,18 +6981,18 @@ async def test_on_message_keeps_link_context_finished_before_deadline(
         *,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
-        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
-        route_done: asyncio.Event,
+        recall: RecallPlan,
+        recall_picks: asyncio.Future[list[str]],
     ) -> ReplyContext:
         """Delays resolution beyond the builder deadline without delaying the builder itself."""
-        await route_done.wait()
+        await recall_picks
         await asyncio.sleep(0.18)
         return await prepare(
             self,
             history_limit=history_limit,
             parts_task=parts_task,
-            text_parts=text_parts,
-            route_done=route_done,
+            recall=recall,
+            recall_picks=recall_picks,
         )
 
     async def immediate_builder(
@@ -6938,18 +7044,18 @@ async def test_on_message_waits_for_deadline_cancelled_link_cleanup(
         *,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
-        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
-        route_done: asyncio.Event,
+        recall: RecallPlan,
+        recall_picks: asyncio.Future[list[str]],
     ) -> ReplyContext:
         """Lets the builder hit its deadline before the resolver starts awaiting it."""
-        await route_done.wait()
+        await recall_picks
         await asyncio.sleep(0.1)
         return await prepare(
             self,
             history_limit=history_limit,
             parts_task=parts_task,
-            text_parts=text_parts,
-            route_done=route_done,
+            recall=recall,
+            recall_picks=recall_picks,
         )
 
     async def cleanup_bound_builder(
@@ -7022,18 +7128,18 @@ async def test_on_message_cancellation_waits_for_deadline_cancelled_link_cleanup
         *,
         history_limit: int,
         parts_task: asyncio.Task[tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]]],
-        text_parts: tuple[list[EasyInputMessageParam], list[EasyInputMessageParam]],
-        route_done: asyncio.Event,
+        recall: RecallPlan,
+        recall_picks: asyncio.Future[list[str]],
     ) -> ReplyContext:
         """Lets the builder reach cleanup before the resolver starts waiting on it."""
-        await route_done.wait()
+        await recall_picks
         await asyncio.sleep(0.1)
         return await prepare(
             self,
             history_limit=history_limit,
             parts_task=parts_task,
-            text_parts=text_parts,
-            route_done=route_done,
+            recall=recall,
+            recall_picks=recall_picks,
         )
 
     async def cleanup_bound_builder(
@@ -7352,10 +7458,15 @@ async def test_on_message_does_not_start_threads_context_on_image_route(
         return []
 
     async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> RouteClassification:
         """Selects Threads while routing the request to the image handler."""
-        del reference_messages, current_message
+        del reference_messages, current_message, recall_candidates, server_memory_block
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE", link_context_sources=["threads"])
 
@@ -7681,10 +7792,15 @@ async def test_on_message_does_not_start_bilibili_context_on_image_route(
         return []
 
     async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> RouteClassification:
         """Selects Bilibili while routing the request to the image handler."""
-        del reference_messages, current_message
+        del reference_messages, current_message, recall_candidates, server_memory_block
         await asyncio.sleep(0)
         return RouteClassification(decision="IMAGE", link_context_sources=["bilibili"])
 
@@ -7756,7 +7872,7 @@ async def test_on_message_bilibili_keyless_disables_media_ingest(
 
 
 async def test_on_message_finally_backstop_cancels_link_tasks(
-    monkeypatch: pytest.MonkeyPatch,
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failure after QA routing still cancels its selected in-flight link build."""
     cog = _cog()
@@ -7776,10 +7892,15 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
         return []
 
     async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> RouteClassification:
         """Selects Bilibili on QA so its builder starts after routing."""
-        del reference_messages, current_message
+        del reference_messages, current_message, recall_candidates, server_memory_block
         await asyncio.sleep(0)
         return RouteClassification(decision="QA", link_context_sources=["bilibili"])
 
@@ -7788,12 +7909,12 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
         *,
         history_limit: int,
         parts_task: object,
-        text_parts: object,
-        route_done: asyncio.Event,
+        recall: object,
+        recall_picks: asyncio.Future[list[str]],
     ) -> ReplyContext:
         """Fails after routing and yields once so the selected builder is in flight."""
-        del self, history_limit, parts_task, text_parts
-        await route_done.wait()
+        del self, history_limit, parts_task, recall
+        await recall_picks
         await asyncio.sleep(0)
         raise RuntimeError("prep exploded")
 
@@ -7815,7 +7936,7 @@ async def test_on_message_finally_backstop_cancels_link_tasks(
 
 
 async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
-    monkeypatch: pytest.MonkeyPatch,
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A prep failure drains a deadline-owned builder cleanup without cancelling it twice."""
     cog = _cog()
@@ -7847,10 +7968,15 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
         return []
 
     async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
+        self: object,
+        *,
+        reference_messages: list[object],
+        current_message: list[object],
+        recall_candidates: object,
+        server_memory_block: object,
     ) -> RouteClassification:
         """Selects Bilibili so the deadline-owned builder starts."""
-        del self, reference_messages, current_message
+        del self, reference_messages, current_message, recall_candidates, server_memory_block
         return RouteClassification(decision="QA", link_context_sources=["bilibili"])
 
     async def fake_prepare(
@@ -7858,12 +7984,12 @@ async def test_on_message_finally_waits_for_deadline_owned_link_cleanup(
         *,
         history_limit: int,
         parts_task: object,
-        text_parts: object,
-        route_done: asyncio.Event,
+        recall: object,
+        recall_picks: asyncio.Future[list[str]],
     ) -> ReplyContext:
         """Fails while the selected builder still owns its deadline cancellation cleanup."""
-        del self, history_limit, parts_task, text_parts
-        await route_done.wait()
+        del self, history_limit, parts_task, recall
+        await recall_picks
         await cleanup_started.wait()
         raise RuntimeError("prep exploded")
 
@@ -8143,9 +8269,9 @@ async def test_the_history_separator_names_the_block_without_inviting_an_answer_
     The old separator read "Chat History that might be helpful for answering", an invitation
     that competed with the Reference Message's own claim to be the primary context. Behaviour
     rules belong in `instructions`, which outranks anything in `input`, so the rule moved there
-    and the separator kept only the naming. This render also feeds memory selection, the media
-    persona reply and the phase-1 extraction transcript, none of which is answering a question,
-    which is the second reason the rule cannot live on the block itself.
+    and the separator kept only the naming. This render also feeds the media persona reply and
+    the phase-1 extraction transcript, neither of which is answering a question, which is the
+    second reason the rule cannot live on the block itself.
     """
     del memory_isolated_dir
     cog = _cog()
@@ -8232,14 +8358,11 @@ async def test_handle_message_reply_orders_server_memory_user_memory_then_tone(
     )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    _recorded(cog).responses.select_queue = [
-        [_function_call_item(call_id="c0", arguments=json.dumps({"user_id_list": ["42"]}))]
-    ]
     _recorded(cog).responses.stream_queue = [
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _reply_via_pipeline(cog=cog, message=message, picks=["42"])
 
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     tone = extract_tone_block(request=answer)
@@ -8350,10 +8473,10 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
-async def test_handle_message_reply_selection_offers_tool_then_answers_with_builtins(
+async def test_handle_message_reply_answers_with_builtins_and_deterministic_memory(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The selector sees only an optional alias while the answer keeps built-ins."""
+    """An optional alias nobody picked stays out while the answer keeps built-ins."""
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     _seed_fact(
@@ -8414,34 +8537,20 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.ResponseStreamer", FakeResponder)
     monkeypatch.setattr("discordbot.cogs.gen_reply.answer.schedule_memory_update", fake_schedule)
 
-    # The selection model declines the optional alias lookup. The author's memory is
-    # deterministic and must still be injected.
+    # The route picks nobody for the optional alias. The author's memory is deterministic and
+    # must still be injected.
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _reply_via_pipeline(cog=cog, message=message)
 
-    # Two requests: selection (non-streaming) then the answer (streaming).
-    assert _recorded(cog).responses.create_streams == [False, True]
-
-    # Selection runs on triage_model; only the answer pays for slow_model.
+    # Only the answer pays for slow_model; memory adds no call of its own.
     assert _recorded(cog).responses.create_models == [
-        _toolkit(cog=cog).runtime_models.triage_model.name,
-        _toolkit(cog=cog).runtime_models.slow_model.name,
+        _toolkit(cog=cog).runtime_models.slow_model.name
     ]
-
-    # Selection offers only the absent nickname-table member, never the author.
-    selection_idx = request_index(responses=_recorded(cog).responses, phase="selection")
-    assert tool_names_for_call(responses=_recorded(cog).responses, n=selection_idx) == [
-        "get_user_memory"
-    ]
-    assert extract_callable_user_ids(
-        request=request_input(responses=_recorded(cog).responses, phase="selection")
-    ) == {42}
-    assert _recorded(cog).responses.create_instructions[selection_idx] == RECALL_SELECT_PROMPT
 
     # Answer keeps the built-in tools and the deterministic author memory.
     answer_idx = request_index(responses=_recorded(cog).responses, phase="answer")
-    assert "get_user_memory" not in tool_names_for_call(
-        responses=_recorded(cog).responses, n=answer_idx
+    assert _recorded(cog).responses.create_tools[answer_idx] == list(
+        _toolkit(cog=cog).runtime_models.slow_model.tools
     )
     _assert_runtime_time_context(
         instructions=_recorded(cog).responses.create_instructions[answer_idx], system_prompt="SYS"
@@ -8450,10 +8559,9 @@ async def test_handle_message_reply_selection_offers_tool_then_answers_with_buil
     assert "喜歡簡短回覆" in (extract_user_memory_blocks(request=answer).get(1) or "")
     assert 42 not in extract_user_memory_blocks(request=answer)
 
-    # Extraction still receives a memory-free, tool-free transcript.
+    # Extraction still receives a memory-free transcript.
     scheduled_list = scheduled[0]["message_list"]
     assert isinstance(scheduled_list, list)
-    assert "get_user_memory" not in str(scheduled_list)
     assert "喜歡簡短回覆" not in str(scheduled_list)
     assert scheduled[0]["scope"] == user_scope(user_id=1)
     assert scheduled[0]["full_reply"] == "完整回覆"
@@ -8526,14 +8634,10 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _reply_via_pipeline(cog=cog, message=message)
 
-    # With no nickname table there is no optional candidate, so the selector is skipped.
     answer_idx = request_index(responses=_recorded(cog).responses, phase="answer")
     assert _recorded(cog).responses.create_streams == [True]
     _assert_runtime_time_context(
         instructions=_recorded(cog).responses.create_instructions[answer_idx], system_prompt="SYS"
-    )
-    assert "get_user_memory" not in tool_names_for_call(
-        responses=_recorded(cog).responses, n=answer_idx
     )
     assert Counter(scheduled) == Counter((user_scope(user_id=1), server_scope(server_id=1)))
 
@@ -8690,15 +8794,6 @@ def test_build_recall_allowlist_escapes_mention_labels() -> None:
     assert "everyone" in allowed[1].prompt_label
     assert allowed[1].credit_label is not None
     assert "@everyone" not in allowed[1].credit_label
-
-
-def test_parse_user_id_list_handles_valid_and_malformed() -> None:
-    """Valid payloads parse to string ids; malformed payloads degrade to an empty list."""
-    assert parse_user_id_list(arguments='{"user_id_list": ["1", "2"]}') == ["1", "2"]
-    assert parse_user_id_list(arguments='{"user_id_list": [1, 2]}') == ["1", "2"]
-    assert parse_user_id_list(arguments="not json") == []
-    assert parse_user_id_list(arguments='{"other": 1}') == []
-    assert parse_user_id_list(arguments='{"user_id_list": "nope"}') == []
 
 
 def test_recall_user_memories_enforces_allowlist(memory_isolated_dir: object) -> None:
@@ -8892,47 +8987,34 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
         "mention_ids",
         "reference_author_id",
         "channel_public",
-        "select_id_lists",
+        "picks",
         "expected_injected",
-        "selection_expected",
-        "expected_callable",
+        "expected_candidates",
     ),
     [
-        ({1: "作者記憶"}, None, [], None, True, [], {1}, False, set()),
-        ({}, None, [], None, True, [], set(), False, set()),
-        ({1: "作者記憶", 2: "mention 記憶"}, None, [2], None, True, [], {1, 2}, False, set()),
-        ({1: "作者記憶", 7: "reply 記憶"}, None, [], 7, True, [], {1, 7}, False, set()),
+        ({1: "作者記憶"}, None, [], None, True, [], {1}, set()),
+        ({}, None, [], None, True, [], set(), set()),
+        ({1: "作者記憶", 2: "mention 記憶"}, None, [2], None, True, [], {1, 2}, set()),
+        ({1: "作者記憶", 7: "reply 記憶"}, None, [], 7, True, [], {1, 7}, set()),
         (
             {1: "作者記憶", 42: "李董記憶"},
             (42, "Boss", "李董"),
             [],
             None,
             True,
-            [["42"]],
+            ["42"],
             {1, 42},
-            True,
             {42},
         ),
+        ({1: "作者記憶", 42: "李董記憶"}, (42, "Boss", "李董"), [], None, True, [], {1}, {42}),
         (
-            {1: "作者記憶", 42: "李董記憶"},
+            {1: "作者記憶", 42: "李董記憶", 99: "局外人記憶"},
             (42, "Boss", "李董"),
             [],
             None,
             True,
-            [],
+            ["99"],
             {1},
-            True,
-            {42},
-        ),
-        (
-            {1: "作者記憶", 42: "李董記憶"},
-            (42, "Boss", "李董"),
-            [],
-            None,
-            True,
-            [["99"]],
-            {1},
-            True,
             {42},
         ),
         (
@@ -8941,9 +9023,8 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
             [],
             None,
             False,
-            [["42"]],
+            ["42"],
             {1},
-            False,
             set(),
         ),
         (
@@ -8952,9 +9033,8 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
             [42],
             None,
             True,
-            [["42"]],
+            ["42"],
             {1, 42},
-            False,
             set(),
         ),
         (
@@ -8963,9 +9043,8 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
             [],
             None,
             True,
-            [["999"]],
+            ["999"],
             {1},
-            False,
             set(),
         ),
         (
@@ -8974,9 +9053,8 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
             list(range(2, 11)),
             None,
             True,
-            [["42"]],
+            ["42"],
             set(range(1, 11)),
-            False,
             set(),
         ),
     ],
@@ -8985,10 +9063,10 @@ def test_recall_user_memories_fully_locked_reads_as_no_memory(memory_isolated_di
         "no-stored-memory",
         "explicit-mention-is-deterministic",
         "reference-author-is-deterministic",
-        "public-alias-selected",
+        "public-alias-picked",
         "public-alias-declined",
         "noncandidate-id-dropped",
-        "private-channel-skips-selector",
+        "private-channel-offers-nothing",
         "explicit-mention-removed-from-candidates",
         "bot-alias-removed-from-candidates",
         "deterministic-memories-not-displaced-by-budget",
@@ -9002,15 +9080,15 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
     mention_ids: list[int],
     reference_author_id: int | None,
     channel_public: bool,
-    select_id_lists: list[list[str]],
+    picks: list[str],
     expected_injected: set[int],
-    selection_expected: bool,
-    expected_callable: set[int],
+    expected_candidates: set[int],
 ) -> None:
     """Deterministic participants and optional public aliases stay in disjoint sets.
 
-    Injection is asserted by id and the optional allowlist structurally, never by a
-    sentinel substring over a serialized request.
+    Driven through the whole turn, so what the route is offered and what its picks resolve to
+    are both the pipeline's own. Injection is asserted by id and the offer structurally, never
+    by a sentinel substring over a serialized request.
     """
     del memory_isolated_dir
     cog = _cog()
@@ -9042,18 +9120,14 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
         parent.id = 988
         message.reference = FakeReference(resolved=parent)
 
-    _recorded(cog).responses.select_queue = [
-        [
-            _function_call_item(call_id=f"c{index}", arguments=json.dumps({"user_id_list": ids}))
-            for index, ids in enumerate(select_id_lists)
-        ]
-    ]
-    _recorded(cog).responses.stream_queue = [
-        [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
-    ]
+    # Staged on every case, so a pick only lands where the route was actually offered one.
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=picks
+    )
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
+    _assert_route_offered(cog=cog, candidates=expected_candidates)
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     # An allowlisted-but-memoryless user gets a placeholder block, not a leak; the boundary is
     # which ids' real memory reaches the model, so placeholder sections are filtered out.
@@ -9063,22 +9137,9 @@ async def test_handle_message_reply_user_memory_injection(  # noqa: PLR0913 -- p
         if body != NO_STORED_MEMORY
     }
     assert injected == expected_injected
-    # The current user message stays last so the model answers it, and no internal selection
-    # artifact (a function_call_output) ever leaks into the answer request.
+    # The current user message stays last so the model answers it.
     assert isinstance(answer, list)
     assert answer[-1].get("role") == "user"
-    assert not any(
-        isinstance(item, dict) and item.get("type") == "function_call_output" for item in answer
-    )
-
-    if selection_expected:
-        assert _recorded(cog).responses.create_streams == [False, True]
-        callable_ids = extract_callable_user_ids(
-            request=request_input(responses=_recorded(cog).responses, phase="selection")
-        )
-        assert callable_ids == expected_callable
-    else:
-        assert _recorded(cog).responses.create_streams == [True]
 
 
 async def test_deterministic_memories_are_author_reply_mentions_ordered_and_deduped(
@@ -9134,18 +9195,25 @@ async def test_history_only_users_are_not_memory_candidates(
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     message.channel = FakeChannel(history=fake_history)
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=["2"]
+    )
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
+    _assert_route_offered(cog=cog, candidates=set())
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert set(extract_user_memory_blocks(request=answer)) == {1}
-    assert _recorded(cog).responses.create_streams == [True]
 
 
-async def test_private_thread_skips_optional_memory_selection(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("where", ["private-thread", "group-dm", "dm"])
+async def test_a_channel_that_is_not_public_offers_the_route_no_candidates(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch, where: str
 ) -> None:
-    """A private thread never exposes an absent nickname-table member to selection."""
+    """Outside a public guild channel, an absent nickname-table member is never offered.
+
+    The route gets the plain shape, so a pick staged for that member has nowhere to land.
+    """
     del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
@@ -9162,20 +9230,37 @@ async def test_private_thread_skips_optional_memory_selection(
     )
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    cast("Any", message.channel).is_private = lambda: True
-    cast("Any", message.channel).parent = FakeChannel(history=message._history, view_channel=True)
+    if where == "private-thread":
+        cast("Any", message.channel).is_private = lambda: True
+        cast("Any", message.channel).parent = FakeChannel(
+            history=message._history, view_channel=True
+        )
+    else:
+        message.guild = None
+    if where == "dm":
+        dm_channel = MagicMock(spec=nextcord.DMChannel)
+        dm_channel.id = 555
+        dm_channel.history = message._history
+        message.channel = dm_channel
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=["42"]
+    )
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
+    _assert_route_offered(cog=cog, candidates=set())
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert set(extract_user_memory_blocks(request=answer)) == {1}
-    assert _recorded(cog).responses.create_streams == [True]
 
 
-async def test_optional_selection_uses_only_remaining_memory_budget(
+async def test_optional_picks_use_only_the_remaining_memory_budget(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Deterministic users fill seven slots, leaving one optional alias slot."""
+    """Deterministic users fill seven slots, leaving one optional alias slot.
+
+    The route names a deterministic participant first, which must not take that slot: only the
+    offered candidates can fill it, in the order the route named them.
+    """
     del memory_isolated_dir
     cog = _cog()
     for user_id in (*range(1, 8), 42, 43):
@@ -9194,48 +9279,112 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     message.mentions = [FakeAuthor(user_id=user_id) for user_id in range(2, 8)]
-    _recorded(cog).responses.select_queue = [
-        [_function_call_item(call_id="c0", arguments=json.dumps({"user_id_list": ["42", "43"]}))]
-    ]
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=["2", "42", "43"]
+    )
 
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
+    _assert_route_offered(cog=cog, candidates={42, 43})
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert set(extract_user_memory_blocks(request=answer)) == {*range(1, 8), 42}
-    selection = request_input(responses=_recorded(cog).responses, phase="selection")
-    assert extract_callable_user_ids(request=selection) == {42, 43}
+
+
+async def test_the_route_is_offered_candidates_with_no_deterministic_memory(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The oblique-reference offer must not be gated on the deterministic lookup finding something.
+
+    A conversation where nobody present has a stored fact is exactly the one the code-resolved
+    path has nothing to contribute to, so gating the offer on it switched the feature off in
+    the case it exists for (#663). Nothing downstream needs a non-empty starting list: the
+    picked memories build the block from scratch.
+    """
+    del memory_isolated_dir
+    cog = _cog()
+    _seed_fact(scope=user_scope(user_id=42), text="李董記憶")
+    _seed_fact(
+        scope=server_scope(server_id=1),
+        text="Boss(社群暱稱:李董)",
+        section="member_alias",
+        durability="permanent",
+        subject_id=42,
+    )
+    monkeypatch.setattr(
+        "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
+    )
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=["42"]
+    )
+
+    await _run_pipeline(
+        cog=cog, message=FakeMessage(content="<@999> 李董在嗎", author=FakeAuthor(user_id=1))
+    )
+
+    _assert_route_offered(cog=cog, candidates={42})
+    answer = request_input(responses=_recorded(cog).responses, phase="answer")
+    assert set(extract_user_memory_blocks(request=answer)) == {42}
+
+
+async def test_an_ask_turn_offers_the_route_no_candidates(
+    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/ask` in a server with a nickname table still gets the plain route shape.
+
+    Its synthesized message carries no guild while the surface knows which server it is in, and
+    the table is read off the message: the write side can never refresh it from `/ask`, so the
+    route there is offered nobody and a pick staged for it has nowhere to land.
+    """
+    del memory_isolated_dir
+    cog = _cog()
+    _seed_fact(scope=user_scope(user_id=1), text="作者記憶")
+    _seed_fact(scope=user_scope(user_id=42), text="第三人記憶")
+    _seed_fact(
+        scope=server_scope(server_id=1),
+        text="Boss(社群暱稱:李董)",
+        section="member_alias",
+        durability="permanent",
+        subject_id=42,
+    )
+    contexts: list[ReplyContext] = []
+
+    async def capture_answer(self: object, *, context: ReplyContext, **kwargs: object) -> None:
+        """Keeps the context the answer would have read, without an interaction to send on."""
+        del self, kwargs
+        contexts.append(context)
+
+    monkeypatch.setattr(AnswerTurn, "stream_answer", capture_answer)
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=["42"]
+    )
+    message = FakeMessage(content="李董在嗎", author=FakeAuthor(user_id=1))
+    message.guild = None
+    surface = TurnSurface(
+        message=as_message(fake=message),
+        # No user, so the history read is the empty conversation rather than the ask store.
+        interaction=cast(
+            "nextcord.Interaction[commands.Bot]", SimpleNamespace(user=None, channel_id=None)
+        ),
+        guild_id=1,
+    )
+
+    await _run_pipeline(cog=cog, message=message, surface=surface)
+
+    _assert_route_offered(cog=cog, candidates=set())
+    (context,) = contexts
+    assert context.server_memory_block is None
+    assert context.memory_block is not None
+    assert set(extract_user_memory_blocks(request=[context.memory_block])) == {1}
 
 
 @pytest.mark.parametrize(
-    (
-        "seeded_ids",
-        "server_nick",
-        "mentions",
-        "select_id_lists",
-        "select_usage",
-        "stream_usage",
-        "present",
-        "absent",
-    ),
+    ("seeded_ids", "server_nick", "mentions", "picks", "present", "absent"),
     [
-        (
-            [1],
-            None,
-            [],
-            [["42"]],
-            (100, 20),
-            (5, 6),
-            ["⬆ 5 ⬇ 6", "\n-# 📖 讀了 Tester (tester) 的記憶"],
-            [],
-        ),
-        ([1, 42], (42, "Boss", "李董"), [], [["42"]], (100, 20), (5, 6), ["⬆ 105 ⬇ 26"], []),
         (
             [1, 2, 3],
             None,
             [(2, "alice", "Alice"), (3, "bob", "Bob")],
             [],
-            None,
-            (1, 1),
             ["\n-# 📖 讀了 Tester (tester), Alice (alice) 等 3 人的記憶"],
             [],
         ),
@@ -9243,9 +9392,7 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             [1, 42],
             (42, "Boss", "李董"),
             [],
-            [["42"], ["42"]],
-            None,
-            (1, 1),
+            ["42", "42"],
             ["\n-# 📖 讀了 Tester (tester) 等 2 人的記憶"],
             ["社群暱稱", "42"],
         ),
@@ -9254,20 +9401,16 @@ async def test_optional_selection_uses_only_remaining_memory_budget(
             (1, "Tester", "李董"),
             [],
             [],
-            None,
-            (1, 1),
             ["\n-# 📖 讀了 Tester (tester) 的記憶"],
             ["社群暱稱"],
         ),
-        ([], None, [], [["42"]], None, (5, 6), [], ["📖"]),
-        # Nobody present is nameable and the selector found a table-only member: the footer
-        # has no name to print, so it reports the bare count. Only reachable since the
-        # optional lookup stopped being gated on a deterministic memory existing.
-        ([42], (42, "Boss", "李董"), [], [["42"]], None, (1, 1), ["\n-# 📖 讀了 1 人的記憶"], []),
+        ([], None, [], ["42"], [], ["📖"]),
+        # Nobody present is nameable and the route picked a table-only member: the footer has
+        # no name to print, so it reports the bare count. Only reachable because the optional
+        # offer is not gated on a deterministic memory existing (#663).
+        ([42], (42, "Boss", "李董"), [], ["42"], ["\n-# 📖 讀了 1 人的記憶"], []),
     ],
     ids=[
-        "skipped-selector-not-counted",
-        "selection-usage-folded-in",
         "owners-collapse-past-two",
         "absent-member-counted-never-named",
         "participant-alias-row-stays-out-of-the-credit",
@@ -9281,18 +9424,16 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
     seeded_ids: list[int],
     server_nick: tuple[int, str, str] | None,
     mentions: list[tuple[int, str, str]],
-    select_id_lists: list[list[str]],
-    select_usage: tuple[int, int] | None,
-    stream_usage: tuple[int, int],
+    picks: list[str],
     present: list[str],
     absent: list[str],
 ) -> None:
-    """The footer credits the memory owners actually read and folds selection tokens into usage.
+    """The footer credits the memory owners actually read.
 
     Reads the user-visible reply text (the feature's small, real output surface): the single-owner
-    credit, the selection-request token contribution, the collapse to "等 N 人" past two owners,
-    repeat-lookup de-duplication, and the no-credit case. Two of them also pin that the
-    `## 成員稱呼` row never reaches this line from either side it used to (#463) — an absent
+    credit, the collapse to "等 N 人" past two owners, repeat-pick de-duplication, and the
+    no-credit case. Two of them also pin that the `## 成員稱呼` row never reaches this line
+    from either side it used to (#463) — an absent
     member is counted into the "等 N 人" total and never named at all, a participant is named by
     their Discord label. The line opens on 讀了 because the write notes share this corner of the
     reply and a reader has to be able to tell them apart at a glance.
@@ -9321,25 +9462,11 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
         author.name, author.display_name = name, display
         mention_authors.append(author)
     message.mentions = mention_authors
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", recall_user_ids=picks
+    )
 
-    if select_usage is not None:
-        _recorded(cog).responses.select_usage = SimpleNamespace(
-            input_tokens=select_usage[0], output_tokens=select_usage[1]
-        )
-    _recorded(cog).responses.select_queue = [
-        [
-            _function_call_item(call_id=f"c{index}", arguments=json.dumps({"user_id_list": ids}))
-            for index, ids in enumerate(select_id_lists)
-        ]
-    ]
-    _recorded(cog).responses.stream_queue = [
-        [
-            _text_event(delta="好"),
-            _completed_event(input_tokens=stream_usage[0], output_tokens=stream_usage[1]),
-        ]
-    ]
-
-    await _reply_via_pipeline(cog=cog, message=message)
+    await _run_pipeline(cog=cog, message=message)
 
     content = message.replies[0].content or ""
     for fragment in present:
@@ -9348,10 +9475,10 @@ async def test_handle_message_reply_memory_footer(  # noqa: PLR0913 -- parametri
         assert fragment not in content
 
 
-async def test_handle_message_reply_retains_author_memory_when_optional_selection_fails(
+async def test_an_unparseable_route_keeps_the_author_memory_and_drops_only_the_picks(
     memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed optional selector loses only the absent member's memory."""
+    """A triage answer outside its schema loses the optional pick, never the turn."""
     del memory_isolated_dir
     cog = _cog()
     _seed_fact(scope=user_scope(user_id=1), text="甲")
@@ -9367,22 +9494,24 @@ async def test_handle_message_reply_retains_author_memory_when_optional_selectio
     monkeypatch.setattr(
         "discordbot.cogs.gen_reply.answer.schedule_memory_update", lambda **kwargs: None
     )
+    with pytest.raises(ValidationError) as invalid:
+        RecallRouteClassification.model_validate(obj={"decision": "QA", "recall_user_ids": 42})
 
-    async def boom(self: object, **kwargs: object) -> object:
-        """Simulates a selection-request failure."""
+    async def reject(**kwargs: object) -> object:
+        """Fails the way `responses.parse` does on a reply outside the schema."""
         del kwargs
-        raise RuntimeError("selection provider error")
+        raise invalid.value
 
-    monkeypatch.setattr(ReplyContextBuilder, "select_recalled_memories", boom)
+    monkeypatch.setattr(_recorded(cog).responses, "parse", reject)
 
     _recorded(cog).responses.stream_queue = [
         [_text_event(delta="照常回答"), _completed_event(input_tokens=5, output_tokens=6)]
     ]
 
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    await _reply_via_pipeline(cog=cog, message=message)
+    message = FakeMessage(content="<@999> 李董在嗎", author=FakeAuthor(user_id=1))
+    await _run_pipeline(cog=cog, message=message)
 
-    # The answer request still ran with the already-resolved deterministic memory only.
+    # The answer request still ran with the deterministic memory only.
     assert (message.replies[0].content or "").startswith("照常回答")
     answer = request_input(responses=_recorded(cog).responses, phase="answer")
     assert "甲" in (extract_user_memory_blocks(request=answer).get(1) or "")
@@ -9420,8 +9549,7 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
 
     One matrix over (guild/DM, public/private): the read block rides the answer only on a
     guild turn, the per-user write always runs, and the per-server write additionally needs a
-    public guild channel. This server memory has no nickname table, so the optional selector
-    must always be skipped.
+    public guild channel.
     """
     del memory_isolated_dir
     cog = _cog()
@@ -9470,8 +9598,6 @@ async def test_handle_message_reply_server_memory_gating(  # noqa: PLR0913 -- pa
             assert (
                 _toolkit(cog=cog).server_memory_writer.consolidate_prompt is SERVER_PHASE2_PROMPT
             )
-
-    assert _recorded(cog).responses.create_streams == [True]
 
 
 def test_allowlist_ids_from_server_memory_parses_nickname_table() -> None:
@@ -9655,171 +9781,144 @@ async def test_streamer_footer_shows_route_effort() -> None:
 
 
 async def test_route_classify_carries_decision_and_defaults_qa() -> None:
-    """The route classifies the reply mode; unparsed output falls back to QA."""
+    """The route classifies the reply mode and grades effort; unparsed output falls back to QA."""
     cog = _cog()
     _recorded(cog).responses.output_parsed = RouteClassification(
-        decision="IMAGE", link_context_sources=["threads", "bilibili"]
+        decision="IMAGE", link_context_sources=["threads", "bilibili"], effort="low"
     )
     message = FakeMessage(content="draw a cat", author=FakeAuthor(user_id=1))
     routed = await _route(cog=cog, message=message)
     assert routed.decision == "IMAGE"
     assert routed.link_context_sources == ["threads", "bilibili"]
+    assert routed.effort == "low"
 
     _recorded(cog).responses.output_parsed = None
     fallback = await _route(cog=cog, message=message)
     assert fallback.decision == "QA"
     assert fallback.link_context_sources == []
+    assert fallback.effort == "high"
 
 
-async def test_grade_effort_carries_grade_and_defaults_high() -> None:
-    """The effort grader returns the model's grade; unparsed output falls back to high."""
-    cog = _cog()
-    _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
-    message = FakeMessage(content="hi", author=FakeAuthor(user_id=1))
-    assert (await _grade(cog=cog, message=message)).effort == "low"
-
-    _recorded(cog).responses.effort_parsed = None
-    assert (await _grade(cog=cog, message=message)).effort == "high"
-
-
-async def test_grade_effort_asks_the_model_even_about_what_it_cannot_read() -> None:
+async def test_route_grades_effort_even_on_what_it_cannot_read() -> None:
     """An attachment or a URL is graded by the model, not settled in code (#493)."""
     cog = _cog()
-    _recorded(cog).responses.effort_parsed = EffortGrade(effort="low")
+    _recorded(cog).responses.output_parsed = RouteClassification(decision="QA", effort="low")
 
     with_attachment = FakeMessage(content="how do I fix this", author=FakeAuthor(user_id=1))
     with_attachment.attachments = [FakeAttachment(filename="shot.png", content_type="image/png")]
-    assert (await _grade(cog=cog, message=with_attachment)).effort == "low"
+    assert (await _route(cog=cog, message=with_attachment)).effort == "low"
 
     with_url = FakeMessage(content="這篇 https://example.test/post", author=FakeAuthor(user_id=1))
-    assert (await _grade(cog=cog, message=with_url)).effort == "low"
+    assert (await _route(cog=cog, message=with_url)).effort == "low"
 
-    # Both reached the grader: #491's code-decided "high" for these graded a sticker-only
+    # Both reached the model: #491's code-decided "high" for these graded a sticker-only
     # reaction as if it hid something to read, and bought nothing the prompt does not already
     # deliver on its own.
     assert len(_recorded(cog).responses.parse_models) == 2
 
 
-async def test_resolve_effort_returns_graded_effort_on_success() -> None:
-    """A completed grade flows through _resolve_effort as the answer model's effort."""
+_ROUTE_REFERENCE = [EasyInputMessageParam(role="user", content="parent (p) [id: 7]: 原訊息")]
+_ROUTE_CURRENT = [EasyInputMessageParam(role="user", content="Tester (tester) [id: 1]: 李董在嗎")]
+_ROUTE_SERVER_MEMORY = render_server_memory_block(
+    memory="## 成員稱呼\n* Boss(社群暱稱:李董)[id: 42]"
+)
+
+
+async def test_the_route_reads_neither_memory_block_without_candidates() -> None:
+    """With nothing to pick from, the route asks the plain question over the messages alone.
+
+    The server memory is handed in on every turn that has one, and must still stay out: only a
+    candidate block gives the route a reason to read it.
+    """
     cog = _cog()
-    route_done = asyncio.Event()
-    route_done.set()
-
-    async def graded() -> EffortGrade:
-        """Returns a non-default grade so the success path is pinned."""
-        return EffortGrade(effort="low")
-
-    effort_task = asyncio.create_task(coro=graded())
-    assert (
-        await _classifier(cog=cog, message=as_message(fake=FakeMessage())).resolve_effort(
-            effort_task=effort_task, route_done=route_done
-        )
-        == "low"
+    # Staged with picks, which the plain schema has no field for.
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", effort="low", recall_user_ids=["42"]
     )
 
-
-async def test_resolve_effort_defaults_high_on_error() -> None:
-    """A failed effort grade resolves to high effort rather than stalling the reply."""
-    cog = _cog()
-    route_done = asyncio.Event()
-    route_done.set()
-
-    async def boom() -> EffortGrade:
-        """Fails the grade to exercise the fallback."""
-        raise RuntimeError("boom")
-
-    effort_task = asyncio.create_task(coro=boom())
-    assert (
-        await _classifier(cog=cog, message=as_message(fake=FakeMessage())).resolve_effort(
-            effort_task=effort_task, route_done=route_done
-        )
-        == "high"
+    route = await _classifier(cog=cog, message=as_message(fake=FakeMessage())).classify(
+        reference_messages=_ROUTE_REFERENCE,
+        current_message=_ROUTE_CURRENT,
+        recall_candidates={},
+        server_memory_block=_ROUTE_SERVER_MEMORY,
     )
 
+    responses = _recorded(cog).responses
+    assert responses.parse_text_formats == [RouteClassification]
+    assert responses.parse_instructions == [ROUTE_PROMPT]
+    assert responses.parse_inputs == [[*_ROUTE_REFERENCE, *_ROUTE_CURRENT]]
+    assert type(route) is RouteClassification
+    assert route.effort == "low"
 
-async def test_resolve_effort_defaults_high_on_grace_timeout(
+
+async def test_the_route_reads_the_server_memory_first_and_the_candidates_last() -> None:
+    """Offered candidates, the route reads the table first and decides against the block last."""
+    cog = _cog()
+    _recorded(cog).responses.output_parsed = RecallRouteClassification(
+        decision="QA", effort="low", recall_user_ids=["42"]
+    )
+    candidates = {
+        42: RecallCandidate(prompt_label="Boss(社群暱稱:李董)"),
+        43: RecallCandidate(prompt_label="Bob(社群暱稱:阿伯)"),
+    }
+    classifier = _classifier(cog=cog, message=as_message(fake=FakeMessage()))
+
+    route = await classifier.classify(
+        reference_messages=_ROUTE_REFERENCE,
+        current_message=_ROUTE_CURRENT,
+        recall_candidates=candidates,
+        server_memory_block=_ROUTE_SERVER_MEMORY,
+    )
+    # A guild with a candidate but no server memory of its own has no block to lead with.
+    await classifier.classify(
+        reference_messages=_ROUTE_REFERENCE,
+        current_message=_ROUTE_CURRENT,
+        recall_candidates=candidates,
+        server_memory_block=None,
+    )
+
+    responses = _recorded(cog).responses
+    assert responses.parse_text_formats == [RecallRouteClassification] * 2
+    assert responses.parse_instructions == [ROUTE_PROMPT + ROUTE_RECALL_SECTION] * 2
+    candidate_block = render_callable_users_block(allowed=candidates)
+    assert responses.parse_inputs == [
+        [_ROUTE_SERVER_MEMORY, *_ROUTE_REFERENCE, *_ROUTE_CURRENT, candidate_block],
+        [*_ROUTE_REFERENCE, *_ROUTE_CURRENT, candidate_block],
+    ]
+    assert extract_callable_user_ids(request=[candidate_block]) == {42, 43}
+    assert isinstance(route, RecallRouteClassification)
+    assert route.recall_user_ids == ["42"]
+    assert route.effort == "low"
+
+
+async def test_an_unparseable_route_falls_back_to_a_plain_high_effort_qa(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A grade still running past the post-route grace resolves to high effort."""
+    """A triage answer that fails its schema loses the picks along with everything else.
+
+    The fallback is the plain class, so the pipeline resolves no picks from it, and `high`,
+    the grade the route gives whatever it is unsure about.
+    """
     cog = _cog()
-    monkeypatch.setattr("discordbot.cogs.gen_reply.routing.EFFORT_GRACE_SECONDS", 0.01)
-    route_done = asyncio.Event()
-    route_done.set()
+    with pytest.raises(ValidationError) as invalid:
+        RecallRouteClassification.model_validate(obj={"decision": "SING"})
 
-    async def slow() -> EffortGrade:
-        """Outlives the grace window."""
-        await asyncio.sleep(30)
-        return EffortGrade(effort="low")
+    async def reject(**kwargs: object) -> object:
+        """Fails the way `responses.parse` does on a reply outside the schema."""
+        del kwargs
+        raise invalid.value
 
-    effort_task = asyncio.create_task(coro=slow())
-    assert (
-        await _classifier(cog=cog, message=as_message(fake=FakeMessage())).resolve_effort(
-            effort_task=effort_task, route_done=route_done
-        )
-        == "high"
+    monkeypatch.setattr(_recorded(cog).responses, "parse", reject)
+
+    route = await _classifier(cog=cog, message=as_message(fake=FakeMessage())).classify(
+        reference_messages=_ROUTE_REFERENCE,
+        current_message=_ROUTE_CURRENT,
+        recall_candidates={42: RecallCandidate(prompt_label="Boss(社群暱稱:李董)")},
+        server_memory_block=_ROUTE_SERVER_MEMORY,
     )
 
-
-async def test_on_message_cancels_effort_task_on_image_route(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The IMAGE route cancels the parallel effort grade it will never consume."""
-    cog = _cog()
-    cancelled: list[bool] = []
-
-    async def fake_route(
-        self: object, *, reference_messages: list[object], current_message: list[object]
-    ) -> RouteClassification:
-        """Routes every message to IMAGE after yielding so the effort task starts."""
-        del reference_messages, current_message
-        await asyncio.sleep(0)
-        return RouteClassification(decision="IMAGE")
-
-    async def fake_grade(
-        self: object, *, reference_messages: list[object], current_message: list[object]
-    ) -> EffortGrade:
-        """Blocks until cancelled, recording the cancellation."""
-        del self, reference_messages, current_message
-        try:
-            await asyncio.sleep(30)
-        except asyncio.CancelledError:
-            cancelled.append(True)
-            raise
-        return EffortGrade(effort="low")
-
-    async def fake_prepare(
-        self: object,
-        *,
-        history_limit: int,
-        parts_task: object,
-        text_parts: object,
-        route_done: object,
-    ) -> ReplyContext:
-        """Keeps the speculative prep off the real memory and history paths."""
-        del self, history_limit, parts_task, text_parts, route_done
-        return ReplyContext()
-
-    async def fake_image_handler(self: object, *, user_prompt: str, **kwargs: object) -> None:
-        """Accepts the dispatched image request."""
-        del self, user_prompt
-
-    async def fake_reaction(
-        message: FakeMessage, bot_user: object, emoji: str, previous: str | None = None
-    ) -> str:
-        """Skips real reaction calls."""
-        del message, bot_user, previous
-        return emoji
-
-    monkeypatch.setattr(RouteClassifier, "classify", fake_route)
-    monkeypatch.setattr(RouteClassifier, "grade_effort", fake_grade)
-    monkeypatch.setattr(ReplyContextBuilder, "build", fake_prepare)
-    monkeypatch.setattr(MediaReplyRoutes, "handle_image", fake_image_handler)
-    monkeypatch.setattr("discordbot.utils.reactions.update_reaction", fake_reaction)
-
-    message = FakeMessage(content="<@!999> draw", author=FakeAuthor(user_id=1))
-    await cog.on_message(message=as_message(fake=message))
-    assert cancelled == [True]
+    assert type(route) is RouteClassification
+    assert route == RouteClassification(decision="QA", effort="high")
 
 
 async def test_handle_message_reply_uses_route_effort() -> None:
@@ -9843,33 +9942,6 @@ async def test_route_input_excludes_attachment_payloads() -> None:
     rendered = str(_recorded(cog).responses.parse_inputs[-1])
     assert "input_file" not in rendered
     assert "[attachment: file]" in rendered
-
-
-async def test_select_recalled_memories_uses_text_only_transcript() -> None:
-    """The selection request carries the text-only transcript verbatim, no payloads."""
-    cog = _cog()
-    _recorded(cog).responses.select_queue = [[]]
-    message_list = [
-        EasyInputMessageParam(
-            role="user",
-            content=[
-                {"type": "input_text", "text": "user (u) [id: 1]: look"},
-                {"type": "input_text", "text": "[attachment: image]"},
-            ],
-        )
-    ]
-
-    message = FakeMessage()
-    await _context_builder(cog=cog, message=as_message(fake=message)).select_recalled_memories(
-        message_list=message_list,
-        allowed={1: RecallCandidate(prompt_label="u", credit_label="u")},
-        recall_context=_recall_context_for(message=as_message(fake=message)),
-    )
-
-    rendered = str(_recorded(cog).responses.create_inputs[-1])
-    assert "input_image" not in rendered
-    assert "input_file" not in rendered
-    assert "[attachment: image]" in rendered
 
 
 async def test_attachment_parts_cached_until_message_changes() -> None:
@@ -9956,150 +10028,13 @@ async def test_attachment_cache_refreshes_on_embed_url_swap(
     assert rendered_urls == ["https://media.test/a.png", "https://media.test/b.png"]
 
 
-async def _prepare_context_with_hanging_selection(
-    cog: ReplyGeneratorCogs, message: FakeMessage, monkeypatch: pytest.MonkeyPatch
-) -> ReplyContext:
-    """Builds reply context where an optional alias selection exceeds its grace."""
-    monkeypatch.setattr("discordbot.cogs.gen_reply.context.RECALL_SELECT_GRACE_SECONDS", 0.01)
-    _seed_fact(
-        scope=server_scope(server_id=1),
-        text="Boss(社群暱稱:李董)",
-        section="member_alias",
-        durability="permanent",
-        subject_id=42,
-    )
-
-    async def slow_selection(self: object, **kwargs: object) -> None:
-        """Simulates a proxy hang far past the selection grace."""
-        del kwargs
-        await asyncio.sleep(1)
-
-    monkeypatch.setattr(ReplyContextBuilder, "select_recalled_memories", slow_selection)
-    msg = as_message(fake=message)
-    parts_task = asyncio.create_task(coro=_context_builder(cog=cog, message=msg).render_parts())
-    text_parts = await _context_builder(cog=cog, message=msg).render_parts(text_only=True)
-    # The route has already returned, so selection gets only the tiny grace before it times out.
-    route_done = asyncio.Event()
-    route_done.set()
-    return await _context_builder(cog=cog, message=msg).build(
-        history_limit=2, parts_task=parts_task, text_parts=text_parts, route_done=route_done
-    )
-
-
-async def test_the_optional_selector_runs_with_no_deterministic_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The oblique-reference lookup must not be gated on the deterministic one finding something.
-
-    A conversation where nobody present has a stored fact is exactly the one the code-resolved
-    path has nothing to contribute to, so gating the selector on it switched the feature off in
-    the case it exists for. Nothing downstream needs a non-empty starting list: the selected
-    memories rebuild the block from scratch.
-    """
-    del memory_isolated_dir
-    cog = _cog()
-    _seed_fact(
-        scope=server_scope(server_id=1),
-        text="Boss(社群暱稱:李董)",
-        section="member_alias",
-        durability="permanent",
-        subject_id=42,
-    )
-    message = FakeMessage(content="李董在嗎", author=FakeAuthor(user_id=1))
-
-    reached: list[object] = []
-
-    async def record_selection(self: object, **kwargs: object) -> RecallSelection:
-        """Records that the optional lookup was reached at all."""
-        del self, kwargs
-        reached.append(True)
-        return RecallSelection(memories=[], input_tokens=0, output_tokens=0)
-
-    monkeypatch.setattr(ReplyContextBuilder, "select_recalled_memories", record_selection)
-    msg = as_message(fake=message)
-    parts_task = asyncio.create_task(coro=_context_builder(cog=cog, message=msg).render_parts())
-    text_parts = await _context_builder(cog=cog, message=msg).render_parts(text_only=True)
-    route_done = asyncio.Event()
-    route_done.set()
-
-    context = await _context_builder(cog=cog, message=msg).build(
-        history_limit=2, parts_task=parts_task, text_parts=text_parts, route_done=route_done
-    )
-
-    assert reached, "the alias table named an absent member, so the selector had to run"
-    assert context.memory_block is None
-
-
-async def test_memory_selection_timeout_retains_author_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A slow optional selection cannot cost the deterministic author's memory."""
-    del memory_isolated_dir
-    cog = _cog()
-    _seed_fact(scope=user_scope(user_id=1), text="甲")
-    _seed_fact(scope=user_scope(user_id=42), text="不該注入的第三人")
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-
-    context = await _prepare_context_with_hanging_selection(
-        cog=cog, message=message, monkeypatch=monkeypatch
-    )
-
-    assert context.memory_block is not None
-    blocks = extract_user_memory_blocks(request=[context.memory_block])
-    assert "甲" in (blocks.get(1) or "")
-    assert 42 not in blocks
-    assert context.memory_credits.named
-
-
-async def test_memory_selection_timeout_without_author_memory_injects_nothing(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A timeout injects nothing when no deterministic participant has memory."""
-    del memory_isolated_dir
-    cog = _cog()
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-
-    context = await _prepare_context_with_hanging_selection(
-        cog=cog, message=message, monkeypatch=monkeypatch
-    )
-
-    assert context.memory_block is None
-    assert context.memory_credits.total == 0
-
-
-async def test_memory_selection_timeout_retains_author_and_reference_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A reply resolves both deterministic memories before the optional selector."""
-    del memory_isolated_dir
-    cog = _cog()
-    _seed_fact(scope=user_scope(user_id=1), text="甲")
-    _seed_fact(scope=user_scope(user_id=2), text="乙")
-    # _replied_to_message only returns a resolved message that passes isinstance(_, Message).
-    monkeypatch.setattr("discordbot.cogs.gen_reply.references.Message", FakeMessage)
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
-    parent = FakeMessage(content="原訊息", author=FakeAuthor(user_id=2))
-    parent.id = 988
-    message.reference = FakeReference(resolved=parent)
-
-    context = await _prepare_context_with_hanging_selection(
-        cog=cog, message=message, monkeypatch=monkeypatch
-    )
-
-    assert context.memory_block is not None
-    blocks = extract_user_memory_blocks(request=[context.memory_block])
-    assert "甲" in (blocks.get(1) or "")
-    assert "乙" in (blocks.get(2) or "")
-    assert context.memory_credits.total == 2
-
-
 async def test_deterministic_memory_lookup_skips_locked_author_memory(
-    memory_isolated_dir: object, monkeypatch: pytest.MonkeyPatch
+    memory_isolated_dir: object,
 ) -> None:
     """Deterministic lookup injects nothing when memory lives in another guild.
 
     The direct path opens exactly the compartments the optional lookup does, so a
-    selector failure cannot reach a directory the resolver would not have opened.
+    pick cannot reach a directory the resolver would not have opened.
     """
     del memory_isolated_dir
     cog = _cog()
@@ -10110,10 +10045,16 @@ async def test_deterministic_memory_lookup_skips_locked_author_memory(
         section="permanent",
         durability="permanent",
     )
-    message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
+    builder = _context_builder(
+        cog=cog,
+        message=as_message(fake=FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))),
+    )
 
-    context = await _prepare_context_with_hanging_selection(
-        cog=cog, message=message, monkeypatch=monkeypatch
+    context = await builder.build(
+        history_limit=2,
+        parts_task=asyncio.create_task(coro=builder.render_parts()),
+        recall=builder.plan_recall(),
+        recall_picks=_resolved_picks(),
     )
 
     assert context.memory_block is None

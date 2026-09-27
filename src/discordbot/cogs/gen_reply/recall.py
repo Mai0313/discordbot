@@ -3,9 +3,9 @@
 Recall is the half that only reads. The write side is the answer model marking notes in
 its own reply (`markers.py`) and `services/memory/` turning them into facts; nothing here
 touches either. Code directly resolves the current author, reply-chain authors, and users
-explicitly mentioned in the current message. The selector, running behind the
-`get_user_memory` function tool defined below, only decides whether the latest message
-obliquely refers to an additional member from a public server nickname table. Every path
+explicitly mentioned in the current message. The route call (`routing.py`) only decides
+whether the latest message obliquely refers to an additional member from a public server
+nickname table, naming ids from the candidate block rendered here. Every path
 still passes a per-request allowlist to `recall_user_memories`, which drops any requested
 id outside it before reading a file. A second boundary decides how much of an allowed
 user's memory this conversation may see, and it is a path join rather than a filter:
@@ -18,12 +18,10 @@ construction, so they live outside the tree.
 """
 
 import re
-import json
 
 from nextcord import User, Member
 from pydantic import Field, BaseModel
 from nextcord.utils import escape_mentions
-from openai.types.responses.function_tool_param import FunctionToolParam
 from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
@@ -41,31 +39,6 @@ from discordbot.services.memory.store import (
 # sees an explicit signal. Also lets the usage footer tell "looked up" apart from
 # "actually had memory".
 NO_STORED_MEMORY = "(no stored memory for this user)"
-
-# Mechanism-only description: the "when to call it" behavior rule lives in
-# RECALL_SELECT_PROMPT (developer authority), not in the tool definition.
-GET_USER_MEMORY_TOOL: FunctionToolParam = {
-    "type": "function",
-    "name": "get_user_memory",
-    "strict": True,
-    "description": (
-        "Look up consolidated long-term memory (stable preferences, facts, interaction "
-        "style) for one or more Discord users by id. Only ids listed as callable in the "
-        "current request are returned; others are silently ignored."
-    ),
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "user_id_list": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Discord user ids (as strings) whose long-term memory to read.",
-            }
-        },
-        "required": ["user_id_list"],
-        "additionalProperties": False,
-    },
-}
 
 
 class RecallContext(BaseModel):
@@ -141,7 +114,7 @@ class RecallCandidate(BaseModel):
 
 
 class UserMemory(BaseModel):
-    """One user's long-term memory returned by the `get_user_memory` tool."""
+    """One user's long-term memory, as read for this reply."""
 
     prompt_label: str = Field(
         ..., description="Label the model reads for this user, community aliases included."
@@ -152,21 +125,6 @@ class UserMemory(BaseModel):
     user_id: str = Field(..., description="String form of the Discord user id.")
     memory: str = Field(
         ..., description="Consolidated long-term memory markdown, identity-stripped."
-    )
-
-
-class RecallSelection(BaseModel):
-    """Optional third-party memories chosen by the selector plus its token usage."""
-
-    memories: list[UserMemory] = Field(
-        ...,
-        description="Additional user memories the model chose, allowlist-enforced and deduped.",
-    )
-    input_tokens: int = Field(
-        ..., description="Input tokens the selection request consumed, for reply accounting."
-    )
-    output_tokens: int = Field(
-        ..., description="Output tokens the selection request consumed, for reply accounting."
     )
 
 
@@ -278,9 +236,9 @@ def render_callable_users_block(*, allowed: dict[int, RecallCandidate]) -> EasyI
 def render_memory_context_block(*, memories: list[UserMemory]) -> EasyInputMessageParam:
     """Renders resolved user memories as a low-authority assistant context note.
 
-    Code decides the direct participants while the selector may add an obliquely referenced
-    third party. They are injected here as background context because the optional tool call
-    stays separate from the answer phase (latency / cost / provider-neutral). Rendered as
+    Code decides the direct participants while the route call may add an obliquely referenced
+    third party. They are injected here as background context, decided before the answer phase
+    rather than by a tool call inside it. Rendered as
     `role=assistant` (the bot's own note, the lowest authority tier) so a stored operating
     preference cannot outrank the developer prompt or the user's current message.
     """
@@ -298,7 +256,7 @@ def render_server_memory_block(*, memory: str) -> EasyInputMessageParam:
     """Renders the bot's memory of the current server as a low-authority assistant note.
 
     There is exactly one server memory per guild, so unlike user memory it needs no
-    selection phase, allowlist, or function tool: it is read directly and injected as
+    selection or allowlist: it is read directly and injected as
     background context. Rendered as `role=assistant` (the bot's own note, the lowest
     authority tier) so a remembered server norm cannot outrank the developer prompt or
     the user's current message.
@@ -313,8 +271,8 @@ def render_server_memory_block(*, memory: str) -> EasyInputMessageParam:
 def render_tone_block(*, tone: str) -> EasyInputMessageParam:
     """Renders the reply target's tone-preference note as a low-authority assistant note.
 
-    Unlike user memory, the tone note needs no selection phase, allowlist, source
-    filter, or function tool: it is the message author's own preference for how the
+    Unlike user memory, the tone note needs no selection, allowlist or source
+    filter: it is the message author's own preference for how the
     bot should sound (persona-independent and cross-server safe by construction), so
     it is read directly for that one author and injected on every reply. Rendered as
     `role=assistant` (the bot's own note, the lowest authority tier) so a remembered
@@ -327,21 +285,6 @@ def render_tone_block(*, tone: str) -> EasyInputMessageParam:
         f"rules and the current message always win.)\n{tone}"
     )
     return EasyInputMessageParam(role="assistant", content=text)
-
-
-def parse_user_id_list(*, arguments: str) -> list[str]:
-    """Parses the `user_id_list` out of a tool call's raw JSON arguments string.
-
-    A malformed or unexpected payload yields an empty list so a bad tool call
-    degrades into an empty lookup instead of crashing the reply.
-    """
-    try:
-        raw = json.loads(arguments)["user_id_list"]
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return []
-    if not isinstance(raw, list):
-        return []
-    return [str(item) for item in raw]
 
 
 def compartments_for_reading(owner_id: int, context: RecallContext) -> list[str]:

@@ -160,20 +160,8 @@ DEEP_RESEARCH_INSTRUCTION = f"""
     * Never mention the tags and never wrap them in backticks.
 """
 
-RECALL_SELECT_PROMPT = """
-Your only task: decide whether the latest user message obliquely refers to any additional server members, and fetch their long-term memory if so.
-
-* Every user message is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.
-* Code has already fetched memory for the latest message's author, reply-chain authors, and explicitly mentioned users. Never look them up again.
-* A system block lists ONLY additional public-channel members eligible for this oblique-reference lookup, one per line as `[id: USER_ID] label`. Labels carry the community nicknames (社群暱稱) used to identify them. Call `get_user_memory` only with an id from that block; ids outside it are ignored.
-* A background block carries this server's memory, including the `## 成員稱呼` table that maps colloquial nicknames to member ids. Use it only to decide whether the LATEST message clearly refers to an eligible member by nickname, a reasonable misspelling, or another unambiguous indirect name.
-* Do not look someone up merely because they appear in older history, an attachment, linked third-party content, or the nickname table. Do not guess from a generic description, a vague pronoun, or edit distance alone. When the reference is ambiguous, call nothing.
-* Call `get_user_memory` only when the latest message actually refers to an eligible member and their prior memory would help answer it. Calling nothing is the normal case.
-* Do NOT write a reply or any other prose. Either call `get_user_memory` with the relevant ids, or do nothing.
-"""
-
 ROUTE_PROMPT = """
-You are a routing classifier for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `decision` field according to the rules below.
+You are a routing classifier and effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in every field according to the rules below.
 
 The bot has two ways to show a generated image. The QA path can already attach its own generated illustration inline whenever one would help its written answer, so an image alongside a reply is NOT by itself a reason to leave QA. Route to IMAGE only when a produced image is the whole point of the request, not a helpful add-on to an answer.
 
@@ -193,10 +181,8 @@ Also fill in the `link_context_sources` field for registered linked-post sources
 - Include a source only when a matching link is present AND the user wants the bot to read that post or video — for example summarizing, explaining, analyzing, comparing, reacting to, or answering a question about its actual content. Threads, Facebook and Instagram links may be in the latest message OR in the message it is replying to; Twitter, Douyin and Bilibili links must be in the latest message.
 - Leave a source out when its link is incidental: the user is just sharing it, citing it as background, asking about something else, or can be answered from the surrounding text without reading the linked content. Judge each source separately when several kinds of link are present.
 - This field is independent of `decision`; it is only acted on when `decision` is QA. Include each source at most once, and when in doubt leave it out.
-"""
 
-EFFORT_PROMPT = """
-You are an effort grader for a Discord bot. Read the user's latest message together with any referenced or attached context, then fill in the `effort` field with how much reasoning the answer model should spend on its reply.
+Also fill in the `effort` field with how much reasoning the answer model should spend on its reply. This field is independent of `decision`; it is only acted on when `decision` is QA.
 
 `high` is the ordinary grade. Give it to anything that wants a real answer: a question about facts, code, or how something works; a request to make, find, explain, or work something out; a problem to solve; anything that turns on content you were not shown — and anything you are unsure about.
 
@@ -206,6 +192,19 @@ You are an effort grader for a Discord bot. Read the user's latest message toget
 - A person could answer it in one line without knowing anything in particular.
 
 Wording does not decide it. A casual-sounding message that really wants something answered is `high`; a question asked purely as banter, where any friendly line would do, is `low`.
+"""
+
+# Appended to ROUTE_PROMPT only on a turn that offers optional recall candidates, together with the
+# `recall_user_ids` field (`RecallRouteClassification`), so a turn without candidates is asked nothing
+# about memory.
+ROUTE_RECALL_SECTION = """
+Also fill in the `recall_user_ids` field: decide whether the latest user message obliquely refers to any additional server members whose long-term memory would help answer it.
+* Every user message is prefixed with `display_name (username) [id: USER_ID]: ` identifying its sender.
+* Code has already fetched memory for the latest message's author, reply-chain authors, and explicitly mentioned users. Never list them.
+* A system block lists ONLY additional public-channel members eligible for this oblique-reference lookup, one per line as `[id: USER_ID] label`. Labels carry the community nicknames (社群暱稱) used to identify them. List only ids from that block; ids outside it are ignored.
+* A background block carries this server's memory, including the `## 成員稱呼` table that maps colloquial nicknames to member ids. Use it only to decide whether the LATEST message clearly refers to an eligible member by nickname, a reasonable misspelling, or another unambiguous indirect name.
+* Do not list someone merely because they appear in older history, an attachment, linked third-party content, or the nickname table. Do not guess from a generic description, a vague pronoun, or edit distance alone. When the reference is ambiguous, leave it empty.
+* List an id only when the latest message actually refers to an eligible member and their prior memory would help answer it. An empty list is the normal case.
 """
 
 # Director instructions for the IMAGE route (and edit): faithfully restate a thin user request as

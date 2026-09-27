@@ -74,7 +74,6 @@ class RecordedResponses(Protocol):
     """
 
     create_streams: list[bool]
-    create_tools: list[list[object] | None]
     create_inputs: list[ResponseInputParam | str]
 
 
@@ -250,26 +249,14 @@ def has_threads_context_block(request: ResponseInputParam | str) -> bool:
     return False
 
 
-def tool_names_for_call(responses: RecordedResponses, n: int) -> list[str]:
-    """Returns the tool names offered on the nth recorded ``create`` call."""
-    names: list[str] = []
-    for tool in responses.create_tools[n] or []:
-        if isinstance(tool, Mapping):
-            name = tool.get("name")
-            if isinstance(name, str):
-                names.append(name)
-    return names
-
-
-def request_index(responses: RecordedResponses, phase: Literal["selection", "answer"]) -> int:
+def request_index(responses: RecordedResponses, phase: Literal["answer"]) -> int:
     """Maps a semantic pipeline phase to its recorded ``create`` index.
 
-    Selection is the first non-streaming call; the answer is the last streaming
-    call. Lets tests reference phases by name instead of hardcoding positions.
+    The answer is the last streaming call. Lets tests reference phases by name
+    instead of hardcoding positions.
     """
+    del phase
     streams = responses.create_streams
-    if phase == "selection":
-        return streams.index(False)
     for index in range(len(streams) - 1, -1, -1):
         if streams[index]:
             return index
@@ -277,7 +264,7 @@ def request_index(responses: RecordedResponses, phase: Literal["selection", "ans
 
 
 def request_input(
-    responses: RecordedResponses, phase: Literal["selection", "answer"]
+    responses: RecordedResponses, phase: Literal["answer"]
 ) -> ResponseInputParam | str:
     """Returns the recorded input for a semantic pipeline phase."""
     return responses.create_inputs[request_index(responses=responses, phase=phase)]

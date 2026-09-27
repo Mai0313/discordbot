@@ -45,7 +45,7 @@ flowchart TD
     U(["@mention · DM · /ask"]) --> UP & RT & CX
 
     UP["Upload attachments"]
-    RT["Route + effort"]
+    RT["Route + effort + recall"]
     CX["History · memory · tone"]
 
     UP & RT & CX --> R{"Route"}

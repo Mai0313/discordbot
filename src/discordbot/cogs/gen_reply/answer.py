@@ -199,7 +199,7 @@ class AnswerTurn(BaseModel):
         attached media). Injects only the selected user memory (already read through the
         compartments this conversation may open) plus the author's tone note, never the server
         memory block, and seeds the
-        selection-call usage / memory labels so the footer matches the QA path. Consumes the
+        memory labels so the footer matches the QA path. Consumes the
         speculative `context_task` (awaited here so its build overlaps generation); any failure
         leaves the delivered media untouched.
         """
@@ -241,8 +241,6 @@ class AnswerTurn(BaseModel):
                 # belonging to the turn -- a retry, the failure embed -- may touch it.
                 carries_turn_notices=False,
                 memory_lookups=context.memory_credits,
-                input_tokens=context.selection_input_tokens,
-                output_tokens=context.selection_output_tokens,
                 model_effort=model.effort or "",
             )
             with logfire.span(span_name, model=model.name, message_id=self.message.id):
@@ -420,14 +418,10 @@ class AnswerTurn(BaseModel):
             # measured from, so leaving this REST round trip inside that window would bias the
             # figure against the one backend that pays for it.
             await self.surface.mark(emoji="<:youtube:1517546722535018596>", bot_user=self.bot.user)
-        # Seed the streamer with the selection request's usage so the footer and chat reward
-        # reflect both LLM calls; the answer stream sums its own usage on top.
         streamer = ResponseStreamer(
             message=self.message,
             surface=self.surface,
             memory_lookups=context.memory_credits,
-            input_tokens=context.selection_input_tokens,
-            output_tokens=context.selection_output_tokens,
             model_effort=effort,
             backend=backend,
             voice_generator=voice_generator,

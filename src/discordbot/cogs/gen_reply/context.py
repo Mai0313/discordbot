@@ -2,41 +2,36 @@
 
 `ReplyContext` is the value; `ReplyContextBuilder` is the single speculative build that produces
 it while the route call is still in flight. Everything the builder does only READS — channel
-history, memory files, one optional selection request — so a non-QA route can discard it safely,
-and the IMAGE / VIDEO routes consume it after their media is on screen instead.
+history and memory files — so a non-QA route can discard it safely, and the IMAGE / VIDEO routes
+consume it after their media is on screen instead. Whose memory the turn may carry is settled
+before the route call (`plan_recall`), since that call is what picks the optional members.
 """
 
 import time
 from typing import TYPE_CHECKING
 import asyncio
 
-from openai import AsyncOpenAI
 import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation
 from nextcord.ext import commands
-from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
+from openai.types.responses.response_input_param import EasyInputMessageParam
 from openai.types.responses.response_input_text_param import ResponseInputTextParam
 
 from discordbot.typings.memory import MemoryCredits
-from discordbot.typings.timeouts import RECALL_SELECT_GRACE_SECONDS
 from discordbot.cogs.gen_reply.input import MessageInputBuilder
 from discordbot.utils.llm_transcript import sanitize_identity
 from discordbot.cogs.gen_reply.recall import (
     NO_STORED_MEMORY,
-    GET_USER_MEMORY_TOOL,
     UserMemory,
     RecallContext,
     RecallCandidate,
-    RecallSelection,
     render_tone_block,
-    parse_user_id_list,
     build_recall_context,
     recall_user_memories,
     memory_lookup_credits,
     build_recall_allowlist,
     render_server_memory_block,
-    render_callable_users_block,
     render_memory_context_block,
     widen_allowlist_with_aliases,
     allowlist_ids_from_server_memory,
@@ -48,7 +43,6 @@ from discordbot.services.memory.store import (
     server_scope,
     read_memory_document,
 )
-from discordbot.cogs.gen_reply.prompts import RECALL_SELECT_PROMPT
 from discordbot.cogs.gen_reply.surface import TurnSurface
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
 from discordbot.typings.context_budgets import (
@@ -58,7 +52,6 @@ from discordbot.typings.context_budgets import (
     HISTORY_PER_MESSAGE_OVERHEAD,
 )
 from discordbot.cogs.gen_reply.references import replied_to_message, source_channel_is_public
-from discordbot.cogs.gen_reply.speculation import await_gated, discard_task
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -107,17 +100,41 @@ class ReplyContext(BaseModel):
         default_factory=MemoryCredits,
         description="Footer credits for the users whose memory was injected.",
     )
-    selection_input_tokens: int = Field(
-        default=0, description="Input tokens spent by the memory selection request."
-    )
-    selection_output_tokens: int = Field(
-        default=0, description="Output tokens spent by the memory selection request."
-    )
 
     @property
     def message_list(self) -> list[EasyInputMessageParam]:
         """History, reference, and current blocks in transcript order."""
         return [*self.hist_messages, *self.reference_messages, *self.current_message]
+
+
+class RecallPlan(BaseModel):
+    """Whose memory one turn may carry, settled before the route call so the route can pick.
+
+    Built by `ReplyContextBuilder.plan_recall`; the route reads `optional_candidates` and the
+    server memory block, and `ReplyContextBuilder.build` joins the route's picks to `memories`.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    server_memory_block: SkipValidation[EasyInputMessageParam | None] = Field(
+        ..., description="Rendered server-memory block, or None outside a guild or without one."
+    )
+    recall_context: RecallContext = Field(
+        ..., description="Where the turn happens, which decides the compartments every read opens."
+    )
+    memories: list[UserMemory] = Field(
+        ..., description="Stored memory of the deterministic participants, in resolution order."
+    )
+    optional_candidates: dict[int, RecallCandidate] = Field(
+        ...,
+        description=(
+            "Absent nickname-table members the route may pick from; empty in a private channel, "
+            "without a table, or when the deterministic participants fill the budget."
+        ),
+    )
+    remaining_slots: int = Field(
+        ..., description="How many optional memories still fit the per-reply budget."
+    )
 
 
 def trim_history_to_budget(*, messages: list[Message]) -> list[Message]:
@@ -247,10 +264,6 @@ class ReplyContextBuilder(BaseModel):
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
-    client: SkipValidation[AsyncOpenAI] = Field(
-        ...,
-        description="Shared LiteLLM-proxy client used for the optional memory-selection request.",
-    )
     bot: SkipValidation[commands.Bot] = Field(
         ...,
         description=(
@@ -272,23 +285,17 @@ class ReplyContextBuilder(BaseModel):
     async def fetch_history(self, *, limit: int) -> list[Message]:
         """Fetches up to `limit` history messages once, trimmed to the char budget.
 
-        Returned raw so both the optional selector's text-only render and the answer's
-        uploaded render derive from one fetch, without a second walk of history. Where they
-        come from is the surface's question: a channel walk on the gateway path, and the
+        Returned raw for the answer's uploaded render. Where they come from is the surface's
+        question: a channel walk on the gateway path, and the
         conversation store on the `/ask` one, which is the only history a user-installed app
         has (it is not a member of the channel and holds no `READ_MESSAGE_HISTORY`).
         """
         return trim_history_to_budget(messages=await self.surface.fetch_history(limit=limit))
 
-    async def render_history(
-        self, *, hist_messages: list[Message], text_only: bool
-    ) -> list[EasyInputMessageParam]:
-        """Renders fetched history in one mode: text-only markers, or full uploaded parts.
+    async def render_history(self, *, hist_messages: list[Message]) -> list[EasyInputMessageParam]:
+        """Renders fetched history with its uploaded attachment parts, for the answer.
 
-        Both modes derive from the same `fetch_history` result, so history is walked once
-        however many renders are asked for. The text-only twin (no upload) feeds optional
-        memory selection without waiting on the Files API; the full render uploads attachment
-        parts for the answer. History is the only render that opts into the dead-source skip:
+        History is the only render that opts into the dead-source skip:
         an expired CDN attachment here re-fails every turn (current / reference do not; see
         GeminiFileUploader._resolve_file_upload).
 
@@ -299,35 +306,30 @@ class ReplyContextBuilder(BaseModel):
         if not hist_messages:
             return []
         input_builder = self.toolkit.input_builder
-        over_budget = (
-            {}
-            if text_only
-            else history_media_over_budget(builder=input_builder, hist_messages=hist_messages)
-        )
+        over_budget = history_media_over_budget(builder=input_builder, hist_messages=hist_messages)
         tasks: list[Awaitable[EasyInputMessageParam]] = [
             input_builder.process_single_message_text_only(message=m)
-            if text_only or m.id in over_budget
+            if m.id in over_budget
             else input_builder.process_single_message(message=m, allow_dead_cache=True)
             for m in hist_messages
         ]
         started = time.monotonic()
         processed = await asyncio.gather(*tasks)
-        if not text_only:
-            logfire.info(
-                "gen_reply history render done",
-                elapsed_seconds=time.monotonic() - started,
-                message_count=len(hist_messages),
-                media_capped=sum(over_budget.values()),
-                message_id=self.message.id,
-            )
+        logfire.info(
+            "gen_reply history render done",
+            elapsed_seconds=time.monotonic() - started,
+            message_count=len(hist_messages),
+            media_capped=sum(over_budget.values()),
+            message_id=self.message.id,
+        )
         # Names the block and stops there. The old wording invited the model to answer FROM the
         # history ("that might be helpful for answering"), which competed with the Reference
         # Message's own claim to be the primary context and lost the reply's subject to whatever
         # in the window read as the most answerable thing. Where the subject may come from is a
         # behaviour rule, so it lives in `REPLY_PROMPT` at developer authority instead. Keeping it
-        # out of here also keeps it out of the three other calls this render feeds, none of which
-        # is answering a question: memory selection, the media persona reply, and the memory
-        # review transcript, whose first message is this header verbatim.
+        # out of here also keeps it out of the two other calls this render feeds, neither of which
+        # is answering a question: the media persona reply, and the memory review transcript,
+        # whose first message is this header verbatim.
         header = EasyInputMessageParam(
             role="system",
             content=[
@@ -345,7 +347,7 @@ class ReplyContextBuilder(BaseModel):
         """Renders the message being replied to, or nothing when this is not a reply.
 
         `text_only` emits attachment markers instead of uploaded file parts, for the
-        route and memory-selection calls that must not wait on the Files API.
+        route call that must not wait on the Files API.
         """
         replied_to = replied_to_message(message=self.message)
         if replied_to is None:
@@ -378,8 +380,8 @@ class ReplyContextBuilder(BaseModel):
     async def render_parts(self, *, text_only: bool = False) -> MessageParts:
         """Renders the message being replied to and the current message together.
 
-        With `text_only` they render as attachment markers (no upload) for the route and memory
-        selection; otherwise this is the answer-path render (uploads + activation poll to ACTIVE)
+        With `text_only` they render as attachment markers (no upload) for the route call;
+        otherwise this is the answer-path render (uploads + activation poll to ACTIVE)
         that runs in the background so only the answer awaits the Files API. The render-timing log
         fires only for the upload-bearing render, the latency-critical one.
         """
@@ -402,15 +404,15 @@ class ReplyContextBuilder(BaseModel):
         """Reads the current guild's raw server memory, or "" when there is none.
 
         Unlike user memory there is exactly one server memory per guild, so it needs no
-        selection phase, allowlist, or function tool: it is read directly with zero extra
-        LLM latency. Returns "" for a DM (no guild) or an empty memory. Read once per reply
-        and shared by the selection and answer phases.
+        selection or allowlist: it is read directly with zero extra LLM latency. Returns "" for
+        a DM (no guild) or an empty memory. Read once per reply and shared by the route call,
+        whose recall picks its nickname table maps, and the answer.
 
         A `/ask` turn always takes the "" branch, since its synthesized message carries no
         guild — deliberately, because the write side is gated on a public channel this route can
         never satisfy and a memory nothing writes back to is one the bot slowly goes stale on.
         What goes with it is the `## 成員稱呼` table, so the alias widening and the optional
-        third-party selector below have nothing to work from either, exactly as in a DM today.
+        third-party candidates below have nothing to work from either, exactly as in a DM today.
         """
         if self.message.guild is None:
             return ""
@@ -440,7 +442,7 @@ class ReplyContextBuilder(BaseModel):
         optional_allowed: dict[int, RecallCandidate] = {}
         # Existing participant labels keep their community aliases even in a private
         # channel because that grants no new access. Only a public channel may offer absent
-        # nickname-table members to the selector.
+        # nickname-table members to the route call.
         if server_memory and self.message.guild is not None:
             widen_allowlist_with_aliases(
                 allowed=deterministic_allowed, memory=server_memory, include_absent=False
@@ -468,162 +470,27 @@ class ReplyContextBuilder(BaseModel):
         ]
         return memories, optional_allowed, len(deterministic_allowed)
 
-    async def select_recalled_memories(
-        self,
-        *,
-        message_list: list[EasyInputMessageParam],
-        allowed: dict[int, RecallCandidate],
-        recall_context: RecallContext,
-        server_memory_block: EasyInputMessageParam | None = None,
-    ) -> RecallSelection:
-        """Lets the model choose optional third-party memories for an oblique reference.
+    def plan_recall(self) -> RecallPlan:
+        """Settles whose memory this turn may carry, before the route call that picks from it.
 
-        Runs an isolated request offering only the get_user_memory tool, then resolves the
-        chosen ids server-side against an allowlist containing only absent members from a
-        public server nickname table. The server memory rides in front as background context
-        so a spoken or misspelled nickname can be mapped to its id. Returns the memories plus
-        this request's token usage so the reply footer and chat reward account for the call.
+        File reads only (the server memory and the deterministic participants' memory), so the
+        route never waits on the history fetch. Optional candidates are offered only when the
+        deterministic participants leave a slot, so a pick can never displace one of them.
         """
-        triage_model = self.toolkit.runtime_models.triage_model
-        # The optional-candidates block stays last so the model reads it right before deciding;
-        # the server-memory block (if any) leads as earlier background context. The caller
-        # passes an already text-only transcript (attachment markers, no file ids), so this
-        # request neither re-reads the uploaded payloads nor waits on their upload.
-        selection_input: ResponseInputParam = [
-            *([server_memory_block] if server_memory_block is not None else []),
-            *message_list,
-            render_callable_users_block(allowed=allowed),
-        ]
-        responses = await self.client.responses.create(
-            model=triage_model.name,
-            instructions=RECALL_SELECT_PROMPT,
-            input=selection_input,
-            reasoning=triage_model.reasoning,
-            tools=[GET_USER_MEMORY_TOOL],
-            stream=False,
-            service_tier="auto",
-            extra_headers={"x-litellm-end-user-id": self.message.author.name},
-        )
-        memories: list[UserMemory] = []
-        seen: set[str] = set()
-        for item in responses.output:
-            if item.type != "function_call":
-                continue
-            if item.name != "get_user_memory":
-                continue
-            for memory in recall_user_memories(
-                user_id_list=parse_user_id_list(arguments=item.arguments),
-                allowed=allowed,
-                context=recall_context,
-            ):
-                if memory.user_id not in seen:
-                    seen.add(memory.user_id)
-                    memories.append(memory)
-        input_tokens = responses.usage.input_tokens if responses.usage else 0
-        output_tokens = responses.usage.output_tokens if responses.usage else 0
-        return RecallSelection(
-            memories=memories, input_tokens=input_tokens, output_tokens=output_tokens
-        )
-
-    async def _await_optional_selection(
-        self, *, task: asyncio.Task[RecallSelection], route_done: asyncio.Event
-    ) -> tuple[RecallSelection, float] | None:
-        """Awaits the optional selector without letting its failure affect direct memories."""
-        started = time.monotonic()
-        try:
-            with logfire.span("gen_reply memory selection", message_id=self.message.id):
-                selection = await await_gated(
-                    task=task,
-                    label="memory selection",
-                    route_done=route_done,
-                    grace_seconds=RECALL_SELECT_GRACE_SECONDS,
-                )
-        except TimeoutError as exc:
-            logfire.warn(
-                "Optional memory selection exceeded the post-route grace; retaining deterministic memories",
-                grace_seconds=RECALL_SELECT_GRACE_SECONDS,
-                message_id=self.message.id,
-                model=self.toolkit.runtime_models.triage_model.name,
-                _exc_info=exc,
-            )
-            return None
-        except Exception:
-            logfire.warn(
-                "Optional memory selection failed; retaining deterministic memories",
-                message_id=self.message.id,
-                model=self.toolkit.runtime_models.triage_model.name,
-                _exc_info=True,
-            )
-            return None
-        return selection, time.monotonic() - started
-
-    async def build(
-        self,
-        *,
-        history_limit: int,
-        parts_task: asyncio.Task[MessageParts],
-        text_parts: MessageParts,
-        route_done: asyncio.Event,
-    ) -> ReplyContext:
-        """Builds history, shared parts, server memory, and the memory selection result.
-
-        Runs speculatively as its own task concurrent with routing: everything here only
-        reads (channel history, memory files, the selection request), so a non-QA route
-        can discard it safely. `parts_task` carries the answer-path reference/current
-        renders (uploaded files); `text_parts` carries their text-only twins so the memory
-        selection call never re-reads or waits on the uploads.
-        """
-        text_reference, text_current = text_parts
-        build_started = time.monotonic()
-
-        # Fetch channel history once. Its text-only twin is rendered below only if a narrowed
-        # selector request is actually needed; the upload-bearing full render is always awaited
-        # later because the answer consumes it.
-        raw_history = await self.fetch_history(limit=history_limit)
-
-        # The bot's own per-server memory is read once here and shared by both phases: it
-        # primes selection (a `## 成員稱呼` nickname table maps spoken aliases to ids) and
-        # rides into the answer as background context. One file read, no extra LLM call.
         server_memory = self.read_server_memory()
-        server_memory_block = (
-            render_server_memory_block(memory=server_memory) if server_memory else None
-        )
-
         # Where this reply is happening, for compartment scoping of every user-memory read.
         recall_context = build_recall_context(
             author_id=self.message.author.id,
             guild_id=self.surface.guild_id,
             is_direct_message=self.surface.is_direct_message,
         )
-
-        # The message author's tone-preference note is read directly for that one author
-        # (their own preference for how the bot should sound, cross-server safe by
-        # construction) and injected on every reply with no selection phase, including one
-        # that runs with user memory off. One file read, no extra LLM call.
-        author_tone = read_tone(scope=user_scope(user_id=self.message.author.id))
-        tone_block = render_tone_block(tone=author_tone) if author_tone else None
-
-        # Code always resolves the current author, reply-chain authors, and current-message
-        # mentions. A separate model call is reserved for the one non-mechanical question: does
-        # the latest message obliquely refer to an absent member in a public nickname table? Both
-        # paths stay behind recall_user_memories, the shared permission and compartment boundary.
-        memory_credits = MemoryCredits()
-        selection_input_tokens = 0
-        selection_output_tokens = 0
-        memory_block: EasyInputMessageParam | None = None
-        selection_task: asyncio.Task[RecallSelection] | None = None
         memories, optional_allowed, deterministic_candidate_count = (
             self._resolve_recall_candidates(
                 server_memory=server_memory, recall_context=recall_context
             )
         )
-        deterministic_memory_count = len(memories)
-        if memories:
-            memory_block = render_memory_context_block(memories=memories)
-            memory_credits = memory_lookup_credits(memories=memories)
-
-        # The optional lookup does not depend on the deterministic one having found anything: a
-        # conversation where nobody present has a stored fact is exactly the one the code path
+        # The optional offer does not depend on the deterministic lookup having found anything:
+        # a conversation where nobody present has a stored fact is exactly the one the code path
         # has nothing of its own to contribute to.
         remaining_slots = max(0, MEMORY_CONTEXT_TARGET_USERS - len(memories))
         logfire.debug(
@@ -634,99 +501,102 @@ class ReplyContextBuilder(BaseModel):
             optional_slots=remaining_slots,
             message_id=self.message.id,
         )
-        if optional_allowed and remaining_slots:
-            # Render the text-only history only for a real optional lookup. This request
-            # carries markers instead of file ids, so it never re-reads uploaded payloads.
-            history_text_only = await self.render_history(
-                hist_messages=raw_history, text_only=True
-            )
-            selection_message_list: list[EasyInputMessageParam] = [
-                *history_text_only,
-                *text_reference,
-                *text_current,
-            ]
-            selection_task = asyncio.create_task(
-                coro=self.select_recalled_memories(
-                    message_list=selection_message_list,
-                    allowed=optional_allowed,
-                    recall_context=recall_context,
-                    server_memory_block=server_memory_block,
-                )
-            )
+        return RecallPlan(
+            server_memory_block=(
+                render_server_memory_block(memory=server_memory) if server_memory else None
+            ),
+            recall_context=recall_context,
+            memories=memories,
+            optional_candidates=optional_allowed if remaining_slots else {},
+            remaining_slots=remaining_slots,
+        )
 
-        try:
-            # The answer needs the uploaded renders; await the full history render and the shared
-            # reference/current uploads here, concurrently with any in-flight selection above.
-            # `parts_task` is shielded so cancelling this speculative prep (IMAGE / VIDEO) never
-            # cancels the shared upload task those routes still reuse; the full history render
-            # rides as an ordinary gather child, so it is cancelled together with prep.
-            with logfire.span("gen_reply context build", message_id=self.message.id):
-                hist_messages, (reference_messages, current_message) = await asyncio.gather(
-                    self.render_history(hist_messages=raw_history, text_only=False),
-                    asyncio.shield(parts_task),
-                )
-            # Covers the history fetch/render plus waiting on the shared attachment upload, so
-            # the log separates pre-answer attachment cost from the route-call cost.
-            logfire.info(
-                "gen_reply context build done",
-                elapsed_seconds=time.monotonic() - build_started,
+    def _resolve_picks(self, *, recall: RecallPlan, picked_ids: list[str]) -> list[UserMemory]:
+        """Reads the members the route picked, held to the offered candidates and the budget."""
+        picked = recall_user_memories(
+            user_id_list=picked_ids,
+            allowed=recall.optional_candidates,
+            context=recall.recall_context,
+        )
+        kept = picked[: recall.remaining_slots]
+        if len(picked) > len(kept):
+            logfire.warn(
+                "Capping optional memories to the remaining per-reply budget",
+                requested=len(picked),
+                kept=len(kept),
                 message_id=self.message.id,
             )
+        logfire.info(
+            "gen_reply optional recall resolved",
+            selected=len(kept),
+            selected_ids=[memory.user_id for memory in kept],
+            # The model-facing label, not the footer credit: this is an operator record, so the
+            # community nickname the route matched on is exactly what makes the row readable, and
+            # it is never None.
+            labels=[memory.prompt_label for memory in kept],
+            candidate_count=len(recall.optional_candidates),
+            deterministic_count=len(recall.memories),
+            message_id=self.message.id,
+        )
+        return kept
 
-            if selection_task is not None:
-                # Memory selection is an optional preflight; a provider/proxy hiccup here must
-                # never turn an answerable message into the generic error path. Resolved under the
-                # route_done gate: it usually already finished during the upload wait above, so
-                # this returns immediately; a slow one gets only the post-route grace.
-                selection_result = await self._await_optional_selection(
-                    task=selection_task, route_done=route_done
-                )
-                if selection_result is not None:
-                    selection, selection_elapsed = selection_result
-                    selection_input_tokens = selection.input_tokens
-                    selection_output_tokens = selection.output_tokens
-                    selected_memories = selection.memories[:remaining_slots]
-                    if len(selection.memories) > len(selected_memories):
-                        logfire.warn(
-                            "Capping optional memories to the remaining per-reply budget",
-                            requested=len(selection.memories),
-                            kept=len(selected_memories),
-                            message_id=self.message.id,
-                        )
-                    if selected_memories:
-                        memories.extend(selected_memories)
-                        memory_block = render_memory_context_block(memories=memories)
-                        memory_credits = memory_lookup_credits(memories=memories)
-                    logfire.info(
-                        "gen_reply memory selection done",
-                        elapsed_seconds=selection_elapsed,
-                        model=self.toolkit.runtime_models.triage_model.name,
-                        selected=len(selected_memories),
-                        selected_ids=[memory.user_id for memory in selected_memories],
-                        # The model-facing label, not the footer credit: this is an operator
-                        # record, so the community nickname the selector matched on is exactly
-                        # what makes the row readable, and it is never None.
-                        labels=[memory.prompt_label for memory in selected_memories],
-                        candidate_count=len(optional_allowed),
-                        deterministic_count=deterministic_memory_count,
-                        message_id=self.message.id,
-                    )
-        finally:
-            # If this prep is cancelled during the upload wait (a non-QA route discarding it)
-            # before the gate resolves it, cancel the in-flight selection so it never orphans.
-            if selection_task is not None and not selection_task.done():
-                await discard_task(
-                    task=selection_task, label="memory selection", message_id=self.message.id
-                )
+    async def build(
+        self,
+        *,
+        history_limit: int,
+        parts_task: asyncio.Task[MessageParts],
+        recall: RecallPlan,
+        recall_picks: asyncio.Future[list[str]],
+    ) -> ReplyContext:
+        """Builds history, shared parts, server memory, and the memory the turn carries.
 
+        Runs speculatively as its own task concurrent with routing: everything here only reads
+        (channel history, memory files), so a non-QA route can discard it safely. `parts_task`
+        carries the answer-path reference/current renders (uploaded files). `recall_picks` is
+        the route's optional recall picks, which the pipeline resolves as soon as the route
+        returns; it is awaited only after the history and uploads, which almost always outlast
+        the route.
+        """
+        build_started = time.monotonic()
+
+        raw_history = await self.fetch_history(limit=history_limit)
+
+        # The message author's tone-preference note is read directly for that one author
+        # (their own preference for how the bot should sound, cross-server safe by
+        # construction) and injected on every reply with no selection phase, including one
+        # that runs with user memory off. One file read, no extra LLM call.
+        author_tone = read_tone(scope=user_scope(user_id=self.message.author.id))
+        tone_block = render_tone_block(tone=author_tone) if author_tone else None
+
+        # The answer needs the uploaded renders; await the full history render and the shared
+        # reference/current uploads here. `parts_task` is shielded so cancelling this speculative
+        # prep (IMAGE / VIDEO) never cancels the shared upload task those routes still reuse; the
+        # full history render rides as an ordinary gather child, so it is cancelled together with
+        # prep.
+        with logfire.span("gen_reply context build", message_id=self.message.id):
+            hist_messages, (reference_messages, current_message) = await asyncio.gather(
+                self.render_history(hist_messages=raw_history), asyncio.shield(parts_task)
+            )
+        # Covers the history fetch/render plus waiting on the shared attachment upload, so
+        # the log separates pre-answer attachment cost from the route-call cost.
+        logfire.info(
+            "gen_reply context build done",
+            elapsed_seconds=time.monotonic() - build_started,
+            message_id=self.message.id,
+        )
+
+        picked_ids = await recall_picks
+        memories = list(recall.memories)
+        if recall.optional_candidates:
+            memories.extend(self._resolve_picks(recall=recall, picked_ids=picked_ids))
         return ReplyContext(
             hist_messages=hist_messages,
             reference_messages=reference_messages,
             current_message=current_message,
-            server_memory_block=server_memory_block,
-            memory_block=memory_block,
+            server_memory_block=recall.server_memory_block,
+            memory_block=render_memory_context_block(memories=memories) if memories else None,
             tone_block=tone_block,
-            memory_credits=memory_credits,
-            selection_input_tokens=selection_input_tokens,
-            selection_output_tokens=selection_output_tokens,
+            memory_credits=memory_lookup_credits(memories=memories)
+            if memories
+            else MemoryCredits(),
         )

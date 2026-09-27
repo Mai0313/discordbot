@@ -197,8 +197,8 @@ async def adapt_interactions_stream(
     `response.response.output`. The Interactions stream uses different names (`event_type`,
     `delta.text`, `interaction.model`, `interaction.usage.total_*_tokens`), so each event is
     remapped onto a minimal namespace with the OpenAI-Responses field names. Usage is emitted
-    exactly once on `interaction.completed` because `_consume` accumulates it with `+=` over a
-    token seed from the earlier selection call; a per-step emit would double-count.
+    exactly once on `interaction.completed` because `_consume` accumulates it with `+=`; a
+    per-step emit would double-count.
     """
     model_name = ""
     # The fallback for a completed event carrying no usage of its own. google-genai 2.22 moved

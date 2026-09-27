@@ -576,8 +576,7 @@ class ResponseStreamer(BaseModel):
         Only the text of the attempt goes. What stays, stays for a reason:
 
         - `input_tokens` / `output_tokens`, because usage arrives on `response.completed`
-          alone, which a failed attempt never reached, and because they are seeded with the
-          memory-selection call's usage. The consequence is deliberate but real -- upstream
+          alone, which a failed attempt never reached. The consequence is deliberate but real -- upstream
           billed the failed attempt and the footer cannot see it, so `attempts` rides out on
           `gen_reply reply finalized` to make an under-reported cost visible in the log.
         - `reply`, so the retry edits the message already on screen instead of posting a
