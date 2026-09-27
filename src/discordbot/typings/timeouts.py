@@ -43,21 +43,6 @@ from typing import Final
 # Reply pipeline (`gen_reply`)
 # --------------------------------------------------------------------------------------
 
-# Optional third-party memory selection overlaps the route call for free: the QA path joins
-# the speculative prep task only after the route returns, so selection runs unbounded while
-# the route is still in flight. Once the route completes, a still-running selection gets only
-# this grace before the reply answers with its deterministic participant memories, so a slow
-# selector can never cost the author, reply-chain authors, or explicitly mentioned users.
-# Tune against the `gen_reply memory selection done` latency log.
-RECALL_SELECT_GRACE_SECONDS: Final[float] = 2.0
-
-# Effort grading runs in parallel with the route under the same `route_done` gate as
-# memory selection: it runs unbounded while the route is in flight and gets only this
-# grace once the route returns before the reply falls back to "high" effort. The grade
-# is consumed only just before the answer model starts, so this latency hides behind the
-# route. Tune against the `gen_reply effort done` latency log.
-EFFORT_GRACE_SECONDS: Final[float] = 5.0
-
 # How many times the streaming answer turn is opened before the reply gives up on a transient
 # upstream failure. A count rather than a cadence, which is why it sits here while the backoff
 # between the attempts stays beside the retry it paces: it multiplies the `openai` client's own
@@ -68,12 +53,12 @@ EFFORT_GRACE_SECONDS: Final[float] = 5.0
 ANSWER_STREAM_MAX_ATTEMPTS: Final[int] = 3
 
 # An intent-selected linked-post context build gets this grace once the QA path resolves it.
-# Far wider than memory/effort because it fetches the post's media and uploads it to the Files
+# Far wider than the rest of the turn's waits because it fetches the post's media and uploads it to the Files
 # API, and because answering blind about a link the user explicitly pointed at is the failure
 # this feature exists to prevent. The builder bounds its own media step just under this and
 # degrades to text, so the grace is a backstop rather than the usual exit. It starts only after
 # routing so an incidental link never begins network work, then overlaps any remaining context
-# preparation and effort grading. Tune against the `gen_reply link context done` latency log.
+# preparation. Tune against the `gen_reply link context done` latency log.
 LINK_CONTEXT_GRACE_SECONDS: Final[float] = 180.0
 
 # How far under the grace the media step gives up, so the builder degrades to its text block
@@ -97,7 +82,7 @@ DOWNLOAD_STOP_JOIN_SECONDS: Final[float] = 5.0
 # How long a Discord attachment's Files API upload is given to reach ACTIVE. Past it the
 # upload becomes a `PendingUpload` the caller caches and re-polls on the next reference, so
 # this reply answers without that attachment rather than waiting for it. Short because the
-# poll overlaps the route and memory-selection calls: a small file is ACTIVE instantly and
+# poll overlaps the route call: a small file is ACTIVE instantly and
 # only a large one spends any of that window.
 ATTACHMENT_ACTIVATION_TIMEOUT_SECONDS: Final[float] = 15.0
 

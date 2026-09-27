@@ -261,8 +261,7 @@ class GeminiFileUploader(AttachmentRenderer):
         The answer request still references the file through the proxy, by the full
         `uri` (`https://.../files/<id>`): the proxy resolves that to a `fileData.fileUri`
         part, while the bare `files/<id>` name fails its mime-type lookup. The upload +
-        activation poll runs in the background while the route and memory selection calls
-        resolve, so small files (instant ACTIVE) add no latency and only large / video
+        activation poll runs in the background while the route call resolves, so small files (instant ACTIVE) add no latency and only large / video
         uploads spend any of that overlap window waiting. A file still PROCESSING at the
         bound returns a `PendingUpload` (the caller caches it to re-poll on the next
         reference); a terminal non-active state or any failure returns None.

@@ -45,7 +45,7 @@ flowchart TD
     U(["tag bot · DM · /ask"]) --> UP & RT & CX
 
     UP["上傳附件"]
-    RT["路由 + 思考強度"]
+    RT["路由 + 思考強度 + 記憶挑選"]
     CX["歷史 · 記憶 · 語氣"]
 
     UP & RT & CX --> R{"分派路線"}

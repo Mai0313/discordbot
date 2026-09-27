@@ -81,8 +81,8 @@ MAX_HISTORY_MEDIA_PARTS: Final[int] = 10
 # --------------------------------------------------------------------------------------
 
 # How many users' memories one reply may carry. Deterministic participants are never displaced:
-# if they fill or exceed the target the optional selector is skipped, otherwise it can use only
-# the remaining slots.
+# if they fill or exceed the target the route is offered no optional candidates, otherwise the
+# ones it names can use only the remaining slots.
 MEMORY_CONTEXT_TARGET_USERS: Final[int] = 8
 
 # Ceiling on one rendered memory document (the merged compartments injected for one reply).

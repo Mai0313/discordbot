@@ -22,7 +22,6 @@ from tests.helpers.llm_input import (
     request_index,
     request_input,
     iter_text_blocks,
-    tool_names_for_call,
     has_memory_context_block,
     extract_callable_user_ids,
     extract_user_memory_blocks,
@@ -125,31 +124,19 @@ class _Recorder:
     def __init__(self) -> None:
         """Initializes the recorded per-call lists."""
         self.create_streams: list[bool] = [False, True]
-        self.create_tools: list[list[object] | None] = [
-            [{"name": "get_user_memory"}],
-            [{"type": "web_search"}],
-        ]
         self.create_inputs: list[ResponseInputParam | str] = [
-            [EasyInputMessageParam(role="user", content="selection")],
+            [EasyInputMessageParam(role="user", content="director")],
             [EasyInputMessageParam(role="user", content="answer")],
         ]
 
 
 def test_request_index_maps_phase_to_position() -> None:
-    """Selection is the first non-streaming call, answer the last streaming one."""
+    """The answer is the last streaming call, not a non-streaming one before it."""
     recorder = _Recorder()
-    assert request_index(responses=recorder, phase="selection") == 0
     assert request_index(responses=recorder, phase="answer") == 1
     assert request_input(responses=recorder, phase="answer") == [
         EasyInputMessageParam(role="user", content="answer")
     ]
-
-
-def test_tool_names_for_call_reads_offered_tools() -> None:
-    """Tool names are read structurally, ignoring non-function builtins."""
-    recorder = _Recorder()
-    assert tool_names_for_call(responses=recorder, n=0) == ["get_user_memory"]
-    assert tool_names_for_call(responses=recorder, n=1) == []
 
 
 # --- embeds ------------------------------------------------------------------

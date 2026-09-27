@@ -21,6 +21,7 @@ from openai.types.responses.response_input_param import EasyInputMessageParam
 
 from discordbot.typings.llm import LLMConfig
 from discordbot.typings.emojis import LINK_SOURCE_EMOJIS
+from discordbot.typings.models import RecallRouteClassification
 from discordbot.utils.reactions import ReactionStatusChain
 from discordbot.utils.usage_log import UsageRecorder
 from discordbot.typings.timeouts import LINK_CONTEXT_GRACE_SECONDS
@@ -44,7 +45,7 @@ from discordbot.cogs.gen_reply.research_bridge import can_launch_research
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 if TYPE_CHECKING:
-    from discordbot.typings.models import EffortGrade, RouteClassification
+    from discordbot.typings.models import RouteClassification
 
 # Recorded as a reply's route when the pipeline failed before the router returned one.
 UNROUTED_REPLY = "unrouted"
@@ -291,15 +292,10 @@ class ReplyPipeline(BaseModel):
         route_decision: str | None = None
         prep_task: asyncio.Task[ReplyContext] | None = None
         parts_task: asyncio.Task[MessageParts] | None = None
-        effort_task: asyncio.Task[EffortGrade] | None = None
         link_tasks: dict[str, LinkTask] = {}
         link_context_deadline: float | None = None
         context_builder = ReplyContextBuilder(
-            client=self.client,
-            bot=self.bot,
-            toolkit=self.toolkit,
-            message=message,
-            surface=self.surface,
+            bot=self.bot, toolkit=self.toolkit, message=message, surface=self.surface
         )
         classifier = RouteClassifier(client=self.client, toolkit=self.toolkit, message=message)
         try:
@@ -307,40 +303,42 @@ class ReplyPipeline(BaseModel):
                 pipeline_started = time.monotonic()
                 self.reactions.advance(emoji="<:flowchart:1517561877973045349>")
                 # The reference + current attachment uploads (and their activation polls)
-                # run in the background and only the answer awaits them. The route and the
-                # optional memory selection use the text-only renders, so neither waits on the Files
-                # API. The QA context builds speculatively in parallel with the route call
-                # since QA is the dominant route — non-QA routes discard it.
+                # run in the background and only the answer awaits them. The route call uses
+                # the text-only renders, so it never waits on the Files API. The QA context
+                # builds speculatively in parallel with the route call since QA is the dominant
+                # route — non-QA routes discard it.
                 parts_task = asyncio.create_task(coro=context_builder.render_parts())
                 text_reference, text_current = await context_builder.render_parts(text_only=True)
-                # Signals optional memory selection that the route has returned: selection runs
-                # unbounded while this is clear and gets only a short grace once it is set.
-                route_done = asyncio.Event()
+                recall = context_builder.plan_recall()
+                # The route's recall picks, which the speculative build joins to the memory it
+                # carries once its history and uploads are in.
+                recall_picks: asyncio.Future[list[str]] = (
+                    asyncio.get_running_loop().create_future()
+                )
                 prep_task = asyncio.create_task(
                     coro=context_builder.build(
                         history_limit=HISTORY_MESSAGE_LIMIT,
                         parts_task=parts_task,
-                        text_parts=(text_reference, text_current),
-                        route_done=route_done,
-                    )
-                )
-                # Effort grading rides the same route_done gate as memory selection: it runs
-                # in parallel with the route and only the QA answer model consumes it, so
-                # IMAGE/VIDEO cancel it below.
-                effort_task = asyncio.create_task(
-                    coro=classifier.grade_effort(
-                        reference_messages=text_reference, current_message=text_current
+                        recall=recall,
+                        recall_picks=recall_picks,
                     )
                 )
                 route = await classifier.classify(
-                    reference_messages=text_reference, current_message=text_current
+                    reference_messages=text_reference,
+                    current_message=text_current,
+                    recall_candidates=recall.optional_candidates,
+                    server_memory_block=recall.server_memory_block,
+                )
+                # Resolved before anything else can raise: from here on the build waiting on it
+                # may be handed to a media route, where this turn's `finally` no longer cancels it.
+                recall_picks.set_result(
+                    route.recall_user_ids if isinstance(route, RecallRouteClassification) else []
                 )
                 reads_links = route.decision == "QA" and bool(route.link_context_sources)
                 if reads_links:
                     link_context_deadline = (
                         asyncio.get_running_loop().time() + LINK_CONTEXT_GRACE_SECONDS
                     )
-                route_done.set()
                 route_decision = route.decision
                 pipeline_span.set_attribute(key="route", value=route.decision)
                 if reads_links:
@@ -360,10 +358,8 @@ class ReplyPipeline(BaseModel):
                         )
                 if route.decision in ("IMAGE", "VIDEO"):
                     # IMAGE and VIDEO share identical speculative-task teardown; they differ only
-                    # in the status emoji and which media handler runs. Effort is answer-only,
-                    # while intent-gated link builders never start for these routes.
-                    await discard_task(task=effort_task, label="effort", message_id=message.id)
-                    effort_task = None
+                    # in the status emoji and which media handler runs. Intent-gated link
+                    # builders never start for these routes.
                     self.reactions.advance(
                         emoji="<:image:1517559727880667226>"
                         if route.decision == "IMAGE"
@@ -379,16 +375,9 @@ class ReplyPipeline(BaseModel):
                     )
                 else:
                     self.reactions.advance(emoji="<:message:1517560873000898860>")
-                    # Selection still gates the answer here; if this wait ever needs to go,
-                    # the answer could speculatively start without memory and refire when
-                    # selection picks some.
                     context = await prep_task
                     prep_task = None
                     parts_task = None
-                    effort = await classifier.resolve_effort(
-                        effort_task=effort_task, route_done=route_done
-                    )
-                    effort_task = None
                     # The selected builds overlapped the remaining reply preparation. Resolve
                     # each under the same grace and fold the post blocks into the answer context
                     # in registry order so the splice stays deterministic.
@@ -399,11 +388,11 @@ class ReplyPipeline(BaseModel):
                             link_tasks=link_tasks, deadline=link_context_deadline
                         )
                         context = context.model_copy(update={"link_blocks": link_blocks})
-                    pipeline_span.set_attribute(key="effort", value=effort)
+                    pipeline_span.set_attribute(key="effort", value=route.effort)
                     await self._answer_qa(
                         route=route,
                         context=context,
-                        effort=effort,
+                        effort=route.effort,
                         pipeline_started=pipeline_started,
                     )
                 self.reactions.advance(emoji="<:greencheck:1517565102424068226>")
@@ -417,11 +406,7 @@ class ReplyPipeline(BaseModel):
                     message_id=message.id,
                 )
         finally:
-            for task, label in (
-                (prep_task, "prep"),
-                (effort_task, "effort"),
-                (parts_task, "parts"),
-            ):
+            for task, label in ((prep_task, "prep"), (parts_task, "parts")):
                 if task is not None:
                     await discard_task(task=task, label=label, message_id=message.id)
             await discard_link_tasks(

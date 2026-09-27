@@ -197,8 +197,8 @@ class RuntimeModelCatalog(BaseModel):
         # that loses the whole reply (#459). An alias is the worse end of that: it moves under the
         # deployment, so the set it accepts can change without this file changing. Look the
         # snapshot up (see `ModelSettings.effort`) before repointing either branch, and check its
-        # set covers every value `EffortGrade` can emit — including across a provider change,
-        # where the effort vocabulary itself differs and a value can stop existing.
+        # set covers every value `RouteClassification.effort` can emit — including across a
+        # provider change, where the effort vocabulary itself differs and a value can stop existing.
         #
         # Through the proxy that rejection depends on the call shape. On a non-streaming call
         # LiteLLM forwards the level for the model itself to refuse and then answers from the
@@ -265,23 +265,13 @@ class RouteClassification(BaseModel):
             "only on the QA route to decide which source builders may start."
         ),
     )
-
-
-class EffortGrade(BaseModel):
-    """Structured answer-effort grade returned by the effort model.
-
-    Graded by a call that runs in parallel with the route; the answer model's effort is
-    overridden with it on the QA path.
-
-    Deliberately binary, with `high` as the grade an ordinary message gets and `low` as the
-    exception that has to be earned: the grader reads text-only parts, so it never sees an
-    attachment's content, a linked post, or the history behind a short message, and every one
-    of those blind spots hides work rather than inventing it. Both values still have to exist
-    on whatever `slow_model` names, and no effort is universal — not even `high` — so
-    repointing that tier or widening this grade is checked against the snapshot first (see
-    `ModelSettings.effort`).
-    """
-
+    # Overrides the answer model's effort on the QA path. Deliberately binary, with `high` as the
+    # grade an ordinary message gets and `low` as the exception that has to be earned: the route
+    # reads text-only parts, so it never sees an attachment's content, a linked post, or the
+    # history behind a short message, and every one of those blind spots hides work rather than
+    # inventing it. Both values still have to exist on whatever `slow_model` names, and no effort
+    # is universal — not even `high` — so repointing that tier or widening this grade is checked
+    # against the snapshot first (see `ModelSettings.effort`).
     effort: Literal["low", "high"] = Field(
         default="high",
         description=(
@@ -294,4 +284,22 @@ class EffortGrade(BaseModel):
     )
 
 
-__all__ = ["EffortGrade", "ModelSettings", "RouteClassification", "RuntimeModelCatalog"]
+# The route's schema on a turn that offers optional recall candidates. No docstring on purpose:
+# under `text_format=` a class docstring is sent as the schema's description, and this shape was
+# measured without one (#725).
+class RecallRouteClassification(RouteClassification):
+    recall_user_ids: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Ids from the additional-members block whose long-term memory the latest message "
+            "obliquely refers to. Empty is the normal case."
+        ),
+    )
+
+
+__all__ = [
+    "ModelSettings",
+    "RecallRouteClassification",
+    "RouteClassification",
+    "RuntimeModelCatalog",
+]

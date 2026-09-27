@@ -606,7 +606,7 @@ class MessageInputBuilder(BaseModel):
         """Renders a message as cleaned text plus `[attachment: ...]` markers.
 
         Pure metadata plus the already-cheap cleaned content; performs no upload, so the
-        route and memory-selection calls never wait on the Files API. Mirrors
+        route call never waits on the Files API. Mirrors
         `process_single_message`'s role and prefix rules so the route sees the same shape
         the answer will, minus the payload bytes.
 
@@ -631,7 +631,7 @@ class MessageInputBuilder(BaseModel):
         )
 
     async def process_single_message_text_only(self, message: Message) -> EasyInputMessageParam:
-        """Renders a message for the route and memory-selection calls without uploading."""
+        """Renders a message for the route call without uploading."""
         try:
             sources = self._supported_sources(
                 sources=self.collect_attachment_sources(message=message), message_id=message.id
