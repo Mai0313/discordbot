@@ -521,7 +521,10 @@ def append_raw_entry(scope: str, entry_text: str) -> None:
     provenance of where a conversation happened, not identity.
     """
     _scope_dir(scope=scope).mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(UTC).isoformat(timespec="seconds")
+    # Microseconds, so the stamp orders entries the way they were written: a forget is set
+    # against everything stamped before it, and a deferred turn can land in the same second as
+    # the one it follows.
+    timestamp = datetime.now(UTC).isoformat(timespec="microseconds")
     raw_path = _raw_path(scope=scope)
     combined = f"{_read_text(path=raw_path)}\n\n## {timestamp}\n{entry_text.strip()}"
     entries = _split_raw_entries(text=combined)

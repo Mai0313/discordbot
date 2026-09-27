@@ -44,6 +44,7 @@ from discordbot.services.memory.deltas import (
     DeltaOutcome,
     today_utc,
     apply_deltas,
+    forget_segments,
     sweep_stale_facts,
     partition_raw_entries,
     render_existing_facts,
@@ -149,7 +150,7 @@ def _should_consolidate(scope: str, forced: bool = False) -> bool:
     return time.monotonic() - last_attempt >= MEMORY_CONSOLIDATION_COOLDOWN_SECONDS
 
 
-async def _consolidate_locked(  # noqa: C901 -- every awaited step needs its own clear check before the next write
+async def _consolidate_locked(
     scope: str, started_at: float, writer: MemoryWriterAI, identity: str
 ) -> None:
     """Fans one raw batch out over the scope's compartments, applying each one's deltas.
@@ -171,80 +172,57 @@ async def _consolidate_locked(  # noqa: C901 -- every awaited step needs its own
     flavor = flavor_of(scope=scope)
     owner = parse_identity(identity=identity, fallback_owner_id=scope_owner_id(scope=scope))
     raw_entries = read_raw_entries(scope=scope)
-    buckets = partition_raw_entries(raw_text=raw_entries, flavor=flavor)
-    # Forget requests are a separate pass over the same batch: they are copied into every
-    # compartment their speaker could read from, and each of those calls may only delete.
-    forget_buckets = partition_forget_requests(
-        raw_text=raw_entries, compartments=tuple(list_compartments(scope=scope))
-    )
     today = datetime.now(UTC).date().isoformat()
-    compartments = _compartments_to_run(buckets=buckets)
-    global_reference = ""
     try:
         async with asyncio.timeout(MEMORY_CONSOLIDATE_TIMEOUT_SECONDS):
-            # Forgets first, so a fact this batch also re-confirms is not deleted right after
-            # being written, and so the observation pass sees the tree the deletions left.
-            if not await apply_forget_buckets(
-                scope=scope,
-                flavor=flavor,
-                owner=owner,
-                started_at=started_at,
-                writer=writer,
-                buckets=forget_buckets,
-                today=today,
-            ):
-                return
-            # Read (again) only after the forget pass, which may have taken evidence out of both
-            # files: no call below is handed it, and the batch retired at the end no longer
-            # carries it.
-            raw_entries = read_raw_entries(scope=scope)
-            buckets = partition_raw_entries(raw_text=raw_entries, flavor=flavor)
-            compartments = _compartments_to_run(buckets=buckets)
-            detail_tail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
-            # Splitting that window into observation blocks is a real stall on a heavy scope,
-            # and this runs on the same loop as the reply path. Pure function, no shared state,
-            # so a thread costs nothing — and the await is safe here because every write still
-            # sits immediately after its own `cleared_since` guard downstream.
-            detail_buckets = await asyncio.to_thread(
-                partition_raw_entries, raw_text=detail_tail, flavor=flavor
-            )
-            for compartment in compartments:
-                if compartment != GLOBAL_COMPARTMENT and not global_reference:
-                    # Read from disk rather than from this run: when the batch carried no
-                    # cross-server evidence there was no global call to take it from, and
-                    # a guild compartment still must not restate what is already shared.
-                    global_reference = render_existing_facts(
-                        facts=read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)
+            # In the order they were recorded: a forget can reach the facts made from what came
+            # before it, and a fact re-confirmed after it is not deleted right after being
+            # written. A forget only removes evidence stamped before it, so the segments still
+            # ahead are the same text they were when this batch was split.
+            observed = True
+            for observations, forgets in forget_segments(raw_text=raw_entries):
+                # Once a pass has failed the batch is kept for a retry, so the passes after it
+                # are skipped; the forgets are not, since a fact an earlier batch stored must not
+                # go on being injected until that retry, which a stuck compartment may never let
+                # succeed.
+                if observed:
+                    observed = await _consolidate_observations(
+                        scope=scope,
+                        flavor=flavor,
+                        owner=owner,
+                        started_at=started_at,
+                        writer=writer,
+                        raw_text=observations,
+                        today=today,
+                        # Not ahead of a forget: merging the fact it names into others first
+                        # would leave it only the choice of deleting all of them or none.
+                        may_compact=not forgets,
                     )
-                if cleared_since(scope=scope, started_at=started_at):
-                    return
-                outcome = await _consolidate_compartment(
+                # Forget requests are a separate pass: they are copied into every compartment
+                # their speaker could read from, including one the pass above just made, and
+                # each of those calls may only delete.
+                if not await apply_forget_buckets(
                     scope=scope,
-                    compartment=compartment,
                     flavor=flavor,
                     owner=owner,
                     started_at=started_at,
                     writer=writer,
-                    request_parts=CompartmentInput(
-                        raw_entries=buckets.get(compartment, ""),
-                        recent_detail=detail_buckets.get(compartment, ""),
-                        global_reference=global_reference,
-                        today=today,
+                    buckets=partition_forget_requests(
+                        raw_text=forgets, compartments=tuple(list_compartments(scope=scope))
                     ),
-                )
-                if outcome is None or not outcome.applied:
-                    # Keep the whole batch so the next run retries it; a partially
-                    # applied fan-out is fine to replay, an unread bucket is not.
+                    today=today,
+                ):
                     return
-                if compartment == GLOBAL_COMPARTMENT:
-                    global_reference = render_existing_facts(
-                        facts=read_facts(scope=scope, compartment=compartment)
-                    )
+            if not observed:
+                return
+            # Read again after the forget passes, which may have taken evidence out of the
+            # file: the batch retired at the end no longer carries it.
+            raw_entries = read_raw_entries(scope=scope)
     except TimeoutError:
         logfire.warn(
             "Memory consolidation fan-out timed out; keeping raw batch",
             scope=scope,
-            compartments=len(compartments),
+            compartments=len(partition_raw_entries(raw_text=raw_entries, flavor=flavor)),
         )
         return
     if cleared_since(scope=scope, started_at=started_at):
@@ -274,6 +252,69 @@ async def _consolidate_locked(  # noqa: C901 -- every awaited step needs its own
     # Best-effort and deliberately fire-and-forget: the worker takes this same scope
     # lock, so it commits once the caller releases it and never sees a half-written batch.
     memory_git.enqueue(scope=scope, reason="update")
+
+
+async def _consolidate_observations(  # noqa: PLR0913 -- the scope's identity plus the slice, its stamp and the LLM handle
+    scope: str,
+    flavor: MemoryFlavor,
+    owner: MemoryOwner,
+    started_at: float,
+    writer: MemoryWriterAI,
+    raw_text: str,
+    today: str,
+    may_compact: bool,
+) -> bool:
+    """Runs the observation fan-out over one slice of the raw batch.
+
+    Returns False when the caller must keep the raw batch for a retry: a partially applied
+    fan-out is fine to replay, an unread bucket is not. A slice with no observation in it
+    costs nothing, not even the detail read. `may_compact` False keeps every call from
+    compacting, however large its compartment.
+    """
+    buckets = partition_raw_entries(raw_text=raw_text, flavor=flavor)
+    if not buckets:
+        return True
+    detail_tail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
+    # Splitting that window into observation blocks is a real stall on a heavy scope, and this
+    # runs on the same loop as the reply path. Pure function, no shared state, so a thread costs
+    # nothing — and the await is safe here because every write still sits immediately after its
+    # own `cleared_since` guard downstream.
+    detail_buckets = await asyncio.to_thread(
+        partition_raw_entries, raw_text=detail_tail, flavor=flavor
+    )
+    global_reference = ""
+    for compartment in _compartments_to_run(buckets=buckets):
+        if compartment != GLOBAL_COMPARTMENT and not global_reference:
+            # Read from disk rather than from this run: when the batch carried no
+            # cross-server evidence there was no global call to take it from, and
+            # a guild compartment still must not restate what is already shared.
+            global_reference = render_existing_facts(
+                facts=read_facts(scope=scope, compartment=GLOBAL_COMPARTMENT)
+            )
+        if cleared_since(scope=scope, started_at=started_at):
+            return False
+        outcome = await _consolidate_compartment(
+            scope=scope,
+            compartment=compartment,
+            flavor=flavor,
+            owner=owner,
+            started_at=started_at,
+            writer=writer,
+            request_parts=CompartmentInput(
+                raw_entries=buckets.get(compartment, ""),
+                recent_detail=detail_buckets.get(compartment, ""),
+                global_reference=global_reference,
+                today=today,
+            ),
+            may_compact=may_compact,
+        )
+        if outcome is None or not outcome.applied:
+            return False
+        if compartment == GLOBAL_COMPARTMENT:
+            global_reference = render_existing_facts(
+                facts=read_facts(scope=scope, compartment=compartment)
+            )
+    return True
 
 
 async def apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus the buckets, their stamp and the LLM handle
@@ -353,6 +394,7 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
     writer: MemoryWriterAI,
     request_parts: CompartmentInput,
     deletes_only: bool = False,
+    may_compact: bool = True,
 ) -> DeltaOutcome | None:
     """Runs and applies one compartment's consolidation; None means the LLM path failed.
 
@@ -373,7 +415,7 @@ async def _consolidate_compartment(  # noqa: PLR0913 -- one compartment's identi
             # asks the model to merge and condense, and `apply_deltas` then drops every
             # non-delete it produced with a warning apiece. The block would only buy a
             # rewrite nobody can apply.
-            compact=not deletes_only and len(rendered) > COMPACTION_TRIGGER_CHARS,
+            compact=may_compact and not deletes_only and len(rendered) > COMPACTION_TRIGGER_CHARS,
         )
     )
     if result is None:
