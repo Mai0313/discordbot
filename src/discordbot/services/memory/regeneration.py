@@ -244,6 +244,18 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
                     evidence=evidence,
                     today=today,
                 )
+                # The replay takes the evidence of what it deleted out of both files, so the
+                # tone rebuild and the retirement below must not work from the copies read
+                # before it.
+                raw_entries = read_raw_entries(scope=scope)
+                evidence = "\n\n".join(
+                    part
+                    for part in (
+                        read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
+                        raw_entries,
+                    )
+                    if part
+                )
                 await rebuild_tone_note(
                     scope=scope,
                     flavor=flavor,
@@ -281,10 +293,12 @@ async def _reapply_forgets(  # noqa: PLR0913 -- the scope's identity plus the co
     """Re-runs every forget request in the corpus against the freshly rebuilt facts.
 
     A rebuild derives facts from evidence rather than from the current facts, and the
-    observation a forget was aimed at is still sitting in `detail.md` verbatim: consolidation
-    retires the raw batch there and never prunes it. So the rebuild re-creates exactly what
-    the user asked to have removed, and `/memory regenerate` quietly undoes every forget they
-    ever asked for.
+    observation a forget was aimed at can still be sitting in `detail.md` verbatim: the forget
+    pass takes out only the evidence of a fact it actually deleted, so a forget that found
+    nothing to delete, or ran before that pass existed, left it there. So the rebuild
+    re-creates exactly what the user asked to have removed, and without this
+    `/memory regenerate` would quietly undo those forgets. The replay then takes that evidence
+    out as the incremental pass does, so the next rebuild no longer sees it.
 
     Replaying the requests afterwards fixes that without weakening anything: each runs as its
     own `deletes_only` call, so the forget's own sentence still cannot be written anywhere.

@@ -72,6 +72,7 @@ from discordbot.services.memory.deltas import (
     DeltaOutcome,
     apply_deltas,
     partition_raw_entries,
+    drop_released_evidence,
     partition_forget_requests,
 )
 from discordbot.services.memory.writer import (
@@ -1374,6 +1375,210 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
     # The forget was replayed against the rebuilt tree, under the same deletion-only gate the
     # incremental path uses, so its own sentence still could not be written anywhere.
     assert True in deletes_only_calls
+
+
+def _entry(timestamp: str, *observations: MemoryObservation, source: str = "guild 42") -> str:
+    """Renders one timestamped raw/detail entry holding the given observations."""
+    return (
+        f"## {timestamp}\n{render_memory_observations(observations=observations, source=source)}"
+    )
+
+
+def _forget_entry(timestamp: str) -> str:
+    """Renders one timestamped entry holding a forget request spoken in guild 42."""
+    return f"## {timestamp}\n{render_forget_requests(notes=('使用者已經不住台中了',), source='guild 42')}"
+
+
+def test_a_delete_releases_only_the_keys_no_remaining_fact_carries(
+    memory_isolated_dir: Path,
+) -> None:
+    """A key another fact still cites is that fact's evidence too, so a forget must leave it.
+
+    The keys are model-cited and two facts can share one; releasing a shared key would take the
+    surviving fact's evidence away along with the deleted one's.
+    """
+    write_fact(
+        scope=USER_SCOPE, fact=_stored_fact(fact_id="a" * 16, keys=("fact.city", "fact.move"))
+    )
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(fact_id="b" * 16, summary="搬家計畫", keys=("fact.move",)),
+    )
+    outcome = apply_deltas(
+        scope=USER_SCOPE,
+        compartment=GLOBAL_COMPARTMENT,
+        flavor="user",
+        deltas=(_delta(action="delete", fact_id="a" * 16),),
+        owner=MemoryOwner(owner_id=USER_ID, owner_name="Alice"),
+        allow_mass_delete=False,
+        deletes_only=True,
+    )
+    assert outcome.released_keys == ("fact.city",)
+
+
+def test_a_forget_releases_only_older_evidence_its_compartment_holds() -> None:
+    """Only what was said before the newest forget, where the forget could reach, goes.
+
+    Something said after it is a restatement the user chose to make, the same key filed for
+    another server is not this forget's to take, and the requests themselves stay for
+    `/memory regenerate` to replay. An older request does not move the cutoff back: a rebuild
+    replays every request the scope ever made, and the oldest would spare nearly everything.
+    """
+    city = _observation(summary="住在台中", normalized_key="fact.city", sharing="source_only")
+    job = _observation(summary="在工廠上班", normalized_key="fact.job", sharing="source_only")
+    text = "\n\n".join([
+        _forget_entry("2026-08-31T00:00:00+00:00"),
+        _entry("2026-09-01T00:00:00+00:00", city, job),
+        _entry("2026-09-01T00:00:01+00:00", city, source="guild 99"),
+        _forget_entry("2026-09-02T00:00:00+00:00"),
+        _entry("2026-09-03T00:00:00+00:00", city),
+    ])
+    forgets = partition_forget_requests(raw_text=text, compartments=("g/42", "g/99"))
+    dropped = drop_released_evidence(text=text, released={"g/42": ("fact.city",)}, forgets=forgets)
+    assert dropped == "\n\n".join([
+        _forget_entry("2026-08-31T00:00:00+00:00"),
+        _entry("2026-09-01T00:00:00+00:00", job),
+        _entry("2026-09-01T00:00:01+00:00", city, source="guild 99"),
+        _forget_entry("2026-09-02T00:00:00+00:00"),
+        _entry("2026-09-03T00:00:00+00:00", city),
+    ])
+    # Nothing released, nothing rewritten: the very same text comes back.
+    assert drop_released_evidence(text=text, released={"g/42": ()}, forgets=forgets) is text
+
+
+async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deleting the fact is not enough while its evidence stays readable.
+
+    Every later consolidation reads `detail.md` back as `<recent_detail>` with the forget request
+    stripped out, so the model would be handed the forgotten evidence with nothing saying it was
+    forgotten; a restatement still pending in `raw.md` would be consolidated right back. The
+    forget pass takes both out before anything reads them again, and the request itself still
+    retires to `detail.md` for a rebuild to replay.
+    """
+    city = _observation(summary="住在台中", normalized_key="fact.city")
+    food = _observation(summary="愛吃拉麵", normalized_key="fact.food")
+    pet = _observation(summary="養了一隻貓", normalized_key="fact.pet")
+    append_detail(scope=USER_SCOPE, text=_entry("2026-09-01T00:00:00+00:00", city, food))
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(fact_id="a" * 16, text="使用者住在台中", keys=("fact.city",)),
+    )
+    (memory_isolated_dir / str(USER_ID) / "raw.md").write_text(
+        "\n\n".join([
+            _entry("2026-09-02T00:00:00+00:00", city),
+            _forget_entry("2026-09-03T00:00:00+00:00"),
+            _entry("2026-09-04T00:00:00+00:00", pet),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    writer, fake_client = _writer()
+    bodies: list[str] = []
+
+    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Deletes the city fact on the forget pass and changes nothing anywhere else."""
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        body = str(cast("dict[str, object]", inputs[0])["content"])
+        bodies.append(body)
+        if "forget_request" in body:
+            return _parsed(
+                output=ConsolidatedMemory(deltas=(_delta(action="delete", fact_id="a" * 16),))
+            )
+        return _parsed(output=_no_change())
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    await consolidation.consolidate_after_turn(
+        scope=USER_SCOPE,
+        forced=True,
+        started_at=time.monotonic(),
+        writer=writer,
+        identity=IDENTITY,
+    )
+
+    assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
+    observation_calls = [body for body in bodies if "fact.pet" in body]
+    assert observation_calls, "the pending observation reached consolidation"
+    assert all("fact.city" not in body for body in observation_calls)
+    # The rest of the evidence is still handed over as before.
+    assert all("fact.food" in body for body in observation_calls)
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "fact.city" not in detail
+    assert "fact.food" in detail
+    assert "fact.pet" in detail
+    assert "### forget_request" in detail
+    assert read_raw_entries(scope=USER_SCOPE) == ""
+
+
+async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The replay prunes both files, so the rest of the rebuild must not use its earlier copies.
+
+    Regeneration read `raw.md` and the detail tail before rebuilding. Retiring that raw copy
+    would restore the evidence the replayed forget just removed, and the tone rebuild would
+    still be handed it.
+    """
+    monkeypatch.setattr(
+        "discordbot.services.memory.regeneration.MEMORY_REGENERATION_COOLDOWN_SECONDS", 0.0
+    )
+    scope_dir = memory_isolated_dir / str(USER_ID)
+    scope_dir.mkdir(parents=True)
+    (scope_dir / "raw.md").write_text(
+        "\n\n".join([
+            _entry(
+                "2026-09-02T00:00:00+00:00",
+                _observation(summary="住在台中", normalized_key="fact.city"),
+            ),
+            _forget_entry("2026-09-03T00:00:00+00:00"),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    writer, fake_client = _writer()
+    bodies: list[str] = []
+
+    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Rebuilds the city fact from evidence, then deletes it on the replayed forget."""
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        body = str(cast("dict[str, object]", inputs[0])["content"])
+        bodies.append(body)
+        if "forget_request" in body:
+            rebuilt = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+            return _parsed(
+                output=ConsolidatedMemory(
+                    deltas=tuple(_delta(action="delete", fact_id=fact.fact_id) for fact in rebuilt)
+                )
+            )
+        if "<tone_evidence>" in body:
+            return _parsed(output=_no_change())
+        return _parsed(
+            output=ConsolidatedMemory(
+                deltas=(
+                    _delta(
+                        section="fact",
+                        summary="住在台中",
+                        text="使用者住在台中",
+                        from_keys=("fact.city",),
+                    ),
+                )
+            )
+        )
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    report = await regeneration.regenerate_scope_memory(
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY
+    )
+
+    assert report.result == "regenerated"
+    assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "fact.city" not in detail
+    assert "### forget_request" in detail
+    assert not any("<tone_evidence>" in body and "住在台中" in body for body in bodies)
 
 
 async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_dir: Path) -> None:
