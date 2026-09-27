@@ -16,9 +16,6 @@ nav:
   - Reference:
       - discordbot:
           - cogs:
-              - auto_unmute:
-                  - cog: Reference/discordbot/cogs/auto_unmute/cog.md
-                  - prompts: Reference/discordbot/cogs/auto_unmute/prompts.md
               - economy:
                   - boards: Reference/discordbot/cogs/economy/boards.md
                   - cog: Reference/discordbot/cogs/economy/cog.md

@@ -1,11 +1,15 @@
 """Tests for the shared best-effort Responses helpers in utils/llm."""
 
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from openai.types.responses import Response
 
-from discordbot.utils.llm import output_text_or_empty
+from discordbot.utils.llm import create_text_or_none, output_text_or_empty
+from discordbot.typings.models import ModelSettings
+
+if TYPE_CHECKING:
+    from openai import AsyncOpenAI
 
 
 def _message(*parts: object) -> SimpleNamespace:
@@ -50,3 +54,23 @@ def test_output_text_or_empty_ignores_non_text_content_and_items() -> None:
         ]
     )
     assert output_text_or_empty(responses=_as_response(fake=responses)) == "kept"
+
+
+async def test_create_text_or_none_returns_the_trimmed_reply_text() -> None:
+    """A successful call hands back the reply's text with surrounding whitespace stripped."""
+
+    async def create(**_kwargs: object) -> SimpleNamespace:
+        """Answers the Responses call with padded text."""
+        return SimpleNamespace(output=[_message(_text_part("  a title \n"))])
+
+    client = cast("AsyncOpenAI", SimpleNamespace(responses=SimpleNamespace(create=create)))
+    text = await create_text_or_none(
+        client=client,
+        model=ModelSettings(name="gemini-test"),
+        instructions="Name the thread.",
+        user_text="brief",
+        end_user_id="deep-research",
+        timeout_seconds=5.0,
+    )
+
+    assert text == "a title"
