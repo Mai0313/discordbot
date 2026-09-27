@@ -153,10 +153,6 @@ PROMPT_REFINE_TIMEOUT_SECONDS: Final[float] = 120.0
 # backstops this module deliberately does not carry.
 # --------------------------------------------------------------------------------------
 
-# Auto-unmute replies are off the critical path; bound the call so a hung provider never
-# leaves the best-effort post-timeout reply pending forever.
-AUTO_UNMUTE_AI_TIMEOUT_SECONDS: Final[float] = 10.0
-
 # Bound the small research-thread title side call; on timeout/failure the brief's first line
 # is used, and the thread is named while the requester is watching it appear.
 THREAD_TITLE_TIMEOUT_SECONDS: Final[float] = 15.0
