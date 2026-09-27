@@ -210,8 +210,44 @@ def drop_released_evidence(
     ]
     if len(kept) == len(pairs):
         return text
+    return _render_file_entries(pairs=kept)
+
+
+def forget_segments(raw_text: str) -> list[tuple[str, str]]:
+    """Splits a raw batch, in file order, into `(observations, the forget requests after them)`.
+
+    What came before a forget is what it can be about, so it has to be consolidated before that
+    forget's pass runs, or the pass finds nothing to delete and the observation right behind it
+    stores what the user asked to drop. What came after is a restatement it must not reach, and
+    a batch can hold several forgets (a forced run that failed keeps its batch), so each one
+    gets its own segment. Only a batch ending in observations has a last segment with no
+    forget; a batch without any forget is that one segment.
+    """
+    segments: list[tuple[str, str]] = []
+    observations: list[tuple[str, str]] = []
+    forgets: list[tuple[str, str]] = []
+    for pair in _iter_observations(text=raw_text):
+        if _is_forget_request(block=pair[1]):
+            forgets.append(pair)
+            continue
+        if forgets:
+            segments.append((
+                _render_file_entries(pairs=observations),
+                _render_file_entries(pairs=forgets),
+            ))
+            observations, forgets = [], []
+        observations.append(pair)
+    segments.append((
+        _render_file_entries(pairs=observations),
+        _render_file_entries(pairs=forgets),
+    ))
+    return segments
+
+
+def _render_file_entries(pairs: list[tuple[str, str]]) -> str:
+    """Renders observation blocks the way `raw.md` and `detail.md` hold them on disk."""
     entries: list[str] = []
-    for timestamp, group in groupby(kept, key=lambda pair: pair[0]):
+    for timestamp, group in groupby(pairs, key=lambda pair: pair[0]):
         body = "\n\n".join(block for _, block in group)
         entries.append(f"## {timestamp}\n{body}" if timestamp else body)
     return "\n\n".join(entries)

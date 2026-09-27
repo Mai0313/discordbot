@@ -1384,9 +1384,9 @@ def _entry(timestamp: str, *observations: MemoryObservation, source: str = "guil
     )
 
 
-def _forget_entry(timestamp: str) -> str:
+def _forget_entry(timestamp: str, note: str = "使用者已經不住台中了") -> str:
     """Renders one timestamped entry holding a forget request spoken in guild 42."""
-    return f"## {timestamp}\n{render_forget_requests(notes=('使用者已經不住台中了',), source='guild 42')}"
+    return f"## {timestamp}\n{render_forget_requests(notes=(note,), source='guild 42')}"
 
 
 def test_a_delete_releases_only_the_keys_no_remaining_fact_carries(
@@ -1579,6 +1579,273 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
     assert "fact.city" not in detail
     assert "### forget_request" in detail
     assert not any("<tone_evidence>" in body and "住在台中" in body for body in bodies)
+
+
+_CITY = _observation(summary="住在台中", normalized_key="fact.city")
+_PET = _observation(summary="養了一隻貓", normalized_key="fact.pet")
+
+
+def _consolidation_stage(calls: list[str]) -> Callable[..., Awaitable[SimpleNamespace]]:
+    """Builds a fake parse that stores what its raw entries evidence and forgets only the city.
+
+    A forget pass deletes the city fact only when its request says the user moved away.
+
+    Each call is recorded as `forget` or `observe` in `calls`, so a test can read the order.
+    """
+
+    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Answers the forget pass, the tone call and the observation passes in turn."""
+        inputs = kwargs["input"]
+        assert isinstance(inputs, list)
+        body = str(cast("dict[str, object]", inputs[0])["content"])
+        if "forget_request" in body:
+            calls.append("forget")
+            doomed = [
+                fact
+                for fact in read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+                if fact.summary == _CITY.summary_zh and "不住台中" in body
+            ]
+            return _parsed(
+                output=ConsolidatedMemory(
+                    deltas=tuple(_delta(action="delete", fact_id=fact.fact_id) for fact in doomed)
+                )
+            )
+        if "<tone_evidence>" in body:
+            return _parsed(output=_no_change())
+        calls.append("observe")
+        raw_entries = body.split("<raw_entries>")[1].split("</raw_entries>", maxsplit=1)[0]
+        return _parsed(
+            output=ConsolidatedMemory(
+                deltas=tuple(
+                    _delta(
+                        section="fact",
+                        summary=observation.summary_zh,
+                        text=observation.summary_zh,
+                        from_keys=(observation.normalized_key,),
+                    )
+                    for observation in (_CITY, _PET)
+                    if observation.normalized_key in raw_entries
+                )
+            )
+        )
+
+    return staged_parse
+
+
+async def test_a_forget_reaches_what_was_staged_before_it(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A "remember X" then "forget X" inside one consolidation window must end with no X (#731).
+
+    One staged entry does not consolidate on its own, so the forget's forced run is the first to
+    see the observation. Run after the forget, it stored exactly what the user had just asked to
+    drop, and on a scope with no compartment yet the forget was not even copied anywhere. What
+    precedes the forget is consolidated first instead, and only once: the pet it also carried is
+    kept, and no later pass reads it again. The two are staged back to back, as a deferred turn
+    lands right behind the one before it, so whole-second stamps would tie them and leave the
+    city's evidence behind.
+    """
+    append_raw_entry(
+        scope=USER_SCOPE,
+        entry_text=render_memory_observations(observations=(_CITY, _PET), source="guild 42"),
+    )
+    append_raw_entry(
+        scope=USER_SCOPE,
+        entry_text=render_forget_requests(notes=("使用者已經不住台中了",), source="guild 42"),
+    )
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    monkeypatch.setattr(fake_client.responses, "parse", _consolidation_stage(calls=calls))
+    await consolidation.consolidate_after_turn(
+        scope=USER_SCOPE,
+        forced=True,
+        started_at=time.monotonic(),
+        writer=writer,
+        identity=IDENTITY,
+    )
+
+    assert calls == ["observe", "forget"]
+    facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.summary for fact in facts] == [_PET.summary_zh]
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "fact.city" not in detail
+    assert "fact.pet" in detail
+
+
+async def test_a_restatement_after_the_forget_survives_it(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Something said again after the forget is the user changing their mind, not its target."""
+    scope_dir = memory_isolated_dir / str(USER_ID)
+    scope_dir.mkdir(parents=True)
+    (scope_dir / "raw.md").write_text(
+        "\n\n".join([
+            _entry("2026-09-01T00:00:00+00:00", _CITY),
+            _forget_entry("2026-09-02T00:00:00+00:00"),
+            _entry("2026-09-03T00:00:00+00:00", _CITY),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    monkeypatch.setattr(fake_client.responses, "parse", _consolidation_stage(calls=calls))
+    await consolidation.consolidate_after_turn(
+        scope=USER_SCOPE,
+        forced=True,
+        started_at=time.monotonic(),
+        writer=writer,
+        identity=IDENTITY,
+    )
+
+    assert calls == ["observe", "forget", "observe"]
+    facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.summary for fact in facts] == [_CITY.summary_zh]
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    # Only the restatement is left as evidence; what the forget was about went with the fact.
+    assert "2026-09-01" not in detail
+    assert "2026-09-03" in detail
+
+
+async def test_each_forget_reaches_only_what_came_before_it(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A batch holding two forgets is taken one forget at a time.
+
+    Only a forced run that failed leaves one behind for the next. Split at the newer forget
+    alone, the restatement between the two was consolidated before the older one, which then
+    deleted it and took its evidence along.
+    """
+    scope_dir = memory_isolated_dir / str(USER_ID)
+    scope_dir.mkdir(parents=True)
+    (scope_dir / "raw.md").write_text(
+        "\n\n".join([
+            _entry("2026-09-01T00:00:00+00:00", _CITY),
+            _forget_entry("2026-09-02T00:00:00+00:00"),
+            _entry("2026-09-03T00:00:00+00:00", _CITY),
+            _forget_entry("2026-09-04T00:00:00+00:00", note="使用者不想再提工作的事"),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    monkeypatch.setattr(fake_client.responses, "parse", _consolidation_stage(calls=calls))
+    await consolidation.consolidate_after_turn(
+        scope=USER_SCOPE,
+        forced=True,
+        started_at=time.monotonic(),
+        writer=writer,
+        identity=IDENTITY,
+    )
+
+    assert calls == ["observe", "forget", "observe", "forget"]
+    facts = read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT)
+    assert [fact.summary for fact in facts] == [_CITY.summary_zh]
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "2026-09-01" not in detail
+    assert "2026-09-03" in detail
+
+
+async def test_a_forget_still_runs_when_the_pass_before_it_fails(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed observation pass must not hold back any forget that follows it.
+
+    The fact an earlier batch stored would otherwise go on being injected until a retry that
+    a stuck compartment may never let succeed, while the reply already said it was dropped.
+    The observation passes after the failed one are skipped, and the batch is kept for the
+    retry.
+    """
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(fact_id="a" * 16, summary=_CITY.summary_zh, keys=("fact.city",)),
+    )
+    (memory_isolated_dir / str(USER_ID) / "raw.md").write_text(
+        "\n\n".join([
+            _entry("2026-09-01T00:00:00+00:00", _PET),
+            _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再提工作的事"),
+            _entry("2026-09-03T00:00:00+00:00", _PET),
+            _forget_entry("2026-09-04T00:00:00+00:00"),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    writer, fake_client = _writer()
+    calls: list[str] = []
+    stage = _consolidation_stage(calls=calls)
+
+    async def failing_observation(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Fails every observation call and answers the forget pass as usual."""
+        body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
+        if "forget_request" in body:
+            return await stage(**kwargs)
+        calls.append("observe")
+        return _parsed(output=None)
+
+    monkeypatch.setattr(fake_client.responses, "parse", failing_observation)
+    await consolidation.consolidate_after_turn(
+        scope=USER_SCOPE,
+        forced=True,
+        started_at=time.monotonic(),
+        writer=writer,
+        identity=IDENTITY,
+    )
+
+    # order-contract: the consolidation passes run one after another; the forgets following the failed pass are the behaviour under test.
+    assert calls == ["observe", "forget", "forget"]
+    assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
+    assert count_raw_entries(scope=USER_SCOPE) == 4
+
+
+async def test_nothing_compacts_ahead_of_a_forget(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compaction merges facts, so it waits until the batch's forgets have run.
+
+    Run in the pass right before a forget, it could fold the fact the forget names into others,
+    leaving the forget to delete all of them or none. The pass after the forget still compacts,
+    which is what says the trigger itself is untouched.
+    """
+    write_fact(
+        scope=USER_SCOPE,
+        fact=_stored_fact(fact_id="a" * 16, text="住" * (COMPACTION_TRIGGER_CHARS + 1)),
+    )
+    scope_dir = memory_isolated_dir / str(USER_ID)
+    (scope_dir / "raw.md").write_text(
+        "\n\n".join([
+            _entry("2026-09-01T00:00:00+00:00", _PET),
+            _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再提工作的事"),
+            _entry("2026-09-03T00:00:00+00:00", _CITY),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    writer, fake_client = _writer()
+    observation_calls: list[tuple[str, str]] = []
+
+    async def recording_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Records each observation call's instructions beside its raw entries."""
+        body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
+        if "forget_request" not in body and "<tone_evidence>" not in body:
+            observation_calls.append((str(kwargs["instructions"]), body))
+        return _parsed(output=_no_change())
+
+    monkeypatch.setattr(fake_client.responses, "parse", recording_parse)
+    await consolidation.consolidate_after_turn(
+        scope=USER_SCOPE,
+        forced=True,
+        started_at=time.monotonic(),
+        writer=writer,
+        identity=IDENTITY,
+    )
+
+    before = [prompt for prompt, body in observation_calls if "fact.pet" in body]
+    after = [prompt for prompt, body in observation_calls if "fact.city" in body]
+    assert before, "the observation ahead of the forget reached consolidation"
+    assert after, "the observation after the forget reached consolidation"
+    assert all(PHASE2_COMPACTION_BLOCK not in prompt for prompt in before)
+    assert all(PHASE2_COMPACTION_BLOCK in prompt for prompt in after)
 
 
 async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_dir: Path) -> None:
