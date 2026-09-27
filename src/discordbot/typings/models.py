@@ -213,14 +213,13 @@ class RuntimeModelCatalog(BaseModel):
         #
         # The peak-hour branch below is parked rather than deleted: `gemini-3.8-flash` runs into
         # high-demand refusals often enough inside the window that it costs more replies than
-        # Pro's queueing did. Uncommenting brings the flash branch's own costs back with it:
-        # LiteLLM's price table has no entry for that snapshot, so a peak-hour reply prices at
-        # `$0.00000000` in the footer while the attachment modality gate falls back to its
-        # `{"text", "image"}` baseline. That gate feeds BOTH renders, so an audio or video
-        # attachment does not merely go unuploaded inside the window: its `[attachment: video]`
-        # marker never reaches the route or the effort grade either, and the answer model is not
-        # told the file existed. A clip posted with one line of text is then answered as if the
-        # line were the whole message, which is a wrong answer rather than a degraded one.
+        # Pro's queueing did. Whichever name this tier returns must have an entry in LiteLLM's
+        # price table: without one a reply prices at `$0.00000000` in the footer and the
+        # attachment modality gate falls back to its `{"text", "image"}` baseline. That gate feeds
+        # BOTH renders, so an audio or video attachment does not merely go unuploaded: its
+        # `[attachment: video]` marker never reaches the route either, and the answer model is
+        # not told the file existed. A clip posted with one line of text is then answered as if
+        # the line were the whole message, which is a wrong answer rather than a degraded one.
         # if self.is_peak:
         #     return ModelSettings(name="gemini-3.8-flash", effort="high")
         return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
