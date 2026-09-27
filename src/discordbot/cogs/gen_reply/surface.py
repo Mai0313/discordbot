@@ -267,12 +267,13 @@ class TurnSurface(BaseModel):
         turn rebuilding into the question and the answer that followed it.
         """
         if self.interaction is None:
-            return [
-                m
-                async for m in self.message.channel.history(
-                    limit=limit, before=self.message, oldest_first=True
-                )
+            # Newest first, then reversed here: nextcord's `oldest_first=True` reverses each
+            # 100-message page on its own, so past one page the newest messages come out first.
+            history = [
+                m async for m in self.message.channel.history(limit=limit, before=self.message)
             ]
+            history.reverse()
+            return history
         user = self.interaction.user
         if user is None or self.interaction.channel_id is None:
             return []
