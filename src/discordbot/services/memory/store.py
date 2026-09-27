@@ -14,8 +14,8 @@ construction and its evidence carries no source to route by.
 
 The remaining tiers are per-scope: ``raw.md`` accumulates phase-1 entries
 until consolidation consumes them, ``detail.md`` is the append-only cold evidence log
-(read as a tail window, trimmed to a hard byte cap), and ``tone.md`` is the short
-always-read note of how the user wants the bot to sound.
+(read as a tail window, trimmed to a hard byte cap, and losing only what a forget released),
+and ``tone.md`` is the short always-read note of how the user wants the bot to sound.
 
 IO is synchronous, which one fact per file would otherwise make untenable on the reply
 path: ``read_memory_document`` is cached under a per-scope generation counter that
@@ -33,6 +33,7 @@ from pathlib import Path
 from datetime import UTC, datetime
 import itertools
 import contextlib
+from collections.abc import Callable
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
@@ -586,6 +587,23 @@ def _trim_detail(path: Path) -> None:
     tmp_path = path.with_suffix(".md.tmp")
     tmp_path.write_text(data="\n\n".join(entries[start:]) + "\n", encoding="utf-8")
     os.replace(src=tmp_path, dst=path)
+
+
+def rewrite_evidence(scope: str, edit: Callable[[str], str]) -> None:
+    """Passes `raw.md` and `detail.md` through `edit`, atomically replacing each one it changed.
+
+    The one change to either file besides an append, an eviction or the oldest-first trim: a
+    forget taking the evidence of the facts it deleted with them (`deltas.drop_released_evidence`
+    has why). A file `edit` hands back unchanged is not rewritten.
+    """
+    for path in (_raw_path(scope=scope), _detail_path(scope=scope)):
+        text = _read_text(path=path)
+        edited = edit(text)
+        if edited == text:
+            continue
+        tmp_path = path.with_suffix(".md.tmp")
+        tmp_path.write_text(data=edited + "\n", encoding="utf-8")
+        os.replace(src=tmp_path, dst=path)
 
 
 def read_detail_tail(scope: str, max_chars: int) -> str:

@@ -13,6 +13,7 @@ than a step in any of them, so each reaches it at one call of its own.
 import time
 import asyncio
 from datetime import UTC, datetime
+from functools import partial
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
@@ -34,6 +35,7 @@ from discordbot.services.memory.store import (
     scope_owner_id,
     read_detail_tail,
     read_raw_entries,
+    rewrite_evidence,
     count_raw_entries,
     list_compartments,
     read_memory_document,
@@ -45,6 +47,7 @@ from discordbot.services.memory.deltas import (
     sweep_stale_facts,
     partition_raw_entries,
     render_existing_facts,
+    drop_released_evidence,
     partition_forget_requests,
 )
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidationRequest
@@ -174,14 +177,6 @@ async def _consolidate_locked(  # noqa: C901 -- every awaited step needs its own
     forget_buckets = partition_forget_requests(
         raw_text=raw_entries, compartments=tuple(list_compartments(scope=scope))
     )
-    detail_tail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
-    # Splitting that window into observation blocks is a real stall on a heavy scope, and
-    # this runs on the same loop as the reply path. Pure function, no shared state, so a
-    # thread costs nothing — and the await is safe here because every write still sits
-    # immediately after its own `cleared_since` guard downstream.
-    detail_buckets = await asyncio.to_thread(
-        partition_raw_entries, raw_text=detail_tail, flavor=flavor
-    )
     today = datetime.now(UTC).date().isoformat()
     compartments = _compartments_to_run(buckets=buckets)
     global_reference = ""
@@ -199,6 +194,20 @@ async def _consolidate_locked(  # noqa: C901 -- every awaited step needs its own
                 today=today,
             ):
                 return
+            # Read (again) only after the forget pass, which may have taken evidence out of both
+            # files: no call below is handed it, and the batch retired at the end no longer
+            # carries it.
+            raw_entries = read_raw_entries(scope=scope)
+            buckets = partition_raw_entries(raw_text=raw_entries, flavor=flavor)
+            compartments = _compartments_to_run(buckets=buckets)
+            detail_tail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
+            # Splitting that window into observation blocks is a real stall on a heavy scope,
+            # and this runs on the same loop as the reply path. Pure function, no shared state,
+            # so a thread costs nothing — and the await is safe here because every write still
+            # sits immediately after its own `cleared_since` guard downstream.
+            detail_buckets = await asyncio.to_thread(
+                partition_raw_entries, raw_text=detail_tail, flavor=flavor
+            )
             for compartment in compartments:
                 if compartment != GLOBAL_COMPARTMENT and not global_reference:
                     # Read from disk rather than from this run: when the batch carried no
@@ -282,7 +291,11 @@ async def apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus th
     the observation fan-out: an unread bucket is not safe to retire.
 
     Every call here is `deletes_only`; `partition_forget_requests` owns why a forget is
-    partitioned on its own rather than folded into the observation buckets.
+    partitioned on its own rather than folded into the observation buckets. Each applied call
+    then takes the evidence of the facts it deleted out of `raw.md` and `detail.md` at once,
+    not after the whole pass: a retry finds those facts already gone and releases nothing, so
+    evidence left behind by a later call failing would stay for good. A caller holding either
+    file's text from before this pass must read it again.
     """
     for compartment, forget_text in sorted(buckets.items()):
         if cleared_since(scope=scope, started_at=started_at):
@@ -301,6 +314,17 @@ async def apply_forget_buckets(  # noqa: PLR0913 -- the scope's identity plus th
         )
         if outcome is None or not outcome.applied:
             return False
+        if outcome.released_keys:
+            if cleared_since(scope=scope, started_at=started_at):
+                return False
+            rewrite_evidence(
+                scope=scope,
+                edit=partial(
+                    drop_released_evidence,
+                    released={compartment: outcome.released_keys},
+                    forgets=buckets,
+                ),
+            )
     return True
 
 

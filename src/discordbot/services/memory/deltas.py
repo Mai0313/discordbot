@@ -23,6 +23,7 @@ that):
 
 import re
 from datetime import UTC, datetime, timedelta
+from itertools import groupby
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
@@ -78,6 +79,13 @@ class DeltaOutcome(BaseModel):
     written: tuple[str, ...] = Field(
         default=(),
         description="Ids this batch created or updated, so a rebuild can drop the rest.",
+    )
+    released_keys: tuple[str, ...] = Field(
+        default=(),
+        description=(
+            "Evidence keys the deleted facts carried that no fact left in the compartment "
+            "carries, so a forget can take the evidence with the fact."
+        ),
     )
 
     @property
@@ -164,6 +172,61 @@ def _forget_targets(block: str, compartments: tuple[str, ...]) -> tuple[str, ...
     guild = guild_compartment(guild_id=int(match.group("guild_id")))
     return tuple(
         compartment for compartment in compartments if compartment in {GLOBAL_COMPARTMENT, guild}
+    )
+
+
+def drop_released_evidence(
+    text: str, released: dict[str, tuple[str, ...]], forgets: dict[str, str]
+) -> str:
+    """Removes from a raw or detail text the evidence behind the facts a forget deleted.
+
+    Leaving it would hand it straight back: every later consolidation reads the detail tail as
+    `<recent_detail>`, and `partition_raw_entries` strips the forget request out of it, so the
+    model would see the evidence with nothing saying it had been forgotten.
+
+    `released` maps each compartment to the keys its forget pass freed
+    (`DeltaOutcome.released_keys`), and `forgets` is that pass's input. An observation goes when
+    it routes to one of those compartments, carries one of its keys as `normalized_key`, and
+    predates the newest forget request copied there: something said after every forget is a
+    restatement, not what was forgotten. The newest, because one pass cannot tell which of its
+    requests deleted which fact, and a rebuild's replay carries every request the scope ever
+    made, so the oldest would leave nearly everything standing. Forget requests themselves
+    stay, since `/memory regenerate` replays them.
+
+    Returns `text` itself when nothing matched, so the caller can skip the rewrite.
+    """
+    cutoffs = {
+        compartment: max(
+            timestamp for timestamp, _ in _iter_observations(text=forgets[compartment])
+        )
+        for compartment, keys in released.items()
+        if keys
+    }
+    pairs = _iter_observations(text=text)
+    kept = [
+        (timestamp, block)
+        for timestamp, block in pairs
+        if not _is_released(timestamp=timestamp, block=block, released=released, cutoffs=cutoffs)
+    ]
+    if len(kept) == len(pairs):
+        return text
+    entries: list[str] = []
+    for timestamp, group in groupby(kept, key=lambda pair: pair[0]):
+        body = "\n\n".join(block for _, block in group)
+        entries.append(f"## {timestamp}\n{body}" if timestamp else body)
+    return "\n\n".join(entries)
+
+
+def _is_released(
+    timestamp: str, block: str, released: dict[str, tuple[str, ...]], cutoffs: dict[str, str]
+) -> bool:
+    """Whether one observation is evidence a forget released; see `drop_released_evidence`."""
+    if _is_forget_request(block=block):
+        return False
+    compartment = _compartment_for_block(block=block)
+    return (
+        _fields_of(block=block).get("normalized_key") in released.get(compartment, ())
+        and timestamp < cutoffs[compartment]
     )
 
 
@@ -293,12 +356,19 @@ def apply_deltas(  # noqa: PLR0913 -- one compartment's identity (scope/compartm
         delete_fact(scope=scope, compartment=compartment, fact_id=fact_id)
     for fact in to_write:
         write_fact(scope=scope, fact=fact)
+    kept_keys = {key for fact in to_write for key in fact.keys}
+    kept_keys.update(
+        key for fact_id, fact in existing.items() if fact_id not in to_delete for key in fact.keys
+    )
     return DeltaOutcome(
         created=created,
         updated=len(to_write) - created,
         deleted=len(to_delete),
         dropped=dropped,
         written=tuple(sorted(written_ids)),
+        released_keys=tuple(
+            sorted({key for fact_id in to_delete for key in existing[fact_id].keys} - kept_keys)
+        ),
     )
 
 
