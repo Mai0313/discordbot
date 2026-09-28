@@ -1364,7 +1364,8 @@ async def stream_answer_with_retry(
 
     This is the only LLM call in the process with no retry anywhere beneath it. LiteLLM's
     router applies `num_retries` and its configured fallbacks to the non-streaming paths,
-    which is why the triage and fast one-shots degrade instead of failing, but a provider 5xx
+    which is why the fast one-shots degrade instead of failing (the triage call has no
+    fallback there and degrades in `routing.py` instead), but a provider 5xx
     that arrives as an SSE error frame mid-stream reaches the client untouched -- and that is
     the one turn whose failure a user watches happen.
 
