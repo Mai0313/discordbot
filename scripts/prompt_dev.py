@@ -45,9 +45,8 @@ if TYPE_CHECKING:
 console = Console()
 config = LLMConfig()
 
-# Mirror the @property value in typings/models.py. slow_model splits on the hour there, so this
-# is the off-peak half; a dev run inside the peak window measures a different model than a reply.
-SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+# Mirror the @property value in typings/models.py.
+SLOW_MODEL = ModelSettings(name="gemini-3.8-flash", effort="high")
 
 
 def gen_reply(user_prompt: str) -> None:

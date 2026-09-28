@@ -8467,9 +8467,9 @@ def test_runtime_model_catalog_dispatches_slow_model_by_peak_hour(
     assert before_peak[1:] == (False, False)
     assert after_peak[1:] == (False, False)
     assert weekend[1:] == (False, False)
-    # The peak branch is parked, so every hour answers on the same model. Asserted across all
-    # five rather than per branch, because the per-branch form passes either way once there is
-    # one branch; the window itself is still guarded above.
+    # No tier splits on the peak window, so every hour answers on the same model. Asserted
+    # across all five rather than per branch, because the per-branch form passes either way
+    # once there is one branch; the window itself is still guarded above.
     assert peak_start[0] == peak_end[0] == before_peak[0] == after_peak[0] == weekend[0]
 
 
