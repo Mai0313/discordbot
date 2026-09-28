@@ -20,7 +20,7 @@ from pydantic import Field, BaseModel, ConfigDict
 
 from discordbot.typings.memory import MemoryOwner
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
-from discordbot.services.memory.tone import update_tone_note
+from discordbot.services.memory.tone import forget_tone, update_tone_note
 from discordbot.services.memory.facts import MemoryFlavor, parse_identity, sections_for_flavor
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
@@ -211,6 +211,17 @@ async def _consolidate_locked(
                         raw_text=forgets, compartments=tuple(list_compartments(scope=scope))
                     ),
                     today=today,
+                ):
+                    return
+                # A tone preference is never stored as a fact, so the pass above cannot reach
+                # one; it gets its own, taking only this segment's forgets so a tone
+                # restatement made after one of them is not offered to it.
+                if not await forget_tone(
+                    scope=scope,
+                    flavor=flavor,
+                    started_at=started_at,
+                    writer=writer,
+                    forgets=forgets,
                 ):
                     return
             if not observed:
