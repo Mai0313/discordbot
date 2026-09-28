@@ -84,6 +84,7 @@ from discordbot.services.memory.writer import (
     ConsolidatedMemory,
     ConsolidationRequest,
     redact_secrets,
+    parse_turn_payload,
     render_turn_payload,
     subject_source_line,
     parse_subject_source,
@@ -2176,6 +2177,170 @@ async def test_a_superseded_turn_is_still_told_what_became_of_its_notes(
     await _drain_scope()
 
     assert [len(reports) for reports in seen.values()] == [1, 1, 1]
+
+
+def test_a_merge_keeps_each_turns_notes_in_their_own_round() -> None:
+    """Merged turns stay in order, and a round with no forget folds into the one before it.
+
+    Folding costs nothing in order, since a round is staged forget first and the folded notes
+    came after that forget anyway, and it saves a review.
+    """
+    older = render_turn_payload(transcript="舊", rounds=((("他住在台中",), ()),))
+    newer = render_turn_payload(transcript="新", rounds=(((), ("他已經不住台中了",)),))
+    transcript, rounds = parse_turn_payload(
+        payload=inflight._merged_payload(newer=newer, older=older)
+    )
+    assert transcript == "新"
+    assert rounds == ((("他住在台中",), ()), ((), ("他已經不住台中了",)))
+
+    older = render_turn_payload(transcript="舊", rounds=((("他養貓",), ("別提舊筆電",)),))
+    newer = render_turn_payload(transcript="新", rounds=((("他養貓", "他養狗"), ()),))
+    _, rounds = parse_turn_payload(payload=inflight._merged_payload(newer=newer, older=older))
+    assert rounds == ((("他養貓", "他養狗"), ("別提舊筆電",)),)
+
+
+def test_a_repeated_note_keeps_its_newest_place_in_a_merge() -> None:
+    """A note written twice counts where it was written last, on either side of a forget.
+
+    Kept at its first place, a remember restated after a forget would be staged ahead of it and
+    deleted, and a forget repeated after a remember would be staged ahead of it and miss it.
+    """
+    older = render_turn_payload(
+        transcript="舊", rounds=((("他住在台中",), ()), ((), ("他已經不住台中了",)))
+    )
+    newer = render_turn_payload(transcript="新", rounds=((("他住在台中",), ()),))
+    _, rounds = parse_turn_payload(payload=inflight._merged_payload(newer=newer, older=older))
+    # The restatement follows the forget, which a round stages first.
+    assert rounds == ((("他住在台中",), ("他已經不住台中了",)),)
+
+    older = render_turn_payload(transcript="舊", rounds=(((), ("別提舊筆電",)), (("他養貓",), ())))
+    newer = render_turn_payload(transcript="新", rounds=(((), ("別提舊筆電",)),))
+    _, rounds = parse_turn_payload(payload=inflight._merged_payload(newer=newer, older=older))
+    assert rounds == ((("他養貓",), ()), ((), ("別提舊筆電",)))
+
+
+async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remember from an older waiting turn must land ahead of a newer turn's forget (#736).
+
+    Merged into one list of each kind, the forget was staged first and the observation after
+    it, where the forget can no longer reach it. Three turns, because that is what it takes to
+    reach the merge: the first occupies the scope and the other two queue behind it.
+    """
+    writer, fake_client = _writer()
+
+    async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Reviews each note into one observation, and changes no fact."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
+        body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
+        if kwargs.get("text_format") is RawMemoryDraft:
+            key = "fact.city" if "台中" in body else "preference.lang"
+            return _parsed(output=_draft("住在台中", normalized_key=key))
+        return _parsed(output=_no_change())
+
+    monkeypatch.setattr(fake_client.responses, "parse", staged_parse)
+    for remember, forget in (
+        (("他喜歡繁體中文",), ()),
+        (("他住在台中",), ()),
+        ((), ("他已經不住台中了",)),
+    ):
+        pipeline.schedule_memory_update(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+            message_list=_user_message(),
+            full_reply="回覆",
+            writer=writer,
+            identity=IDENTITY,
+            remember_notes=remember,
+            forget_notes=forget,
+        )
+    await _drain_scope()
+
+    staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
+        scope=USER_SCOPE
+    )
+    assert staged.index("fact.city") < staged.index("### forget_request")
+
+
+async def test_a_failed_review_still_writes_the_forgets_of_later_rounds(
+    memory_isolated_dir: Path,
+) -> None:
+    """A merged turn whose first review fails still stages the forgets behind it.
+
+    The row is kept for the restart retry, but a forget needs no model, and waiting for that
+    retry would leave the bot repeating what the newer turn asked it to drop.
+    """
+    writer, fake_client = _writer()
+    fake_client.responses.raises = RuntimeError("review is down")
+    pipeline.resume_memory_update(
+        scope=USER_SCOPE,
+        subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+        transcript=render_turn_payload(
+            transcript="Alice (alice) [id: 123456789]: 哈囉",
+            rounds=((("他住在台中",), ()), ((), ("他已經不住台中了",))),
+        ),
+        writer=writer,
+        identity=IDENTITY,
+        token=memory_db.new_token(),
+    )
+    await _wait_for_inflight()
+
+    staged = read_detail_tail(scope=USER_SCOPE, max_chars=100_000) + read_raw_entries(
+        scope=USER_SCOPE
+    )
+    assert "他已經不住台中了" in staged
+
+
+async def test_a_partly_failed_merge_still_reports_what_it_staged(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later round's failed review must not hide what an earlier round already took down.
+
+    A resumed retry carries no report, so this is the only chance the replies get to hear it.
+    """
+    writer, fake_client = _writer()
+    reviews: list[int] = []
+
+    async def second_review_fails(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Reviews the first round, fails the second, changes no fact."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
+        if kwargs.get("text_format") is RawMemoryDraft:
+            reviews.append(1)
+            if len(reviews) > 1:
+                raise RuntimeError("review is down")
+            return _parsed(output=_draft("養了一隻貓", normalized_key="fact.pet"))
+        return _parsed(output=_no_change())
+
+    monkeypatch.setattr(fake_client.responses, "parse", second_review_fails)
+    reported: list[MemoryWriteSummary] = []
+
+    async def record(summary: MemoryWriteSummary) -> None:
+        """Captures what the merged replies were told."""
+        reported.append(summary)
+
+    inflight.enqueue_memory_update(
+        turn=inflight.MemoryTurn(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+            transcript=render_turn_payload(
+                transcript="Alice (alice) [id: 123456789]: 哈囉",
+                rounds=((("他養了一隻貓",), ()), (("他住在台中",), ("別提舊筆電",))),
+            ),
+            writer=writer,
+            identity=IDENTITY,
+            token=memory_db.new_token(),
+            report=record,
+        ),
+        run=pipeline._run_memory_update,
+    )
+    await _wait_for_inflight()
+
+    assert len(reported) == 1
+    assert reported[0].remembered == ("養了一隻貓",)
+    assert reported[0].forgotten == ("別提舊筆電",)
 
 
 async def test_a_merged_report_answers_the_newer_reply_when_the_older_one_raises() -> None:
@@ -4294,7 +4459,7 @@ async def test_resume_memory_update_reruns_failed_job(memory_isolated_dir: Path)
     resumed row carries what the answer model marked without `memory_job` growing a field.
     """
     payload = render_turn_payload(
-        transcript="Alice (alice) [id: 123456789]: 哈囉", remember=_NOTES, forget=()
+        transcript="Alice (alice) [id: 123456789]: 哈囉", rounds=((_NOTES, ()),)
     )
     await memory_db.upsert_pending(
         scope=USER_SCOPE,

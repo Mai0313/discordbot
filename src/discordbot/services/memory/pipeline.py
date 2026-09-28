@@ -212,7 +212,7 @@ def schedule_memory_update(  # noqa: PLR0913 -- flavor (scope/subject/identity) 
             scope=scope,
             subject=subject,
             transcript=render_turn_payload(
-                transcript=transcript, remember=remember_notes, forget=forget_notes
+                transcript=transcript, rounds=((remember_notes, forget_notes),)
             ),
             writer=writer,
             identity=identity,
@@ -334,7 +334,9 @@ async def _run_memory_update(turn: MemoryTurn) -> None:
         await settle(MemoryWriteSummary())
 
 
-async def _review_and_stage(turn: MemoryTurn, report: MemoryWriteReport | None) -> bool | None:
+async def _review_and_stage(  # noqa: C901 -- one review per round, and every write after an await needs its own clear check
+    turn: MemoryTurn, report: MemoryWriteReport | None
+) -> bool | None:
     """Reviews one turn's notes and stages what survives, under the caller's scope lock.
 
     Returns whether consolidation should be FORCED (a forget is waiting), or None when the
@@ -342,30 +344,59 @@ async def _review_and_stage(turn: MemoryTurn, report: MemoryWriteReport | None) 
     lock-holding half reads as one thing; the caller owns only the consolidation decision.
     """
     scope = turn.scope
-    transcript, remember_notes, forget_notes = parse_turn_payload(payload=turn.transcript)
+    transcript, rounds = parse_turn_payload(payload=turn.transcript)
     # The subject's source line survives the memory_job round-trip, so a resumed
     # turn stamps the same source; a pre-source row (or the server flavor) parses
     # to None and renders without the source/sharing fields.
     source = parse_subject_source(subject=turn.subject)
-    # Written before the evaluator runs, and deliberately not undone by its failure: a
-    # forget needs no model, and making it wait behind one would let a failed call keep
-    # the bot repeating what it was just asked to drop. A retried row therefore writes it
-    # twice, which costs nothing: consolidation deletes the fact the first time and finds
-    # nothing to delete the second.
-    forget_text = render_forget_requests(notes=forget_notes, source=source)
-    if forget_text and not cleared_since(scope=scope, started_at=turn.captured_at):
-        append_raw_entry(scope=scope, entry_text=forget_text)
-    draft = await turn.writer.evaluate(
-        subject=turn.subject, transcript=transcript, notes=remember_notes
-    )
-    if cleared_since(scope=scope, started_at=turn.captured_at):
-        # Cleared while this update was in flight; dropping the result beats
-        # resurrecting deleted memory. The tombstone already owns the durable
-        # ordering; this terminal write is only best-effort cleanup for a
-        # process-local store clear.
-        await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token))
-        return None
-    if draft is None:
+    forget_notes: tuple[str, ...] = ()
+    remember_notes: tuple[str, ...] = ()
+    kept: list[MemoryObservation] = []
+    reviewed = True
+    # One round per turn, oldest first, so what an older turn asked to remember is in `raw.md`
+    # ahead of a newer turn's forget (`parse_turn_payload`).
+    for remember, forget in rounds:
+        # Written before the round's review runs, and deliberately not undone by its failure:
+        # a forget needs no model, and making it wait behind one would let a failed call keep
+        # the bot repeating what it was just asked to drop. A retried row therefore writes it
+        # twice, which costs nothing while nothing was staged before the failure. A merged row
+        # whose earlier rounds did land re-stages them behind their own forget's second copy,
+        # which can then reach them; that takes three waiting turns and a failed review at
+        # once, and is accepted rather than tracked per round.
+        forget_text = render_forget_requests(notes=forget, source=source)
+        if forget_text and not cleared_since(scope=scope, started_at=turn.captured_at):
+            append_raw_entry(scope=scope, entry_text=forget_text)
+        forget_notes += forget
+        remember_notes += remember
+        if not remember or not reviewed:
+            # After a failed review the rest is left to the retry, but not the forgets.
+            continue
+        draft = await turn.writer.evaluate(
+            subject=turn.subject, transcript=transcript, notes=remember
+        )
+        if cleared_since(scope=scope, started_at=turn.captured_at):
+            # Cleared while this update was in flight; dropping the result beats
+            # resurrecting deleted memory. The tombstone already owns the durable
+            # ordering; this terminal write is only best-effort cleanup for a
+            # process-local store clear.
+            await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token))
+            return None
+        if draft is None:
+            reviewed = False
+            continue
+        recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
+        deduped = filter_duplicate_observations(
+            observations=draft.observations,
+            existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
+            source=source,
+        )
+        if deduped:
+            append_raw_entry(
+                scope=scope,
+                entry_text=render_memory_observations(observations=deduped, source=source),
+            )
+            kept.extend(deduped)
+    if not reviewed:
         # The LLM path itself failed: keep the row (payload intact) so the
         # restart sweep retries it, no extra timeout needed. The cause detail is
         # already logged upstream; this line adds the scope attribution.
@@ -377,37 +408,22 @@ async def _review_and_stage(turn: MemoryTurn, report: MemoryWriteReport | None) 
         await safe_db_write(
             coro=memory_db.mark_failed(scope=scope, token=turn.token, error="evaluate failed")
         )
-        if report is not None and forget_text:
-            # The forget is durable regardless of the review, so the reply may say so. Its
-            # remembered half is left empty rather than guessed at: the notes that would have
-            # filled it are exactly what the failed call was reviewing.
-            await report_writes(report=report, summary=MemoryWriteSummary(forgotten=forget_notes))
+        if report is not None and (kept or forget_notes):
+            # What earlier rounds staged and every forget are durable regardless of the failed
+            # review, so the reply may say so; the notes that failed are left out rather than
+            # guessed at. A resumed retry carries no report, so this is the only chance.
+            await report_writes(
+                report=report,
+                summary=_write_summary(observations=tuple(kept), forgotten=forget_notes),
+            )
         # The forget above is already durable and has nothing to do with the review that
         # failed, so it still gets the immediate pass it was written for. Without this it
         # would wait for an unrelated turn to push the backlog over threshold, and the bot
         # would go on repeating what it was asked to drop -- exactly what writing it first
         # was meant to prevent.
-        return True if forget_text else None
-    recent_detail = read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS)
-    deduped_observations = filter_duplicate_observations(
-        observations=draft.observations,
-        existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
-        source=source,
-    )
-    if deduped_observations:
-        append_raw_entry(
-            scope=scope,
-            entry_text=render_memory_observations(
-                observations=deduped_observations, source=source
-            ),
-        )
-    elif not forget_text:
-        logfire.debug(
-            "Memory notes survived nothing",
-            scope=scope,
-            notes=len(remember_notes),
-            candidates=len(draft.observations),
-        )
+        return True if forget_notes else None
+    if not kept and not forget_notes:
+        logfire.debug("Memory notes survived nothing", scope=scope, notes=len(remember_notes))
         await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token))
         return None
     # The turn is durable in raw.md now; record success before the (best-effort,
@@ -415,10 +431,9 @@ async def _review_and_stage(turn: MemoryTurn, report: MemoryWriteReport | None) 
     await safe_db_write(coro=memory_db.mark_done(scope=scope, token=turn.token))
     if report is not None:
         await report_writes(
-            report=report,
-            summary=_write_summary(observations=deduped_observations, forgotten=forget_notes),
+            report=report, summary=_write_summary(observations=tuple(kept), forgotten=forget_notes)
         )
-    return bool(forget_text)
+    return bool(forget_notes)
 
 
 async def safe_list_resumable() -> list[memory_db.MemoryJob]:

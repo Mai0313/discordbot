@@ -628,9 +628,12 @@ def render_memory_observations(
     return "\n\n".join(blocks)
 
 
-def render_turn_payload(
-    transcript: str, remember: tuple[str, ...], forget: tuple[str, ...]
-) -> str:
+# One turn's inline memory notes, `(remember, forget)`. A payload merged from several waiting
+# turns carries one per turn, oldest first; `parse_turn_payload` has why.
+type NoteRound = tuple[tuple[str, ...], tuple[str, ...]]
+
+
+def render_turn_payload(transcript: str, rounds: tuple[NoteRound, ...]) -> str:
     """Bundles one turn's transcript and its inline memory notes into a single stored string.
 
     The notes ride inside the `transcript` column rather than in columns of their own: nothing
@@ -643,26 +646,40 @@ def render_turn_payload(
     conversation content that happens to contain the header line.
     """
     blocks = [transcript]
-    for kind, notes in (("remember", remember), ("forget", forget)):
-        lines = [text for note in notes if (text := _note_text(note=note))]
-        if lines:
-            body = _indent_block(text="\n".join(lines))
-            blocks.append(f"[memory notes | {kind}]\n{body}")
+    for position, (remember, forget) in enumerate(rounds, start=1):
+        for kind, notes in (("remember", remember), ("forget", forget)):
+            lines = [text for note in notes if (text := _note_text(note=note))]
+            # A round with another after it always ends in its forget block, empty or not,
+            # since that block is where `parse_turn_payload` closes a round.
+            if lines or (kind == "forget" and position < len(rounds)):
+                body = _indent_block(text="\n".join(lines))
+                blocks.append(f"[memory notes | {kind}]\n{body}".rstrip())
     return "\n\n".join(blocks)
 
 
-def parse_turn_payload(payload: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
-    """Splits a stored payload back into `(transcript, remember notes, forget notes)`.
+def parse_turn_payload(payload: str) -> tuple[str, tuple[NoteRound, ...]]:
+    """Splits a stored payload back into its transcript and its rounds of notes, in order.
 
-    The inverse of `render_turn_payload`.
+    The inverse of `render_turn_payload`. Rounds stay apart because they are staged in order: a
+    newer turn's forget can name what an older one asked to remember, which has to be in
+    `raw.md` ahead of it for the forget to reach. Each round writes its remember block before
+    its forget block, and a forget block closes a round, so a row stored as one turn with at
+    most one block of each kind still reads as the single round it was.
     """
-    collected: dict[str, list[str]] = {"remember": [], "forget": []}
+    rounds: list[NoteRound] = []
+    remember: list[str] = []
     for match in _NOTES_BLOCK_RE.finditer(payload):
-        collected[match.group("kind")].extend(
+        notes = [
             stripped for line in match.group("body").splitlines() if (stripped := line.strip())
-        )
-    transcript = _NOTES_BLOCK_RE.sub("", payload).rstrip()
-    return transcript, tuple(collected["remember"]), tuple(collected["forget"])
+        ]
+        if match.group("kind") == "remember":
+            remember.extend(notes)
+            continue
+        rounds.append((tuple(remember), tuple(notes)))
+        remember = []
+    if remember:
+        rounds.append((tuple(remember), ()))
+    return _NOTES_BLOCK_RE.sub("", payload).rstrip(), tuple(rounds)
 
 
 def render_memory_notes(notes: tuple[str, ...]) -> str:
