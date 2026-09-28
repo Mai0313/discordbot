@@ -9,8 +9,13 @@ live here rather than beside the fan-out they hang off.
 The two differ only in what they are allowed to conclude from silence. `update_tone_note`
 sees one batch, so no tone signal means "nothing this time" and the existing note stands.
 `rebuild_tone_note` saw the whole evidence corpus, so no signal anywhere means the note is
-stale, and it is the only path allowed to delete it.
+stale, and it is the only path allowed to delete it for want of signal. `forget_tone` is the
+third writer: it can only take lines away, and a forget that takes every line takes the note.
 """
+
+from functools import partial
+
+import logfire
 
 from discordbot.services.memory.facts import MemoryFlavor
 from discordbot.services.memory.store import (
@@ -19,9 +24,18 @@ from discordbot.services.memory.store import (
     clear_tone,
     write_tone,
     cleared_since,
+    read_detail_tail,
+    read_raw_entries,
+    rewrite_evidence,
 )
-from discordbot.services.memory.deltas import tone_evidence_from_raw
+from discordbot.services.memory.deltas import (
+    newest_stamp,
+    drop_observations,
+    tone_observations,
+    tone_evidence_from_raw,
+)
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidationRequest
+from discordbot.typings.context_budgets import MEMORY_DETAIL_CONTEXT_MAX_CHARS
 
 # The exact header a tone note must lead with; the tier is injected on every reply,
 # so anything else is a rewrite that did not land and must not be written.
@@ -74,7 +88,8 @@ async def rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the c
 
     This pass saw everything, so no signal anywhere means a surviving note is stale and
     would keep injecting a preference the evidence no longer supports. It is the only path
-    allowed to delete the note.
+    allowed to delete the note for want of signal; `forget_tone` deletes it only by taking
+    its last line.
     """
     if flavor != "user":
         return
@@ -94,6 +109,62 @@ async def rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the c
         clear_tone(scope=scope)
         return
     _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
+
+
+async def forget_tone(
+    scope: str, flavor: MemoryFlavor, started_at: float, writer: MemoryWriterAI, forgets: str
+) -> bool:
+    """Takes what forget requests name out of the tone note and out of the evidence behind it.
+
+    A tone preference is never stored as a fact, so the fact pass has nothing to delete for one,
+    and the note would go on carrying it into every reply while its evidence waited for the
+    next rebuild to read it back. Only evidence stamped before the newest request is offered,
+    since anything later restates what was forgotten. The call can only point at lines it was
+    shown, so this drops and never writes: the forget's own sentence has nowhere to go.
+
+    Returns False when the call failed, so a caller that must not lose the forget keeps its
+    batch for a retry; True when it ran or had nothing to do.
+    """
+    if flavor != "user" or not forgets:
+        return True
+    cutoff = newest_stamp(text=forgets)
+    note = read_tone(scope=scope).splitlines()
+    note_lines = (
+        tuple(line for line in note[1:] if line.strip()) if note[:1] == [_TONE_HEADER] else ()
+    )
+    corpus = "\n\n".join((
+        read_detail_tail(scope=scope, max_chars=MEMORY_DETAIL_CONTEXT_MAX_CHARS),
+        read_raw_entries(scope=scope),
+    ))
+    evidence = [
+        observation for observation in tone_observations(text=corpus) if observation[0] < cutoff
+    ]
+    if not note_lines and not evidence:
+        return True
+    result = await writer.forget_tone(
+        forgets=forgets, note_lines=note_lines, evidence=tuple(line for _, _, line in evidence)
+    )
+    if result is None:
+        logfire.warn("Memory tone forget call failed; keeping raw batch", scope=scope)
+        return False
+    if cleared_since(scope=scope, started_at=started_at):
+        return False
+    kept = [
+        line for number, line in enumerate(note_lines, start=1) if number not in result.drop_lines
+    ]
+    if len(kept) < len(note_lines):
+        if kept:
+            write_tone(scope=scope, content="\n".join([_TONE_HEADER, *kept]))
+        else:
+            clear_tone(scope=scope)
+    doomed = {
+        (timestamp, block)
+        for number, (timestamp, block, _) in enumerate(evidence, start=1)
+        if number in result.drop_evidence
+    }
+    if doomed:
+        rewrite_evidence(scope=scope, edit=partial(drop_observations, doomed=doomed))
+    return True
 
 
 def _tone_request(existing_tone: str, tone_evidence: str, today: str) -> ConsolidationRequest:
@@ -118,7 +189,8 @@ def _write_tone_result(scope: str, tone_markdown: str) -> None:
     """Persists a tone-note call's output when it is acceptable for this scope.
 
     An empty or malformed output never deletes the existing note: the tier is best-effort
-    and the next consolidation repairs it. Only the evidence-complete rebuild may clear it.
+    and the next consolidation repairs it. Only the evidence-complete rebuild may clear it for
+    want of signal.
     """
     if flavor_of(scope=scope) != "user":
         return

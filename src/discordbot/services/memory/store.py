@@ -671,9 +671,9 @@ def clear_raw(scope: str) -> None:
 def clear_tone(scope: str) -> None:
     """Deletes the tone note when a full-evidence rebuild found no tone signal.
 
-    Only the evidence-complete regeneration path may call this: an incremental
-    consolidation's empty tone output merely means "no tone signal in this batch"
-    and must never remove the note.
+    Or when a forget took its last line. Those are the only two callers: an incremental
+    consolidation's empty tone output merely means "no tone signal in this batch" and must
+    never remove the note.
     """
     _tone_path(scope=scope).unlink(missing_ok=True)
 

@@ -31,8 +31,8 @@ from discordbot.typings.memory import (
 )
 from discordbot.typings.models import ModelSettings
 from discordbot.cogs.memory.cog import MemoryCogs
+from discordbot.services.memory import tone, inflight, pipeline, regeneration, consolidation
 from discordbot.services.memory import database as memory_db
-from discordbot.services.memory import inflight, pipeline, regeneration, consolidation
 from discordbot.cogs.memory.views import (
     MEMORY_PAGE_MAX_CHARS,
     MemoryPagesView,
@@ -76,6 +76,7 @@ from discordbot.services.memory.deltas import (
     partition_forget_requests,
 )
 from discordbot.services.memory.writer import (
+    ToneForget,
     MemoryWriterAI,
     RawMemoryDraft,
     MemoryFactDelta,
@@ -1342,6 +1343,8 @@ async def test_regenerate_does_not_resurrect_a_forgotten_fact(
 
     async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
         """Rebuilds the fact from evidence, then answers the forget pass with a no-op."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
         inputs = kwargs["input"]
         assert isinstance(inputs, list)
         body = str(cast("dict[str, object]", inputs[0])["content"])
@@ -1479,6 +1482,8 @@ async def test_a_forget_takes_the_evidence_of_the_fact_it_deleted(
 
     async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
         """Deletes the city fact on the forget pass and changes nothing anywhere else."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
         inputs = kwargs["input"]
         assert isinstance(inputs, list)
         body = str(cast("dict[str, object]", inputs[0])["content"])
@@ -1583,6 +1588,15 @@ async def test_a_rebuild_does_not_put_back_what_its_replayed_forget_took_out(
 
 _CITY = _observation(summary="住在台中", normalized_key="fact.city")
 _PET = _observation(summary="養了一隻貓", normalized_key="fact.pet")
+_ROAST = _observation(
+    summary="喜歡被高強度粗口互嗆",
+    normalized_key="interaction.roast",
+    category="interaction_style",
+)
+_TERSE = _observation(
+    summary="回答要簡潔", normalized_key="preference.terse", category="interaction_style"
+)
+_TONE_NOTE = "## 語氣偏好\n- 偏好高強度粗口互嗆\n- 回答要簡潔"
 
 
 def _consolidation_stage(calls: list[str]) -> Callable[..., Awaitable[SimpleNamespace]]:
@@ -1595,6 +1609,8 @@ def _consolidation_stage(calls: list[str]) -> Callable[..., Awaitable[SimpleName
 
     async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
         """Answers the forget pass, the tone call and the observation passes in turn."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
         inputs = kwargs["input"]
         assert isinstance(inputs, list)
         body = str(cast("dict[str, object]", inputs[0])["content"])
@@ -1752,11 +1768,12 @@ async def test_a_forget_still_runs_when_the_pass_before_it_fails(
 ) -> None:
     """A failed observation pass must not hold back any forget that follows it.
 
-    The fact an earlier batch stored would otherwise go on being injected until a retry that
-    a stuck compartment may never let succeed, while the reply already said it was dropped.
-    The observation passes after the failed one are skipped, and the batch is kept for the
-    retry.
+    The fact an earlier batch stored, or the tone note, would otherwise go on being injected
+    until a retry that a stuck compartment may never let succeed, while the reply already said
+    it was dropped. The observation passes after the failed one are skipped, and the batch is
+    kept for the retry.
     """
+    write_tone(scope=USER_SCOPE, content=_TONE_NOTE)
     write_fact(
         scope=USER_SCOPE,
         fact=_stored_fact(fact_id="a" * 16, summary=_CITY.summary_zh, keys=("fact.city",)),
@@ -1776,7 +1793,10 @@ async def test_a_forget_still_runs_when_the_pass_before_it_fails(
     stage = _consolidation_stage(calls=calls)
 
     async def failing_observation(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
-        """Fails every observation call and answers the forget pass as usual."""
+        """Fails every observation call and answers the forget passes as usual."""
+        if kwargs.get("text_format") is ToneForget:
+            calls.append("tone")
+            return _parsed(output=ToneForget())
         body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
         if "forget_request" in body:
             return await stage(**kwargs)
@@ -1793,7 +1813,7 @@ async def test_a_forget_still_runs_when_the_pass_before_it_fails(
     )
 
     # order-contract: the consolidation passes run one after another; the forgets following the failed pass are the behaviour under test.
-    assert calls == ["observe", "forget", "forget"]
+    assert calls == ["observe", "forget", "tone", "forget", "tone"]
     assert read_facts(scope=USER_SCOPE, compartment=GLOBAL_COMPARTMENT) == []
     assert count_raw_entries(scope=USER_SCOPE) == 4
 
@@ -1826,6 +1846,8 @@ async def test_nothing_compacts_ahead_of_a_forget(
 
     async def recording_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
         """Records each observation call's instructions beside its raw entries."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
         body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
         if "forget_request" not in body and "<tone_evidence>" not in body:
             observation_calls.append((str(kwargs["instructions"]), body))
@@ -1846,6 +1868,130 @@ async def test_nothing_compacts_ahead_of_a_forget(
     assert after, "the observation after the forget reached consolidation"
     assert all(PHASE2_COMPACTION_BLOCK not in prompt for prompt in before)
     assert all(PHASE2_COMPACTION_BLOCK in prompt for prompt in after)
+
+
+def _tone_forget_answer(
+    bodies: list[str], answer: ToneForget | None
+) -> Callable[..., Awaitable[SimpleNamespace]]:
+    """Builds a fake parse answering the tone forget call with `answer` and nothing else."""
+
+    async def parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Records each request body; only the tone forget call gets `answer`."""
+        bodies.append(str(cast("dict[str, object]", kwargs["input"][0])["content"]))
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=answer)
+        return _parsed(output=_no_change())
+
+    return parse
+
+
+async def test_a_forget_takes_what_it_names_out_of_the_tone_note(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tone preference is never a fact, so only its own pass can forget it.
+
+    The answer is numbers into what the call was shown, so it can only drop: a number it was
+    never shown changes nothing, the forget's own sentence never lands in the note, and a
+    restatement made after the forget is not even offered.
+    """
+    write_tone(scope=USER_SCOPE, content=_TONE_NOTE)
+    append_detail(scope=USER_SCOPE, text=_entry("2026-09-01T00:00:00+00:00", _ROAST, _TERSE))
+    (memory_isolated_dir / str(USER_ID) / "raw.md").write_text(
+        _entry("2026-09-03T00:00:00+00:00", _ROAST) + "\n", encoding="utf-8"
+    )
+    writer, fake_client = _writer()
+    bodies: list[str] = []
+    monkeypatch.setattr(
+        fake_client.responses,
+        "parse",
+        _tone_forget_answer(
+            bodies=bodies, answer=ToneForget(drop_lines=(1, 9), drop_evidence=(1, 7))
+        ),
+    )
+    forgets = _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再被粗口互嗆")
+    assert await tone.forget_tone(
+        scope=USER_SCOPE,
+        flavor="user",
+        started_at=time.monotonic(),
+        writer=writer,
+        forgets=forgets,
+    )
+
+    assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n- 回答要簡潔"
+    # Two older entries offered, the restatement after the forget not among them.
+    assert "[2] [explicit_preference] 回答要簡潔" in bodies[0]
+    assert "[3]" not in bodies[0].split("<tone_evidence>")[1]
+    detail = read_detail_tail(scope=USER_SCOPE, max_chars=100_000)
+    assert "interaction.roast" not in detail
+    assert "preference.terse" in detail
+    assert "interaction.roast" in read_raw_entries(scope=USER_SCOPE)
+
+
+async def test_each_tone_forget_sees_only_what_came_before_it(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tone preference restated between two forgets is not offered to the first of them.
+
+    The evidence lines carry no stamp, so the model could not tell a restatement from what
+    was forgotten; each segment's tone forget is offered only what predates its own requests.
+    """
+    write_tone(scope=USER_SCOPE, content=_TONE_NOTE)
+    (memory_isolated_dir / str(USER_ID) / "raw.md").write_text(
+        "\n\n".join([
+            _forget_entry("2026-09-01T00:00:00+00:00", note="使用者不想再被粗口互嗆"),
+            _entry("2026-09-02T00:00:00+00:00", _ROAST),
+            _forget_entry("2026-09-03T00:00:00+00:00", note="使用者不想再提工作的事"),
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    writer, fake_client = _writer()
+    bodies: list[str] = []
+    monkeypatch.setattr(
+        fake_client.responses, "parse", _tone_forget_answer(bodies=bodies, answer=ToneForget())
+    )
+    await consolidation.consolidate_after_turn(
+        scope=USER_SCOPE,
+        forced=True,
+        started_at=time.monotonic(),
+        writer=writer,
+        identity=IDENTITY,
+    )
+
+    tone_calls = [body for body in bodies if "<tone_note>" in body]
+    assert len(tone_calls) == 2
+    assert _ROAST.summary_zh not in tone_calls[0]
+    assert _ROAST.summary_zh in tone_calls[1]
+
+
+async def test_a_failed_tone_forget_keeps_the_batch(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note is injected into every reply, so a forget it has not taken yet must be retried.
+
+    Retiring the batch would leave the request in `detail.md`, where only a rebuild reads it.
+    """
+    write_tone(scope=USER_SCOPE, content=_TONE_NOTE)
+    append_raw_entry(
+        scope=USER_SCOPE,
+        entry_text=render_forget_requests(notes=("使用者不想再被粗口互嗆",), source="guild 42"),
+    )
+    writer, fake_client = _writer()
+    bodies: list[str] = []
+    monkeypatch.setattr(
+        fake_client.responses, "parse", _tone_forget_answer(bodies=bodies, answer=None)
+    )
+    await consolidation.consolidate_after_turn(
+        scope=USER_SCOPE,
+        forced=True,
+        started_at=time.monotonic(),
+        writer=writer,
+        identity=IDENTITY,
+    )
+
+    assert any("<tone_note>" in body for body in bodies), "the tone forget was asked"
+    assert read_tone(scope=USER_SCOPE) == _TONE_NOTE
+    assert count_raw_entries(scope=USER_SCOPE) == 1
 
 
 async def test_pipeline_reports_private_observations_as_a_count(memory_isolated_dir: Path) -> None:

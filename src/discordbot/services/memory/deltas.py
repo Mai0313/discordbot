@@ -196,9 +196,7 @@ def drop_released_evidence(
     Returns `text` itself when nothing matched, so the caller can skip the rewrite.
     """
     cutoffs = {
-        compartment: max(
-            timestamp for timestamp, _ in _iter_observations(text=forgets[compartment])
-        )
+        compartment: newest_stamp(text=forgets[compartment])
         for compartment, keys in released.items()
         if keys
     }
@@ -211,6 +209,11 @@ def drop_released_evidence(
     if len(kept) == len(pairs):
         return text
     return _render_file_entries(pairs=kept)
+
+
+def newest_stamp(text: str) -> str:
+    """Returns the latest entry stamp in a raw or detail text, or "" when it has none."""
+    return max((timestamp for timestamp, _ in _iter_observations(text=text)), default="")
 
 
 def forget_segments(raw_text: str) -> list[tuple[str, str]]:
@@ -282,8 +285,17 @@ def tone_evidence_from_raw(raw_text: str) -> str:
     user's own trash-talk across a guild, and the note came out telling the bot to trash-talk
     them back.
     """
-    lines: list[str] = []
-    for _, block in _iter_observations(text=raw_text):
+    return "\n".join(f"* {line}" for _, _, line in tone_observations(text=raw_text))
+
+
+def tone_observations(text: str) -> list[tuple[str, str, str]]:
+    """Returns each tone-bearing observation of a raw or detail text as `(stamp, block, line)`.
+
+    `line` is how it reads as tone evidence, `[evidence_kind] summary`; a block with no summary
+    carries no signal and is left out.
+    """
+    observations: list[tuple[str, str, str]] = []
+    for timestamp, block in _iter_observations(text=text):
         # The category is the block's `### <category>` header, not one of its fields.
         header = _OBSERVATION_HEADER_RE.match(block)
         if header is None or header.group("category") not in _TONE_CATEGORIES:
@@ -291,8 +303,21 @@ def tone_evidence_from_raw(raw_text: str) -> str:
         fields = _fields_of(block=block)
         summary = fields.get("summary_zh", "")
         if summary:
-            lines.append(f"* [{fields.get('evidence_kind', 'unknown')}] {summary}")
-    return "\n".join(lines)
+            line = f"[{fields.get('evidence_kind', 'unknown')}] {summary}"
+            observations.append((timestamp, block, line))
+    return observations
+
+
+def drop_observations(text: str, doomed: set[tuple[str, str]]) -> str:
+    """Removes the given `(stamp, block)` observations from a raw or detail text.
+
+    Returns `text` itself when none of them is there, so the caller can skip the rewrite.
+    """
+    pairs = _iter_observations(text=text)
+    kept = [pair for pair in pairs if pair not in doomed]
+    if len(kept) == len(pairs):
+        return text
+    return _render_file_entries(pairs=kept)
 
 
 def render_existing_facts(facts: list[MemoryFact]) -> str:

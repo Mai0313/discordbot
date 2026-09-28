@@ -25,6 +25,7 @@ from discordbot.typings.models import ModelSettings
 from discordbot.utils.llm_transcript import USAGE_FOOTER_RE, FORWARDED_MESSAGE_MARKER
 from discordbot.services.memory.prompts import (
     PHASE2_PROMPT,
+    TONE_FORGET_PROMPT,
     PHASE1_EVALUATOR_PROMPT,
     PHASE2_COMPACTION_BLOCK,
 )
@@ -263,6 +264,25 @@ class ConsolidatedMemory(BaseModel):
     )
 
 
+class ToneForget(BaseModel):
+    """Which tone-note lines and which tone evidence the forget requests name."""
+
+    model_config = ConfigDict(frozen=True)
+
+    drop_lines: tuple[int, ...] = Field(
+        default=(),
+        description="Numbers of the `<tone_note>` lines a forget request names; empty when none.",
+        examples=[(2,)],
+    )
+    drop_evidence: tuple[int, ...] = Field(
+        default=(),
+        description=(
+            "Numbers of the `<tone_evidence>` entries a forget request names; empty when none."
+        ),
+        examples=[(1, 4)],
+    )
+
+
 class ConsolidationRequest(BaseModel):
     """Everything one compartment's consolidation call is given.
 
@@ -416,6 +436,27 @@ class MemoryWriterAI(BaseModel):
             }
         )
 
+    async def forget_tone(
+        self, forgets: str, note_lines: tuple[str, ...], evidence: tuple[str, ...]
+    ) -> ToneForget | None:
+        """Asks which tone-note lines and which tone evidence the forget requests name.
+
+        The answer is numbers into the two lists and nothing else, so a caller can only ever
+        drop what it rendered here: nothing a forget says, and nothing the model writes, can
+        land in the note. None means the LLM path failed.
+        """
+        return await self._parse(
+            model=self.consolidate_model,
+            instructions=TONE_FORGET_PROMPT,
+            user_text="\n\n".join([
+                _tagged(tag="forget_requests", body=forgets),
+                _tagged(tag="tone_note", body=_numbered(lines=note_lines)),
+                _tagged(tag="tone_evidence", body=_numbered(lines=evidence)),
+            ]),
+            text_format=ToneForget,
+            end_user_label="memory_tone_forget",
+        )
+
     async def _parse(
         self,
         model: ModelSettings,
@@ -448,6 +489,11 @@ class MemoryWriterAI(BaseModel):
 def _tagged(tag: str, body: str) -> str:
     """Wraps one consolidation input block, marking an absent one explicitly."""
     return f"<{tag}>\n{body.strip() or '(empty)'}\n</{tag}>"
+
+
+def _numbered(lines: tuple[str, ...]) -> str:
+    """Numbers lines from 1, the handles a `ToneForget` answer points back with."""
+    return "\n".join(f"[{number}] {line}" for number, line in enumerate(lines, start=1))
 
 
 def _redacted_delta(delta: MemoryFactDelta) -> MemoryFactDelta:
