@@ -31,6 +31,7 @@ from discordbot.services.memory import database as memory_db
 from discordbot.utils.asyncio_locks import KeyedLockManager, LoopLocalRegistry, LoopLocalSemaphore
 from discordbot.services.memory.store import flavor_of, cleared_since
 from discordbot.services.memory.writer import (
+    NoteRound,
     MemoryWriterAI,
     parse_turn_payload,
     render_turn_payload,
@@ -258,14 +259,14 @@ def _merged_payload(newer: str, older: str) -> str:
     say a note had ever been written.
 
     Merging is only ever within one conversation source; `_pending_updates` is keyed on the
-    subject for that reason, and this function never sees two sources.
+    subject for that reason, and this function never sees two sources. Each turn's notes stay a
+    round of their own, oldest first, since a newer turn's forget can name what an older one
+    asked to remember (`parse_turn_payload`).
     """
-    transcript, remember, forget = parse_turn_payload(payload=newer)
-    _, older_remember, older_forget = parse_turn_payload(payload=older)
+    transcript, rounds = parse_turn_payload(payload=newer)
+    _, older_rounds = parse_turn_payload(payload=older)
     return render_turn_payload(
-        transcript=transcript,
-        remember=_deduped(notes=(*older_remember, *remember)),
-        forget=_deduped(notes=(*older_forget, *forget)),
+        transcript=transcript, rounds=_capped(rounds=(*older_rounds, *rounds))
     )
 
 
@@ -298,16 +299,39 @@ def _merged_report(
     return both
 
 
-def _deduped(notes: tuple[str, ...]) -> tuple[str, ...]:
+def _capped(rounds: tuple[NoteRound, ...]) -> tuple[NoteRound, ...]:
     """Drops exact repeats, keeps writing order, and caps what a merge can accumulate.
 
     The per-reply cap the markers enforce does not survive a merge: each skipped turn stacks
     onto the pending payload, so without a bound here a long stretch of skipped turns grows
     the review request and the raw entry together. The OLDEST are dropped, since the newest
     notes are the ones the user is still in the middle of.
+
+    A repeated note keeps its NEWEST occurrence: moved back to an older round, it would be
+    staged ahead of a forget the user wrote after the first time, and the repeat after it is
+    what the user meant last. A round left with no forget is then folded into the one before
+    it: staged in the same order, it costs one review instead of two.
     """
-    unique = tuple(dict.fromkeys(notes))
-    return unique[-MEMORY_MERGED_NOTES_MAX:]
+    seen: tuple[set[str], set[str]] = (set(), set())
+    newest_first: list[NoteRound] = []
+    for round_ in reversed(rounds):
+        kept: list[tuple[str, ...]] = []
+        for notes, taken in zip(round_, seen, strict=True):
+            picked: list[str] = []
+            for note in reversed(notes):
+                if note in taken or len(taken) >= MEMORY_MERGED_NOTES_MAX:
+                    continue
+                taken.add(note)
+                picked.append(note)
+            kept.append(tuple(reversed(picked)))
+        newest_first.append((kept[0], kept[1]))
+    merged: list[NoteRound] = []
+    for remember, forget in reversed(newest_first):
+        if merged and not forget:
+            merged[-1] = ((*merged[-1][0], *remember), merged[-1][1])
+        elif remember or forget:
+            merged.append((remember, forget))
+    return tuple(merged)
 
 
 def _release_pending_report(pending: MemoryTurn) -> None:
