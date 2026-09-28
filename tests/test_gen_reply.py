@@ -9921,6 +9921,49 @@ async def test_an_unparseable_route_falls_back_to_a_plain_high_effort_qa(
     assert route == RouteClassification(decision="QA", effort="high")
 
 
+async def test_a_transient_route_failure_falls_back_but_a_refusal_still_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider outage on the triage call costs the route, not the reply (#742).
+
+    The same plain high-effort QA as an answer outside the schema. A refusal keeps raising, so a
+    defect in the request is not buried under a turn that looks routed.
+    """
+    cog = _cog()
+    request = httpx2.Request(method="POST", url="http://proxy/v1/responses")
+    failures: list[Exception] = [
+        APIError(message="high demand", request=request, body={"code": "503"}),
+        APITimeoutError(request=request),
+        BadRequestError(
+            "no", response=httpx2.Response(status_code=400, request=request, json={}), body=None
+        ),
+    ]
+
+    async def fail(**kwargs: object) -> object:
+        """Fails the way `responses.parse` does when the provider does."""
+        del kwargs
+        raise failures.pop(0)
+
+    monkeypatch.setattr(_recorded(cog).responses, "parse", fail)
+    classifier = _classifier(cog=cog, message=as_message(fake=FakeMessage()))
+
+    async def classify() -> RouteClassification:
+        """One route call on the candidate shape, which the fallback must also drop."""
+        return await classifier.classify(
+            reference_messages=_ROUTE_REFERENCE,
+            current_message=_ROUTE_CURRENT,
+            recall_candidates={42: RecallCandidate(prompt_label="Boss(社群暱稱:李董)")},
+            server_memory_block=_ROUTE_SERVER_MEMORY,
+        )
+
+    for _ in range(2):
+        route = await classify()
+        assert type(route) is RouteClassification
+        assert route == RouteClassification(decision="QA", effort="high")
+    with pytest.raises(BadRequestError):
+        await classify()
+
+
 async def test_handle_message_reply_uses_route_effort() -> None:
     """The answer request's reasoning effort follows the route decision."""
     cog = _cog()

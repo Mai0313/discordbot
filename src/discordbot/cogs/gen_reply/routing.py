@@ -10,13 +10,14 @@ selector picked someone on most turns where nobody was named (#725).
 import time
 from typing import cast
 
-from openai import AsyncOpenAI
+from openai import APIError, AsyncOpenAI
 import logfire
 from nextcord import Message
 from pydantic import Field, BaseModel, ConfigDict, SkipValidation, ValidationError
 from openai.types.responses.response_input_param import ResponseInputParam, EasyInputMessageParam
 
 from discordbot.typings.models import RouteClassification, RecallRouteClassification
+from discordbot.utils.llm_errors import llm_status_code, is_retryable_llm_error
 from discordbot.cogs.gen_reply.recall import RecallCandidate, render_callable_users_block
 from discordbot.cogs.gen_reply.prompts import ROUTE_PROMPT, ROUTE_RECALL_SECTION
 from discordbot.cogs.gen_reply.toolkit import ReplyToolkit
@@ -93,6 +94,21 @@ class RouteClassifier(BaseModel):
                 "RouteClassification parse failed; defaulting to QA",
                 message_id=self.message.id,
                 model=triage_model.name,
+                _exc_info=exc,
+            )
+            route = RouteClassification(decision="QA")
+        except APIError as exc:
+            # The proxy gives the triage model no fallback, so a transient provider failure
+            # would otherwise cost the whole reply (#742). A refusal still raises: it is a
+            # defect, and degrading every turn to QA would hide it.
+            if not is_retryable_llm_error(exc=exc):
+                raise
+            logfire.warn(
+                "RouteClassification call failed; defaulting to QA",
+                message_id=self.message.id,
+                model=triage_model.name,
+                status_code=llm_status_code(exc=exc),
+                error_type=type(exc).__name__,
                 _exc_info=exc,
             )
             route = RouteClassification(decision="QA")
