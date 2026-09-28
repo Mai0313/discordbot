@@ -87,7 +87,7 @@ class RuntimeModelCatalog(BaseModel):
     def is_peak(self) -> bool:
         """Whether runtime model selection is in the peak-hour window.
 
-        No tier reads this today; `slow_model`'s branch on it is parked (see there).
+        No tier reads this today.
 
         Returns:
             True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
@@ -173,10 +173,9 @@ class RuntimeModelCatalog(BaseModel):
         what keeps this tier below `slow_model`.
 
         Returns:
-            Flash at `medium`, two snapshots back from `gemini-3.8-flash`, popular enough now
-            to queue behind its own load (observed 2026-08-20).
+            Flash at `medium`, one snapshot behind `slow_model`.
         """
-        return ModelSettings(name="gemini-3.6-flash", effort="medium")
+        return ModelSettings(name="gemini-3.7-flash", effort="medium")
 
     @property
     def slow_model(self) -> ModelSettings:
@@ -187,16 +186,15 @@ class RuntimeModelCatalog(BaseModel):
         repointing this tier changes what reaches the model, not just how well it reasons.
 
         Returns:
-            `gemini-3.1-pro-preview` at `high`, on every hour. The peak-hour split below is
-            parked, not deleted: see the comment there.
+            `gemini-3.8-flash` at `high`, on every hour.
         """
-        # Both branches are pinned to explicit snapshots and never a `*-latest` alias. This is the
-        # one tier whose effort is replaced at runtime by the route's grade, and the YouTube
+        # Pinned to an explicit snapshot and never a `*-latest` alias. This is the one tier whose
+        # effort is replaced at runtime by the route's grade, and the YouTube
         # answer turn hands that effort straight to the Interactions API as a `thinking_level`
         # (`gen_reply/interactions.py`), where a level the model does not list is a hard failure
         # that loses the whole reply (#459). An alias is the worse end of that: it moves under the
         # deployment, so the set it accepts can change without this file changing. Look the
-        # snapshot up (see `ModelSettings.effort`) before repointing either branch, and check its
+        # snapshot up (see `ModelSettings.effort`) before repointing this tier, and check its
         # set covers every value `RouteClassification.effort` can emit — including across a
         # provider change, where the effort vocabulary itself differs and a value can stop existing.
         #
@@ -207,22 +205,17 @@ class RuntimeModelCatalog(BaseModel):
         # does. This tier's own proxy path is the streaming answer turn, which LiteLLM gives no
         # fallback, so there the refusal is an error.
         #
-        # `gemini-3.8-flash` accepts low / medium / high and NOT `minimal` (Google's thinking
-        # table, read 2026-09-02). openrouter does not list that snapshot, so this is the only
-        # way to complete the lookup the rule above asks for.
+        # `gemini-3.8-flash` accepts low / medium / high and NOT `minimal` (openrouter's list,
+        # read 2026-09-28, matching Google's thinking table read 2026-09-02).
         #
-        # The peak-hour branch below is parked rather than deleted: `gemini-3.8-flash` runs into
-        # high-demand refusals often enough inside the window that it costs more replies than
-        # Pro's queueing did. Whichever name this tier returns must have an entry in LiteLLM's
-        # price table: without one a reply prices at `$0.00000000` in the footer and the
+        # Whichever name this tier returns must have an entry in LiteLLM's price table: without
+        # one a reply prices at `$0.00000000` in the footer and the
         # attachment modality gate falls back to its `{"text", "image"}` baseline. That gate feeds
         # BOTH renders, so an audio or video attachment does not merely go unuploaded: its
         # `[attachment: video]` marker never reaches the route either, and the answer model is
         # not told the file existed. A clip posted with one line of text is then answered as if
         # the line were the whole message, which is a wrong answer rather than a degraded one.
-        # if self.is_peak:
-        #     return ModelSettings(name="gemini-3.8-flash", effort="high")
-        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
+        return ModelSettings(name="gemini-3.8-flash", effort="high")
 
     @property
     def memory_writer_model(self) -> ModelSettings:
