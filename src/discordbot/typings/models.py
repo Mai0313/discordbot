@@ -174,7 +174,7 @@ class RuntimeModelCatalog(BaseModel):
         what keeps this tier below `slow_model`.
 
         Returns:
-            Flash at `medium`, one snapshot behind `slow_model`.
+            Flash at `medium`, one snapshot behind `gemini-3.8-flash`.
         """
         return ModelSettings(name="gemini-3.7-flash", effort="medium")
 
@@ -187,7 +187,7 @@ class RuntimeModelCatalog(BaseModel):
         repointing this tier changes what reaches the model, not just how well it reasons.
 
         Returns:
-            `gemini-3.8-flash` at `high`, on every hour.
+            `gemini-3.1-pro-preview` at `high`, on every hour.
         """
         # Pinned to an explicit snapshot and never a `*-latest` alias. This is the one tier whose
         # effort is replaced at runtime by the route's grade, and the YouTube
@@ -206,8 +206,9 @@ class RuntimeModelCatalog(BaseModel):
         # does. This tier's own proxy path is the streaming answer turn, which LiteLLM gives no
         # fallback, so there the refusal is an error.
         #
-        # `gemini-3.8-flash` accepts low / medium / high and NOT `minimal` (openrouter's list,
-        # read 2026-09-28, matching Google's thinking table read 2026-09-02).
+        # `gemini-3.1-pro-preview` accepts low / medium / high and NOT `minimal` (openrouter's
+        # list, read 2026-09-28). Back on it from `gemini-3.8-flash`, whose high-demand 503s kept
+        # failing the answer stream mid-reply.
         #
         # Whichever name this tier returns must have an entry in LiteLLM's price table: without
         # one a reply prices at `$0.00000000` in the footer and the
@@ -216,7 +217,7 @@ class RuntimeModelCatalog(BaseModel):
         # `[attachment: video]` marker never reaches the route either, and the answer model is
         # not told the file existed. A clip posted with one line of text is then answered as if
         # the line were the whole message, which is a wrong answer rather than a degraded one.
-        return ModelSettings(name="gemini-3.8-flash", effort="high")
+        return ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
     @property
     def memory_writer_model(self) -> ModelSettings:

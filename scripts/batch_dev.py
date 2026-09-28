@@ -20,7 +20,7 @@ console = Console()
 config = LLMConfig()
 
 # Mirror the @property value in typings/models.py.
-SLOW_MODEL = ModelSettings(name="gemini-3.8-flash", effort="low")
+SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="low")
 
 # Both are Literal in the Batch API signature, so they carry the same literal type here.
 BATCH_ENDPOINT: Literal["/v1/responses"] = "/v1/responses"

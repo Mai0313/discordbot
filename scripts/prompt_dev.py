@@ -46,7 +46,7 @@ console = Console()
 config = LLMConfig()
 
 # Mirror the @property value in typings/models.py.
-SLOW_MODEL = ModelSettings(name="gemini-3.8-flash", effort="high")
+SLOW_MODEL = ModelSettings(name="gemini-3.1-pro-preview", effort="high")
 
 
 def gen_reply(user_prompt: str) -> None:
