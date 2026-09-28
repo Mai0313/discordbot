@@ -87,7 +87,8 @@ class RuntimeModelCatalog(BaseModel):
     def is_peak(self) -> bool:
         """Whether runtime model selection is in the peak-hour window.
 
-        No tier reads this today.
+        No tier reads this today. Kept on purpose: peak-hour high-demand refusals come and go,
+        and this is what a tier branches on when they return.
 
         Returns:
             True during UTC weekdays from 08:00 up to (but excluding) 17:00, otherwise False.
