@@ -2343,6 +2343,57 @@ async def test_a_partly_failed_merge_still_reports_what_it_staged(
     assert reported[0].forgotten == ("別提舊筆電",)
 
 
+async def test_a_correction_lost_to_the_dedupe_is_logged(
+    memory_isolated_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """How often a correction's new fact is dropped as a duplicate is measured, not guessed.
+
+    The dedupe keys on `(normalized_key, source)` against what is already staged, so a new
+    fact that reuses the key of the one its own turn forgets never reaches `raw.md`.
+    """
+    append_raw_entry(
+        scope=USER_SCOPE,
+        entry_text=render_memory_observations(
+            observations=(_observation(summary="住在台中", normalized_key="fact.city"),),
+            source="guild 42",
+        ),
+    )
+    writer, fake_client = _writer()
+
+    async def review_then_nothing(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
+        """Reviews the note into the reused key, and changes no fact."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
+        if kwargs.get("text_format") is RawMemoryDraft:
+            return _parsed(output=_draft("住在台南", normalized_key="fact.city"))
+        return _parsed(output=_no_change())
+
+    monkeypatch.setattr(fake_client.responses, "parse", review_then_nothing)
+    logged: list[dict[str, object]] = []
+
+    def record(message: str, **fields: object) -> None:
+        """Keeps the one line under test."""
+        if message.startswith("Memory observation dropped as already staged"):
+            logged.append(fields)
+
+    monkeypatch.setattr("discordbot.services.memory.pipeline.logfire.info", record)
+    # An ordinary repeat, with no forget beside it, is what the dedupe is for: not logged.
+    for forget in ((), ("使用者已經不住台中了",)):
+        pipeline.schedule_memory_update(
+            scope=USER_SCOPE,
+            subject=f"target_user_id: {USER_ID}\n{subject_source_line(guild_id=42)}",
+            message_list=_user_message(),
+            full_reply="回覆",
+            writer=writer,
+            identity=IDENTITY,
+            remember_notes=("使用者住在台南",),
+            forget_notes=forget,
+        )
+        await _wait_for_inflight()
+
+    assert logged == [{"scope": USER_SCOPE, "user": IDENTITY, "keys": ["fact.city"]}]
+
+
 async def test_a_merged_report_answers_the_newer_reply_when_the_older_one_raises() -> None:
     """One dead reply must not take the other's report down with it.
 

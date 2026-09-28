@@ -390,6 +390,20 @@ async def _review_and_stage(  # noqa: C901 -- one review per round, and every wr
             existing_text="\n\n".join((read_raw_entries(scope=scope), recent_detail)),
             source=source,
         )
+        if forget_notes and len(deduped) < len(draft.observations):
+            # A correction's new fact that reuses the key of something already staged is
+            # dropped here, before the forget beside it (this round's or, in a merged row, an
+            # earlier one's) has run. Counted before anything is decided about it.
+            logfire.info(
+                "Memory observation dropped as already staged on a forgetting turn",
+                scope=scope,
+                user=turn.identity,
+                keys=[
+                    observation.normalized_key
+                    for observation in draft.observations
+                    if observation not in deduped
+                ],
+            )
         if deduped:
             append_raw_entry(
                 scope=scope,
