@@ -2232,6 +2232,8 @@ async def test_a_merged_forget_reaches_what_an_older_waiting_turn_remembered(
 
     async def staged_parse(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
         """Reviews each note into one observation, and changes no fact."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
         body = str(cast("dict[str, object]", kwargs["input"][0])["content"])
         if kwargs.get("text_format") is RawMemoryDraft:
             key = "fact.city" if "台中" in body else "preference.lang"
@@ -2303,6 +2305,8 @@ async def test_a_partly_failed_merge_still_reports_what_it_staged(
 
     async def second_review_fails(**kwargs: Any) -> SimpleNamespace:  # noqa: ANN401 -- mirrors the client
         """Reviews the first round, fails the second, changes no fact."""
+        if kwargs.get("text_format") is ToneForget:
+            return _parsed(output=ToneForget())
         if kwargs.get("text_format") is RawMemoryDraft:
             reviews.append(1)
             if len(reviews) > 1:
