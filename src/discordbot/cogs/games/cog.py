@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import logfire
 import nextcord
-from nextcord import User, Embed, Guild, Locale, Member, Interaction, SlashOption
+from nextcord import User, Embed, Guild, Locale, Member, ClientUser, Interaction, SlashOption
 from nextcord.ext import commands
 
 from discordbot.typings.games import (
@@ -85,13 +85,7 @@ class GamesCogs(commands.Cog):
             table_minimum=table_bet,
             edge=count_adjusted_edge(true_count=true_count),
         )
-        avatar_url = await guild_avatar_url(user=bot_user, guild=guild)
-        identity = GameParticipantIdentity(
-            user_id=bot_user.id,
-            account_name=bot_user.name,
-            display_name=bot_user.display_name,
-            avatar_url=avatar_url,
-        )
+        identity = await self._identity_from_user(user=bot_user, guild=guild)
         return build_wager_participant(
             identity=identity, balance=balance, wager=decided_bet, mode="clamp"
         )
@@ -106,7 +100,7 @@ class GamesCogs(commands.Cog):
 
     @staticmethod
     async def _identity_from_user(
-        user: User | Member, guild: Guild | None = None
+        user: User | Member | ClientUser, guild: Guild | None = None
     ) -> GameParticipantIdentity:
         """Builds the shared game identity for a Discord user."""
         avatar_url = await guild_avatar_url(user=user, guild=guild)
@@ -171,15 +165,7 @@ class GamesCogs(commands.Cog):
         for participant in participants:
             balance = await get_balance(user_id=participant.user_id)
             refreshed_participant = build_wager_participant(
-                identity=GameParticipantIdentity(
-                    user_id=participant.user_id,
-                    account_name=participant.account_name,
-                    display_name=participant.display_name,
-                    avatar_url=participant.avatar_url,
-                ),
-                balance=balance,
-                wager=participant.bet,
-                mode=mode,
+                identity=participant, balance=balance, wager=participant.bet, mode=mode
             )
             if refreshed_participant is None:
                 dropped.append(participant.display_name)
