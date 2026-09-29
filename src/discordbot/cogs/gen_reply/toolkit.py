@@ -109,8 +109,7 @@ class ReplyToolkit(BaseModel):
         """The text-to-speech engine for spoken QA replies.
 
         Returns:
-            A generator bound to the proxy client and the TTS deployment; the caller
-            still gates it on `allow_voice` and `config.inline_voice_enabled`.
+            A generator bound to the proxy client and the TTS deployment.
         """
         return VoiceGenerator(
             client=self.openai_client, model_name=self.runtime_models.tts_model.name
@@ -122,8 +121,7 @@ class ReplyToolkit(BaseModel):
 
         Returns:
             A generator bound to the proxy client and the image deployment; the route
-            calls `render` (raises) while the inline path calls `generate` (best-effort,
-            gated on `allow_image` and `config.inline_image_enabled`).
+            calls `render` (raises) while the inline path calls `generate` (best-effort).
         """
         return ImageGenerator(
             client=self.openai_client, image_model=self.runtime_models.image_model
@@ -151,8 +149,7 @@ class ReplyToolkit(BaseModel):
         Returns:
             A generator bound to the DIRECT-to-Google Gemini client and the video model
             (the Interactions API is Gemini-only, not reachable via the proxy); the route
-            calls `render` (raises) while the inline path calls `generate` (best-effort, gated
-            on `allow_video` and `config.video_available`).
+            calls `render` (raises) while the inline path calls `generate` (best-effort).
         """
         return VideoGenerator(
             client=self.gemini_client, video_model=self.runtime_models.video_model
@@ -165,7 +162,7 @@ class ReplyToolkit(BaseModel):
         Returns:
             A generator bound to the DIRECT-to-Google Gemini client (Lyria runs on the
             Interactions API, not the proxy) and the music model; the inline path calls
-            `generate` (best-effort, gated on `allow_music` and `config.music_available`).
+            `generate` (best-effort).
         """
         return MusicGenerator(
             client=self.gemini_client, music_model=self.runtime_models.music_model

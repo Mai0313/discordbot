@@ -1098,7 +1098,6 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors AnswerTurn.stream_ans
     system_prompt: str = "SYS",
     history_limit: int = 2,
     effort: Literal["low", "high"] = "high",
-    describe_capabilities: bool = False,
     picks: list[str] | None = None,
 ) -> None:
     """Drives prepare-context plus answer the way on_message does for the QA route.
@@ -1115,10 +1114,7 @@ async def _reply_via_pipeline(  # noqa: PLR0913 -- mirrors AnswerTurn.stream_ans
         recall_picks=_resolved_picks(ids=picks),
     )
     await _answer(cog=cog, message=msg).stream_answer(
-        system_prompt=system_prompt,
-        context=context,
-        effort=effort,
-        describe_capabilities=describe_capabilities,
+        system_prompt=system_prompt, context=context, effort=effort
     )
 
 
@@ -2873,12 +2869,17 @@ async def test_voice_config_gate_controls_synthesizer(
 ) -> None:
     """config.inline_voice_enabled gates whether the QA streamer receives a synthesizer."""
     cog = _cog()
-    cog.config = _config_stub(inline_voice_enabled=enabled)
+    cog.config = _config_stub(
+        inline_voice_enabled=enabled,
+        inline_image_enabled=False,
+        music_available=False,
+        video_available=False,
+    )
     built = _install_streamer(monkeypatch=monkeypatch)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
-        system_prompt="SYS", context=ReplyContext(), allow_voice=True
+        system_prompt="SYS", context=ReplyContext()
     )
 
     assert (built[0]["voice_generator"] is not None) == expect_synth
@@ -2893,12 +2894,17 @@ async def test_image_config_gate_controls_generator(
 ) -> None:
     """config.inline_image_enabled gates whether the QA streamer receives an image generator."""
     cog = _cog()
-    cog.config = _config_stub(inline_voice_enabled=False, inline_image_enabled=enabled)
+    cog.config = _config_stub(
+        inline_voice_enabled=False,
+        inline_image_enabled=enabled,
+        music_available=False,
+        video_available=False,
+    )
     built = _install_streamer(monkeypatch=monkeypatch)
 
     message = FakeMessage(content="<@999> hi", author=FakeAuthor(user_id=1))
     await _answer(cog=cog, message=as_message(fake=message)).stream_answer(
-        system_prompt="SYS", context=ReplyContext(), allow_image=True
+        system_prompt="SYS", context=ReplyContext()
     )
 
     assert (built[0]["image_generator"] is not None) == expect_gen
@@ -2974,6 +2980,8 @@ async def test_youtube_qa_uses_interactions_backend() -> None:
     cog.config = _config_stub(
         inline_voice_enabled=False,
         inline_image_enabled=False,
+        music_available=False,
+        video_available=False,
         youtube_video_enabled=True,
         gemini_key_configured=True,
     )
@@ -3006,6 +3014,8 @@ async def test_youtube_interactions_passes_effort_as_thinking_level() -> None:
     cog.config = _config_stub(
         inline_voice_enabled=False,
         inline_image_enabled=False,
+        music_available=False,
+        video_available=False,
         youtube_video_enabled=True,
         gemini_key_configured=True,
     )
@@ -3059,6 +3069,8 @@ async def test_youtube_qa_falls_back_to_responses(
     cog.config = _config_stub(
         inline_voice_enabled=False,
         inline_image_enabled=False,
+        music_available=False,
+        video_available=False,
         youtube_video_enabled=scenario != "kill_switch_off",
         gemini_key_configured=scenario != "no_key",
     )
@@ -5691,32 +5703,18 @@ async def test_a_generators_own_timeout_is_not_blamed_on_the_ask_window() -> Non
 
 
 @pytest.mark.parametrize(
-    argnames=(
-        "route",
-        "expected_call",
-        "expected_prep",
-        "expected_voice",
-        "expected_image",
-        "expected_music",
-        "expected_video",
-        "expected_capabilities",
-    ),
+    argnames=("route", "expected_call", "expected_prep"),
     argvalues=[
-        ("IMAGE", "handle_image", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
-        ("VIDEO", "handle_video", [HISTORY_MESSAGE_LIMIT], [], [], [], [], []),
-        ("QA", "stream_answer", [HISTORY_MESSAGE_LIMIT], [True], [True], [True], [True], [True]),
+        ("IMAGE", "handle_image", [HISTORY_MESSAGE_LIMIT]),
+        ("VIDEO", "handle_video", [HISTORY_MESSAGE_LIMIT]),
+        ("QA", "stream_answer", [HISTORY_MESSAGE_LIMIT]),
     ],
 )
-async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915 -- parametrized columns; orchestrates per-route stubs
+async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0915 -- orchestrates per-route stubs
     monkeypatch: pytest.MonkeyPatch,
     route: Literal["IMAGE", "VIDEO", "QA"],
     expected_call: str,
     expected_prep: list[int],
-    expected_voice: list[bool],
-    expected_image: list[bool],
-    expected_music: list[bool],
-    expected_video: list[bool],
-    expected_capabilities: list[bool],
 ) -> None:
     """Verifies on_message dispatches each route to the expected handler."""
     cog = _cog()
@@ -5766,11 +5764,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         prompts.append(user_prompt)
         calls.append("handle_video")
 
-    voice_flags: list[bool] = []
-    image_flags: list[bool] = []
-    music_flags: list[bool] = []
-    video_flags: list[bool] = []
-    capability_flags: list[bool] = []
     effort_flags: list[str] = []
     contexts: list[ReplyContext] = []
 
@@ -5780,22 +5773,12 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
         system_prompt: str,
         context: ReplyContext,
         effort: str = "high",
-        allow_voice: bool = False,
-        allow_image: bool = False,
-        allow_music: bool = False,
-        allow_video: bool = False,
         allow_research: bool = False,
-        describe_capabilities: bool = False,
         yt_url: str | None = None,
     ) -> None:
         """Records slow message handler dispatch."""
         del yt_url, allow_research
         calls.append("stream_answer")
-        voice_flags.append(allow_voice)
-        image_flags.append(allow_image)
-        music_flags.append(allow_music)
-        video_flags.append(allow_video)
-        capability_flags.append(describe_capabilities)
         effort_flags.append(effort)
         contexts.append(context)
 
@@ -5815,17 +5798,6 @@ async def test_gen_reply_on_message_dispatches_routes(  # noqa: PLR0913, PLR0915
     # screen, so each issues exactly one prep request and what is asserted is which request was
     # made, not the order two of them arrived in.
     assert Counter(prep_requests) == Counter(expected_prep)
-    # Voice is enabled on QA (the only route that streams a reply here); IMAGE/VIDEO never do.
-    assert Counter(voice_flags) == Counter(expected_voice)
-    # Inline image is QA-only; IMAGE/VIDEO never reach here.
-    assert Counter(image_flags) == Counter(expected_image)
-    # Inline music is QA-only, like inline image.
-    assert Counter(music_flags) == Counter(expected_music)
-    # Inline video is QA-only, like inline image/music.
-    assert Counter(video_flags) == Counter(expected_video)
-    # The feature reference that replaced /help rides QA alone; a media persona reply is not
-    # fielding a question about what the bot can do.
-    assert Counter(capability_flags) == Counter(expected_capabilities)
     if route in {"IMAGE", "VIDEO"}:
         assert prompts == ["hello"]
         assert effort_flags == []
@@ -6720,16 +6692,12 @@ def test_reply_context_message_list_orders_hist_ref_current() -> None:
     assert [part["content"] for part in context.message_list] == ["hist", "ref", "now"]
 
 
-@pytest.mark.parametrize(argnames="describe_capabilities", argvalues=[True, False])
 @pytest.mark.usefixtures("no_memory_review")
-async def test_handle_message_reply_leads_with_the_capability_reference(
-    describe_capabilities: bool,
-) -> None:
-    """The feature reference leads the answer input, and only when the route asked for it.
+async def test_handle_message_reply_leads_with_the_capability_reference() -> None:
+    """The feature reference leads the answer input.
 
     It is the one block that is byte-identical on every reply, so it rides in front of history
-    where it costs the least against a prefix cache. A caller that leaves the flag off must
-    get none of it.
+    where it costs the least against a prefix cache.
     """
     cog = _cog()
 
@@ -6738,17 +6706,14 @@ async def test_handle_message_reply_leads_with_the_capability_reference(
         [_text_event(delta="好"), _completed_event(input_tokens=1, output_tokens=1)]
     ]
 
-    await _reply_via_pipeline(
-        cog=cog, message=message, describe_capabilities=describe_capabilities
-    )
+    await _reply_via_pipeline(cog=cog, message=message)
 
     header = str(render_capabilities_block()["content"]).split("\n", 1)[0]
     blocks = list(iter_text_blocks(request=request_input(responses=_recorded(cog).responses)))
     carried = [index for index, (_role, text) in enumerate(blocks) if text.startswith(header)]
-    assert carried == ([0] if describe_capabilities else [])
-    if describe_capabilities:
-        assert blocks[0][0] == "assistant"
-        assert "/memory clear" in blocks[0][1]
+    assert carried == [0]
+    assert blocks[0][0] == "assistant"
+    assert "/memory clear" in blocks[0][1]
 
 
 @pytest.mark.usefixtures("no_memory_review")
@@ -6924,6 +6889,13 @@ async def test_handle_message_reply_answers_with_builtins_and_deterministic_memo
 ) -> None:
     """An optional alias nobody picked stays out while the answer keeps built-ins."""
     cog = _cog()
+    # Every inline marker off, so nothing is appended to the instructions checked below.
+    cog.config = _config_stub(
+        inline_voice_enabled=False,
+        inline_image_enabled=False,
+        music_available=False,
+        video_available=False,
+    )
     _seed_fact(scope=user_scope(user_id=1), text="喜歡簡短回覆")
     _seed_fact(
         scope=server_scope(server_id=1),
@@ -6980,6 +6952,13 @@ async def test_handle_message_reply_without_stored_memory_keeps_instructions(
 ) -> None:
     """Verifies a memory-less user gets untouched instructions but still schedules."""
     cog = _cog()
+    # Every inline marker off, so nothing is appended to the instructions checked below.
+    cog.config = _config_stub(
+        inline_voice_enabled=False,
+        inline_image_enabled=False,
+        music_available=False,
+        video_available=False,
+    )
 
     scheduled: list[object] = []
 

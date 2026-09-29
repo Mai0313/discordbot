@@ -272,12 +272,7 @@ class ReplyPipeline(BaseModel):
             system_prompt=REPLY_PROMPT,
             context=context,
             effort=effort,
-            allow_voice=True,
-            allow_image=True,
-            allow_music=True,
-            allow_video=True,
             allow_research=can_launch_research(message=message),
-            describe_capabilities=True,
             yt_url=yt_url,
         )
 

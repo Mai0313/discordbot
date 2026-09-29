@@ -304,47 +304,33 @@ class AnswerTurn(BaseModel):
             content=self.message.author.mention, allowed_mentions=AllowedMentions.none()
         )
 
-    async def stream_answer(  # noqa: PLR0913 -- per-call reply inputs plus the route's memory/effort/voice gates
+    async def stream_answer(
         self,
         *,
         system_prompt: str,
         context: ReplyContext,
         effort: Literal["low", "high"] = "high",
-        allow_voice: bool = False,
-        allow_image: bool = False,
-        allow_music: bool = False,
-        allow_video: bool = False,
         allow_research: bool = False,
-        describe_capabilities: bool = False,
         yt_url: str | None = None,
     ) -> None:
-        """Streams the answer from a pre-built reply context, then schedules memory updates.
+        """Streams the QA answer from a pre-built reply context, then schedules memory updates.
 
         Both the per-user and the per-server update are scheduled here; the per-server one
-        carries its own guild / public-channel guards. `allow_voice` enables a
-        spoken clip, `allow_image` an inline generated image, `allow_music` an inline generated
-        music clip, and `allow_video` an inline generated video clip when the answer model marks
-        the reply for it. All four are QA only: the media persona reply is built with none of the
-        generators, so a marker in one is stripped and produces nothing.
-        `describe_capabilities` injects the feature reference that replaced
-        `/help`, carried by QA alone since a persona reply riding generated media is not fielding
-        a question about the bot. `yt_url`, set only when the router asked
-        to watch a linked YouTube video, swaps the answer turn onto the Gemini Interactions API
-        (which can ingest the video) while reusing the same streamer / footer / memory path.
+        carries its own guild / public-channel guards. The answer leads with the feature
+        reference that replaced `/help`, and each inline marker (a spoken clip, an image, a
+        music clip, a video clip) is offered whenever its own switch allows it. Both are QA
+        only: the media persona reply is not fielding a question about the bot, and it is built
+        with none of the generators, so a marker in one is stripped and produces nothing.
+        `allow_research` offers the `<deep-research>` marker where a research thread can be
+        opened. `yt_url`, set only when the router asked to watch a linked YouTube video, swaps
+        the answer turn onto the Gemini Interactions API (which can ingest the video) while
+        reusing the same streamer / footer / memory path.
         """
         toolkit = self.toolkit
-        voice_generator = (
-            toolkit.voice_generator if allow_voice and self.config.inline_voice_enabled else None
-        )
-        image_generator = (
-            toolkit.image_generator if allow_image and self.config.inline_image_enabled else None
-        )
-        music_generator = (
-            toolkit.music_generator if allow_music and self.config.music_available else None
-        )
-        video_generator = (
-            toolkit.video_generator if allow_video and self.config.video_available else None
-        )
+        voice_generator = toolkit.voice_generator if self.config.inline_voice_enabled else None
+        image_generator = toolkit.image_generator if self.config.inline_image_enabled else None
+        music_generator = toolkit.music_generator if self.config.music_available else None
+        video_generator = toolkit.video_generator if self.config.video_available else None
         # Only advertise an inline marker when its renderer is actually active; with it disabled
         # the streamer would strip the block and produce nothing, silently dropping the request
         # from the reply, so a disabled deployment must not be told about it.
@@ -366,9 +352,7 @@ class AnswerTurn(BaseModel):
         # primary context rather than getting buried up near history. The feature reference
         # leads: it is the one block that is byte-identical on every reply, so the front is
         # where it costs the least against a prefix cache.
-        answer_input: ResponseInputParam = (
-            [render_capabilities_block()] if describe_capabilities else []
-        )
+        answer_input: ResponseInputParam = [render_capabilities_block()]
         answer_input.extend(context.hist_messages)
         answer_input.extend(
             block
@@ -445,7 +429,7 @@ class AnswerTurn(BaseModel):
             reference=len(context.reference_messages),
             link_blocks=len(context.link_blocks),
             media_parts=count_media_parts(answer_input=answer_input),
-            capabilities=describe_capabilities,
+            capabilities=True,
             server_memory=context.server_memory_block is not None,
             user_memory=context.memory_block is not None,
             tone=context.tone_block is not None,
