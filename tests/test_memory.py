@@ -38,6 +38,7 @@ from discordbot.cogs.memory.views import (
     paginate_on_lines,
     memory_footer_text,
 )
+from discordbot.services.memory.run import start_run
 from discordbot.utils.llm_transcript import render_author_identity
 from discordbot.services.memory.store import (
     DM_COMPARTMENT,
@@ -1756,13 +1757,10 @@ async def test_a_forget_takes_what_it_names_out_of_the_tone_note(
         answer=ToneForget(drop_lines=(1, 9), drop_evidence=(1, 7))
     )
     forgets = _forget_entry("2026-09-02T00:00:00+00:00", note="使用者不想再被粗口互嗆")
-    assert await tone.forget_tone(
-        scope=USER_SCOPE,
-        flavor="user",
-        started_at=time.monotonic(),
-        writer=writer,
-        forgets=forgets,
+    run = start_run(
+        scope=USER_SCOPE, writer=writer, identity=IDENTITY, started_at=time.monotonic()
     )
+    assert await tone.forget_tone(run=run, forgets=forgets)
 
     assert read_tone(scope=USER_SCOPE) == "## 語氣偏好\n- 回答要簡潔"
     # Two older entries offered, the restatement after the forget not among them.

@@ -17,9 +17,9 @@ from functools import partial
 
 import logfire
 
-from discordbot.typings.memory import TONE_HEADER, MemoryFlavor
+from discordbot.typings.memory import TONE_HEADER
+from discordbot.services.memory.run import ConsolidationRun
 from discordbot.services.memory.store import (
-    flavor_of,
     read_tone,
     clear_tone,
     write_tone,
@@ -33,17 +33,10 @@ from discordbot.services.memory.deltas import (
     tone_observations,
     tone_evidence_from_raw,
 )
-from discordbot.services.memory.writer import MemoryWriterAI, ConsolidationRequest
+from discordbot.services.memory.writer import ConsolidationRequest
 
 
-async def update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the batch, its stamp, and the LLM handle
-    scope: str,
-    flavor: MemoryFlavor,
-    started_at: float,
-    writer: MemoryWriterAI,
-    raw_entries: str,
-    today: str,
-) -> None:
+async def update_tone_note(run: ConsolidationRun, raw_entries: str) -> None:
     """Rewrites the per-user tone note from the WHOLE batch, in its own call.
 
     It gets a call of its own rather than riding on the `global` compartment's, whose input
@@ -53,31 +46,24 @@ async def update_tone_note(  # noqa: PLR0913 -- the scope's identity plus the ba
     Best-effort throughout: the note is a small always-read tier and the next
     consolidation repairs a bad write, so a failure never touches the raw batch.
     """
-    if flavor != "user":
+    if run.flavor != "user":
         return
     tone_evidence = tone_evidence_from_raw(raw_text=raw_entries)
     if not tone_evidence:
         # No tone signal in this batch is the normal case, and an empty output must
         # never delete the note; only the evidence-complete rebuild may do that.
         return
-    result = await writer.consolidate(
+    result = await run.writer.consolidate(
         request=_tone_request(
-            existing_tone=read_tone(scope=scope), tone_evidence=tone_evidence, today=today
+            existing_tone=read_tone(scope=run.scope), tone_evidence=tone_evidence, today=run.today
         )
     )
-    if result is None or cleared_since(scope=scope, started_at=started_at):
+    if result is None or cleared_since(scope=run.scope, started_at=run.started_at):
         return
-    _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
+    _write_tone_result(scope=run.scope, tone_markdown=result.tone_markdown)
 
 
-async def rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the corpus, its stamp, and the LLM handle
-    scope: str,
-    flavor: MemoryFlavor,
-    started_at: float,
-    writer: MemoryWriterAI,
-    evidence: str,
-    today: str,
-) -> None:
+async def rebuild_tone_note(run: ConsolidationRun, evidence: str) -> None:
     """Rebuilds the tone note from the whole evidence corpus, in its own call.
 
     This pass saw everything, so no signal anywhere means a surviving note is stale and
@@ -85,29 +71,27 @@ async def rebuild_tone_note(  # noqa: PLR0913 -- the scope's identity plus the c
     allowed to delete the note for want of signal; `forget_tone` deletes it only by taking
     its last line.
     """
-    if flavor != "user":
+    if run.flavor != "user":
         return
     tone_evidence = tone_evidence_from_raw(raw_text=evidence)
     result = (
         None
         if not tone_evidence
-        else await writer.consolidate(
+        else await run.writer.consolidate(
             # No `existing_tone`: this pass saw the whole corpus, so it rewrites the note
             # from the evidence rather than merging into what is already there.
-            request=_tone_request(existing_tone="", tone_evidence=tone_evidence, today=today)
+            request=_tone_request(existing_tone="", tone_evidence=tone_evidence, today=run.today)
         )
     )
-    if cleared_since(scope=scope, started_at=started_at):
+    if cleared_since(scope=run.scope, started_at=run.started_at):
         return
     if result is None or not result.tone_markdown:
-        clear_tone(scope=scope)
+        clear_tone(scope=run.scope)
         return
-    _write_tone_result(scope=scope, tone_markdown=result.tone_markdown)
+    _write_tone_result(scope=run.scope, tone_markdown=result.tone_markdown)
 
 
-async def forget_tone(
-    scope: str, flavor: MemoryFlavor, started_at: float, writer: MemoryWriterAI, forgets: str
-) -> bool:
+async def forget_tone(run: ConsolidationRun, forgets: str) -> bool:
     """Takes what forget requests name out of the tone note and out of the evidence behind it.
 
     A tone preference is never stored as a fact, so the fact pass has nothing to delete for one,
@@ -119,43 +103,43 @@ async def forget_tone(
     Returns False when the call failed, so a caller that must not lose the forget keeps its
     batch for a retry; True when it ran or had nothing to do.
     """
-    if flavor != "user" or not forgets:
+    if run.flavor != "user" or not forgets:
         return True
     cutoff = newest_stamp(text=forgets)
-    note = read_tone(scope=scope).splitlines()
+    note = read_tone(scope=run.scope).splitlines()
     note_lines = (
         tuple(line for line in note[1:] if line.strip()) if note[:1] == [TONE_HEADER] else ()
     )
     evidence = [
         observation
-        for observation in tone_observations(text=read_evidence(scope=scope))
+        for observation in tone_observations(text=read_evidence(scope=run.scope))
         if observation[0] < cutoff
     ]
     if not note_lines and not evidence:
         return True
-    result = await writer.forget_tone(
+    result = await run.writer.forget_tone(
         forgets=forgets, note_lines=note_lines, evidence=tuple(line for _, _, line in evidence)
     )
     if result is None:
-        logfire.warn("Memory tone forget call failed; keeping raw batch", scope=scope)
+        logfire.warn("Memory tone forget call failed; keeping raw batch", scope=run.scope)
         return False
-    if cleared_since(scope=scope, started_at=started_at):
+    if cleared_since(scope=run.scope, started_at=run.started_at):
         return False
     kept = [
         line for number, line in enumerate(note_lines, start=1) if number not in result.drop_lines
     ]
     if len(kept) < len(note_lines):
         if kept:
-            write_tone(scope=scope, content="\n".join([TONE_HEADER, *kept]))
+            write_tone(scope=run.scope, content="\n".join([TONE_HEADER, *kept]))
         else:
-            clear_tone(scope=scope)
+            clear_tone(scope=run.scope)
     doomed = {
         (timestamp, block)
         for number, (timestamp, block, _) in enumerate(evidence, start=1)
         if number in result.drop_evidence
     }
     if doomed:
-        rewrite_evidence(scope=scope, edit=partial(drop_observations, doomed=doomed))
+        rewrite_evidence(scope=run.scope, edit=partial(drop_observations, doomed=doomed))
     return True
 
 
@@ -178,19 +162,11 @@ def _tone_request(existing_tone: str, tone_evidence: str, today: str) -> Consoli
 
 
 def _write_tone_result(scope: str, tone_markdown: str) -> None:
-    """Persists a tone-note call's output when it is acceptable for this scope.
+    """Persists a tone-note call's output when it leads with `TONE_HEADER`.
 
     An empty or malformed output never deletes the existing note: the tier is best-effort
     and the next consolidation repairs it. Only the evidence-complete rebuild may clear it for
     want of signal.
     """
-    if flavor_of(scope=scope) != "user":
-        return
-    if not _tone_is_well_formed(tone_markdown=tone_markdown):
-        return
-    write_tone(scope=scope, content=tone_markdown)
-
-
-def _tone_is_well_formed(tone_markdown: str) -> bool:
-    """Whether a tone note carries the exact header the injected tier is contracted to."""
-    return tone_markdown.startswith(TONE_HEADER)
+    if tone_markdown.startswith(TONE_HEADER):
+        write_tone(scope=scope, content=tone_markdown)

@@ -14,36 +14,28 @@ it worked.
 import time
 from typing import Literal
 import asyncio
-from datetime import UTC, datetime
 
 import logfire
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.memory import MemoryOwner, MemoryFlavor
 from discordbot.typings.timeouts import MEMORY_CONSOLIDATE_TIMEOUT_SECONDS
+from discordbot.services.memory.run import ConsolidationRun, start_run
 from discordbot.utils.asyncio_locks import LoopLocalRegistry
 from discordbot.services.memory.tone import rebuild_tone_note
-from discordbot.services.memory.facts import parse_identity
 from discordbot.services.memory.store import (
     GLOBAL_COMPARTMENT,
     clear_raw,
-    flavor_of,
     read_facts,
     scope_lock,
     append_detail,
     cleared_since,
     read_evidence,
-    scope_owner_id,
     read_raw_entries,
     detail_file_bytes,
     list_compartments,
     prune_compartment,
 )
-from discordbot.services.memory.deltas import (
-    apply_deltas,
-    partition_raw_entries,
-    partition_forget_requests,
-)
+from discordbot.services.memory.deltas import apply_deltas, partition_raw_entries
 from discordbot.services.memory.writer import MemoryWriterAI, ConsolidatedMemory
 from discordbot.services.memory.inflight import memory_semaphore
 from discordbot.services.memory.constants import MEMORY_REGENERATION_COOLDOWN_SECONDS
@@ -168,15 +160,13 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
             # cooldown check before the first one stamps the attempt; the
             # re-check under the lock keeps the per-scope limit on the rewrite.
             return RegenerationReport(result="cooldown")
-        flavor = flavor_of(scope=scope)
-        owner = parse_identity(identity=identity, fallback_owner_id=scope_owner_id(scope=scope))
+        run = start_run(scope=scope, writer=writer, identity=identity, started_at=started_at)
         raw_entries = read_raw_entries(scope=scope)
         evidence = read_evidence(scope=scope)
         if not evidence:
             return RegenerationReport(result="no_evidence")
         _last_regeneration[scope] = time.monotonic()
-        buckets = partition_raw_entries(raw_text=evidence, flavor=flavor)
-        today = datetime.now(UTC).date().isoformat()
+        buckets = partition_raw_entries(raw_text=evidence, flavor=run.flavor)
         compartments = _compartments_to_rebuild(scope=scope, buckets=buckets)
         try:
             # The individual calls carry no deadline of their own, so this is the only
@@ -198,14 +188,11 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
                         continue
                     result = await writer.consolidate(
                         request=compartment_request(
+                            run=run,
                             compartment=compartment,
-                            flavor=flavor,
                             existing_facts="",
                             parts=CompartmentInput(
-                                raw_entries=raw_bucket,
-                                recent_detail="",
-                                global_reference="",
-                                today=today,
+                                raw_entries=raw_bucket, recent_detail="", global_reference=""
                             ),
                             compact=True,
                         )
@@ -224,34 +211,15 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
                             result="failed", unreadable_removed=unreadable_removed
                         )
                     unreadable_removed += _replace_compartment(
-                        scope=scope,
-                        compartment=compartment,
-                        flavor=flavor,
-                        owner=owner,
-                        result=result,
+                        run=run, compartment=compartment, result=result
                     )
-                await _reapply_forgets(
-                    scope=scope,
-                    flavor=flavor,
-                    owner=owner,
-                    started_at=started_at,
-                    writer=writer,
-                    evidence=evidence,
-                    today=today,
-                )
+                await _reapply_forgets(run=run, evidence=evidence)
                 # The replay takes the evidence of what it deleted out of both files, so the
                 # tone rebuild and the retirement below must not work from the copies read
                 # before it.
                 raw_entries = read_raw_entries(scope=scope)
                 evidence = read_evidence(scope=scope)
-                await rebuild_tone_note(
-                    scope=scope,
-                    flavor=flavor,
-                    started_at=started_at,
-                    writer=writer,
-                    evidence=evidence,
-                    today=today,
-                )
+                await rebuild_tone_note(run=run, evidence=evidence)
         except TimeoutError:
             logfire.warn(
                 "Memory regeneration timed out", scope=scope, compartments=len(compartments)
@@ -259,7 +227,7 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
         if cleared_since(scope=scope, started_at=started_at):
             return RegenerationReport(result="failed", unreadable_removed=unreadable_removed)
-        report_injection_size(scope=scope, flavor=flavor)
+        report_injection_size(scope=scope, flavor=run.flavor)
         if raw_entries:
             # The rebuild consumed the raw batch; retire it to the cold tier so it
             # cannot be re-ingested.
@@ -269,15 +237,7 @@ async def regenerate_scope_memory(  # noqa: PLR0911 -- one early report per way 
         return RegenerationReport(result="regenerated", unreadable_removed=unreadable_removed)
 
 
-async def _reapply_forgets(  # noqa: PLR0913 -- the scope's identity plus the corpus, its stamp, and the LLM handle
-    scope: str,
-    flavor: MemoryFlavor,
-    owner: MemoryOwner,
-    started_at: float,
-    writer: MemoryWriterAI,
-    evidence: str,
-    today: str,
-) -> None:
+async def _reapply_forgets(run: ConsolidationRun, evidence: str) -> None:
     """Re-runs every forget request in the corpus against the freshly rebuilt facts.
 
     A rebuild derives facts from evidence rather than from the current facts, and the
@@ -296,17 +256,7 @@ async def _reapply_forgets(  # noqa: PLR0913 -- the scope's identity plus the co
     Best-effort: the rebuild has already landed by this point, and a failure here leaves a
     resurrected fact rather than a broken store. The next forget removes it again.
     """
-    await apply_forget_buckets(
-        scope=scope,
-        flavor=flavor,
-        owner=owner,
-        started_at=started_at,
-        writer=writer,
-        buckets=partition_forget_requests(
-            raw_text=evidence, compartments=tuple(list_compartments(scope=scope))
-        ),
-        today=today,
-    )
+    await apply_forget_buckets(run=run, forgets=evidence)
 
 
 def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
@@ -324,11 +274,7 @@ def _compartments_to_rebuild(scope: str, buckets: dict[str, str]) -> list[str]:
 
 
 def _replace_compartment(
-    scope: str,
-    compartment: str,
-    flavor: MemoryFlavor,
-    owner: MemoryOwner,
-    result: ConsolidatedMemory,
+    run: ConsolidationRun, compartment: str, result: ConsolidatedMemory
 ) -> int:
     """Replaces a compartment's contents with a from-scratch rebuild's facts.
 
@@ -341,15 +287,15 @@ def _replace_compartment(
     The mass-delete guard is off here: replacing the entire set is what this path is for.
     """
     outcome = apply_deltas(
-        scope=scope,
+        scope=run.scope,
         compartment=compartment,
-        flavor=flavor,
+        flavor=run.flavor,
         deltas=result.deltas,
-        owner=owner,
+        owner=run.owner,
         allow_mass_delete=True,
     )
     return _prune_rebuilt_compartment(
-        scope=scope, compartment=compartment, keep=set(outcome.written)
+        scope=run.scope, compartment=compartment, keep=set(outcome.written)
     )
 
 
