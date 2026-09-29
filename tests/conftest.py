@@ -203,3 +203,16 @@ def gemini_key_set_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(name="GEMINI_API_KEY", raising=False)
     for name in [name for name in os.environ if name.startswith("GEMINI_API_KEY_")]:
         monkeypatch.delenv(name=name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def git_environment_isolated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keeps every git a test runs inside the repository the test names.
+
+    Autouse because git exports `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and friends to a hook
+    or a `git rebase --exec` command run from a linked worktree, and a `git -C <tmp_path>` under
+    those still acts on the enclosing repository, writing a test identity and `core.bare` into
+    the checkout's own `.git/config`.
+    """
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name=name, raising=False)
