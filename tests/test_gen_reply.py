@@ -5703,6 +5703,48 @@ async def test_a_generators_own_timeout_is_not_blamed_on_the_ask_window() -> Non
 
 
 @pytest.mark.parametrize(
+    argnames=("route", "generator"),
+    argvalues=[("IMAGE", "image_generator"), ("VIDEO", "video_generator")],
+)
+async def test_a_failed_media_generation_drains_the_speculative_context(
+    route: Literal["IMAGE", "VIDEO"], generator: str
+) -> None:
+    """A route that fails before consuming the context it was handed cancels and drains it.
+
+    Nothing else will: the pipeline hands the build over to the media route and stops tracking
+    it, so a context left pending here keeps reading history and uploading attachments for a
+    turn that has already failed.
+    """
+    cog = _cog()
+
+    class _RefusesToRender:
+        """A render that fails outright, well inside the window."""
+
+        async def render(self, **kwargs: object) -> bytes:
+            """Fails the way a refused generation does."""
+            del kwargs
+            raise RuntimeError("render refused")
+
+    cog.toolkit.__dict__[generator] = _RefusesToRender()
+    release = asyncio.Event()
+
+    async def pending_context() -> ReplyContext:
+        """A context build still in flight when the generation fails."""
+        await release.wait()
+        return ReplyContext()
+
+    context_task = asyncio.create_task(pending_context())
+    message = as_message(fake=FakeMessage(content="畫一隻貓", author=FakeAuthor(user_id=1)))
+    routes = _media_routes(cog=cog, message=message)
+    handle = routes.handle_image if route == "IMAGE" else routes.handle_video
+
+    with pytest.raises(RuntimeError, match="render refused"):
+        await handle(user_prompt="draw a cat", context_task=context_task)
+
+    assert context_task.cancelled()
+
+
+@pytest.mark.parametrize(
     argnames=("route", "expected_call", "expected_prep"),
     argvalues=[
         ("IMAGE", "handle_image", [HISTORY_MESSAGE_LIMIT]),
