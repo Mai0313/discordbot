@@ -30,14 +30,10 @@ from discordbot.cogs.games.blackjack import (
     BlackjackPlayerHand,
     InsuranceBetTooSmallError,
     InsuranceBeyondBalanceError,
-    can_split,
-    can_double,
     hand_value,
     render_hand,
-    can_surrender,
     dealer_up_card,
     dealer_must_hit,
-    committed_wagers,
     is_five_card_win,
     is_five_card_twenty_one,
 )
@@ -621,12 +617,12 @@ class BlackjackView(View):
         self._peek_animated = False
         self._state_revision = 0
         self._background_tasks: set[asyncio.Task[None]] = set()
-        self._action_buttons: dict[str, Button[BlackjackView]] = {
-            "bj:hit": cast('Button["BlackjackView"]', self.hit),
-            "bj:stand": cast('Button["BlackjackView"]', self.stand),
-            "bj:double": cast('Button["BlackjackView"]', self.double),
-            "bj:split": cast('Button["BlackjackView"]', self.split),
-            "bj:surrender": cast('Button["BlackjackView"]', self.surrender),
+        self._action_buttons: dict[BotAction, Button[BlackjackView]] = {
+            "hit": cast('Button["BlackjackView"]', self.hit),
+            "stand": cast('Button["BlackjackView"]', self.stand),
+            "double": cast('Button["BlackjackView"]', self.double),
+            "split": cast('Button["BlackjackView"]', self.split),
+            "surrender": cast('Button["BlackjackView"]', self.surrender),
         }
         self._insurance_buttons: tuple[Button[BlackjackView], Button[BlackjackView]] = (
             cast('Button["BlackjackView"]', self.insure_yes),
@@ -999,17 +995,7 @@ class BlackjackView(View):
         hand = self.round_state.active_hand()
         if hand is None:
             return
-        balance_remaining = active.participant.balance_at_start - committed_wagers(player=active)
-        allowed: list[BotAction] = []
-        if not hand.finished and not hand.is_split_aces:
-            allowed.append("hit")
-            allowed.append("stand")
-        if can_double(hand=hand, balance_remaining=balance_remaining):
-            allowed.append("double")
-        if can_split(hand=hand, balance_remaining=balance_remaining):
-            allowed.append("split")
-        if can_surrender(hand=hand, peeked_blackjack=self.round_state.peeked_blackjack):
-            allowed.append("surrender")
+        allowed = self.round_state.allowed_actions()
         if not allowed:
             with contextlib.suppress(ValueError):
                 self.round_state.stand(user_id=active.participant.user_id)
@@ -1026,14 +1012,14 @@ class BlackjackView(View):
             dealer_cards=list(self.round_state.dealer),
             dealer_up=dealer_up,
             shoe=list(self.round_state.shoe),
-            allowed_actions=tuple(allowed),
+            allowed_actions=allowed,
             is_pair_hand=is_pair_hand,
             bet=hand.bet,
             doubled=hand.doubled,
         )
         chosen_action = action_context.action_analysis.basic_strategy_action
         applied = self._apply_bot_action(
-            user_id=active.participant.user_id, action=chosen_action, allowed=tuple(allowed)
+            user_id=active.participant.user_id, action=chosen_action, allowed=allowed
         )
         if not applied:
             with contextlib.suppress(ValueError):
@@ -1085,29 +1071,11 @@ class BlackjackView(View):
                 button.disabled = False
                 set_view_item_visible(view=self, item=button, visible=True)
             return
-        if self.round_state.phase != "player_actions":
-            return
 
-        active_player = self.round_state.active_player()
-        active_hand = self.round_state.active_hand()
-        if active_player is None or active_hand is None:
-            return
-
-        balance_remaining = active_player.participant.balance_at_start - committed_wagers(
-            player=active_player
-        )
-        visible: dict[str, bool] = {
-            "bj:hit": not active_hand.finished and not active_hand.is_split_aces,
-            "bj:stand": not active_hand.finished and not active_hand.is_split_aces,
-            "bj:double": can_double(hand=active_hand, balance_remaining=balance_remaining),
-            "bj:split": can_split(hand=active_hand, balance_remaining=balance_remaining),
-            "bj:surrender": can_surrender(
-                hand=active_hand, peeked_blackjack=self.round_state.peeked_blackjack
-            ),
-        }
-        for custom_id, button in self._action_buttons.items():
+        allowed = self.round_state.allowed_actions()
+        for action, button in self._action_buttons.items():
             button.disabled = False
-            set_view_item_visible(view=self, item=button, visible=visible[custom_id])
+            set_view_item_visible(view=self, item=button, visible=action in allowed)
 
     async def _edit_in_progress_locked(self, message: Message) -> None:
         """Refreshes the per-seat embeds while holding the round lock."""

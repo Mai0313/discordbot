@@ -9,7 +9,7 @@ from typing import Final, Literal
 
 from pydantic import Field, BaseModel, ConfigDict
 
-from discordbot.typings.games import Card, SettleOutcome, GameParticipant
+from discordbot.typings.games import Card, BotAction, SettleOutcome, GameParticipant
 from discordbot.typings.economy import MAX_SINGLE_BET
 
 RoundPhase = Literal["insurance", "player_actions", "settled"]
@@ -304,21 +304,17 @@ class BlackjackPlayerHand(BaseModel):
         """Returns True once every owned hand has finished."""
         return bool(self.hands) and all(hand.finished for hand in self.hands)
 
+    @property
+    def balance_remaining(self) -> int:
+        """Returns the starting balance left once every hand bet and the insurance are covered.
 
-def committed_wagers(player: BlackjackPlayerHand) -> int:
-    """Returns the total points already committed for one participant.
-
-    Sums every active hand bet plus any insurance side bet, so callers can
-    measure how much of the player's starting balance is still spoken for
-    when validating Double / Split / Insurance affordability.
-
-    Args:
-        player: The player whose committed wagers should be summed.
-
-    Returns:
-        Total committed points across hands and insurance for the player.
-    """
-    return sum(hand.bet for hand in player.hands) + player.insurance_bet
+        This is what a Double, a Split or an insurance side bet has to fit in.
+        """
+        return (
+            self.participant.balance_at_start
+            - sum(hand.bet for hand in self.hands)
+            - self.insurance_bet
+        )
 
 
 def can_double(
@@ -618,8 +614,7 @@ class BlackjackRound(BaseModel):
             raise InsuranceBetTooSmallError("Half of the original bet rounds to zero")
         if amount != expected:
             raise InsuranceRefusedError("Insurance amount must equal half of the original bet")
-        balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
-        if not can_insure(player=player, balance_remaining=balance_remaining):
+        if not can_insure(player=player, balance_remaining=player.balance_remaining):
             raise InsuranceBeyondBalanceError("Not enough balance for insurance")
         player.insurance_bet = amount
         player.insurance_resolved = True
@@ -690,6 +685,27 @@ class BlackjackRound(BaseModel):
             return self.active_hand()
         return hand
 
+    def allowed_actions(self) -> tuple[BotAction, ...]:
+        """Returns what the active sub-hand may do now, in hit, stand, double, split, surrender order.
+
+        Empty when no sub-hand is waiting on an action. Reads the turn through
+        `active_hand`, with the same non-pure-read caveat as `active_player`.
+        """
+        player = self.active_player()
+        hand = self.active_hand()
+        if player is None or hand is None:
+            return ()
+        actions: list[BotAction] = []
+        if not hand.is_split_aces:
+            actions.extend(("hit", "stand"))
+        if can_double(hand=hand, balance_remaining=player.balance_remaining):
+            actions.append("double")
+        if can_split(hand=hand, balance_remaining=player.balance_remaining):
+            actions.append("split")
+        if can_surrender(hand=hand, peeked_blackjack=self.peeked_blackjack):
+            actions.append("surrender")
+        return tuple(actions)
+
     def hit(self, user_id: int) -> Card:
         """Draws one card for the active sub-hand.
 
@@ -739,8 +755,7 @@ class BlackjackRound(BaseModel):
                 is not the active player, or `can_double` rejects the hand.
         """
         player, hand = self._require_active(user_id=user_id)
-        balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
-        if not can_double(hand=hand, balance_remaining=balance_remaining):
+        if not can_double(hand=hand, balance_remaining=player.balance_remaining):
             raise ValueError("Cannot double this hand")
         hand.bet *= 2
         hand.doubled = True
@@ -766,8 +781,7 @@ class BlackjackRound(BaseModel):
                 is not the active player, or `can_split` rejects the hand.
         """
         player, hand = self._require_active(user_id=user_id)
-        balance_remaining = player.participant.balance_at_start - committed_wagers(player=player)
-        if not can_split(hand=hand, balance_remaining=balance_remaining):
+        if not can_split(hand=hand, balance_remaining=player.balance_remaining):
             raise ValueError("Cannot split this hand")
         split_aces = hand.cards[0].rank == "A"
         first_card, second_card = hand.cards[0], hand.cards[1]

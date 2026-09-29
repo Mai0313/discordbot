@@ -505,6 +505,21 @@ def _two_player_round(
     return round_state
 
 
+def test_allowed_actions_list_the_active_hand_in_button_order() -> None:
+    """A fresh pair that can cover a second bet may do everything, hit first; a settled round nothing."""
+    round_state = _two_player_round(
+        cards_a=[Card(rank="8", suit="♠"), Card(rank="8", suit="♥")],
+        cards_b=[Card(rank="9", suit="♣"), Card(rank="9", suit="♦")],
+        dealer=[Card(rank="5", suit="♣"), Card(rank="6", suit="♦")],
+    )
+
+    assert round_state.allowed_actions() == ("hit", "stand", "double", "split", "surrender")
+
+    round_state.stand_all_remaining()
+
+    assert round_state.allowed_actions() == ()
+
+
 def test_an_empty_shoe_falls_back_to_drawing_from_an_infinite_deck(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
