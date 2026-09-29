@@ -501,21 +501,13 @@ class MessageInputBuilder(BaseModel):
         return list(await asyncio.gather(*tasks))
 
     async def get_attachment_parts(
-        self,
-        message: Message,
-        sources: list[AttachmentSource] | None = None,
-        allow_dead_cache: bool = False,
+        self, message: Message, sources: list[AttachmentSource], allow_dead_cache: bool = False
     ) -> list[RenderedPart]:
         """Extracts attachment content parts from a message, with a per-message cache.
 
-        Pass the pre-collected supported `sources` to avoid re-collecting; when omitted
-        they are collected and gated here so direct callers keep working. `allow_dead_cache`
+        `sources` are the message's collected sources after the modality gate. `allow_dead_cache`
         is opt-in for history scrollback only (see `GeminiFileUploader._resolve_file_upload`).
         """
-        if sources is None:
-            sources = self._supported_sources(
-                sources=self.collect_attachment_sources(message=message), message_id=message.id
-            )
         if not sources:
             return []
         # Key on the exact sources rendered plus the edit time, so a late embed unfurl

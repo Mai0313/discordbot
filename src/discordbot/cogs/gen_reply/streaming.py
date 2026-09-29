@@ -145,14 +145,9 @@ class ResponseStreamer(BaseModel):
     message: SkipValidation[Message] = Field(
         ..., description="The Discord message being answered and replied to."
     )
-    surface: TurnSurface | None = Field(
-        default=None,
-        description=(
-            "Where this reply goes; None falls back to replying into the source message's own "
-            "channel. Optional here and nowhere else in the pipeline because that fallback is "
-            "exactly what a streamer built on its own should do, and because the gateway surface "
-            "holds no state to keep."
-        ),
+    surface: TurnSurface = Field(
+        ...,
+        description="Where this reply goes, and where its reactions and dropped-media hints land.",
     )
     stored_content: str = Field(default="", description="The accumulated reply text.")
     reasoning_content: str = Field(
@@ -392,15 +387,6 @@ class ResponseStreamer(BaseModel):
         kept.reverse()
         return "\n".join([header, *(f"-# {line}" for line in kept)])
 
-    def _turn_surface(self) -> TurnSurface:
-        """This reply's surface, defaulting to the source message's own channel.
-
-        Built per call when absent rather than cached, which is safe precisely because the
-        gateway surface holds nothing: its hints go straight out as reactions and it has no
-        interaction response to spend. Only `/ask` passes one in, and that one is the pipeline's.
-        """
-        return self.surface or TurnSurface.for_message(message=self.message)
-
     async def _reply_or_send(self, content: str) -> Message:
         """Replies to the source message, sending unparented if it was deleted.
 
@@ -408,9 +394,8 @@ class ResponseStreamer(BaseModel):
         (unknown message_reference); we log it and send into the same channel instead of
         wasting the whole pipeline. Other HTTP errors still propagate to the caller.
         """
-        surface = self._turn_surface()
         try:
-            return await surface.send(content=content)
+            return await self.surface.send(content=content)
         except HTTPException as exc:
             if exc.code != 50035 and not isinstance(exc, NotFound):
                 raise
@@ -418,7 +403,7 @@ class ResponseStreamer(BaseModel):
                 "Source message deleted before reply; sending unparented",
                 message_id=self.message.id,
             )
-            return await surface.send_unparented(content=content)
+            return await self.surface.send_unparented(content=content)
 
     async def _write_preview_snapshot(self) -> None:
         """Writes the latest preview snapshot to the Discord reply, skipping no-ops."""
@@ -507,11 +492,10 @@ class ResponseStreamer(BaseModel):
         `PartialMessageable`, so replying to it would post into a channel the bot is not in and
         every answer over the limit would lose its tail.
         """
-        surface = self._turn_surface()
         parent_content, follow_up_chunks = self._split_reply_for_discord(
             content=content,
             footer=footer,
-            max_messages=surface.answer_capacity(has_landed_reply=self.reply is not None),
+            max_messages=self.surface.answer_capacity(has_landed_reply=self.reply is not None),
         )
         # Track the parent reply so a later voice attach edits the right message even when
         # the reply is created here (no preview snapshot ran before finalize).
@@ -531,7 +515,7 @@ class ResponseStreamer(BaseModel):
                 return
         previous = self.reply
         for chunk in follow_up_chunks:
-            previous = await surface.follow_up(previous=previous, content=chunk)
+            previous = await self.surface.follow_up(previous=previous, content=chunk)
 
     def _on_reasoning_delta(self, delta: str) -> None:
         """Accumulates one reasoning-summary delta, logging the first one's latency."""
@@ -614,7 +598,7 @@ class ResponseStreamer(BaseModel):
         `update_reaction` suppresses its own, and a reply deleted mid-answer (or a rate-limited
         edit) must not cost the retry it is announcing.
         """
-        await self._turn_surface().mark(emoji=RETRY_HINT_EMOJI)
+        await self.surface.mark(emoji=RETRY_HINT_EMOJI)
         if self.reply is None:
             return
         notice = self._retry_notice()
@@ -947,7 +931,7 @@ class ResponseStreamer(BaseModel):
         and failures are suppressed inside `update_reaction`. A surface with nothing to react to
         holds it instead, and `_write_hint_line` puts it on the reply once the media step ends.
         """
-        await self._turn_surface().hint(emoji=emoji)
+        await self.surface.hint(emoji=emoji)
 
     async def _write_hint_line(self) -> None:
         """Writes the hints a surface without reactions collected, as one line on the reply.
@@ -957,7 +941,7 @@ class ResponseStreamer(BaseModel):
         it out of `full_reply`. Best-effort throughout: a hint about a failure must never become
         one, and there is nothing to write when the reply never landed or the surface reacts.
         """
-        hints = self._turn_surface().take_hints()
+        hints = self.surface.take_hints()
         if not hints or self.reply is None or not self._usage_footer:
             return
         body = self._without_memory_note(text=self.stored_content.removesuffix(self._usage_footer))
@@ -1010,7 +994,7 @@ class ResponseStreamer(BaseModel):
             )
             return None
         # Mark the source message with the bot's `voice` app emoji while the clip synthesizes.
-        await self._turn_surface().mark(emoji=VOICE_EMOJI)
+        await self.surface.mark(emoji=VOICE_EMOJI)
         logfire.info(
             "Synthesizing voice reply", message_id=self.message.id, text_chars=len(self.voice_text)
         )
@@ -1089,7 +1073,7 @@ class ResponseStreamer(BaseModel):
                 cap=MAX_INLINE_IMAGES,
             )
         # Mark the source message with the bot's `image` app emoji while the images render.
-        await self._turn_surface().mark(emoji=IMAGE_EMOJI)
+        await self.surface.mark(emoji=IMAGE_EMOJI)
         logfire.info(
             "Generating inline image reply", message_id=self.message.id, image_count=len(prompts)
         )
@@ -1143,7 +1127,7 @@ class ResponseStreamer(BaseModel):
             )
             return None
         # Mark the source message while the clip renders (no custom app emoji for music yet).
-        await self._turn_surface().mark(emoji="🎵")
+        await self.surface.mark(emoji="🎵")
         logfire.info("Generating inline music reply", message_id=self.message.id)
         clip = await self.music_generator.generate(user_prompt=self.music_prompt)
         if clip is None:
@@ -1176,7 +1160,7 @@ class ResponseStreamer(BaseModel):
             )
             return None
         # Mark the source message with the bot's `video` app emoji while the clip renders.
-        await self._turn_surface().mark(emoji=VIDEO_EMOJI)
+        await self.surface.mark(emoji=VIDEO_EMOJI)
         logfire.info("Generating inline video reply", message_id=self.message.id)
         source_images = await source_images_task if source_images_task is not None else []
         video_bytes = await self.video_generator.generate(
@@ -1316,7 +1300,7 @@ class ResponseStreamer(BaseModel):
             return False
         if follow_up is not None:
             try:
-                await self._turn_surface().follow_up(
+                await self.surface.follow_up(
                     previous=reply, content=follow_up, allowed_mentions=AllowedMentions.none()
                 )
             except Exception as exc:
