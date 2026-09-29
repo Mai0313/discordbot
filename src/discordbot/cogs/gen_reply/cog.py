@@ -49,6 +49,7 @@ from discordbot.cogs.gen_reply.pipeline import ReplyPipeline
 from discordbot.services.memory.pipeline import safe_list_resumable, resume_memory_update
 from discordbot.cogs.gen_reply.turn_state import dispatched_model, current_answer_streamer
 from discordbot.cogs.gen_reply.ask_message import build_ask_message, interaction_channel
+from discordbot.cogs.gen_reply.status_marks import FAILED_EMOJI
 from discordbot.services.memory.git_history import memory_git
 from discordbot.services.memory.consolidation import needs_consolidation, consolidate_if_needed
 from discordbot.cogs.gen_reply.research_bridge import in_active_research_thread
@@ -295,7 +296,7 @@ class ReplyGeneratorCogs(commands.Cog):
                 _exc_info=True,
             )
             try:
-                reactions.advance(emoji="<:redcross:1517565100838355016>")
+                reactions.advance(emoji=FAILED_EMOJI)
                 error_embed = Embed(
                     title="Something went wrong",
                     description=f"```\n{extract_friendly_error(exc=e)}\n```",

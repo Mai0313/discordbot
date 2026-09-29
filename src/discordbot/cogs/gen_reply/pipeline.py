@@ -41,6 +41,13 @@ from discordbot.cogs.gen_reply.speculation import (
     await_deadline_bound_task,
     drain_deadline_bound_task,
 )
+from discordbot.cogs.gen_reply.status_marks import (
+    DONE_EMOJI,
+    IMAGE_EMOJI,
+    VIDEO_EMOJI,
+    ANSWER_EMOJI,
+    ROUTING_EMOJI,
+)
 from discordbot.cogs.gen_reply.research_bridge import can_launch_research
 from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
@@ -299,7 +306,7 @@ class ReplyPipeline(BaseModel):
         try:
             with logfire.span("gen_reply pipeline", message_id=message.id) as pipeline_span:
                 pipeline_started = time.monotonic()
-                self.reactions.advance(emoji="<:flowchart:1517561877973045349>")
+                self.reactions.advance(emoji=ROUTING_EMOJI)
                 # The reference + current attachment uploads (and their activation polls)
                 # run in the background and only the answer awaits them. The route call uses
                 # the text-only renders, so it never waits on the Files API. The QA context
@@ -359,9 +366,7 @@ class ReplyPipeline(BaseModel):
                     # in the status emoji and which media handler runs. Intent-gated link
                     # builders never start for these routes.
                     self.reactions.advance(
-                        emoji="<:image:1517559727880667226>"
-                        if route.decision == "IMAGE"
-                        else "<:video:1517560671913377842>"
+                        emoji=IMAGE_EMOJI if route.decision == "IMAGE" else VIDEO_EMOJI
                     )
                     # `parts_task` is left for the finally backstop — prep awaits it via
                     # asyncio.shield, so if the handler discards prep on a generation failure the
@@ -372,7 +377,7 @@ class ReplyPipeline(BaseModel):
                         decision=route.decision, context_task=media_context_task
                     )
                 else:
-                    self.reactions.advance(emoji="<:message:1517560873000898860>")
+                    self.reactions.advance(emoji=ANSWER_EMOJI)
                     context = await prep_task
                     prep_task = None
                     parts_task = None
@@ -393,7 +398,7 @@ class ReplyPipeline(BaseModel):
                         effort=route.effort,
                         pipeline_started=pipeline_started,
                     )
-                self.reactions.advance(emoji="<:greencheck:1517565102424068226>")
+                self.reactions.advance(emoji=DONE_EMOJI)
                 # End of the turn on the success path; the failure path is `gen_reply failed`,
                 # which carries the traceback. The console exporter prints no span-end line, so
                 # without this the file holds no total for the turn at all.

@@ -60,6 +60,7 @@ from discordbot.cogs.gen_reply.interactions import (
     to_interactions_input,
     create_interactions_answer_stream,
 )
+from discordbot.cogs.gen_reply.status_marks import YOUTUBE_EMOJI
 from discordbot.cogs.gen_reply.research_bridge import maybe_launch_research
 
 
@@ -421,7 +422,7 @@ class AnswerTurn(BaseModel):
             # Added BEFORE the streamer is built: its `created_at` is what the answer latency is
             # measured from, so leaving this REST round trip inside that window would bias the
             # figure against the one backend that pays for it.
-            await self.surface.mark(emoji="<:youtube:1517546722535018596>", bot_user=self.bot.user)
+            await self.surface.mark(emoji=YOUTUBE_EMOJI, bot_user=self.bot.user)
         streamer = ResponseStreamer(
             message=self.message,
             surface=self.surface,
