@@ -20,12 +20,19 @@ not drift off `high`, since it is the one tier whose effort is chosen at runtime
 `interactions.create`, where #459 lost whole replies to it.
 """
 
+import json
 from types import SimpleNamespace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from discordbot.typings.models import ModelSettings, RuntimeModelCatalog
+from discordbot.typings.models import (
+    ModelSettings,
+    RouteClassification,
+    RuntimeModelCatalog,
+    RecallRouteClassification,
+)
+from discordbot.cogs.gen_reply.link_sources.registry import LINK_CONTEXT_SOURCES
 
 # `disable` and `none` both mean "no thinking", which no Gemini model can honor. Every tier the
 # catalog ships is Gemini, which is what makes this a guard rather than a preference; it is not a
@@ -186,3 +193,21 @@ def test_the_catalog_exposes_the_tiers_under_test() -> None:
     """Guards the sweep itself: a catalog that stopped exposing tiers would pass vacuously."""
     models = _catalog_models()
     assert {"triage_model", "fast_model", "slow_model"} <= set(models)
+
+
+@pytest.mark.parametrize("route_shape", [RouteClassification, RecallRouteClassification])
+def test_the_route_schema_names_every_registered_link_source_inline(
+    route_shape: type[RouteClassification],
+) -> None:
+    """The triage call's schema spells out exactly the registry's source names, in place.
+
+    A source the enum lacks can never be selected, so its builder never starts; a name the
+    registry lacks is one the model can pick with nothing behind it. The enum stays inline
+    because the schema reaches the model as-is and both shapes were measured that way (#725):
+    a named alias hoisted into `$defs` behind a `$ref` changes the bytes the route call sends.
+    """
+    schema = route_shape.model_json_schema()
+    field = schema["properties"]["link_context_sources"]
+    assert "$defs" not in schema
+    assert "$ref" not in json.dumps(obj=field)
+    assert set(field["items"]["enum"]) == {source.name for source in LINK_CONTEXT_SOURCES}
