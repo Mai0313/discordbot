@@ -181,9 +181,9 @@ DOUYIN_EXPAND_TIMEOUT_SECONDS: Final[float] = 120.0
 # The same bound for the Threads expansion, and deliberately NOT the same number: that cog
 # holds no shared fetch slot, so this caps the listener rather than a queue behind it, and one
 # expansion walks a whole conversation and downloads the target's video where a Douyin expansion
-# reads one post. Set to what the reply pipeline already allows the very same walk
-# (`LINK_CONTEXT_GRACE_SECONDS`) rather than to a second guess.
-THREADS_EXPAND_TIMEOUT_SECONDS: Final[float] = 180.0
+# reads one post. Derived from what the reply pipeline already allows the very same walk rather
+# than set to a second guess.
+THREADS_EXPAND_TIMEOUT_SECONDS: Final[float] = LINK_CONTEXT_GRACE_SECONDS
 
 # The same bound for the Facebook expansion, and a third of the Threads one because the work is
 # a third of it: ONE page fetch, then parsing, with no conversation walk and no download at all
@@ -194,13 +194,13 @@ FACEBOOK_EXPAND_TIMEOUT_SECONDS: Final[float] = 60.0
 # The same bound for the Instagram expansion, and the same number for the same reason: one page
 # fetch and a parse, with nothing downloaded. Its page is smaller than Facebook's (~800KB against
 # ~950KB) but carries the whole comment list, so the walk is the part worth guarding.
-INSTAGRAM_EXPAND_TIMEOUT_SECONDS: Final[float] = 60.0
+INSTAGRAM_EXPAND_TIMEOUT_SECONDS: Final[float] = FACEBOOK_EXPAND_TIMEOUT_SECONDS
 
 # The same bound for the Twitter expansion, kept at the same number so the three expansions that
 # download nothing answer a stalled platform identically. Twitter is the fastest of them by a wide
 # margin — one JSON request of a few KB rather than a ~950KB page to walk — so this is headroom
 # rather than a budget, and shortening it would only turn a slow minute into a failed one.
-TWITTER_EXPAND_TIMEOUT_SECONDS: Final[float] = 60.0
+TWITTER_EXPAND_TIMEOUT_SECONDS: Final[float] = FACEBOOK_EXPAND_TIMEOUT_SECONDS
 
 # Bound on `/download_video`'s whole download step, both the yt-dlp and the Douyin branch.
 # Wider than an auto-expansion because the user asked for this file by name and may be after a
